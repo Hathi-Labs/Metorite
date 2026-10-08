@@ -33,6 +33,44 @@ def _executable_lines(path: pathlib.Path) -> list[str]:
     ]
 
 
+#: The host env must not reach a script under test. 🔴 Learned on PR #729:
+#: the CI `test` job exports CUSTOMER_CONSOLE_DATABASE_URL for the whole unit
+#: suite (pr-check.yml), backup_db.sh read it, and a Console dump appeared in
+#: the off-box happy path on Linux only. Each name below is one the backup and
+#: migration scripts read, one that changes how bash or a tool runs, or a knob
+#: of these tests. A test that wants one sets it in its own program.
+_HOST_ENV_PREFIXES = (
+    "BACKUP_", "CUSTOMER_CONSOLE_", "CONSOLE_", "PG", "KEEP_", "RCLONE_",
+    "ZSTD_", "GNUPG", "DOCKER_", "STUB_", "MIGRATION", "SKIP_", "TAR_",
+    "BASH_ENV", "BASH_FUNC_", "TENANT_LADDER_",
+)
+_HOST_ENV_NAMES = frozenset({
+    "ENV", "CDPATH", "GLOBIGNORE", "DATABASE_URL", "APP_DIR", "KEY_MODE",
+    "KEY_VALIDITY", "VOL_DIR", "COUNT_RC", "RESTORE_FAILS", "RM_FAILS",
+    "GZIP", "SECONDS", "CALLS", "W", "S3",
+})
+
+
+def _hermetic_env() -> dict[str, str]:
+    """os.environ without any name that could steer a script under test."""
+    import os
+
+    return {
+        k: v for k, v in os.environ.items()
+        if k.upper() not in _HOST_ENV_NAMES and not k.upper().startswith(_HOST_ENV_PREFIXES)
+    }
+
+
+def test_the_harness_env_is_hermetic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The companion of the scrub: a name the CI job exports must not survive."""
+    monkeypatch.setenv("CUSTOMER_CONSOLE_DATABASE_URL", "postgresql://leak@ci/x")
+    monkeypatch.setenv("BACKUP_S3_BUCKET", "leak")
+    monkeypatch.setenv("PGHOST", "leak")
+    env = _hermetic_env()
+    assert not {"CUSTOMER_CONSOLE_DATABASE_URL", "BACKUP_S3_BUCKET", "PGHOST"} & set(env)
+    assert "PATH" in env or "Path" in env, "the scrub removed PATH"
+
+
 def test_the_live_delivery_path_syncs_units_from_the_repo() -> None:
     """The loop must glob the units directory and install on change — in the
     file the workflow and the poller actually execute."""
@@ -149,7 +187,8 @@ def test_the_pg_seam_actually_reaches_docker_in_docker_mode() -> None:
         # mangles the embedded quotes on their way into MSYS bash, and text
         # mode rewrites \n to \r\n, which bash reads as `set -u\r`.
         run = subprocess.run(
-            ["bash"], input=prog.encode(), capture_output=True, timeout=10
+            ["bash"], input=prog.encode(), capture_output=True, timeout=10,
+            env=_hermetic_env(),
         )
         out = run.stdout.decode(errors="replace")
         err = run.stderr.decode(errors="replace")[:300]
@@ -233,7 +272,8 @@ def test_the_app_database_is_derived_from_env_and_never_excluded() -> None:
             + 'rm -f "$ENV_FILE"\n'
         )
         run = subprocess.run(
-            ["bash"], input=prog.encode(), capture_output=True, timeout=10
+            ["bash"], input=prog.encode(), capture_output=True, timeout=10,
+            env=_hermetic_env(),
         )
         out = run.stdout.decode(errors="replace")
         assert run.returncode == 0, run.stderr.decode(errors="replace")[:300]
@@ -543,7 +583,8 @@ def _run_backup_verify(docker_mode: str, env: str = "") -> tuple[int, str, str, 
     # cwd=_ROOT and a RELATIVE script path: a python-made Windows path does
     # not survive into every bash on PATH (see the APP_DB test above).
     run = subprocess.run(
-        ["bash"], input=prog.encode(), capture_output=True, timeout=60, cwd=_ROOT
+        ["bash"], input=prog.encode(), capture_output=True, timeout=60, cwd=_ROOT,
+        env=_hermetic_env(),
     )
     err = run.stderr.decode(errors="replace")
     err, _, calls = err.partition("\n===CALLS===\n")
@@ -715,7 +756,8 @@ def _run_apply(ledger_setup: str, backup_rc: int = 0) -> tuple[int, str, str, st
         + "exit $rc\n"
     )
     run = subprocess.run(
-        ["bash"], input=prog.encode(), capture_output=True, timeout=60, cwd=_ROOT
+        ["bash"], input=prog.encode(), capture_output=True, timeout=60, cwd=_ROOT,
+        env=_hermetic_env(),
     )
     err = run.stderr.decode(errors="replace")
     err, _, rest = err.partition("\n===CALLS===\n")
@@ -813,6 +855,10 @@ printf 'PRIVATE KEY BLOCK\n' > "$W/priv.asc"
 # what the guard sees: root, and a root:root 0600 file, unless a knob says not.
 printf 'BACKUP_S3_BUCKET=metorite-backups\n' > "$W/backup-offbox.env"
 export BACKUP_OFFBOX_ENV_FILE="$W/backup-offbox.env"
+# No default of the script may reach a HOST path (/home/acb/.acb/agents, a
+# real Docker volume). A test that wants other values sets them itself.
+export BACKUP_FILE_DIRS="$W/files/att $W/files/missing"
+export BACKUP_MEETING_BOT_VOLUME=stub-meeting-bot-data
 id() {
   if [ "${1:-}" = "-u" ]; then echo "${STUB_UID:-0}"; return 0; fi
   command id "$@"
@@ -1026,7 +1072,8 @@ def _run_backup_offbox(
     )
     t0 = time.monotonic()
     run = subprocess.run(
-        ["bash"], input=prog.encode(), capture_output=True, timeout=timeout, cwd=_ROOT
+        ["bash"], input=prog.encode(), capture_output=True, timeout=timeout, cwd=_ROOT,
+        env=_hermetic_env(),
     )
     took = time.monotonic() - t0
     err = run.stderr.decode(errors="replace")
@@ -1486,7 +1533,10 @@ def _run_lib(body: str) -> tuple[int, str, str]:
         + body
         + '\nprintf "\\n===CALLS===\\n"\ncat "$CALLS"\nrm -f "$CALLS"\n'
     )
-    run = subprocess.run(["bash"], input=prog.encode(), capture_output=True, timeout=30, cwd=_ROOT)
+    run = subprocess.run(
+        ["bash"], input=prog.encode(), capture_output=True, timeout=30, cwd=_ROOT,
+        env=_hermetic_env(),
+    )
     return run.returncode, run.stdout.decode(errors="replace"), run.stderr.decode(errors="replace")
 
 
