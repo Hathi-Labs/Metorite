@@ -169,7 +169,6 @@ const WRITE: readonly string[] = [
   "create_field",
   "update_field",
   "create_tag",
-  "create_tags",
   "update_tag",
   "edit_comment",
   "set_recurrence",

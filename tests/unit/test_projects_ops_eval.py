@@ -678,3 +678,55 @@ def test_a_stray_mark_fails_and_a_drawable_name_passes() -> None:
     assert _answer_rule("Task #5 «Notification engine» is due.", "answer_marks_drawable")
     assert not _answer_rule("Inside «Hathi Labs a new project sits.", "answer_marks_drawable")
     assert not _answer_rule("«a «b» c»", "answer_marks_drawable")
+
+
+# ── where the cards go (projects_ai_chat.md §24, owner 2026-10-08) ──────────
+
+_ROWS = "\n".join(
+    f"- #{n} «Task {n}» · unassigned\n  full_id: 0f8fad5b-d9cb-469f-a165-{70867728950 + n:012d}"
+    for n in range(11, 16)
+)
+
+
+def _genui(ui: dict[str, Any]) -> ToolCall:
+    return ToolCall(C.GENUI_TOOL, json.dumps({"ui": json.dumps(ui)}), '{"ok": true}', True)
+
+
+def _card_rule(calls: list[ToolCall], rule: str) -> bool:
+    return next(r for r in C.common(_evidence("PO-6", calls=calls)) if r.rule == rule).ok
+
+
+_STATS = {"type": "template", "props": {"name": "statDashboard",
+                                        "data": {"stats": [{"label": "Open", "value": 5}]}}}
+_PICKER = {"hitl": True, "type": "template",
+           "props": {"name": "optionPicker", "data": {"options": [{"id": "a", "label": "A"}]}}}
+
+
+def test_one_answer_card_passes_and_two_fail() -> None:
+    """Mutation caught: ``answer_cards`` that counts nothing, or ``<= 1`` made ``<= 2``."""
+    assert _card_rule([_genui(_STATS)], "one_answer_card")
+    assert not _card_rule([_genui(_STATS), _genui(_STATS)], "one_answer_card")
+    # A view draws an answer card too.
+    view = ToolCall("render_board", "{}", "Board of «Launch»", True)
+    assert not _card_rule([view, _genui(_STATS)], "one_answer_card")
+
+
+def test_a_picker_that_waits_is_not_the_answer_card() -> None:
+    """Mutation caught: ``is_ask_card`` that reads a picker as an answer."""
+    assert _card_rule([_genui(_PICKER), _genui(_STATS)], "one_answer_card")
+    assert C.is_ask_card({"type": "card", "children": [
+        {"type": "button", "props": {"label": "Go", "action": "go"}}]})
+    assert not C.is_ask_card(_STATS)
+
+
+def test_a_card_that_repeats_a_read_fails() -> None:
+    """Mutation caught: ``recarded_reads`` that finds nothing, or that counts a
+    card built from part of a read."""
+    read = ToolCall("list_tasks", "{}", _ROWS, True)
+    mirror = {"type": "list", "props": {"items": [f"#{n} Task {n}" for n in range(11, 16)]}}
+    assert not _card_rule([read, _genui(mirror)], "no_read_recarded")
+    # Two of five rows: an answer built from the read, not a copy of it.
+    part = {"type": "list", "props": {"items": ["#11 Task 11", "#12 Task 12", "#99 Other"]}}
+    assert _card_rule([read, _genui(part)], "no_read_recarded")
+    # No read before it: nothing to repeat.
+    assert _card_rule([_genui(mirror)], "no_read_recarded")

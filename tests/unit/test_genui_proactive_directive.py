@@ -36,6 +36,18 @@ def test_directive_is_template_first_and_names_the_shared_marker():
     assert "--cc-*" in full
 
 
+def test_directive_carries_the_placement_rule():
+    """projects_ai_chat.md §24: one card for an answer, and no read redrawn.
+
+    Mutation: drop PLACEMENT_RULE from either variant and this fails."""
+    from acb_skills.addendum import PLACEMENT_RULE
+
+    for text in (_ui_first_directive(), _ui_first_directive(compact=True)):
+        assert text.endswith(PLACEMENT_RULE)
+    assert "at most ONE card" in PLACEMENT_RULE
+    assert "Never draw a read's result again as a card" in PLACEMENT_RULE
+
+
 def test_directive_is_byte_stable():
     assert _ui_first_directive() == _ui_first_directive()
     assert _ui_first_directive(compact=True) == _ui_first_directive(compact=True)
