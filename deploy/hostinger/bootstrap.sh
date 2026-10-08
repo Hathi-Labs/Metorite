@@ -121,23 +121,15 @@ fi
 
 # 7. systemd unit so the compose stack survives reboots
 say "Systemd unit (acb.service)"
-sudo tee /etc/systemd/system/acb.service >/dev/null <<UNIT
-[Unit]
-Description=AI Company Brain (docker compose stack)
-Requires=docker.service
-After=docker.service network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=$APP_DIR
-EnvironmentFile=$APP_DIR/.env
-ExecStart=/usr/bin/docker compose -f infra/docker-compose.yml --profile core --profile memory up -d --remove-orphans
-ExecStop=/usr/bin/docker compose -f infra/docker-compose.yml down
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+# WS-49 BH-8: the unit is a repo file now, deploy/hostinger/acb.service. This
+# step wrote it from a heredoc, so no copy of it was in the repo. It also
+# started the memory profile, which put Neo4j on the public internet.
+# vps_apply.sh keeps the box copy in step with the repo file on each deploy.
+# ⚠️ The repo file names /opt/acb/app. Another APP_DIR needs its own unit.
+if [ "$APP_DIR" != "/opt/acb/app" ]; then
+  warn "APP_DIR is $APP_DIR, but acb.service names /opt/acb/app. Edit the installed unit."
+fi
+sudo install -m 0644 "$APP_DIR/deploy/hostinger/acb.service" /etc/systemd/system/acb.service
 sudo systemctl daemon-reload
 sudo systemctl enable acb.service
 

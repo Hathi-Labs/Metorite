@@ -1005,7 +1005,11 @@ def test_a_slow_single_page_pdf_stops_at_the_deadline() -> None:
     started = time.monotonic()
     with pytest.raises(at.AttachmentRefused, match="too long"):
         at.extract_text(data, ".pdf", seconds=1.0)
-    assert time.monotonic() - started < 3.0
+    # 10 s, not 3 s. The visitor checks the clock between operators, and one
+    # parse of the 256 KB form took about 2 s on a loaded CI runner. A 3 s
+    # bound failed #739 and #743 at 3.02 s. Without the deadline this file
+    # runs about 50 s, so 10 s still fails a broken deadline.
+    assert time.monotonic() - started < 10.0
 
 
 def _free_slots() -> int:

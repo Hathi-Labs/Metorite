@@ -1,11 +1,15 @@
 # Box hardening — an app compromise must not become root
 
-**Status: ACTIVE, specified 2026-10-08. BH-1 BUILT, not merged** (branch
-`sec-bh1-child-env`, fix round 1 of its review on 2026-10-08). The other
-slices are not built. Board row
+**Status: ACTIVE, specified 2026-10-08, built in part. BH-1 BUILT, not
+merged** (branch `sec-bh1-child-env`, fix round 1 of its review on
+2026-10-08). Board row
 **WS-49**. The owner ruled on 2026-10-08 to close this gap first, before the
 data of the beta customers arrives. This spec owns H-270 and H-271 in
 `HANDOFF.md`.
+
+**BH-2 narrowed part BUILT 2026-10-08 on `sec-bh2a-probe-rollback`:** probe,
+rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
+BH-7. `50-hardening.conf`, the staging and the strict check wait.
 
 **Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
 GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
@@ -543,6 +547,9 @@ and `MetoriteCopilotAgent.start` both build the client with
 `child_env_client`, which passes `env=copilot_env()`. A client that a
 caller set first is kept. With no token, the client gets no
 `github_token`, so the CLI keeps its logged-in user. It does not refuse.
+`copilot_agent.GUARDED_WRAPPER_VERSIONS` lists the wrapper versions the
+tests cover. Any other version refuses every Copilot start, and the
+import logs it.
 
 **BH-D4. The gateway runs in a systemd sandbox.** NoNewPrivileges by itself
 is not enough (§0). The gateway gets the full set of §5 BH-2, and its write
@@ -963,6 +970,10 @@ the owner 2026-10-08 for WS-49.
 **Re-specified in fix rounds 1 and 2.** The second audit returned
 GO-NARROWED. This version applies W1 to W3 and S1 to S4.
 
+**BH-2 narrowed part BUILT 2026-10-08 on `sec-bh2a-probe-rollback`:** probe,
+rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
+BH-7. `50-hardening.conf`, the staging and the strict check wait.
+
 **The GO-NARROWED split.**
 
 - **These may start now:**
@@ -1173,15 +1184,16 @@ parts (B2-5).
 
 **Part 1, in the narrowed PR:**
 
-- Every `User=acb` unit in `deploy/hostinger/`, except `acb-pull.service`,
-  has `NoNewPrivileges=yes` in the unit or in its drop-in.
 - `acb-gateway-90-bh2-off.conf` holds the six reset lines:
   `ReadWritePaths=`, `InaccessiblePaths=`, `ProtectSystem=no`,
   `ProtectHome=no`, `NoNewPrivileges=no` and `PrivateTmp=no`.
 - `scripts/box_hardening_probe.sh` exists, and it runs each probe of
   acceptance 2.
 - The drop-ins of the other units merge only after the BH-7 installer
-  merges, because nothing installs a drop-in before it.
+  merges, because nothing installs a drop-in before it. So they land with
+  BH-7, and so does one check of part 1. That check reads each `User=acb`
+  unit in `deploy/hostinger/`, except `acb-pull.service`. Each one has
+  `NoNewPrivileges=yes` in the unit or in its drop-in.
 
 **Part 2, in the full slice:**
 
@@ -1218,6 +1230,31 @@ parts (B2-5).
 **Rollback.** One command: `sudo bash /opt/acb/app/scripts/bh2_rollback.sh on`.
 It needs no edit on the box, and the next deploy passes for 72 hours. After
 the fix, run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh off`.
+
+**Deferred from the narrowed part.** Each item goes with the full slice.
+
+- **The `acb-operator-console.service` unit (item 3).** Its unit is only on
+  the box. The BO-23 unit loop (`vps_apply.sh:1560`) installs each
+  `deploy/hostinger/*.service` file. So a copy in the repo changes the live
+  unit on the next deploy. Read the box's unit first, then add the copy with
+  the three lines.
+- **The deploy lock in `bh2_rollback.sh`.** The script does not take
+  `/opt/acb/acb-deploy.lock`. So an `on` or `off` during a deploy can race the
+  gateway restart of that deploy.
+- **A live check of `CapabilityBoundingSet=~`.** The rollback conf uses it to
+  give every capability back. The systemd source reads `~` with an empty
+  list as "all", and `systemd-analyze verify` (systemd 255) accepts it. No
+  `systemctl show` on the box has confirmed the value. Run
+  `systemctl show acb-gateway -p CapabilityBoundingSet` after the first `on`.
+
+**Two probe checks can pass on a box with no sandbox.** The overall verdict
+stays right, because the property checks of part 1 of the probe fail there.
+
+- `etc-acb-hidden` passes when `/etc/acb` is absent, or when its mode is
+  0700. Only `hidden-etc-acb`, a property check, proves the sandbox.
+- `p5-touch-t2-vendor-fails` reports SKIP when `/opt/acb/t2-vendor` is
+  absent, which is the case before BH-7. Until BH-7, the vendor dir is
+  `~/.acb/agents/vendor/t2-react`, and the probe does not check that path.
 
 **The gate.** AGENT-SAFE to build. The staging on the box, the deploy and the
 drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner

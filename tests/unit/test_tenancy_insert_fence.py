@@ -207,6 +207,9 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # Same guarded shape: the column list is built per call from
     # `pg_attribute`, so the literal text shows the no-column arm.
     ("209_people_email_unique_per_tenant.sql", "people"): (1, "GUARDED"),
+    # 233 restates 209's trigger INSERT unchanged and adds an UPDATE half,
+    # so the guarded shape and the count are the same as 209's.
+    ("233_people_status_follows_member.sql", "people"): (1, "GUARDED"),
     # Both arms of 207's cross-tenant grant. The no-column half is the
     # one counted; the other names `organization_id` from the ROLE being
     # granted, because the statement crosses every organization by

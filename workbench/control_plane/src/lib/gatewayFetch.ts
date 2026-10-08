@@ -90,6 +90,8 @@
 // HTTP server. `src/lib/gateway.test.ts` fails if a module that reaches the
 // gateway calls the bare `fetch` again.
 
+import { gatewayUrlEscape } from "./gatewayPath";
+
 /** The retry window. `deadlineMs` must stay below Caddy's 30 s hold. */
 export const GATEWAY_RETRY = Object.freeze({
   deadlineMs: 25_000,
@@ -293,6 +295,16 @@ export async function gatewayFetch(
   callerInit: RequestInit = {},
   opts: GatewayRetryOptions = {}
 ): Promise<Response> {
+  // The path guard, layer 2 (gatewayPath.ts). A path that the URL parser
+  // would rewrite never leaves this app, whatever route built it. Only a
+  // string can still carry an escape: a URL object resolved it already.
+  if (typeof input === "string") {
+    const escape = gatewayUrlEscape(input);
+    if (escape !== null) {
+      (opts.log ?? ((line: string) => console.warn(line)))(`[gateway] refused: ${escape}`);
+      return Response.json({ detail: `Invalid path: ${escape}.` }, { status: 400 });
+    }
+  }
   const init = withJsonContentType(callerInit);
   const { origin, route } = parse(input);
   // Rule 9: while the breaker is open, one try and no window.
