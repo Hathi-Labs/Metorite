@@ -87,7 +87,10 @@ def world(monkeypatch) -> World:
         }
 
     async def fake_completion(**kw):
-        w.completions.append(kw)
+        from acb_llm.routed import run_attribution
+
+        # Who the routed call would bill, read the way the real one reads it.
+        w.completions.append({**kw, "_bills": run_attribution()})
         msg = SimpleNamespace(content=w.fill_reply)
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), "m"
 
@@ -143,6 +146,18 @@ class TestTheModelSeesOnlyWhatTheMemberCanOpen:
         assert call["member"] == "who@x.test" and call["member_proven"] is True
         assert call["module_slug"] == "shell"
 
+    def test_the_fill_bills_the_same_member(self, world):
+        world.routing = True
+        ask("write to priya about march", member("email", email="who@x.test"))
+        bills = world.completions[-1]["_bills"]
+        assert bills["member"] == "who@x.test" and bills["member_proven"] is True
+
+    def test_the_run_context_is_put_back_after_the_request(self, world):
+        from acb_llm.routed import run_attribution
+
+        ask("write to priya about march", member("email", email="who@x.test"))
+        assert run_attribution()["member"] is None
+
 
 class TestOneBilledCallAndAFreeRepeat:
     def test_one_decide_call_per_new_intent_and_none_on_a_repeat(self, world):
@@ -163,6 +178,12 @@ class TestOneBilledCallAndAFreeRepeat:
 
         ask("write to priya about march", member("email"))
         assert world.redis.keys and all(isinstance(k, TenantKey) for k in world.redis.keys)
+
+    def test_a_revoked_app_is_a_new_key_so_a_cached_job_never_outlives_it(self, world):
+        ask("write to priya about march", member("email", "tasks"))
+        answer = ask("write to priya about march", member("tasks"))
+        assert len(world.decides) == 2
+        assert answer["kind"] == "handoff", "the cached compose job outlived the email grant"
 
     def test_a_member_with_no_organization_is_never_cached(self, world):
         user = member("email", org=None)
@@ -263,8 +284,10 @@ class TestOneJobList:
         src = REGISTRY_TS.read_text(encoding="utf-8")
         block = src[src.index("export const JOBS"):src.index("];", src.index("export const JOBS"))]
         out = {}
-        for m in re.finditer(r'id: "([^"]+)",.*?app: "([^"]+)",\s*href: "([^"]+)"', block, re.S):
-            out[m.group(1)] = (m.group(2), m.group(3))
+        for m in re.finditer(
+            r'id: "([^"]+)",\s*label: "([^"]+)",.*?app: "([^"]+)",\s*href: "([^"]+)"', block, re.S,
+        ):
+            out[m.group(1)] = (m.group(3), m.group(4), m.group(2))
         return out
 
     def _nav_features(self) -> dict[str, str | None]:
@@ -280,8 +303,10 @@ class TestOneJobList:
         assert ts, "the registry.ts JOBS block was not found"
         py = {j.id: j.href for j in intent.JOBS}
         assert set(py) == set(ts)
-        for job_id, (_app, href) in ts.items():
+        labels = {j.id: j.label for j in intent.JOBS}
+        for job_id, (_app, href, label) in ts.items():
             assert py[job_id] == href, job_id
+            assert labels[job_id] == label, f"{job_id}: the bar says {label!r}, the coordinator {labels[job_id]!r}"
 
     def test_each_job_is_gated_on_its_apps_own_feature(self):
         ts, nav = self._ts_jobs(), self._nav_features()
@@ -292,10 +317,21 @@ class TestOneJobList:
 
 
 class TestTheRouteIsMounted:
-    def test_the_gateway_serves_shell_intent(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "test-internal-token")
-        from fastapi.routing import iter_route_contexts
-        from gateway.main import app
+    def test_the_gateway_serves_shell_intent(self):
+        # ⚠️ In a FRESH interpreter. This module imports `intent` itself, which
+        # registers the route whatever `routes/shell/__init__.py` does, so an
+        # in-process check passed with the registering import deleted
+        # (verifier of NS-4b, 2026-10-08).
+        import subprocess
+        import sys
 
-        paths = {getattr(c, "path", None) for c in iter_route_contexts(app.routes)}
-        assert "/shell/intent" in paths and "/shell/search" in paths
+        probe = (
+            "import os; os.environ.setdefault('GATEWAY_INTERNAL_TOKEN', 't');"
+            "from fastapi.routing import iter_route_contexts;"
+            "from gateway.main import app;"
+            "p = {getattr(c, 'path', None) for c in iter_route_contexts(app.routes)};"
+            "print('/shell/intent' in p, '/shell/search' in p)"
+        )
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                             timeout=300, cwd=str(ROOT))
+        assert out.stdout.strip().splitlines()[-1] == "True True", out.stderr[-2000:]

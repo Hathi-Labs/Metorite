@@ -1,6 +1,8 @@
 # The shell — how a member finds an app, a job or an answer
 
-**Status:** Specified 2026-10-05. Nothing is built. Board row **WS-44**.
+**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-4a, NS-4b, NS-10,
+NS-10b and NS-11. The shell bar is ON in production since 2026-10-08. Board
+row **WS-44**.
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -313,11 +315,14 @@ registry.
 values the form reads, so tier 2 may fill them (§6.6). A job never writes when
 it opens.
 
-**Jobs live in one JSON file**, `src/lib/shell/jobs.json`. `nav.ts` imports it,
-and the gateway reads the same file. Each job names the feature it needs, so
-the gateway filters jobs by the member's own features. The gateway never
-trusts a job list from the client (R5e). A test reads the file from both
-sides, so no mirror can drift.
+**Jobs live in two lists that a test holds as one.** The bar reads `JOBS` in
+`src/lib/shell/registry.ts`. The gateway reads its own `JOBS` in
+`gateway/routes/shell/intent.py`, because the gateway cannot import the
+workbench. Each job names the feature it needs, so the gateway filters jobs by
+the member's own features. The gateway never trusts a job list from the
+client (R5e). `test_shell_intent.py::TestOneJobList` reads both files and
+fails if an id, a label, a link or a gate drifts. NS-2 moves the jobs into
+each app's manifest.
 
 ### 5.2 The rules for every app, built or future
 
@@ -442,7 +447,10 @@ words the member changed stops at once.
 **Tier 2 runs only when one of these is true:**
 
 - the query holds two words or more, and the member paused for 900 ms
-- the member pressed `Enter` and no tier 0 or tier 1 result was selected
+
+`Enter` always has a row to run, because the bar always offers "Ask the
+assistant" for a sentence. So `Enter` never starts tier 2 by itself. A member
+who presses it before the pause gets the hand-off to the assistant.
 
 ### 6.4 Six rules
 
@@ -953,7 +961,7 @@ Done when:
 
 1. `POST /shell/intent` returns `job` or `handoff` (§6.6) through the Router.
 2. The prompt holds only the jobs the member can open. The server filters
-   `jobs.json` by the member's own features. One test asserts that a job
+   its job list by the member's own features. One test asserts that a job
    behind a missing feature is absent. A second test asserts that the server
    ignores a job list from the client.
 3. Each call writes one usage row, and a test asserts it.

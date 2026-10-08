@@ -145,12 +145,9 @@ async def _pick(user: UserContext, words: str, scope: str | None, jobs: list[Job
     from acb_llm import ChoiceAnswer, ChoiceQuestion, decide
     from acb_llm.routed import run_attribution
 
-    # Who to bill, from the request's own binding, as the email features do
-    # (`decide_features.py`). Never a hard-coded "proven": the internal service
-    # caller is `system:internal`, which is no member at all.
-    attribution = dict(run_attribution())
-    attribution["member"] = user.email
-    attribution["member_proven"] = True
+    # Who to bill: the run context `shell_intent` bound for this member, which
+    # the fill's routed call reads too. One source for both billed calls.
+    attribution = run_attribution()
     criteria = {j.id: f"{j.label}: {j.meaning}" for j in jobs}
     criteria[ASK] = "anything else: a question, a search, or a request none of the jobs above does"
     decision = await decide(
@@ -164,6 +161,7 @@ async def _pick(user: UserContext, words: str, scope: str | None, jobs: list[Job
         )},
         member=attribution["member"],
         member_proven=attribution["member_proven"],
+        agent=attribution.get("agent"),
         module_slug="shell",
     )
     answer = decision["job"]
@@ -219,9 +217,16 @@ async def _fill(job: Job, words: str) -> dict[str, str]:
     return out
 
 
-def _cache_key(user: UserContext, words: str, scope: str | None) -> str:
-    """The member, the scope and the words. Never the words alone (§6.5)."""
-    raw = "\x1f".join([(user.email or "").lower(), scope or "", words.lower()])
+def _cache_key(user: UserContext, words: str, scope: str | None, jobs: list[Job]) -> str:
+    """The member, the scope, the words AND the jobs they hold (§6.5).
+
+    ⚠️ The held jobs are part of the key. An answer cached before an admin
+    took an app away would otherwise name its job for five more minutes
+    (verifier of NS-4b, 2026-10-08). With them in the key, a changed grant is
+    a new key.
+    """
+    held = ",".join(sorted(j.id for j in jobs))
+    raw = "\x1f".join([(user.email or "").lower(), scope or "", held, words.lower()])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
@@ -270,16 +275,29 @@ async def shell_intent(
     if len(words.split()) < 2:
         return {"kind": "none"}
 
-    digest = _cache_key(user, words, body.scope)
+    jobs = held_jobs(user)
+    digest = _cache_key(user, words, body.scope, jobs)
     hit = await _cached(user, digest)
     if hit is not None:
         return hit
 
-    jobs = held_jobs(user)
+    from acb_common._log import bind_run_context, run_context_scope
+
+    # Both billed calls, the pick and the fill, read the member from the run
+    # context. Bound here, inside a scope that puts the request's own fields
+    # back on exit. The member is the session's, so it is verified.
+    with run_context_scope():
+        bind_run_context(user=user.email, source="shell", app="shell", member_verified=True)
+        return await _answer(user, words, body.scope, jobs, digest)
+
+
+async def _answer(
+    user: UserContext, words: str, scope: str | None, jobs: list[Job], digest: str,
+) -> dict[str, Any]:
     from acb_llm import DecideError, DecideUnavailable
 
     try:
-        answer = await asyncio.wait_for(_pick(user, words, body.scope, jobs), PICK_TIMEOUT_S)
+        answer = await asyncio.wait_for(_pick(user, words, scope, jobs), PICK_TIMEOUT_S)
     except TimeoutError:
         logger.info("shell.intent pick timed out")
         return {"kind": "unavailable"}
