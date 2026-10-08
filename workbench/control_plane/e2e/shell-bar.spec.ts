@@ -277,6 +277,63 @@ test.describe("Find (NS-4a)", () => {
   });
 });
 
+test.describe("the coordinator (NS-4b)", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  async function intentStub(page: Page, answer: unknown, asked: string[] = []) {
+    await page.route("**/api/shell/intent", async (r) => {
+      asked.push((JSON.parse(r.request().postData() ?? "{}") as { q?: string }).q ?? "");
+      return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(answer) });
+    });
+    await page.route(/\/api\/shell\/search\?.*/, (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ groups: [] }) }),
+    );
+  }
+
+  test("a sentence becomes a filled job, and Capture opens with the words typed", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await intentStub(page, {
+      kind: "job", job: "capture", label: "New task",
+      href: "/tasks?do=capture&fill.title=call+the+vendor", filled: { title: "call the vendor" },
+    });
+    await page.goto("/settings/appearance");
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("remind me to call the vendor");
+    const row = commandBar(page).getByRole("option", { name: /New task · call the vendor/ });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Suggested by AI");
+    await row.click();
+    await page.waitForURL((u) => u.pathname === "/tasks");
+    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toHaveValue("call the vendor");
+    // The job and its fields left the address.
+    await expect.poll(() => new URL(page.url()).search).toBe("");
+  });
+
+  test("out of credits says so in one line, and the other groups keep working", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await intentStub(page, { kind: "paused", message: "AI suggestions are paused. Ask an admin to add credits." });
+    await page.goto("/settings/appearance");
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("write an email");
+    await expect(commandBar(page).getByRole("option", { name: /AI suggestions are paused/ })).toBeVisible();
+    await expect(commandBar(page).getByRole("option").first()).toContainText("Write an email");
+  });
+
+  test("one word never asks the coordinator", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    const asked: string[] = [];
+    await intentStub(page, { kind: "none" }, asked);
+    await page.goto("/settings/appearance");
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("email");
+    await page.waitForTimeout(1500);
+    expect(asked).toEqual([]);
+  });
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 

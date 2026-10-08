@@ -895,7 +895,46 @@ Done when:
    never returns.
 4. The route ran against a real Postgres (R8).
 
-### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), OWNER-GATE (turn on)
+### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), OWNER-GATE (turn on) · BUILT 2026-10-08, dark
+
+**Built.** `gateway/routes/shell/intent.py` serves `POST /shell/intent`. The
+owner's words, 2026-10-07: *"a high-level coordination AI that enables us to
+quickly go to the appropriate app and workflow depending on our query."*
+
+1. **Pick.** The route makes one typed choice through `acb_llm.decide`, among
+   `held_jobs(user)` and "ask". The Console Router serves it and bills it.
+2. **Fill.** One completion through `completion_on_router` reads the job's own
+   fields. An email has `to` and `subject`, and a task has `title`. It
+   runs ONLY when `routing_is_on()` (H-69). Off, the job opens with an empty
+   form.
+3. **The answer** is one of these:
+   - `job`, with `fill.<field>` parameters for the job door (`doJob.tsx`)
+   - `handoff`, which opens `/chat?q=` with the words typed in
+   - `paused`, which shows the §6.5 line
+   - `off`, `none` or `unavailable`
+4. **Cache.** The route keeps each answer for five minutes. The key holds the
+   member, the scope and the words, through `acb_common.tenant_redis`.
+
+⚠️ **The job list is two files kept as one.** The server reads its own list,
+not a `jobs.json`, because the gateway cannot import the workbench.
+`test_shell_intent.py::TestOneJobList` fails if the ids, the links or the gates
+drift from `lib/shell/registry.ts`.
+
+The bar shows the pick as the first row of Ask: "New task · call the vendor",
+marked "Suggested by AI". It waits for two words and a pause of 900 ms. Capture
+and Compose open with the filled words. The member checks them, and nothing is
+saved or sent until the member does so.
+
+**Two switches, both the owner's:** `COMMAND_BAR_AI` on the gateway turns the
+route on. `DECIDE_ENABLED`, which the email rules already use, serves the pick.
+The fill also needs `ROUTER_SERVING_ENABLED` (H-69).
+
+Fences: `tests/unit/test_shell_intent.py` (done-when 2 to 5), the
+`DELEGATED_ROUTERS` entry, and three e2e cases.
+
+**Done-when 3, read against the build.** A billed call writes its usage row
+in the Console, not in the gateway. So the test asserts the call, not the row:
+one `decide` call for a new intent, and none for a repeat.
 
 Flag `COMMAND_BAR_AI` on the gateway, default off. Files:
 `gateway/routes/shell/intent.py`.

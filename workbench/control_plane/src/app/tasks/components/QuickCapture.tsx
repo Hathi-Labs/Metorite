@@ -56,7 +56,9 @@ function QuickCapturePanel() {
 
   const vp = useVisualViewport();
   const [mode, setMode] = useState<"single" | "sweep">(storeMode);
-  const [value, setValue] = useState("");
+  // The coordinator's words, when it opened Capture (NS-4b). Read once, as
+  // the box opens; the member edits them before anything is filed.
+  const [value, setValue] = useState(() => useTaskStore.getState().quickCaptureSeed ?? "");
   const [added, setAdded] = useState(0);
   const [pendingAtts, setPendingAtts] = useState<TaskAttachment[]>([]);
   // Optional capture-time date: a "remind" tickler (defer_until — hidden until
