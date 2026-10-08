@@ -365,6 +365,7 @@ Rules that make it work:
 
 ## 6. Environment notes that will bite you
 
+- Secrets go through `scripts/secrets.sh` and the drop folder (`docs/secrets_drop.md`). Never cat or paste a secret.
 - Windows is the primary dev box: pass `encoding="utf-8"` explicitly when
   reading files in tests and scripts; cp1252 is the default and it crashes.
 - **Two recorded pytest hazards, both narrower than they sound:** the board
