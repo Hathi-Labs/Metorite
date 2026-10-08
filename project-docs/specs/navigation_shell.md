@@ -3,6 +3,7 @@
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-4a, NS-4b, NS-10,
 NS-10b and NS-11. The shell bar is ON in production since 2026-10-08. Board
 row **WS-44**.
+
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -320,9 +321,10 @@ it opens.
 `gateway/routes/shell/intent.py`, because the gateway cannot import the
 workbench. Each job names the feature it needs, so the gateway filters jobs by
 the member's own features. The gateway never trusts a job list from the
-client (R5e). `test_shell_intent.py::TestOneJobList` reads both files and
-fails if an id, a label, a link or a gate drifts. NS-2 moves the jobs into
-each app's manifest.
+client (R5e).
+
+`test_shell_intent.py::TestOneJobList` reads both files and fails if an id, a
+label, a link or a gate drifts. NS-2 moves the jobs into each app's manifest.
 
 ### 5.2 The rules for every app, built or future
 
