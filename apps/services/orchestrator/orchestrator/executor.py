@@ -693,6 +693,21 @@ class _PendingUserInput(dict[str, Any]):
 
 _pending_user_input: _PendingUserInput = _PendingUserInput()
 
+
+def threads_waiting_on_a_person() -> set[str]:
+    """The threads whose run is parked on a question or an approval card.
+
+    Such a run can wait an hour (``_USER_INPUT_TIMEOUT``), so the gateway's
+    stop step must not wait for it (``GET /internal/drain``). A restart ends
+    it either way.
+    """
+    out: set[str] = set()
+    for request_id, fut in list(_pending_user_input.items()):
+        owner = _pending_user_input.owner_of(request_id)
+        if owner and not fut.done():
+            out.add(owner)
+    return out
+
 # How long the agent waits for a human answer before giving up (seconds).
 _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 

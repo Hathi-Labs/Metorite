@@ -10,13 +10,14 @@ is lost. The owning spec is `project-docs/specs/data_narrowing_pipeline.md`,
 `--compare`, because the live run needs owner approval.
 
 ⚠️ **This eval does not show a saving of the email size.** The email eval
-gates at a ratio of 0.40. Here the gated ratio is 0.650, OVER that bar. With
-every chat read in ONE request, the best case for today, the ratio is 0.918.
-On Q2 the new path costs 1.45 times today's path.
+gates at a ratio of 0.40. Here the gated ratio is 0.622, OVER that bar. It was
+0.650 before H-276. With every chat read in ONE request, the best case for
+today, the ratio is 0.878. On Q2 the new path costs 1.44 times today's path.
 
-So the bar here is 1.00. On Q1 to Q4, the new path must cost no more than
-today's path, and it must find every answer. The run prints the email bar and
-each question that costs more under its first line.
+So the bar here is 0.65. The run prints the email bar and each question that
+costs more under its first line. The rule of H-276 also binds: no gated
+question costs more than today's path. The eval names Q2 as the one known
+breach, at 1.45 at most, and H-279 holds its fix.
 
 ## Why WhatsApp saves less than email
 
@@ -24,6 +25,11 @@ A WhatsApp message is short. The mean text of the fixture is 58 characters,
 about 15 tokens. PICK asks one question for each candidate, and each question
 carries its guidance, so PICK spends about 160 tokens on each candidate. That
 is ten times the message. So PICK costs more than it saves on these messages.
+
+Since H-276, the tool checks the cost before PICK (spec §3.3a). On Q1, Q3, Q4
+and Q5 it skips PICK and reads every candidate, and its count line says "with
+no PICK step". Q2 has 27 candidates, more than the READ cap of 25, so PICK
+must run there.
 
 The saving that remains comes from fewer requests. Today's path asks one
 search for each search word, then one request for each five chats it reads.
@@ -100,9 +106,13 @@ uv run python -m evals.whatsapp_narrowing.dataset --write
 
 1. **Recall.** For Q1 to Q4, the after path reads in full every answering
    message.
-2. **Cost.** On Q1 to Q4, the after path's credits are at most 1.00 times the
-   before path's credits. This is NOT the email bar (see the top).
-3. **The rules.** These bind every question:
+2. **Cost.** On Q1 to Q4, the after path's credits are at most 0.65 times the
+   before path's credits. This is NOT the email bar (see the top). It was 1.00
+   until H-276.
+3. **Never more (H-276).** No gated question costs more after than before,
+   and Q1 to Q4 together do not. Q2 is the known breach. It passes while its
+   ratio stays at 1.45 or under.
+4. **The rules.** These bind every question:
    - Each request acts as the member.
    - No message of the other member reaches a response.
    - Each query parameter is a real parameter of its route. The runner reads
@@ -125,7 +135,24 @@ The scripted run calls no model and no Router. The `skill-eval.yml` job runs
 it. The unit job runs `tests/unit/test_whatsapp_narrowing_eval.py`, which
 breaks each side of the pass rule and checks that the eval fails.
 
-## The result of 2026-10-08
+## The result after H-276 and H-277, 2026-10-08
+
+The scripted run, with 5 chat reads in one request on the before path. Every
+number is a stub estimate. Only Q2 runs PICK.
+
+| Q | Before: found and read | Before recall | After: found and read | After recall | Ratio | Ratio, best case for today |
+|---|---|---|---|---|---|---|
+| Q1 | 155 and 155 | 1.0 | 14 and 14 | 1.0 | 0.42 | 0.74 |
+| Q2 | 57 and 57 | 1.0 | 27 and 8 | 1.0 | 1.44 | 1.44 |
+| Q3 | 102 and 102 | 1.0 | 7 and 7 | 1.0 | 0.55 | 0.74 |
+| Q4 | 117 and 117 | 1.0 | 7 and 7 | 1.0 | 0.53 | 0.72 |
+| Q5 | 67 and 67 | 0.6, expected | 5 and 5 | 0.6, expected | 0.75 | 0.75 |
+
+On Q1 to Q4 the ratio is **0.622**, under the bar of 0.65 and over the email
+bar of 0.40. In the best case for today it is 0.878. With the bar at 0.65, the
+break-even factor of `tier-powerful` is 1.08, and of `tier-decide` 1.46.
+
+## The result of N4, 2026-10-08, before H-276
 
 The scripted run, with 5 chat reads in one request on the before path. Every
 number is a stub estimate.
@@ -154,10 +181,11 @@ more than today's path.
   asks for. The gated number uses one search for each word and 5 chat reads
   in one request.
 - **Today's recall is 1.0 here because the fixture chats are short.** Each
-  chat of the fixture holds 8 to 17 messages, so `read_whatsapp_chat`, which
-  reads the OLDEST 20 messages, reads all of them. A real chat over 60 days
-  holds more. Then today's path misses the recent answers, and its cost stays
-  the same. The eval does not model that, so it is kind to today's path.
+  chat of the fixture holds 8 to 17 messages, so `read_whatsapp_chat` reads
+  all of them. It read the OLDEST 20 messages of a chat until H-277, and it now
+  reads the newest 20. A real chat over 60 days holds more, so today's path
+  still misses an answer that is older than its last 20 messages. The eval
+  does not model that, so it is kind to today's path.
 - **Prompt caching is not modelled.** A cached prompt costs less, and that
   cuts the saving of fewer requests.
 - **The prompt leaves out the platform tools and the addendum.** Each request
