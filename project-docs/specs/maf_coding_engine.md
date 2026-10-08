@@ -2718,6 +2718,17 @@ from the text below:
   5xx gives HTTP 502, and the gateway saves nothing. A 404 or a 403 gives
   `maf`, as before.
 - **WS43-F31 is built here** (§17.6), in `tests/unit/test_agent_config_runtime.py`.
+- **The executor tests the object and the label** on the sub-agent
+  path and the batch path, with `acb_skills.loader.is_copilot_agent`. The
+  scope text says that the executor already does this. Only the stream path
+  did. A repo that declares no runtime gets `maf`, so the label alone no
+  longer finds each Copilot object.
+- **Residual.** A repo that declares no runtime and builds a Copilot agent
+  still registers. It runs with the deprecation line until WS-43r.
+- **Found in review, and fixed.** `list_agents` wrote each declared runtime
+  into the shared `_AGENT_REGISTRY` dicts. After the first `GET /agent`, the
+  executor read `maf` for task-manager and app-builder. It now writes into
+  copies.
 
 **Scope.** `gateway/routes/agent.py` (`:1279-1284` and `:1589`), the loader's
 check of a built agent in `acb_skills/loader.py`, and fence WS43-F18. §15.5 is
