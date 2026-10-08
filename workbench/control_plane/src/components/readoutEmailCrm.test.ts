@@ -13,7 +13,9 @@
  *   draws in its step";
  * - `withoutIds` loses the `id=` forms -> "shows no id";
  * - the `• key: value` rule goes -> "labels each fact";
- * - a `[kind]` draws as the key -> "draws a stage as a chip".
+ * - a `[kind]` draws as the key -> "draws a stage as a chip";
+ * - an unfenced address draws as text -> "labels each fact of a record"
+ *   (the person chip's initials).
  */
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
@@ -140,9 +142,10 @@ describe("the CRM reads", () => {
     expect(text).not.toContain("lead_name");
     expect(text).not.toContain("owner_email");
     expect(text).toContain("1 Oct 2026");
-    // A status is its chip, and a person is a person chip.
+    // A status is its chip, and an address is a person chip with initials.
     expect(out).toContain(statusAccent({ name: "Qualified" }).dot);
-    expect(out).toContain('title="priya@x.io"');
+    expect(out).toContain(">PR<");
+    expect(out).toContain(">RA<");
   });
 
   it("a search shows its rows with no id", () => {
