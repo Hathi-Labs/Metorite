@@ -263,6 +263,57 @@ filters only. PICK still gets the member's question as `query`.)*
 7. In a `no_egress` run, the tool sends every batch to System 1 on
    `tier-fast`. It sends no decide request (§4, Q4).
 
+### 3.3a The cost check of PICK — PICK pays for itself, or it is skipped
+
+*(Added by H-276, 2026-10-08.)* PICK spends about 160 tokens on each
+candidate, because each question carries its guidance. A WhatsApp message is
+about 15 tokens. On short items, PICK costs more than the READ that it saves.
+So the tool checks the cost before PICK. ONE function holds the rule,
+`narrowing.pick_cost`, in the shared seam. No source holds a rule of its own.
+
+1. **The cost of PICK.** The tool measures the decide requests that PICK would
+   send: the state and the questions of each batch of 16. It prices them at
+   the input price of `tier-decide`, and one answer of 90 characters for each
+   item at its output price.
+2. **The cost of a READ of every candidate.** Each candidate can carry `size`,
+   the characters that READ would give for it. The tool clips each size at the
+   body clip of 6000, adds the header lines, and prices the sum at the input
+   price of the tier that reads the tool output (§3.6).
+3. **An unknown size is the body clip.** A source that does not set `size`
+   gets the most that READ can give. So its READ looks dear, and PICK runs as
+   before. The email adapter sets no size, because the light search gives no
+   body length.
+4. **The WhatsApp adapter sets `size`.** READ gives a window of 5 lines. The
+   adapter takes each line as long as the line of the kept message.
+5. **The rule.** The tool skips PICK when the cost of PICK, times the margin
+   of 2, is at least the cost of a READ of every candidate.
+6. **The margin is 2.** PICK saves the READ of the items that it drops. Both
+   evals drop about one half of the candidates on Q1 to Q4, so PICK pays only
+   when it costs less than half of the READ.
+7. **A skip never cuts an item.** The tool skips only when READ can take every
+   candidate: 25 or fewer, and no more matches than candidates. With more,
+   PICK runs, because READ would cut the rest.
+8. **A skip reads every candidate.** It drops nothing and checks nothing, so
+   recall cannot drop. The count line says so:
+
+   ```text
+   Read all 7 matches in full, with no PICK step. A check of items this short costs more than it saves.
+   ```
+
+9. **The prices.** The agent cannot read the Router's tier prices. So
+   `narrowing.TIER_RATES` holds the prices of the eval card,
+   `evals/email_narrowing/fixtures/rate_card.json`, and a test pins the two
+   together. HANDOFF H-278 holds the step to the Router's prices.
+10. **A broken estimate keeps PICK.** The tool logs
+    `narrowing.pick_cost_failed` and runs PICK.
+
+**The rule of both evals (H-276): the narrowing path never costs more than
+today's path.** Each gated question, and the gated questions together, must
+cost no more after than before. An eval can name a question that already costs
+more, with the highest ratio that the rule accepts and the HANDOFF id of its
+fix. That question fails the rule when its ratio goes up. The WhatsApp eval
+names Q2 at 1.45, under H-279. The email eval names none.
+
 ### 3.4 The keep rule
 
 The rule is one function, `keep(answer)`, in `narrowing.py`.
@@ -425,6 +476,11 @@ numbers now obey the two sums below.)*
 reads "of more than 200 matches", and the "More than 200 items matched" line
 follows. It never prints a total that nobody counted.)*
 
+*(Amended by H-276, 2026-10-08. When the cost check skips PICK (§3.3a), the
+count line has a second shape: "Read all 7 matches in full, with no PICK
+step." It names no check and no keep, because no model judged an item. When a
+read fails, it reads "Read 6 of 7 matches in full".)*
+
 - "Checked" counts the questions that got an answer.
 - "Kept" includes the items that were not checked. So "Checked" plus "not
   checked" is the candidate count, and "Kept" plus "dropped" is the
@@ -507,6 +563,9 @@ questions.
   2. The after-run's credits on the 4 questions are at most 40 percent of
      the before-run's credits (agent default, the PR reports the number).
   3. The PR records both tables, the date and the SHA.
+  4. *(Added by H-276.)* No gated question costs more after than before, and
+     the gated questions together do not (§3.3a). The rule is
+     `never_costs_more_than_today` in the summary.
 
 In CI, the eval runs scripted, with `stub_api.py`, as `evals/projects_ops/`
 does. It counts tokens and requests. On a dev box with the Router, it also
@@ -524,6 +583,8 @@ reads the credits from `usage_event`.
 | WS48-F4 | Only `narrowing.py` defines `narrow_and_read`. Each agent that holds the tool builds it with `make_narrow_tool`, and its instructions hold the count line rule | `tests/unit/test_narrowing_one_seam.py` (new), an AST scan of `apps/` and `packages/` |
 | WS48-F5 | An adapter opens no database session and imports no `sqlalchemy` | `tests/unit/test_narrowing_one_seam.py` |
 | WS48-F6 | A typed System-1 question goes to `tier-decide`. A failure falls back to `tier-fast` and logs. A `no_egress` run and the turn-kind question stay on `tier-fast` | `tests/unit/test_system_one_tool.py` (extended by N3) |
+| WS48-F7 | PICK runs only when it pays (§3.3a). A skip needs 25 candidates or fewer and no overflow, reads every candidate, and its count line says "with no PICK step". The rates are the eval card | `tests/unit/test_narrowing_pick_cost.py` (H-276) |
+| WS48-F8 | The narrowing path never costs more than today's path, on each gated question and on all of them together | `tests/unit/test_email_narrowing_eval.py` and `tests/unit/test_whatsapp_narrowing_eval.py` (H-276) |
 
 Existing fences that bind this work:
 `tests/unit/test_no_direct_ai_vendor_calls.py`,
@@ -854,6 +915,35 @@ dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
   messages of a chat, because its route orders `sent_at ASC` and then applies
   the limit. The narrowing READ does not use that form. H-277 holds it.
 
+**Build notes (2026-10-08, branch `ws48-pick-cost`, H-276 and H-277).**
+
+- **The cost check of PICK** is §3.3a. The WhatsApp adapter sets
+  `Candidate.size`, and the email adapter does not. So PICK still runs on
+  every email question, and the email eval does not move.
+- **The scripted WhatsApp run after H-276.** These are stub numbers. Q1, Q3,
+  Q4 and Q5 skip PICK and read every candidate. Recall stays 1.0 on Q1 to Q4.
+  The ratios go from 0.437 to 0.416 (Q1), from 0.600 to 0.546 (Q3) and from
+  0.570 to 0.528 (Q4). Q2 has 27 candidates, more than the READ cap, so PICK
+  runs and Q2 stays at 1.445. The gated ratio goes from 0.650 to 0.619.
+- **The bar moves toward the email bar.** The WhatsApp eval gated at 1.00. It
+  now gates at 0.65, a ratchet with a small margin over 0.619. The rule of
+  §3.3a, "never more than today's path", takes the place of the old bar of
+  1.00. It names Q2 at 1.45, and H-279 holds its fix.
+- **The email run after H-276** is the same as before: a gated ratio of
+  0.3351, and recall 1.0 on Q1 to Q4.
+- **H-277: the thread route takes the newest messages.** `GET
+  /whatsapp/chats/{id}/messages` took the oldest `limit`. It now takes the
+  newest `limit` and gives them oldest first, with `id` after `sent_at` for a
+  tie. A message with no `sent_at` is still the oldest.
+- **Why the route, and not the tool.** Both callers want the newest messages.
+  `read_whatsapp_chat` says "the recent messages". The app's thread view shows
+  the newest message at the bottom, and it reloads the thread after a send.
+  With a chat longer than 100 messages, it showed the first 100, and a sent
+  reply did not show. So the default changes, and no parameter is added.
+- **The R8 test** is `test_whatsapp_thread_newest.py`. A chat of 30 messages
+  goes through the REAL tool and the REAL route on Postgres. The tool shows
+  messages 11 to 30, in order.
+
 ### N5 · The CRM adapter and the Projects adapter — AGENT-SAFE
 
 **Files:** `apps/agents/agent-crm/narrow_source.py` (new),
@@ -912,6 +1002,10 @@ uv run pytest tests/unit/test_narrowing_pick.py tests/unit/test_narrowing_one_se
   tests/unit/test_email_narrow_source.py tests/unit/test_system_one_tool.py \
   tests/unit/test_tier_policy.py tests/unit/test_no_direct_ai_vendor_calls.py \
   tests/unit/test_delegation_no_egress.py -q -rs
+
+# H-276 and H-277 (the last file is R8: it needs TENANT_LADDER_DATABASE_URL)
+uv run pytest tests/unit/test_narrowing_pick_cost.py tests/unit/test_email_narrowing_eval.py \
+  tests/unit/test_whatsapp_narrowing_eval.py tests/unit/test_whatsapp_thread_newest.py -q -rs
 
 # The evals (N2, N4)
 uv run python -m evals.email_narrowing.run --scripted

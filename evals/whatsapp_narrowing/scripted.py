@@ -18,11 +18,11 @@ asks for. :data:`READS_PER_TURN` is 5. The runner also plays every read in
 ONE request, the best case for today, and reports that ratio beside the gated
 one. Only a live sweep measures what a model does.
 
-⚠️ **Today's tools are weak in two ways that the before path keeps.**
+⚠️ **Today's search tool is weak in a way that the before path keeps.**
 ``search_whatsapp`` shows at most 15 matches of each search, and it shows no
-date. ``read_whatsapp_chat`` reads the OLDEST messages of a chat, because its
-route orders ``sent_at ASC`` and then applies the limit. The eval reports the
-recall of the before path, so a reader sees what the cheaper path misses.
+date. The eval reports the recall of the before path, so a reader sees what
+the cheaper path misses. ``read_whatsapp_chat`` read the OLDEST messages of a
+chat until H-277. It now reads the newest ``limit``, in reading order.
 """
 from __future__ import annotations
 

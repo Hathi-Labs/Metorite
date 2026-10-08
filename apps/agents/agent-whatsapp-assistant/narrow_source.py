@@ -316,6 +316,17 @@ def excerpt(text: str, words: Sequence[str], limit: int = SNIPPET_CLIP) -> str:
     return "… " + text[start:start + limit - 2]
 
 
+def read_size(m: Mapping[str, Any]) -> int:
+    """The characters that READ gives for *m*: a window of
+    ``2 * READ_WINDOW + 1`` lines (H-276).
+
+    The other lines of the window are not known before the read. The estimate
+    takes each one as long as the line of *m* itself. The cost check of PICK
+    uses it, and nothing else does.
+    """
+    return (2 * READ_WINDOW + 1) * (len(_line(m, kept=True)) + 1)
+
+
 def candidate_of(m: Mapping[str, Any], words: Sequence[str] = ()) -> Candidate:
     """One search row as a short summary of ONE message. Never a thread."""
     return Candidate(
@@ -324,6 +335,7 @@ def candidate_of(m: Mapping[str, Any], words: Sequence[str] = ()) -> Candidate:
         who=_who(m),
         when=str(m.get("sent_at") or ""),
         snippet=excerpt(message_text(m), words),
+        size=read_size(m),
     )
 
 
@@ -424,6 +436,7 @@ __all__ = [
     "excerpt",
     "item_id",
     "message_text",
+    "read_size",
     "search_params",
     "search_text",
     "split_id",

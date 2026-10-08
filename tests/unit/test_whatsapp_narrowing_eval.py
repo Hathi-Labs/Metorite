@@ -16,6 +16,12 @@ and the eval must fail on it:
   ``test_recall_fails_when_pick_drops_an_answer``; the keep rule drops a low
   ``no`` -> ``test_recall_fails_when_the_keep_rule_drops_a_low_no``; the READ
   cap leaves an answer unread -> ``test_recall_fails_when_read_leaves_an_answer``;
+* the rule of H-276: Q2 costs more than its known gate ->
+  ``test_never_more_fails_when_q2_costs_more_than_its_gate``; a question over
+  today's path that the eval does not name ->
+  ``test_never_more_fails_on_a_question_it_does_not_name``;
+* the cost check stops skipping PICK on short messages ->
+  ``test_the_short_questions_skip_pick``;
 * a leak of another member's chat -> ``test_a_leak_of_another_members_chat_fails``;
 * a PICK item with more than its one message -> ``test_the_wire_rule_finds_a_thread``;
 * a write on either path -> ``test_a_write_fails_the_no_state_rule``;
@@ -125,12 +131,12 @@ def test_the_scripted_sweep_passes(raw: run.Raw) -> None:
 
 
 def test_the_summary_says_the_email_bar_is_not_met(raw: run.Raw) -> None:
-    """The bar here is "no worse than today". The summary prints the email
+    """The bar here is 0.65, over the email bar. The summary prints the email
     bar beside it, and each question that costs more, so a pass never reads
     as a measured saving."""
     summary = run.judge(raw)
     lines = "\n".join(run.summary_lines(summary))
-    assert summary.totals["cost_bar"] == "1.00" and summary.totals["email_bar"] == "0.40"
+    assert summary.totals["cost_bar"] == "0.65" and summary.totals["email_bar"] == "0.40"
     assert summary.totals["ratio"] > 0.40
     assert "EMAIL BAR: the email eval gates at 0.40. This ratio is OVER it" in lines
     assert "WEAK CASE: today's path with every chat read in ONE request" in lines
@@ -169,7 +175,10 @@ def test_the_cost_bar_fails_when_powerful_costs_more(raw: run.Raw) -> None:
 # ── The recall side fails when it should ────────────────────────────────────
 
 
-def test_recall_fails_when_pick_drops_an_answer() -> None:
+def test_recall_fails_when_pick_drops_an_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Q1 is short, so the cost check skips PICK on it (H-276). A margin of 0
+    # makes PICK run, so the mutation reaches the keep rule.
+    monkeypatch.setattr(narrowing, "PICK_MARGIN", 0.0)
     ds = ds_mod.load()
     target = ds.question("Q1").answering[0]
     summary = _sweep(only=("Q1",), door_override=lambda q, m: ("no", 0.95) if m == target else None)
@@ -186,6 +195,7 @@ def test_recall_fails_when_the_keep_rule_drops_a_low_no(monkeypatch: pytest.Monk
         return answer is None or not (answer.choice == "no" and answer.probability >= 0.5)
 
     monkeypatch.setattr(narrowing, "keep", drops_low)
+    monkeypatch.setattr(narrowing, "PICK_MARGIN", 0.0)  # PICK runs on Q1 (H-276)
     summary = _sweep(only=("Q1",))
     assert _q(summary, "Q1")["after"]["recall"] < 1.0
     assert summary.passed is False
@@ -261,3 +271,63 @@ def test_compare_refuses_a_door_that_is_not_local(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "https://console.metorite.com")
     monkeypatch.setenv("DECIDE_ENABLED", "true")
     assert run.main(["--compare"]) == run.EXIT_NO_GO
+
+
+# ── H-276: PICK pays for itself, and never more than today's path ──────────
+
+
+def test_the_short_questions_skip_pick(raw: run.Raw) -> None:
+    """A WhatsApp message is short, so the cost check skips PICK and READ takes
+    every candidate. Q2 has 27 candidates, more than the READ cap of 25, so
+    PICK still runs there. Recall stays 1.0 on every gated question."""
+    summary = run.judge(raw)
+    end = ", with no PICK step. A check of items this short costs more than it saves."
+    for qid in ("Q1", "Q3", "Q4", "Q5"):
+        q = _q(summary, qid)
+        assert q["after"]["count_line"].endswith(end), q["after"]["count_line"]
+        assert "tier-decide" not in q["after"]["tiers"], qid
+        assert q["after"]["read"] == q["after"]["found"], qid
+    q2 = _q(summary, "Q2")
+    assert q2["after"]["count_line"].startswith("Checked 27 matches.")
+    assert q2["after"]["tiers"]["tier-decide"]["requests"] == 2
+    assert all(q["after"]["recall"] == 1.0 for q in summary.questions if q["gated"])
+
+
+def test_never_more_holds_with_q2_named(raw: run.Raw) -> None:
+    """Q2 costs more than today's path, and the eval names it with its fix
+    (H-279). Every other gated question, and the four together, cost less."""
+    summary = run.judge(raw)
+    rule = summary.rules[run.NEVER_MORE]
+    assert rule["pass"] is True and rule["detail"] == []
+    assert len(rule["accepted"]) == 1 and rule["accepted"][0].startswith("Q2 x")
+    assert "H-279" in rule["accepted"][0]
+    known = run.KNOWN_COSTS_MORE
+    assert known == {"Q2": (Decimal("1.45"), "H-279")}
+    for qid in ("Q1", "Q3", "Q4"):
+        assert _q(summary, qid)["ratio"] <= 1, qid
+    lines = "\n".join(run.summary_lines(summary))
+    assert "COSTS MORE: Q2 costs x" in lines and "(known, H-279)" in lines
+    assert "NEVER MORE: accepted Q2 x" in lines
+
+
+def test_never_more_fails_when_q2_costs_more_than_its_gate(raw: run.Raw) -> None:
+    """A card where ``tier-decide`` costs 1.5 times the eval card puts Q2 past
+    its gate of x1.45. The rule fails on it."""
+    card = stub_api.load_card()
+    scaled = {tier: ({k: str(Decimal(v) * Decimal("1.5")) for k, v in rate.items()}
+                     if tier == "tier-decide" else rate)
+              for tier, rate in card.items()}
+    broken = run.judge(raw, scaled)
+    rule = broken.rules[run.NEVER_MORE]
+    assert rule["pass"] is False and broken.passed is False
+    assert [d for d in rule["detail"] if d.startswith("Q2 x")], rule
+
+
+def test_never_more_fails_on_a_question_it_does_not_name(
+    raw: run.Raw, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run, "KNOWN_COSTS_MORE", {})
+    broken = run.judge(raw)
+    rule = broken.rules[run.NEVER_MORE]
+    assert rule["pass"] is False and broken.passed is False
+    assert rule["detail"] and rule["detail"][0].startswith("Q2 x")

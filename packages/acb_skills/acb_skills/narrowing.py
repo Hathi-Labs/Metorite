@@ -8,7 +8,8 @@ matter. The ONE tool, ``narrow_and_read``, does three steps:
 1. **NARROW, with no model.** A :class:`SourceAdapter` applies the structured
    filters and the existing search. It gives at most :data:`MAX_CANDIDATES`
    short summaries (§3.2).
-2. **PICK, on ``tier-decide``.** One ``choice`` question for each candidate,
+2. **PICK, on ``tier-decide``, when it pays** (:func:`pick_cost`). One
+   ``choice`` question for each candidate,
    ``acb_llm.decide_shape.MAX_QUESTIONS`` (16) to a request, through the ONE facade ``acb_llm.decide``.
    At most :data:`MAX_IN_FLIGHT` requests run at one time, inside one bound
    of :data:`PICK_BOUND_S` (§3.3). The state is the query and the summaries,
@@ -16,6 +17,15 @@ matter. The ONE tool, ``narrow_and_read``, does three steps:
 3. **READ.** The adapter reads at most :data:`READ_CAP` kept items in full.
    ``tier_policy.TOOL_HINTS`` maps the tool to ``analysis``, so for a covered
    agent the next model request goes to ``tier-powerful`` (§3.6).
+
+🔴 **PICK pays for itself, or the tool skips it** (:func:`pick_cost`, §3.3a,
+H-276). PICK spends about 160 tokens on each candidate. A short item, for
+example a WhatsApp message, costs less to read than to check. So before PICK,
+the tool compares the cost of PICK with the cost of a READ of every candidate.
+When PICK does not save by :data:`PICK_MARGIN`, the tool reads every candidate
+with no PICK step, and the count line says so. It skips only when READ can take
+every candidate (at most :data:`READ_CAP`), so a skip reads more and never cuts
+an item.
 
 🔴 **A drop needs a confident ``no``** (:func:`keep`, §3.4). ``unsure``, a
 low ``no`` and no answer keep the item. The filter never drops in silence.
@@ -69,18 +79,22 @@ __all__ = [
     "MAX_CANDIDATES",
     "MAX_IN_FLIGHT",
     "NARROW_RISK",
+    "PICK_MARGIN",
     "READ_CAP",
+    "TIER_RATES",
     "TOOL_NAME",
     "Candidate",
     "FilterRefused",
     "FullItem",
     "Narrowed",
+    "PickCost",
     "SourceAdapter",
     "Verdict",
     "keep",
     "make_narrow_tool",
     "narrow_tool_for",
     "narrowing_on",
+    "pick_cost",
 ]
 
 #: The ONE name of the tool (§3.1). ``tier_policy.TOOL_HINTS`` holds it.
@@ -131,6 +145,47 @@ QUERY_CLIP = 2000
 #: Auto threshold of ``tier_policy.SYSTEM_ONE_THRESHOLDS``. The run's effort
 #: raises it (Thinking 0.80, Max 0.90), so a higher effort drops fewer.
 DROP_THRESHOLD = 0.70
+
+# ── The cost check of PICK (§3.3a, H-276) ───────────────────────────────────
+
+#: PICK runs only when its cost, times this margin, is under the cost of a
+#: READ of every candidate. PICK saves the READ of the items that it drops, so
+#: it pays when it drops more than 1/margin of the READ cost. Both evals drop
+#: about one half of the candidates (email 38 of 76, WhatsApp 27 of 55, on
+#: Q1 to Q4), so the margin is 2. A margin of 1 would run PICK when only a drop
+#: of EVERY item paid for it.
+PICK_MARGIN = 2.0
+
+#: Characters to one token. The evals use the same estimate
+#: (``evals/email_narrowing/stub_api.py`` ``CHARS_PER_TOKEN``).
+CHARS_PER_TOKEN = 4
+
+#: The tier of every PICK request (``acb_llm.decide.DECIDE_TIER``).
+PICK_TIER = "tier-decide"
+
+#: The characters of one PICK answer on the wire. A ``choice`` answer with its
+#: confidence and its one probability is about 90 characters.
+PICK_ANSWER_CHARS = 90
+
+#: The price of each tier, in credits for each million tokens, as
+#: ``(input, output)``. ⚠️ TODO(H-278): the agent cannot read the Router's tier
+#: prices. The production card lives in the Console database, and the seed ships
+#: it unpriced. So these are the values of the eval card,
+#: ``evals/email_narrowing/fixtures/rate_card.json``, and
+#: ``test_narrowing_pick_cost.py`` fails if the two differ. The check uses only
+#: the ratio of two prices, so a change of every price by one factor changes
+#: no decision.
+TIER_RATES: dict[str, tuple[float, float]] = {
+    "tier-fast": (0.54, 2.20),
+    "tier-decide": (0.54, 2.20),
+    "tier-balanced": (1.10, 4.40),
+    "tier-powerful": (1.10, 4.40),
+}
+
+#: The tier whose price the check uses when a tier is not in the card. It is
+#: the most expensive one, so an unknown READ tier makes READ look dear and
+#: keeps PICK, as before H-276.
+_FALLBACK_TIER = "tier-powerful"
 
 #: The dropped list lives this long in the gateway process (§6.3).
 DROPPED_TTL_S = 15 * 60
@@ -196,13 +251,21 @@ _CALL_ID = re.compile(r"\An[0-9a-f]{6}\Z")
 
 @dataclass(frozen=True)
 class Candidate:
-    """One NARROW result, as a short summary. Never a full body."""
+    """One NARROW result, as a short summary. Never a full body.
+
+    ``size`` is the characters that READ would give for this item, when the
+    source can tell before the read (H-276). It never reaches PICK. ``None``
+    means "not known", and the cost check of PICK then takes the body clip
+    (:data:`BODY_CLIP`), the most that READ can give. So a source that does not
+    set it keeps PICK, as before.
+    """
 
     id: str
     title: str = ""
     who: str = ""
     when: str = ""
     snippet: str = ""
+    size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -541,6 +604,94 @@ async def _pick_batch(
         return _Batch([None] * len(batch), "none")
 
 
+def _tokens(chars: int) -> int:
+    """The tokens of *chars* characters, rounded up, as the evals count them."""
+    return -(-max(0, chars) // CHARS_PER_TOKEN)
+
+
+def _rate(tier: str) -> tuple[float, float]:
+    return TIER_RATES.get(tier) or TIER_RATES[_FALLBACK_TIER]
+
+
+def _read_tier() -> str:
+    """The tier of the request that reads the tool output (§3.6), as
+    ``tier_policy`` picks it after ``narrow_and_read``."""
+    try:
+        from acb_skills import tier_policy
+
+        kind = tier_policy.TOOL_HINTS.get(TOOL_NAME)
+        return str(tier_policy.KIND_TIERS.get(kind) or tier_policy.DEFAULT_TIER)
+    except Exception:  # a broken read takes the dearest tier, and keeps PICK
+        return _FALLBACK_TIER
+
+
+def _pick_chars(query: str, batch: Sequence[Candidate], keys: Sequence[str]) -> int:
+    """The characters of ONE decide request for *batch*: the state, and one
+    question with its instructions and criteria for each item (§3.3)."""
+    body = {
+        "state": _state(query, batch, keys),
+        "questions": {
+            k: {"type": "choice", "instructions": _instructions(k), "criteria": _CRITERIA}
+            for k in keys
+        },
+    }
+    return len(json.dumps(body))
+
+
+def _read_chars(c: Candidate) -> int:
+    """The characters that READ adds for *c*: its header lines and its body,
+    the body at most :data:`BODY_CLIP`. An unknown size reads as the clip."""
+    size = c.size
+    known = isinstance(size, int) and not isinstance(size, bool) and size >= 0
+    body = min(size, BODY_CLIP) if known else BODY_CLIP  # type: ignore[type-var]
+    header = len(_dropped_line(c)) + len("--- item  ---\nTitle: \n")
+    return header + body
+
+
+@dataclass(frozen=True)
+class PickCost:
+    """The cost check of PICK for one call (§3.3a). The costs are credits on
+    :data:`TIER_RATES`, and an estimate: 4 characters to a token."""
+
+    pick: float
+    read_all: float
+    read_tier: str
+    skip: bool
+
+
+def pick_cost(query: str, candidates: Sequence[Candidate]) -> PickCost:
+    """Whether PICK pays for itself on *candidates*. ONE rule (H-276).
+
+    * ``pick`` is the decide requests: the request size of each batch at the
+      input price of ``tier-decide``, and one answer for each item at its
+      output price.
+    * ``read_all`` is a READ of every candidate with no PICK: each item's
+      ``size`` (or the body clip) and its header, at the input price of the
+      tier that reads the tool output.
+    * ``skip`` is True only when READ can take every candidate (at most
+      :data:`READ_CAP`) and ``pick * PICK_MARGIN >= read_all``. More than
+      :data:`READ_CAP` candidates always keep PICK, because READ would cut the
+      rest.
+    """
+    from acb_llm.decide_shape import MAX_QUESTIONS as per_request
+
+    pick_in, pick_out = _rate(PICK_TIER)
+    read_tier = _read_tier()
+    read_in, _read_out = _rate(read_tier)
+    prompt = answers = 0
+    for i in range(0, len(candidates), per_request):
+        batch = list(candidates[i:i + per_request])
+        prompt += _tokens(_pick_chars(query, batch, _keys(batch)))
+        answers += _tokens(PICK_ANSWER_CHARS * len(batch))
+    pick = (prompt * pick_in + answers * pick_out) / 1_000_000
+    read_all = sum(_tokens(_read_chars(c)) for c in candidates) * read_in / 1_000_000
+    skip = (
+        0 < len(candidates) <= READ_CAP
+        and pick * PICK_MARGIN >= read_all
+    )
+    return PickCost(pick=pick, read_all=read_all, read_tier=read_tier, skip=skip)
+
+
 @dataclass
 class _Picked:
     """Every verdict of one PICK step, in candidate order."""
@@ -711,11 +862,19 @@ class Counts:
     read: int
     #: The source saw more matches than it gave, with no exact total (N4).
     more: bool = False
+    #: The cost check skipped PICK, and READ took every candidate (H-276).
+    pick_skipped: bool = False
 
     @property
     def overflow(self) -> bool:
         """More items matched than the candidates."""
         return self.total > self.candidates or self.more
+
+
+#: The end of the count line when the cost check skipped PICK (H-276).
+NO_PICK = (
+    ", with no PICK step. A check of items this short costs more than it saves."
+)
 
 
 def count_line(c: Counts) -> str:
@@ -726,6 +885,11 @@ def count_line(c: Counts) -> str:
         of = f" of more than {c.candidates}"
     else:
         of = ""
+    if c.pick_skipped:
+        # H-276: say that NO item was checked, so neither the model nor the
+        # member reads "kept" as "a model judged it relevant".
+        read = "all" if c.read == c.candidates else f"{c.read} of"
+        return f"Read {read} {c.candidates}{of} matches in full{NO_PICK}"
     unchecked = f", and {c.not_checked} were not checked (kept)" if c.not_checked else ""
     return (
         f"Checked {c.checked}{of} matches. Kept {c.kept}, dropped {c.dropped}"
@@ -763,6 +927,35 @@ def _parse_filters(raw: str, allowed: frozenset[str]) -> dict[str, Any] | str:
     return dict(parsed)
 
 
+def _cost_check(query: str, candidates: Sequence[Candidate]) -> PickCost:
+    """:func:`pick_cost`, and a broken estimate keeps PICK, as before H-276."""
+    try:
+        return pick_cost(query, candidates)
+    except Exception as exc:  # an estimate must never break the call
+        _log.warning("narrowing.pick_cost_failed", error_type=type(exc).__name__)
+        return PickCost(pick=0.0, read_all=0.0, read_tier="", skip=False)
+
+
+async def _sort(
+    query: str, candidates: Sequence[Candidate], *, skip: bool,
+) -> tuple[_Picked, list[Candidate], list[Candidate], int]:
+    """PICK and the keep rule, or the skip of H-276: every candidate kept and
+    none checked. Returns the PICK result, the kept, the dropped and the
+    count of checked items."""
+    if skip:
+        return _Picked(verdicts=[None] * len(candidates)), list(candidates), [], 0
+    picked = await _pick(query, candidates)
+    threshold = _run_threshold()
+    kept: list[Candidate] = []
+    dropped: list[Candidate] = []
+    checked = 0
+    for c, verdict in zip(candidates, picked.verdicts, strict=True):
+        if verdict is not None:
+            checked += 1
+        (kept if keep(verdict, threshold) else dropped).append(c)
+    return picked, kept, dropped, checked
+
+
 async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> str:
     """The three steps for one call. Never raises."""
     if not (query or "").strip():
@@ -785,15 +978,11 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
     total = max(int(narrowed.total or 0), len(found))
     more = bool(getattr(narrowed, "more", False))
 
-    picked = await _pick(query, candidates)
-    threshold = _run_threshold()
-    kept: list[Candidate] = []
-    dropped: list[Candidate] = []
-    checked = 0
-    for c, verdict in zip(candidates, picked.verdicts, strict=True):
-        if verdict is not None:
-            checked += 1
-        (kept if keep(verdict, threshold) else dropped).append(c)
+    cost = _cost_check(query, candidates)
+    # H-276: a skip needs every match in hand (no overflow) as well, so it
+    # reads MORE items than PICK would, and never fewer.
+    skip = cost.skip and total <= len(candidates) and not more
+    picked, kept, dropped, checked = await _sort(query, candidates, skip=skip)
 
     items: list[FullItem] = []
     to_read = [c.id for c in kept[:READ_CAP]]
@@ -815,6 +1004,7 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
         candidates=len(candidates), total=total, checked=checked,
         kept=len(kept), dropped=len(dropped),
         not_checked=len(candidates) - checked, read=len(items), more=more,
+        pick_skipped=skip,
     )
     call_id = _remember_dropped(dropped)
     _log.info(
@@ -823,7 +1013,8 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
         checked=counts.checked, kept=counts.kept, dropped=counts.dropped,
         not_checked=counts.not_checked, read=counts.read, more=counts.more,
         engines=dict(picked.engines), request_ids=list(picked.request_ids),
-        bound_hit=picked.bound_hit,
+        bound_hit=picked.bound_hit, pick_skipped=skip,
+        pick_cost=round(cost.pick, 8), read_all_cost=round(cost.read_all, 8),
     )
 
     lines = [count_line(counts)]

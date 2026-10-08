@@ -22,7 +22,10 @@ against the gateway stub, and the after path runs the REAL pipeline of
    every answering message. So no answer is dropped, and no answer is unread.
 2. COST. The after path's credits on the gated questions are at most
    :data:`COST_BAR` of the before path's credits.
-3. The rules of :func:`_rules` hold: tenancy, the real route parameters, one
+3. NEVER MORE (H-276). No gated question costs more after than before, and
+   the gated questions together do not. :data:`KNOWN_COSTS_MORE` names the one
+   question that already does, with the ratio that it may not pass.
+4. The rules of :func:`_rules` hold: tenancy, the real route parameters, one
    message for each PICK item, and a READ that changes no state.
 
 Q5 is the expected miss (spec Q3). Its recall is reported and not gated.
@@ -50,6 +53,7 @@ from typing import Any
 import httpx
 
 from evals.email_narrowing.run import (
+    NEVER_MORE,
     _compare_gate,
     _env,
     _no_system_one,
@@ -58,6 +62,8 @@ from evals.email_narrowing.run import (
     _recall,
     _TapTransport,
     git_sha,
+    never_costs_more,
+    never_more_lines,
 )
 from evals.whatsapp_narrowing import dataset as ds_mod
 from evals.whatsapp_narrowing import scripted, stub_api
@@ -70,13 +76,19 @@ AGENT = "whatsapp-assistant"
 RUN_ID = "run-whatsapp-narrowing-eval"
 THREAD = "thread-whatsapp-narrowing-eval"
 
-#: The cost bar of the pass rule: the after path costs no more than today's
-#: path. ⚠️ It is NOT the 40 percent bar of the email eval (§7.2). A WhatsApp
-#: message is about 15 tokens, and PICK spends about 160 tokens on each
-#: candidate (one question with its guidance), so PICK costs more than it
-#: saves here. The first scripted run gave a gated ratio of 0.65. The summary
-#: prints the email bar beside this one, so nobody reads a pass as a saving.
-COST_BAR = Decimal("1.00")
+#: The cost bar of the pass rule. ⚠️ It is NOT the 40 percent bar of the email
+#: eval (§7.2). A WhatsApp message is about 15 tokens, and PICK spends about
+#: 160 tokens on each candidate. N4 gated at 1.00 with a ratio of 0.650. H-276
+#: skips PICK when it does not pay, and the ratio fell to 0.619. So the bar
+#: moves toward the email bar, to 0.65: a ratchet with a small headroom. The
+#: summary prints the email bar beside it, so nobody reads a pass as a saving.
+COST_BAR = Decimal("0.65")
+#: The questions that cost more than today's path, with the highest ratio that
+#: the rule of H-276 accepts for each, and the HANDOFF id of the fix. Q2 asks
+#: for every message of one group in three weeks. NARROW finds 27 messages,
+#: more than the READ cap of 25, so PICK must run, and the READ windows of one
+#: chat overlap. With no PICK at all (a READ cap of 30), Q2 costs 1.447 times today.
+KNOWN_COSTS_MORE: dict[str, tuple[Decimal, str]] = {"Q2": (Decimal("1.45"), "H-279")}
 #: The bar of the email eval, printed for comparison. It is not a gate here.
 EMAIL_BAR = Decimal("0.40")
 
@@ -410,6 +422,7 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
     questions: list[dict[str, Any]] = []
     gated_before = gated_after = gated_best = Decimal(0)
     recall_ok = True
+    rows: list[tuple[str, Decimal, Decimal]] = []
     for q in ds.questions:
         before, after = results[q.id]["before"], results[q.id]["after"]
         b_cr, a_cr, best_cr = (before.router.credits(card), after.router.credits(card),
@@ -418,6 +431,7 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
         found_answering = [i for i in answering if i in after.found]
         e2e = _recall(answering, after.read)
         if q.spec.gated:
+            rows.append((q.id, b_cr, a_cr))
             gated_before += b_cr
             gated_after += a_cr
             gated_best += best_cr
@@ -442,6 +456,7 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
         })
     ratio = _ratio(gated_after, gated_before)
     cost_ok = ratio is not None and Decimal(str(ratio)) <= COST_BAR
+    rules = {**rules, NEVER_MORE: never_costs_more(rows, KNOWN_COSTS_MORE)}
     rules_ok = all(r["pass"] is not False for r in rules.values())
     gated_tables = [results[q.id]["after"].table() for q in ds.questions if q.spec.gated]
     texts = [len(message_text(m)) for m in ds.messages]
@@ -488,6 +503,7 @@ def summary_lines(s: Summary) -> list[str]:
         + ("OVER it: no saving of that size here" if t["ratio"] is None
            or t["ratio"] > float(t["email_bar"]) else "under it"),
         *(f"  COSTS MORE: {q['id']} costs x{q['ratio']} of today's path"
+          + (f" (known, {KNOWN_COSTS_MORE[q['id']][1]})" if q["id"] in KNOWN_COSTS_MORE else "")
           for q in s.questions if q["gated"] and (q["ratio"] or 0) > 1),
         f"  chats: {t['messages']} messages in {t['chats']} chats, "
         f"mean text {t['mean_text_chars']} characters",
@@ -510,6 +526,7 @@ def summary_lines(s: Summary) -> list[str]:
         f"  break-even: tier-powerful x{t['break_even_powerful_x']}, "
         f"tier-decide x{t['break_even_decide_x']}"
     )
+    lines.extend(never_more_lines(s.rules))
     for name, rule in s.rules.items():
         if rule["pass"] is False:
             lines.append(f"  RULE FAILED: {name}: {rule['detail']}")
