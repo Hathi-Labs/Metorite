@@ -651,6 +651,11 @@ async def test_the_thread_route_sends_only_a_select(monkeypatch: pytest.MonkeyPa
 async def test_the_thread_route_refuses_an_anchor_of_another_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The route's own 404 path, on a session with no anchor row. This fake
+    agrees with any SQL, so it proves only the Python half. The SQL half, an
+    anchor of another chat that the CTE must not find, is
+    ``test_whatsapp_read_no_mark.py::test_the_around_read_keeps_the_owner_scope``
+    on a real database (review note)."""
     from fastapi import HTTPException
     from gateway.routes.whatsapp.transport import messages as messages_mod
 
