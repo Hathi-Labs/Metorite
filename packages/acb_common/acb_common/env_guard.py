@@ -151,6 +151,8 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # gpg reads its keyring from here. The backup encrypts to a key in it.
+    "GNUPGHOME",
     # The process environment: shell, Python, Go, linker, TLS, resolver.
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "TEMP",
     "TMP", "LANG", "LANGUAGE", "TZ", "IFS", "ENV", "PS1", "PS2", "PS3",
@@ -181,8 +183,11 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "GMAIL_OAUTH_", "MSFT_OAUTH_", "AUTH_MICROSOFT_ENTRA_ID_", "GMAIL_PUSH_",
     # Backup. acb-backup.service runs scripts/backup_db.sh as root with the
     # env file, so BACKUP_REMOTE sends every dump to the host it names, and
-    # KEEP_DAILY deletes the backup history.
-    "BACKUP_", "KEEP_",
+    # KEEP_DAILY deletes the backup history. BACKUP_S3_* holds the key of the
+    # off-box bucket (H-123). The same unit runs rclone and gpg, so RCLONE_*
+    # could point the copy at another bucket. backup_db.sh unsets RCLONE_* and
+    # passes --homedir to gpg as well, and this is the second layer.
+    "BACKUP_", "KEEP_", "RCLONE_",
     # Server and agent runtime switches.
     "UVICORN_", "V1_", "SKILLS_", "SUB_AGENT_", "TOOL_", "RUNTIME_",
     "SESSION_", "STREAM_", "HISTORY_", "PROMPT_", "RUN_", "WATCHDOG_",

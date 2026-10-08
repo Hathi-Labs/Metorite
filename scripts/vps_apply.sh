@@ -1511,6 +1511,31 @@ else
   sudo systemctl status acb-health-watchdog.timer --no-pager 2>&1 | head -15 || true
 fi
 
+echo "==> Ensuring the off-box backup tools (H-123)"
+# backup_db.sh uploads the nightly copy with rclone, after zstd and gpg. The
+# box has gpg and zstd. rclone comes from apt HERE, so no hand install drifts
+# from the repo, and a rebuilt box gets it on the first deploy. Idempotent: a
+# tool that is present costs one `command -v`.
+# Non-fatal on purpose. A missing tool must never block shipping the app, and
+# the nightly unit then fails LOUDLY on its own (`needs 'rclone'`).
+# ⚠️ `< /dev/null`: this file IS the shell's stdin on the push path, and a
+# command that reads stdin eats the rest of the deploy.
+_offbox_missing=""
+command -v rclone >/dev/null 2>&1 || _offbox_missing="$_offbox_missing rclone"
+command -v gpg    >/dev/null 2>&1 || _offbox_missing="$_offbox_missing gnupg"
+command -v zstd   >/dev/null 2>&1 || _offbox_missing="$_offbox_missing zstd"
+if [ -n "$_offbox_missing" ]; then
+  echo "    installing:$_offbox_missing"
+  # shellcheck disable=SC2086 # one word per package, on purpose
+  if (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $_offbox_missing) >/dev/null 2>&1 < /dev/null; then
+    echo "    + installed:$_offbox_missing"
+  else
+    echo "    !! could not install:$_offbox_missing — the nightly off-box copy FAILS until it is"
+  fi
+else
+  echo "    rclone, gpg and zstd are present"
+fi
+
 echo "==> Syncing systemd units (BO-23)"
 # The repo is the source of truth for the box's units; without this step a
 # unit added there only reaches the machine if somebody remembers to copy it

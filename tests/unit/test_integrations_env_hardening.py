@@ -801,6 +801,9 @@ class TestLayerBRefusesPlatformKeys:
         "OPENAI_API_BASE", "MICROSOFT_TENANT_ID",
         # Round 1: the verifier's proven bypasses.
         "BACKUP_REMOTE", "KEEP_DAILY", "UVICORN_UDS", "WEB_CONCURRENCY",
+        # H-123: the off-box copy. Its key, and the tools that read env.
+        "BACKUP_S3_SECRET_ACCESS_KEY", "BACKUP_S3_ENDPOINT", "BACKUP_GPG_RECIPIENT",
+        "RCLONE_CONFIG_OFFBOX_ENDPOINT", "RCLONE_CONFIG", "GNUPGHOME",
         "SHELLOPTS", "BASHOPTS", "LIVE_ASR_URL", "SKILLS_FAIL_CLOSED",
         "SKILLS_INDEX_ONLY", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE",
         "FORWARDED_ALLOW_IPS", "MEET_GOOGLE_PASSWORD", "SHERPA_SEG_MODEL",

@@ -787,3 +787,468 @@ def test_the_pending_count_and_the_apply_loop_share_one_definition() -> None:
     assert text.index("No pending migrations") < text.index('BACKUP_SCRIPT="$APP_DIR'), (
         "the pending count must come BEFORE the backup"
     )
+
+
+# ── The off-box copy in Supabase Storage (H-123, owner decision 2026-10-08) ─
+#
+# backup_db.sh compresses each item with zstd, encrypts it with gpg to the
+# owner's PUBLIC key, and uploads it with rclone to <bucket>/<prefix>/<stamp>/.
+# These run the REAL script with stub rclone, gpg and zstd. The stub bucket is
+# a directory, $S3, so a test can read exactly what went up and what was
+# deleted. Each stub writes its argv to the calls log, and rclone also writes
+# whether the secret reached it through the ENVIRONMENT.
+# The real round trip (MinIO, real rclone and gpg) is scripts/rehearse_offbox.sh.
+
+_OFFBOX_STUBS = r"""
+S3="$W/s3"
+mkdir -p "$S3" "$W/files/att"
+export S3
+printf 'resume of a candidate\n' > "$W/files/att/cv.txt"
+KEYFPR="0123456789ABCDEF0123456789ABCDEF01234567"
+export KEYFPR
+printf 'PUBLIC KEY BLOCK\n' > "$W/pub.asc"
+printf 'PRIVATE KEY BLOCK\n' > "$W/priv.asc"
+gpgconf() { :; }
+zstd() {
+  printf 'zstd %s\n' "$*" >> "$CALLS"
+  local f="" a
+  for a in "$@"; do case "$a" in -*) ;; *) f="$a" ;; esac; done
+  if [ -n "$f" ]; then cat "$f"; else cat; fi
+}
+gpg() {
+  printf 'gpg %s\n' "$*" >> "$CALLS"
+  local out="" a prev="" mode="" target=""
+  for a in "$@"; do
+    case "$prev" in --output) out="$a" ;; --list-keys) target="$a" ;; esac
+    case "$a" in
+      --encrypt) mode=enc ;;
+      --decrypt) mode=dec ;;
+      --list-keys) mode=list ;;
+      show-only) mode=show ;;
+      --import) if [ "$mode" != show ]; then mode=import; fi ;;
+    esac
+    prev="$a"
+  done
+  case "$mode" in
+    show)
+      case "${KEY_MODE:-public}" in
+        garbage) return 2 ;;
+        private) printf 'sec:u:255:22:AAAA:1::::::scESC:\n' ;;
+        *) printf 'pub:-:255:22:AAAA:1::::::scESC:\n' ;;
+      esac ;;
+    import)
+      if [ "${KEY_MODE:-public}" = garbage ]; then return 2; fi ;;
+    list)
+      if [ "$target" != "$KEYFPR" ]; then return 2; fi
+      printf 'pub:%s:255:22:AAAA:1::::::scESC:\n' "${KEY_VALIDITY:--}"
+      printf 'fpr:::::::::%s:\n' "$KEYFPR" ;;
+    enc)
+      { printf 'STUBGPG\n'; tr 'A-Za-z' 'N-ZA-Mn-za-m'; } > "$out" ;;
+    dec)
+      local f="${!#}"
+      head -1 "$f" | grep -qx STUBGPG || return 2
+      tail -n +2 "$f" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
+  esac
+  return 0
+}
+_s3p() { printf '%s' "$S3/${1#offbox:}"; }
+rclone() {
+  printf 'rclone %s\n' "$*" >> "$CALLS"
+  local secret=unset
+  if [ -n "${RCLONE_CONFIG_OFFBOX_SECRET_ACCESS_KEY:-}" ]; then secret=set; fi
+  printf 'rclone-env endpoint=%s secret=%s config=%s\n' \
+    "${RCLONE_CONFIG_OFFBOX_ENDPOINT:-}" "$secret" "${RCLONE_CONFIG:-}" >> "$CALLS"
+  if [ -n "${STUB_UPLOAD_FAILS:-}" ]; then
+    echo "ERROR : AccessDenied key=$RCLONE_CONFIG_OFFBOX_ACCESS_KEY_ID secret=$RCLONE_CONFIG_OFFBOX_SECRET_ACCESS_KEY" >&2
+    return 1
+  fi
+  local pos=() a skip=0 flag="" excl="" dirs=0 rec=0
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then
+      skip=0
+      if [ "$flag" = --exclude ]; then excl="$a"; fi
+      continue
+    fi
+    case "$a" in
+      --retries|--low-level-retries|--stats|--log-level|--exclude) skip=1; flag="$a" ;;
+      --dirs-only) dirs=1 ;;
+      -R) rec=1 ;;
+      -*) ;;
+      *) pos+=("$a") ;;
+    esac
+  done
+  local src dst d x
+  case "${pos[0]}" in
+    copy)
+      src="${pos[1]}"; dst="${pos[2]}"
+      case "$src" in offbox:*) src="$(_s3p "$src")" ;; esac
+      case "$dst" in offbox:*) dst="$(_s3p "$dst")" ;; esac
+      mkdir -p "$dst"
+      for x in "$src"/*; do
+        if [ -f "$x" ] && [ "$(basename "$x")" != "$excl" ]; then cp "$x" "$dst/"; fi
+      done ;;
+    copyto)
+      dst="$(_s3p "${pos[2]}")"
+      mkdir -p "$(dirname "$dst")"
+      cp "${pos[1]}" "$dst" ;;
+    lsf)
+      d="$(_s3p "${pos[1]}")"
+      if [ "$dirs" = 1 ]; then
+        for x in "$d"/*/; do if [ -d "$x" ]; then printf '%s/\n' "$(basename "$x")"; fi; done
+      elif [ "$rec" = 1 ]; then
+        if [ -d "$d" ]; then (cd "$d" && find . -type f | sed 's#^\./##'); fi
+      else
+        for x in "$d"/*; do if [ -f "$x" ]; then basename "$x"; fi; done
+      fi ;;
+    delete)
+      rm -rf "$(_s3p "${pos[1]}")" ;;
+  esac
+  return 0
+}
+docker() {
+  printf 'docker %s\n' "$*" >> "$CALLS"
+  if [ "${1:-} ${2:-}" = "volume inspect" ] && [ -n "${VOL_DIR:-}" ]; then
+    echo "$VOL_DIR"
+    return 0
+  fi
+  return 1
+}
+export -f gpgconf zstd gpg _s3p rclone docker
+"""
+
+_S3_SECRET = "S3cr3tStubValue987"
+_S3_KEY_ID = "AKIDSTUB123"
+_S3_ENV = (
+    "BACKUP_S3_ENDPOINT=https://ref.storage.supabase.co/storage/v1/s3 "
+    "BACKUP_S3_REGION=ap-south-1 BACKUP_S3_BUCKET=metorite-backups "
+    f"BACKUP_S3_ACCESS_KEY_ID={_S3_KEY_ID} BACKUP_S3_SECRET_ACCESS_KEY={_S3_SECRET} "
+)
+_GPG_ENV = 'BACKUP_GPG_RECIPIENT="$KEYFPR" BACKUP_GPG_PUBLIC_KEY_FILE="$W/pub.asc" '
+_DIRS_ENV = 'BACKUP_FILE_DIRS="$W/files/att $W/files/missing" '
+_NIGHT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
+
+
+def _run_backup_offbox(env: str, setup: str = "", after: str = "") -> dict[str, object]:
+    """Run the REAL backup_db.sh (no deep verify) with the off-box stubs.
+
+    `env` prefixes the script, `setup` runs before it, and `after` runs after
+    it in the same shell (for the restore half). Returns the exit code, the
+    output, the calls log, and the stub bucket as {relative path: first line}.
+    """
+    import subprocess
+
+    prog = (
+        _STUBS
+        + _OFFBOX_STUBS
+        + setup
+        + env
+        + ' PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" '
+        + "bash scripts/backup_db.sh < /dev/null\n"
+        + "rc=$?\n"
+        + 'ls "$W"/backups/*/acb.dump >/dev/null 2>&1 && echo "DUMP-ON-DISK" >&2\n'
+        + 'ls "$W"/backups/*/customer_console.dump >/dev/null 2>&1 '
+        + '&& echo "CONSOLE-DUMP-ON-DISK" >&2\n'
+        + 'ls -d "$W"/backups/*/offbox.work >/dev/null 2>&1 && echo "WORK-DIR-LEFT" >&2\n'
+        + after
+        + 'printf "\\n===CALLS===\\n" >&2\n'
+        + 'cat "$CALLS" >&2\n'
+        + 'printf "\\n===S3===\\n" >&2\n'
+        + '(cd "$S3" && find . -type f | sed "s#^\\./##" | sort | while read -r f; do '
+        + 'printf "%s\\t%s\\n" "$f" "$(head -1 "$f")"; done) >&2\n'
+        + 'rm -rf "$W"\n'
+        + "exit $rc\n"
+    )
+    run = subprocess.run(
+        ["bash"], input=prog.encode(), capture_output=True, timeout=120, cwd=_ROOT
+    )
+    err = run.stderr.decode(errors="replace")
+    err, _, rest = err.partition("\n===CALLS===\n")
+    calls, _, s3 = rest.partition("\n===S3===\n")
+    bucket = dict(
+        ln.split("\t", 1) for ln in s3.splitlines() if "\t" in ln
+    )
+    return {
+        "rc": run.returncode,
+        "out": run.stdout.decode(errors="replace"),
+        "err": err,
+        "calls": calls,
+        "bucket": bucket,
+    }
+
+
+def _rclone_calls(calls: str) -> list[str]:
+    return [ln for ln in calls.splitlines() if ln.startswith("rclone ")]
+
+
+def test_the_off_box_happy_path_uploads_only_encrypted_objects() -> None:
+    """One night goes up under metorite-backups/nightly/<stamp>/. Every object
+    is a .zst.gpg, every object is the stub's ciphertext, and SHA256SUMS goes
+    up LAST, after the rest."""
+    r = _run_backup_offbox(
+        _S3_ENV + _GPG_ENV + _DIRS_ENV + 'VOL_DIR="$W/files/att"',
+    )
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert "off-box copy ok (offbox:metorite-backups/nightly/" in r["out"], r["out"]
+    assert "No off-box copy is set up" not in r["err"]
+    bucket: dict[str, str] = r["bucket"]  # type: ignore[assignment]
+    names = sorted(p.split("/")[-1] for p in bucket)
+    assert names == sorted([
+        "acb.dump.zst.gpg", "globals.sql.zst.gpg", "MANIFEST.txt.zst.gpg",
+        "files.tar.zst.gpg", "meeting-bot-volume.tar.zst.gpg", "SHA256SUMS.zst.gpg",
+    ]), names
+    for path, first in bucket.items():
+        assert re.fullmatch(r"metorite-backups/nightly/\d{4}-\d{2}-\d{2}T\d{6}Z/[^/]+", path), path
+        assert first == "STUBGPG", f"{path} went up as plaintext: {first!r}"
+    rc = _rclone_calls(r["calls"])  # type: ignore[arg-type]
+    copy = next(i for i, ln in enumerate(rc) if ln.startswith("rclone ") and " copy " in ln)
+    sums = next(i for i, ln in enumerate(rc) if " copyto " in ln and "SHA256SUMS" in ln)
+    assert copy < sums, "SHA256SUMS must go up last, as the mark of a complete night"
+    assert "--exclude SHA256SUMS.zst.gpg" in rc[copy]
+    assert "skip " in r["out"] and "files/missing (no such directory)" in r["out"]
+    assert "WORK-DIR-LEFT" not in r["err"], "the staging directory was left on the box"
+    assert not any(" stop " in ln for ln in str(r["calls"]).splitlines() if ln.startswith("docker")), (
+        "the meeting bot must keep running while its volume is read"
+    )
+
+
+@pytest.mark.parametrize(
+    ("gpg_env", "setup", "why"),
+    [
+        ("", "", "BACKUP_GPG_RECIPIENT must be the full fingerprint"),
+        ('BACKUP_GPG_RECIPIENT="$KEYFPR" ', "", "is not a readable file"),
+        (
+            'BACKUP_GPG_RECIPIENT="$KEYFPR" BACKUP_GPG_PUBLIC_KEY_FILE="$W/nope.asc" ',
+            "", "is not a readable file",
+        ),
+        (_GPG_ENV, "export KEY_MODE=garbage\n", "holds no OpenPGP key"),
+        (_GPG_ENV, "export KEY_MODE=private\n", "holds a PRIVATE key"),
+        (_GPG_ENV, "export KEY_VALIDITY=r\n", "is revoked, expired or not valid"),
+        (
+            'BACKUP_GPG_RECIPIENT=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF '
+            'BACKUP_GPG_PUBLIC_KEY_FILE="$W/pub.asc" ',
+            "", "has the exact fingerprint",
+        ),
+        ('BACKUP_GPG_RECIPIENT=alice@example.com BACKUP_GPG_PUBLIC_KEY_FILE="$W/pub.asc" ',
+         "", "must be the full fingerprint"),
+    ],
+)
+def test_a_missing_or_bad_key_fails_before_any_upload(gpg_env: str, setup: str, why: str) -> None:
+    """🔴 S3 is configured and the key is missing or wrong: the step FAILS, and
+    rclone is never called, so no plaintext can leave the box. The local dump
+    stays, and local retention still runs. Mutation: make a key failure fall
+    through to the upload, and the calls log shows rclone."""
+    r = _run_backup_offbox(_S3_ENV + gpg_env + _DIRS_ENV, setup=setup)
+    assert r["rc"] != 0, f"a bad key exited 0:\n{r['out']}\n{r['err']}"
+    assert why in r["err"], r["err"]
+    assert "Nothing was uploaded" in r["err"]
+    assert _rclone_calls(r["calls"]) == [], "rclone ran with no valid key"  # type: ignore[arg-type]
+    assert r["bucket"] == {}, f"something reached the bucket: {r['bucket']}"
+    assert not any(
+        ln.startswith("gpg ") and "--encrypt" in ln for ln in str(r["calls"]).splitlines()
+    ), "the run encrypted data with a key it had not checked"
+    assert "DUMP-ON-DISK" in r["err"]
+    assert "Retention (keeping" in r["out"], "local retention did not run"
+    assert "the off-box copy to Supabase Storage FAILED" in r["err"]
+    assert "WORK-DIR-LEFT" not in r["err"]
+
+
+def test_a_half_configured_bucket_fails_and_says_what_is_missing() -> None:
+    r = _run_backup_offbox(
+        "BACKUP_S3_BUCKET=metorite-backups " + _GPG_ENV,
+    )
+    assert r["rc"] != 0
+    assert "configured in part. Missing: BACKUP_S3_ENDPOINT" in r["err"], r["err"]
+    assert _rclone_calls(r["calls"]) == []  # type: ignore[arg-type]
+
+
+def test_an_upload_failure_keeps_the_console_dump_and_local_retention() -> None:
+    """🔴 The upload fails. The Console dump and the local retention still
+    run, the bucket retention does NOT run (a run of failed nights must never
+    prune the last good copies), and the exit is non-zero at the END.
+    Mutation: make the upload `exit 1` the whole script, and the retention
+    line goes missing."""
+    r = _run_backup_offbox(
+        f"{_CONSOLE_ENV} " + _S3_ENV + _GPG_ENV + _DIRS_ENV,
+        setup="export STUB_UPLOAD_FAILS=1\n",
+    )
+    assert r["rc"] != 0, f"a failed upload exited 0:\n{r['out']}\n{r['err']}"
+    assert "the upload to offbox:metorite-backups/nightly/" in r["err"], r["err"]
+    assert "DUMP-ON-DISK" in r["err"]
+    assert "CONSOLE-DUMP-ON-DISK" in r["err"], "the Console dump did not run"
+    assert "Retention (keeping" in r["out"], "local retention did not run"
+    assert "off-box copy ok" not in r["out"]
+    assert "the off-box copy to Supabase Storage FAILED" in r["err"]
+    assert not any(" delete " in ln for ln in _rclone_calls(r["calls"])), (  # type: ignore[arg-type]
+        "the bucket was pruned after a failed upload"
+    )
+
+
+def test_no_secret_reaches_argv_or_the_log() -> None:
+    """The keys reach rclone through its ENVIRONMENT only. Neither key value is
+    on any argv, in stdout, or in stderr, even when rclone prints them in an
+    error. And a RCLONE_* value already in the env file cannot redirect the
+    copy: the script unsets them first."""
+    for setup in ("export RCLONE_CONFIG_OFFBOX_ENDPOINT=https://attacker.example\n",
+                  "export STUB_UPLOAD_FAILS=1\n"):
+        r = _run_backup_offbox(_S3_ENV + _GPG_ENV + _DIRS_ENV, setup=setup)
+        text = f"{r['out']}\n{r['err']}\n{r['calls']}"
+        assert _S3_SECRET not in text, "the secret access key leaked"
+        assert _S3_KEY_ID not in text, "the access key id leaked"
+        envs = [ln for ln in str(r["calls"]).splitlines() if ln.startswith("rclone-env ")]
+        assert envs, "rclone never ran"
+        for ln in envs:
+            assert "secret=set" in ln, "the secret did not reach rclone through its env"
+            assert "endpoint=https://ref.storage.supabase.co/storage/v1/s3" in ln, ln
+            assert "config=/dev/null" in ln, "rclone may read a config file"
+    assert "secret=***" in str(r["err"]), "the rclone error was not shown, redacted"
+
+
+def test_bucket_retention_deletes_only_old_nights_under_the_prefix() -> None:
+    """KEEP=2. Three old nights plus tonight: the two oldest go. A folder
+    under the prefix that is not a night, a night under another prefix, and a
+    sibling prefix that only STARTS with the same name all stay. Every delete
+    argv names exactly offbox:<bucket>/nightly/<stamp>."""
+    base = '"$S3/metorite-backups'
+    setup = "".join(
+        f'mkdir -p {base}/{d}" && echo x > {base}/{d}/x"\n'
+        for d in (
+            "nightly/2026-01-01T000000Z", "nightly/2026-01-02T000000Z",
+            "nightly/2026-01-03T000000Z", "nightly/not-a-stamp",
+            "other/2026-01-01T000000Z", "nightly-old/2026-01-01T000000Z",
+        )
+    )
+    r = _run_backup_offbox(_S3_ENV + _GPG_ENV + _DIRS_ENV + "BACKUP_S3_KEEP=2 ", setup=setup)
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    bucket: dict[str, str] = r["bucket"]  # type: ignore[assignment]
+    nights = sorted({p.split("/")[2] for p in bucket if p.startswith("metorite-backups/nightly/")})
+    assert "2026-01-01T000000Z" not in nights and "2026-01-02T000000Z" not in nights, nights
+    assert "2026-01-03T000000Z" in nights and "not-a-stamp" in nights, nights
+    assert len([n for n in nights if _NIGHT_RE.fullmatch(n)]) == 2, nights
+    assert "metorite-backups/other/2026-01-01T000000Z/x" in bucket
+    assert "metorite-backups/nightly-old/2026-01-01T000000Z/x" in bucket
+    deletes = [ln for ln in _rclone_calls(r["calls"]) if " delete " in ln]  # type: ignore[arg-type]
+    assert len(deletes) == 2, deletes
+    for ln in deletes:
+        target = ln.split()[-1]
+        assert re.fullmatch(r"offbox:metorite-backups/nightly/\d{4}-\d{2}-\d{2}T\d{6}Z", target), ln
+
+
+_LIB = "scripts/offbox_lib.sh"
+
+
+def _run_lib(body: str) -> tuple[int, str, str]:
+    """Source the REAL offbox_lib.sh with a stub rclone, then run `body`."""
+    import subprocess
+
+    prog = (
+        "set -u\n"
+        'CALLS="$(mktemp)"\n'
+        'rclone() { printf "rclone %s\\n" "$*" >> "$CALLS"; }\n'
+        f". {_LIB}\n"
+        + body
+        + '\nprintf "\\n===CALLS===\\n"\ncat "$CALLS"\nrm -f "$CALLS"\n'
+    )
+    run = subprocess.run(["bash"], input=prog.encode(), capture_output=True, timeout=30, cwd=_ROOT)
+    return run.returncode, run.stdout.decode(errors="replace"), run.stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize(
+    "night",
+    ["", "..", "../other", "2026-10-01T000000Z/../../other", "*", "2026-10-01T000000Z/x",
+     " 2026-10-01T000000Z", "2026-10-01T000000Z ", "2026-10-01", "nightly"],
+)
+def test_the_delete_guard_refuses_anything_but_a_night_stamp(night: str) -> None:
+    """🔴 The ONE delete in the bucket. A value that is not exactly a night
+    stamp is refused, and rclone is never called."""
+    rc, out, err = _run_lib(
+        "offbox_bucket=metorite-backups; offbox_prefix=nightly\n"
+        f"offbox_delete_night '{night}' && echo DELETED || echo REFUSED\n"
+    )
+    assert rc == 0, err
+    assert "REFUSED" in out, f"{night!r} was not refused: {out}"
+    assert "rclone " not in out.partition("===CALLS===")[2], f"{night!r} reached rclone"
+    assert "refusing to delete" in err
+
+
+@pytest.mark.parametrize(
+    "prefix", ["", "/", "..", "../x", "a/../b", "a//b", "./a", "a/.", "a b", "*", "a/*"]
+)
+def test_the_delete_guard_refuses_an_unsafe_prefix(prefix: str) -> None:
+    rc, out, err = _run_lib(
+        f"offbox_bucket=metorite-backups; offbox_prefix='{prefix}'\n"
+        "offbox_delete_night 2026-10-01T000000Z && echo DELETED || echo REFUSED\n"
+        f"offbox_prefix_ok '{prefix}' && echo PREFIX-OK || echo PREFIX-BAD\n"
+    )
+    assert rc == 0, err
+    assert "REFUSED" in out and "PREFIX-BAD" in out, f"{prefix!r}: {out}"
+    assert "rclone " not in out.partition("===CALLS===")[2]
+
+
+def test_the_delete_guard_deletes_exactly_one_night() -> None:
+    """The companion: a guard that refused everything would pass the two
+    tests above, and the bucket would grow without end."""
+    rc, out, err = _run_lib(
+        "offbox_bucket=metorite-backups; offbox_prefix=metorite/nightly\n"
+        "offbox_delete_night 2026-10-01T023012Z && echo DELETED || echo REFUSED\n"
+    )
+    assert rc == 0, err
+    assert "DELETED" in out, out
+    calls = out.partition("===CALLS===")[2].strip().splitlines()
+    assert len(calls) == 1, calls
+    assert calls[0].endswith(" delete --rmdirs offbox:metorite-backups/metorite/nightly/2026-10-01T023012Z"), calls
+
+
+def test_the_restore_downloads_decrypts_and_verifies_a_night() -> None:
+    """The restore half, against the night the backup just uploaded. Then the
+    same restore against a TAMPERED object must fail, and say why."""
+    restore = (
+        _S3_ENV + 'bash scripts/restore_offbox.sh --list < /dev/null > "$W/list.txt" 2>&1\n'
+        'echo "LIST-RC=$?" >&2; cat "$W/list.txt" >&2\n'
+        + _S3_ENV
+        + 'bash scripts/restore_offbox.sh --night latest --key "$W/priv.asc" '
+        '--out "$W/restore" < /dev/null > "$W/r1.txt" 2>&1\n'
+        'echo "RESTORE1-RC=$?" >&2; cat "$W/r1.txt" >&2\n'
+        'ls "$W"/restore/*/acb.dump >/dev/null 2>&1 && echo "RESTORED-DUMP" >&2\n'
+        'grep -q "resume of a candidate" <(tar -xOf "$W"/restore/*/files.tar 2>/dev/null) '
+        '&& echo "RESTORED-FILES" >&2\n'
+        'obj="$(ls "$S3"/metorite-backups/nightly/*/globals.sql.zst.gpg)"\n'
+        'printf "STUBGPG\\n-- tampered\\n" > "$obj"\n'
+        + _S3_ENV
+        + 'bash scripts/restore_offbox.sh --night latest --key "$W/priv.asc" '
+        '--out "$W/restore2" < /dev/null > "$W/r2.txt" 2>&1\n'
+        'echo "RESTORE2-RC=$?" >&2; cat "$W/r2.txt" >&2\n'
+    )
+    r = _run_backup_offbox(_S3_ENV + _GPG_ENV + _DIRS_ENV, after=restore)
+    err = str(r["err"])
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{err}"
+    assert "LIST-RC=0" in err and _NIGHT_RE.search(err.partition("LIST-RC=0")[2]), err
+    assert "RESTORE1-RC=0" in err, err
+    assert "every file matches SHA256SUMS" in err and "every dump matches MANIFEST.txt" in err
+    assert "RESTORED-DUMP" in err and "RESTORED-FILES" in err, err
+    assert "RESTORE2-RC=1" in err, "a tampered night was restored without an error"
+    assert "does not match SHA256SUMS" in err, err
+    assert _S3_SECRET not in err and _S3_SECRET not in str(r["out"])
+
+
+def test_the_deploy_installs_rclone_and_the_migration_backup_never_uploads() -> None:
+    """Two static halves.
+
+    (a) vps_apply.sh installs rclone from apt when it is absent, with stdin
+        closed, because this file IS the shell's stdin on the push path.
+    (b) The pre-migration backup runs with the keys that vps_apply.sh lifts
+        from .env, and none of them is a BACKUP_ key. So a deploy never
+        uploads, an outage of the bucket never blocks a migration, and a
+        deploy never pushes a real night out of the bucket retention.
+    """
+    lines = _executable_lines(_APPLY)
+    assert any("command -v rclone" in ln for ln in lines), "nothing checks for rclone"
+    install = [ln for ln in lines if "apt-get install" in ln and "_offbox_missing" in ln]
+    assert install, "vps_apply.sh no longer installs the off-box tools"
+    assert all("< /dev/null" in ln for ln in install), install
+    assert any('_offbox_missing="$_offbox_missing rclone"' in ln for ln in lines)
+
+    lift = next(ln for ln in lines if ln.strip().startswith("for _k in ") and "PG_MODE" in ln)
+    assert "BACKUP_" not in lift, (
+        "vps_apply.sh lifts a BACKUP_ key into the migration run, so the "
+        f"pre-migration backup would upload: {lift.strip()!r}"
+    )
