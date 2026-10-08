@@ -155,6 +155,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # WS-49 BH-7: the drop-in installer of vps_apply.sh keeps the changed
+    # units in this name.
+    "DROPIN_CHANGED_UNITS",
     # gpg reads its keyring from here. The backup encrypts to a key in it.
     # tar reads TAR_OPTIONS as extra flags, so it could add or drop files in
     # the off-box copy (H-123).
