@@ -5,18 +5,29 @@
 # (~1–3 GB RAM + up to 2 CPU per concurrent meeting) and should not share the
 # app's tight resource envelope. Point the gateway at it with:
 #   NOTES_BOT_PROVIDER=selfhosted
-#   MEETING_BOT_URL=http://<this-host>:8080
-#   MEETING_BOT_TOKEN=<the shared secret below, if set>
+#   MEETING_BOT_URL=http://127.0.0.1:8080
+#   MEETING_BOT_TOKEN=<the same shared secret as below>
+#
+# 🔴 WS-49 BH-8. The port binds to 127.0.0.1 only. Docker port rules go around
+# ufw, and an open worker lets anyone send a bot into a meeting. For a gateway
+# on another box, reach this port through an SSH tunnel or a proxy with TLS.
+# Do not publish it on 0.0.0.0. Fence: tests/unit/test_compose_ports_local.py.
+#
+# MEETING_BOT_TOKEN is REQUIRED. app/main.py checks the bearer token only when
+# the token is set, so an empty token is an open API. This file has no
+# profiles, so the `:?` form stops only this file, and only when the token is
+# missing or empty.
 services:
   meeting-bot:
     build: .
     image: metorite/meeting-bot:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
-      # Optional shared bearer secret the gateway must send (recommended).
-      MEETING_BOT_TOKEN: "${MEETING_BOT_TOKEN:-}"
+      # Shared bearer secret that the gateway must send. Compose refuses to
+      # start with no value.
+      MEETING_BOT_TOKEN: "${MEETING_BOT_TOKEN:?set MEETING_BOT_TOKEN to a shared secret}"
       MEET_JOIN_TIMEOUT: "150"
       MEET_MAX_DURATION: "14400"
     # Headless Chrome needs a large /dev/shm or --disable-dev-shm-usage (we set
