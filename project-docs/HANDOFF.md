@@ -150,6 +150,12 @@ line — never reclaim a number by deleting the other entry.
   from catch-alls to every template that puts a route param into a gateway
   path. `encodeURIComponent` alone is not enough, because uvicorn decodes
   `%2F` back into a separator before Starlette routes.
+- **A latent chain, closed by the same PR.** Layer 2 reads the path one
+  decode deep. A triple-encoded slash (`%25252F`) becomes a separator only
+  after TWO Starlette trailing-slash redirects. Today no gateway route ends in
+  `/` after a param, so no such pair exists (review of #743). Set
+  `redirect: "manual"` in `gatewayFetch` to close it for good. First check
+  which callers rely on a followed redirect, such as `/people/`.
 - **Authority:** verifier and diff review of the path guard PR, 2026-10-08
 - **Added:** 2026-10-08 · branch `proxy-path-guard`.
 
