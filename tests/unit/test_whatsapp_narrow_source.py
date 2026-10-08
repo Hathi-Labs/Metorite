@@ -302,10 +302,10 @@ def test_each_target_is_a_real_parameter_of_the_route() -> None:
 def test_the_filter_keys_are_the_keys_of_n4() -> None:
     """§4 names account_id, chat_id, after and before. N4 adds contact,
     group, from_me, has_media and the search words."""
-    assert ns.FILTER_KEYS == frozenset({
+    assert frozenset({
         "account_id", "chat_id", "contact", "group", "after", "before",
         "from_me", "has_media", "words",
-    })
+    }) == ns.FILTER_KEYS
 
 
 def test_the_fixed_parameters_are_hybrid_websearch_and_200() -> None:

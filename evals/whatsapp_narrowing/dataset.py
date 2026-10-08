@@ -198,7 +198,7 @@ class Plant:
     verdicts: dict[str, tuple[str, float]] = field(default_factory=dict)
 
 
-def _plants() -> list[Plant]:  # noqa: PLR0915 — one flat list of fixtures
+def _plants() -> list[Plant]:
     p: list[Plant] = []
     add = p.append
     # Q1: dealers who asked for the price of the X200 in the last 30 days. 8

@@ -49,7 +49,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from evals.email_narrowing.stub_api import (  # noqa: F401 — re-exported for the runner
+from evals.email_narrowing.stub_api import (
     DECIDE_TIER,
     StubRouter,
     credits_of,

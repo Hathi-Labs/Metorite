@@ -29,7 +29,10 @@ from __future__ import annotations
 import json
 import re
 
-from evals.email_narrowing.scripted import Session, tier_after  # noqa: F401 — one session for both evals
+from evals.email_narrowing.scripted import (  # noqa: F401 — one session for both evals
+    Session,
+    tier_after,
+)
 from evals.whatsapp_narrowing.dataset import Dataset, Question
 
 #: The chat reads that today's model asks for in one request (an assumption).
