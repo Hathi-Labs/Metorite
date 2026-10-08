@@ -510,6 +510,13 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             '"assignees": "Priya", "due": "2026-09-30"}, {"title": "Draft the brief"}]',
         }
     ],
+    # H-273 — several new tags or types, one confirmation card with rows.
+    "create_tags": [
+        {"project_id": UUID, "tags": '[{"name": "q4", "color": "blue"}, "blocked"]'},
+    ],
+    "create_types": [
+        {"project_id": UUID, "types": '[{"name": "Chore", "icon": "broom"}, {"name": "Spike"}]'},
+    ],
     "propose_plan": [
         {
             "name": "Q4 launch",

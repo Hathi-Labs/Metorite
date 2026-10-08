@@ -5315,21 +5315,44 @@ board, because the reads are now closed in the trail.
 
 ### 24.5 Several new tags, types or statuses
 
-`request_confirmation(rows=…)` (#691) gives one card with a checkbox for each
-row, and `create_tasks` uses it. **No batch tool for the vocabulary exists
-yet, and this change does not build one.**
+**BUILT 2026-10-08 for tags and types (H-273, branch `projects-vocab-batch`).**
+`create_tags(project_id, tags)` and `create_types(project_id, types)` take
+the words in ONE call. They use the rows card of
+`request_confirmation(rows=…)` (#691), as `create_tasks` does: ONE card with
+a checkbox for each word.
 
-A `create_tags` tool touches seven fences. Four are in the skill: the route
-manifest, the F2 field-parity fence, the writes table and the H-236 egress
-pin. Three are outside it: the agent's scope, the receipt card and an R8 test
-on a real database. The F2 fence
-allows rows for `create_tasks` only. The tool is a write path with its own
-consent, and it does not belong in a UI change. HANDOFF carries it.
+- **One helper, two kinds.** `forms.py` `_VocabKind` holds what differs: the
+  row keys, the route and the words. `_vocab_plan` does every read before the
+  card, and `_vocab_write` does the writes after it. Each tool calls
+  `_confirm` itself, so the source fence of the one card door still sees it.
+- **A row means what the single tool's argument means.** A tag row takes
+  `name`, `color` and `description`, as `create_tag` does. A type row takes
+  `name`, `icon`, `color` and `is_epic`, as `create_type` does. A plain name
+  is a row too. An organization-wide word, and the default type, stay with the
+  single tool, one call each.
+- **Before the card.** Four faults stop the batch, and nothing is drawn: a
+  duplicate name in the batch, an unknown key, more than `MAX_BATCH` rows, and
+  a card that `_fits_on_card` refuses. A name that the project has already starts unticked, and
+  its hint gives the reason. An organization-wide match says that a tick adds a
+  copy for this tree (D-PM-16).
+- **After the card.** The tool writes exactly the ticked rows, in the card's
+  order, with one POST each to the route of `create_tag` or `create_type`. An
+  id that the card did not offer writes nothing (`FORGED_ROWS`).
+- **The server decides (§16 of `projects_agent_parity.md`).** The tool reads
+  no permission and decides none. A refusal of the route, a 403 or a 409, is
+  quoted in the receipt for its row. A row that fails does not stop the next
+  row, and nothing raises after the first write.
+- **The receipt.** For each word made, it prints `- tag «name» · facts` and
+  then `  tag_id: <uuid>`. Each fact is fenced with `data()`. Then it prints a
+  `failed:` or `unknown:` line for each row that failed, a `stopped:` line and
+  the rows left out. `BatchReceiptCard` draws a
+  tag as the tag pill and a type as a plain pill.
 
-Until it exists, the Projects agent creates several words one after another in
-one turn. It draws no picker first, it lists the words in one short Markdown
-list, and each create shows its own card. The pin keeps each card in view
-while it waits.
+**Statuses are not built.** The status route inserts a second lane with the
+same name, and each lane needs its own position and the server's `may_edit`
+first. That is more than a few lines on the helper, so HANDOFF H-274 carries
+it. Until then, the Projects agent calls `create_status` once for each new
+status, one after another.
 
 ### 24.6 Fences (R7)
 
@@ -5344,6 +5367,7 @@ while it waits.
 | Five agents carry the one section, word for word | `tests/unit/test_chat_placement_instructions.py` |
 | The injected directive ends with the rule | `tests/unit/test_genui_proactive_directive.py` |
 | At most one answer card per answer, and no card that repeats a read | `evals/projects_ops/checkers.py` `one_answer_card`, `no_read_recarded`, held by `tests/unit/test_projects_ops_eval.py` |
+| Several new tags or types are ONE card with a checkbox for each, and the server decides each row (H-273) | `tests/unit/test_projects_create_vocab.py`, `test_projects_field_parity.py` (the row exception), eval task PO-11 |
 
 **Advisory.** A receipt in a step stays mounted after the member opens it,
 so a closed step keeps what the member did in it. Nothing tests that, because
