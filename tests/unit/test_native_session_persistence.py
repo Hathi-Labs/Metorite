@@ -184,6 +184,24 @@ def test_flag_off_the_run_calls_the_agent_itself() -> None:
     assert executor._agent_for_run(agent, None) is agent
 
 
+def test_with_no_session_the_run_call_is_todays_call() -> None:
+    """With the flag off, ``_session_turn`` is None. The ``run`` call then gets
+    no ``session`` keyword, and the agent gets no history provider, so the
+    call is the call of ``main`` byte for byte. An abandoned turn is the same."""
+
+    class _Abandoned:
+        usable = False
+        session = object()
+        history = object()
+
+    agent = object()
+    for turn in (None, _Abandoned()):
+        assert executor._native_session_run_kwargs(turn) == {}
+        assert executor._native_session_history(turn) is None
+        history = executor._native_session_history(turn)
+        assert executor._agent_for_run(agent, None, history=history) is agent
+
+
 @pytest.mark.usefixtures("_a_tenant", "_flag_off")
 def test_flag_off_the_wire_carries_the_string_prompt(monkeypatch) -> None:
     """Through the real executor: one user message holds today's prompt, with
@@ -1403,6 +1421,85 @@ def test_r8_org_b_cannot_read_or_write_org_a_row(graph_as_app, app_engine, store
     assert state.chat_exists is False and state.stored is None
     assert store.read_state(org_a, tid, _PROBE_AGENT).stored is not None
     assert len(_stored(graph_as_app, tid)) == 1
+
+
+def _migration_body() -> str:
+    """Migration 228 without its BEGIN and COMMIT, so a test can run it again."""
+    from pathlib import Path
+
+    path = (Path(__file__).resolve().parents[2] / "infra" / "postgres"
+            / "228_maf_agent_session.sql")
+    return "\n".join(
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().upper() not in ("BEGIN;", "COMMIT;"))
+
+
+@_DB_GATE
+def test_r8_the_migration_alone_forces_and_scopes_the_table(
+    graph_as_app, app_engine, store_log,  # noqa: F811
+) -> None:
+    """Migration 228 is the ONLY lock on the table in production.
+
+    The deploy never replays ``generated/``, so on the box nothing but the
+    guarded block of 228 enables and forces RLS on this table. The promoted
+    catalog gets FORCE and the policy from ``generated/04_policies.sql`` too,
+    and that hides a defect in 228. So this test takes both away, runs 228
+    again, and makes the app role the OWNER of the table. FORCE is what binds
+    the owner. Then org B must read no row of org A, and must not write one.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError, ProgrammingError
+
+    org_a, org_b = graph_as_app.org_a, graph_as_app.org_b
+    tid = _tid()
+    _chat(org_a, tid)
+    _one_turn(org_a, tid, _PROPOSE, _ASK)
+    try:
+        with graph_as_app.admin_engine.begin() as c:
+            c.execute(text("DROP POLICY IF EXISTS maf_agent_session_tenant_isolation "
+                           "ON maf_agent_session"))
+            c.execute(text("ALTER TABLE maf_agent_session NO FORCE ROW LEVEL SECURITY"))
+            c.execute(text("ALTER TABLE maf_agent_session DISABLE ROW LEVEL SECURITY"))
+            with c.connection.dbapi_connection.cursor() as cur:
+                cur.execute(_migration_body())
+            c.execute(text(f"ALTER TABLE maf_agent_session OWNER TO {_APP_ROLE}"))
+        rel = _admin(graph_as_app, "SELECT relrowsecurity, relforcerowsecurity "
+                                   "FROM pg_class WHERE relname = 'maf_agent_session'")
+        assert [tuple(r) for r in rel] == [(True, True)]
+        with app_engine.connect() as c:
+            with c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org_b})
+                seen_b = c.execute(text("SELECT count(*) FROM maf_agent_session "
+                                        "WHERE thread_id = :t"), {"t": tid}).scalar_one()
+            with c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org_a})
+                seen_a = c.execute(text("SELECT count(*) FROM maf_agent_session "
+                                        "WHERE thread_id = :t"), {"t": tid}).scalar_one()
+            assert (seen_b, seen_a) == (0, 1)
+            with pytest.raises((DBAPIError, ProgrammingError)) as refused, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org_b})
+                c.execute(text(
+                    "INSERT INTO maf_agent_session (organization_id, thread_id, "
+                    "agent_name, session_json, transcript_digest, session_fingerprint) "
+                    "VALUES (CAST(:a AS uuid), :t, 'evil', '{}'::jsonb, :d, :d)"),
+                    {"a": org_a, "t": tid, "d": "0" * 64})
+            assert "row-level security" in str(refused.value).lower()
+    finally:
+        # A move of the owner moves the grants of the old owner too, so the app
+        # role gets its grant back when the table moves back.
+        with graph_as_app.admin_engine.begin() as c:
+            c.execute(text("ALTER TABLE maf_agent_session OWNER TO CURRENT_USER"))
+            c.execute(text("ALTER TABLE maf_agent_session ENABLE ROW LEVEL SECURITY"))
+            c.execute(text("ALTER TABLE maf_agent_session FORCE ROW LEVEL SECURITY"))
+            c.execute(text("DROP POLICY IF EXISTS maf_agent_session_tenant_isolation "
+                           "ON maf_agent_session"))
+            c.execute(text(
+                "CREATE POLICY maf_agent_session_tenant_isolation ON maf_agent_session "
+                "USING (organization_id = current_setting('app.tenant_id', true)::uuid) "
+                "WITH CHECK (organization_id = "
+                "current_setting('app.tenant_id', true)::uuid)"))
+            c.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON maf_agent_session "
+                           f"TO {_APP_ROLE}"))
 
 
 @_DB_GATE
