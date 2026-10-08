@@ -54,6 +54,17 @@ below was run red on 2026-10-07, then taken back out:
 * the request names the stale agent of the run context ->
   ``test_the_request_carries_the_run_attribution``.
 
+The production fault of 2026-10-08 (every System-1 request got a 400). Each
+mutation below was run red on 2026-10-09, then taken back out:
+
+* ``RESPONSE_FORMAT`` goes back to a ``json_schema`` ->
+  ``test_the_request_asks_for_json_mode_and_names_no_schema``;
+* the parse reads a fenced or wrapped reply as an answer ->
+  ``test_a_malformed_json_mode_answer_is_unavailable``;
+* ``ask`` stops logging ``system_one.failed`` -> ``TestTheFailureReasonIsLogged``;
+* the reason of a Router refusal is a type name and not ``http_<status>`` ->
+  ``test_a_router_refusal_logs_its_http_status``.
+
 Review round 1 (2026-10-07), each run red the same way:
 
 * a claimed member goes out as proven, or a fallback logs the client's
