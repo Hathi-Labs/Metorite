@@ -1,0 +1,22 @@
+# The docker compose stack (postgres, redis). WS-49 BH-8.
+# Until 2026-10-08 only a heredoc in bootstrap.sh made this unit, so the repo
+# held no copy. vps_apply.sh now installs this file with every other unit
+# (the BO-23 loop), and bootstrap.sh installs it from here.
+# ⚠️ Core profile ONLY. The memory profile started Neo4j, and Neo4j answered
+# on the public internet. Do not add a profile here without a fence.
+# Fence: tests/unit/test_compose_ports_local.py.
+[Unit]
+Description=AI Company Brain (docker compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/acb/app
+EnvironmentFile=/opt/acb/app/.env
+ExecStart=/usr/bin/docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f infra/docker-compose.yml down
+
+[Install]
+WantedBy=multi-user.target

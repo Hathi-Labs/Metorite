@@ -131,8 +131,12 @@ Metorite has two memory layers that persist across conversations:
 | **Mem0** (episodic) | Postgres + pgvector | `MEM0_ENABLED=true` | Per-user facts extracted from conversations |
 | **Graphiti** (knowledge graph) | Neo4j | `GRAPHITI_ENABLED=true` | Time-stamped entity relationships and timelines |
 
-Both are enabled by default in the deploy scripts (`--profile core --profile memory`).
-Set the env vars in `/opt/acb/app/.env`:
+⚠️ The deploy starts `--profile core` only, so Neo4j does not run. WS-49 BH-8
+took the memory profile out of `acb.service`, because Neo4j answered on the
+public internet. Neo4j has no default password. It refuses to start until
+`NEO4J_PASSWORD` holds a real secret. Set that value through
+`scripts/secrets.sh`. Its ports bind to `127.0.0.1`, so use an SSH tunnel for
+the browser. To turn Graphiti on, set the env vars in `/opt/acb/app/.env`:
 
 ```bash
 MEM0_ENABLED=true

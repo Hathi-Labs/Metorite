@@ -8,6 +8,16 @@
 #
 # AGE (Apache property-graph) is deferred to Phase 2 — Phase 0 only needs
 # pgvector + relational tables. See project-docs/system_architecture.md §4.
+#
+# 🔴 EVERY PUBLISHED PORT BINDS TO 127.0.0.1, WRITTEN OUT (WS-49 BH-8).
+# Docker publishes a port with its own iptables rules, and those rules go
+# around ufw. On 2026-10-08 a bare "7474:7474" put Neo4j on the internet with
+# the compose default password, and scanners connected. So:
+#   - the host part of each `ports:` entry is the literal 127.0.0.1;
+#   - no host part comes from an env var. The gateway writes .env at run
+#     time, so a POSTGRES_BIND-style knob lets a gateway write publish a port;
+#   - an operator who needs a port from off the box uses an SSH tunnel.
+# Fence: tests/unit/test_compose_ports_local.py (BH-F5).
 
 name: acb
 
@@ -29,8 +39,9 @@ services:
       # rules that bypass UFW, so a bare "5432:5432" exposed Postgres to the
       # internet despite the firewall. The host app connects over 127.0.0.1 and
       # in-compose services (e.g. Langfuse) use the compose network, so loopback
-      # is sufficient. Override POSTGRES_BIND to expose it deliberately.
-      - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
+      # is sufficient. There is no override: the POSTGRES_BIND knob is gone
+      # (WS-49 BH-8). Use an SSH tunnel to reach it from off the box.
+      - "127.0.0.1:5432:5432"
     volumes:
       - acb-postgres-data:/var/lib/postgresql/data
       - ./postgres/00_create_databases.sql:/docker-entrypoint-initdb.d/00_create_databases.sql:ro
@@ -55,7 +66,8 @@ services:
     ports:
       # Loopback only — see the Postgres note above. Redis has no auth, so a
       # public "6379:6379" was an open data store bypassing UFW via Docker.
-      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
+      # No REDIS_BIND override any more (WS-49 BH-8).
+      - "127.0.0.1:6379:6379"
     volumes:
       - acb-redis-data:/data
     healthcheck:
@@ -75,16 +87,46 @@ services:
     <<: *restart
     profiles: ["memory"]
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-neo4j_dev_change_me}
+      # 🔴 NO DEFAULT PASSWORD (WS-49 BH-8). The old default
+      # `neo4j_dev_change_me` was public, in this file, while 7474 and 7687
+      # were on the internet. Set NEO4J_PASSWORD in the env file. On the box,
+      # set it through scripts/secrets.sh, never by hand in a shell.
+      #
+      # ⚠️ This is `:-` and NOT `:?`, on purpose. Compose interpolates the
+      # WHOLE file before it reads profiles, so a `${NEO4J_PASSWORD:?...}` here
+      # makes `--profile core` fail too (measured on Compose v5.1.3). That
+      # would break acb.service and every deploy on a box with no Neo4j.
+      # The guard in `entrypoint:` below refuses the bad values instead, and
+      # only when this service starts.
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-}
       NEO4J_PLUGINS: '["apoc"]'
+    # The guard: no password, the image default, or the old compose default
+    # stops the container before Neo4j sets an initial password. Then it hands
+    # over to the image's own entrypoint, unchanged.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        case "$${NEO4J_AUTH#neo4j/}" in
+          ""|neo4j|neo4j_dev_change_me)
+            echo "acb-neo4j: refusing to start. Set NEO4J_PASSWORD to a real secret (WS-49 BH-8)." >&2
+            exit 64 ;;
+        esac
+        exec tini -g -- /startup/docker-entrypoint.sh "$$@"
+      - acb-neo4j-guard
+    command: ["neo4j"]
     ports:
-      - "7474:7474"   # HTTP
-      - "7687:7687"   # Bolt
+      # Loopback only (WS-49 BH-8). For the browser, use an SSH tunnel:
+      #   ssh -L 7474:127.0.0.1:7474 -L 7687:127.0.0.1:7687 metorite
+      - "127.0.0.1:7474:7474"   # HTTP
+      - "127.0.0.1:7687:7687"   # Bolt
     volumes:
       - acb-neo4j-data:/data
       - acb-neo4j-logs:/logs
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-neo4j_dev_change_me} 'RETURN 1'"]
+      # The container env holds NEO4J_AUTH, not NEO4J_PASSWORD. The old check
+      # read NEO4J_PASSWORD, found it unset, and so always tried the default.
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1'"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -109,7 +151,8 @@ services:
       NEXTAUTH_URL:    ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
       TELEMETRY_ENABLED: "false"
     ports:
-      - "3000:3000"
+      # Loopback only (WS-49 BH-8). It was "3000:3000", which is public.
+      - "127.0.0.1:3000:3000"
 
   # --- Copilot SDK mutation sandbox image. Build via `--profile sandbox`. ---
   # Not a long-running service — the image is built here so
