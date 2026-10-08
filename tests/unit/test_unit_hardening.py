@@ -210,7 +210,12 @@ case "$STUB_RUN_MODE" in
     for n in $STUB_PASS_NAMES; do
       if [ "$n" = p5-touch-t2-vendor-fails ]; then echo "SKIP $n"; else echo "PASS $n"; fi
     done
-    echo "SKIP p1-sudo-n-true-fails"
+    echo "BH2-PROBE-END"
+    exit 0 ;;
+  skip-other)
+    for n in $STUB_PASS_NAMES; do
+      if [ "$n" = p1-sudo-n-true-fails ]; then echo "SKIP $n"; else echo "PASS $n"; fi
+    done
     echo "BH2-PROBE-END"
     exit 0 ;;
   allpass)
@@ -349,15 +354,23 @@ def test_the_probe_passes_a_hardened_box_and_drops_unknown_lines(tmp_path: Path)
 @needs_bash
 def test_only_the_t2_vendor_check_may_skip(tmp_path: Path) -> None:
     """Before BH-7, /opt/acb/t2-vendor does not exist, so its check SKIPs. A
-    SKIP is not a FAIL. A SKIP for any other check is dropped, and then the
-    transient unit has not answered every probe."""
+    SKIP is not a FAIL."""
     r = _probe(tmp_path, dict(GOOD_PROPS), "allpass-skip-t2")
     _assert_no_value(r)
     assert "SKIP p5-touch-t2-vendor-fails" in r.stdout
-    assert "SKIP p1-sudo-n-true-fails" not in r.stdout
-    assert "PASS p1-sudo-n-true-fails" in r.stdout
     assert r.returncode == 0, r.stdout
     assert r.stdout.rstrip().endswith(" PASS, 1 SKIP, 0 FAIL"), r.stdout
+
+
+@needs_bash
+def test_a_skip_of_any_other_check_is_dropped(tmp_path: Path) -> None:
+    """A SKIP for any other check is dropped. Then the transient unit has not
+    answered every probe, and the probe FAILs."""
+    r = _probe(tmp_path, dict(GOOD_PROPS), "skip-other")
+    _assert_no_value(r)
+    assert "p1-sudo-n-true-fails" not in r.stdout
+    assert "FAIL transient-unit-ran-every-probe" in r.stdout
+    assert r.returncode == 1, r.stdout
 
 
 @needs_bash
