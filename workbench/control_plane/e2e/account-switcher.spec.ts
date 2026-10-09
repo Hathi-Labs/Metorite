@@ -165,6 +165,17 @@ test.describe("phone", () => {
     expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
   });
 
+  test("a row drops ONE account from this browser", async ({ page }) => {
+    const calls: string[] = [];
+    await phone(page, calls);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await page
+      .getByTestId("drawer-org")
+      .getByRole("button", { name: "Remove vjvarada@fracktal.in from this browser" })
+      .click();
+    await expect.poll(() => calls).toEqual(['/api/accounts/remove {"slot":2}']);
+  });
+
   test("the bottom bar's account tab says who and where, and opens the account sheet", async ({ page }) => {
     await phone(page);
     const tab = page.getByTestId("account-tab");

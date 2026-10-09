@@ -46,8 +46,25 @@ export function useAccounts(withOrgs = false) {
     setAccounts(await fetchAccounts(orgs));
   }, []);
   useEffect(() => {
-    void reload(withOrgs);
-  }, [reload, withOrgs]);
+    let alive = true;
+    void (async () => {
+      // ⚠️ The plain read FIRST, then the names, in that order. The names
+      // need one gateway call per account (up to 3 s), and rows that appear
+      // only then push the menu down under a thumb that is already moving, so
+      // a tap meant for the nav lands on "switch" (review of #765). The plain
+      // read touches no gateway, so the rows take their place at once. In
+      // sequence, so a late plain answer can never erase the names.
+      const plain = await fetchAccounts(false);
+      if (!alive) return;
+      setAccounts(plain);
+      if (!withOrgs || plain.others.length === 0) return;
+      const full = await fetchAccounts(true);
+      if (alive) setAccounts(full);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [withOrgs]);
   return { accounts, reload };
 }
 
@@ -478,11 +495,17 @@ export function DrawerOrgSwitch() {
   const { access } = useAccess();
   const { data: session } = useSession();
   const { switching, error, pick } = useSwitchAccount(() => void reload(true));
+  // ⚠️ The organization and the address from ONE answer, `/api/auth/me`, so
+  // the block can never pair one account's organization with another's email.
+  // A tab that missed a switch broadcast holds the older identity for up to
+  // two minutes, and a separate `/api/accounts` read could already name the
+  // newer one (review of #765).
   const orgName = access.organization?.display_name || access.organization?.slug || null;
-  const email = accounts.active?.email ?? session?.user?.email ?? null;
-  const name = accounts.active?.name ?? session?.user?.name ?? null;
+  const email = access.email || session?.user?.email || null;
+  const name = session?.user?.name ?? accounts.active?.name ?? null;
   if (!orgName && !email) return null;
-  const others = accounts.enabled ? accounts.others : [];
+  // Never offer the account that is open now.
+  const others = accounts.enabled ? accounts.others.filter((o) => o.email !== email) : [];
 
   return (
     <section aria-label="Organization and account" className="border-b border-border px-3 py-3" data-testid="drawer-org">
@@ -509,11 +532,11 @@ export function DrawerOrgSwitch() {
           <div className="px-1 pb-1 text-xs font-medium text-muted-foreground">Switch to</div>
           <div role="list" aria-label="Switch organization" className="flex flex-col gap-1">
             {others.map((o) => (
-              <div key={o.slot} role="listitem">
+              <div key={o.slot} role="listitem" className="flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() => void pick(o)}
-                  className="flex w-full items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-left hover:bg-secondary tech-transition"
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-left hover:bg-secondary tech-transition"
                 >
                   <Avatar email={o.email} name={o.name} />
                   <span className="min-w-0 flex-1">
@@ -524,6 +547,21 @@ export function DrawerOrgSwitch() {
                   </span>
                   <Icon name="ArrowRight" size={15} className="shrink-0 text-muted-foreground" />
                 </button>
+                {/* The one place on a phone to drop ONE account from this
+                    browser (review of #765, P1). Always shown, as on desktop:
+                    a hover-only control never appears on touch. */}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  aria-label={`Remove ${o.email} from this browser`}
+                  title="Remove from this browser"
+                  onClick={async () => {
+                    await removeAccount(o.slot);
+                    void reload(true);
+                  }}
+                  className="shrink-0 text-muted-foreground"
+                />
               </div>
             ))}
           </div>
@@ -547,18 +585,20 @@ export function AccountTab({ onOpen, open }: { onOpen: () => void; open: boolean
   const { accounts } = useAccounts();
   const { access } = useAccess();
   const { data: session } = useSession();
+  // From ONE answer, as in the organization block: the address and its
+  // organization both come from `/api/auth/me`, which the shell polls.
   const orgName = access.organization?.display_name || access.organization?.slug || null;
-  const email = accounts.active?.email ?? session?.user?.email ?? null;
-  const name = accounts.active?.name ?? session?.user?.name ?? null;
+  const email = access.email || session?.user?.email || null;
+  const name = session?.user?.name ?? accounts.active?.name ?? null;
   if (!email) return null;
-  const count = accounts.enabled ? accounts.others.length : 0;
+  const count = accounts.enabled ? accounts.others.filter((o) => o.email !== email).length : 0;
   const label = `Account: ${email}${orgName ? `, in ${orgName}` : ""}${count ? `, ${count} more` : ""}`;
   return (
     <button
       type="button"
       onClick={onOpen}
       aria-label={label}
-      aria-haspopup="dialog"
+      aria-expanded={open}
       data-testid="account-tab"
       className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
         open ? "text-primary" : "text-muted-foreground hover:text-foreground"
