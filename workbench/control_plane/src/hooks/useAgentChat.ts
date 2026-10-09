@@ -31,6 +31,16 @@ import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCusto
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
+import {
+  holdForUpdate,
+  idleAfterStaleRecovery,
+  isStaleRecovery,
+  isUpdateOutage,
+  planSend,
+  registerSender,
+  retryHeldNow,
+  type SendOptions,
+} from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
@@ -132,7 +142,8 @@ interface UseAgentChatReturn {
   messages: ChatMessage[];
   isLoading: boolean;
   error: string | null;
-  sendMessage: (content: string) => Promise<void>;
+  /** `opts.resume` is the Continue button after an app update. */
+  sendMessage: (content: string, opts?: SendOptions) => Promise<void>;
   clearMessages: () => void;
   stopGeneration: () => void;
   /** Replace the messages array (used to hydrate from Postgres on mount). */
@@ -143,6 +154,10 @@ interface UseAgentChatReturn {
   /** Agent run status for the UI: "idle" | "running" | "recovering" | "unknown".
    *  Lets the user know if execution is stored, stuck, or ongoing. */
   runStatus: "idle" | "running" | "recovering" | "unknown";
+  /** True while the app updates and a send is held (`lib/chatRecovery.ts`). */
+  outage: boolean;
+  /** The "Metorite is updating" notice's Retry: try the held sends now. */
+  retryHeld: () => void;
 }
 
 // nanoid, foldForToolStart, unfoldTrailingAnswer and the per-event message
@@ -215,17 +230,44 @@ export function useAgentChat({
   );
 
   const sendMessage = useCallback(
-    async (content: string) => {
-      if (!content.trim() || getSessionState(threadId).isLoading) return;
+    async (content: string, opts?: SendOptions) => {
+      const text = content.trim();
+      if (!text) return;
+      const before = getSessionState(threadId);
+      const held = opts?.heldId
+        ? before.messages.find((m) => m.id === opts.heldId && m.role === "user")
+        : undefined;
+
+      // ── An app update (incident 2026-10-09, lib/chatRecovery.ts) ────────
+      // `collapse`: the same words that already wait are ONE send, with no
+      // second bubble and no second copy on the server. That is the four
+      // "Continue" bubbles of the incident. `hold`: the gateway is down, so
+      // the send waits once, and goes out when /api/health says it is back.
+      const plan = planSend(before, text, held?.id);
+      if (plan === "collapse" || plan === "busy") return;
+      if (plan === "hold") {
+        const heldMsg: ChatMessage = {
+          id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
+        };
+        setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
+        holdForUpdate(threadId, text);
+        return;
+      }
+      if (plan === "requeue") {
+        holdForUpdate(threadId, text, { front: true });
+        return;
+      }
 
       const controller = new AbortController();
       // Stamp the assistant 1ms after the user so the pair never shares a
       // timestamp_ms. The DB orders by (timestamp_ms, id); an identical ms for
       // both would let a reload render the reply before its own prompt.
       const turnTs = Date.now();
-      const userMsg: ChatMessage = {
-        id: nanoid(), role: "user", content: content.trim(), timestamp: turnTs,
-      };
+      // A held send keeps its bubble and its id, so the saved row is the one
+      // the member already saw.
+      const userMsg: ChatMessage = held
+        ? { ...held, pendingDelivery: false }
+        : { id: nanoid(), role: "user", content: text, timestamp: turnTs };
       const assistantId = nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
@@ -241,11 +283,20 @@ export function useAgentChat({
       const streamToken = nanoid();
       claimStreamOwnership(threadId, assistantId, streamToken);
 
-      setSessionState(threadId, (prev) => ({
-        ...prev,
-        messages: [...prev.messages, userMsg, assistantMsg],
-        isLoading: true, error: null, abortController: controller,
-      }));
+      setSessionState(threadId, (prev) => {
+        if (!held) {
+          return {
+            ...prev,
+            messages: [...prev.messages, userMsg, assistantMsg],
+            isLoading: true, error: null, abortController: controller,
+          };
+        }
+        // The held bubble stays where it is, and its answer follows it.
+        const idx = prev.messages.findIndex((m) => m.id === userMsg.id);
+        const messages = prev.messages.map((m) => (m.id === userMsg.id ? userMsg : m));
+        messages.splice(idx + 1, 0, assistantMsg);
+        return { ...prev, messages, isLoading: true, error: null, abortController: controller };
+      });
 
       // Emit run started event for subscribers
       emitAgentEvent("onRunStarted", { runId: assistantId, threadId });
@@ -253,6 +304,8 @@ export function useAgentChat({
       // The HTTP status of a refused request, so the failure below can tell a
       // refused SESSION from a failed turn. Null for an error inside a stream.
       let failedStatus: number | null = null;
+      // Did any response arrive? With none, the app never took the send.
+      let gotResponse = false;
       try {
         // Build the history sent to the model from the ACTIVE context window
         // (everything from the most recent compaction checkpoint onward), so a
@@ -263,7 +316,14 @@ export function useAgentChat({
         // the current turn travels separately as `message`, and leaving it in the
         // history sent the user's prompt to the model twice on the copilot and
         // executor paths (only litellm deduped server-side).
-        const prior = getSessionState(threadId).messages.slice(0, -2);
+        // Everything before this turn. Held turns that wait behind it are
+        // not history yet.
+        const prior = getSessionState(threadId).messages.filter(
+          (m) => m.id !== userMsg.id && m.id !== assistantId && !m.pendingDelivery,
+        );
+        // A held turn's answer comes after it, so nothing after it is history.
+        const cut = held ? prior.findIndex((m) => m.timestamp > userMsg.timestamp) : -1;
+        if (cut >= 0) prior.splice(cut);
         const active = activeContextSlice(prior);
         const history = active
           .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
@@ -288,8 +348,12 @@ export function useAgentChat({
             // every turn and never correlated with the frontend's nanoid —
             // breaking refresh recovery.
             assistantMessageId: assistantId,
+            // Continue after an app update: a flag, never words. The gateway
+            // writes the note the model reads (gateway/chat_recovery.py).
+            ...(opts?.resume ? { resume: true } : {}),
           }),
         });
+        gotResponse = true;
 
         // ── Stand down: this message was folded into a run already going ──
         // docs/multiplayer/README.md §4.6. A 202 means the gateway steered our
@@ -303,12 +367,17 @@ export function useAgentChat({
         if (res.status === 202) {
           const outcome = (await res.json().catch(() => ({}))) as {
             steered?: boolean;
+            pendingReplay?: boolean;
           };
           if (outcome.steered) {
             // Drop our own placeholder; the user's message stays, attributed.
+            // A steer the run has not taken yet marks the turn pending, so a
+            // repeat of the same words collapses into it.
             setSessionState(threadId, (prev) => ({
               ...prev,
-              messages: prev.messages.filter((m) => m.id !== assistantId),
+              messages: prev.messages
+                .filter((m) => m.id !== assistantId)
+                .map((m) => (m.id === userMsg.id && outcome.pendingReplay ? { ...m, pendingDelivery: true } : m)),
             }));
           }
           return;
@@ -420,6 +489,17 @@ export function useAgentChat({
         // so the user sees them.  Otherwise legitimate backend failures like
         // "Load failed" (Copilot SDK model load error) get swallowed.
         const rawErr = err instanceof Error ? err.message : String(err);
+        // The app is updating: the gateway did not take this send. Hold it
+        // once, show ONE notice, and send it when the gateway is back. The
+        // composer stays live (lib/chatRecovery.ts, incident 2026-10-09).
+        if (isUpdateOutage({ status: failedStatus, gotResponse, err })) {
+          setSessionState(threadId, (prev) => ({
+            ...prev,
+            messages: prev.messages.filter((m) => m.id !== assistantId),
+          }));
+          holdForUpdate(threadId, userMsg.content, { userMsgId: userMsg.id, front: !!held });
+          return;
+        }
         const lc = rawErr.toLowerCase();
         const isBrowserNetworkError =
           err instanceof TypeError || err instanceof DOMException;
@@ -477,6 +557,10 @@ export function useAgentChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [agentName, threadId, model, mode, systemContext],
   );
+
+  // The held sends of an app update go out through the latest sender.
+  useEffect(() => { registerSender(threadId, sendMessage); }, [threadId, sendMessage]);
+  const retryHeld = useCallback(() => { void retryHeldNow(threadId); }, [threadId]);
 
   const clearMessages = useCallback(() => {
     setSessionState(threadId, (prev) => ({ ...prev, messages: [], error: null }));
@@ -895,6 +979,25 @@ export function useAgentChat({
     // Recovery timeout: set when recovering is first detected, cleared when done.
     let recoveryStartedAt = 0;
 
+    // The composer is never dead (incident 2026-10-09). A recovery that has
+    // heard nothing for STALE_RUN_MS falls back to idle, and the last answer
+    // gets the interrupted notice, with Continue.
+    const settleStale = () => {
+      const cur = getSessionState(threadId);
+      if (!cur.recovering && cur.runStatus === "idle") { recoveryStartedAt = 0; return; }
+      if (!recoveryStartedAt) recoveryStartedAt = Date.now();
+      if (!isStaleRecovery({
+        recovering: cur.recovering, runStatus: cur.runStatus,
+        hasLiveStream: !!cur.abortController, since: recoveryStartedAt, now: Date.now(),
+      })) return;
+      recoveryStartedAt = 0;
+      setSessionState(threadId, idleAfterStaleRecovery);
+    };
+    const pollAgain = (ms: number) => {
+      settleStale();
+      if (!cancelled) pollTimer = setTimeout(poll, ms);
+    };
+
     const poll = async () => {
       if (cancelled) return;
       try {
@@ -906,7 +1009,9 @@ export function useAgentChat({
           `/api/chat/sessions/${threadId}/messages?limit=50`,
           { signal: AbortSignal.timeout(5000) }
         );
-        if (!res.ok) return;
+        // A failed poll used to end the polling for good, and a recovery
+        // then stayed "Reconnecting…" with a Stop button until a reload.
+        if (!res.ok) { pollAgain(10000); return; }
         // The gateway serves this endpoint in camelCase (chat.py
         // _render_message) and always has. This mapper read snake_case, so
         // every recovery poll rebuilt messages with an empty tool timeline, no
@@ -925,7 +1030,7 @@ export function useAgentChat({
           redacted?: boolean;
           redactedCaps?: string[];
         }>;
-        if (!Array.isArray(remote) || remote.length === 0) return;
+        if (!Array.isArray(remote) || remote.length === 0) { pollAgain(10000); return; }
 
         // Map remote format to ChatMessage.  Drop stale __ERROR__ system
         // messages persisted by older builds — transient errors must never
@@ -1123,7 +1228,7 @@ export function useAgentChat({
           pollTimer = setTimeout(poll, interval);
         }
       } catch {
-        if (!cancelled) pollTimer = setTimeout(poll, 10000);
+        pollAgain(10000);
       }
     };
 
@@ -1138,6 +1243,10 @@ export function useAgentChat({
 
   const recovering = getSessionState(threadId).recovering;
   const runStatus = getSessionState(threadId).runStatus;
+  const outage = sessionState.outage;
 
-  return { messages, isLoading, error, sendMessage, clearMessages, stopGeneration, setMessages, recovering, runStatus };
+  return {
+    messages, isLoading, error, sendMessage, clearMessages, stopGeneration, setMessages,
+    recovering, runStatus, outage, retryHeld,
+  };
 }

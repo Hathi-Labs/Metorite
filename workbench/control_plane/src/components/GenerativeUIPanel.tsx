@@ -113,6 +113,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // answer's details menu names it (S3), and raw JSON here would show a
   // fold on every answer of a covered agent.
   "ai.route",
+  // An app update cut the run (incident 2026-10-09). The chat draws the
+  // "interrupted" notice with Continue for it (`lib/chatRecovery.ts`).
+  "run_interrupted",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body

@@ -18,6 +18,10 @@ import { RUN_ERROR_WORDS, type RunErrorView } from "@/lib/runErrors";
  *   admin or not. The fold shows the ref, and staff grep the logs for it.
  * - Retry re-sends the member's last message through the chat's one retry
  *   path (`AgentChat`'s `handleRetryMessage`).
+ * - A `notice` code (an app update, a run an update ended) draws as a status
+ *   in the warning tokens, with `role="status"`, and with no fold: nothing
+ *   failed for good, and there is no raw text to show (incident 2026-10-09).
+ *   Its button carries the code's own verb, such as "Continue".
  *
  * Fences: `runErrors.test.ts`, which renders this card.
  */
@@ -34,6 +38,7 @@ export function ErrorCardView({
   const [copied, setCopied] = React.useState(false);
   const [expanded, setExpanded] = React.useState(defaultOpen);
   const words = RUN_ERROR_WORDS[error.code];
+  const notice = words.tone === "notice";
 
   const handleCopy = () => {
     const text = error.ref ? `${error.raw}\n\nReference: ${error.ref}` : error.raw;
@@ -45,25 +50,41 @@ export function ErrorCardView({
   return (
     <div
       data-chat-error-card
-      role="alert"
-      className="w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm"
+      data-tone={notice ? "notice" : "error"}
+      role={notice ? "status" : "alert"}
+      className={[
+        "w-full min-w-0 max-w-full overflow-hidden rounded-xl border px-4 py-3 text-sm",
+        notice ? "border-warning/40 bg-warning/10" : "border-destructive/40 bg-destructive/10",
+      ].join(" ")}
     >
-      <p className="min-w-0 font-semibold text-destructive wrap-anywhere">{words.title}</p>
+      <p className={`min-w-0 font-semibold wrap-anywhere ${notice ? "text-foreground" : "text-destructive"}`}>
+        {words.title}
+      </p>
       <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{words.body}</p>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
         {onRetry && words.retry && (
-          <Button type="button" size="sm" variant="secondary" icon="RefreshCw" onClick={onRetry}>
-            Retry
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            icon={words.action ? "CornerDownRight" : "RefreshCw"}
+            onClick={onRetry}
+          >
+            {words.action ?? "Retry"}
           </Button>
         )}
-        <Button type="button" size="sm" variant="text" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
-          {expanded ? "Hide full error" : "Show full error"}
-        </Button>
-        <Button type="button" size="sm" variant="text" onClick={handleCopy} title="Copy the full error">
-          {copied ? "Copied" : "Copy error"}
-        </Button>
+        {!notice && (
+          <>
+            <Button type="button" size="sm" variant="text" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
+              {expanded ? "Hide full error" : "Show full error"}
+            </Button>
+            <Button type="button" size="sm" variant="text" onClick={handleCopy} title="Copy the full error">
+              {copied ? "Copied" : "Copy error"}
+            </Button>
+          </>
+        )}
       </div>
-      {expanded && (
+      {!notice && expanded && (
         <div className="mt-2 min-w-0 space-y-2" data-chat-error-fold>
           <pre className="max-h-40 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-[10px] text-muted-foreground wrap-anywhere">
             {error.raw || "(no error details)"}

@@ -50,6 +50,7 @@ import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/li
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
 import { codeForStatus } from "@/lib/runErrors";
+import { RUN_INTERRUPTED_EVENT } from "@/lib/chatRecovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -81,6 +82,10 @@ interface ChatRequest {
   /** When true, the client is reconnecting to an existing agent run rather
    *  than starting a new one.  The route calls the reconnect endpoint. */
   reconnect?: boolean;
+  /** The Continue button after a restart (incident 2026-10-09). The gateway
+   *  writes the words the model reads, from the saved partial reply, so this
+   *  is a flag and never text. */
+  resume?: boolean;
 }
 
 const LITELLM_BASE_URL =
@@ -217,6 +222,9 @@ async function translateAndPersistStream(
   let lastPersistTime = Date.now();
   let clientConnected = true;
 
+  /** True once the run said it ended (finished or failed). */
+  let sawTerminal = false;
+
   /** Safely enqueue to the client; sets clientConnected=false on failure. */
   const enqueue = (data: Record<string, unknown>) => {
     if (!clientConnected) return;
@@ -243,6 +251,7 @@ async function translateAndPersistStream(
         let ev: Record<string, unknown>;
         try { ev = JSON.parse(raw); } catch { continue; }
         const t = ev.type as string;
+        if (t === "RUN_FINISHED" || t === "RUN_ERROR" || t === "done") sawTerminal = true;
         let out: Record<string, unknown> | null = null;
 
         if (t === "TEXT_MESSAGE_CONTENT") {
@@ -493,6 +502,17 @@ async function translateAndPersistStream(
     // Backend stream ended early
   }
 
+  // A stream that ended with no terminal event was cut, almost always by a
+  // gateway restart (incident 2026-10-09). Say so: the marker draws "The
+  // assistant was interrupted by an update" with a Continue button, and the
+  // final persist below saves it on the row. The gateway's restart sweep
+  // writes the same marker from its side (`orchestrator/run_liveness.py`).
+  if (!sawTerminal) {
+    const cut = { name: RUN_INTERRUPTED_EVENT, value: { reason: "connection" } };
+    customEvents.push({ ...cut, segmentCutoff: segments.length });
+    enqueue({ type: "custom", ...cut });
+  }
+
   // Final persist — ensure the complete message is saved with all stream metadata.
   // ⚠️ This persist retries through a gateway restart (H-194), and it is
   // awaited. When a restart cuts the run stream, the member's SSE response
@@ -594,7 +614,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect } = body;
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume } = body;
   if (!agentName || !message) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
@@ -702,6 +722,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               message,
             ),
             think_mode: thinkMode ?? "auto",
+            ...(resume === true ? { resume: true } : {}),
             // Forward the caller's system context (persona / persistent memory /
             // app-specific context like the email app's selected account + open
             // email) so named agents — not just the orchestrator — receive it.

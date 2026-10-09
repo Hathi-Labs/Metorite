@@ -2774,6 +2774,20 @@ async def reconnect_agent_stream(
         if _since.startswith("local-"):
             _since = "0-0"
 
+        # A dead run never holds a reconnect open (incident 2026-10-09). Its
+        # flag outlives its process, and Phase 2 below would then wait on it
+        # for up to an hour, with the chat showing "Reconnecting…". Close it
+        # first: the replay then carries its "interrupted" marker and ends.
+        try:
+            from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+            if await is_active(thread_id) and await run_liveness(thread_id) == "dead":
+                from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+                await recover_dead_run(thread_id, why="reconnect")
+        except Exception:  # noqa: BLE001 — never block a replay on this check
+            _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
+
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between
         # replay end and subscribe start.

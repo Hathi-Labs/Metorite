@@ -734,3 +734,49 @@ def test_continue_sends_the_servers_words_not_the_clients(monkeypatch):
     note = _run(agent_routes._resume_note_for("t-resume", _ALICE, _ORG))
     assert "cut off by an app update" in note
     assert note.endswith("Step 1 done. Step 2: write the")
+
+
+# ---------------------------------------------------------------------------
+# 7. A reconnect never waits on a dead run, and the gateway runs the beat
+# ---------------------------------------------------------------------------
+
+def test_a_reconnect_to_a_dead_run_ends_with_the_marker(liveness, no_persist, monkeypatch):
+    """Before the fix, Phase 2 waited on the dead run's flag for up to an
+    hour, and the chat showed "Reconnecting…" all that time."""
+    from acb_auth import UserContext, UserRole, get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import agent as agent_routes
+
+    tid = "t-reconnect"
+    _seed_run(liveness, tid, _DEAD, record=_record(tid))
+    _seed_events(liveness, tid, [
+        {"type": "RUN_STARTED"},
+        {"type": "TEXT_MESSAGE_CONTENT", "delta": "half an answer"},
+    ])
+    monkeypatch.setattr(agent_routes, "_thread_owner_ok", lambda *_a, **_k: True)
+    app = FastAPI()
+    app.get("/agent/run/{thread_id}/reconnect")(agent_routes.reconnect_agent_stream)
+    app.dependency_overrides[get_current_user] = lambda: UserContext(
+        email=_ALICE, role=UserRole.EMPLOYEE, organization_id=_ORG,
+    )
+    body = TestClient(app).get(f"/agent/run/{tid}/reconnect").text
+    assert "half an answer" in body
+    assert '"run_interrupted"' in body
+    assert '"RUN_FINISHED"' in body
+    assert "cc:active:t-reconnect" not in liveness.store
+
+
+def test_the_gateway_starts_the_beat_and_stops_it_first():
+    """The lifespan wiring. Without the start, no process beats and every
+    sibling's run reads as dead. Without the stop, the next process waits a
+    whole TTL before it closes this one's runs."""
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/main.py"
+    ).read_text(encoding="utf-8")
+    assert "start_instance_heartbeat(on_interrupted=persist_interrupted)" in src
+    after_yield = src[src.index("    yield\n"):]
+    stop = after_yield.index("await stop_instance_heartbeat()")
+    assert stop < after_yield.index("stop_background_sync"), "stop the beat first"
