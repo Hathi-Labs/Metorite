@@ -73,6 +73,7 @@ ADMIN = f"admin.{TAG}@acme.test"
 MEMBER = f"member.{TAG}@acme.test"
 ADMIN2 = f"admin2.{TAG}@acme.test"
 ADMIN3 = f"admin3.{TAG}@acme.test"
+ADMIN4 = f"admin4.{TAG}@acme.test"
 #: I-10 — what the ten ClickUp statuses of the fixture become (§6.3).
 SIX = {"Backlog", "To do", "In progress", "Review", "On hold", "Done"}
 
@@ -202,14 +203,17 @@ async def main() -> None:
     person1 = sum(1 for t in bundle.tasks if "name:person 1" in t.assignee_refs)
     org2 = await seed("b", [ADMIN2])
     org3 = await seed("c", [ADMIN3])
+    org4 = await seed("d", [ADMIN4])
     try:
         await first_org(org, bundle, raw, person1)
         await second_org(org2, bundle, raw)
         await third_org(org3, raw)
+        await fourth_org(org4, raw)
     finally:
         await drop(org)
         await drop(org2)
         await drop(org3)
+        await drop(org4)
 
 
 async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
@@ -994,6 +998,83 @@ async def second_org(org: str, bundle: object, raw: bytes) -> None:
         "6.8 after a discard, the run's tasks are gone and the added lanes stay",
         not refusals and left == 0 and {str(r.id) for r in kept} == {str(r.id) for r in lanes},
         f"refusals={refusals} tasks left={left} lanes {len(lanes)}->{len(kept)}",
+    )
+
+
+def root_statuses(raw: bytes, statuses: list[str]) -> tuple[bytes, list[str]]:
+    """The fixture with the first root tasks given these statuses, in order.
+    Returns the file and the refs of the tasks it changed."""
+    import csv
+    import io
+
+    table = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+    col = {name: i for i, name in enumerate(table[0])}
+    roots = [r for r in table[1:] if r[col["Parent ID"]] == "null"]
+    for row, status in zip(roots, statuses, strict=False):
+        row[col["Status"]] = status
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows(table)
+    return out.getvalue().encode("utf-8"), [r[col["Task ID"]] for r in roots[: len(statuses)]]
+
+
+async def lane_of(org: str, ref: str) -> object:
+    return await one(
+        org,
+        "SELECT s.name FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :r",
+        r=ref,
+    )
+
+
+async def fourth_org(org: str, raw: bytes) -> None:
+    """I-10 review fixes, on an existing space a member made (§6.3).
+
+    P2-a: the space marks "Doing" with the retired ``is_default`` flag, and
+    "To do" sits first by position. A task with no status takes the lane that
+    ``core.load_default_status`` names, never the flagged one."""
+    target = str(uuid.uuid4())
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "INSERT INTO pm_projects (id, organization_id, name, source, created_by, owns_statuses) "
+                "VALUES (CAST(:id AS uuid), CAST(:o AS uuid), 'Member space', 'manual', :me, true)"
+            ),
+            {"id": target, "o": org, "me": ADMIN4},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO pm_project_grants (project_id, subject, created_by) "
+                "VALUES (CAST(:p AS uuid), 'org', :me)"
+            ),
+            {"p": target, "me": ADMIN4},
+        )
+        for name, category, position, default in (
+            ("To do", "todo", 10, False),
+            ("Doing", "in_progress", 20, True),
+        ):
+            await db.execute(
+                text(
+                    "INSERT INTO pm_task_statuses (project_id, name, position, category, is_default) "
+                    "VALUES (CAST(:p AS uuid), :n, :pos, :c, :d)"
+                ),
+                {"p": target, "n": name, "pos": position, "c": category, "d": default},
+            )
+    file, (blank_ref,) = root_statuses(raw, [""])
+    bundle = clickup.parse([(FIXTURE.name, file)])
+    mapping = ImportMapping(target=Target(kind="existing", project_id=target))
+    run_id, lease = await new_run(org, ADMIN4, bundle, file, mapping)
+    await import_writer.apply_run(org, run_id, lease)
+    first = await one(
+        org,
+        "SELECT name FROM pm_task_statuses WHERE project_id = CAST(:t AS uuid) "
+        "   AND category <> 'triage' ORDER BY position, name LIMIT 1",
+        t=target,
+    )
+    landed = await lane_of(org, blank_ref)
+    check(
+        "8.1 a task with no status takes the first lane by position, not is_default",
+        landed == first and landed != "Doing",
+        f"landed={landed} first={first}",
     )
 
 
