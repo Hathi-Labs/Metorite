@@ -39,7 +39,19 @@
 #     (`--quiet` → `iet: command not found`). Exit 127.
 # Copy it out first — `git show origin/main:scripts/vps_apply.sh > /tmp/a.sh`
 # — and run THAT. This is what vps_pull.sh does, and why.
+#
+# ⚠️ A copy taken out first is still the WRONG copy when a merge lands during
+# the apply. So after the pull, this script runs the pulled commit's own copy
+# of itself ("Run the pulled commit's own copy" below).
 set -e
+
+# The sha256 of the copy that bash runs now, read before anything can rewrite
+# it. It stays empty when bash reads the script from stdin, as the push path
+# does (`ssh … bash -s`), because no file then holds it.
+VPS_APPLY_SELF_SUM=""
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  VPS_APPLY_SELF_SUM="$(sha256sum < "${BASH_SOURCE[0]}" | cut -d' ' -f1)" || VPS_APPLY_SELF_SUM=""
+fi
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
 
@@ -139,7 +151,21 @@ deploy_already_applied() {
 
 # Written ONLY on the success path, just before the final line. It records
 # "a complete apply of this sha finished", which is the claim the skip needs.
+#
+# $2, when given, is the sha256 of the script that ran the steps. The marker
+# is then written only when $1's own copy of this file has that sha256. A
+# marker for a sha whose steps did not run is how the BH-7 drop-ins were lost
+# on 2026-10-08, with every deploy green. The call at the end of this file
+# always passes $2. Fence: `tests/unit/test_deploy_reexec.py`.
 record_applied_sha() {
+  if [ "$#" -ge 2 ]; then
+    ras_want="$(git -C "$APP_DIR" show "$1:scripts/vps_apply.sh" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    if [ -z "$2" ] || [ "$2" != "$ras_want" ]; then
+      echo "    !! NOT recording ${1:0:12} as applied: the steps that ran are not that commit's"
+      echo "       copy of scripts/vps_apply.sh. The next deploy applies it again."
+      return 0
+    fi
+  fi
   printf '%s %s\n' "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     > "$DEPLOY_MARKER.tmp.$$" 2>/dev/null \
     && mv -f "$DEPLOY_MARKER.tmp.$$" "$DEPLOY_MARKER" 2>/dev/null \
@@ -371,7 +397,10 @@ fi
 
 echo "==> Taking the deploy lock ($DEPLOY_LOCK)"
 if [ "${DEPLOY_LOCK_HELD:-0}" = "1" ]; then
-  echo "    held by the caller (vps_pull.sh)"
+  # vps_pull.sh holds it on fd 8, or the first copy of this script held it on
+  # fd 8 before its re-exec. The fd stays open through `exec`, so the lock
+  # does too. A second acquire here would wait on that same lock.
+  echo "    held by the caller (vps_pull.sh, or this script before its re-exec)"
 else
   lock_rc=0
   deploy_lock_acquire "${DEPLOY_LOCK_MODE:-wait}" || lock_rc=$?
@@ -395,73 +424,124 @@ if deploy_session_ended; then
   echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
   exit 1
 fi
-tether_to_session
+# After a re-exec, the watcher of the first copy still watches this pid,
+# because `exec` keeps the pid. A second watcher would do the same work twice.
+if [ "${VPS_APPLY_REEXECED:-0}" != "1" ]; then
+  tether_to_session
+fi
 
 echo "==> Pulling latest from origin/main"
-
-# 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
-# one below, one directory over — and this one is worse, because it blocks the
-# `git reset` that would have delivered its own fix.
-#
-# `git reset --hard` UNLINKS a tracked file to rewrite it, and unlinking needs
-# write permission on the CONTAINING DIRECTORY. A directory owned `root:root`
-# with `drwxr-xr-x` therefore stops the app user dead:
-#
-#   error: unable to unlink old
-#   'workbench/operator_console/src/app/models/ModelDetails.tsx':
-#   Permission denied
-#
-# Measured 2026-08-31: that killed the deploys of PR #190 and PR #198, three
-# rounds each, both with green CI. The box sat on 3ad494bd for a day while
-# `main` moved two merges ahead — and stayed UP the whole time, serving old
-# code, so nothing alarmed. 113 root-owned paths in the tracked tree, created
-# 2026-08-30 16:49 by something in that deploy running as root.
-#
-# `.venv` gets this treatment at line ~270 and the source tree never did, which
-# is why the earlier fix could not save this case: `uv sync` is far downstream
-# of the checkout that now fails.
-#
-# ⚠️ Scoped to what git must rewrite. `.next` is ~66k root-owned build files and
-# is gitignored, so `git reset` never touches it — chowning it here would turn
-# a fast repair into a minutes-long one for no benefit. `node_modules` likewise.
-#
-# `find -exec … +` rather than `chown $(find …)`: the command substitution
-# splits on whitespace, so it breaks on any path with a space in it, and a tree
-# this size can overflow the argument list. `find` under `sudo` also keeps the
-# traversal quiet on directories the app user cannot read.
-CHECKOUT_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
-CHECKOUT_USER="${CHECKOUT_OWNER%%:*}"
-if sudo find "$APP_DIR" \( -name .next -o -name node_modules \) -prune -o \
-     ! -user "$CHECKOUT_USER" -exec chown "$CHECKOUT_OWNER" {} + 2>/dev/null; then
-  echo "    checkout ownership normalised to $CHECKOUT_OWNER before reset"
+if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then
+  # The first copy did the fetch, the skip check and the reset, and then ran
+  # this copy. Do not fetch again: a newer origin/main is the next deploy's job.
+  echo "    the first copy pulled ${DEPLOY_TARGET_SHA:0:12}. This is that commit's own copy of the script"
+  if [ -n "${VPS_APPLY_REEXEC_FILE:-}" ] && [ "$VPS_APPLY_REEXEC_FILE" = "${BASH_SOURCE[0]:-}" ]; then
+    rm -f "$VPS_APPLY_REEXEC_FILE"   # bash keeps its fd open, so it reads on
+  fi
 else
-  echo "    WARNING: could not repair checkout ownership — git reset may fail"
-  echo "             with 'unable to unlink old' (see H-89)."
-fi
+  # 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
+  # one below, one directory over — and this one is worse, because it blocks the
+  # `git reset` that would have delivered its own fix.
+  #
+  # `git reset --hard` UNLINKS a tracked file to rewrite it, and unlinking needs
+  # write permission on the CONTAINING DIRECTORY. A directory owned `root:root`
+  # with `drwxr-xr-x` therefore stops the app user dead:
+  #
+  #   error: unable to unlink old
+  #   'workbench/operator_console/src/app/models/ModelDetails.tsx':
+  #   Permission denied
+  #
+  # Measured 2026-08-31: that killed the deploys of PR #190 and PR #198, three
+  # rounds each, both with green CI. The box sat on 3ad494bd for a day while
+  # `main` moved two merges ahead — and stayed UP the whole time, serving old
+  # code, so nothing alarmed. 113 root-owned paths in the tracked tree, created
+  # 2026-08-30 16:49 by something in that deploy running as root.
+  #
+  # `.venv` gets this treatment at line ~270 and the source tree never did, which
+  # is why the earlier fix could not save this case: `uv sync` is far downstream
+  # of the checkout that now fails.
+  #
+  # ⚠️ Scoped to what git must rewrite. `.next` is ~66k root-owned build files and
+  # is gitignored, so `git reset` never touches it — chowning it here would turn
+  # a fast repair into a minutes-long one for no benefit. `node_modules` likewise.
+  #
+  # `find -exec … +` rather than `chown $(find …)`: the command substitution
+  # splits on whitespace, so it breaks on any path with a space in it, and a tree
+  # this size can overflow the argument list. `find` under `sudo` also keeps the
+  # traversal quiet on directories the app user cannot read.
+  CHECKOUT_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
+  CHECKOUT_USER="${CHECKOUT_OWNER%%:*}"
+  if sudo find "$APP_DIR" \( -name .next -o -name node_modules \) -prune -o \
+       ! -user "$CHECKOUT_USER" -exec chown "$CHECKOUT_OWNER" {} + 2>/dev/null; then
+    echo "    checkout ownership normalised to $CHECKOUT_OWNER before reset"
+  else
+    echo "    WARNING: could not repair checkout ownership — git reset may fail"
+    echo "             with 'unable to unlink old' (see H-89)."
+  fi
 
-# Preserve runtime-managed state that lives in tracked files but is
-# mutated on the VPS (agents.json = Control-Plane agent registry).
-# git reset --hard would otherwise wipe agents registered via the UI.
-cp apps/services/gateway/agents.json /tmp/acb-agents.json.bak 2>/dev/null || true
-git fetch origin main
-DEPLOY_TARGET_SHA="$(git rev-parse origin/main)"
+  # Preserve runtime-managed state that lives in tracked files but is
+  # mutated on the VPS (agents.json = Control-Plane agent registry).
+  # git reset --hard would otherwise wipe agents registered via the UI.
+  cp apps/services/gateway/agents.json /tmp/acb-agents.json.bak 2>/dev/null || true
+  git fetch origin main
+  DEPLOY_TARGET_SHA="$(git rev-parse origin/main)"
 
-# 🟢 **THE SECOND PATH NO LONGER REBUILDS WHAT THE FIRST JUST SHIPPED.**
-# Measured 2026-09-26: a CI build at 06:34, and root's pull rebuilt the SAME
-# commit at 06:47. The pull gate reads its own marker only, so a CI deploy
-# never counted. Now both paths write one marker, and both check it here,
-# INSIDE the lock. A skip prints the final line on purpose: a complete apply
-# of this exact sha has finished, which is what deploy.yml's gate asks.
-# DEPLOY_FORCE=1 (`vps_pull.sh --force`) always re-applies, for an .env edit.
-if [ "${DEPLOY_FORCE:-0}" != "1" ] && deploy_already_applied "$DEPLOY_TARGET_SHA"; then
-  echo "    already at ${DEPLOY_TARGET_SHA:0:12}, skipping — a complete apply of it finished at ${DEPLOY_APPLIED_AT:-?}"
-  echo "==> Deployment complete"
-  exit 0
-fi
-git reset --hard origin/main
-if [ -s /tmp/acb-agents.json.bak ]; then
-  cp /tmp/acb-agents.json.bak apps/services/gateway/agents.json
-  echo "    restored runtime agents.json ($(wc -l < apps/services/gateway/agents.json) lines)"
+  # 🟢 **THE SECOND PATH NO LONGER REBUILDS WHAT THE FIRST JUST SHIPPED.**
+  # Measured 2026-09-26: a CI build at 06:34, and root's pull rebuilt the SAME
+  # commit at 06:47. The pull gate reads its own marker only, so a CI deploy
+  # never counted. Now both paths write one marker, and both check it here,
+  # INSIDE the lock. A skip prints the final line on purpose: a complete apply
+  # of this exact sha has finished, which is what deploy.yml's gate asks.
+  # DEPLOY_FORCE=1 (`vps_pull.sh --force`) always re-applies, for an .env edit.
+  if [ "${DEPLOY_FORCE:-0}" != "1" ] && deploy_already_applied "$DEPLOY_TARGET_SHA"; then
+    echo "    already at ${DEPLOY_TARGET_SHA:0:12}, skipping — a complete apply of it finished at ${DEPLOY_APPLIED_AT:-?}"
+    echo "==> Deployment complete"
+    exit 0
+  fi
+  git reset --hard origin/main
+  if [ -s /tmp/acb-agents.json.bak ]; then
+    cp /tmp/acb-agents.json.bak apps/services/gateway/agents.json
+    echo "    restored runtime agents.json ($(wc -l < apps/services/gateway/agents.json) lines)"
+  fi
+  # ── Run the pulled commit's own copy of this script ───────────────────────
+  # 🔴 **THE STEPS THAT RUN MUST BE THE STEPS OF THE SHA THAT IS RECORDED.**
+  # Measured 2026-10-08: a deploy of 90fc39e3 ran its own copy of this file.
+  # Its reset moved the checkout to 469f5081, which merged during the apply
+  # and added the BH-7 step. The old copy ran its old steps and recorded
+  # 469f5081 as applied. Each later deploy of 469f5081 then skipped. So the
+  # BH-7 drop-ins never went in, and every deploy job was green.
+  #
+  # So read the target's own copy out of the object database, as vps_pull.sh
+  # does, and compare it with the copy that runs now. When they differ, or
+  # when this copy came from stdin and has no hash, `exec` the target's copy
+  # ONE time. `exec` keeps the pid, so the deploy lock on fd 8 and the watcher
+  # of the deploy session stay. VPS_APPLY_REEXECED=1 makes the new copy skip
+  # the lock, the watcher and this pull step, so it cannot exec again. stdin
+  # becomes /dev/null, because on the push path it holds the rest of the OLD
+  # script.
+  #
+  # Fence: `tests/unit/test_deploy_reexec.py`. It runs an old copy against a
+  # merge that adds a step, and it fails unless that step runs exactly once.
+  VPS_APPLY_NEXT="$(mktemp "${TMPDIR:-/tmp}/acb-vps-apply-reexec.XXXXXX")"
+  if ! git show "$DEPLOY_TARGET_SHA:scripts/vps_apply.sh" > "$VPS_APPLY_NEXT"; then
+    rm -f "$VPS_APPLY_NEXT"
+    echo "    !! cannot read scripts/vps_apply.sh at ${DEPLOY_TARGET_SHA:0:12}. Refusing to run the steps of another commit"
+    exit 1
+  fi
+  if [ -n "$VPS_APPLY_SELF_SUM" ] && [ "$(sha256sum < "$VPS_APPLY_NEXT" | cut -d' ' -f1)" = "$VPS_APPLY_SELF_SUM" ]; then
+    rm -f "$VPS_APPLY_NEXT"
+  else
+    if [ -z "$VPS_APPLY_SELF_SUM" ]; then
+      echo "    this copy came from stdin and cannot be compared. Running the copy of ${DEPLOY_TARGET_SHA:0:12} now (re-exec)"
+    else
+      echo "    this copy differs from the copy of ${DEPLOY_TARGET_SHA:0:12}. Running that copy now (re-exec)"
+    fi
+    exec env VPS_APPLY_REEXECED=1 VPS_APPLY_REEXEC_FILE="$VPS_APPLY_NEXT" \
+      DEPLOY_TARGET_SHA="$DEPLOY_TARGET_SHA" DEPLOY_LOCK_HELD=1 \
+      DEPLOY_TETHER_ANCHOR="$DEPLOY_SESSION_ANCHOR" \
+      APP_DIR="$APP_DIR" DEPLOY_LOCK="$DEPLOY_LOCK" DEPLOY_MARKER="$DEPLOY_MARKER" \
+      bash "$VPS_APPLY_NEXT" "$@" < /dev/null
+  fi
 fi
 
 echo "==> Skipping deprecated LiteLLM proxy cleanup (already removed)"
@@ -1731,5 +1811,6 @@ uv run python scripts/check_infra.py || {
 # ⚠️ Do not reword it, and do not move it. It must stay the LAST echo here.
 # `test_deploy_pipeline.py::TestTheApplyMustReachItsEnd` fences both sides.
 # The marker goes first, so it can only record an apply that got this far.
-record_applied_sha "$(git -C "$APP_DIR" rev-parse HEAD)"
+# It records HEAD only when HEAD's own copy of this file ran the steps.
+record_applied_sha "$(git -C "$APP_DIR" rev-parse HEAD)" "$VPS_APPLY_SELF_SUM"
 echo "==> Deployment complete"

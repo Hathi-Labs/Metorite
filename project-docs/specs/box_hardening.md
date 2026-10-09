@@ -16,6 +16,13 @@ installs go to `agent-site`, and the T2 vendor step runs no scripts. The slice
 adds the drop-in installer and `40-agent-site.conf`. It also adds the drop-ins
 of the four other units from BH-2 item 3.
 
+**Deploy re-exec fix BUILT, not merged, 2026-10-09 on `deploy-reexec-apply`.**
+On 2026-10-08 an apply that started before the BH-7 merge recorded 469f5081
+as applied, but it did not run the BH-7 step. `scripts/vps_apply.sh` now runs
+the pulled commit's own copy of itself after the pull. It also refuses to
+record a sha whose own copy did not run the steps. The fence is
+`tests/unit/test_deploy_reexec.py`.
+
 **Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
 GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
 **Dispatchable now: BH-1 and BH-8.**
