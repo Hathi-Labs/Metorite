@@ -314,6 +314,25 @@ def test_a_late_answer_resumes_as_a_new_run_and_is_not_lost(
     assert isinstance(again.json()["detail"], str), again.json()
 
 
+def test_two_late_answers_that_race_resend_once(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Two tabs answer at once, and both read the row while it still waits.
+    Only the one statement that moves the row may resend."""
+    tid = "t-race"
+    rid = _park_a_confirmation(liveness, tid)
+    snapshot = dict(ask_db.rows[(_ORG_A, rid)])
+    # Both requests read the row before either moved it.
+    monkeypatch.setattr(pending_ask, "read_ask", lambda _org, _rid: dict(snapshot))
+    client = _answer_client(monkeypatch, _ALICE, _ORG_A)
+    body = {"request_id": rid, "answer": "APPROVE", "thread_id": tid}
+
+    first = client.post("/agent/respond-input", json=body)
+    second = client.post("/agent/respond-input", json=body)
+    assert first.json()["detail"]["error"] == "run_restarted"
+    assert isinstance(second.json()["detail"], str), "the loser must not resend"
+
+
 def test_a_late_answer_needs_the_thread_that_asked(
     flag_on, ask_db, liveness, no_persist, monkeypatch,
 ):

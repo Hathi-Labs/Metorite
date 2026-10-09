@@ -152,6 +152,35 @@ def test_the_migration_is_expand_only_and_runs_twice(world):
         cur.execute(sql)  # a second run changes nothing, and raises nothing
 
 
+def test_the_migrations_own_block_makes_the_policy(world, app_engine):
+    """The phase files re-make the policy in this catalog, so take it away and
+    run the MIGRATION alone. Its guarded block must bring back FORCE and a
+    policy that hides org A from org B. A new box gets the table from this
+    file, before any phase file runs."""
+    with world.admin_engine.begin() as c:
+        c.execute(text("DROP POLICY IF EXISTS chat_pending_ask_tenant_isolation ON chat_pending_ask"))
+        c.execute(text("ALTER TABLE chat_pending_ask NO FORCE ROW LEVEL SECURITY"))
+        c.execute(text("ALTER TABLE chat_pending_ask DISABLE ROW LEVEL SECURITY"))
+    sql = _migration().read_text(encoding="utf-8")
+    with world.admin_engine.begin() as c, c.connection.dbapi_connection.cursor() as cur:
+        cur.execute(sql)
+    rid = uuid.uuid4().hex
+    with world.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_pending_ask (organization_id, request_id, thread_id, kind) "
+            "VALUES (CAST(:a AS uuid), :r, 't-own-block', 'ask_user')"),
+            {"a": world.org_a, "r": rid})
+        rls = c.execute(text(
+            "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+            "WHERE oid = 'chat_pending_ask'::regclass")).first()
+    assert tuple(rls) == (True, True)
+    with app_engine.connect() as c, c.begin():
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": world.org_b})
+        seen = c.execute(text(
+            "SELECT count(*) FROM chat_pending_ask WHERE request_id = :r"), {"r": rid}).scalar_one()
+    assert seen == 0, "org B read org A's question"
+
+
 def test_the_table_is_force_rls_with_a_two_sided_policy(world):
     with world.admin_engine.connect() as c:
         rls = c.execute(text(
