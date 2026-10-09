@@ -152,8 +152,9 @@ test.describe("phone", () => {
       const [a, b] = [await top.boundingBox(), await search.boundingBox()];
       expect(a!.y).toBeLessThan(b!.y);
     }
-    // The foot keeps the actions and no second list.
+    // ONE place for accounts: no second account row or list at the foot.
     await expect(page.getByRole("list", { name: "Other accounts" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Vijay Varada/ })).toHaveCount(0);
   });
 
   test("one tap in the menu switches to that account", async ({ page }) => {
@@ -176,16 +177,13 @@ test.describe("phone", () => {
     await expect.poll(() => calls).toEqual(['/api/accounts/remove {"slot":2}']);
   });
 
-  test("the bottom bar's account tab says who and where, and opens the account sheet", async ({ page }) => {
+  test("the top block holds the account actions, and the bottom bar has no account tab", async ({ page }) => {
     await phone(page);
-    const tab = page.getByTestId("account-tab");
-    await expect(tab).toHaveAccessibleName(
-      "Account: vjvarada@hathilabs.com, in Hathi Labs LLP, 2 more",
-    );
-    await expect(tab).toContainText("Hathi Labs LLP");
-    await tab.click();
-    await expect(page.getByTestId("drawer-org")).toContainText("Signed in as vjvarada@hathilabs.com");
-    await expect(page.getByRole("list", { name: "Switch organization" }).getByRole("listitem")).toHaveCount(2);
-    await expect(page.getByRole("button", { name: "Add another account" })).toBeVisible();
+    // Owner, 2026-10-09: an account tab crowded the app's own tabs.
+    await expect(page.getByTestId("account-tab")).toHaveCount(0);
+    await page.getByRole("button", { name: "Menu" }).click();
+    const top = page.getByTestId("drawer-org");
+    await expect(top.getByRole("button", { name: "Add account" })).toBeVisible();
+    await expect(top.getByRole("button", { name: "Sign out of all" })).toBeVisible();
   });
 });
