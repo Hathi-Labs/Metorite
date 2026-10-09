@@ -62,7 +62,7 @@ export interface ShellJob {
 }
 
 /**
- * The first jobs, one or two per live app. NS-2 moves each into its app's
+ * The jobs, one or two per live app. NS-2 moves each into its app's
  * manifest (§5.1). Until then they live here, ONE list, so the bar and the
  * apps cannot disagree about what a job is called.
  */
@@ -90,6 +90,34 @@ export const JOBS: readonly ShellJob[] = [
     app: "/calendar",
     href: "/calendar",
     icon: "CalendarClock",
+  },
+  {
+    // A root node in Projects is a SPACE (the tree grammar of migration 193),
+    // so the label names what opens: the "New space" row in the tree.
+    id: "new-project",
+    label: "New space",
+    words: ["space", "project", "workspace", "department", "board"],
+    app: "/projects",
+    href: "/projects?do=new-project",
+    icon: "FolderPlus",
+  },
+  {
+    id: "new-chat",
+    label: "New chat",
+    words: ["chat", "conversation", "assistant", "ai", "talk", "thread"],
+    app: "/chat",
+    href: "/chat?do=new-chat",
+    icon: "MessageSquarePlus",
+  },
+  {
+    // Admin only, as its pane is. The bar shows a job only when the member
+    // holds its pane, and `visibleSections` holds Organisation for an admin.
+    id: "invite",
+    label: "Invite a member",
+    words: ["invite", "member", "members", "user", "join", "onboard", "seat"],
+    app: "/settings/organization",
+    href: "/settings/organization?do=invite",
+    icon: "UserPlus",
   },
   {
     id: "find-person",

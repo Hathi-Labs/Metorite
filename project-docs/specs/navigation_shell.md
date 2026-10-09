@@ -1,9 +1,12 @@
 # The shell — how a member finds an app, a job or an answer
 
-**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slice 1,
-NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production since
-2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
+**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
+and 2, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
+
+NS-2 slice 2 (2026-10-09) adds three jobs and the job route fence. It rides
+the shell bar flag, which is on.
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -97,7 +100,7 @@ through one manifest, and no app builds its own copy.
 | Bell | `NotificationBell` belongs to Projects. Projects and My Tasks mount it. Approvals has no badge | `app/projects/components/NotificationBell.tsx` |
 | Assistant | Three rails on the shared `AgentChat`: `task-manager`, `projects-assistant` and `email-assistant` | `app/tasks/components/AssistantRail.tsx` · `app/projects/components/AssistantRail.tsx` · `app/email/components/EmailAssistantChat.tsx` |
 | Personal rollup | None. No spec defined its content before this one | — |
-| Live panes | **Ten**, in four sections. Personal Center holds My Tasks, Calendar, My Profile and Email. My Access left the sidebar on 2026-10-05, and it is a tab of the People app | `launch_surface.md` §2 · `src/lib/nav.ts` · `nav.test.ts` |
+| Live panes | **Eleven**, in four sections. Personal Center holds My Tasks, Calendar, My Profile, My Email and My WhatsApp. My Access left the sidebar on 2026-10-05, and it is a tab of the People app | `launch_surface.md` §2 · `src/lib/nav.ts` · `nav.test.ts` |
 | Who may see a team | `/auth/me` returns no groups. `reader_scope` and `subject_choices` already answer which people and teams a member may see, for the Reports app (`projects_reports.md` §7.1) | `routes/admin/me.py:197-228` · `routes/projects/report_scope.py:148`, `:332` |
 | Per-member settings | `user_settings`, read and written by `GET` and `PUT /tasks/settings`. That router requires `feature:tasks` | `infra/postgres/51_gtd_settings.sql` · `routes/tasks/settings.py:355` · `routes/tasks/core.py:41-44` |
 | First run | `WelcomeDialog`, mounted by `AppShell` | `AppShell.tsx:167` |
@@ -175,8 +178,8 @@ lives in `src/lib/sidebarFold.ts`:
 Fence: `sidebarFold.test.ts` and `e2e/sidebar-fold.spec.ts`. The phone layout
 has no sidebar, so the fold does not apply there.
 
-⚠️ **The live set does not change.** §2 of `launch_surface.md` still lists
-ten live panes, and `nav.test.ts` still counts ten. This spec changes
+⚠️ **The live set does not change.** §2 of `launch_surface.md` lists
+eleven live panes, and `nav.test.ts` counts eleven. This spec changes
 WHERE a live pane renders, not WHETHER it is live. Promotion stays an owner
 decision (**H-21**).
 
@@ -392,6 +395,11 @@ workbench. Each job names the feature it needs, so the gateway filters jobs by
 the member's own features. The gateway never trusts a job list from the
 client (R5e).
 
+**The job of an `adminOnly` pane carries an admin gate.** Such a pane has no
+feature, so a feature gate alone offers its job to every member. The gateway
+offers it only to a member who holds `admin:members:read`. `GET /auth/me`
+reports that same test as `is_admin`, and the sidebar shows the pane on it.
+
 `test_shell_intent.py::TestOneJobList` reads both files and fails if an id, a
 label, a link or a gate drifts. NS-2 moves the jobs into each app's manifest.
 
@@ -445,16 +453,21 @@ manifest" section, and the spec-auditor refuses one without it.
 | My Tasks | personal | New task, Capture | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
 | Calendar | personal | Block focus time | — | — | Today | `task-manager` | Move its `h1` into the title slot |
 | Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
-| Projects | across | New task, New project | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
+| My WhatsApp | personal | — (owner to name) | — | — | — | — | The owner names its job |
+| Projects | across | New space | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Request leave | the directory | — | Out today | — | None beyond the manifest |
-| My Profile | personal | — | — | — | — | — | Move to the account menu |
+| My Profile | personal | Update my profile | — | — | — | — | Move to the account menu |
 | My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | — | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
 | Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the account menu |
-| Appearance | personal | — | — | — | — | — | Moves to every member's account menu |
+| Appearance | personal | Change how Metorite looks | — | — | — | — | Moves to every member's account menu |
 
 A `preview` app writes its manifest in the pull request that promotes it.
+
+**The Projects job is "New space".** A root node of the Projects tree is a
+space (migration 193), so the label names the row that opens. The job id
+stays `new-project`. "New task" is the label of the My Tasks job `capture`.
 
 ### 5.4 What a future app gets for free
 
@@ -889,7 +902,7 @@ Done when:
 6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
    a changed accent, and the neighbouring app.
 
-### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slice 1 BUILT 2026-10-09, ON in production since 2026-10-09
+### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slices 1 and 2 BUILT 2026-10-09, ON in production since 2026-10-09
 
 **Built in slice 1:**
 
@@ -906,10 +919,23 @@ Done when:
   three member and organization pages opens from the account menu. The second
   pins the shapes that four kinds of member see.
 
+**Built in slice 2:**
+
+- Three jobs, in `lib/shell/registry.ts` and in `intent.py`. "New space" opens
+  the draft row at the root of the Projects tree. "New chat" starts a
+  conversation in Chat. "Invite a member" opens the invite dialog of
+  Organisation.
+- The gateway's `Job` carries `admin`, and `held_jobs()` holds an admin job
+  for an admin only (§5.1). `TestOneJobList` fails if a job's admin gate
+  disagrees with `adminOnly` in `nav.ts`. A second test asserts that a member
+  who is not an admin does not hold `invite`.
+- Done-when 2's job route check. `nav.test.ts` fails on a job whose `href`
+  has no `page.tsx` under `src/app`.
+
 **Still open in NS-2:** done-when 1's "one job or more" for every live pane.
-Projects, Chat, WhatsApp, Approvals and Organisation have no job yet, and each
-needs a form link that opens with `?do=`. Done-when 2's job route check comes
-with them.
+Only WhatsApp and Approvals have no job, because the owner has not named
+them yet. The next slice moves the jobs onto each pane's manifest
+(`NavPane.jobs`, §5.1).
 
 Flag `NEXT_PUBLIC_SHELL_NAV`. Files: `src/lib/nav.ts`, `src/lib/nav.test.ts`,
 `src/components/Sidebar.tsx`, and a new launcher and account menu in
@@ -923,7 +949,7 @@ Done when:
    whose `href` is no route.
 3. The launcher renders `visibleSections(features, isAdmin)` and nothing else
    (`launch_surface.md` §8.4).
-4. The live count in `nav.test.ts` is still ten.
+4. `nav.test.ts` counts eleven live panes, the set of `launch_surface.md` §2.
 5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
@@ -1018,6 +1044,7 @@ quickly go to the appropriate app and workflow depending on our query."*
 not a `jobs.json`, because the gateway cannot import the workbench.
 `test_shell_intent.py::TestOneJobList` fails if the ids, the links or the gates
 drift from `lib/shell/registry.ts`.
+Since NS-2 slice 2, an admin job also needs `admin:members:read` (§5.1).
 
 The server limits the pick and the fill to three seconds each. Uvicorn does not cancel
 a handler when the browser goes, so the limit must live on the server. A fill

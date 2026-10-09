@@ -15,6 +15,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
+import { ShellJob } from "@/lib/shell/doJob";
 import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import { useToast } from "@/components/ui/Toast";
 import { PROJECT_STATES } from "@/lib/statusAccent";
@@ -4100,6 +4101,21 @@ function ProjectsWorkspace() {
    *  branches cannot end up offering different dialogs. */
   const overlays = (
     <>
+      {/* NS-2: the command bar's "New space" opens the draft row at the root
+          of the tree, as the + on the Spaces heading does. `POST
+          /projects/nodes` asks only `feature:projects` for a root, and the
+          bar offers the job only to a member who holds Projects. The tree
+          must be on screen to show the row: the rail on a desktop, the tree
+          sheet on a phone. In `overlays`, so both layouts mount it. */}
+      <ShellJob
+        id="new-project"
+        ready={!loading}
+        onOpen={() => {
+          setCreating({ parent: null, kind: "project", label: "New space", level: "space" });
+          if (isMobile) setSheet("tree");
+          else setRailOpen(true);
+        }}
+      />
       {/* WS-41 I-4 — "Import from ClickUp". In `overlays`, which BOTH returns
           render: mounted beside MoveDialog it would open nothing on a phone
           (H-120 is that defect for "Move to…"). The rig found this one. */}
