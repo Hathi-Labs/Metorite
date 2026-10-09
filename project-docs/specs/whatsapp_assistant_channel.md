@@ -1,9 +1,22 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** SPECIFIED, and nothing is built. Board row **WS-47**. WAC-1 to
-WAC-5 are AGENT-SAFE, and they can start now on Meta's free test number. WAC-0
-(the Meta setup) is the owner's, and it gates production only. HANDOFF
+**Status:** SPECIFIED, and the build starts 2026-10-09 with WAC-1. Board row
+**WS-47**. WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test
+number. WAC-0 (the number) is the owner's, and it gates production only. HANDOFF
 **H-251** carries it.
+
+**Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
+and building").** Four changes, recorded in §11:
+
+1. **No App Review gates the bot.** The bot number belongs to Hathi Labs, which
+   owns the Metorite Meta app. Standard access covers a business's own assets.
+   App Review (submitted 2026-10-08) matters only for the WS-20 inbox, where a
+   customer connects their own number. Most of §6.2 is done already.
+2. **The run uses the main Chat assistant**, not the Projects assistant (§5.5).
+3. **One phone can link to every org its person belongs to**, with an org
+   switcher. This replaces the one-org rule of D-WAC-2 (§5.2, §5.3).
+4. **Native WhatsApp UI** (lists, link buttons, Flows) becomes two new slices,
+   WAC-10 and WAC-11 (§5.11, §7).
 
 **Verified against code on 2026-10-06** at `origin/main` `fb97075fe`.
 **Created:** 2026-10-06, by owner directive in chat. **Owner:** vjvarada.
@@ -264,9 +277,15 @@ Metorite sends an approved template: "Hi, this is Metorite. Reply YES to
 connect." A YES within 24 hours writes the link. No link exists before the reply,
 so a wrong number links nobody.
 
-**One phone, one active link.** A phone is linked to at most one member and one
-org at a time. A new link from another org replaces the old one only after the
-bot asks the phone to confirm. (D-WAC-2.)
+**One phone, one person, and every org of that person (D-WAC-2, amended
+2026-10-09).** A phone links to one person. That person can link the phone in
+each org where they are a member, one link per org. Exactly one of those links
+is the **current** link, and every run uses it. The member changes it with the
+org switcher (§5.11), and the last choice stays.
+
+**A second person can never link the same phone.** The phone can already have an
+active link to one member email. Then the bot refuses a link code from a
+different member email, and tells the sender why.
 
 ### 5.3 The link table
 
@@ -282,7 +301,16 @@ sends, digits only), `status` (`pending`, `active`, `revoked`), `code_hash`,
   `(organization_id, member_email)` for an `active` row and nothing else. It
   uses the same mechanism as `resolve_identity`'s RLS-exempt identity read. It
   is not a new connection site (R5b).
-- **Uniqueness.** A partial unique index on `wa_id` where `status = 'active'`.
+- **Uniqueness** *(amended 2026-10-09)*. A partial unique index on
+  `(wa_id, organization_id)` where `status = 'active'`, and a second partial
+  unique index on `wa_id` where `is_current` is true. A column `is_current`
+  (boolean, default false) joins the column list.
+- **The cross-tenant read returns every active link of the phone**, each as
+  `(organization_id, member_email, is_current)`. The org switcher needs the
+  list. The run uses only the current row.
+- **One person per phone.** The code redemption refuses a link when the phone
+  already has an active link to a different `member_email`. This check runs in
+  the same narrow read, so it needs no wider access.
 - **R6.** The migration only adds. The number is taken at build time (R1).
 
 ### 5.4 The inbound path
@@ -315,10 +343,11 @@ Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
 
 ### 5.5 The run
 
-- **The agent.** The first slice reuses the Projects assistant
-  (`apps/agents/agent-projects/`), because it already holds the Projects, Tasks
-  and Calendar tools and their confirmation classes. A dedicated
-  `metorite-assistant` agent comes later, if the scope widens past Projects.
+- **The agent** *(amended 2026-10-09)*. The run uses the main Chat assistant,
+  the default agent of `/chat`, with its specialist agents. The owner wants the
+  bot to be an entry point to all of Metorite, not to Projects only. The
+  channel adds no agent of its own. Tools that need a card on the web follow
+  §5.6.
 - **The identity.** The run is the linked member. ⚠️ **The org comes from the
   link row and is bound explicitly.** It is never re-derived from the email,
   because §4.2 gap 4 makes that fail for a member of two orgs. It is never read
@@ -378,6 +407,33 @@ transcription. Delete the audio file after transcription.
 | A member leaves the org | The membership check in §5.5 revokes the link |
 | The org turns the channel off | An org setting stops new links and stops every run for that org |
 | Org data passes through Meta | State it in the trust record (WS-37) and the DPDP notice. Store no message text beyond the chat thread |
+
+### 5.11 Native WhatsApp UI *(added 2026-10-09)*
+
+WhatsApp offers native elements. The bot uses them where they help, and plain
+text everywhere else.
+
+| Element | Limit | Use |
+|---|---|---|
+| Reply buttons | 3 buttons | Confirm and Cancel (§5.6). Quick acts on one task: Done, Tomorrow, Snooze |
+| List message | 10 rows in sections | Today's tasks, where a row opens the task. A project picker. **The org switcher** |
+| Link button (`cta_url`) | 1 button | "Open in Metorite" for any item |
+| Typing indicator | Shows up to 25 seconds | Sent when a run starts, so the member knows the bot works |
+| WhatsApp Flows | Multi-screen forms | "New task" with a project dropdown, an assignee and a calendar picker. A Flow fetches the member's projects from a Flow endpoint (WAC-11) |
+| Document and image | Files | A report as a PDF. A chart as an image |
+
+**The org switcher.** "Switch org" (typed, or a list row) sends a list message
+of the member's linked orgs. A tap sets that link as current. The reply names
+the new org. A member with one org never sees the switcher.
+
+**The tap is untrusted input.** A list row id or a button id from WhatsApp is
+data the phone sent. The webhook checks it against the sender's own links and
+pending acts before it acts. A row id never carries an org id that the sender
+has no link to.
+
+**Flows need an endpoint key.** A Flow endpoint encrypts its payload with an RSA
+key pair. The private key is platform configuration on the box, like §5.1. The
+owner puts it there (WAC-11).
 
 ### 5.10 Shell manifest (R9)
 
@@ -456,8 +512,11 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-7** | Proactive messages: the daily brief and the nudge, STOP and START (§5.8) | AGENT-SAFE to build, **OWNER-GATE** to switch on | A brief goes only to an opted-in, linked phone. STOP ends every Metorite-initiated message to that phone |
 | **WAC-8** | Org controls: the org setting, admin revoke, revoke on membership removal, link expiry | AGENT-SAFE | An org with the channel off gets no run and no new link. A removed member's link is `revoked` before their next message |
 | **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
+| **WAC-10** | Native UI, part 1 (§5.11): list messages, the link button, the typing indicator, the org switcher | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
+| **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
-**Order:** WAC-1 → WAC-2 → WAC-3 → WAC-4 → WAC-8 → WAC-5 → WAC-6 → WAC-7.
+**Order:** WAC-1 → WAC-2 → WAC-3 → WAC-4 → WAC-10 → WAC-8 → WAC-5 → WAC-11 →
+WAC-6 → WAC-7.
 WAC-8 comes before any production use. WAC-9 can follow WAC-8.
 
 ---
@@ -497,7 +556,9 @@ manual step, and its evidence is the reply on the phone plus the run log line.
 
 - **D-WAC-1.** The bot number is platform configuration, not a `wa_accounts`
   row (§5.1).
-- **D-WAC-2.** One phone has at most one active link, to one member in one org
+- **D-WAC-2** *(amended 2026-10-09, §11)*. One phone belongs to one person. It
+  can link to each org of that person, and one link is current. *Was:* one phone
+  has at most one active link, to one member in one org
   (§5.2).
 - **D-WAC-3.** The run binds the org from the link row (§5.5).
 - **D-WAC-4.** A destructive or guarded act never runs from WhatsApp. It
@@ -514,3 +575,23 @@ manual step, and its evidence is the reply on the phone plus the run log line.
 | Q4 | Which org goes first? | Fracktal (customer zero, D36) |
 | Q5 | How long does a link live with no inbound message? | 90 days |
 | Q6 | Flow B: may an admin enter a member's number, or only the member? | Only the member |
+
+---
+
+## 11. Amendments of 2026-10-09
+
+The owner asked to start the build while they get the bot number. Four
+changes follow from the research of that day. The owner may still reverse any
+of them.
+
+| # | Change | Why |
+|---|---|---|
+| A1 | No App Review gates the bot | The number belongs to the app's own business. Standard access covers it |
+| A2 | The run uses the main Chat assistant | The owner wants one entry point to all of Metorite |
+| A3 | One phone links to every org of its person, with a current link and an org switcher | A person can be a member of two orgs. One shared bot number serves every org |
+| A4 | Native UI slices WAC-10 and WAC-11 | The owner asked for UI elements inside the chat. §5.11 lists what WhatsApp allows |
+
+**Interpretation recorded.** "A bot that can chat with all the customers of all
+the organizations" is read as: the members of every Metorite org. The end
+customers of an org (for example, a café's clients) are a different product,
+and this spec does not cover them. The owner has not confirmed this reading.
