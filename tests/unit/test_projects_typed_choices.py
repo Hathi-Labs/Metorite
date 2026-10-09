@@ -314,8 +314,9 @@ def test_each_title_keeps_its_best_pair_before_a_second_one() -> None:
     titles = ["Book the venue", "Print the badges"]
     existing = [
         {"id": "a", "title": "Book the venue", "task_number": 1},
-        {"id": "b", "title": "Book a venue", "task_number": 2},
-        {"id": "c", "title": "Print badges", "task_number": 3},
+        # Row 0's SECOND pair (0.875) scores above row 1's best (0.81).
+        {"id": "b", "title": "Book the venue now", "task_number": 2},
+        {"id": "c", "title": "Print all badges", "task_number": 3},
     ]
     pairs = choices.twin_pairs(titles, existing)
     assert [(i, r["id"]) for i, r in pairs][:2] == [(0, "a"), (1, "c")]
