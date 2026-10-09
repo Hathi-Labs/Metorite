@@ -25,7 +25,8 @@ and building").** Four changes, recorded in §11:
 4. **Native WhatsApp UI** (lists, link buttons, Flows) becomes two new slices,
    WAC-10 and WAC-11 (§5.11, §7).
 
-**Verified against code on 2026-10-06** at `origin/main` `fb97075fe`.
+**Verified against code on 2026-10-06** at `origin/main` `fb97075fe`. **§4.1, §5.4,
+§5.9 and the WAC-2 row checked again on 2026-10-09** at `c9ea6c22b` (WAC-2 audit).
 **Created:** 2026-10-06, by owner directive in chat. **Owner:** vjvarada.
 
 **Single owner.** This spec owns WhatsApp as a way to TALK to Metorite.
@@ -198,9 +199,9 @@ app a free test number (§6.3).
 
 | Piece | Where | What it gives us |
 |---|---|---|
-| Meta webhook | `apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py` (GET line 49, POST line 90) | Verify handshake, `X-Hub-Signature-256` HMAC check against `WHATSAPP_APP_SECRET`, and a parse to a sync result |
+| Meta webhook | `apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py` (GET line 62, POST line 122) | Verify handshake, `X-Hub-Signature-256` HMAC check against `WHATSAPP_APP_SECRET`, and a parse to a sync result |
 | Webhook parser | `apps/services/whatsapp_ingestion/whatsapp_ingestion/providers/webhook.py` | `parse_webhook(payload)`. It is total and never raises |
-| Send seam | `whatsapp_ingestion/providers/base.py` (`BaseWhatsAppProvider` line 83, `send_text` line 94, `send_template` line 108) and `providers/cloud_api.py` | Free text and templates over the Cloud API |
+| Send seam | `whatsapp_ingestion/providers/base.py` (`BaseWhatsAppProvider` line 122, `send_text` line 133, `send_template` line 147) and `providers/cloud_api.py` | Free text and templates over the Cloud API |
 | 24-hour window rule | `gateway/routes/whatsapp/transport/send.py` (route at line 62) | The template-or-text decision |
 | Agent run | `gateway/routes/agent.py`: `POST /agent/run` (line 2732), `/agent/run/stream` (line 2007), `/agent/run/async` (line 2798) | A run as a named member, through `session_user` |
 | Service identity | `packages/acb_auth/acb_auth/deps.py` `get_current_user` (line 410) | `Bearer GATEWAY_INTERNAL_TOKEN` + `X-User-Email` gives a member context |
@@ -354,7 +355,7 @@ Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
         ├─ phone_number_id ≠ bot number ──▶ today's path, unchanged (WS-20)
         │
         └─ phone_number_id = bot number
-              ├─ status update only ──▶ record delivery state, ack 200
+              ├─ status update only ──▶ log the status, ack 200 (no store before WAC-3)
               ├─ text holds a link code ──▶ §5.2 redemption, reply, ack 200
               ├─ wa_id has no active link ──▶ fixed reply with NO org data, ack 200
               └─ wa_id is linked ──▶ record the message by wamid (idempotent)
@@ -373,6 +374,46 @@ Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
   in silence. The recorded message carries a state, and a sweep re-runs a
   message that stayed `received` too long. Use the BO-20 durable queue (WS-4)
   if it has landed by build time. Do not build a second queue.
+
+**Link redemption, as WAC-2 builds it** *(set 2026-10-09 from the WAC-2 audit)*:
+
+- **Status updates.** WAC-2 acks a status update and writes a log line with the
+  status and no message text. Nothing stores it. WAC-3 records the bot's own
+  messages, and a delivery state can attach to that record then.
+- **The fixed replies.** The bot sends exactly these texts. Only the success
+  reply holds org data, and it goes only to the phone that just proved it holds
+  the code.
+
+  | Case | Reply |
+  |---|---|
+  | Unknown phone, no code | "Hi, this is Metorite. To chat with your workspace, open My Profile in Metorite and select Chat on WhatsApp." |
+  | Wrong, used or expired code (one text for all three) | "That link code did not work. Open My Profile in Metorite and get a new link." |
+  | The phone belongs to another person | "This phone is already linked to another Metorite account. Unlink it there first." |
+  | Too many failed codes | The same text as a wrong code |
+  | Success | "Linked to <org name> as <member name>. Ask me about your tasks, projects or calendar." |
+
+  One text covers wrong, used and expired codes, so a reply never tells a
+  guesser which case it hit.
+- **A redelivered link message.** Meta can deliver the same message twice. When
+  the code's row is already `active` with this sender's `wa_id`, the bot sends
+  the success reply again and changes nothing. It never answers a redelivery
+  with the failure reply.
+- **The per-sender limit.** At most 5 failed redemptions for each `wa_id` in 15
+  minutes. After that, the bot sends the failure reply and runs no lookup. The
+  counter lives in the gateway process, so a restart resets it. The gateway
+  runs one process (`deploy/hostinger/acb-gateway.service`). A move to several
+  workers makes this limit advisory, and that move must replace it. A 50-bit
+  code that expires in 15 minutes leaves little to guess, and every sender is a
+  real WhatsApp phone behind Meta's HMAC.
+- **The per-member issue limit.** At most 10 codes for each member in each org
+  in one hour. The route counts them from `whatsapp_member_links.created_at`,
+  under the advisory lock that it already takes. Beyond it, the route
+  answers 429 with a plain sentence, and writes nothing.
+- **The first link of a phone is current.** Redemption sets `is_current` only
+  when the phone has no current link. A later org of the same person links
+  with `is_current` false, and the org switcher (WAC-10) moves it.
+- **The bot path fails closed.** With `WHATSAPP_APP_SECRET` unset, the bot path
+  does nothing, in dev too. The WS-20 path keeps its own rule.
 
 ### 5.5 The run
 
@@ -434,7 +475,7 @@ transcription. Delete the audio file after transcription.
 | Risk | Control |
 |---|---|
 | A SIM swap gives the phone to someone else | Destructive acts go to the web app (D-WAC-4). An admin can revoke a link. A link expires after 90 days with no inbound message (the period is Q5) |
-| A forged webhook | HMAC on every POST. A missing `WHATSAPP_APP_SECRET` must fail CLOSED for the bot path. Today's code logs a warning and accepts |
+| A forged webhook | HMAC on every POST. A missing `WHATSAPP_APP_SECRET` must fail CLOSED for the bot path, in dev too. Today's route answers 403 with no secret outside dev, and accepts in dev |
 | A message arrives from an unknown phone | §5.4. No org data in the reply |
 | A link code is guessed | 8 characters or more, single use, 15-minute expiry, a hash at rest, and a rate limit per sender |
 | A member leaves the org | The membership check in §5.5 revokes the link |
@@ -537,7 +578,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 |---|---|---|---|
 | **WAC-0** | The Meta setup of §6 | **OWNER-GATE** | The five values of §5.1 are on the box, and `GET /whatsapp/webhook` answers Meta's handshake |
 | **WAC-1** ✅ built 2026-10-09 | The link table (§5.3), its migration, the code-issue route, and "Chat on WhatsApp" in member settings | AGENT-SAFE | A signed-in member gets a `wa.me` link and a QR. The code is stored as a hash and expires. The migration applies on a real database (R8). `test_tenant_coverage.py` passes |
-| **WAC-2** | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review.)* `POST /me/whatsapp-link/code` gets a per-member limit, because each call adds a row and an audit row |
+| **WAC-2** | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
 | **WAC-3** | A linked text runs the assistant and the reply comes back (§5.5, §5.6, read tools and capture only) | AGENT-SAFE | "What is due today?" from the test phone returns the member's tasks. A member of two orgs gets answers from the LINKED org. One `wamid` delivered twice starts one run. A removed member gets no answer. The thread shows in the web chat |
 | **WAC-4** | Confirmation by reply buttons for class B writes, and the web-app link for guarded acts (§5.6) | AGENT-SAFE | "Add a task: call the vendor tomorrow" asks with buttons, and Confirm writes exactly one task. A tap from another phone or after expiry writes nothing. A delete request answers with a web link and changes nothing |
 | **WAC-5** | Voice notes (§5.7) | AGENT-SAFE | A voice note runs as its transcript, the reply echoes the transcript, and no audio file remains after the run |
