@@ -124,6 +124,23 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-286 · Reply Zero lists snoozed and junk threads as needing a reply, and the digest and My Day do not · [AGENT]
+- **Check:** run `rg -n "excluded = " apps/services/gateway/gateway/routes/email/automation/replyzero.py`.
+  If the active buckets still exclude only `'trash', 'archive'`, this is open.
+- **Why.** The email app has two rules for "needs a reply". The digest's
+  `_LIVE_THREAD` (`routes/email/digest.py`) leaves out a thread when its last
+  message is in trash, junk or the archive, or the member snoozed it. The shell's needs
+  feed reads the same rule (`needs_reply_threads`, WS-44 NS-3). Reply Zero
+  (`replyzero.reply_zero`) leaves out only trash and archive. So a member sees
+  a snoozed or junk thread in the Reply list, and not in the digest count or
+  on My Day.
+- **Do this:** the email app decides which rule is right. If Reply Zero
+  should match, make its active buckets read `digest._LIVE_THREAD`, and do
+  not write a third copy. Fence it with a snoozed and a junk case in the
+  Reply Zero suite.
+- **Authority:** `email_app_master_plan.md` (Reply Zero), `navigation_shell.md` §7.2
+- **Added:** 2026-10-09 · WS-44 NS-3 slice A
+
 ### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
 - **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
   No hit means this is open.

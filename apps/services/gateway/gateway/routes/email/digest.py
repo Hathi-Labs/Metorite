@@ -126,9 +126,17 @@ async def _digest_top_senders(
 # the quiet re-sync to bring it straight back (and the needs-reply count never
 # moved). It reappears — here and in the inbox — the moment snoozed_until
 # passes, with no scheduler involved.
+# An ARCHIVED last message is out too: archive is the member saying "dealt
+# with", and Reply Zero (`replyzero.reply_zero`) also hides an archived thread
+# from its active buckets. So the digest and the shell's needs feed
+# (`needs_reply_threads`) agree on every rule here. ⚠️ Reply Zero's list does
+# NOT agree on two: it hides only trash and archive, so it still lists a junk
+# thread and a snoozed thread as needing a reply (HANDOFF H-286). Every user
+# of this predicate reads an ACTIVE bucket (NEEDS_REPLY, AWAITING). A read of
+# DONE, where an archived thread belongs, must not reuse it.
 _LIVE_THREAD = ("NOT EXISTS (SELECT 1 FROM email_messages tem "
                 "WHERE tem.id = ts.last_message_id "
-                "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk') "
+                "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk', 'archive') "
                 "OR tem.snoozed_until > now()))")
 
 
@@ -165,7 +173,7 @@ _PRIORITY_SCORE = (
 
 async def _digest_thread_list(
     db: Any, account_id: str, status: str, limit: int,
-    *, prioritized: bool = False,
+    *, prioritized: bool = False, with_time: bool = False,
 ) -> list[dict[str, Any]]:
     """Live threads in one status, with enough identity for the dashboard to
     open the thread: thread_id, the last message id, and the counterparty
@@ -175,7 +183,11 @@ async def _digest_thread_list(
     ``prioritized`` (the dashboard's needs-reply queue) orders by an urgency
     score — importance + unread + capped age — instead of pure age, so the row
     you should act on first is on top. Everything else stays OLDEST first
-    (aging is the point of a brief / of "who's kept me waiting longest")."""
+    (aging is the point of a brief / of "who's kept me waiting longest").
+
+    ``with_time`` adds ``last_message_at``, the ISO time of the last message,
+    for a caller that shows when the thread went quiet (the shell's needs
+    feed, through :func:`needs_reply_threads`). Off, the rows do not change."""
     order = (f"{_PRIORITY_SCORE} DESC, ts.last_message_at ASC"
              if prioritized else "ts.last_message_at ASC")
     rows = (await db.execute(text(
@@ -187,7 +199,8 @@ async def _digest_thread_list(
                    LOWER(COALESCE(em.importance, '')) = 'high' AS high,
                    em.is_read AS is_read,
                    GREATEST(0, EXTRACT(DAY FROM now() - ts.last_message_at))::int
-                     AS age_days
+                     AS age_days,
+                   ts.last_message_at AS last_at
             FROM email_thread_status ts
             LEFT JOIN email_messages em ON ts.last_message_id = em.id
             WHERE ts.account_id = :aid AND ts.status = '{status}'
@@ -205,7 +218,7 @@ async def _digest_thread_list(
         ours = (r.from_email or "").lower() in selves
         who = ((r.to_name or r.to_email) if ours
                else (r.from_name or r.from_email)) or ""
-        out.append({
+        item = {
             "subject": (r.subject or "(no subject)"),
             "age_days": r.age_days,
             "thread_id": r.thread_id,
@@ -214,8 +227,30 @@ async def _digest_thread_list(
             "who": who,
             "important": bool(r.high),
             "unread": (r.is_read is False),
-        })
+        }
+        if with_time:
+            item["last_message_at"] = (
+                r.last_at.isoformat() if r.last_at is not None else None)
+        out.append(item)
     return out
+
+
+async def needs_reply_threads(
+    user: UserContext, account_id: str, limit: int,
+) -> list[dict[str, Any]]:
+    """The live needs-reply threads of ONE mailbox the member owns, the one
+    who has waited longest first, at most ``limit`` (navigation_shell.md
+    §7.2, the shell's needs feed).
+
+    The same rows the digest's Needs-reply count counts: ``_LIVE_THREAD``
+    leaves out a thread whose last message is in trash, junk or the archive,
+    or is snoozed. The owner check runs first, so a mailbox of another member is
+    404 before any read. It writes nothing and starts no backfill. Not a
+    route: the shell calls it after its own ``feature:email`` check."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        return await _digest_thread_list(
+            db, account_id, "NEEDS_REPLY", limit, with_time=True)
 
 
 async def _digest_backlog_aging(

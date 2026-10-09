@@ -3778,7 +3778,9 @@ async def run_agent_stream(
     try:
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):
-                await _relay_mark_active(thread_id)
+                # The SAME run that run_detached just marked: keep the actor,
+                # source and floor it wrote (the #791 review P1).
+                await _relay_mark_active(thread_id, keep_run_facts=True)
         # The org's live-run index (/chat/active-sessions), for a run that no
         # run_detached wraps. Server-side org and member only, never the body.
         if _relay_register_live is not None and thread_id:
