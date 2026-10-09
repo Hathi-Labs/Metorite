@@ -14745,13 +14745,16 @@ optional note, and `include_attachments` (true by default) or `attachment_ids`.
    No detail holds a URL.
 
 The agent tool `forward_email` shows a confirmation card before it posts. Each target is in
-`context`: the From mailbox, then each To, Cc and Bcc address, one line each
-(`_card_targets`). The card keeps 4,000 characters of `context` and 500 of `detail`, so
-no subject and no file name can push a recipient off the card (verifier F1). A list over
-ten addresses ends with "+N more". `detail` starts with From and the first To, then the
-subject, and the files come last, with "+N more" when they do not fit (`_card_detail`).
-`send_email` builds its card the same way. A "no" sends nothing. `instructions.md` says
-to forward, not to send, when the user asks to pass an email to a new person.
+`context`: the From mailbox, then each To, Bcc and Cc address, one line each
+(`_card_targets`). The Bcc comes before the Cc (§15.5 item 1). The card keeps 4,000
+characters of `context` and 500 of `detail`. So no subject and no file name can push a
+recipient off the card (verifier F1). A list over ten addresses ends with "+N more".
+
+An `Attachments:` block follows the targets and names each file, one line each (§15.5
+item 2). `detail` starts with From and the first To, then the subject, and the files come
+last, with "+N more" when they do not fit (`_card_detail`). `send_email` builds its card
+the same way. A "no" sends nothing. `instructions.md` says to forward, not to send, when
+the user asks to pass an email to a new person.
 
 ⚠️ `POST /email/send` writes no audit row, and it checks no send right beyond the `email`
 feature and the mailbox owner. The forward has the same two guards. It logs
@@ -14793,11 +14796,18 @@ The link opens the email inside the app only. It is not a link to share with ano
 - `src/lib/inAppLink.test.ts`: the external mark, the escaped subject, and the click event.
 - `e2e/email-deep-link.spec.ts`: a fresh link, a second link while the page is open, and
   the same chat link clicked twice.
+- `tests/unit/test_email_forward.py` also holds the card order, the `Attachments:` block
+  and its budget (§15.5 items 1 and 2).
+- `src/lib/confirmationQueue.test.ts`: a list row reads by its key (§15.5 item 3).
+- `src/app/email/lib/forward.test.ts`: the request of the pane, the words of each refusal,
+  and the markers it reads out of `forward.py` (§15.5 item 4).
+- `e2e/email-forward.spec.ts`: the pane sends `POST /email/forward`, the Outlook notice,
+  a file taken out on Gmail, and a 413 with "Forward without files" (§15.5 item 4).
+- `src/app/api/email/[...path]/postTimeout.test.ts`: a forward has 120 seconds at the
+  proxy (§15.5 item 4).
 
 ### 15.4 Not done here
 
-- **The reading pane's Forward still drops the files** (`EmailDetail.tsx`). It can call the
-  new route. That is a UI ticket.
 - **The rule action FORWARD still writes a text-quoted draft** (`automation/actions.py`).
 - **No link leaves the app.** A link that a colleague can open needs a share model.
 - **A slow forward can go out after the tool reports a failure.** The route does not stop
@@ -14810,3 +14820,79 @@ The link opens the email inside the app only. It is not a link to share with ano
 - **Outlook cannot forward a subset of the files.** `createForward`, a delete of the files
   not chosen, and a send would do it. Graph names the copied files with new ids, so the
   match would be by name and size, which two files can share.
+- **The reading-pane Forward takes no file of the member's own.** `POST /email/forward`
+  carries the files of the email only. The pane hides its two attach controls on a
+  forward. "Pop out" opens the full composer, which sends a new mail without the files
+  of the email. A forward with both kinds of file needs `artifacts` on the route.
+- **The pane's forward can also go out after a failure shows.** The proxy now waits 120
+  seconds for `POST /email/forward` (§15.5 item 4). A forward that takes longer still
+  goes out while the pane shows a 502. The bullet on a slow forward above holds the
+  choice.
+- **The draft card lists To, Cc, then Bcc** (`_draft_card`). It draws rows, not a box
+  that scrolls, so the order of §15.5 item 1 does not bind it.
+
+### 15.5 Follow-ups of #766 (2026-10-09)
+
+**Status: 🔨 BUILT on branch `email-chat-followups`, not merged (2026-10-09).** No
+migration, and no flag.
+
+1. **The Bcc comes before the Cc on the send and forward cards.** `_card_targets` writes
+   From, To, Bcc, then Cc. The card draws a `context` that holds a note or a body in a
+   box that scrolls at `max-h-40`. A Bcc after a long Cc list sat below that line. The
+   cap of ten for each list, "+N more" and the budget of 3,000 characters are as before.
+2. **The card names each file.** `_card_head` adds an `Attachments:` block to `context`,
+   after the targets and before the note or the body. The block has one line for each
+   file, with its name and its size. It names 20 files at most and ends with "+N more".
+   The targets and the files share the budget of 3,000 characters. The targets take
+   what they need first, and the block always keeps room for its count. A forward with
+   no file says "none". `detail` keeps its short form.
+3. **A field row reads by its key.** `parseCardBody` removes a leading `- ` from the key
+   of a row, so `- From` reads `From`. The draft card and the unsubscribe card use the
+   same row shape, so they read right too.
+4. **The reading-pane Forward keeps the files.** `EmailDetail.tsx` sends
+   `POST /email/forward` with the id of the email, To, Cc, Bcc, the note and the files.
+   It no longer builds a forward in the browser.
+   - Each file of the email is a chip, kept by default (`ForwardFileChips.tsx`). Every
+     file kept sends `include_attachments` alone. Some files kept send
+     `attachment_ids`. No file kept sends `include_attachments: false`
+     (`lib/forward.ts`, `forwardRequest`).
+   - On an Outlook mailbox, a chip taken out shows a notice: Outlook forwards all the
+     files of an email, or none of them. The notice has "Keep every file" and "Forward
+     without files". The pane sends nothing while the notice shows.
+   - The route sends from the mailbox that holds the email. A forward with another From
+     stops in the pane and names that mailbox.
+   - `forwardFailure` gives each answer of the route its words. A 413, the Outlook 422,
+     the IMAP 422 and the 422 of a file with no bytes offer "Forward without files",
+     which sends again with no file. A 401, a 404, a 429 and a 502 each say what to do.
+   - The note and the AI help (`compose-assist`, forward mode) are as before. The
+     server adds the forwarded header, the original and the signature.
+   - A sent forward deletes the draft that the autosave kept, as a discard does.
+   - The proxy gives `POST /email/forward` 120 seconds (`FILE_SEND_POST_PATHS`). At 30
+     seconds it answered 502 while the gateway still sent the mail.
+5. **The screenshots.** A capture rig drew the cards, the choice card and the comparison.
+   It drew the email chat inside the Email app and the forward compose. It drew each in dark,
+   light, compact and a changed accent. It found four defects, and this slice fixes
+   each one.
+   - A file name cut at 60 characters lost its extension ("revision.pd"). A long name
+     now keeps its last 16 characters (`_card_file_name`).
+   - The draft card drew its lead-in "Each recipient of this draft:" under its rows. A
+     note that ends with a colon now draws above the rows (`splitNotes`).
+   - The text box of a long card scrolled with no sign of it. The card now says "Scroll
+     the text above to read all of it" when the box holds more.
+   - An option card centred its content, so the titles beside a Recommended badge sat
+     lower. The cards now lay out from the top.
+
+**Fences.**
+
+- `tests/unit/test_email_forward.py`: the Bcc before a long Cc list, the files in
+  `context`, the cap of 20 and the shared budget. It also holds a hidden mark and a long
+  name.
+- `src/lib/confirmationQueue.test.ts`: a list row reads by its key, and a lead-in note
+  draws above the rows.
+- `src/app/email/lib/forward.test.ts`: the request, the Outlook check, the words of each
+  refusal, and the markers that it reads out of `forward.py`.
+- `e2e/email-forward.spec.ts`: the request of the pane, the Outlook notice, a subset on
+  Gmail, and a 413 with "Forward without files".
+- `src/app/api/email/[...path]/postTimeout.test.ts`: the budget of a forward.
+- Advisory: the hint of a box that scrolls measures the DOM, so no unit test reaches it.
+  The screenshots are its only check.
