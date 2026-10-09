@@ -509,6 +509,9 @@ def _statuses(
     earlier = earlier or {}
     held = {_fold(n): (n, c) for n, c in target}
     pen = {_fold(n) for n in reserved or []}
+    # The names the runs this one continues recorded (`status_names`). A long
+    # one is not new, so the 64-character limit does not apply to it.
+    recorded = {_fold(target_name) for target_name, _category in earlier.values()}
     moved = {_fold(old): new for old, new in (renamed or {}).items()} if continues else {}
 
     def off_the_pen(name: str) -> str:
@@ -545,10 +548,13 @@ def _statuses(
         if existing:
             # The status exists: it keeps its own stage and spelling.
             target_name, category = held[_fold(target_name)]
-        elif len(target_name) > MAX_STATUS and (named or not continues):
-            # Only a NEW status has the limit, and a name the admin CHOSES is
-            # new on any run. A run that continues keeps the earlier tree's
-            # source names with no choice, as before I-10.
+        elif len(target_name) > MAX_STATUS and not (
+            continues and _fold(target_name) in {_fold(name), *recorded}
+        ):
+            # Only a NEW status has the limit. A run that continues keeps the
+            # earlier tree's names: the source name, and every name an
+            # earlier run recorded. The wizard sends a name on EVERY row, so
+            # "no choice" cannot be the test (the PR #784 review).
             errors.append(f"A new status name holds 1 to {MAX_STATUS} characters: {name}.")
         final[name] = (target_name, category)
         rows.append(
