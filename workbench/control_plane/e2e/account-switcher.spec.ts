@@ -156,7 +156,7 @@ test.describe("phone", () => {
     await expect(page.getByTestId("account-tab")).toHaveCount(0);
   });
 
-  test("a tap on the header opens the other accounts and the actions", async ({ page }) => {
+  test("a tap on the header opens the other accounts, and only that", async ({ page }) => {
     await phone(page);
     await page.getByRole("button", { name: "Menu" }).click();
     await header(page).click();
@@ -164,8 +164,17 @@ test.describe("phone", () => {
     const list = top.getByRole("list", { name: "Switch organization" });
     await expect(list.getByRole("listitem")).toHaveCount(2);
     await expect(list).toContainText("Fracktal Works");
-    await expect(top.getByRole("button", { name: "Add account" })).toBeVisible();
-    await expect(top.getByRole("button", { name: "Sign out of all" })).toBeVisible();
+    await expect(top.getByRole("button", { name: "Add another account" })).toBeVisible();
+    // The rare acts are at the foot, not in the header (owner review, 2026-10-09).
+    await expect(top.getByRole("button", { name: /Sign out/ })).toHaveCount(0);
+  });
+
+  test("the foot holds the settings and sign-out, under one heading", async ({ page }) => {
+    await phone(page);
+    await page.getByRole("button", { name: "Menu" }).click();
+    const foot = page.getByRole("region", { name: "Account and settings" });
+    await expect(foot.getByRole("button", { name: "Desktop view" })).toBeVisible();
+    await expect(foot.getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
   });
 
   test("one tap in the open header switches to that account", async ({ page }) => {
