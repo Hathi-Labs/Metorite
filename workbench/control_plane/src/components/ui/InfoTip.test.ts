@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { shouldDismiss } from "@/lib/outsideClick";
 
-import { INFO_TIP_WIDTH, InfoTip, infoTipFit, infoTipReducer } from "./InfoTip";
+import { INFO_TIP_WIDTH, InfoTip, infoTipFit, infoTipReducer, takesEscape } from "./InfoTip";
 
 const shut = { open: false };
 const open = { open: true };
@@ -43,6 +43,21 @@ describe("infoTipReducer", () => {
     // A press inside the trigger or the portalled panel does not close it.
     const inside = { ...walk, isGuarded: () => true };
     expect(infoTipReducer(open, { type: "outside", dismiss: shouldDismiss("x", inside) })).toEqual(open);
+  });
+});
+
+describe("takesEscape (PR #803 review)", () => {
+  it("takes Escape from inside the tip, whatever else is open", () => {
+    expect(takesEscape(true, true)).toBe(true);
+    expect(takesEscape(true, false)).toBe(true);
+  });
+
+  it("takes Escape when no other popup is open, so the Modal behind stays open", () => {
+    expect(takesEscape(false, false)).toBe(true);
+  });
+
+  it("leaves Escape to an open list when focus is in that list", () => {
+    expect(takesEscape(false, true)).toBe(false);
   });
 });
 

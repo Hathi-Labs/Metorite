@@ -23,7 +23,7 @@ import { useCallback, useEffect, useId, useReducer, useRef, useState } from "rea
 
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
-import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { PREVENT_OUTSIDE_CLICK, domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 export interface InfoTipState {
   open: boolean;
@@ -49,6 +49,16 @@ export function infoTipReducer(state: InfoTipState, action: InfoTipAction): Info
     case "close":
       return { open: false };
   }
+}
+
+/**
+ * Does an open tip take this Escape? Yes when focus is inside its trigger or
+ * its panel. Also yes when no other popup is open, so the key closes the tip
+ * and never the `Modal` behind it. No when focus is elsewhere and another
+ * popup is open: that popup closes first (the PR #803 review).
+ */
+export function takesEscape(focusInTip: boolean, otherPopupOpen: boolean): boolean {
+  return focusInTip || !otherPopupOpen;
 }
 
 /** The widest the panel draws, in px: 20rem at the default text size. */
@@ -113,12 +123,22 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
     // ⚠️ In the CAPTURE phase on `window`, and stopped there. A tip inside a
     // `Modal` (the import wizard) otherwise lets Escape reach the dialog too,
     // and one key closed the whole wizard (measured in the I-10b walk).
+    // But the tip takes Escape only when it is the thing the member is in
+    // (`takesEscape`): an open list elsewhere closes first, and focus moves
+    // back to the trigger only from inside the tip (the PR #803 review).
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      const active = document.activeElement;
+      const panel = document.getElementById(panelId);
+      const inTip = Boolean(active && (root.current?.contains(active) || panel?.contains(active)));
+      const otherPopup = Array.from(document.querySelectorAll(`[${PREVENT_OUTSIDE_CLICK}]`)).some(
+        (node) => node !== panel,
+      );
+      if (!takesEscape(inTip, otherPopup)) return;
       event.stopPropagation();
       event.preventDefault();
       dispatch({ type: "key", key: "Escape" });
-      root.current?.querySelector("button")?.focus();
+      if (inTip) root.current?.querySelector("button")?.focus();
     };
     document.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey, true);
@@ -126,7 +146,7 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
       document.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [open]);
+  }, [open, panelId]);
 
   return (
     <span ref={attach} className="inline-flex align-middle">
