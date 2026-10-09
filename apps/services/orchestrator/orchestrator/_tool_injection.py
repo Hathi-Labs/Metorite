@@ -72,6 +72,13 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # and the addendum does not name it, so the floor NAMES it but the box
     # pays nothing for it (`decide_tools.decide_tool_enabled`).
     "decide",
+    # Chat attachments (H-229): every chat has the upload button, so every
+    # agent must read what the member attaches. On 2026-10-09 task-manager
+    # held no reader, and it spent 9 minutes on shell, scripts and the web
+    # over a 38 KB .docx before the run failed. It is pure parsing, read-only
+    # and no shell tool, so D85 and the egress rule both keep it.
+    # Fence: ``tests/unit/test_chat_upload_every_agent.py``.
+    "read_attachment",
 })
 
 
@@ -97,7 +104,11 @@ _WORKFLOW_TOOL_NAMES: frozenset[str] = frozenset({
 #: Floor tools that no agent may opt out of. ``ask_questions`` is how an
 #: agent asks the member, and ``emit_generative_ui`` carries every form,
 #: picker and plan card that waits for the member (the HITL surface).
-_FLOOR_KEEP: frozenset[str] = frozenset({"ask_questions", "emit_generative_ui"})
+#: ``read_attachment`` reads what the member attaches, and every chat can
+#: attach a file.
+_FLOOR_KEEP: frozenset[str] = frozenset({
+    "ask_questions", "emit_generative_ui", "read_attachment",
+})
 
 #: The names an agent may put in ``floor_opt_out``.
 FLOOR_OPT_OUT_ALLOWED: frozenset[str] = (
@@ -712,6 +723,19 @@ def _build_output_discipline_block(
     """
     from acb_skills.addendum import build_output_discipline_block  # noqa: PLC0415
     return build_output_discipline_block(compact=compact, design_system=design_system)
+
+
+def _with_attachment_rule(instructions: str, holds_reader: bool) -> str:
+    """*instructions* with the attachment failure rule, once.
+
+    For a native MAF agent, which reads no Copilot addendum. Only an agent
+    that holds ``read_attachment`` gets it, and the rule itself is the
+    marker, so a second injection adds nothing (KV-cache stable).
+    """
+    from acb_skills.addendum import ATTACHMENT_FAILURE_RULE  # noqa: PLC0415
+    if not holds_reader or ATTACHMENT_FAILURE_RULE in instructions:
+        return instructions
+    return instructions + "\n\n" + ATTACHMENT_FAILURE_RULE
 
 
 def _ui_first_directive(*, compact: bool = False) -> str:
@@ -1534,6 +1558,11 @@ def _inject_agent_tools(
     _design_injected = any(
         getattr(fn, "__name__", "") == "load_design_system" for fn in _extra_tools
     )
+    # The attachment failure rule. The Copilot addendum carries it in its
+    # "Chat attachments" section, and a native MAF agent reads no addendum.
+    _reader_injected = any(
+        getattr(fn, "__name__", "") == "read_attachment" for fn in _extra_tools
+    )
 
     for agent in agents:
         injected = False
@@ -1723,6 +1752,9 @@ def _inject_agent_tools(
                                 design_system=_design_injected,
                             )
                         )
+                    _do["instructions"] = _with_attachment_rule(
+                        _do.get("instructions") or "", _reader_injected,
+                    )
                 except Exception:  # noqa: BLE001
                     pass
                 continue

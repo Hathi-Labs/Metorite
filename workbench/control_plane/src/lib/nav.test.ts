@@ -323,3 +323,11 @@ describe("every job opens a page that exists (NS-2 done-when 2)", () => {
     expect(routeHasPage(pathname), `${href} has no src/app page`).toBe(true);
   });
 });
+
+describe("every live app has a job (NS-2 done-when 1)", () => {
+  // A live app with no job is invisible in the command bar's Do group, so a
+  // member who types what they want to do there finds only "Open …".
+  it.each(LIVE_PANES.map((p) => [p.label, p.href] as const))("%s (%s) has one job or more", (_label, href) => {
+    expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
+  });
+});

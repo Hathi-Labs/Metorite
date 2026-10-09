@@ -23,7 +23,7 @@ import type { ModelStatus } from "./modelSearch";
 export const HELP_FEED = {
   freshness:
     "When we last pulled vendor facts — prices, context windows and " +
-    "retirement dates — from litellm's maintained price map. Nothing here " +
+    "retirement dates — from the vendors' published price list. Nothing here " +
     "is billing truth: what a customer pays lives on Pricing.",
   fetch:
     "Pull today's vendor facts now. This updates what the vendor charges US " +
@@ -112,7 +112,7 @@ export const HELP_TIERS = {
     "so this is one point of failure written several times. Add a step from " +
     "a different provider.",
   notRegistered:
-    "A binding names this tier but `tier_catalog` does not. It serves, and " +
+    "A binding names this tier but the tier list does not. It serves, and " +
     "it cannot be priced until somebody registers it.",
   rank:
     "Where this model sits in the chain. 1 serves every call; 2 runs only " +
@@ -127,7 +127,7 @@ export const HELP_TIERS = {
  *  of it. Most models should come from "available from your vendors" instead. */
 export const HELP_DECLARE = {
   open:
-    "Add a model the vendor feed does not carry. Anything litellm can reach " +
+    "Add a model the vendor feed does not carry. Any model the vendor's API serves " +
     "works, written up or not — but if the feed knows it, adding it above " +
     "needs no typing at all.",
   modelId:
@@ -144,7 +144,7 @@ export const HELP_DECLARE = {
     "do; a transcription arrives whole.",
   submit:
     "Declares the model to the Router. It records no price, so the model " +
-    "arrives costs blind until you add one.",
+    "arrives with no vendor price until you add one.",
 } as const;
 
 /** The three facts on every card. */
@@ -206,9 +206,9 @@ export const HELP_AVAILABLE = {
     "act. No form, and nothing to type.",
   addUnpriced:
     "Declares the model, but the feed carries no price for it — so it will " +
-    "arrive costs blind and its margin will read as unknown.",
+    "arrive with no vendor price and its margin will read as unknown.",
   notServable:
-    "litellm offers this model in a mode the Router has no endpoint for " +
+    "The vendor price list offers this model in a mode the Router has no endpoint for " +
     "yet, so declaring it would create something nothing can call.",
   pick:
     "Tick the models you want, across as many vendors as you like, then add " +

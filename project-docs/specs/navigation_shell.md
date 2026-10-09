@@ -388,6 +388,11 @@ registry.
 values the form reads, so tier 2 may fill them (§6.6). A job never writes when
 it opens.
 
+**A job may be a link to the place where the work waits,** when the app has no
+form to open. "Plan my day", "Reply on WhatsApp" and "Review pending
+approvals" are links of this kind (owner decision, 2026-10-09). A link job
+still names its app, so the member sees it only when they hold that app.
+
 **Jobs live in two lists that a test holds as one.** The bar reads `JOBS` in
 `src/lib/shell/registry.ts`. The gateway reads its own `JOBS` in
 `gateway/routes/shell/intent.py`, because the gateway cannot import the
@@ -453,13 +458,13 @@ manifest" section, and the spec-auditor refuses one without it.
 | My Tasks | personal | New task | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
 | Calendar | personal | Plan my day (built). Block focus time is a target | — | — | Today | `task-manager` | Move its `h1` into the title slot |
 | Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
-| My WhatsApp | personal | — (owner to name) | — | — | — | — | The owner names its job |
+| My WhatsApp | personal | Reply on WhatsApp (a link) | — | — | — | — | None beyond the manifest |
 | Projects | across | New space | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Find a colleague (built). Request leave is a target | the directory | — | Out today | — | None beyond the manifest |
 | My Profile | personal | Update my profile | — | — | — | — | Move to the account menu |
 | My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
-| Approvals | admin | — | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
+| Approvals | admin | Review pending approvals (a link) | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
 | Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the account menu |
 | Appearance | personal | Change how Metorite looks | — | — | — | — | Moves to every member's account menu |
 
@@ -1000,10 +1005,13 @@ Done when:
 - Done-when 2's job route check. `nav.test.ts` fails on a job whose `href`
   has no `page.tsx` under `src/app`.
 
-**Still open in NS-2:** done-when 1's "one job or more" for every live pane.
-Only WhatsApp and Approvals have no job, because the owner has not named
-them yet. The next slice moves the jobs onto each pane's manifest
-(`NavPane.jobs`, §5.1).
+**Built in slice 3 (2026-10-09):** two link jobs, "Reply on WhatsApp" and
+"Review pending approvals", after the owner chose links. Every live pane now
+has a job, and `nav.test.ts` fails on a live pane with none.
+
+**Still open in NS-2:** done-when 1's "`NavPane` carries the §5.1 fields". The
+jobs still live in one list in `lib/shell/registry.ts`, and the next slice
+moves them onto each pane's manifest (`NavPane.jobs`, §5.1).
 
 Flag `NEXT_PUBLIC_SHELL_NAV`. Files: `src/lib/nav.ts`, `src/lib/nav.test.ts`,
 `src/components/Sidebar.tsx`, and a new launcher and account menu in

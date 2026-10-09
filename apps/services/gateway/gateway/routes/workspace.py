@@ -404,6 +404,21 @@ def _refuse_shared_clone_write(workspace: Path) -> None:
         )
 
 
+#: The names of a chat session that mean the default agent. The chat proxy
+#: (`app/api/agent/chat/route.ts`) runs each of them as the orchestrator, from
+#: `DEFAULT_AGENT_NAMES` in `workbench/control_plane/src/lib/chatMemorySave.ts`.
+#: This set mirrors that one. Fence: `src/lib/chatUpload.test.ts` compares them.
+_DEFAULT_CHAT_AGENT_ALIASES: frozenset[str] = frozenset({
+    "orchestrator", "default", "metorite", "",
+})
+
+
+def _chat_agent_name(name: str | None) -> str:
+    """The agent that runs a chat session named *name*, as the proxy maps it."""
+    clean = str(name or "").strip()
+    return "orchestrator" if clean.lower() in _DEFAULT_CHAT_AGENT_ALIASES else clean
+
+
 def _get_workspace_path(
     session_id: str, user_email: str | None, organization_id: str | None,
 ) -> Path | None:
@@ -464,9 +479,15 @@ def _get_workspace_path(
             )
 
         # ── 2. Derive from agent clone directory ────────────────────────────
-        agent_name: str = row.agent_name or ""
-        if not agent_name or agent_name in ("orchestrator", "default"):
-            return None
+        # The orchestrator is a shared agent like any other (2026-10-09). Its
+        # runs work in its tenant dir (`executor._resolve_run_workspace`), so
+        # its sessions resolve that dir here too. This line returned None for
+        # it from June 2026, when the main chat had no agent clone, so every
+        # upload into a new main chat answered 404. The chat proxy runs each
+        # alias of the default agent as the orchestrator, so a legacy session
+        # named "metorite" or "default" resolves the same dir.
+        # Fence: tests/unit/test_orchestrator_upload.py.
+        agent_name: str = _chat_agent_name(row.agent_name)
 
         # H-201 part 3: a personal agent gives the viewer's own folder, and a
         # shared agent the viewer's tenant dir. Neither is ever the clone.
@@ -1998,15 +2019,31 @@ async def stream_artifact_events(
 from fastapi import UploadFile
 
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
+#: Every kind that ``read_attachment`` reads must be here, ``.htm`` too
+#: (2026-10-09). The chat's file picker mirrors this list exactly
+#: (``CHAT_UPLOAD_ACCEPT``). Fences:
+#: ``workbench/control_plane/src/lib/chatUpload.test.ts`` and
+#: ``tests/unit/test_attachment_formats.py``.
 _ALLOWED_EXTENSIONS = {
-    ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
-    ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".js", ".ts",
+    ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".tsv",
+    ".odt", ".ods", ".odp", ".rtf",
+    ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
     ".py", ".sh", ".ps1", ".toml", ".ini", ".cfg",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
     ".mp3", ".wav", ".mp4", ".webm",
     ".zip", ".tar", ".gz", ".bz2", ".7z",
     ".log", ".sql", ".db", ".sqlite",
 }
+
+
+def _refuse_legacy_office(ext: str) -> None:
+    """Refuse an older binary Office file at upload, with the sentence that
+    says how to fix it. No reader takes it, so the member hears it at once,
+    and not after a chat turn (``attachment_text.LEGACY_OFFICE``)."""
+    from acb_skills.attachment_text import LEGACY_OFFICE, unsupported_sentence
+
+    if ext in LEGACY_OFFICE:
+        raise HTTPException(status_code=400, detail=unsupported_sentence(ext))
 
 
 @router.post("/workspace/{session_id}/upload")
@@ -2066,6 +2103,7 @@ async def upload_files(
         # Validate filename
         safe_name = Path(f.filename or "untitled").name
         ext = Path(safe_name).suffix.lower()
+        _refuse_legacy_office(ext)
         if ext not in _ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
