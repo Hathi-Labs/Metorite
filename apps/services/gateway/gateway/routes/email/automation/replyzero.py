@@ -1401,7 +1401,9 @@ async def _resolve_on(
     if not thread_id:
         return matches
     try:
-        plan = first or await status_before_match(db, account_id, message_row)
+        plan = first
+        if plan is None and status is None:  # a job never asks in Block W
+            plan = await status_before_match(db, account_id, message_row)
         if plan is None or not plan.rules:
             return matches
         if status is not None:
