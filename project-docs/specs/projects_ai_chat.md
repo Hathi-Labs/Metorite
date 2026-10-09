@@ -5478,10 +5478,28 @@ Fences: `chatPlacement.test.ts` (the blocks, the order, the memo),
 the motion), and `e2e/genui-option-picker.spec.ts` (each click path in a real
 browser, with 200 and with 409).
 
-⚠️ **Not done here.** The chosen state of a picker lives in the browser. A
-reload draws an answered picker as new. And `AgentChat`'s history read
-compares the server rows with the messages of its first render, so a slow
-read can replace a live turn. The replay hit that race on a cold compile.
+**Review round 1 (2026-10-09).**
+
+- **A cached turn keeps its text** (P1-a). The local cache kept the stamps and
+  not the segments, so the flow drew the cards and dropped the answer. Now
+  `genUiFlow` answers `null` (the old layout) for a turn with no segment, and
+  the cache keeps the segments of a turn whose card is stamped, under 32,000
+  characters (`segmentsForCache`). The cache has no byte budget, and a quota
+  error skips the whole write.
+- **A card before the first text is stamped `0`** (P2-c). It had no stamp, and
+  drew after all the text. All three writers stamp it now.
+- **One slot for the cards** in both layouts, so a card keeps its place in the
+  tree when the first text arrives after it.
+- **An answered picker stays answered** (P2-c). `emit_generative_ui` returns
+  its `request_id` with the answer, and the chat reads the turn's tool results
+  (`lib/askAnswers.ts`). This session's own answers, and an answer that a
+  `confirmation_resolved` event names, count too. A card with an answer draws
+  as sent and takes no click after any remount or reload. A timed-out or
+  cancelled card stays open, and a click on it goes out as a message.
+
+⚠️ **Not done here.** `AgentChat`'s history read compares the server rows with
+the messages of its first render, so a slow read can replace a live turn. The
+replay hit that race on a cold compile.
 
 ## 25. The fixed prefix of each request (2026-10-09)
 

@@ -14723,11 +14723,31 @@ optional note, and `include_attachments` (true by default) or `attachment_ids`.
    it from the row, then from the cache of the reading pane, then once from the provider.
 6. **The subject** is `Fwd: <subject>`. The route removes each `Re:`, `Fw:`, `Fwd:` and
    `Subject:` mark that led the original, so the owner's "Re: Subject:" goes.
-7. **The send** uses `provider_session` and maps a mail that is too large to 413, as
-   `POST /email/send` does. A forward threads into no conversation.
+7. **The send** uses `provider_session`, by one of two paths. A forward threads into no
+   conversation.
+   - **Outlook with every file** uses Graph's own `POST /me/messages/{id}/forward`
+     (`forward_message`, `forwards_natively`). Graph copies the files at the server, so
+     a forward of any size sends no file through Metorite and meets no size cap of ours.
+     Graph's `/me/sendMail` takes files inline and refuses a body over about 4 MB. The
+     first build sent an Outlook forward that way, so a real PDF failed after the
+     approval (review round 1, P1-b). The recipients, the bcc and the subject ride in
+     the `message` parameter of the forward.
+   - **A subset of the files on Outlook answers 422** (`OUTLOOK_SUBSET`). Graph's
+     forward carries every file or none. A rebuild with some files would meet the
+     inline limit again. A forward with no files rebuilds the mail with no files.
+   - **Every other forward rebuilds the mail** through `send_message`, with the cap of
+     step 3.
+8. **A provider failure gets a reason, never a bare 500** (`_provider_refusal`). A
+   mail that is too large is 413 on both providers (`OutlookMailTooLarge` for Graph).
+   The provider's own 401, 404 and 429 pass through. Any other refusal of the
+   provider is 422, and it names the status and the provider's error code. A provider
+   that is down is 502, because a 4xx would tell the caller to change a right request.
+   No detail holds a URL.
 
-The agent tool `forward_email` shows a confirmation card before it posts. The card names the
-mailbox, each recipient, each bcc and each file. A "no" sends nothing. `instructions.md` says
+The agent tool `forward_email` shows a confirmation card before it posts. The card names
+each bcc and each file FIRST, then the mailbox, To and Cc, and the subject last. When the
+500 characters of the card cannot hold every item, it says "+N more". `send_email` uses
+the same builder (`_card_detail`). A "no" sends nothing. `instructions.md` says
 to forward, not to send, when the user asks to pass an email to a new person.
 
 ⚠️ `POST /email/send` writes no audit row, and it checks no send right beyond the `email`
@@ -14741,14 +14761,21 @@ The link to one email is `/email?email=<id>&account=<account id>`.
 - `emailLink` in `workbench/control_plane/src/app/email/lib/emailLink.ts` builds it, and
   `_email_link` in the agent prints the same shape. Each answers nothing for an id that is
   not a UUID.
-- The list tools of the agent print `link=` after each `id=`. `read_email` prints a
-  `Link:` line. The model copies the link and never builds one.
-- The agent cites each email that it names as `[subject](link)`. The chat opens an in-app
-  link in the same tab (`isInAppPath`).
-- The orchestrator keeps a link of a sub-agent as it is. An in-app link is a citation. A bare
-  UUID in text is not, and the orchestrator does not show it.
-- `components/EmailDeepLink.tsx` reads `?email=` each time it changes, so a link opens while
-  the email page is open. The reader before it ran once for each mailbox.
+- The list tools of the agent print the whole Markdown link as `link_md=` after each
+  `id=`. `read_email` prints it as a `Link:` line. The model copies it and never builds
+  a link.
+- The tool escapes the subject in the words of the link (`_md_link_text`). A sender
+  chooses the subject, so a subject such as `[Open](https://evil.example)` would
+  otherwise plant a link (review round 1, P2-a).
+- The chat draws a link to another site with an external-link icon and its host, so the
+  member sees where it goes (`MarkdownLink`, `lib/inAppLink.ts`).
+- The orchestrator keeps an in-app link of a sub-agent as it is. It does not keep a link
+  to another site that the text of an email gives. A bare UUID in text is not a
+  citation, and the orchestrator does not show it.
+- `components/EmailDeepLink.tsx` opens the email of a link two ways. It reads `?email=`
+  each time it changes. It also hears each click on a chat link (`IN_APP_LINK_EVENT`),
+  so a second click on the same link opens the email again (review round 1, P2-b). An
+  open always brings the mail forward, also when that mail is already selected.
 - "Open in inbox" on a chat card pushes the link, so a refresh opens the same email.
 
 The link opens the email inside the app only. It is not a link to share with another person.
@@ -14760,7 +14787,9 @@ The link opens the email inside the app only. It is not a link to share with ano
 - `tests/unit/test_email_forward_r8.py` (R8): the route's SQL as a non-privileged role under
   FORCE row level security.
 - `src/app/email/lib/emailLink.test.ts`: the link, `isInAppPath`, and the two callers.
-- `e2e/email-deep-link.spec.ts`: a fresh link and a second link while the page is open.
+- `src/lib/inAppLink.test.ts`: the external mark, the escaped subject, and the click event.
+- `e2e/email-deep-link.spec.ts`: a fresh link, a second link while the page is open, and
+  the same chat link clicked twice.
 
 ### 15.4 Not done here
 
@@ -14768,3 +14797,13 @@ The link opens the email inside the app only. It is not a link to share with ano
   new route. That is a UI ticket.
 - **The rule action FORWARD still writes a text-quoted draft** (`automation/actions.py`).
 - **No link leaves the app.** A link that a colleague can open needs a share model.
+- **A slow forward can go out after the tool reports a failure.** The route does not stop
+  when its caller goes away, and the agent waits 60 seconds for it. A forward that takes
+  longer can be sent while the model reads a failure, and the model can then ask again.
+  An idempotency key for each confirmation does not close this, because a second
+  approval is a new card with a new key. A key over the mail and its recipients for a
+  short window would, and it can also refuse a forward that the member wants twice. That
+  choice is the owner's.
+- **Outlook cannot forward a subset of the files.** `createForward`, a delete of the files
+  not chosen, and a send would do it. Graph names the copied files with new ids, so the
+  match would be by name and size, which two files can share.

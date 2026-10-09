@@ -29,18 +29,18 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth.roles import UserContext, UserRole  # noqa: E402
-from acb_common.db import bind_tenant, release_tenant  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
-from gateway.routes.email.transport import attachments as att_mod  # noqa: E402
-from gateway.routes.email.transport import forward as fwd  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from acb_auth.roles import UserContext, UserRole
+from acb_common.db import bind_tenant, release_tenant
+from fastapi import HTTPException
+from gateway.routes.email.transport import attachments as att_mod
+from gateway.routes.email.transport import forward as fwd
+from sqlalchemy import text
 
-from tests.unit._tenant_ladder import tenant_engine_scope  # noqa: E402
+from tests.unit._tenant_ladder import tenant_engine_scope
 
 # ``promoted`` and ``app_engine`` are used by name for fixture injection, so
 # the import is load-bearing even though it reads as unused.
-from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: E402, F401
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
     promoted,

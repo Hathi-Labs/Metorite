@@ -380,6 +380,27 @@ export function genUiTitle(spec: unknown): string {
 // (`app/api/agent/chat/route.ts`) and the gateway fold (`chat_fold.py`). A
 // segment at or past the stamp draws AFTER the card.
 
+/** The most characters of segment text that the local cache keeps for one
+ *  turn. The cache has no byte budget of its own, and a quota error skips the
+ *  WHOLE write (`sessions.ts`), so a big copy would cost every turn. */
+export const CACHED_SEGMENTS_MAX_CHARS = 32_000;
+
+/**
+ * The segments a cached copy of a turn keeps: only when a card of the turn
+ * carries a stamp, because only `genUiFlow` needs them, and only under
+ * {@link CACHED_SEGMENTS_MAX_CHARS}. Else `undefined`, and the turn draws in
+ * the old layout from its `content` (review round 1, P1-a).
+ */
+export function segmentsForCache<E extends { segmentCutoff?: number }>(
+  segments: readonly { id: string; text: string }[] | undefined,
+  customEvents: readonly E[] | undefined,
+): { id: string; text: string }[] | undefined {
+  if (!segments?.length) return undefined;
+  if (!(customEvents ?? []).some((e) => typeof e.segmentCutoff === "number")) return undefined;
+  const chars = segments.reduce((n, s) => n + s.text.length, 0);
+  return chars <= CACHED_SEGMENTS_MAX_CHARS ? [...segments] : undefined;
+}
+
 /** One block of the body of a turn, in the order it streamed. */
 export type FlowBlock =
   | { kind: "text"; text: string }
@@ -387,8 +408,12 @@ export type FlowBlock =
 
 /**
  * The body of a turn as text and card blocks, in stream order, or `null`
- * when no card carries a stamp. `null` means "draw as before": all the text,
- * then all the cards.
+ * when no card carries a stamp, or when the turn holds no segment. `null`
+ * means "draw as before": all the text (`content`), then all the cards.
+ *
+ * ⚠️ A turn with stamps and NO segments is the local cache of an older build
+ * (review round 1, P1-a). Its stamps point into segments it does not hold,
+ * so a flow from them would draw the cards and drop the answer.
  *
  * ⚠️ A stamped card is in the flow from the moment it arrives, also before
  * any text follows it. If the layout changed only when the follow-up began,
@@ -407,7 +432,7 @@ export function genUiFlow(
   const segs = segments ?? [];
   const stamped = (c: number | undefined): c is number =>
     typeof c === "number" && Number.isInteger(c) && c >= 0;
-  if (!cutoffs.some(stamped)) return null;
+  if (!cutoffs.some(stamped) || segs.length === 0) return null;
 
   const blocks: FlowBlock[] = [];
   const pushText = (text: string) => {

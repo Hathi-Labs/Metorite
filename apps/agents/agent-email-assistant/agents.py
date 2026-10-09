@@ -491,7 +491,7 @@ async def search_emails(
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
         lines.append(
-            f"• id={e.get('id')}{acct}{_link_field(e.get('id'))} | "
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'), e.get('subject'))} | "
             f"{frm.get('name') or frm.get('email')}: "
             f"{e.get('subject', '(no subject)')} — {(e.get('snippet') or '')[:90]}"
         )
@@ -551,9 +551,10 @@ async def read_email(email_id: str, full: bool = False) -> str:
         lines.append(f"Cc: {cc}")
     lines.append(f"Subject: {e.get('subject', '(no subject)')}")
     lines.append(f"Date: {e.get('received_at', '')}")
-    # The link to cite this email by (owner report, 2026-10-09). Never "id=":
-    # the chat cards read "id=" as the id of a mail or of a rule.
-    link = _email_link(e.get("id") or email_id, e.get("account_id"))
+    # The link to cite this email by, whole and escaped (owner report and
+    # review round 1, 2026-10-09). Never "id=": the chat cards read "id=" as
+    # the id of a mail or of a rule.
+    link = _md_link(e.get("subject"), e.get("id") or email_id, e.get("account_id"))
     if link:
         lines.append(f"Link: {link}")
     atts = [a for a in (e.get("attachments") or []) if isinstance(a, dict)]
@@ -630,12 +631,33 @@ def _email_link(email_id: Any, account_id: Any = None) -> str:
     return f"/email?email={mail}" + (f"&account={box}" if box else "")
 
 
-def _link_field(email_id: Any) -> str:
-    """`` link=<link>`` for a list line, after the id. The chat cards read
+#: The characters of a subject that could end the words of a Markdown link or
+#: start a new one. A sender chooses the subject, so a subject such as
+#: ``[Open](https://evil.example)`` would plant a link (review round 1, P2-a).
+_MD_LINK_TEXT_SPECIAL = frozenset("\\[]()`<>|*_")
+
+
+def _md_link_text(value: Any, limit: int = 80) -> str:
+    """The words of a Markdown link: one line, no control character, cut at
+    *limit*, and each character that Markdown reads escaped with ``\\``."""
+    text = _card_text(value or "", limit) or "email"
+    return "".join(f"\\{ch}" if ch in _MD_LINK_TEXT_SPECIAL else ch for ch in text)
+
+
+def _md_link(subject: Any, email_id: Any, account_id: Any = None) -> str:
+    """The whole Markdown link to one email, ``[subject](/email?email=…)``, with
+    the subject escaped, or ``""`` for an id that is not a UUID. The model
+    copies it as it is and builds no link of its own."""
+    link = _email_link(email_id, account_id)
+    return f"[{_md_link_text(subject)}]({link})" if link else ""
+
+
+def _link_field(email_id: Any, subject: Any) -> str:
+    """`` link_md=<link>`` for a list line, after the id. The chat cards read
     ``id=`` and the text after the last ``|``, so the field sits before the
-    first ``|`` (``parseEmailRows`` in ``EmailToolCards.tsx``)."""
-    link = _email_link(email_id)
-    return f" link={link}" if link else ""
+    first real ``|`` (``parseEmailRows`` in ``EmailToolCards.tsx``)."""
+    link = _md_link(subject, email_id)
+    return f" link_md={link}" if link else ""
 
 
 def _attachment_line(a: dict[str, Any]) -> str:
@@ -817,7 +839,7 @@ async def find_urgent(account_id: str | None = None) -> str:
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
         lines.append(
-            f"• id={e.get('id')}{acct}{_link_field(e.get('id'))} | "
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'), e.get('subject'))} | "
             f"{frm.get('name') or frm.get('email')}: {e.get('subject', '(no subject)')}"
         )
     return "\n".join(lines)
@@ -836,7 +858,7 @@ async def find_needs_reply(account_id: str) -> str:
     lines = ["Needs reply:"]
     for t in threads[:15]:
         lines.append(
-            f"• id={t.get('message_id')}{_link_field(t.get('message_id'))} | "
+            f"• id={t.get('message_id')}{_link_field(t.get('message_id'), t.get('subject'))} | "
             f"{t.get('from')}: {t.get('subject')}"
         )
     return "\n".join(lines)
@@ -962,7 +984,7 @@ async def query_inbox(
             flags.append("attachment")
         flag = f" [{', '.join(flags)}]" if flags else ""
         lines.append(
-            f"• id={e.get('id')}{_link_field(e.get('id'))} | "
+            f"• id={e.get('id')}{_link_field(e.get('id'), e.get('subject'))} | "
             f"{(e.get('received_at') or '')[:10]} | "
             f"{frm.get('name') or frm.get('email')}: "
             f"{e.get('subject', '(no subject)')}{flag} — "
@@ -1176,7 +1198,7 @@ async def get_important_emails(account_id: str, days: int = 30) -> str:
     lines = ["Most important emails to check:"]
     for e in emails:
         lines.append(
-            f"• id={e.get('message_id')}{_link_field(e.get('message_id'))} | "
+            f"• id={e.get('message_id')}{_link_field(e.get('message_id'), e.get('subject'))} | "
             f"{e.get('from')}: "
             f"{e.get('subject')} — ({e.get('reason')})"
         )
@@ -2328,6 +2350,68 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     return refs
 
 
+#: The characters of a card's detail that ``request_confirmation`` keeps.
+_CARD_DETAIL_LIMIT = 500
+
+
+def _card_detail(
+    sender: str,
+    *,
+    to: list[str],
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    files_label: str = "Attachments",
+    files: list[str] | None = None,
+    subject: str = "",
+    limit: int = _CARD_DETAIL_LIMIT,
+) -> str:
+    """The detail of a send card, in the order a member must read it.
+
+    The hidden recipients and the files come FIRST, because a mail body can
+    ask the model to add either one, and the card keeps only ``limit``
+    characters (review round 1, P3). Then the From mailbox, To and Cc, and
+    the subject last, because the sender of the mail chooses it. When the
+    items do not all fit, the detail says how many it left out ("+N more"),
+    so a cut list never reads as the whole list.
+    """
+    sections: list[tuple[str, list[str]]] = []
+    if bcc:
+        sections.append(("Bcc", list(bcc)))
+    if files is not None:
+        sections.append((f"{files_label}:", list(files) or ["none"]))
+    sections.append(("From", [sender]))
+    sections.append(("To", list(to)))
+    if cc:
+        sections.append(("Cc", list(cc)))
+    # Room for " · +NNN more", so the marker always fits.
+    budget = limit - 16
+    parts: list[str] = []
+    left_out = 0
+    used = 0
+    for label, items in sections:
+        if left_out:
+            left_out += len(items)
+            continue
+        shown: list[str] = []
+        for i, item in enumerate(items):
+            piece = f"{label} {item}" if not shown else item
+            sep = (" · " if parts else "") if not shown else ", "
+            if used + len(sep) + len(piece) > budget:
+                left_out = len(items) - i
+                break
+            used += len(sep) + len(piece)
+            shown.append(item)
+        if shown:
+            parts.append(f"{label} {', '.join(shown)}")
+    detail = " · ".join(parts)
+    if left_out:
+        detail += f" · +{left_out} more"
+    room = limit - len(detail) - len(" · Subject: ")
+    if subject and room >= 10:
+        detail += f" · Subject: {subject[:room]}"
+    return detail
+
+
 def _reply_fill(
     orig: dict[str, Any], to: list[str], subject: str | None,
 ) -> tuple[list[str], str | None]:
@@ -2453,22 +2537,16 @@ async def send_email(
     # interactive stream to deliver the card (HH-2) — automated callers get
     # "Send cancelled" instead of a silent send.
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
-    _cc_note = f", cc {', '.join(cc)}" if cc else ""
-    # A mail body can ask the model to add a hidden recipient or a file, so the
-    # card shows each bcc address and each attachment (EM-T8e-2 review).
-    _bcc_note = f", bcc {', '.join(bcc)}" if bcc else ""
-    _files_note = (
-        " · Attachments: " + ", ".join(r.get("path", "") for r in refs) if refs else ""
-    )
     verb = "reply" if reply_to_email_id else "email"
     if not await request_confirmation(
         title=f"Send this {verb}?",
-        detail=(
-            # The card cuts the detail at 500 characters, and the sender of the
-            # mail controls the subject of a reply. So the hidden recipients
-            # and the files come first, and the subject is clipped last.
-            f"From {sender} · To {', '.join(to)}{_cc_note}{_bcc_note}{_files_note} · "
-            f"Subject: {(subject or '(none)')[:120]}"
+        # A mail body can ask the model to add a hidden recipient or a file, so
+        # the card shows each bcc address and each attachment FIRST, and says
+        # how many it left out (EM-T8e-2 review, review round 1 P3).
+        detail=_card_detail(
+            sender, to=to, cc=cc, bcc=bcc,
+            files=[r.get("path", "") for r in refs] if refs else None,
+            subject=(subject or "(none)")[:120],
         ),
         context=body,
     ):
@@ -2490,18 +2568,15 @@ def _size_text(size: Any) -> str:
     return f"{n / (1024 * 1024):.1f} MB"
 
 
-def _forward_files_note(files: list[dict[str, Any]]) -> str:
-    """The files of a forward, for its card. At most ten names, each on one
-    line, because a sender chooses each name."""
-    if not files:
-        return "none"
+def _forward_files(files: list[dict[str, Any]]) -> list[str]:
+    """The files of a forward, for its card: each name on one line, because
+    a sender chooses each name, with its size."""
     shown = []
-    for a in files[:10]:
+    for a in files:
         size = _size_text(a.get("size_bytes"))
         name = _one_line(a.get("filename") or "file", 60)
         shown.append(f"{name} ({size})" if size else name)
-    more = f", and {len(files) - 10} more" if len(files) > 10 else ""
-    return ", ".join(shown) + more
+    return shown
 
 
 @_annotate_risk(destructive=True, open_world=True)
@@ -2562,18 +2637,13 @@ async def forward_email(
     subject = _card_text(orig.get("subject") or "(no subject)", 120)
 
     from acb_skills.ask_tools import request_confirmation
-    _cc_note = f", cc {', '.join(cc)}" if cc else ""
-    # A mail body can ask the model to add a hidden recipient, so the card
-    # shows each bcc address, and each file that leaves with the forward.
-    _bcc_note = f", bcc {', '.join(bcc)}" if bcc else ""
     if not await request_confirmation(
         title="Forward this email?",
-        detail=(
-            # The card cuts the detail at 500 characters, and the sender of the
-            # mail controls the subject. So the recipients and the files come
-            # first, and the subject is clipped last.
-            f"From {sender} · To {', '.join(to)}{_cc_note}{_bcc_note} · "
-            f"Attachments: {_forward_files_note(carried)} · Subject: {subject}"
+        # Each bcc and each file that leaves with the forward come first, and
+        # the card says how many it left out (review round 1, P3).
+        detail=_card_detail(
+            sender, to=to, cc=cc, bcc=bcc,
+            files=_forward_files(carried), subject=subject,
         ),
         context=note or "",
     ):

@@ -117,10 +117,12 @@ export function GenUiMarkdown({ content }: { content: string }) {
 export { GenUiText };
 
 function Node({
-  node, onAction, depth = 0,
+  node, onAction, answered, depth = 0,
 }: {
   node: GenUINode;
   onAction?: (action: string) => void;
+  /** The answer this card already got (`lib/askAnswers.ts`), or nothing. */
+  answered?: string;
   depth?: number;
 }): React.ReactElement | null {
   // Depth guard — a pathological/looping tree can't blow the stack.
@@ -134,7 +136,7 @@ function Node({
   const kids = Array.isArray(node.children) ? node.children : [];
 
   const renderKids = () =>
-    kids.map((k, i) => <Node key={i} node={k} onAction={onAction} depth={depth + 1} />);
+    kids.map((k, i) => <Node key={i} node={k} onAction={onAction} answered={answered} depth={depth + 1} />);
 
   switch (type) {
     case "card":
@@ -345,7 +347,7 @@ function Node({
       // onAction channel buttons use, so their submits flow back to the agent.
       const name = s(props.name);
       const data = props.data;
-      return renderTemplate(name, data, { onAction });
+      return renderTemplate(name, data, { onAction, answered });
     }
 
     case "html": {
@@ -402,10 +404,12 @@ function Node({
  * Accepts either a single node or `{ root: node }` / `{ view: node }` wrappers.
  */
 export default function GenerativeUINode({
-  spec, onAction,
+  spec, onAction, answered,
 }: {
   spec: unknown;
   onAction?: (action: string) => void;
+  /** The answer a blocking card already got, so a remount keeps it locked. */
+  answered?: string;
 }): React.ReactElement | null {
   const root =
     spec && typeof spec === "object"
@@ -414,5 +418,5 @@ export default function GenerativeUINode({
         ?? spec)
       : spec;
   if (!root || typeof root !== "object") return null;
-  return <Node node={root as GenUINode} onAction={onAction} />;
+  return <Node node={root as GenUINode} onAction={onAction} answered={answered} />;
 }

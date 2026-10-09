@@ -95,3 +95,91 @@ test.describe("The link to one email", () => {
     await expect(page.getByText("The body of Second mail about the PDF.").first()).toBeVisible({ timeout: 15_000 });
   });
 });
+
+/**
+ * The email chat answers with a link to mail A. The stream is a `fetch`
+ * override inside the page, as in `genui-option-picker.spec.ts`, and the
+ * session store answers empty, so the page needs no gateway.
+ */
+async function installChat(page: Page) {
+  await page.addInitScript((mail) => {
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const enc = new TextEncoder();
+    const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
+    const orig = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/api/chat/active-sessions")) return json([]);
+      if (url.includes("/api/chat/sessions")) {
+        // "Unknown" to the restored-chat probe (`probeSession`): neither open
+        // nor refused, so reopening the chat keeps the same conversation.
+        if (url.includes("/room")) return json({ detail: "no gateway in this suite" }, 503);
+        return (init?.method ?? "GET").toUpperCase() === "GET" ? json([]) : json({ ok: true });
+      }
+      if (url.includes("/api/auth/me")) {
+        return json({
+          email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
+          organization: { id: "00000000-0000-0000-0000-0000000000e2", slug: "e2e" },
+          roles: ["owner"], legacy_role: "executive", features: ["chat", "email"],
+          features_denied: [], agents: ["email-assistant"], permissions: ["*"],
+          capabilities: [], denied: [], is_admin: true,
+        });
+      }
+      if (url.includes("/api/agent/chat")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if (body.reconnect) return json({}, 404);
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(frame({ type: "message_start", messageId: "m-1" }));
+            controller.enqueue(frame({ type: "delta", messageId: "m-1",
+              content: `Here it is: [BQ quote for the extruder](/email?email=${mail}).` }));
+            controller.enqueue(frame({ type: "message_end", messageId: "m-1" }));
+            controller.enqueue(frame({ type: "done" }));
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return orig(input, init);
+    };
+  }, MAIL_A);
+  await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
+  await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
+}
+
+test.describe("A link in the email chat", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("opens its email on the first click AND on a second click of the same link", async ({ page }) => {
+    // Review round 1, P2-b: the second click pushed the URL the page already
+    // showed, so nothing changed and the chat stayed over the mail.
+    await installMocks(page);
+    await installChat(page);
+    await page.goto("/email");
+    const chatButton = page.getByRole("button", { name: "Chat", exact: true }).first();
+    await expect(chatButton).toBeVisible({ timeout: 60_000 });
+    await chatButton.click();
+
+    const box = page.getByRole("textbox", { name: /^Message / });
+    await expect(box).toBeEnabled({ timeout: 30_000 });
+    await box.fill("Find the BQ quote");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const link = page.getByRole("link", { name: "BQ quote for the extruder" });
+    await expect(link).toBeVisible({ timeout: 15_000 });
+
+    const body = page.getByText("The body of BQ quote for the extruder.").first();
+    await link.click();
+    await expect(body).toBeVisible({ timeout: 15_000 });
+    await expect(link).toBeHidden();
+
+    // The chat again, and the SAME link again.
+    await chatButton.click();
+    await expect(link).toBeVisible({ timeout: 15_000 });
+    await link.click();
+    await expect(link).toBeHidden({ timeout: 10_000 });
+    await expect(body).toBeVisible();
+  });
+});

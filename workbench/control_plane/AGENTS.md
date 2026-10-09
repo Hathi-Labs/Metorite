@@ -163,6 +163,11 @@ Seven rules on top of the three above. Each one exists because it was broken:
    - `components/RecommendedBadge.tsx` is the one mark of a recommended
      option. Do not draw a star for it. Fences: `genUITemplates.test.ts`
      and `elicitationCard.test.ts`.
+   - `src/lib/askAnswers.ts` is the one reader of the answer a blocking card
+     already got. A card that has one draws as sent after any remount.
+   - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
+     click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
+     host. Fence: `inAppLink.test.ts`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).

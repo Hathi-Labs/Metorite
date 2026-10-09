@@ -38,8 +38,10 @@ import ProjectToolCards, { PROJECT_CARD_TOOLS, projectEvidence } from "@/compone
 import TaskToolCards, { TASK_CARD_TOOLS, taskEvidence } from "@/components/tasks/TaskToolCards";
 import { ToolStepRow } from "@/components/ThinkingContainer";
 import {
+  CACHED_SEGMENTS_MAX_CHARS,
   PLACEMENT,
   genUiFlow,
+  segmentsForCache,
   genUiPlacement,
   isEvidenceTool,
   placementOf,
@@ -245,6 +247,80 @@ describe("a card keeps its place in the order the turn streamed (2026-10-09)", (
     expect(head).toBeGreaterThan(-1);
     expect(card).toBeGreaterThan(head);
     expect(follow).toBeGreaterThan(card);
+  });
+
+  it("stamps and no segments keep the old layout (a cached turn, P1-a)", () => {
+    expect(genUiFlow(undefined, [2])).toBeNull();
+    expect(genUiFlow([], [0])).toBeNull();
+  });
+
+  it("a cached turn with stamps and no segments draws its text AND its card (P1-a)", () => {
+    // The local cache of the first build kept the stamps and dropped the
+    // segments, so the flow drew the card alone and the answer vanished.
+    const picker = {
+      type: "template",
+      props: { name: "optionPicker", data: { title: "How should we forward it?", options: [{ id: "a", label: "Forward" }] } },
+      request_id: "req-cached",
+    };
+    const message = {
+      id: "a2", role: "assistant" as const, timestamp: 1, streaming: false,
+      content: "The email has a PDF.\n\nDone. I forwarded it.",
+      customEvents: [{ name: "generative_ui", value: picker, segmentCutoff: 2 }],
+    };
+    const html = renderToStaticMarkup(createElement(MessageBubble, { message, sessionId: "s1" }));
+    expect(html).toContain("The email has a PDF.");
+    expect(html).toContain("Done. I forwarded it.");
+    expect(html.indexOf('data-chat-ask="genui:req-cached"')).toBeGreaterThan(html.indexOf("Done. I forwarded it."));
+  });
+
+  it("the cache keeps segments only for a stamped card, and only when small", () => {
+    const stamped = [{ name: "generative_ui", value: {}, segmentCutoff: 1 }];
+    expect(segmentsForCache(segs("a", "b"), stamped)).toEqual(segs("a", "b"));
+    const unstamped: { name: string; value: unknown; segmentCutoff?: number }[] = [{ name: "generative_ui", value: {} }];
+    expect(segmentsForCache(segs("a"), unstamped)).toBeUndefined();
+    expect(segmentsForCache(undefined, stamped)).toBeUndefined();
+    expect(segmentsForCache([{ id: "x", text: "y".repeat(CACHED_SEGMENTS_MAX_CHARS + 1) }], stamped)).toBeUndefined();
+    const src = readFileSync(join(ROOT, "workbench/control_plane/src/components/AgentChat.tsx"), "utf-8");
+    expect(src.match(/segments: segmentsForCache\(m\.segments, m\.customEvents\)/g)?.length).toBe(2);
+  });
+
+  it("an answered picker draws as sent after a reload, from the run's own record (P2-c)", () => {
+    const rid = "0123456789abcdef0123456789abcdef";
+    const picker = {
+      type: "template",
+      props: { name: "optionPicker", data: { title: "How?", options: [
+        { id: "a", label: "Forward" }, { id: "b", label: "Send a link" }] } },
+      request_id: rid,
+    };
+    const message = {
+      id: "a3", role: "assistant" as const, content: "", timestamp: 1, streaming: false,
+      segments: segs("Pick one."),
+      toolEvents: [{ id: "t1", name: "emit_generative_ui", args: {}, status: "done" as const,
+        result: JSON.stringify({ ok: true, response: "Selected: Send a link", request_id: rid }) }],
+      customEvents: [{ name: "generative_ui", value: picker, segmentCutoff: 1 }],
+    };
+    const html = renderToStaticMarkup(createElement(MessageBubble, { message, sessionId: "s1" }));
+    expect(html).toContain(">Sent<");
+    expect(html).toMatch(/aria-pressed="true"[^>]*>(?:(?!<\/button>).)*Send a link/);
+    expect(html.match(/<button[^>]*disabled=""[^>]*aria-pressed/g)?.length).toBe(2);
+  });
+
+  it("a live answer of this session locks the card too (P2-c)", () => {
+    const rid = "fedcba9876543210fedcba9876543210";
+    const picker = {
+      type: "template",
+      props: { name: "optionPicker", data: { options: [{ id: "a", label: "Forward" }] } },
+      request_id: rid,
+    };
+    const message = {
+      id: "a4", role: "assistant" as const, content: "", timestamp: 1, streaming: true,
+      segments: segs("Pick one."),
+      customEvents: [{ name: "generative_ui", value: picker, segmentCutoff: 1 }],
+    };
+    const html = renderToStaticMarkup(createElement(MessageBubble, {
+      message, sessionId: "s1", askAnswers: new Map([[rid, "Selected: Forward"]]) }));
+    expect(html).toContain(">Sent<");
+    expect(html).toContain('aria-pressed="true"');
   });
 
   it("a new answer handler reaches the bubble", () => {

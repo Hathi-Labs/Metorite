@@ -15,7 +15,8 @@ import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
-import { genUiFlow, genUiPlacement } from "@/lib/chatPlacement";
+import { genUiFlow, genUiPlacement, type FlowBlock } from "@/lib/chatPlacement";
+import { answersFromTools } from "@/lib/askAnswers";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
@@ -104,6 +105,7 @@ function MessageBubble({
   sessionId,
   onChoice,
   onHitlRespond,
+  askAnswers,
   onFileOpen,
   onResend,
   onRetryMessage,
@@ -120,6 +122,9 @@ function MessageBubble({
    *  answers resume the parked run via /agent/respond-input instead of being
    *  sent as a new chat message. Falls back to onChoice when absent. */
   onHitlRespond?: (requestId: string, answer: string) => void;
+  /** The answers this session sent to blocking cards, by `request_id`
+   *  (`lib/askAnswers.ts`). A card that has one stays locked on a remount. */
+  askAnswers?: ReadonlyMap<string, string>;
   onFileOpen?: (entry: FileEntry) => void;
   onResend?: (content: string) => void;
   onRetryMessage?: (m: ChatMessage) => void;
@@ -250,6 +255,8 @@ function MessageBubble({
   // inline as a first-class element (not buried in the "Interactive view"
   // fold) so on-the-fly UI is prominent. Button actions route through onChoice
   // — the same follow-up contract as the ```choices``` MCQ block.
+  // The answers the run itself recorded, so a reload keeps a card answered.
+  const toolAnswers = useMemo(() => answersFromTools(dedupedToolEvents), [dedupedToolEvents]);
   const genUiRaw = (message.customEvents ?? [])
     .filter((e) => e.name === "generative_ui" && e.value != null);
   const genUiEvents = genUiRaw.map((e) => e.value);
@@ -259,7 +266,14 @@ function MessageBubble({
   // then all the cards. `genUiFlow` in lib/chatPlacement.ts is the rule.
   const flow = genUiFlow(message.segments, genUiRaw.map((e) => e.segmentCutoff));
   const head = flow && flow[0]?.kind === "text" ? flow[0].text : "";
-  const flowRest = flow ? (head ? flow.slice(1) : flow) : null;
+  // ONE slot for the cards in both layouts, so a card keeps its place in
+  // the tree when the turn's first text arrives after it, and never
+  // remounts: its block is the first after the head in both (`cards-0`).
+  const blocks: FlowBlock[] = flow
+    ? (head ? flow.slice(1) : flow)
+    : genUiEvents.length > 0
+      ? [{ kind: "cards", indexes: genUiEvents.map((_, i) => i) }]
+      : [];
   const lastTextIdx = flow ? flow.map((b) => b.kind).lastIndexOf("text") : -1;
 
   // The tiers that served this answer (WS-45 S3, D90 Q4), for every member.
@@ -488,6 +502,9 @@ function MessageBubble({
       if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
       else onChoice?.(msg);
     };
+    const answered = requestId
+      ? (askAnswers?.get(requestId) ?? toolAnswers.get(requestId))
+      : undefined;
     // An element that needs the member is marked, so the pin above
     // the composer can find it and scroll to it (§24 rule 1).
     const ask = genUiPlacement(spec) === "ask";
@@ -518,11 +535,11 @@ function MessageBubble({
     if (ask) {
       return (
         <div key={i} {...askAttr} className="min-w-0 outline-none">
-          <GenerativeUINode spec={spec} onAction={act} />
+          <GenerativeUINode spec={spec} onAction={act} answered={answered} />
         </div>
       );
     }
-    return <GenerativeUINode key={i} spec={spec} onAction={act} />;
+    return <GenerativeUINode key={i} spec={spec} onAction={act} answered={answered} />;
   };
 
   // ═══ Assistant message — no bubble, renders directly ═══
@@ -587,16 +604,9 @@ function MessageBubble({
           surface:"panel" specs render as a compact open-chip (the immersive
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
-      {genUiEvents.length > 0 && !flow && (
+      {blocks.length > 0 && (
         <EntityIndexContext.Provider value={entityIndex}>
-        <div className="mt-3 space-y-2">
-          {genUiEvents.map((_, i) => renderGenUi(i))}
-        </div>
-        </EntityIndexContext.Provider>
-      )}
-      {flowRest && flowRest.length > 0 && (
-        <EntityIndexContext.Provider value={entityIndex}>
-          {flowRest.map((b, k) =>
+          {blocks.map((b, k) =>
             b.kind === "cards" ? (
               <div key={`cards-${k}`} className="mt-3 space-y-2">
                 {b.indexes.map((i) => renderGenUi(i))}
@@ -692,6 +702,7 @@ export default React.memo(MessageBubble, (a, b) =>
   // render when the card arrived, with a stale `submitText` inside it, so a
   // 409 fallback could queue the answer behind a run that had ended.
   a.onHitlRespond === b.onHitlRespond &&
+  a.askAnswers === b.askAnswers &&
   a.onResend === b.onResend &&
   a.onRetryMessage === b.onRetryMessage &&
   a.onFileOpen === b.onFileOpen &&

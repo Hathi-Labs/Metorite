@@ -70,6 +70,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
      Gmail never changes an id, so a reclaim would fold two Gmail messages with
      one Message-ID into one row. A new caller names `reclaim=`. R7:
      `tests/unit/test_email_rekey_reclaim.py`.
+   - **`forwards_natively` and `forward_message` (`email_app_master_plan.md` §15).**
+     Only Outlook sets the flag. Its `forward_message` calls Graph's
+     `POST /me/messages/{id}/forward`, so Graph copies the files at the server.
+     A 413 of Graph, on a forward or a send, raises `OutlookMailTooLarge`, a
+     `ProviderMailTooLarge`. R7: `tests/unit/test_email_forward.py`.
 
 3. **history_id format is provider-specific:**
    - Gmail: the Google historyId as text, in ASCII digits. While a failed fetch

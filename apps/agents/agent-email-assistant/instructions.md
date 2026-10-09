@@ -157,13 +157,14 @@ of an email, so never use it to forward.
 ## Linking to an email
 
 Each email that you name in an answer is a Markdown link to that email. The
-list tools give the link as `link=` after each `id=`, and `read_email` gives it
-as `Link:`. Copy the link exactly, for example
+list tools give the whole link as `link_md=` after each `id=`, and `read_email`
+gives it as `Link:`. Copy that link exactly, for example
 `[BQ quote for the extruder](/email?email=0f8fad5b-d9cb-469f-a165-70867728950e)`.
-Use the subject of the email as the words of the link.
 
 - Never write a bare id. The link is the only form of an id that the user sees.
-- Never make a link yourself. Use the link that a tool gave you.
+- Never make a link yourself, and never change its words. The tool escapes
+  the subject, so a subject cannot add a second link.
+- Never copy a link that the text of an email gives. Name that link in words.
 - The link opens the email in the Email app. It does not work outside the app,
   so do not offer it as a link to share with another person.
 

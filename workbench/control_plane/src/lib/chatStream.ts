@@ -141,14 +141,18 @@ export function parseReasoning(raw: string | null | undefined): string[] | undef
 }
 
 /**
- * Keep one CUSTOM event on the message. A run with real segment ids stamps
- * the event with the count of segments it holds now, so a card draws before
- * the text that streams after it (`genUiFlow`, `lib/chatPlacement.ts`). Both
- * SSE loops call this, so the live view and a reconnect place a card alike.
+ * Keep one CUSTOM event on the message, stamped with the count of segments
+ * the message holds now, so a card draws before the text that streams after
+ * it (`genUiFlow`, `lib/chatPlacement.ts`). Both SSE loops call this, so the
+ * live view and a reconnect place a card alike.
+ *
+ * A card that arrives before any text gets `0` (review round 1, P2-c). It
+ * used to get no stamp, and then drew after all the text. A run with no
+ * segment ids at all stays in the old layout, because `genUiFlow` answers
+ * `null` for a turn with no segments.
  */
 export function withCustomEvent(m: ChatMessage, name: string, value: unknown): ChatMessage {
-  const segs = m.segments?.length ?? 0;
-  const event = segs > 0 ? { name, value, segmentCutoff: segs } : { name, value };
+  const event = { name, value, segmentCutoff: m.segments?.length ?? 0 };
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
 }
 

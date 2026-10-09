@@ -15,19 +15,34 @@ original, in this order:
    the mailbox of the mail is 404 too, as for a reply (EM-T8a, D-EM-19).
 2. The files. ``include_attachments`` (default true) takes every file of the
    mail. ``attachment_ids`` takes the named files only, and each must be a
-   file of THIS mail. The stored sizes are checked against
-   :data:`MAX_FORWARD_BYTES` before any byte is fetched (413).
-3. The bytes of each file, through ``_fetch_owned_attachment``, the ONE owned
-   fetch of a file (ownership, the tenant cache, the provider). A file that
-   the provider gives no bytes for (an attached mail, a cloud link) stops the
-   forward with 422. A forward never goes out without a file the member asked
-   for, the rule of H-201 part 3.
-4. The body: the note and the signature of the mailbox, then a standard
-   forwarded header (From, Date, Subject, To), then the original body. The
-   HTML of the original is kept when the mail has it: the stored HTML, then
-   the HTML cache of the reading pane, then one read of the provider.
-5. One send through ``provider_session``, the same seam and the same 413
-   mapping as ``POST /email/send``.
+   file of THIS mail. An IMAP mailbox forwards no file (422).
+3. The note and the signature of the mailbox.
+4. The send, by one of two paths:
+
+   a. **Outlook with every file** (``forwards_natively``): Graph's own
+      ``POST /me/messages/{id}/forward``. Graph copies the files at the
+      server, so a forward of any size sends no file through Metorite. Its
+      ``/me/sendMail`` takes files inline and refuses a body over about
+      4 MB, which is why the first build failed there after the approval.
+      Graph's forward carries every file or none, so a SUBSET of the files
+      on Outlook answers 422 (:data:`OUTLOOK_SUBSET`). That is a choice:
+      a forward with some files, rebuilt here, would meet the same inline
+      limit again.
+   b. **Every other forward** rebuilds the mail. The stored sizes are checked
+      against :data:`MAX_FORWARD_BYTES` before any fetch (413). Each file
+      comes through ``_fetch_owned_attachment``, the ONE owned fetch of a
+      file. A file that the provider gives no bytes for (an attached mail, a
+      cloud link) stops the forward with 422, so a forward never goes out
+      without a file the member asked for (H-201 part 3). The body is the
+      note, a standard forwarded header (From, Date, Subject, To), then the
+      original. The HTML of the original is kept: the stored HTML, then the
+      HTML cache of the reading pane, then one read of the provider.
+
+   Both paths answer a mail that is too large with 413 (``_mail_too_large``,
+   and ``OutlookMailTooLarge`` for Graph). Every other provider failure gets
+   a reason (:func:`_provider_refusal`): the provider's own 401, 404 or 429,
+   a 422 for any other refusal, and a 502 when the provider is down. Never a
+   bare 500.
 
 What a forward does NOT do: it threads into nothing (a forward is a new
 conversation), it writes no row of ``email_messages`` (the next sync brings
@@ -48,9 +63,12 @@ from __future__ import annotations
 
 import html as _html
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
+import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.email.core import (
@@ -75,6 +93,13 @@ MAX_FORWARD_BYTES = 25 * 1024 * 1024
 FORWARD_NOT_IN_MAILBOX = (
     "The mail to forward is not in that mailbox. Forward it from the mailbox "
     "that holds it, or leave account_id out."
+)
+
+#: The 422 of a subset of the files on an Outlook mailbox (see 4a above).
+OUTLOOK_SUBSET = (
+    "On an Outlook mailbox, a forward carries every file of the email or "
+    "none of them, so nothing was sent. Forward it with all its files, or "
+    "with none."
 )
 
 _IMAP_FILES = (
@@ -211,8 +236,9 @@ async def forward_email(
     """Forward one of the caller's own mails, with its original files.
 
     Answers ``{"id", "ok", "subject", "attachments", "bytes"}``. 404 for a
-    mail or a file that is not the caller's, 413 above
-    :data:`MAX_FORWARD_BYTES`, 422 for a file the provider gives no bytes for.
+    mail or a file that is not the caller's, 413 for a mail that is too large,
+    422 for a file the provider gives no bytes for or a subset on Outlook, and
+    a reason for each other provider failure (:func:`_provider_refusal`).
     """
     owner = user.email or "anonymous"
     mid = _canonical_uuid(req.message_id)
@@ -255,35 +281,8 @@ async def forward_email(
             chosen = list(files) if req.include_attachments else []
         if chosen and str(row.provider or "").lower() == "imap":
             raise HTTPException(status_code=422, detail=_IMAP_FILES)
-        stored = sum(int(f.size_bytes or 0) for f in chosen)
-        if stored > MAX_FORWARD_BYTES:
-            raise _too_big(stored)
 
-        # 3. The bytes, through the one owned fetch of a file.
-        attachments: list[dict[str, Any]] = []
-        total = 0
-        for f in chosen:
-            got = await _fetch_owned_attachment(db, str(f.id), user)
-            if not got.content:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"The mail provider gave no bytes for the file "
-                        f"'{str(got.row.filename or 'file')[:200]}'. It can be an "
-                        "attached mail or a link to a cloud file, so nothing was "
-                        "sent. Forward it without that file."
-                    ),
-                )
-            total += len(got.content)
-            if total > MAX_FORWARD_BYTES:
-                raise _too_big(total)
-            attachments.append({
-                "filename": got.row.filename or "attachment",
-                "mime_type": got.row.mime_type or "application/octet-stream",
-                "content": got.content,
-            })
-
-        # 4. The signature of the mailbox goes under the note, as on a send.
+        # 3. The note and the signature of the mailbox, as on a send.
         from gateway.routes.email.signature import build_signed_bodies
         sig_row = (await db.execute(text(
             "SELECT signature FROM email_assistant_settings WHERE account_id = :aid"
@@ -292,21 +291,47 @@ async def forward_email(
             (sig_row.signature if sig_row else "") or "", req.note or "", None)
         if note_text.strip() and not (note_html or "").strip():
             note_html = _html.escape(note_text).replace("\n", "<br>")
+        subject = forward_subject(row.subject)
 
         # ``drafting`` imports ``send``, so the 413 mapper comes in here too.
         from gateway.routes.email.automation.drafting import _mail_too_large
 
         async with provider_session(db, owner, account_id=account_id) as sess:
+            native = bool(getattr(sess.provider, "forwards_natively", False))
+            every_file = bool(chosen) and len(chosen) == len(files)
+
+            # 4a. Outlook, with every file: Graph forwards at the server, so
+            #     no file passes through here and no size cap of ours applies.
+            if native and every_file:
+                with _mail_too_large(), _provider_refusal():
+                    sent_id = await sess.provider.forward_message(
+                        row.provider_message_id, req.to, cc=req.cc, bcc=req.bcc,
+                        comment=note_text, subject=subject,
+                    )
+                sent_names = [str(f.filename or "attachment") for f in chosen]
+                total = sum(int(f.size_bytes or 0) for f in chosen)
+                _log.info("email.forwarded", account_id=account_id, message_id=mid,
+                          attachments=len(sent_names), bytes=total, native=True)
+                return {"id": sent_id, "ok": True, "subject": subject,
+                        "attachments": sent_names, "bytes": total}
+            # Graph's forward carries every file or none of them, so a subset
+            # on Outlook would leave files out of the member's sight.
+            if native and chosen:
+                raise HTTPException(status_code=422, detail=OUTLOOK_SUBSET)
+
+            # 4b. Every other forward rebuilds the mail: the bytes of each file
+            #     through the one owned fetch, then one send.
+            attachments, total = await _fetch_files(db, chosen, user)
+
             original_text = row.body_text or ""
             original_html = row.body_html or None
             if not original_html or not original_text.strip():
                 original_text, original_html = await _original_body(
                     sess, row, user, original_text, original_html)
-            subject = forward_subject(row.subject)
             body_text, body_html = forward_bodies(
                 note_text, note_html, forward_header(row),
                 original_text or row.snippet or "", original_html)
-            with _mail_too_large():
+            with _mail_too_large(), _provider_refusal():
                 sent_id = await sess.provider.send_message(
                     to=req.to,
                     subject=subject,
@@ -321,7 +346,7 @@ async def forward_email(
 
     _log.info(
         "email.forwarded", account_id=account_id, message_id=mid,
-        attachments=len(attachments), bytes=total,
+        attachments=len(attachments), bytes=total, native=False,
     )
     return {
         "id": sent_id,
@@ -330,6 +355,105 @@ async def forward_email(
         "attachments": [a["filename"] for a in attachments],
         "bytes": total,
     }
+
+
+async def _fetch_files(
+    db: Any, chosen: list[Any], user: UserContext,
+) -> tuple[list[dict[str, Any]], int]:
+    """The bytes of each chosen file, through the one owned fetch of a file.
+
+    The stored sizes are checked against :data:`MAX_FORWARD_BYTES` before any
+    fetch, and the fetched bytes after each one (413). A file with no bytes
+    stops the forward with 422.
+    """
+    stored = sum(int(f.size_bytes or 0) for f in chosen)
+    if stored > MAX_FORWARD_BYTES:
+        raise _too_big(stored)
+    attachments: list[dict[str, Any]] = []
+    total = 0
+    for f in chosen:
+        with _provider_refusal():
+            got = await _fetch_owned_attachment(db, str(f.id), user)
+        if not got.content:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The mail provider gave no bytes for the file "
+                    f"'{str(got.row.filename or 'file')[:200]}'. It can be an "
+                    "attached mail or a link to a cloud file, so nothing was "
+                    "sent. Forward it without that file."
+                ),
+            )
+        total += len(got.content)
+        if total > MAX_FORWARD_BYTES:
+            raise _too_big(total)
+        attachments.append({
+            "filename": got.row.filename or "attachment",
+            "mime_type": got.row.mime_type or "application/octet-stream",
+            "content": got.content,
+        })
+    return attachments, total
+
+
+@contextmanager
+def _provider_refusal() -> Iterator[None]:
+    """Answer a failed provider call with a reason, never a bare 500.
+
+    The detail names the status and Graph's or Google's own error code, and
+    never the URL, because the text of an ``httpx`` error holds it. A 4xx of
+    the provider is the provider refusing THIS mail: 422, or the provider's
+    own 401, 404 or 429. A 5xx or a network failure is the provider being
+    down: 502, because a 4xx would tell a caller to change a request that was
+    right.
+    """
+    try:
+        yield
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        code = _provider_error_code(exc.response)
+        _log.warning("email.forward_refused", status=status, code=code)
+        named = f" ({code})" if code else ""
+        if status == 401:
+            raise HTTPException(status_code=401, detail="Email account authentication failed") from None
+        if status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="The mail provider no longer holds this email, so nothing was sent.",
+            ) from None
+        if status == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="The mail provider asked for a pause. Nothing was sent. Try again later.",
+                headers={"Retry-After": exc.response.headers.get("Retry-After", "60")},
+            ) from None
+        if 400 <= status < 500:
+            raise HTTPException(
+                status_code=422,
+                detail=f"The mail provider refused the forward: HTTP {status}{named}. Nothing was sent.",
+            ) from None
+        raise HTTPException(
+            status_code=502,
+            detail=f"The mail provider failed: HTTP {status}{named}. Nothing was sent.",
+        ) from None
+    except httpx.TransportError as exc:
+        _log.warning("email.forward_unreached", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail="The mail provider did not answer, so nothing was sent.",
+        ) from None
+
+
+def _provider_error_code(resp: httpx.Response) -> str:
+    """The provider's own error code (Graph ``error.code``, Google
+    ``error.status``), cut short, else ``""``. Never the message text."""
+    try:
+        err = resp.json().get("error")
+    except Exception:
+        return ""
+    if isinstance(err, dict):
+        code = err.get("code") if isinstance(err.get("code"), str) else err.get("status")
+        return re.sub(r"[^A-Za-z0-9_.-]", "", str(code or ""))[:60]
+    return ""
 
 
 async def _original_body(

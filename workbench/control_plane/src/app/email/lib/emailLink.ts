@@ -11,9 +11,10 @@
  *   open survives a refresh;
  * - the page's deep-link reader (`components/EmailDeepLink.tsx`), which
  *   reads the same two names back;
- * - the email agent prints the same shape in its tool output as `link=`
+ * - the email agent prints the same shape inside `link_md=` in its tool output
  *   (`_email_link` in `apps/agents/agent-email-assistant/agents.py`), and
- *   `tests/unit/test_email_forward_tool.py` holds the two to one shape.
+ *   `tests/unit/test_email_forward.py::TestTheLinks` (the fence
+ *   `email-chat-links`) holds the two to one shape.
  *
  * The id must be a UUID. A link with anything else in it could name another
  * page, so the helper answers `null` for it. `account` is optional, because

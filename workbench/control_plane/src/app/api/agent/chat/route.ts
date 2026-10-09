@@ -393,11 +393,11 @@ async function translateAndPersistStream(
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
           // A dispatched browser action (H-164) is a side effect, not part
           // of the answer: forwarded to the page, never saved on the message.
-          // The count of segments now, so the saved card keeps its place in
-          // the turn (`genUiFlow`, lib/chatPlacement.ts). Only an id-carrying
-          // run has segments, the same rule as a tool's `segmentCutoff`.
+          // The count of segments now, 0 before the first text, so the
+          // saved card keeps its place in the turn (`genUiFlow`,
+          // lib/chatPlacement.ts). The live hook stamps it the same way.
           if (cev.name !== "frontend_tool") {
-            customEvents.push(segments.length > 0 ? { ...cev, segmentCutoff: segments.length } : cev);
+            customEvents.push({ ...cev, segmentCutoff: segments.length });
           }
           out = { type: "custom", name: cev.name, value: cev.value };
         } else if (t === "SUB_AGENT_TEXT_DELTA") {

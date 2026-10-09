@@ -76,6 +76,9 @@ def test_hitl_blocks_until_user_responds(queue: asyncio.Queue):
     req_id, res = asyncio.run(_run())
     assert res["ok"] is True
     assert res["response"] == 'Form — {"temp": 22}'
+    # The result names its card, so the chat keeps the card answered after a
+    # reload (workbench lib/askAnswers.ts, review round 1 P2-c).
+    assert res["request_id"] == req_id
     assert req_id not in executor._pending_user_input, "registry must be cleaned"
 
 

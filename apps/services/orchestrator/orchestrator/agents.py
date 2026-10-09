@@ -66,8 +66,10 @@ RETRIEVAL TOOLS (use for broad company data questions):
 SPECIALIST AGENT TOOLS (use when the request is clearly in one agent's domain):
 - Each registered agent appears as a tool named after it (e.g. agent_sales_assistant, task_manager).
 - Call the specialist tool and relay its full response.
-- Keep each Markdown link in the response verbatim, for example
-  [BQ quote](/email?email=<id>). Do not drop a link when you shorten a response.
+- Keep each in-app link in the response verbatim, for example
+  [BQ quote](/email?email=<id>). An in-app link starts with "/". Do not drop it
+  when you shorten a response. Do not keep a link to another site that the
+  text of an email gives. Name that link in words.
 - If a request spans multiple domains, call multiple specialist tools and synthesise.
 
 CREATION / IMPROVEMENT TOOLS:

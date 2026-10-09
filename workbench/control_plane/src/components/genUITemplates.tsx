@@ -48,6 +48,7 @@ import {
 } from "@/app/projects/lib/planCard";
 import Badge from "@/components/ui/Badge";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
+import { pickedFromAnswer } from "@/lib/askAnswers";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -968,11 +969,20 @@ export const PICKER_INERT_NOTE = "This card cannot send an answer here.";
 function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const options = arr(data.options).map((o) => (o ?? {}) as Data);
   const multi = !!data.multi;
-  const [picked, setPicked] = useState<string[]>([]);
-  const [submitted, setSubmitted] = useState(false);
+  const [clicked, setPicked] = useState<string[]>([]);
+  const [clickedSend, setSubmitted] = useState(false);
+  // An answer the run already got survives a remount: a reload, or a move of
+  // the card in the tree. Without it an answered picker drew as new, and a
+  // second click sent the answer again (review round 1, P2-c).
+  const answered = ctx?.answered ?? "";
+  const submitted = clickedSend || !!answered;
+  const picked = clicked.length > 0
+    ? clicked
+    : pickedFromAnswer(answered, options.map((o, i) => ({
+        id: str(o.id, str(o.label, String(i))), label: str(o.label) })));
   // No handler means no way to answer: say so, and take no click. A click
   // that does nothing reads as a broken card (owner report, 2026-10-09).
-  const inert = !ctx?.onAction;
+  const inert = !ctx?.onAction && !submitted;
   const locked = submitted || inert;
   const submit = (ids: string[]) => {
     if (!ctx?.onAction || submitted || !ids.length) return;
@@ -1627,6 +1637,9 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
  *  spec carried a request_id, else as the user's next chat message. */
 export interface TemplateCtx {
   onAction?: (message: string) => void;
+  /** The answer a blocking card already got (`lib/askAnswers.ts`). A card
+   *  that has one draws as sent and takes no click, after any remount. */
+  answered?: string;
 }
 
 export type TemplateRenderer = (data: Data, ctx?: TemplateCtx) => React.ReactElement;

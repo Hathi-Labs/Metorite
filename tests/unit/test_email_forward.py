@@ -42,6 +42,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from acb_auth.roles import UserContext, UserRole
 from fastapi import HTTPException
@@ -72,13 +73,17 @@ class _Harness:
     predicate as text: a row goes back only to its owner.
     """
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, files: dict[str, bytes] | None = None,
-                 sizes: dict[str, int | None] | None = None, provider: str = "microsoft",
-                 body_html: str | None = "<html><body><p>The <b>BQ</b> quote.</p></body></html>",
-                 body_text: str = "The BQ quote.", signature: str = "") -> None:
+    def __init__(  # noqa: C901 - the fakes close over one harness
+        self, monkeypatch: pytest.MonkeyPatch, *, files: dict[str, bytes] | None = None,
+        sizes: dict[str, int | None] | None = None, provider: str = "microsoft",
+        body_html: str | None = "<html><body><p>The <b>BQ</b> quote.</p></body></html>",
+        body_text: str = "The BQ quote.", signature: str = "",
+        native: bool = False, send_error: BaseException | None = None,
+    ) -> None:
         self.files = files if files is not None else {PDF: b"%PDF-1.7 quote", SHEET: b"PK sheet"}
         self.sizes = sizes or {}
         self.sent: list[dict[str, Any]] = []
+        self.forwarded: list[dict[str, Any]] = []
         self.fetched: list[str] = []
         self.body_reads = 0
         self.row = SimpleNamespace(
@@ -143,9 +148,18 @@ class _Harness:
             yield SimpleNamespace(provider=_AttProvider())
 
         class _SendProvider:
+            forwards_natively = native
+
             async def send_message(self, **kw: Any) -> str:
+                if send_error is not None:
+                    raise send_error
                 h.sent.append(kw)
                 return "sent-1"
+
+            async def forward_message(self, pmid: str, to: list[str], **kw: Any) -> None:
+                if send_error is not None:
+                    raise send_error
+                h.forwarded.append({"pmid": pmid, "to": to, **kw})
 
             async def get_message_body(self, _pmid: str) -> Any:
                 h.body_reads += 1
@@ -303,6 +317,142 @@ class TestTheForwardRoute:
         assert "/email/forward" in [r.path for r in router.routes]
 
 
+def _graph_error(status: int, code: str) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/sendMail?secret=1")
+    resp = httpx.Response(status, json={"error": {"code": code, "message": "secret text"}},
+                          request=req)
+    return httpx.HTTPStatusError("boom https://graph.microsoft.com/v1.0/me", request=req,
+                                 response=resp)
+
+
+class TestTheOutlookPath:
+    """P1-b of review round 1. Graph's sendMail takes files inline and refuses
+    a body over about 4 MB, so an Outlook forward of a real PDF failed AFTER
+    the member approved it, with a 500."""
+
+    async def test_every_file_goes_by_graph_forward_with_no_fetch_and_no_cap(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch, native=True, sizes={PDF: 40 * MB, SHEET: 1 * MB})
+        out = await _forward(note="See below.", cc=["c@fracktal.test"], bcc=["b@fracktal.test"])
+        assert h.sent == [] and h.fetched == [], "no byte of a file passed through Metorite"
+        [call] = h.forwarded
+        assert call["pmid"] == "pm-1" and call["to"] == ["geo@fracktal.test"]
+        assert call["cc"] == ["c@fracktal.test"] and call["bcc"] == ["b@fracktal.test"]
+        assert call["comment"] == "See below."
+        assert call["subject"] == "Fwd: BQ quote for the extruder"
+        assert out["attachments"] == ["quote.pdf", "rates.xlsx"]
+
+    async def test_a_subset_of_the_files_on_outlook_is_422(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch, native=True)
+        with pytest.raises(HTTPException) as exc:
+            await _forward(attachment_ids=[PDF])
+        assert exc.value.status_code == 422
+        assert exc.value.detail == fwd.OUTLOOK_SUBSET
+        assert h.sent == [] and h.forwarded == [] and h.fetched == []
+
+    async def test_every_file_named_by_id_is_still_the_native_path(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch, native=True)
+        await _forward(attachment_ids=[SHEET, PDF])
+        assert len(h.forwarded) == 1 and h.sent == []
+
+    async def test_no_files_on_outlook_rebuilds_the_mail_without_files(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch, native=True)
+        await _forward(include_attachments=False)
+        assert h.forwarded == [] and h.sent[0]["attachments"] is None
+
+    @pytest.mark.parametrize(("status", "code", "answer"), [
+        (400, "ErrorInvalidRecipients", 422),
+        (403, "ErrorAccessDenied", 422),
+        (404, "ErrorItemNotFound", 404),
+        (429, "ApplicationThrottled", 429),
+        (503, "ServiceUnavailable", 502),
+    ])
+    async def test_a_provider_error_is_a_reason_never_a_500(
+        self, monkeypatch, status: int, code: str, answer: int,
+    ) -> None:
+        _Harness(monkeypatch, native=True, send_error=_graph_error(status, code))
+        with pytest.raises(HTTPException) as exc:
+            await _forward()
+        assert exc.value.status_code == answer
+        assert "graph.microsoft.com" not in exc.value.detail
+        assert "secret" not in exc.value.detail
+        if answer == 422:
+            assert code in exc.value.detail
+
+    async def test_a_gmail_refusal_on_the_rebuild_is_a_reason_too(self, monkeypatch) -> None:
+        _Harness(monkeypatch, send_error=_graph_error(400, "failedPrecondition"))
+        with pytest.raises(HTTPException) as exc:
+            await _forward()
+        assert exc.value.status_code == 422
+
+    async def test_a_network_failure_is_502(self, monkeypatch) -> None:
+        _Harness(monkeypatch, send_error=httpx.ConnectError("down"))
+        with pytest.raises(HTTPException) as exc:
+            await _forward()
+        assert exc.value.status_code == 502
+
+    async def test_too_large_at_graph_is_413(self, monkeypatch) -> None:
+        from email_ingestion.providers.outlook import OutlookMailTooLarge
+        _Harness(monkeypatch, native=True, send_error=OutlookMailTooLarge(0, None))
+        with pytest.raises(HTTPException) as exc:
+            await _forward()
+        assert exc.value.status_code == 413
+
+
+class TestTheGraphForward:
+    """``OutlookProvider.forward_message`` against a stubbed Graph."""
+
+    @staticmethod
+    def _provider(handler: Any) -> Any:
+        from email_ingestion.providers.outlook import GRAPH_API_BASE, OutlookProvider
+        p = OutlookProvider({"access_token": "a", "refresh_token": "r"})
+        p._http = httpx.AsyncClient(base_url=GRAPH_API_BASE, transport=httpx.MockTransport(handler))
+        return p
+
+    async def test_it_posts_the_native_forward_with_every_recipient(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen.append(req)
+            return httpx.Response(202)
+
+        p = self._provider(handler)
+        assert p.forwards_natively is True
+        out = await p.forward_message("AAMk=1", ["geo@f.test"], cc=["c@f.test"],
+                                      bcc=["b@f.test"], comment="See below.", subject="Fwd: X")
+        assert out is None
+        [req] = seen
+        assert req.method == "POST"
+        assert req.url.path == "/v1.0/me/messages/AAMk=1/forward"
+        body = json.loads(req.content)
+        assert body["comment"] == "See below."
+        msg = body["message"]
+        assert [r["emailAddress"]["address"] for r in msg["toRecipients"]] == ["geo@f.test"]
+        assert [r["emailAddress"]["address"] for r in msg["ccRecipients"]] == ["c@f.test"]
+        assert [r["emailAddress"]["address"] for r in msg["bccRecipients"]] == ["b@f.test"]
+        assert msg["subject"] == "Fwd: X"
+        assert "attachments" not in msg, "Graph keeps the files at the server"
+
+    async def test_a_413_raises_the_typed_too_large_error(self) -> None:
+        from email_ingestion.providers.base import ProviderMailTooLarge
+        p = self._provider(lambda req: httpx.Response(413))
+        with pytest.raises(ProviderMailTooLarge):
+            await p.forward_message("m", ["geo@f.test"])
+
+    async def test_a_send_that_graph_refuses_as_too_large_is_typed_too(self) -> None:
+        from email_ingestion.providers.outlook import OutlookMailTooLarge
+        p = self._provider(lambda req: httpx.Response(
+            400, json={"error": {"code": "ErrorMessageSizeExceeded"}}))
+        with pytest.raises(OutlookMailTooLarge):
+            await p.send_message(["geo@f.test"], "S", "body",
+                                 attachments=[{"filename": "a.pdf", "content": b"x"}])
+
+    async def test_another_refusal_stays_an_http_error(self) -> None:
+        p = self._provider(lambda req: httpx.Response(
+            400, json={"error": {"code": "ErrorInvalidRecipients"}}))
+        with pytest.raises(httpx.HTTPStatusError):
+            await p.forward_message("m", ["geo@f.test"])
+
+
 class TestTheSubject:
     @pytest.mark.parametrize(("subject", "expected"), [
         ("BQ quote", "Fwd: BQ quote"),
@@ -389,9 +539,10 @@ class TestTheForwardTool:
         [card] = chat.cards
         assert card["title"] == "Forward this email?"
         detail = card["detail"]
-        assert detail.startswith("From Fracktal · dana@fracktal.in · To geo@fracktal.test")
-        assert "bcc boss@fracktal.test" in detail
-        assert "quote.pdf (2.0 MB)" in detail and "rates.xlsx" in detail
+        # The hidden recipient and the files come first (review round 1, P3).
+        assert detail.startswith(
+            "Bcc boss@fracktal.test · Attachments: quote.pdf (2.0 MB), rates.xlsx (29 KB) · "
+            "From Fracktal · dana@fracktal.in · To geo@fracktal.test")
         assert detail.index("rates.xlsx") < detail.index("Subject:")
         assert card["context"] == "See the quote."
         [(path, body)] = chat.posts
@@ -401,6 +552,22 @@ class TestTheForwardTool:
             "note": "See the quote.", "include_attachments": True, "account_id": BOX,
         }
         assert "with 2 attachment(s)" in out and "Fracktal · dana@fracktal.in" in out
+
+    def test_a_cut_card_says_how_many_it_left_out(self) -> None:
+        to = [f"person{i:02d}@fracktal.test" for i in range(40)]
+        detail = agents._card_detail("Fracktal · dana@fracktal.in", to=to,
+                                     bcc=["hidden@evil.test"], files=["payroll.xlsx"],
+                                     subject="S" * 300)
+        assert len(detail) <= 500
+        assert detail.startswith("Bcc hidden@evil.test · Attachments: payroll.xlsx · From ")
+        shown = sum(1 for t in to if t in detail)
+        assert 0 < shown < 40
+        assert f"+{40 - shown} more" in detail
+        assert detail.index("more") < detail.index("Subject:") if "Subject:" in detail else True
+
+    def test_a_card_that_fits_says_nothing_more(self) -> None:
+        detail = agents._card_detail("Box", to=["a@b.test"], cc=["c@b.test"], subject="Hi")
+        assert detail == "From Box · To a@b.test · Cc c@b.test · Subject: Hi"
 
     async def test_a_no_on_the_card_sends_nothing(self, chat) -> None:
         chat.answer = False
@@ -455,7 +622,7 @@ class TestTheLinks:
         for out in (await agents.query_inbox(BOX), await agents.search_emails("quote"),
                     await agents.find_urgent(BOX)):
             line = next(ln for ln in out.splitlines() if "id=" in ln)
-            assert f"id={MAIL} link=/email?email={MAIL} |" in line, line
+            assert f"id={MAIL} link_md=[BQ quote](/email?email={MAIL}) |" in line, line
 
     async def test_read_email_prints_the_link(self, monkeypatch) -> None:
         async def fake_get(path, params=None):
@@ -464,11 +631,21 @@ class TestTheLinks:
 
         monkeypatch.setattr(agents, "_get", fake_get)
         out = await agents.read_email(MAIL)
-        assert f"Link: /email?email={MAIL}&account={BOX}" in out
+        assert f"Link: [BQ quote](/email?email={MAIL}&account={BOX})" in out
+
+    def test_a_crafted_subject_cannot_plant_a_link(self) -> None:
+        """Review round 1, P2-a: a sender chooses the subject."""
+        md = agents._md_link("Click [here](https://evil.example) `x` a|b", MAIL)
+        assert md == (
+            r"[Click \[here\]\(https://evil.example\) \`x\` a\|b]"
+            f"(/email?email={MAIL})"
+        )
+        assert agents._md_link("x", "../admin") == ""
+        assert agents._md_link("", MAIL) == f"[email](/email?email={MAIL})"
 
     def test_the_orchestrator_keeps_a_link_and_refuses_a_bare_uuid(self) -> None:
         prompt = (REPO / "apps/services/orchestrator/orchestrator/agents.py").read_text(encoding="utf-8")
-        assert "in-app link" in prompt
-        assert "verbatim" in prompt
+        assert "Keep each in-app link in the response verbatim" in prompt
+        assert "Do not keep a link to another site" in prompt
         instructions = (REPO / "apps/agents/agent-orchestrator/instructions.md").read_text(encoding="utf-8")
         assert "/email?email=" in instructions

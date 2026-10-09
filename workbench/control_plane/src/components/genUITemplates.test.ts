@@ -242,6 +242,15 @@ describe("a recommended option says so (owner report, 2026-10-09)", () => {
     expect(html).not.toMatch(/ccFadeUp[^;"]* both/);
   });
 
+  it("an answer the card already got locks it and shows the choice, after any remount (P2-c)", () => {
+    const html = renderToStaticMarkup(createElement(() =>
+      TEMPLATE_REGISTRY.optionPicker({ title: "How?", options }, { answered: "Selected: Send a link" })));
+    expect(html).toContain(">Sent<");
+    expect(html.match(/aria-pressed="true"/g)?.length).toBe(1);
+    expect(html.match(/<button[^>]* disabled=""/g)?.length).toBe(2);
+    expect(html).not.toContain("This card cannot send an answer here.");
+  });
+
   it("with no handler the options take no click, and the card says why", () => {
     const html = picker(undefined);
     expect(html.match(/<button[^>]* disabled=""/g)?.length).toBe(2);

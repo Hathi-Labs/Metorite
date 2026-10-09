@@ -1609,15 +1609,20 @@ async def emit_generative_ui(ui: str) -> dict:
                 _result = await wait_user_future(_fut, 3600)
             finally:
                 _pending_user_input.pop(_request_id, None)
+            # The request id rides in the result, so the chat can tell an
+            # answered card from an open one after a reload (``askAnswers.ts``
+            # in the workbench, review round 1 P2-c).
             return {
                 "ok": True,
                 "response": _result.get("answer", ""),
+                "request_id": _request_id,
                 **_warn_fields(_ui_warnings),
             }
         except Exception:
             return {
                 "ok": True,
                 "response": None,
+                "request_id": _request_id,
                 "note": "user did not respond to the UI",
             }
     except Exception as exc:
