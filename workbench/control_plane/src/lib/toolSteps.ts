@@ -5,7 +5,7 @@
  * A row used to read "Edited Create Task" or "Used Task Detail": the tool's
  * code name, title-cased, behind a verb guessed from a regex. The owner asked
  * for the trail the way a person would say it (2026-10-05): "Read file
- * outputs/…", "Ran a script in the sandbox", "Asked email-assistant",
+ * outputs/…", "Ran a script in the sandbox", "Asked Email assistant",
  * "Created a task", "Wrote report.md".
  *
  * This module is that vocabulary, and the ONLY place a tool name becomes a
@@ -21,6 +21,7 @@
  */
 
 import type { ToolEvent } from "@/components/MarkdownMessage";
+import { agentName } from "@/lib/agentName";
 
 /** What a step does. Drives the icon on the trail's axis. */
 export type StepKind = "read" | "edit" | "search" | "run" | "delegate" | "think" | "other";
@@ -36,9 +37,25 @@ export interface ToolStep {
   /**
    * What the step acted on, when it is short enough to read on one line: a
    * file path, a command's first line, a query. Absent when the label
-   * already says it ("Asked email-assistant", "Wrote report.md").
+   * already says it ("Asked Email assistant", "Wrote report.md").
    */
   target?: string;
+  /**
+   * The agent that a hand-off asked, by its name in words ("Email
+   * assistant"), never its slug. The row draws it as a chip. The label ends
+   * with the same words, so a header that shows only the label still names
+   * the agent.
+   */
+  agent?: string;
+  /**
+   * What the step asked for, in full: the task that a hand-off gave its
+   * agent. The row draws it under the label, wrapped, and clamps a long one
+   * behind a "Show more" toggle. It is never cut.
+   */
+  description?: string;
+  /** The argument keys that the label and the description already show. The
+   *  detail does not show them again. */
+  shownKeys?: string[];
 }
 
 /** The longest target drawn on the one-line row. The detail shows the rest. */
@@ -272,7 +289,59 @@ export function isRunStep(name: string): boolean {
 /** Is this step a hand-off to another agent? */
 export function isDelegateStep(name: string): boolean {
   const bare = bareToolName(name);
-  return bare === "call_agent" || /delegate|spawn_agent|ask_agent/.test(bare);
+  return /^call_agent(_background)?$/.test(bare) || /delegate|spawn_agent|ask_agent/.test(bare);
+}
+
+/** The keys a hand-off names its agent with, in the order they are read. */
+const AGENT_KEYS = ["agent_name", "agent", "name"] as const;
+
+/** The keys a hand-off gives its task in. `call_agent` sends `message`, and
+ *  an orchestrator specialist tool sends `task` (`orchestrator/agents.py`). */
+const TASK_KEYS = ["message", "task", "prompt", "instructions"] as const;
+
+/**
+ * Is this step the orchestrator asking a specialist agent through the
+ * agent's own tool? The orchestrator gives each agent a tool named for it
+ * (`email_assistant`), whose one argument is the `task`
+ * (`_load_specialist_agents_as_tools`). So a tool that no other rung knows,
+ * with a sentence as its only argument `task`, is a hand-off. A sub-agent
+ * name on the event says so directly.
+ */
+function isSpecialistCall(event: Pick<ToolEvent, "args" | "subAgentName">): boolean {
+  if (str(event.subAgentName)) return true;
+  const keys = Object.keys(event.args ?? {});
+  const task = event.args?.task;
+  return keys.length === 1 && keys[0] === "task" && typeof task === "string" && /\s/.test(task.trim());
+}
+
+/** A hand-off as a step: "Asked Email assistant", and the task it gave. */
+function delegateStep(
+  status: StepStatus,
+  slug: string | null,
+  args: Record<string, unknown>,
+  agentKey: string | undefined,
+): ToolStep {
+  const agent = slug ? agentName(slug) : undefined;
+  const taskKey = TASK_KEYS.find((k) => str(args[k]));
+  const description = taskKey ? String(args[taskKey]).trim() : undefined;
+  const shownKeys = [agentKey, taskKey].filter((k): k is string => !!k);
+  return {
+    kind: "delegate",
+    status,
+    label: phrase(V.ask, status, agent ?? "another agent"),
+    ...(agent ? { agent } : {}),
+    ...(description ? { description } : {}),
+    ...(shownKeys.length > 0 ? { shownKeys } : {}),
+  };
+}
+
+/**
+ * The row's words around the agent chip: "Asked" and "Email assistant".
+ * Null when the step names no agent, and the row draws the label whole.
+ */
+export function splitAgentLabel(step: ToolStep): { lead: string; agent: string } | null {
+  if (!step.agent || !step.label.endsWith(step.agent)) return null;
+  return { lead: step.label.slice(0, -step.agent.length).trimEnd(), agent: step.agent };
 }
 
 function statusOf(event: Pick<ToolEvent, "status">): StepStatus {
@@ -313,9 +382,9 @@ export function describeToolStep(
 
   // ── A hand-off to another agent ───────────────────────────────────────────
   if (isDelegateStep(event.name)) {
-    const who = str(event.subAgentName) ?? str(args.agent_name) ?? str(args.agent)
-      ?? str(args.name) ?? "another agent";
-    return { kind: "delegate", status, label: phrase(V.ask, status, who) };
+    const agentKey = AGENT_KEYS.find((k) => str(args[k]));
+    const slug = str(event.subAgentName) ?? (agentKey ? str(args[agentKey]) : null);
+    return delegateStep(status, slug, args, agentKey);
   }
 
   // ── Files ─────────────────────────────────────────────────────────────────
@@ -364,6 +433,11 @@ export function describeToolStep(
       label: phrase(named.verb, status, named.object),
       ...(q ? { target: oneLine(q) } : {}),
     };
+  }
+
+  // ── An agent asked through its own tool (`email_assistant`) ──────────────
+  if (isSpecialistCall(event)) {
+    return delegateStep(status, str(event.subAgentName) ?? bare, args, undefined);
   }
 
   // ── A search with a query ─────────────────────────────────────────────────

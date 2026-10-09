@@ -4,7 +4,7 @@
 //
 // R7 fences named here:
 //   * `trail-step-words`: `describeToolStep` says what a step did, the way a
-//     person would ("Ran a script in the sandbox", "Asked email-assistant",
+//     person would ("Ran a script in the sandbox", "Asked Email assistant",
 //     "Created a task", "Wrote report.md", "Read file outputs/…"), in the
 //     running, done and failed tenses.
 //   * `trail-rail-renders-steps`: a recorded event stream, folded by the SAME
@@ -16,6 +16,12 @@
 //   * `trail-args-cap`: a running row learns its arguments only once they
 //     are a whole object, and a long value is cut to 8 KB with a marker. A
 //     long command is cut in the detail too.
+//   * `trail-args-full`: a step's detail shows every argument value in full,
+//     with its key as a card label ("Task", never "task:"), in the trail's
+//     type. A long value opens clamped behind "Show more", and a credential
+//     shows as "Hidden". A hand-off names its agent in words ("Email
+//     assistant", never `email_assistant`), and shows its task as the step's
+//     description (owner report, 2026-10-09).
 //   * `trail-one-component`: the Projects, Tasks and email rails mount the
 //     shared `AgentChat`, so none of them can draw a second, thinner trail.
 
@@ -24,13 +30,23 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { TOOL_ARGS_CAP, capToolArgs, wholeToolArgs } from "@/lib/toolArgs";
+import {
+  CLAMP_CHARS,
+  TOOL_ARGS_CAP,
+  argFields,
+  capToolArgs,
+  needsClamp,
+  wholeToolArgs,
+} from "@/lib/toolArgs";
+import { agentName } from "@/lib/agentName";
+import { fieldSpec } from "@/lib/cardFields";
 import {
   COMMAND_CAP,
   OUTPUT_CAP,
   bareToolName,
   capOutput,
   describeToolStep,
+  splitAgentLabel,
 } from "@/lib/toolSteps";
 import { applyStreamEvent, applySubAgentEvent, type StreamFold } from "@/lib/chatStream";
 import type { ChatMessage } from "@/hooks/useAgentChat";
@@ -67,11 +83,11 @@ describe("describeToolStep — a step in words", () => {
 
   it("names a hand-off by the agent it asked", () => {
     expect(step("call_agent", { agent_name: "email-assistant", task: "find the PO" }).label).toBe(
-      "Asked email-assistant",
+      "Asked Email assistant",
     );
     expect(
       describeToolStep({ name: "call_agent", status: "running", subAgentName: "email-assistant" }).label,
-    ).toBe("Asking email-assistant");
+    ).toBe("Asking Email assistant");
   });
 
   it("names the Projects tools as acts on tasks and projects", () => {
@@ -173,7 +189,7 @@ describe("the rail renders the agent's steps from a recorded stream", () => {
 
   it("draws one row per step, in order, with its words", () => {
     expect(rows(html).map(([, text]) => text)).toEqual([
-      "Asked email-assistant done ▾",
+      "Asked Email assistant done ▾",
       "Ran a script in the sandbox python summarise.py outputs/po.csv done ▾",
       "Created a task failed failed ▾",
       "Writing report.md outputs/report.md running ▴",
@@ -211,7 +227,8 @@ describe("a script step shows its command and output when open", () => {
   it("shows a hand-off's own steps under it", () => {
     const asked = replay(RECORDED).toolEvents!.find((t) => t.id === "t1")!;
     const open = renderToStaticMarkup(createElement(ToolStepRow, { event: asked, open: true }));
-    expect(open).toContain("email-assistant");
+    // The branch's own header names the agent in words, not its slug.
+    expect(open).toMatch(/font-medium truncate">Email assistant</);
     expect(open).toContain("Read an email");
   });
 
@@ -272,5 +289,132 @@ describe("every rail mounts the shared chat, so the trail is the same one", () =
 
   it("the shared chat's working line names the step through the one vocabulary", () => {
     expect(read("components/AgentChat.tsx")).toMatch(/describeToolStep\(running\)\.label/);
+  });
+});
+
+// ─── trail-args-full ────────────────────────────────────────────────────────
+
+/**
+ * The owner's report (2026-10-09). On /chat, the orchestrator asked
+ * email-assistant through the agent's own tool, `email_assistant`. The open
+ * step showed `email_assistant`, the raw name, and then
+ * `task: In the Fracktal mailbox (vjvarada@fracktal.in), find the email
+ * thread related to`, cut at 80 characters with no ellipsis and no way to
+ * read the rest (`ArgsDetail`, `.slice(0, 80)`).
+ */
+const OWNER_TASK =
+  "In the Fracktal mailbox (vjvarada@fracktal.in), find the email thread related to " +
+  "the Welmont School lab order. Read every message in the thread, list who sent what " +
+  "and when, and say which questions are still open. Then draft a short reply to the " +
+  "latest message that answers the delivery question, and do not send it.";
+
+const OWNER_STEP: ToolEvent = {
+  id: "o1",
+  name: "email_assistant",
+  status: "done",
+  args: { task: OWNER_TASK },
+  result: "Found the thread: 6 messages.",
+  startedAt: 1000,
+  endedAt: 4200,
+};
+
+describe("a step's arguments show in full, in words", () => {
+  const label = (k: string) => fieldSpec(k).label;
+
+  it("never cuts a value: a long one is whole, and opens clamped", () => {
+    expect(OWNER_TASK.length).toBeGreaterThan(280);
+    const [f] = argFields({ task: OWNER_TASK }, label);
+    expect(f.text).toBe(OWNER_TASK);
+    expect(f.clamp).toBe(true);
+  });
+
+  it("clamps past three lines or about three lines of text, and not before", () => {
+    expect(needsClamp("x".repeat(CLAMP_CHARS))).toBe(false);
+    expect(needsClamp("x".repeat(CLAMP_CHARS + 1))).toBe(true);
+    expect(needsClamp(["a", "b", "c"].join("\n"))).toBe(false);
+    expect(needsClamp(["a", "b", "c", "d"].join("\n"))).toBe(true);
+    expect(argFields({ query: "PO 4471" }, label)[0].clamp).toBe(false);
+  });
+
+  it("names each key in product words, from the card labels", () => {
+    const fields = argFields({ task: "a b", due_at: "2026-10-09", account_id: "a1", tags: ["ops", "bug"] }, label);
+    expect(fields.map((f) => f.label)).toEqual(["Task", "Due", "Account id", "Tags"]);
+    expect(fields[3].text).toBe("ops, bug");
+    expect(argFields({ _raw: '{"x": ' }, label)[0].label).toBe("Arguments");
+  });
+
+  it("keeps a credential off the screen", () => {
+    const fields = argFields({ password: "hunter2", api_key: "sk-1", access_token: "t", max_tokens: 50 }, label);
+    expect(fields.filter((f) => f.hidden).map((f) => f.key)).toEqual(["password", "api_key", "access_token"]);
+    expect(fields.every((f) => !f.hidden || f.text === "")).toBe(true);
+    expect(fields.find((f) => f.key === "max_tokens")?.text).toBe("50");
+  });
+
+  it("leaves out the keys the row already shows, and empty values", () => {
+    expect(argFields({ task: "a b", note: "", extra: "kept" }, label, ["task"]).map((f) => f.key)).toEqual(["extra"]);
+  });
+});
+
+describe("a hand-off names its agent in words, and shows its task", () => {
+  it("reads an agent slug as words, in either spelling", () => {
+    expect(agentName("email_assistant")).toBe("Email assistant");
+    expect(agentName("email-assistant")).toBe("Email assistant");
+    expect(agentName("projects-assistant")).toBe("Projects assistant");
+  });
+
+  it("reads the orchestrator's specialist tool as a hand-off, with the task in full", () => {
+    const step = describeToolStep(OWNER_STEP);
+    expect(step).toMatchObject({
+      kind: "delegate",
+      label: "Asked Email assistant",
+      agent: "Email assistant",
+      description: OWNER_TASK,
+      shownKeys: ["task"],
+    });
+    expect(splitAgentLabel(step)).toEqual({ lead: "Asked", agent: "Email assistant" });
+    expect(describeToolStep({ ...OWNER_STEP, status: "running" }).label).toBe("Asking Email assistant");
+  });
+
+  it("reads call_agent's message as the task", () => {
+    const step = describeToolStep({
+      name: "call_agent", status: "done",
+      args: { agent_name: "crm-assistant", message: "Find the Acme deal" },
+    });
+    expect(step).toMatchObject({ agent: "Crm assistant", description: "Find the Acme deal" });
+    expect(step.shownKeys).toEqual(["agent_name", "message"]);
+  });
+
+  it("does not take a tool with a task reference for a hand-off", () => {
+    expect(describeToolStep({ name: "frobnicate", status: "done", args: { task: "#12" } }).kind).toBe("other");
+  });
+
+  it("draws the owner's step: the agent chip, the whole task once, a toggle, no raw names", () => {
+    for (const open of [false, true]) {
+      const html = renderToStaticMarkup(createElement(ToolStepRow, { event: OWNER_STEP, open }));
+      expect(html).toContain(OWNER_TASK); // whole, never cut
+      expect(html.split(OWNER_TASK).length - 1).toBe(1); // the detail does not repeat it
+      expect(html).toContain("data-step-description");
+      expect(html).toContain("data-clamped");
+      expect(html).toContain("Show more");
+      expect(html).toContain(">Email assistant<");
+      expect(html).not.toContain("email_assistant");
+      expect(html).not.toContain("task:");
+    }
+  });
+
+  it("draws the other arguments as labels and values, in the trail's type", () => {
+    const html = renderToStaticMarkup(createElement(ToolStepRow, {
+      event: {
+        id: "q", name: "query_inbox", status: "done",
+        args: { query: "Welmont " + "order ".repeat(60), due_at: "2026-10-09" },
+      },
+      open: true,
+    }));
+    const args = /<dl data-step-args=""[^>]*>([\s\S]*?)<\/dl>/.exec(html)?.[1] ?? "";
+    expect(args).toContain(">Query<");
+    expect(args).toContain(">Due<");
+    expect(args).toContain("order ".repeat(60).trim());
+    expect(args).not.toContain("font-mono");
+    expect(html).toContain("Show more");
   });
 });
