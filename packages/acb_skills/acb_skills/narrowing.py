@@ -15,8 +15,9 @@ matter. The ONE tool, ``narrow_and_read``, does three steps:
    of :data:`PICK_BOUND_S` (§3.3). The state is the query and the summaries,
    never a full body.
 3. **READ.** The adapter reads at most :data:`READ_CAP` kept items in full.
-   ``tier_policy.TOOL_HINTS`` maps the tool to ``analysis``, so for a covered
-   agent the next model request goes to ``tier-powerful`` (§3.6).
+   The turn's own tier reads them. Since the owner's one-model-per-turn rule
+   (2026-10-09), the ``analysis`` hint in ``tier_policy.TOOL_HINTS`` no
+   longer raises the next request. It is logged as ``ai_route.hint_ignored``.
 
 🔴 **PICK pays for itself, or the tool skips it** (:func:`pick_cost`, §3.3a,
 H-276). PICK spends about 160 tokens on each candidate. A short item, for
@@ -35,9 +36,14 @@ facade sends that batch to System 1 on ``tier-fast`` (``system_one.ask``) in
 one request. A ``DecideRequestInvalid`` is a caller bug, so it also logs
 ``narrowing.decide_invalid`` at ``error``.
 
-🔴 **A ``no_egress`` run never asks the decide door** (§4, Q4). The decide
-vendor is a separate sub-processor (D75.8), so every batch of such a run
-goes to System 1. That is why the tool may say ``open_world=False``.
+🔴 **A ``no_egress`` run and the decide door** (§4, Q4, amended by the owner
+on 2026-10-09). The decide vendor is a separate sub-processor (D75.8), and
+it already serves email rule matching. The owner allows a ``no_egress`` run
+to send it a typed question with short summaries. The PICK state is only
+that: the query and the clipped summaries. So while ``DECIDE_IN_NO_EGRESS``
+is on (the default), such a run asks the door too. With the switch off,
+every batch of such a run goes to System 1, as before. The tool keeps
+``open_world=False``, because the owner accepted that destination.
 
 🔴 **Every model call goes through our Router (D90, D57.7).** This module
 imports no vendor client. It calls ``acb_llm.decide`` and
@@ -197,8 +203,10 @@ DROPPED_MAX_ENTRIES = 512
 DROPPED_LINES = 100
 
 #: The tool's risk (§4). It reads and changes nothing. Its only destinations
-#: are our Router and the platform's own gateway routes, and a ``no_egress``
-#: run asks no decide vendor. So ``open_world`` is False.
+#: are our Router, the platform's own gateway routes and the decide door. A
+#: ``no_egress`` run sends the door only a typed question with short
+#: summaries, which the owner accepted on 2026-10-09. So ``open_world`` is
+#: False.
 NARROW_RISK: dict[str, bool] = {
     "read_only": True,
     "destructive": False,
@@ -614,8 +622,12 @@ def _rate(tier: str) -> tuple[float, float]:
 
 
 def _read_tier() -> str:
-    """The tier of the request that reads the tool output (§3.6), as
-    ``tier_policy`` picks it after ``narrow_and_read``."""
+    """The tier of the request that reads the tool output (§3.6).
+
+    Since 2026-10-09 the turn keeps one tier, so the read runs on the turn's
+    tier. The estimate takes the tier of the tool's hint kind (an
+    ``analysis`` turn). ``tier-balanced`` and ``tier-powerful`` have the
+    same price in :data:`TIER_RATES`, so no decision of the check changes."""
     try:
         from acb_skills import tier_policy
 
@@ -713,9 +725,15 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
     batches = [
         list(candidates[i:i + per_request]) for i in range(0, len(candidates), per_request)
     ]
-    # 🔴 Q4: a `no_egress` run sends no decide request. The reader fails
-    # closed, so a frame with no run binding asks System 1 only.
-    use_decide = not no_egress_for_this_run()
+    # 🔴 Q4, amended by the owner on 2026-10-09: a `no_egress` run may ask the
+    # decide door too, while `DECIDE_IN_NO_EGRESS` is on. The state is the
+    # query and the clipped summaries only (`_state`), so it is a typed
+    # question with short summaries. With the switch off, a `no_egress` run
+    # (and a frame with no run binding, because the reader fails closed)
+    # asks System 1 only, as before.
+    from acb_skills.decide_tools import decide_in_no_egress
+
+    use_decide = not no_egress_for_this_run() or decide_in_no_egress()
     attribution: Mapping[str, Any] = {}
     if use_decide:
         from acb_llm.routed import run_attribution

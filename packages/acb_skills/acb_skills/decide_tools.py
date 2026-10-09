@@ -70,8 +70,24 @@ facade, :func:`acb_llm.decide`, with ``acb_llm.routed.run_attribution()``:
   ``decide_tool.system_one_fallback`` with the reason code. A 400 or a 422
   is a caller bug, so that line logs at ``error``. Every failed item and
   every refused item goes out in ONE ``tier-fast`` request;
-* a ``no_egress`` run sends no decide request (Q4 of that spec), and the
-  turn-kind question of ``tier_policy`` never comes here.
+* the turn-kind question of ``tier_policy`` never comes here.
+
+🔴 **A ``no_egress`` run (owner, 2026-10-09, amends Q4 of that spec).** While
+``DECIDE_IN_NO_EGRESS`` is on (the default), a ``no_egress`` run sends a
+SHORT typed item to ``tier-decide`` too: a context of at most
+:data:`NO_EGRESS_CONTEXT_MAX` characters, a question of at most
+:data:`NO_EGRESS_QUESTION_MAX` and options of at most
+:data:`NO_EGRESS_OPTION_MAX` each. A longer item stays on ``tier-fast`` and
+logs :data:`NOT_SHORT`. With the switch off, a ``no_egress`` run sends no
+decide request, as before. :func:`decide_in_no_egress` is the one reader.
+
+## A skill's own typed choices (owner, 2026-10-09)
+
+:func:`ask_typed` lets a tool ask the same engine a small typed question, in
+place of a main-model round. Projects asks which row a name means, and
+whether a new task is a twin. It is on only for an agent that
+``AI_TIER_ROUTING`` covers (:func:`typed_choices_on`), and it takes the same
+route as the tool, so there is no second client.
 
 The calling model reads the same lead and the same line. A decide answer has
 no reason, so its line ends after the confidence. The thresholds of §5 apply
@@ -448,32 +464,157 @@ FALLBACK_EVENT = "decide_tool.system_one_fallback"
 DECIDE_TIMEOUT_S = 10.0
 
 
-def _on_decide() -> bool:
-    """Whether this call sends its typed items to ``tier-decide``. ONE reader.
+#: The routes of :func:`_decide_route`. ``open``: every typed item may go to
+#: ``tier-decide``. ``short``: the run is ``no_egress``, so only a SHORT typed
+#: item may go (:func:`_short_enough`).
+ROUTE_OPEN = "open"
+ROUTE_SHORT = "short"
 
-    ``SYSTEM_ONE_ON_DECIDE`` on, and a run that may send data off the
-    platform. ``no_egress_for_this_run`` fails closed, so a frame with no run
-    binding stays on ``tier-fast``. Any error reads as off.
+#: The most characters of the context, of one question and of one option
+#: that a ``no_egress`` run sends to ``tier-decide`` (owner, 2026-10-09).
+#: The owner allows typed questions with SHORT summaries. A longer item is
+#: free-form work, and it stays on ``tier-fast``, our own chat tier.
+NO_EGRESS_CONTEXT_MAX = 1500
+NO_EGRESS_QUESTION_MAX = 400
+NO_EGRESS_OPTION_MAX = 120
+
+#: The reason code of an item that a ``no_egress`` run keeps on ``tier-fast``
+#: because it is not short.
+NOT_SHORT = "no_egress_not_short"
+
+
+def decide_in_no_egress() -> bool:
+    """Whether a ``no_egress`` run may send a typed item to ``tier-decide``.
+
+    The ONE reader of ``DECIDE_IN_NO_EGRESS`` (owner, 2026-10-09). The
+    System-1 ``decide`` and the PICK step of ``narrowing`` both ask it. A
+    broken read reads as OFF, so the run keeps the rule of before.
+    """
+    try:
+        from acb_common import get_settings
+
+        return bool(get_settings().decide_in_no_egress)
+    except Exception:  # a broken read must not open a destination
+        return False
+
+
+def _decide_route() -> str | None:
+    """The route of this call's typed items, or ``None`` for ``tier-fast``.
+
+    * ``SYSTEM_ONE_ON_DECIDE`` off: ``None``.
+    * A run that may send data off the platform: :data:`ROUTE_OPEN`.
+    * A ``no_egress`` run: :data:`ROUTE_SHORT` while ``DECIDE_IN_NO_EGRESS``
+      is on, else ``None``. ``no_egress_for_this_run`` fails closed, so a
+      frame with no run binding takes the short route too.
+
+    Any error reads as ``None``.
     """
     try:
         from acb_common import get_settings
 
         if not get_settings().system_one_on_decide:
-            return False
+            return None
         from acb_skills.egress import no_egress_for_this_run
 
-        return not no_egress_for_this_run()
+        if not no_egress_for_this_run():
+            return ROUTE_OPEN
+        return ROUTE_SHORT if decide_in_no_egress() else None
     except Exception:  # a broken read must not move the engine
-        return False
+        return None
+
+
+def _on_decide() -> bool:
+    """Whether this call may send any typed item to ``tier-decide``."""
+    return _decide_route() is not None
+
+
+def _short_enough(context: str, item: Any) -> bool:
+    """True when *item* about *context* is a SHORT typed question.
+
+    A ``no_egress`` run sends only these to ``tier-decide``. The bound is on
+    the text that leaves: the context, the question and each option.
+    """
+    return (
+        len(context or "") <= NO_EGRESS_CONTEXT_MAX
+        and len(str(item.question or "")) <= NO_EGRESS_QUESTION_MAX
+        and all(len(str(o)) <= NO_EGRESS_OPTION_MAX for o in item.options)
+    )
 
 
 async def _answers_of(context: str, asked: list[Any], log_kind: str) -> list[Any]:
     """The answers of *asked*, from the engine that this call uses."""
     from acb_skills import system_one
 
-    if not _on_decide():
+    route = _decide_route()
+    if route is None:
         return await system_one.ask(context, asked)
-    return await _ask_on_decide(context, asked, log_kind)
+    return await _ask_on_decide(context, asked, log_kind, short_only=route == ROUTE_SHORT)
+
+
+# ── Typed choices for a skill's own tool (owner, 2026-10-09) ─────────────────
+
+
+def typed_choices_on() -> bool:
+    """Whether a tool of this run may ask the ``decide`` engine itself.
+
+    A tool asks a small typed question (which status a name means, whether a
+    new task is a twin) in place of a main-model round. It uses the engine of
+    the System-1 ``decide``, so it is on only where that engine is: for an
+    agent that ``AI_TIER_ROUTING`` covers. The calling agent comes from the
+    run binding (R5). Any error reads as off.
+    """
+    try:
+        from acb_skills.system_one import _calling_agent
+        from acb_skills.tier_policy import tier_routing_on
+
+        return tier_routing_on(_calling_agent())
+    except Exception:  # a broken read must not add a request
+        return False
+
+
+async def ask_typed(context: str, items: list[Any], *, purpose: str) -> list[Any] | None:
+    """The answers of *items*, from the ONE engine of the System-1 ``decide``.
+
+    The same route as the tool (:func:`_answers_of`): ``tier-decide`` when
+    ``SYSTEM_ONE_ON_DECIDE`` lets it, with the short bound in a ``no_egress``
+    run, else System 1 on ``tier-fast``. No second client.
+
+    Returns ``None`` when no engine answered, and never raises. *purpose* is
+    a fixed code for the logs, for example ``projects.name``. The caller
+    reads each answer with :func:`sure_choice`. Nothing here logs the
+    context, a question or an option.
+    """
+    from acb_skills import system_one
+
+    if not items or len(items) > system_one.MAX_ITEMS:
+        return None
+    try:
+        answers = await _answers_of(context or "", list(items), purpose)
+    except system_one.SystemOneUnavailable as exc:
+        _log.info("decide_tool.typed_choice", purpose=purpose, status=exc.reason,
+                  items=len(items))
+        return None
+    except Exception as exc:  # a tool must never break on its helper
+        _log.warning("decide_tool.typed_choice_failed", purpose=purpose,
+                     error_type=type(exc).__name__)
+        return None
+    _log.info("decide_tool.typed_choice", purpose=purpose, status="ok", items=len(items),
+              confidences=[a.confidence for a in answers])
+    return list(answers)
+
+
+def sure_choice(answer: Any) -> str | None:
+    """The choice of *answer* at or above the run's threshold, else ``None``.
+
+    The thresholds of ``tier_policy`` (§5) apply, as for the tool's own line.
+    """
+    if answer is None:
+        return None
+    confidence = getattr(answer, "confidence", None)
+    choice = getattr(answer, "choice", None)
+    if choice is None or confidence is None or confidence < _run_threshold():
+        return None
+    return str(choice)
 
 
 def _decide_question(item: Any) -> Any:
@@ -619,8 +760,14 @@ async def _one_decide(
     return None
 
 
-async def _ask_on_decide(context: str, asked: list[Any], log_kind: str) -> list[Any]:
+async def _ask_on_decide(
+    context: str, asked: list[Any], log_kind: str, *, short_only: bool = False,
+) -> list[Any]:
     """Ask *asked* on ``tier-decide``, and the rest on ``tier-fast``. In order.
+
+    *short_only* is the ``no_egress`` route (owner, 2026-10-09): an item that
+    is not short (:func:`_short_enough`) goes to ``tier-fast`` with no decide
+    request, and logs :data:`NOT_SHORT`.
 
     Raises :class:`~acb_skills.system_one.SystemOneUnavailable` only when no
     item got an answer from either engine, so the tool says ``UNAVAILABLE``
@@ -634,6 +781,10 @@ async def _ask_on_decide(context: str, asked: list[Any], log_kind: str) -> list[
 
         sendable: dict[str, Any] = {}
         for item in asked:
+            if short_only and not _short_enough(context, item):
+                _log.info(FALLBACK_EVENT, reason=NOT_SHORT, request=0, items=1,
+                          decide_kind=log_kind)
+                continue
             question = _decide_question(item)
             code = shape_refusal(context, question)
             if code is None:
