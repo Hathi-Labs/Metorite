@@ -1164,7 +1164,7 @@ words, so that nobody is confused.
    shows only in the Statuses section. Each stage heading's bare Info icon in
    `StatusManager.tsx` becomes an `InfoTip` with that stage's meaning.
 7. **Row order.** The rows that need a check go first. The Map pairs each
-   plan row with its resolved row by `source`, never by index. Thus a sort
+   plan row with its resolved row by `source`, never by index. So a sort
    cannot pair them wrongly.
 8. **The word "category".** The member-visible text in
    `statusCategory.ts` that says "status category" says "stage" instead.
