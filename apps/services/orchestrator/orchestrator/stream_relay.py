@@ -376,9 +376,18 @@ async def mark_active(
         if reset:
             await r.delete(_stream_key(thread_id))
         await r.set(_active_key(thread_id), "1", ex=STREAM_TTL_SECONDS)
+        # ⚠️ An omitted fact CLEARS the old value only at a run boundary
+        # (``reset=True``). A call without ``reset`` marks the SAME run again,
+        # and the executor makes one inside every detached run
+        # (``run_agent_stream`` → ``_relay_mark_active(thread_id)``, with no
+        # actor). Before the fix, that call deleted the actor, the source and
+        # the floor that ``run_detached`` had just written. The steer floor
+        # then failed open, the supersede guard never answered 409, and a cron
+        # run read as a person's. Fence:
+        # ``tests/unit/test_chat_deploy_recovery.py::test_the_executor_prologue_keeps_the_run_facts``.
         if actor:
             await r.set(_run_actor_key(thread_id), actor, ex=STREAM_TTL_SECONDS)
-        else:
+        elif reset:
             # A run with no known actor must not inherit the previous one's,
             # or an anonymous/internal run would look like it belongs to
             # whoever ran last and could be refused on their behalf.
@@ -391,7 +400,7 @@ async def mark_active(
             await r.set(
                 _run_source_key(thread_id), source, ex=STREAM_TTL_SECONDS,
             )
-        else:
+        elif reset:
             await r.delete(_run_source_key(thread_id))
         if floor:
             await r.set(
@@ -399,7 +408,7 @@ async def mark_active(
                 json.dumps(sorted({str(m) for m in floor})),
                 ex=STREAM_TTL_SECONDS,
             )
-        else:
+        elif reset:
             await r.delete(_run_floor_key(thread_id))
     finally:
         pass  # shared pooled client — never closed per-call
@@ -524,7 +533,9 @@ async def touch_active(thread_id: str) -> None:
 # The org of a run is therefore WHICH HASH it is in, written at run start from
 # the server-side ``organization_id`` (never from the payload, R11). The actor
 # is recorded HERE and not read from ``cc:runactor``, because the executor's own
-# ``mark_active(thread_id)`` call clears ``cc:runactor`` mid-run.
+# ``mark_active(thread_id)`` call used to clear ``cc:runactor`` mid-run. That
+# call keeps it now (``mark_active`` clears only on ``reset=True``), and the
+# index still records its own copy.
 #
 # Why per organization and not per member: a shared room shows the green dot to
 # every participant, and the run belongs to only one of them. A per-member set
