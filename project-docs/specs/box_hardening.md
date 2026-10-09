@@ -1293,9 +1293,10 @@ drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
 BH-6 audit, which is one part of P3. The three backup scripts now trust no
 value from `/opt/acb/app/.env`. A root run pins its paths, checks each value
 that it takes, and reads the off-box names from `/etc/acb/backup-offbox.env`
-only. The fence is `tests/unit/test_backup_env_values.py`, and the rest of
-BH-6 below is still open. Until BH-6 ships, root's bash still reads
-`BASH_ENV` and `LD_PRELOAD` from that file before the first line runs.
+only. The names that act before a script runs, such as `BASH_ENV` and
+`LD_PRELOAD`, are now closed by `UnsetEnvironment=` in `acb-backup.service`
+and `acb.service`, as a stopgap until BH-6. The fence is
+`tests/unit/test_backup_env_values.py`, and the rest of BH-6 is still open.
 
 **Fix round 2, 2026-10-08.** The second audit returned NO-GO. This version
 applies C1 to C4.

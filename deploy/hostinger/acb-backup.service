@@ -32,8 +32,9 @@ User=root
 # it.** backup_db.sh pins its paths, validates each value it takes, and reads
 # the off-box names from /etc/acb/backup-offbox.env only. Its header lists the
 # class of each name. ⚠️ An `Environment=` line here cannot pin a name: a
-# value from an EnvironmentFile wins over it. box_hardening.md BH-6 removes
-# this line, which also keeps LD_PRELOAD and BASH_ENV from root's bash.
+# value from an EnvironmentFile wins over it. The UnsetEnvironment= block
+# below keeps BASH_ENV, LD_PRELOAD and the rest from root's bash. BH-6
+# removes this line.
 EnvironmentFile=/opt/acb/app/.env
 # ⚠️ The Customer Console is a SEPARATE Supabase project with its own
 # credentials, so its DSN lives in its own env file. The leading `-` makes it
@@ -57,6 +58,25 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # compromise of the app can still read this key. That is H-271.
 # `test_only_the_backup_unit_loads_the_offbox_key_file` fences the units.
 EnvironmentFile=-/etc/acb/backup-offbox.env
+# 🔴 **WS-49 BH-6a stopgap: the names that act WITHOUT the script.** The
+# EnvironmentFile above is acb-writable. bash reads BASH_ENV, SHELLOPTS and PS4
+# before the first line of a script, and ld.so reads LD_PRELOAD before bash
+# runs at all. So no script can refuse them, and each one is root code
+# execution. systemd applies UnsetEnvironment= as the LAST step, after every
+# Environment= and EnvironmentFile= line (systemd.exec(5), v255). These lines
+# remove each such name. The list also takes the names that a root child
+# (psql, tar, git, docker, a python or node tool) reads as code or config.
+# Each name here is one that no root unit needs from .env. box_hardening.md
+# BH-6 removes the .env line itself, and these lines can go with it.
+# Fence: tests/unit/test_backup_env_values.py (every root unit that loads an
+# env file under /opt/acb carries this block).
+UnsetEnvironment=BASH_ENV ENV SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND BASH_XTRACEFD GLOBIGNORE CDPATH IFS
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_BIND_NOW
+UnsetEnvironment=GCONV_PATH LOCPATH NLSPATH HOSTALIASES RESOLV_HOST_CONF MALLOC_CHECK_ OPENSSL_CONF OPENSSL_ENGINES
+UnsetEnvironment=PYTHONSTARTUP PYTHONPATH PYTHONHOME PERL5LIB PERL5OPT NODE_OPTIONS RUBYOPT
+UnsetEnvironment=GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_EXEC_PATH GIT_SSH_COMMAND
+UnsetEnvironment=DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY
+UnsetEnvironment=TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR
 # Invoked through bash on purpose — a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise fail with a bare
 # "Permission denied" and backups would silently never run. Same reasoning as

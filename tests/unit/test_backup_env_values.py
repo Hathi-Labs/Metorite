@@ -660,3 +660,79 @@ def test_the_off_box_step_stages_only_under_a_night() -> None:
     assert "VICTIM-KEPT" in str(r["err"]), "the off-box step deleted a dir it did not make"
     assert r["rc"] != 0
     assert "refusing to stage in" in str(r["err"]), r["err"]
+
+
+# ── The units: the names that act before the script ────────────────────────
+#
+# bash reads BASH_ENV, SHELLOPTS and PS4 before the first line of a script,
+# and ld.so reads LD_PRELOAD before bash runs. No script can refuse them. So a
+# ROOT unit that loads an acb-writable env file must drop them with
+# UnsetEnvironment=, which systemd applies after every Environment= and
+# EnvironmentFile= line (systemd.exec(5), v255). A stopgap until BH-6.
+
+_UNITS = _ROOT / "deploy/hostinger"
+#: Every root unit that loads an env file under /opt/acb carries ALL of these.
+_PRE_SCRIPT_TEXT = (
+    "BASH_ENV ENV SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND BASH_XTRACEFD GLOBIGNORE CDPATH IFS "
+    "LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_BIND_NOW "
+    "GCONV_PATH LOCPATH NLSPATH HOSTALIASES RESOLV_HOST_CONF MALLOC_CHECK_ OPENSSL_CONF "
+    "OPENSSL_ENGINES PYTHONSTARTUP PYTHONPATH PYTHONHOME PERL5LIB PERL5OPT NODE_OPTIONS RUBYOPT "
+    "GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_EXEC_PATH GIT_SSH_COMMAND "
+    "DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY "
+    "TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR"
+)
+_PRE_SCRIPT_NAMES = frozenset(_PRE_SCRIPT_TEXT.split())
+#: The floor the coordinator named. Kept apart, so a mutation of the list
+#: above that drops one of these names reads as what it is.
+_PRE_SCRIPT_FLOOR = frozenset({"BASH_ENV", "LD_PRELOAD", "SHELLOPTS", "PS4", "GCONV_PATH"})
+
+
+def _effective_service_keys(unit: object) -> dict[str, list[str]]:
+    """The keys of a unit plus its repo drop-ins (<unit>.d/*.conf, in name
+    order), as systemd merges them. A key repeats. An empty
+    UnsetEnvironment= resets that list, as systemd does."""
+    import pathlib
+
+    path = pathlib.Path(str(unit))
+    files = [path, *sorted((path.parent / f"{path.name}.d").glob("*.conf"))]
+    keys: dict[str, list[str]] = {}
+    for f in files:
+        for raw in f.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith(("#", ";", "[")) or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k == "UnsetEnvironment" and not v:
+                keys[k] = []
+                continue
+            keys.setdefault(k, []).append(v)
+    return keys
+
+
+def _root_units_with_an_app_env_file() -> list[str]:
+    found = []
+    for unit in sorted(_UNITS.glob("*.service")):
+        keys = _effective_service_keys(unit)
+        user = (keys.get("User") or ["root"])[-1]
+        env_files = [v.lstrip("-") for v in keys.get("EnvironmentFile", [])]
+        if user in ("root", "0") and any(f.startswith("/opt/acb/") for f in env_files):
+            found.append(unit.name)
+    return found
+
+
+def test_the_scan_finds_both_root_units_that_load_the_app_env() -> None:
+    """The companion: a scan that finds nothing passes the test below."""
+    assert {"acb.service", "acb-backup.service"} <= set(_root_units_with_an_app_env_file())
+
+
+@pytest.mark.parametrize("unit", _root_units_with_an_app_env_file())
+def test_a_root_unit_that_loads_the_app_env_drops_the_pre_script_names(unit: str) -> None:
+    """🔴 Each root unit that loads an env file under /opt/acb drops every
+    name of the list with UnsetEnvironment=. Mutation: delete the
+    UnsetEnvironment= lines from acb.service, and this goes red."""
+    keys = _effective_service_keys(_UNITS / unit)
+    dropped = {n for v in keys.get("UnsetEnvironment", []) for n in v.split()}
+    assert not _PRE_SCRIPT_FLOOR - dropped, f"{unit} keeps {sorted(_PRE_SCRIPT_FLOOR - dropped)}"
+    assert not _PRE_SCRIPT_NAMES - dropped, f"{unit} keeps {sorted(_PRE_SCRIPT_NAMES - dropped)}"
+    assert not [n for n in dropped if "=" in n], "drop by NAME, so every value of it goes"
