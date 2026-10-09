@@ -489,6 +489,7 @@ def add_credit(
         # recorded fully in `credit_lot.credits_used`; this column names where
         # it started, so a human reading one ledger row has somewhere to look.
         lot_id = drawn[0]["lot_id"] if drawn else None
+        record_draws(conn, org_id=org_id, charged=-delta, drawn=drawn)
 
     conn.execute(
         text(
@@ -759,6 +760,147 @@ def draw_from_lots(conn: Connection, *, org_id: str, credits: Decimal) -> list[d
         drawn.append({"lot_id": lot.id, "credits": take, "source": lot.source})
         left -= take
     return drawn
+
+
+def record_draws(
+    conn: Connection,
+    *,
+    org_id: str,
+    charged: Decimal,
+    drawn: list[dict[str, Any]],
+) -> None:
+    """Write one `credit_draw` row per lot a charge spent (migration 036).
+
+    🔴 **The credits no lot covered get a row too, with a NULL `lot_id`.** The
+    balance went below zero to pay them. Without that row, the window read
+    would count fewer charged credits than `usage_event` did, and the console
+    could not tell an overdraft from a charge that predates this table.
+    """
+    if charged <= 0:
+        return
+    covered = sum((Decimal(d["credits"]) for d in drawn), Decimal(0))
+    rows = [{"org": org_id, "lot": d["lot_id"], "c": d["credits"]} for d in drawn]
+    if charged > covered:
+        rows.append({"org": org_id, "lot": None, "c": charged - covered})
+    if not rows:
+        return
+    conn.execute(
+        text(
+            "INSERT INTO credit_draw (organization_id, lot_id, credits) "
+            "VALUES (CAST(:org AS uuid), :lot, :c)"
+        ),
+        rows,
+    )
+
+
+#: Lot sources that are revenue when a customer spends them. Every other
+#: source (trial, promo, grant, refund) was given, not sold.
+LOT_PAID_SOURCES: tuple[str, ...] = ("purchase",)
+
+
+def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
+    """Paid and free credits each organization SPENT in the window. Operator-only.
+
+    Spec: `operator_console_money.md` §3. Returns
+    ``{"since": <first draw ever, or None>, "rows": {slug: {...}}}``.
+
+    Each row carries, as Decimals:
+
+    - ``paid_credits``: drawn from a purchase lot.
+    - ``paid_value_inr``: what those credits cost the customer, at the price
+      that lot was SOLD at. Covers only priced purchase lots.
+    - ``unpriced_paid_credits``: drawn from a purchase lot with no price on
+      record (a manual grant typed without one). The console values them at
+      the current credit price and says so.
+    - ``free_credits``: drawn from a trial, promo, grant or refund lot.
+    - ``unbacked_credits``: no lot covered them, so the balance went negative.
+
+    And lifetime figures from `credit_lot`, which the console uses to estimate
+    the part of a window that predates migration 036:
+    ``life_paid_used``, ``life_paid_value_inr``, ``life_free_used``.
+
+    ⚠️ **`since` is fleet-wide, not per organization.** It says when draws
+    began to be recorded at all. A window that starts before it is partly
+    estimated, for every customer alike.
+    """
+    window = conn.execute(
+        text(
+            """
+            SELECT o.slug AS slug,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE l.source = ANY(:paid)), 0)        AS paid_credits,
+                   COALESCE(SUM(d.credits * l.price_paid_inr / l.credits) FILTER
+                       (WHERE l.source = ANY(:paid)
+                          AND l.price_paid_inr IS NOT NULL), 0) AS paid_value_inr,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE l.source = ANY(:paid)
+                          AND l.price_paid_inr IS NULL), 0)     AS unpriced_paid_credits,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE l.id IS NOT NULL
+                          AND NOT (l.source = ANY(:paid))), 0)  AS free_credits,
+                   COALESCE(SUM(d.credits) FILTER
+                       (WHERE d.lot_id IS NULL), 0)             AS unbacked_credits
+            FROM credit_draw d
+            JOIN organization o ON o.id = d.organization_id
+            LEFT JOIN credit_lot l ON l.id = d.lot_id
+            WHERE d.created_at >= now() - make_interval(days => :days)
+            GROUP BY o.slug
+            """
+        ),
+        {"days": days, "paid": list(LOT_PAID_SOURCES)},
+    ).all()
+    lifetime = conn.execute(
+        text(
+            """
+            SELECT o.slug AS slug,
+                   COALESCE(SUM(l.credits_used) FILTER
+                       (WHERE l.source = ANY(:paid)), 0)        AS paid_used,
+                   COALESCE(SUM(l.credits_used * l.price_paid_inr / l.credits)
+                       FILTER (WHERE l.source = ANY(:paid)
+                                 AND l.price_paid_inr IS NOT NULL), 0)
+                                                                AS paid_value_inr,
+                   COALESCE(SUM(l.credits_used) FILTER
+                       (WHERE NOT (l.source = ANY(:paid))), 0)  AS free_used
+            FROM credit_lot l
+            JOIN organization o ON o.id = l.organization_id
+            GROUP BY o.slug
+            """
+        ),
+        {"paid": list(LOT_PAID_SOURCES)},
+    ).all()
+    since = conn.execute(text("SELECT MIN(created_at) FROM credit_draw")).scalar_one_or_none()
+
+    zero = Decimal(0)
+    out: dict[str, dict[str, Decimal]] = {}
+
+    def row(slug: str) -> dict[str, Decimal]:
+        return out.setdefault(
+            slug,
+            {
+                "paid_credits": zero,
+                "paid_value_inr": zero,
+                "unpriced_paid_credits": zero,
+                "free_credits": zero,
+                "unbacked_credits": zero,
+                "life_paid_used": zero,
+                "life_paid_value_inr": zero,
+                "life_free_used": zero,
+            },
+        )
+
+    for r in window:
+        x = row(r.slug)
+        x["paid_credits"] = Decimal(r.paid_credits)
+        x["paid_value_inr"] = Decimal(r.paid_value_inr)
+        x["unpriced_paid_credits"] = Decimal(r.unpriced_paid_credits)
+        x["free_credits"] = Decimal(r.free_credits)
+        x["unbacked_credits"] = Decimal(r.unbacked_credits)
+    for r in lifetime:
+        x = row(r.slug)
+        x["life_paid_used"] = Decimal(r.paid_used)
+        x["life_paid_value_inr"] = Decimal(r.paid_value_inr)
+        x["life_free_used"] = Decimal(r.free_used)
+    return {"since": since.isoformat() if since else None, "rows": out}
 
 
 def add_credit_lot(

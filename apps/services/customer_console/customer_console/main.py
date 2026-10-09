@@ -4661,6 +4661,9 @@ _ORG_PURGE_KEEPS_TABLES: tuple[str, ...] = (
     # account is gone. It holds no personal data — a source, an amount, a
     # price and a date.
     "credit_lot",
+    # Migration 036. Which lots each charge spent: financial history, no
+    # personal data, and its `lot_id` references the kept `credit_lot`.
+    "credit_draw",
     "payment_order",
     "usage_event",
     "usage_rollup",
@@ -4674,6 +4677,7 @@ _ORG_PURGE_KEEPS: tuple[str, ...] = (
     "seat_grant",
     "credit_ledger",
     "credit_lot (what the credits cost, for a later refund argument)",
+    "credit_draw (which lots each charge spent)",
     "payment_order",
     "usage_event (user_email scrubbed)",
     "usage_rollup",
@@ -9505,6 +9509,24 @@ class OrgUsageRow(BaseModel):
     #: BY DEFINITION, so a large count beside a small token total is itself
     #: the signal that the provider's SHAPE broke and not our arithmetic.
     unbilledTokens: int = 0
+    #: 🔴 **What the customer PAID for, of the credits they spent** (migration
+    #: 036, `operator_console_money.md` §3). Credits drawn from a purchase lot
+    #: in the window, and their value at the price each lot was SOLD at.
+    paidCredits: str = "0"
+    paidValueInr: str = "0"
+    #: Drawn from a purchase lot with no price on record. The console values
+    #: them at the current credit price and labels the figure an estimate.
+    unpricedPaidCredits: str = "0"
+    #: Drawn from a trial, promo, grant or refund lot. Given away: we pay the
+    #: vendor for these calls and receive nothing.
+    freeCredits: str = "0"
+    #: No lot covered these credits, so the balance went below zero.
+    unbackedCredits: str = "0"
+    #: Lifetime figures from `credit_lot`. The console uses them to estimate
+    #: the part of the window that predates `credit_draw` (see `drawsSince`).
+    lifePaidUsed: str = "0"
+    lifePaidValueInr: str = "0"
+    lifeFreeUsed: str = "0"
 
 
 class OrgUsageView(BaseModel):
@@ -9531,6 +9553,10 @@ class OrgUsageView(BaseModel):
     unbilledOrgs: int = 0
     unbilledCallsTotal: int = 0
     unbilledTokensTotal: int = 0
+    #: When `credit_draw` got its first row, fleet-wide (migration 036). A
+    #: window that starts earlier is partly ESTIMATED from the lifetime lot
+    #: mix, and the console says so. NULL means no draw is recorded yet.
+    drawsSince: str | None = None
 
 
 class UsageDayRow(BaseModel):
@@ -9580,9 +9606,11 @@ def admin_usage_by_org(
         # by definition, so the leaking organization sorts last and falls off
         # the page — the worse the leak, the more certainly it hides.
         unbilled = store.unbilled_fleet_total(conn, days=days)
+        draws = store.draws_by_org(conn, days=days)
 
     now = datetime.now(UTC)
     annotated = analytics.annotate_orgs(rows, balances, burn, now)
+    no_draws: dict[str, Decimal] = {}
     # A3 over EVERYBODY. The per-row flag survives for the visible page;
     # this list is what stops the cap from hiding the quiet-but-funded.
     silent_slugs = sorted(
@@ -9599,6 +9627,7 @@ def admin_usage_by_org(
         unbilledOrgs=unbilled["orgs"],
         unbilledCallsTotal=unbilled["calls"],
         unbilledTokensTotal=unbilled["tokens"],
+        drawsSince=draws["since"],
         rows=[
             OrgUsageRow(
                 slug=r["slug"],
@@ -9616,10 +9645,26 @@ def admin_usage_by_org(
                 refusals=r["refusals"],
                 unbilledCalls=r["unbilled_calls"],
                 unbilledTokens=r["unbilled_tokens"],
+                **_draw_fields(draws["rows"].get(r["slug"], no_draws)),
             )
             for r in annotated
         ],
     )
+
+
+def _draw_fields(d: dict[str, Decimal]) -> dict[str, str]:
+    """`store.draws_by_org`'s row, as the strings `OrgUsageRow` carries."""
+    names = {
+        "paidCredits": "paid_credits",
+        "paidValueInr": "paid_value_inr",
+        "unpricedPaidCredits": "unpriced_paid_credits",
+        "freeCredits": "free_credits",
+        "unbackedCredits": "unbacked_credits",
+        "lifePaidUsed": "life_paid_used",
+        "lifePaidValueInr": "life_paid_value_inr",
+        "lifeFreeUsed": "life_free_used",
+    }
+    return {out: str(d.get(key, Decimal(0))) for out, key in names.items()}
 
 
 @app.get("/admin/usage/daily")
