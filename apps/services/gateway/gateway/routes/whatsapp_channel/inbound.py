@@ -322,7 +322,8 @@ async def _activate(db: Any, row: Any, wa_id: str) -> str:
         now_row = (await db.execute(
             text(_ROW_STATE_SQL), {"id": row["id"]},
         )).mappings().first()
-        if now_row is not None and now_row["status"] == "active"                 and now_row["wa_id"] == wa_id:
+        if (now_row is not None and now_row["status"] == "active"
+                and now_row["wa_id"] == wa_id):
             return "again"
         return "failed"
 
