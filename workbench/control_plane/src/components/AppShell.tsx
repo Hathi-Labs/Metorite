@@ -15,7 +15,6 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import OrgBrandLockup from "@/components/OrgBrandLockup";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -38,7 +37,7 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
-import { DrawerOrgSwitch } from "@/components/AccountSwitcher";
+import { DrawerAccountHeader } from "@/components/AccountSwitcher";
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
@@ -311,23 +310,10 @@ function MobileBottomNavInner({
 
   const menuContent = (
     <>
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        {/* Branding doubles as the way home — the mobile shell has no top bar.
-            Same component as the desktop sidebar on purpose: a brand mark that
-            differs by window width is worse than no brand mark. */}
-        <OrgBrandLockup fallbackCaption="Home" onNavigate={close} maxWidth={180} />
-        <button
-          onClick={close}
-          className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary"
-          aria-label="Close"
-        >
-          <AppIcon name="X" size={16} />
-        </button>
-      </div>
-      {/* Which organization is open, which account is signed in, one tap to
-          another, and the account actions: the ONE place for accounts on a
-          phone (owner request, 2026-10-09). First, under the header. */}
-      <DrawerOrgSwitch you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close} />
+      {/* The header is the account surface (owner, 2026-10-09): the mark and
+          the organization, the signed-in address under it, and a tap opens
+          the other accounts and the account actions. */}
+      <DrawerAccountHeader onClose={close} you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close} />
       {/* NS-1 on the phone: the one search. */}
       {shellBarOn() ? (
         <div className="border-b border-border px-3 py-2">
