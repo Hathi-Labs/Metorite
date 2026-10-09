@@ -213,6 +213,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # Deploy, release and test harness.
     "DEPLOY_", "RELEASE_", "VPS_", "CADDY_", "SMOKE_", "GH_", "MB_", "OC_",
     "WB_", "E2E_", "CHECKOUT_", "VERSION_",
+    # The local demo workspace for the marketing screenshots
+    # (scripts/demo_seed, marketing_site.md §6.3). It never runs on the box.
+    "DEMO_",
     # The process environment and the toolchain. ``BASH`` covers BASH_ENV,
     # BASHOPTS, BASH_XTRACEFD and every BASH_FUNC_ export.
     "LC_", "BASH", "PYTHON", "UV_", "PIP_", "LD_", "DYLD_", "NODE_",
