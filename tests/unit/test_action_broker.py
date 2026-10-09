@@ -83,13 +83,37 @@ class _FakeSession:
         return [p for s, p in self.executed if s.lstrip().upper().startswith(verb)]
 
 
+_ORG = "00000000-0000-0000-0000-0000000000a1"
+
+
 @pytest.fixture(autouse=True)
 def _fake_db(monkeypatch):
-    """Route every ``get_session()`` in the broker + audit to one fake session."""
+    """Route the broker's ``tenant_session`` and the audit's ``get_session``
+    to one fake session, with a tenant bound (H-201). The fake seam refuses
+    no tenant, as the real one does, and records each tenant it binds."""
+    from contextlib import contextmanager
+
     import acb_graph
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_graph.db import TenantUnbound
+
     fake = _FakeSession()
+    fake.tenants = []
+
+    @contextmanager
+    def _tenant_session(org=None):
+        if not org:
+            raise TenantUnbound("no tenant")
+        fake.tenants.append(org)
+        yield fake
+
     monkeypatch.setattr(acb_graph, "get_session", lambda: fake)
-    return fake
+    monkeypatch.setattr(acb_graph, "tenant_session", _tenant_session)
+    token = bind_tenant(_ORG)
+    try:
+        yield fake
+    finally:
+        release_tenant(token)
 
 
 # ── Authority-tier policy ────────────────────────────────────────────────────
@@ -274,3 +298,48 @@ def test_list_pending_returns_rows(_fake_db):
     rows = list_pending()
     assert len(rows) == 2
     assert {r["action"] for r in rows} == {"clickup.comment", "zoho.email"}
+
+
+# ── H-201: the queue binds the tenant of the context, and only that one ──────
+
+def test_every_queue_call_binds_the_context_tenant(_fake_db):
+    _fake_db.select_rows = [_pending_row()]
+    list_pending()
+    enqueue(propose("agent:sales", "clickup.comment", "task:1", {}))
+    reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    asyncio.run(approve(str(_fake_db.select_rows[0]["id"]), "user:vijay"))
+    assert _fake_db.tenants and set(_fake_db.tenants) == {_ORG}
+
+
+def test_no_tenant_reads_empty_and_writes_nothing(_fake_db):
+    from acb_common.db import clear_tenant, release_tenant
+
+    _fake_db.select_rows = [_pending_row()]
+    called: list = []
+    register_action_handler("clickup.comment", lambda p: called.append(p))
+    token = clear_tenant()
+    try:
+        assert list_pending() == []
+        assert enqueue(propose("agent:sales", "clickup.comment", "task:1", {})) is None
+        res = asyncio.run(approve(str(_fake_db.select_rows[0]["id"]), "user:vijay"))
+        assert res["ok"] is False and not called
+        reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    finally:
+        release_tenant(token)
+    assert _fake_db.tenants == []
+    assert not _fake_db.statements("INSERT") and not _fake_db.statements("UPDATE")
+
+
+def test_the_queue_opens_no_unbound_session() -> None:
+    """The source fence. It reads the code, so it runs with no database."""
+    import inspect
+
+    from action_broker import broker
+
+    for fn in (broker.enqueue, broker.list_pending, broker._load_proposal, broker._mark):
+        src = inspect.getsource(fn)
+        assert "get_session" not in src, fn.__name__
+        assert "tenant_session(" in src, fn.__name__
+    # The tenant comes from the bound context, never from an argument.
+    for fn in (broker.enqueue, broker.list_pending, broker.approve, broker.reject):
+        assert "organization_id" not in inspect.signature(fn).parameters, fn.__name__

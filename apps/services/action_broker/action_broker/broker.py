@@ -56,6 +56,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from acb_audit import AuditEvent, record
+from acb_common import get_logger
+
+_log = get_logger("action_broker")
 
 
 class AuthorityTier(StrEnum):
@@ -203,26 +206,49 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
 # ── Approval queue — persistence for NEEDS_APPROVAL proposals ─────────────────
 # Mirrors ``pending_commit`` (self-mutation): a proposal the broker cannot
 # auto-apply is parked in ``pending_actions`` until an operator approves it, at
-# which point :func:`execute` runs the registered handler. DB access uses the
-# same sync ``acb_graph.get_session`` + ``text()`` recipe as
-# ``mutation._register_pending_commit``; each write is best-effort and returns a
-# sentinel (never raises) so a broker call is not lost on a DB blip.
+# which point :func:`execute` runs the registered handler. Each write is
+# best-effort and returns a sentinel (never raises) so a broker call is not lost
+# on a DB blip.
+#
+# ⚠️ **Tenant-bound (H-201).** ``pending_actions`` has FORCE row level security.
+# Every read and write opens ``acb_graph.tenant_session(org)``, the ONE sync GUC
+# seam. ``org`` is the tenant the caller's context bound (``current_tenant()``,
+# set by the auth dependency or by a job from its own record). It never comes
+# from a proposal, a payload or a request field (R5 / R11). With no bound tenant
+# a read answers empty, a write refuses, and ``action_broker.tenant_unbound``
+# is logged. Nothing falls back to the unbound ``get_session``. The fence is
+# ``tests/unit/test_action_broker_tenancy_r8.py``.
+
+
+def _bound_tenant(op: str) -> str | None:
+    """The tenant this broker call acts for, or ``None`` (logged)."""
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    if not org:
+        _log.warning("action_broker.tenant_unbound", op=op)
+        return None
+    return str(org)
 
 
 def enqueue(proposal: ActionProposal) -> str | None:
     """Persist *proposal* to ``pending_actions`` (status ``pending``).
 
     Returns the row id (the proposal's own UUID) or ``None`` if the DB write
-    fails. Call this for a ``NEEDS_APPROVAL`` disposition.
+    fails or no tenant is bound. Call this for a ``NEEDS_APPROVAL`` disposition.
+    The row's ``organization_id`` comes from the GUC that ``tenant_session``
+    sets, through the column's DEFAULT.
     """
     import json
 
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
         row_id = str(proposal.id)
-        with get_session() as sess:
+        # With no tenant, ``tenant_session(None)`` raises ``TenantUnbound``
+        # before it opens a connection, and the ``except`` below audits it.
+        with tenant_session(_bound_tenant("enqueue")) as sess:
             sess.execute(
                 text(
                     "INSERT INTO pending_actions "
@@ -242,7 +268,6 @@ def enqueue(proposal: ActionProposal) -> str | None:
                     "disposition": (proposal.disposition or Disposition.NEEDS_APPROVAL).value,
                 },
             )
-            sess.commit()
         record(AuditEvent(
             actor="system:action_broker",
             action=f"enqueue:{proposal.action}",
@@ -261,12 +286,18 @@ def enqueue(proposal: ActionProposal) -> str | None:
 
 
 def list_pending() -> list[dict[str, Any]]:
-    """Return the pending approval queue (newest first). ``[]`` on DB failure."""
+    """Return the bound tenant's pending queue (newest first).
+
+    ``[]`` on DB failure, and ``[]`` when no tenant is bound.
+    """
+    org = _bound_tenant("list_pending")
+    if org is None:
+        return []
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
-        with get_session() as sess:
+        with tenant_session(org) as sess:
             rows = sess.execute(
                 text(
                     "SELECT id, actor, action, target, payload, authority, "
@@ -281,11 +312,18 @@ def list_pending() -> list[dict[str, Any]]:
 
 
 def _load_proposal(action_id: str) -> tuple[ActionProposal | None, str | None]:
-    """Load a queued row and rebuild its :class:`ActionProposal` + current status."""
-    from acb_graph import get_session
+    """Load a queued row and rebuild its :class:`ActionProposal` + current status.
+
+    The read sees only the bound tenant's rows. Another tenant's id, or no
+    bound tenant, reads as ``(None, None)``, so :func:`approve` runs nothing.
+    """
+    from acb_graph import tenant_session
     from sqlalchemy import text
 
-    with get_session() as sess:
+    org = _bound_tenant("load_proposal")
+    if org is None:
+        return None, None
+    with tenant_session(org) as sess:
         row = sess.execute(
             text(
                 "SELECT id, actor, action, target, payload, authority, "
@@ -313,15 +351,22 @@ def _mark(
     action_id: str, status: str, *, reviewed_by: str | None = None,
     result: dict[str, Any] | None = None,
 ) -> None:
-    """Update a queued row's status (+ reviewer / result). Best-effort."""
+    """Update a queued row's status (+ reviewer / result). Best-effort.
+
+    The UPDATE reaches only the bound tenant's rows. With no bound tenant it
+    changes nothing.
+    """
     import json
 
+    org = _bound_tenant("mark")
+    if org is None:
+        return
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
         reviewed_at_expr = "now()" if reviewed_by is not None else "reviewed_at"
-        with get_session() as sess:
+        with tenant_session(org) as sess:
             sess.execute(
                 text(
                     "UPDATE pending_actions SET status = :status, "
@@ -337,7 +382,6 @@ def _mark(
                     "result": json.dumps(result) if result is not None else None,
                 },
             )
-            sess.commit()
     except Exception:
         pass
 
