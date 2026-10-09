@@ -977,9 +977,12 @@ def router(monkeypatch):
     spy = _RouterSpy()
     monkeypatch.setattr(routed, "routing_is_on", lambda: True)
     monkeypatch.setattr(console_resolve, "chat_completion_on_console", spy)
-    _log._AUTOMATION_AGENT.set(None)
+    vouch = getattr(_log, "_AUTOMATION_AGENT", None)
+    if vouch is not None:
+        vouch.set(None)
     yield spy
-    _log._AUTOMATION_AGENT.set(None)
+    if vouch is not None:
+        vouch.set(None)
 
 
 @pytest.fixture

@@ -704,9 +704,12 @@ def _no_vouch():
     """No automation name vouched for at the start or the end of a test."""
     from acb_common import _log
 
-    _log._AUTOMATION_AGENT.set(None)
+    vouch = getattr(_log, "_AUTOMATION_AGENT", None)
+    if vouch is not None:
+        vouch.set(None)
     yield
-    _log._AUTOMATION_AGENT.set(None)
+    if vouch is not None:
+        vouch.set(None)
 
 
 @pytest.mark.usefixtures("_no_vouch")
