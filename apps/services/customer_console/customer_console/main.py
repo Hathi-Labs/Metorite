@@ -57,9 +57,11 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as day_time
 from decimal import Decimal
 from typing import Annotated, Any, Literal, NoReturn
+from zoneinfo import ZoneInfo
 
 import anyio
 from fastapi import (
@@ -67,6 +69,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -3917,7 +3920,12 @@ def list_provider_credentials(staff: Operator, include_revoked: bool = False) ->
 
 
 @app.get("/providers/spend")
-def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict[str, Any]:
+def provider_spend(
+    staff: Operator,
+    days: int = store.SPEND_WINDOW_DAYS,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
+) -> dict[str, Any]:
     """What each vendor cost US over the window. **Operator-only.**
 
     🔴 **The console could see what customers spend and not what we owe.** Every
@@ -3932,9 +3940,9 @@ def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict
     # A window nobody can widen without meaning to. The read is a full scan of
     # the usage partition, and an unbounded `days` is how a console page times
     # out against a year of rows.
-    window = max(1, min(int(days), 365))
+    window, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
-        rows = store.spend_by_provider(conn, days=window)
+        rows = store.spend_by_provider(conn, days=window, start=lo, end=hi)
     return {
         "days": window,
         "providers": [
@@ -9592,6 +9600,10 @@ class OrgUsageView(BaseModel):
     unbilledOrgs: int = 0
     unbilledCallsTotal: int = 0
     unbilledTokensTotal: int = 0
+    #: WS-50 slice 7: the inclusive India dates of a chosen range, or NULL for
+    #: the default "last windowDays days".
+    rangeFrom: str | None = None
+    rangeTo: str | None = None
     #: When `credit_draw` got its first row, fleet-wide (migration 036). A
     #: window that starts earlier is partly ESTIMATED from the lifetime lot
     #: mix, and the console says so. NULL means no draw is recorded yet.
@@ -9614,10 +9626,49 @@ class UsageSeriesView(BaseModel):
     spikes: list[str]
 
 
+def _usage_window(
+    days: int,
+    start: date | None,
+    end: date | None,
+) -> tuple[int, datetime | None, datetime | None]:
+    """The window a usage read covers: (days, start, end). WS-50 slice 7.
+
+    With no ``start``, the last ``days`` days as before, and ``start`` and
+    ``end`` stay None so every query keeps its old predicate. With a range,
+    both dates are INCLUSIVE calendar days in India (`store.RANGE_TZ`): the
+    window runs from midnight on ``start`` to midnight after ``end``.
+
+    ⚠️ **A 422 for a range that cannot be answered.** An end before the
+    start, or a span over `store.USAGE_MAX_DAYS`, is refused rather than
+    clamped. A clamped range quietly answers a question nobody asked.
+    """
+    if start is None:
+        if end is not None:
+            raise HTTPException(status_code=422, detail="'to' needs a 'from' date as well")
+        return max(1, min(int(days), store.USAGE_MAX_DAYS)), None, None
+    last = end or datetime.now(ZoneInfo(store.RANGE_TZ)).date()
+    if last < start:
+        raise HTTPException(
+            status_code=422,
+            detail="'to' is before 'from'" if end is not None else "'from' is after today",
+        )
+    span = (last - start).days + 1
+    if span > store.USAGE_MAX_DAYS:
+        raise HTTPException(
+            status_code=422, detail=f"a range is at most {store.USAGE_MAX_DAYS} days"
+        )
+    tz = ZoneInfo(store.RANGE_TZ)
+    lo = datetime.combine(start, day_time.min, tzinfo=tz)
+    hi = datetime.combine(last + timedelta(days=1), day_time.min, tzinfo=tz)
+    return span, lo, hi
+
+
 @app.get("/admin/usage/orgs")
 def admin_usage_by_org(
     _: Operator,
     days: int = store.SPEND_WINDOW_DAYS,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
 ) -> OrgUsageView:
     """Every organization's AI usage, with margin, runway and the silent flag.
 
@@ -9625,9 +9676,9 @@ def admin_usage_by_org(
     `NUMERIC(14,4)`, and `float` is the standard way to make a total disagree
     with the sum of its rows.
     """
-    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    days, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
-        page = store.usage_by_org(conn, days=days)
+        page = store.usage_by_org(conn, days=days, start=lo, end=hi)
         rows = page["rows"]
         balances = store.credit_balance_by_org(conn)
         # The burn window is its own read rather than a slice of the first —
@@ -9648,8 +9699,8 @@ def admin_usage_by_org(
         # 🔴 UNCAPPED, for the reason `last_seen_by_org` is. A leak bills zero
         # by definition, so the leaking organization sorts last and falls off
         # the page — the worse the leak, the more certainly it hides.
-        unbilled = store.unbilled_fleet_total(conn, days=days)
-        draws = store.draws_by_org(conn, days=days)
+        unbilled = store.unbilled_fleet_total(conn, days=days, start=lo, end=hi)
+        draws = store.draws_by_org(conn, days=days, start=lo, end=hi)
         # The same row `/catalog/tiers` and the breakdown read.
         price = conn.execute(
             text(
@@ -9668,6 +9719,8 @@ def admin_usage_by_org(
     )
     return OrgUsageView(
         windowDays=days,
+        rangeFrom=None if start is None else start.isoformat(),
+        rangeTo=None if hi is None else (hi - timedelta(days=1)).date().isoformat(),
         # 🔴 Truncation is REPORTED, never silent. Rows sort by spend, so the
         # quiet customers the LEFT JOIN exists to include are the ones the cap
         # removes. The console says "100 of 563" rather than looking complete.
@@ -9726,16 +9779,18 @@ def admin_usage_daily(
     _: Operator,
     days: int = store.SPEND_WINDOW_DAYS,
     org_slug: str | None = None,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
 ) -> UsageSeriesView:
     """AI usage per day, for the platform or for one organization.
 
     ⚠️ The series fills every gap. A client must not add a second gap fill —
     two of them disagree the first time one is changed.
     """
-    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    days, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug) if org_slug else None
-        series = store.usage_daily(conn, days=days, org_id=org_id)
+        series = store.usage_daily(conn, days=days, org_id=org_id, start=lo, end=hi)
 
     return UsageSeriesView(
         windowDays=days,
@@ -9905,6 +9960,8 @@ def admin_usage_breakdown(
     _: Operator,
     org_slug: str,
     days: int = store.SPEND_WINDOW_DAYS,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
 ) -> OrgBreakdownView:
     """One customer's spend by app, by agent and by person, with OUR cost.
 
@@ -9924,14 +9981,14 @@ def admin_usage_breakdown(
     fixed at `SPEND_WINDOW_DAYS`, and passing a different window here keeps all
     three reads on the same one.
     """
-    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    days, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug)
-        apps = store.usage_by_app(conn, org_id=org_id, days=days)
-        members = store.usage_by_member(conn, org_id=org_id, days=days)
-        cost_app = store.usage_cost_by(conn, org_id=org_id, by="app", days=days)
-        cost_agent = store.usage_cost_by(conn, org_id=org_id, by="app_agent", days=days)
-        cost_member = store.usage_cost_by(conn, org_id=org_id, by="member", days=days)
+        apps = store.usage_by_app(conn, org_id=org_id, days=days, start=lo, end=hi)
+        members = store.usage_by_member(conn, org_id=org_id, days=days, start=lo, end=hi)
+        cost_app = store.usage_cost_by(conn, org_id=org_id, by="app", days=days, start=lo, end=hi)
+        cost_agent = store.usage_cost_by(conn, org_id=org_id, by="app_agent", days=days, start=lo, end=hi)
+        cost_member = store.usage_cost_by(conn, org_id=org_id, by="member", days=days, start=lo, end=hi)
         # The same row `/catalog/tiers` reads for the fleet's realised margin.
         price = conn.execute(
             text(

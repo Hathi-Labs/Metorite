@@ -113,6 +113,7 @@ organization.
 | 3a | `POST /credits/grant` takes an optional `price_paid_inr`, legal only on `manual` or `purchase` with positive credits. The lot records what the customer paid | `test_customer_console_manual_credits.py` passes against a real Postgres |
 | 4 | Customer list columns from §3, and a Money page that replaces AI usage, with the vendor bill moved onto it | The ratio "× cost" appears on no page |
 | 5 | Navigation groups, plain words, no internal codes, Activity in sentences, a Setup page for the go-live checklist | `words`-style test refuses `H-[0-9]`, `D[0-9]`, `migration [0-9]` and env names in rendered strings |
+| 7 | A chosen date range. `/admin/usage/orgs`, `/admin/usage/daily`, `/admin/usage/breakdown` and `/providers/spend` take `from` and `to`: inclusive calendar days in India. With no `from`, every read answers the last N days as before. The Money page and the customer page get a range picker | `test_customer_console_usage_range.py` passes against a real Postgres: the India-midnight edges, the daily span, the default unchanged, and a 422 for an unanswerable range |
 | 6 | A visual pass: dark, light and phone width, with the fixture rig in `e2e/visual/` | Screenshots of every page reviewed before each PR |
 
 ## 5. Files
