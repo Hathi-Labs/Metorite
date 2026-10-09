@@ -237,6 +237,56 @@ function buildFolders(emails: Email[]): EmailFolder[] {
   );
 }
 
+/** One message's last change in this pane: read, flag, star, folder, labels. */
+export type MessagePatch = Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder" | "categories">>;
+
+/** `email` with its patch on top. A card of a thread reads its state here. */
+export function withPatch<T extends Email>(email: T, patches: Record<string, MessagePatch>): T {
+  const patch = patches[email.id];
+  return patch ? { ...email, ...patch } : email;
+}
+
+/** The patches less the entry of a write that ended, if a later write did not replace it. */
+function dropPatch(
+  patches: Record<string, MessagePatch>,
+  id: string,
+  mine: MessagePatch,
+): Record<string, MessagePatch> {
+  if (patches[id] !== mine) return patches;
+  const next = { ...patches };
+  delete next[id];
+  return next;
+}
+
+/**
+ * The patches less every entry whose message is a row of `emails`. The row is
+ * the server's state, so a refetch with a newer value shows through.
+ */
+export function prunePatches(
+  patches: Record<string, MessagePatch>,
+  emails: ReadonlyArray<{ id: string }>,
+): Record<string, MessagePatch> {
+  const ids = Object.keys(patches);
+  if (ids.length === 0) return patches;
+  const rows = new Set(emails.map((e) => e.id));
+  if (!ids.some((id) => rows.has(id))) return patches;
+  const next = { ...patches };
+  for (const id of ids) if (rows.has(id)) delete next[id];
+  return next;
+}
+
+/** The patches with one entry put back as it was before a failed write. */
+function restorePatch(
+  patches: Record<string, MessagePatch>,
+  id: string,
+  prev: MessagePatch | undefined,
+): Record<string, MessagePatch> {
+  const next = { ...patches };
+  if (prev) next[id] = prev;
+  else delete next[id];
+  return next;
+}
+
 interface EmailState {
   // Data
   accounts: EmailAccount[];
@@ -464,9 +514,14 @@ interface EmailState {
    *  The popup component owns the preview/enhance async state; the store only
    *  tracks which message it's for. */
   taskCapturePopupEmailId: string | null;
+  /** The mailbox of that email, when the caller named it. A message of a
+   *  thread is often not a row of the list, so the list cannot say. */
+  taskCapturePopupAccountId: string | null;
   /** Open the clarify-before-capture popup for an email ("Add to Tasks" now
-   *  opens a review popup instead of capturing instantly). */
-  captureEmailToTasks: (emailId: string) => void;
+   *  opens a review popup instead of capturing instantly). `accountId` names
+   *  the mailbox of a message that the caller holds and the list may not:
+   *  a card of a thread (owner, 2026-10-10). */
+  captureEmailToTasks: (emailId: string, accountId?: string) => void;
   closeTaskCapturePopup: () => void;
   /** Show the "Captured to Tasks" toast (called by the popup on confirm). */
   notifyTaskCaptured: (notice: NonNullable<EmailState["taskCaptureNotice"]>) => void;
@@ -477,7 +532,21 @@ interface EmailState {
   /** Set the colour of a label in ONE mailbox: `accountId`, else the
    *  selected one. A label belongs to its mailbox (EM-T8d review). */
   setLabelColor: (name: string, color: string, accountId?: string | null) => Promise<void>;
-  applyLabel: (id: string, name: string, add: boolean) => Promise<void>;
+  /** `current` gives the labels of a message that is not a row of the list,
+   *  such as an older card of a thread. The list cannot say. */
+  applyLabel: (id: string, name: string, add: boolean, current?: string[]) => Promise<void>;
+  /**
+   * The read, flag, star, folder and label change of a write IN FLIGHT, by
+   * id (review fix round 1, P2-a, and round 3, P3). `updateEmail` and
+   * `applyLabel` write it for every message, also one that is not a row of
+   * the list, and a card reads it through `withPatch`.
+   *
+   * It is short-lived. A write that succeeds drops its patch, and a write
+   * that fails restores the one before. A list that holds the row drops the
+   * patch too, because the row is the server's state. After that the list
+   * row, or the thread copy of the reading pane, shows the change.
+   */
+  messagePatches: Record<string, MessagePatch>;
   /** Add/remove one category across many messages at once. */
   applyLabelBulk: (ids: string[], name: string, add: boolean) => Promise<void>;
   /** Remove ALL categories from the given messages. */
@@ -1627,10 +1696,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   taskCaptureNotice: null,
   taskCapturePopupEmailId: null,
+  taskCapturePopupAccountId: null,
 
-  captureEmailToTasks: (emailId) => {
+  captureEmailToTasks: (emailId, accountId) => {
     const email = get().emails.find((e) => e.id === emailId);
-    if (!email) {
+    if (!email && !accountId) {
       // e.g. a brand-new draft not yet saved to the message list — nothing to
       // capture from, so show a hint instead of opening an empty popup.
       set({
@@ -1642,10 +1712,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       setTimeout(() => get().clearTaskCaptureNotice(), 6000);
       return;
     }
-    set({ taskCapturePopupEmailId: emailId });
+    set({
+      taskCapturePopupEmailId: emailId,
+      taskCapturePopupAccountId: email?.accountId ?? accountId ?? null,
+    });
   },
 
-  closeTaskCapturePopup: () => set({ taskCapturePopupEmailId: null }),
+  closeTaskCapturePopup: () =>
+    set({ taskCapturePopupEmailId: null, taskCapturePopupAccountId: null }),
 
   notifyTaskCaptured: (notice) => {
     set({ taskCaptureNotice: notice });
@@ -1658,22 +1732,30 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   clearTaskCaptureNotice: () => set({ taskCaptureNotice: null }),
 
+  messagePatches: {},
+
   updateEmail: async (id, updates) => {
     // Optimistic update. When an email is moved to a *different* folder than the
     // one we're viewing (archive / move-to / etc.), drop it from the list so it
     // visibly leaves the current folder — except in the virtual "starred" view.
     const prevEmails = get().emails;
+    // A message of a thread is often not a row of the list. Its move does
+    // not change the count of the list (review fix round 1).
+    const inList = prevEmails.some((e) => e.id === id);
     const movedAway =
       updates.folder !== undefined &&
       updates.folder !== get().selectedFolder &&
       get().selectedFolder !== "starred";
+    const prevPatch = get().messagePatches[id];
+    const patch: MessagePatch = { ...prevPatch, ...updates };
     set({
       emails: movedAway
         ? prevEmails.filter((e) => e.id !== id)
         : prevEmails.map((e) => (e.id === id ? { ...e, ...updates } : e)),
-      emailsTotal: movedAway
+      emailsTotal: movedAway && inList
         ? Math.max(0, get().emailsTotal - 1)
         : get().emailsTotal,
+      messagePatches: { ...get().messagePatches, [id]: patch },
     });
     // Demo: keep the optimistic change; there's no backend to persist to.
     if (DEMO) return;
@@ -1686,9 +1768,16 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           ),
         });
       }
+      // The write is done: the list row or the pane's thread copy holds it.
+      set({ messagePatches: dropPatch(get().messagePatches, id, patch) });
     } catch (err: any) {
       // Revert on failure
-      set({ emails: prevEmails, error: err.message || "Failed to update email" });
+      set({
+        emails: prevEmails,
+        emailsTotal: movedAway && inList ? get().emailsTotal + 1 : get().emailsTotal,
+        messagePatches: restorePatch(get().messagePatches, id, prevPatch),
+        error: err.message || "Failed to update email",
+      });
     }
   },
 
@@ -1742,18 +1831,22 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
-  applyLabel: async (id, name, add) => {
+  applyLabel: async (id, name, add, current) => {
     const prevEmails = get().emails;
+    const prevPatch = get().messagePatches[id];
+    const toggle = (cats: string[]) =>
+      add ? (cats.includes(name) ? cats : [...cats, name]) : cats.filter((c) => c !== name);
+    // The labels of now: the patch, the list row, or what the caller holds.
+    const base =
+      prevPatch?.categories ?? prevEmails.find((e) => e.id === id)?.categories ?? current ?? [];
+    const patch: MessagePatch = { ...prevPatch, categories: toggle(base) };
     // Optimistically update the message's category chips.
     set({
       emails: prevEmails.map((e) => {
         if (e.id !== id) return e;
-        const cats = e.categories || [];
-        const next = add
-          ? cats.includes(name) ? cats : [...cats, name]
-          : cats.filter((c) => c !== name);
-        return { ...e, categories: next };
+        return { ...e, categories: toggle(e.categories || []) };
       }),
+      messagePatches: { ...get().messagePatches, [id]: patch },
     });
     // Track a brand-new label so it's offered for other messages immediately.
     if (add && !get().availableLabels.includes(name)) {
@@ -1770,8 +1863,13 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       set({
         emails: get().emails.map((e) => (e.id === id ? { ...e, ...updated } : e)),
       });
+      set({ messagePatches: dropPatch(get().messagePatches, id, patch) });
     } catch (err: any) {
-      set({ emails: prevEmails, error: err.message || "Failed to update label" });
+      set({
+        emails: prevEmails,
+        messagePatches: restorePatch(get().messagePatches, id, prevPatch),
+        error: err.message || "Failed to update label",
+      });
     }
   },
 
@@ -1789,9 +1887,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const cats = email?.categories || [];
       if (cats.length === 0) continue;
       const prev = get().emails;
-      // Optimistically drop all category chips for this message.
+      // Optimistically drop all category chips for this message. A patch of
+      // its labels would hide the change, so it goes (fix round 3, P3).
       set({
         emails: prev.map((e) => (e.id === id ? { ...e, categories: [] } : e)),
+        messagePatches: restorePatch(get().messagePatches, id, undefined),
       });
       try {
         await api.updateEmailLabels(id, [], cats);
@@ -2213,3 +2313,12 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+// A list that holds a row drops that row's patch: the row is the server's
+// state, and it shows through (review fix round 3, P3). An optimistic write
+// sets the row to the patch's value, so the drop changes nothing on screen.
+useEmailStore.subscribe((state, prev) => {
+  if (state.emails === prev.emails) return;
+  const pruned = prunePatches(state.messagePatches, state.emails);
+  if (pruned !== state.messagePatches) useEmailStore.setState({ messagePatches: pruned });
+});

@@ -125,6 +125,7 @@ export default function EmailPage() {
     pendingSend,
     taskCaptureNotice,
     taskCapturePopupEmailId,
+    taskCapturePopupAccountId,
     closeTaskCapturePopup,
     notifyTaskCaptured,
     pendingChatPrompt,
@@ -1286,7 +1287,7 @@ export default function EmailPage() {
       {/* Add-to-Tasks clarify popup */}
       {taskCapturePopupEmailId && (() => {
         const popupEmail = emails.find((e) => e.id === taskCapturePopupEmailId);
-        const acctId = popupEmail?.accountId ?? selectedAccountId;
+        const acctId = taskCapturePopupAccountId ?? popupEmail?.accountId ?? selectedAccountId;
         if (!acctId) return null;
         return (
           <TaskCaptureModal

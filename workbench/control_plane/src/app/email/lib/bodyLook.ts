@@ -1,0 +1,391 @@
+/**
+ * How the reading pane draws an HTML email body in dark mode (owner, 2026-10-10).
+ *
+ * The owner said: "the email body shows a white background in dark mode ... The
+ * text and images should adapt to a dark background." The body draws in a
+ * sandboxed iframe (`MessageContent.tsx`), so it inherits none of the app's
+ * tokens. This module picks a look for the frame and builds the CSS of that look.
+ *
+ * Four looks:
+ *
+ * 1. `native` — the email declares its own dark support: a
+ *    `prefers-color-scheme: dark` media query, or a `color-scheme` CSS
+ *    property that names `dark` on a mail with no colours of its own. The
+ *    sender's own dark design applies (`forceDarkMedia`). Nothing is inverted.
+ *    A `color-scheme` meta tag never counts: the sanitizer removes `meta`.
+ * 2. `tokens` — simple HTML with no colour and no background of its own. The
+ *    frame takes the app's card, ink, link and border tokens.
+ * 3. `invert` — styled HTML with its own colours or backgrounds. The whole
+ *    document gets `invert(1) hue-rotate(180deg)`, and each image, picture,
+ *    video and canvas gets the same filter again, so it looks as sent. A box
+ *    with a CSS or attribute background picture becomes a light island: it
+ *    gets the filter again and a white backing (coordinator, 2026-10-10). A layer multiplies the page by a base colour before the filter,
+ *    so the email's white lands on the app's card colour, not on black.
+ * 4. `original` — light mode, or the member asked for the light version. The
+ *    frame draws exactly what it drew before this module existed.
+ *
+ * ⚠️ **Security.** The CSS here holds fixed text and colours made from numbers.
+ * Nothing from the email reaches it. The classifier reads the email and gives
+ * back one of three names, and that name is all that leaves it.
+ *
+ * ⚠️ **Print.** Each rule of a dark look sits inside `@media screen`. A print of
+ * the page therefore draws the original light sheet.
+ *
+ * ⚠️ **Time.** Every scan here is linear, and a body over
+ * {@link CLASSIFY_LIMIT} characters skips the style scan. A crafted mail must
+ * not freeze the pane, and dark is the default mode.
+ *
+ * Fences: `bodyLook.test.ts` (the classifier, the re-invert rule, the base
+ * colour, the print rule and the time of a crafted mail) and `e2e/email-message-actions.spec.ts` (the look
+ * that a real frame gets).
+ */
+
+import { parseColor, type Rgb } from "@/lib/theme/contrast";
+import { THEME } from "@/lib/theme/themes";
+
+/** What the dark-mode classifier can decide for an HTML body. */
+export type DarkRule = "native" | "tokens" | "invert";
+
+/** The look the frame draws. `original` is the light sheet, as sent. */
+export type BodyLook = "original" | DarkRule;
+
+/**
+ * A body longer than this skips the style scan and gets `invert`. Each scan
+ * is linear, and the limit keeps even a linear scan of a crafted mail short.
+ */
+export const CLASSIFY_LIMIT = 256 * 1024;
+
+// Every quantifier below is bounded, or stops at a character that starts the
+// next match, so no scan can go back over the text (review fix round 1, P1-a).
+
+/** A `prefers-color-scheme: dark` media query, in a `<style>` or a `media=`. */
+const DARK_MEDIA = /prefers-color-scheme\s{0,20}:\s{0,20}dark/i;
+
+/** The CSS property: `color-scheme: light dark` or `supported-color-schemes`. */
+const DARK_PROPERTY = /(?<![\w-])(?:supported-)?color-schemes?\s{0,20}:[^;{}"'<]{0,200}?\bdark\b/i;
+
+/**
+ * One start tag. `[^<>]` stops at the next `<`, so two scans never cover
+ * the same text, and a tag with no `>` costs no more than its own length.
+ */
+const TAG = /<[a-z][^<>]*>/gi;
+
+/** An attribute that sets a colour or a background, inside one tag. */
+const OWN_COLOUR_ATTR = /\s(?:bgcolor|background|color|text|link|vlink|alink)\s{0,20}=/i;
+
+/**
+ * A colour or a background that the email sets itself in CSS. A value that
+ * sets nothing (`inherit`, `transparent`, `none` …) does not count.
+ * `border-color` and `color-scheme` do not count either.
+ */
+const OWN_COLOUR_CSS =
+  /(?<![\w-])(?:background(?:-color|-image)?|color)\s{0,20}:\s{0,20}(?!(?:inherit|initial|unset|revert|transparent|none|currentcolor)\b)[^;"'}\s]/i;
+
+/** True when one tag of the mail sets a colour or a background. */
+function ownColourAttr(html: string): boolean {
+  for (const tag of html.matchAll(TAG)) {
+    if (OWN_COLOUR_ATTR.test(tag[0])) return true;
+  }
+  return false;
+}
+
+/**
+ * Pick the dark-mode rule for an HTML body. The order is the owner's order:
+ * the email's own dark design first, then the tokens, then the invert.
+ *
+ * A dark media query is a dark design. A `color-scheme` that names dark,
+ * with no media query, says only that the browser's own dark colours are
+ * fine. That holds for a mail with no colours of its own. A mail that sets
+ * dark text on a white box would draw that text on the dark card, so it is
+ * inverted.
+ */
+export function classifyEmailHtml(html: string): DarkRule {
+  // A very long body is a newsletter or an attack. Both read well inverted.
+  if (html.length > CLASSIFY_LIMIT) return "invert";
+  if (DARK_MEDIA.test(html)) return "native";
+  const ownColours = OWN_COLOUR_CSS.test(html) || ownColourAttr(html);
+  if (DARK_PROPERTY.test(html) && !ownColours) return "native";
+  return ownColours ? "invert" : "tokens";
+}
+
+/** A query that is always true on a screen, and one that is never true. */
+const ALWAYS = "(min-width: 0px)";
+const NEVER = "(max-width: -1px)";
+
+/** One media query list, with the dark condition on and the light one off. */
+function forceDarkQueries(list: string): string {
+  return list
+    .split(",")
+    .map((query) => {
+      if (!/prefers-color-scheme/i.test(query)) return query;
+      const dark = /prefers-color-scheme\s*:\s*dark/i.test(query);
+      let out = query
+        .replace(/\(\s*prefers-color-scheme\s*:\s*dark\s*\)/gi, ALWAYS)
+        .replace(/\(\s*prefers-color-scheme\s*:\s*light\s*\)/gi, NEVER);
+      // A forced dark rule stays off paper: a print draws the light design.
+      if (dark && !/^\s*(?:only\s+|not\s+)?(?:all|screen|print|speech)\b/i.test(out)) {
+        out = ` screen and ${out.trim()}`;
+      }
+      return out;
+    })
+    .join(",");
+}
+
+/**
+ * Turn the sender's own dark media queries on, for the `native` look.
+ *
+ * A child frame takes `prefers-color-scheme` from the OS, not from the app,
+ * so a member in the app's dark mode on a light OS never saw the sender's
+ * dark design. Measured in Chromium on 2026-10-10: the frame element's
+ * `color-scheme: dark` does not reach the child's media query.
+ *
+ * It runs on the SANITIZED markup. It swaps a media condition for fixed
+ * words with no `<`, so it cannot make a tag, and it adds no text of its own
+ * beyond those words.
+ */
+export function forceDarkMedia(html: string): string {
+  return html
+    // `[^{;@]` stops at the next `@media`, so the scans never overlap.
+    .replace(/@media([^{;@]{0,500})\{/gi, (whole, list: string) =>
+      /prefers-color-scheme/i.test(list) ? `@media${forceDarkQueries(list).trimEnd()} {` : whole,
+    )
+    .replace(/(<style\b[^<>]{0,500}?\bmedia\s{0,20}=\s{0,20})(["'])([^"'<>]{0,500})\2/gi, (whole, head: string, q: string, list: string) =>
+      /prefers-color-scheme/i.test(list) ? `${head}${q}${forceDarkQueries(list).trim()}${q}` : whole,
+    );
+}
+
+/**
+ * The look of one frame. Light mode, and the member's light version, always
+ * get the original.
+ */
+export function chooseBodyLook(input: {
+  dark: boolean;
+  lightVersion: boolean;
+  html: string;
+}): BodyLook {
+  if (!input.dark || input.lightVersion) return "original";
+  return classifyEmailHtml(input.html);
+}
+
+/** The colour scheme the iframe ELEMENT carries. A child frame reads its
+ *  `prefers-color-scheme` from it, so only `native` says dark. */
+export function frameColorScheme(look: BodyLook): "light" | "dark" {
+  return look === "native" ? "dark" : "light";
+}
+
+// ── The base colour of the invert ──────────────────────────────────────────
+
+/** The filter of the invert look, and of each re-inverted image. */
+export const INVERT_FILTER = "invert(1) hue-rotate(180deg)";
+
+/**
+ * The hue-rotate matrix of the Filter Effects spec, for `deg` degrees. It
+ * works on sRGB values in 0..1, as a browser applies a CSS filter function.
+ */
+export function hueRotateMatrix(deg: number): number[][] {
+  const r = (deg * Math.PI) / 180;
+  const c = Math.cos(r);
+  const s = Math.sin(r);
+  return [
+    [0.213 + c * 0.787 - s * 0.213, 0.715 - c * 0.715 - s * 0.715, 0.072 - c * 0.072 + s * 0.928],
+    [0.213 - c * 0.213 + s * 0.143, 0.715 + c * 0.285 + s * 0.14, 0.072 - c * 0.072 - s * 0.283],
+    [0.213 - c * 0.213 - s * 0.787, 0.715 - c * 0.715 + s * 0.715, 0.072 + c * 0.928 + s * 0.072],
+  ];
+}
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+function apply(m: number[][], { r, g, b }: Rgb): Rgb {
+  return {
+    r: clamp01(m[0][0] * r + m[0][1] * g + m[0][2] * b),
+    g: clamp01(m[1][0] * r + m[1][1] * g + m[1][2] * b),
+    b: clamp01(m[2][0] * r + m[2][1] * g + m[2][2] * b),
+  };
+}
+
+const invert = ({ r, g, b }: Rgb): Rgb => ({ r: 1 - r, g: 1 - g, b: 1 - b });
+
+/** What {@link INVERT_FILTER} does to one colour. */
+export function invertColour(c: Rgb): Rgb {
+  return apply(hueRotateMatrix(180), invert(c));
+}
+
+/**
+ * The base colour that {@link INVERT_FILTER} turns into `target`. A
+ * hue-rotate of 180 degrees is its own inverse, so the base is
+ * `1 - M180 · target`.
+ */
+export function invertBase(target: Rgb): Rgb {
+  return invert(apply(hueRotateMatrix(180), target));
+}
+
+// ── The palette, from the tokens ────────────────────────────────────────────
+
+/** The token colours a dark look needs, as normalised RGB. */
+export interface BodyPalette {
+  card: Rgb;
+  ink: Rgb;
+  link: Rgb;
+  muted: Rgb;
+  border: Rgb;
+}
+
+/** Each palette slot: its colour in the dark mode of THEME. */
+const SLOTS: Record<keyof BodyPalette, keyof typeof THEME.colors.dark> = {
+  card: "card",
+  ink: "cardForeground",
+  link: "primary",
+  muted: "mutedForeground",
+  border: "border",
+};
+
+/** The one live token: the member may change the accent, and links follow it. */
+export const LIVE_ACCENT = "--primary";
+
+/**
+ * The dark palette. Every slot comes from the dark mode of `THEME`, the
+ * mirror of `globals.css` that `themes.test.ts` keeps in step. Only the link
+ * reads the live accent through `read`, and a value that does not parse
+ * falls back to THEME.
+ *
+ * ⚠️ Never read the card, the ink or the border live (fix round 3, P2-a).
+ * On a switch to dark, next-themes sets its state before it swaps the class
+ * of `<html>`. A live read then got the LIGHT card, white. The base of white
+ * is black, and the page drew as a blank white sheet.
+ */
+export function bodyPalette(read: (name: string) => string | null = () => null): BodyPalette {
+  const out = {} as BodyPalette;
+  for (const key of Object.keys(SLOTS) as (keyof BodyPalette)[]) {
+    out[key] = parseColor(String(THEME.colors.dark[SLOTS[key]])) as Rgb;
+  }
+  const accent = read(LIVE_ACCENT);
+  const live = accent ? parseColor(accent) : null;
+  if (live) out.link = live;
+  return out;
+}
+
+/** A colour for CSS, built from numbers only. */
+export function cssColour({ r, g, b }: Rgb): string {
+  const part = (v: number) => Math.round(clamp01(v) * 255).toString(16).padStart(2, "0");
+  return "#" + part(r) + part(g) + part(b);
+}
+
+// ── The CSS of each look ────────────────────────────────────────────────────
+
+/** Media that draws a picture. Each gets the filter again, so it looks as sent. */
+const MEDIA = "img, picture, video, canvas, svg image";
+
+/** A box whose background is a picture: an inline style or the attribute. */
+const PICTURE_BOX =
+  '[style*="background-image" i], [style*="background" i][style*="url(" i], [background]';
+
+/**
+ * The same boxes, less one that sets its own `bgcolor`: the backing skips it
+ * (fix round 3, P2-b). A `<td bgcolor="#1a1a1a" style="background-image:…">`
+ * with white text keeps its dark colour while the picture is blocked.
+ */
+const BACKED_BOX =
+  '[style*="background-image" i]:not([bgcolor]), [style*="background" i][style*="url(" i]:not([bgcolor]), [background]:not([bgcolor])';
+
+/**
+ * The re-invert rules of the invert look: a LIGHT ISLAND for each picture
+ * (coordinator decision, 2026-10-10, round 2).
+ *
+ * - Each picture element and each box with a background picture gets the
+ *   filter again, so it composites as in light mode.
+ * - A box with a background picture also gets a white backing. White text
+ *   over a photo stays white, and the photo keeps its true colours. Dark
+ *   text in a box whose picture did not load sits on white, and stays
+ *   readable. Without the backing it drew dark on the dark card (round 0).
+ * - The backing has no `!important`. A sender's own inline
+ *   `background-color` wins, and a `bgcolor` attribute is left alone.
+ * - A picture or a box inside a re-inverted box gets no filter of its own,
+ *   because two re-inverts would invert it again.
+ * - Each re-inverted picture and box paints ABOVE the multiply layer
+ *   (`ISLAND_Z` over `LAYER_Z`). The layer tints only the inverted page, so a
+ *   picture keeps the colours of light mode: a yellow sun stays yellow, not
+ *   peach (verifier F5).
+ *
+ * The cost: such a box looks light in dark mode, as image blocks do in Gmail.
+ */
+export function reinvertCss(): string {
+  const white = cssColour({ r: 1, g: 1, b: 1 });
+  return (
+    `${MEDIA}, ${PICTURE_BOX} { filter: ${INVERT_FILTER}; position: relative; z-index: ${ISLAND_Z}; }\n` +
+    `${BACKED_BOX} { background-color: ${white}; }\n` +
+    `:is(${PICTURE_BOX}, picture) :is(${MEDIA}, ${PICTURE_BOX}) { filter: none; }`
+  );
+}
+
+/** The paint order: the multiply layer, then each light island above it. */
+export const LAYER_Z = 2147483646;
+export const ISLAND_Z = 2147483647;
+
+/** The re-invert rules, as one string. */
+export const REINVERT_CSS = reinvertCss();
+
+/** How far the multiply layer reaches past the frame: a wide mail overflows it. */
+export const OVERLAY_SPREAD_PX = 4096;
+
+/** A remote picture while the images are blocked: its alt text gets no re-invert. */
+export const BLOCKED_REMOTE_CSS = 'img[src^="http" i] { filter: none; }';
+
+/**
+ * The CSS that a look adds after the frame's own base CSS. `original` adds
+ * nothing, so light mode is unchanged. Each rule sits in `@media screen`.
+ */
+export function bodyLookCss(
+  look: BodyLook,
+  palette: BodyPalette,
+  opts: { remoteBlocked?: boolean } = {},
+): string {
+  if (look === "original") return "";
+  const card = cssColour(palette.card);
+  const ink = cssColour(palette.ink);
+  const link = cssColour(palette.link);
+  if (look === "native") {
+    // The sender's dark CSS comes later in the document, so it wins where it
+    // sets a colour. The card and the ink fill what it leaves unset.
+    return (
+      "@media screen {\n" +
+      "  :root { color-scheme: dark; }\n" +
+      `  html, body { background: ${card}; color: ${ink}; }\n` +
+      `  a { color: ${link}; }\n` +
+      "}"
+    );
+  }
+  if (look === "tokens") {
+    return (
+      "@media screen {\n" +
+      "  :root { color-scheme: dark; }\n" +
+      `  html, body { background: ${card}; color: ${ink}; }\n` +
+      `  a { color: ${link}; }\n` +
+      `  blockquote { border-left-color: ${cssColour(palette.border)}; color: ${cssColour(palette.muted)}; }\n` +
+      "}"
+    );
+  }
+  // The sheet stays the white of the original, and a layer multiplies every
+  // pixel by the base before the filter runs. White becomes the base, and
+  // the filter turns the base into the card: the email's own white boxes
+  // land on the card, not on black. Black text stays black, so it still
+  // turns white. A light island paints above the layer, so it keeps the
+  // colours of light mode.
+  //
+  // A wide newsletter overflows the frame, and the member can scroll it
+  // sideways. The spread of the layer's shadow multiplies that overflow too,
+  // so no strip of black shows at the side. A shadow adds no scroll area.
+  const sheet = cssColour({ r: 1, g: 1, b: 1 });
+  const base = cssColour(invertBase(palette.card));
+  return (
+    "@media screen {\n" +
+    `  html { filter: ${INVERT_FILTER}; background: ${sheet}; position: relative; min-height: 100%; }\n` +
+    `  html::after { content: ""; position: absolute; inset: 0; background: ${base}; ` +
+    `box-shadow: 0 0 0 ${OVERLAY_SPREAD_PX}px ${base}; ` +
+    `mix-blend-mode: multiply; pointer-events: none; z-index: ${LAYER_Z}; }\n` +
+    `  ${REINVERT_CSS.replace(/\n/g, "\n  ")}\n` +
+    // A blocked remote picture never loads, and its alt text draws in its
+    // place. A re-invert would turn that text dark on the dark card.
+    (opts.remoteBlocked ? `  ${BLOCKED_REMOTE_CSS}\n` : "") +
+    "}"
+  );
+}
