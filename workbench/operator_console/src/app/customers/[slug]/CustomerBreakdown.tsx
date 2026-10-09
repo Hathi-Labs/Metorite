@@ -133,7 +133,7 @@ export default function CustomerBreakdown({
       <div className="panel-head">
         <h2>Where it went</h2>
         <p>
-          {`The same ${data?.windowDays ?? 30} days, split by app, by agent and by person. `} The customer&apos;s own admin sees these rows with credits
+          {`The same period, split by app, by agent and by person. `} The customer&apos;s own admin sees these rows with credits
           only. They never see the AI cost or the margin.
         </p>
       </div>
