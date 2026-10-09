@@ -270,9 +270,11 @@ filters only. PICK still gets the member's question as `query`.)*
 7. In a `no_egress` run, the tool sends every batch to System 1 on
    `tier-fast`. It sends no decide request (§4, Q4).
    *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on, a
-   `no_egress` run sends its batches to the decide door too. The state holds
-   the query and the clipped summaries, so it is a typed question with short
-   summaries. With the switch off, the rule above holds.)*
+   `no_egress` run may send a batch to the decide door too. The batch goes
+   only when its state fits the short bound of 1500 characters
+   (`decide_tools.short_context`). A longer batch goes to System 1. A batch
+   of 16 summaries is longer, so most batches of such a run stay on
+   `tier-fast`. With the switch off, the rule above holds.)*
 
 ### 3.3a The cost check of PICK — PICK pays for itself, or it is skipped
 

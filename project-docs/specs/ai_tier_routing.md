@@ -652,7 +652,8 @@ output and writes the answer, so it is the step that needs the stronger model.
 - It reads the turn kind and the last tool call from run state.
 - It logs one line for each request: `ai_route.chosen`, with the agent, the
   run, the tier, the kind and the reason (`default`, `turn_kind`, `tool_hint`
-  or `effort`). The line holds no tenant text.
+  or `effort`). The line holds no tenant text. *(Amended by the owner,
+  2026-10-09: `tool_hint` is no longer a reason. See the box in §4.4.)*
 - **A Copilot SDK agent cannot switch per request.** task-manager and
   app-builder get the turn-kind tier for the whole run, set once at
   `_apply_model_for_maf_agent`. D84 ports them later.
@@ -902,11 +903,21 @@ check below passes. Here is how the System-1 callable passes each one:
 >   decide vendor is already a sub-processor, for email rule matching (D75).
 >   Free-form work stays on our chat tiers.
 > - **The bound.** `decide_tools` sends an item of a `no_egress` run to
->   `tier-decide` only when the context holds at most 4000 characters, the
+>   `tier-decide` only when the context holds at most 1500 characters, the
 >   question at most 400 and each option at most 120. A longer item goes to
 >   `tier-fast`. The tool then logs `decide_tool.system_one_fallback` with
 >   the reason `no_egress_not_short`. The turn-kind question always stays on
 >   `tier-fast`.
+> - **One bound for every path.** `decide_tools.short_context` holds the
+>   bound. The PICK step of `narrow_and_read` asks it for each batch, and the
+>   Projects twin check asks it for its context. A PICK batch of 16 summaries
+>   is longer than the bound, so it goes to System 1 and logs
+>   `narrowing.pick_fallback` with the same reason.
+> - ⚠️ **What the bound does not do.** It measures length, not content. The
+>   model writes the context of the `decide` tool, so up to 1500 characters
+>   of raw member text can reach `tier-decide` while `SYSTEM_ONE_ON_DECIDE`
+>   is on. The owner decides whether that is a short summary before that
+>   flag goes on. It ships OFF.
 > - **The switch.** `DECIDE_IN_NO_EGRESS` is the one switch that undoes this,
 >   and it ships ON. With it off, a `no_egress` run sends no decide request,
 >   as before. `decide_tools.decide_in_no_egress` is the one reader, and a
@@ -924,6 +935,9 @@ check below passes. Here is how the System-1 callable passes each one:
 >   The context holds names, titles and task numbers, and never a
 >   description. `skill_projects/choices.py` holds both. They run only for
 >   an agent that `AI_TIER_ROUTING` covers.
+> - **The card shows what a model chose.** A status, a type and a person show
+>   on the card by name, as before. A project that a name resolved shows
+>   first on the `create_task` card, and in its detail line.
 > - **The safe answer.** An `unsure`, a confidence under the threshold of §5
 >   and a failure of both engines give the refusal of before, with the real
 >   names. A twin is a flag on the card. It never blocks a create.
