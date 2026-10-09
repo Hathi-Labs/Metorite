@@ -1016,7 +1016,11 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           return (
             <button key={id} type="button" onClick={() => toggle(id)} disabled={locked}
               aria-pressed={active}
-              style={{ textAlign: "left", borderRadius: 12, padding: "10px 12px", cursor: locked ? "default" : "pointer",
+              // A column from the top: a button centres its content, so an
+              // option with a Recommended badge set the row height and the
+              // titles beside it sat lower (follow-up 5 of #766).
+              style={{ textAlign: "left", display: "flex", flexDirection: "column", justifyContent: "flex-start",
+                borderRadius: 12, padding: "10px 12px", cursor: locked ? "default" : "pointer",
                 border: `1px solid ${active ? "var(--primary)" : recommended ? RECOMMENDED_RING : "var(--border)"}`,
                 background: active ? "color-mix(in srgb, var(--primary) 10%, var(--card))" : "var(--card)",
                 boxShadow: active ? "0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent)" : "none",

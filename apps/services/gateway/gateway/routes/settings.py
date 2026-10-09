@@ -2057,27 +2057,12 @@ async def put_appearance(
 # signing path, a lifecycle policy and a second place a tenant's data can be
 # left behind at deletion — for one row.
 #
-# ⚠️ **`org_settings` IS NOT TENANT-SCOPED TODAY, and this row will collide.**
-# An earlier version of this comment claimed tenancy came free here because the
-# table sat behind RLS like everything else. That was false and it was
-# load-bearing — it was the stated reason the bytes live here. The facts:
-# `151_org_settings.sql` keys the table on `key` ALONE and says so ("there is
-# no per-tenant key namespace because this deployment is one organisation");
-# `test_tenancy_boundary.py` lists org_settings in BASELINE_UNSCOPED; and
-# `acb_common/org_settings.py` writes through a raw `psycopg.connect()` that
-# binds no `app.tenant_id`, allow-listed in `test_psycopg_seam.py` as "a
-# binding site the RLS work must convert, not a permanent exemption".
-#
-# So on the day a second organisation shares this database, tenant B's upload
-# overwrites the one global 'branding' row and tenant A's members render
-# tenant B's logo. After MT-1b promotion it fails the other way: the unbound
-# connection reads zero rows under FORCE RLS and every org's logo silently
-# vanishes. This is inherited from the `appearance` neighbour rather than
-# introduced here — but branding is the first *content* placed in this table
-# rather than a preference, and it is the most visible cross-tenant artifact
-# the product has. **MT-1b must widen this PK and bind the tenant before a
-# second customer is onboarded.** Tracked as a board finding, not fixed here:
-# converting the org_settings seam is MT-1b's work, not this slice's.
+# Tenancy. `org_settings` is keyed `(organization_id, key)` since migration
+# 234, and `acb_common/org_settings.py` binds the request's tenant on its own
+# connection. So each organization holds its own 'branding' row. Until
+# 2026-10-09 it did not: the key was `key` alone and the connection bound no
+# tenant, so under FORCE RLS every save answered 500 and every read was empty.
+# Fence: `tests/unit/test_org_settings_tenancy_r8.py`.
 #
 # The cap below is what keeps that true. At 128 KiB a logo is a row, not a
 # file; without a cap it becomes a file in a column, which is the failure mode

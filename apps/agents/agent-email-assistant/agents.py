@@ -2353,9 +2353,13 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
 #: The most addresses of one list that a send card names one by one. A longer
 #: list ends with "+N more", so the count always shows.
 _CARD_TARGET_CAP = 10
-#: The characters of ``context`` that the targets may take. The rest of the
-#: 4,000 that ``request_confirmation`` keeps is for the note or the body.
+#: The characters of ``context`` that the targets and the files may take
+#: together. The rest of the 4,000 that ``request_confirmation`` keeps is for
+#: the note or the body.
 _CARD_TARGET_BUDGET = 3000
+#: The most files that the ``Attachments:`` block of a send card names one by
+#: one. More files end with "+N more", so the count always shows.
+_CARD_FILE_CAP = 20
 
 
 def _card_targets(
@@ -2364,9 +2368,10 @@ def _card_targets(
     to: list[str],
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    budget: int = _CARD_TARGET_BUDGET,
 ) -> str:
     """The targets of a send, for the top of ``context``: the From mailbox,
-    then each To, Cc and Bcc address, one line each, in the line shape of the
+    then each To, Bcc and Cc address, one line each, in the line shape of the
     draft card (``_draft_address_line``: no hidden character, an IDN domain
     marked).
 
@@ -2374,10 +2379,14 @@ def _card_targets(
     ``detail`` never reaches, so no file name and no subject can push a
     recipient off the card (verifier F1 of 2026-10-09, EM-T13a/13b-1). A list
     longer than the cap ends with "+N more", so the card always shows the
-    count. If the block is still too long, the cap goes down, one address at a
-    time. An address is never cut in half.
+    count. If the block is still longer than *budget*, the cap goes down, one
+    address at a time. An address is never cut in half.
+
+    The Bcc comes before the Cc. The card draws a ``context`` with a note or a
+    body in a box that scrolls, so a Bcc after a long Cc list sat below the
+    fold. A Bcc is the target that a member cannot see on the sent mail.
     """
-    lists = (("To", list(to)), ("Cc", list(cc or [])), ("Bcc", list(bcc or [])))
+    lists = (("To", list(to)), ("Bcc", list(bcc or [])), ("Cc", list(cc or [])))
     block = ""
     for cap in range(_CARD_TARGET_CAP, 0, -1):
         lines = ["The mailbox and each recipient:", f"- From: {sender}"]
@@ -2386,13 +2395,74 @@ def _card_targets(
             if len(addrs) > cap:
                 lines.append(f"- {head}: +{len(addrs) - cap} more")
         block = "\n".join(lines)
-        if len(block) <= _CARD_TARGET_BUDGET:
+        if len(block) <= budget:
             break
     return block
 
 
+def _card_file_line(name: str, size: str = "") -> str:
+    """One file of the ``Attachments:`` block: ``file "<name>" (<size>)``.
+
+    A sender chooses the name, so the name is data. The fixed head and the
+    quotes keep a name such as ``Bcc: ceo@corp.test`` from reading as a target
+    line, and a file named ``none`` from reading as the empty marker (review
+    round 1, P3-b). A quote or a backslash in the name is escaped.
+    """
+    quoted = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'file "{quoted}" ({size})' if size else f'file "{quoted}"'
+
+
+def _card_files(files: list[tuple[str, str]], budget: int) -> str:
+    """The ``Attachments:`` block of ``context``: one line for each file.
+
+    *files* holds ``(name, size)`` pairs. The cut of ``detail`` names only
+    the first files and then "+N more", so a member could not see the name of
+    each file that leaves (follow-up 2 of #766). This block names up to
+    :data:`_CARD_FILE_CAP` files. If it is longer than *budget*, the cap goes
+    down, one file at a time. A name is never cut in half, and the count of
+    the files left out always shows. A send with no file says ``- none``,
+    which no file line can be (:func:`_card_file_line`).
+    """
+    items = [_card_file_line(_card_text(n, 1000), z) for n, z in files if str(n).strip()]
+    if not items:
+        return "Attachments:\n- none"
+    block = ""
+    for cap in range(min(_CARD_FILE_CAP, len(items)), -1, -1):
+        lines = ["Attachments:"] + [f"- {item}" for item in items[:cap]]
+        if len(items) > cap:
+            lines.append(f"- +{len(items) - cap} more")
+        block = "\n".join(lines)
+        if len(block) <= budget:
+            break
+    return block
+
+
+#: The room that the ``Attachments:`` block keeps when the targets are long:
+#: its shortest form, the head and the count of the files.
+_CARD_FILES_FLOOR = len("\n\nAttachments:\n- +999 more")
+
+
+def _card_head(
+    sender: str,
+    *,
+    to: list[str],
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    files: list[tuple[str, str]] | None = None,
+) -> str:
+    """The targets, then the files when *files* is not None, inside
+    :data:`_CARD_TARGET_BUDGET`. The targets come first and take what they
+    need. The files take the rest, and they keep room for their count."""
+    if files is None:
+        return _card_targets(sender, to=to, cc=cc, bcc=bcc)
+    targets = _card_targets(
+        sender, to=to, cc=cc, bcc=bcc, budget=_CARD_TARGET_BUDGET - _CARD_FILES_FLOOR)
+    room = _CARD_TARGET_BUDGET - len(targets) - 2
+    return f"{targets}\n\n{_card_files(files, room)}"
+
+
 def _card_context(targets: str, body: str | None) -> str:
-    """``context``: the targets first, then the note or the body."""
+    """``context``: the targets and the files first, then the note or the body."""
     text = (body or "").strip()
     return f"{targets}\n\n{text}" if text else targets
 
@@ -2576,7 +2646,15 @@ async def send_email(
             files=[r.get("path", "") for r in refs] if refs else None,
             subject=(subject or "(none)")[:120],
         ),
-        context=_card_context(_card_targets(sender, to=to, cc=cc, bcc=bcc), body),
+        context=_card_context(
+            _card_head(
+                sender, to=to, cc=cc, bcc=bcc,
+                # A workspace path keeps its extension when it is long.
+                files=[(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "")
+                       for r in refs] if refs else None,
+            ),
+            body,
+        ),
     ):
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
@@ -2602,9 +2680,41 @@ def _forward_files(files: list[dict[str, Any]]) -> list[str]:
     shown = []
     for a in files:
         size = _size_text(a.get("size_bytes"))
-        name = _one_line(a.get("filename") or "file", 60)
+        name = _card_file_name(a.get("filename") or "file")
         shown.append(f"{name} ({size})" if size else name)
     return shown
+
+
+#: The longest file name that a send card shows whole, and the end of a
+#: longer name that the card always keeps.
+_CARD_FILE_NAME_LIMIT = 60
+_CARD_FILE_NAME_TAIL = 16
+
+
+#: The longest workspace path that the card of ``send_email`` shows whole.
+_CARD_PATH_LIMIT = 120
+
+
+def _forward_file_pairs(files: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The files of a forward as ``(name, size)`` pairs, for ``context``."""
+    return [(_card_file_name(a.get("filename") or "file"), _size_text(a.get("size_bytes")))
+            for a in files]
+
+
+def _card_file_name(value: Any, limit: int = _CARD_FILE_NAME_LIMIT) -> str:
+    """A file name for a card, at most *limit* characters long.
+
+    ``_card_text`` drops a format character too, so a right-to-left mark
+    cannot turn "invoice<RLO>fdp.exe" into "invoiceexe.pdf". A long name
+    keeps its end, because the extension says what the file is. So the cut
+    goes in the middle ("invoice-2026-10-…-quote-revision.pdf"). A plain cut
+    at 60 showed "revision.pd" (follow-up 5 of #766, the screenshots).
+    """
+    name = _card_text(value, 1000)
+    if len(name) <= limit:
+        return name
+    head = limit - _CARD_FILE_NAME_TAIL - 1
+    return f"{name[:head]}…{name[-_CARD_FILE_NAME_TAIL:]}"
 
 
 @_annotate_risk(destructive=True, open_world=True)
@@ -2663,16 +2773,18 @@ async def forward_email(
     files = [a for a in (orig.get("attachments") or []) if isinstance(a, dict)]
     carried = files if include_attachments else []
     subject = _card_text(orig.get("subject") or "(no subject)", 120)
+    shown_files = _forward_files(carried)
 
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
         title="Forward this email?",
-        # Each target in ``context``, which the cut of ``detail`` never
-        # reaches. The files close ``detail`` (verifier F1).
-        detail=_card_detail(
-            sender, to=to, files=_forward_files(carried), subject=subject,
-        ),
-        context=_card_context(_card_targets(sender, to=to, cc=cc, bcc=bcc), note),
+        # Each target and each file in ``context``, which the cut of
+        # ``detail`` never reaches. ``detail`` keeps the short form, with the
+        # files last (verifier F1).
+        detail=_card_detail(sender, to=to, files=shown_files, subject=subject),
+        context=_card_context(
+            _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
+            note),
     ):
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {

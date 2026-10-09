@@ -57,9 +57,18 @@ export function isStorageRemoval(path: readonly string[]): boolean {
   );
 }
 
+/**
+ * The sends that fetch files before they send (follow-up 4 of #766). A
+ * forward reads up to 25 MB of files from the provider and then sends them.
+ * At 30 s the proxy answered 502 while the gateway still sent the mail, so a
+ * member who tried again sent it twice.
+ */
+export const FILE_SEND_POST_PATHS: ReadonlySet<string> = new Set(["forward"]);
+
 /** The abort budget of one POST, by the path segments after `/email/`. */
 export function postTimeoutMs(path: readonly string[]): number {
-  return AI_SLOW_POST_PATHS.has(path.join("/")) || isStorageRemoval(path)
+  const joined = path.join("/");
+  return AI_SLOW_POST_PATHS.has(joined) || FILE_SEND_POST_PATHS.has(joined) || isStorageRemoval(path)
     ? AI_SLOW_TIMEOUT_MS
     : DEFAULT_POST_TIMEOUT_MS;
 }
