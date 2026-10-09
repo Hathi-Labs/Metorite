@@ -294,6 +294,7 @@ async def _llm_capture(
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=450,
+            feature="tasks.capture_email",
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
@@ -1080,6 +1081,7 @@ async def _llm_detect_commitment(
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=450,
+            feature="tasks.capture_email",
             response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""

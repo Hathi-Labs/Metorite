@@ -350,7 +350,10 @@ async def _ask(context: str, items: list[Item], timeout_s: float) -> list[Answer
     calling = _calling_agent()
     if calling:
         # The CALLING agent, so its own usage rows hold this call (§6.5).
-        headers["X-CC-Agent"] = calling
+        # A chat agent never passes as an automation name (§4.3a).
+        from acb_common import chat_agent_label
+
+        headers["X-CC-Agent"] = chat_agent_label(calling)
 
     try:
         agent, async_client = _build_agent(timeout_s)

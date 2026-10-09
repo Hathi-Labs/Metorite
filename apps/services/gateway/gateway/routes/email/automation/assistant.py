@@ -631,6 +631,7 @@ async def _llm_writing_style(samples: list[str]) -> str:
                 messages=[{"role": "system", "content": sys_prompt},
                           {"role": "user", "content": joined[:8000]}],
                 temperature=0, max_tokens=1000,
+                feature="email.voice_profile",
             )
         return (resp.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001

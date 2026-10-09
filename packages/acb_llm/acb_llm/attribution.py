@@ -103,7 +103,12 @@ def attribution_headers(ctx: dict[str, str] | None = None) -> dict[str, str]:
     run_id = str(ctx.get("run_id") or "").strip()
     if run_id:
         out[RUN] = run_id
-    agent = str(ctx.get("agent") or "").strip()
+    # The ONE agent rule, shared with `routed.run_attribution`: the bound
+    # agent, else `<app>.automation`, and a chat agent never passes as an
+    # automation name (AI-call attribution, 2026-10-10).
+    from acb_common._log import attributed_agent
+
+    agent = attributed_agent(ctx, app) or ""
     if agent:
         out[AGENT] = agent
     return out
@@ -181,16 +186,27 @@ def attributed_openai(
     hands the factory a mock transport. ``_transport`` is private to httpx,
     so ``test_router_ride_through.py`` asserts the wrap is in place: a
     renamed attribute fails that test instead of silently losing the retry.
+
+    🔴 **A fixed ``X-CC-Agent`` goes through ``acb_common.chat_agent_label``**
+    (AI-call attribution, 2026-10-10). Every MAF client sets its agent name
+    here, and :func:`_stamp` never overwrites it. A MAF manifest slug may hold
+    a dot, so a member agent with the slug ``email.rule_match`` wrote that
+    name into the platform's own usage rows. Doing it HERE, once, covers each
+    agent that builds its client on this seam, including a new one.
     """
     import openai
+    from acb_common._log import chat_agent_label
 
     from acb_llm.ride_through import RideThroughTransport
 
+    headers = dict(default_headers) if default_headers is not None else None
+    if headers and headers.get(AGENT):
+        headers[AGENT] = chat_agent_label(headers[AGENT])
     http_client = openai.DefaultAsyncHttpxClient(event_hooks={"request": [_stamp]})
     http_client._transport = RideThroughTransport(http_client._transport)
     return openai.AsyncOpenAI(
         base_url=base_url,
         api_key=api_key,
-        default_headers=default_headers,
+        default_headers=headers,
         http_client=http_client,
     )

@@ -124,6 +124,24 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-287 · Three AI paths spend money and write no usage row · [AGENT]
+- **Check:** run `rg -n "litellm|_litellm" packages/acb_llm/acb_llm/context.py apps/services/gateway/gateway/routes/integrations.py`
+  and `rg -n "v1/embeddings" apps/services/gateway/gateway/main.py`. If
+  `acompletion_stream_text` still calls `acompletion` directly, this is open.
+- **Why.** The Operator dashboard sees only a call that writes a
+  `usage_event` row. Three paths call litellm directly and write none, so no
+  attribution can reach them:
+  1. `acompletion_stream_text` (`acb_llm/context.py`). It serves the
+     streaming email draft and the compose assist.
+  2. `POST /v1/embeddings` (`gateway/main.py`). `email_embeddings` and
+     `tasks/capability` use it.
+  3. The direct `_litellm.acompletion` loop in `gateway/routes/integrations.py`.
+- **Do this:** route each one through the Router, as H-171 did for
+  `acompletion_with_fallback`. Keep D57.7: a routed call that fails, fails.
+  `acompletion_stream_text` already takes `feature=`, so its name is ready.
+- **Authority:** `customer_console.md` §4.3a, H-171
+- **Added:** 2026-10-10 · branch `ai-call-attribution`
+
 ### H-286 · Reply Zero lists snoozed and junk threads as needing a reply, and the digest and My Day do not · [AGENT]
 - **Check:** run `rg -n "excluded = " apps/services/gateway/gateway/routes/email/automation/replyzero.py`.
   If the active buckets still exclude only `'trash', 'archive'`, this is open.

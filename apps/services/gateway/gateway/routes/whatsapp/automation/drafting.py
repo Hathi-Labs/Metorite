@@ -151,6 +151,7 @@ async def draft_reply(db: Any, account_id: str, chat_id: str) -> str | None:
         resp, _used = await acompletion_with_fallback(
             model=_DRAFT_MODEL, fallback_model=_FALLBACK_MODEL,
             messages=messages, temperature=0.4, max_tokens=350,
+            feature="whatsapp.draft",
         )
         content = (resp.choices[0].message.content or "").strip()
     except Exception as exc:

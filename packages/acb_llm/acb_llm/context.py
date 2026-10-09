@@ -246,6 +246,7 @@ async def acompletion_with_fallback(
     max_tokens: int = 1024,
     temperature: float = 0.2,
     source: str | None = None,
+    feature: str | None = None,
     **extra: Any,
 ) -> tuple[Any, str]:
     """Run a chat completion on ``model``, fitting the input to its context
@@ -265,7 +266,42 @@ async def acompletion_with_fallback(
     it, so stack inspection can only ever resolve the shared package name
     (``"apps"``), never the individual app. Passing ``source=f"app:{slug}"``
     explicitly is the only way to get per-app cost attribution.
+
+    ``feature`` names this call for the usage report, as ``email.draft``
+    (AI-call attribution, 2026-10-10). It is a code constant of the shape
+    ``<app>.<feature>``, and it binds the run context's ``agent`` for this
+    call alone, through ``acb_common.automation_agent_scope``. A chat agent
+    the task already holds keeps its own name. It never reaches litellm or
+    the Router payload.
     """
+    _source = source if source is not None else _infer_app_source()
+    if not feature:
+        return await _complete_with_fallback(
+            model=model, fallback_model=fallback_model, messages=messages,
+            max_tokens=max_tokens, temperature=temperature, source=_source,
+            extra=extra,
+        )
+    from acb_common._log import automation_agent_scope
+
+    with automation_agent_scope(feature):
+        return await _complete_with_fallback(
+            model=model, fallback_model=fallback_model, messages=messages,
+            max_tokens=max_tokens, temperature=temperature, source=_source,
+            extra=extra,
+        )
+
+
+async def _complete_with_fallback(
+    *,
+    model: str,
+    fallback_model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    source: str | None,
+    extra: dict[str, Any],
+) -> tuple[Any, str]:
+    """The body of :func:`acompletion_with_fallback`, with ``source`` resolved."""
     import litellm as _litellm
     from litellm import acompletion
 
@@ -275,7 +311,7 @@ async def acompletion_with_fallback(
         ensure_model_registered,
     )
 
-    _source = source if source is not None else _infer_app_source()
+    _source = source
 
     # ── H-171: our own Router bills this, or nobody does ────────────────
     #
@@ -364,6 +400,7 @@ async def acompletion_stream_text(
     max_tokens: int = 1024,
     temperature: float = 0.2,
     on_delta: Any = None,
+    feature: str | None = None,
     **extra: Any,
 ) -> tuple[str, str]:
     """Streaming counterpart of :func:`acompletion_with_fallback` for callers
@@ -382,7 +419,37 @@ async def acompletion_stream_text(
 
     Usage is emitted post-stream via ``litellm.stream_chunk_builder`` so
     streamed calls stay visible in observability like non-streamed ones.
+
+    ``feature`` names the call, as :func:`acompletion_with_fallback` takes it.
     """
+    _source = _infer_app_source()
+    if not feature:
+        return await _stream_text(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, on_delta=on_delta, source=_source,
+            extra=extra,
+        )
+    from acb_common._log import automation_agent_scope
+
+    with automation_agent_scope(feature):
+        return await _stream_text(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, on_delta=on_delta, source=_source,
+            extra=extra,
+        )
+
+
+async def _stream_text(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    on_delta: Any,
+    source: str | None,
+    extra: dict[str, Any],
+) -> tuple[str, str]:
+    """The body of :func:`acompletion_stream_text`, with ``source`` resolved."""
     import litellm as _litellm
     from litellm import acompletion
 
@@ -392,7 +459,7 @@ async def acompletion_stream_text(
         ensure_model_registered,
     )
 
-    _source = _infer_app_source()
+    _source = source
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()

@@ -324,6 +324,7 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
                           {"role": "user",
                            "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
                 temperature=0, max_tokens=1000,
+                feature="email.template_fill",
             )
         out = (resp.choices[0].message.content or "").strip()
         return out or template

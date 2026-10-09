@@ -862,6 +862,7 @@ async def _llm_pick_rule(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_prompt}],
                 max_tokens=800,
+                feature="rule_match",
             )
             if isinstance(data, dict) and isinstance(data.get("index"), int):
                 idx = data["index"]
@@ -948,6 +949,7 @@ async def _llm_pick_rules(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_prompt}],
                 max_tokens=1500,
+                feature="rule_match",
             )
             out: list[dict[str, Any]] = []
             seen: set[int] = set()
