@@ -99,6 +99,7 @@ organization.
 | 1 | `lib/money.ts`: the D94 model, one function per word, with the estimate flags | `money.test.ts` covers paid, free, unbacked, unpriced, the estimate, and a missing credit price |
 | 2 | `Explain`: an ⓘ tooltip that opens on hover, focus and tap, and a glossary in `lib/glossary.ts`. Each tooltip shows the definition, the formula and the row's own numbers | Every money figure on the customer page and on Money has an `Explain`. `glossary.test.ts` fails on an entry with no formula |
 | 3 | Customer page: a money strip, a lifecycle bar, tabs, one "Start paid plan" act, one seats panel, the rupee value on a credit grant | The strip shows We charged, AI cost, Profit, Margin, Credits left and Days left for the last 30 days |
+| 3a | `POST /credits/grant` takes an optional `price_paid_inr`, legal only on `manual` or `purchase` with positive credits. The lot records what the customer paid | `test_customer_console_manual_credits.py` passes against a real Postgres |
 | 4 | Customer list columns from §3, and a Money page that replaces AI usage, with the vendor bill moved onto it | The ratio "× cost" appears on no page |
 | 5 | Navigation groups, plain words, no internal codes, Activity in sentences, a Setup page for the go-live checklist | `words`-style test refuses `H-[0-9]`, `D[0-9]`, `migration [0-9]` and env names in rendered strings |
 | 6 | A visual pass: dark, light and phone width, with the fixture rig in `e2e/visual/` | Screenshots of every page reviewed before each PR |

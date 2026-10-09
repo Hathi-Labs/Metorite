@@ -223,3 +223,54 @@ def test_a_seat_source_typo_answers_400_not_500(client, org):
         "source": "banana"})
     assert r.status_code == 400
     assert "seat source" in r.json()["detail"]
+
+
+# ── WS-50 slice 3: the rupee amount a customer paid ────────────────────────
+
+
+def _lots(slug):
+    from sqlalchemy import text
+
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT l.source, l.credits, l.price_paid_inr FROM credit_lot l "
+                "JOIN organization o ON o.id = l.organization_id "
+                "WHERE o.slug = :s ORDER BY l.id"
+            ),
+            {"s": slug},
+        ).all()
+    eng.dispose()
+    return [(r.source, Decimal(r.credits), r.price_paid_inr) for r in rows]
+
+
+def test_a_manual_grant_records_what_the_customer_paid(client, org):
+    """🔴 Before WS-50 slice 3 a manual grant made a purchase lot with NO
+    price, so the console could not say what those credits earned."""
+    r = client.post("/credits/grant", headers=OP, json={
+        "org_slug": org, "credits": "1000", "reason": "manual",
+        "ref": f"UTR-{uuid.uuid4().hex[:10]}", "price_paid_inr": "1200"})
+    assert r.status_code == 200, r.text
+    assert ("purchase", Decimal("1000"), Decimal("1200.00")) in _lots(org)
+
+
+def test_a_price_on_a_FREE_grant_is_refused(client, org):
+    """A price on a free grant would make free credits read as bought."""
+    r = client.post("/credits/grant", headers=OP, json={
+        "org_slug": org, "credits": "100", "reason": "grant", "price_paid_inr": "100"})
+    assert r.status_code == 422
+
+
+def test_a_price_on_a_negative_row_is_refused(client, org):
+    r = client.post("/credits/grant", headers=OP, json={
+        "org_slug": org, "credits": "-10", "reason": "manual",
+        "ref": f"UTR-{uuid.uuid4().hex[:10]}", "price_paid_inr": "10"})
+    assert r.status_code == 422
+
+
+def test_a_grant_without_a_price_is_still_legal(client, org):
+    """R6: the field is optional, so a caller that predates it still works."""
+    r = _grant(client, org, "50", ref=f"UTR-{uuid.uuid4().hex[:10]}")
+    assert r.status_code == 200, r.text
+    assert ("purchase", Decimal("50"), None) in _lots(org)

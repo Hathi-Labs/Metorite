@@ -643,6 +643,12 @@ class CreditGrantRequest(BaseModel):
     credits: Decimal = Field(ge=Decimal("-9999999999"), le=Decimal("9999999999"))
     reason: str = LEDGER_REASON_PURCHASE
     ref: str | None = None
+    #: 🔴 WS-50 slice 3: what the customer PAID for these credits, in rupees.
+    #: Before this field a manual grant made a purchase lot with no price, so
+    #: the operator console could not say what those credits earned and had
+    #: to guess at the current credit price. Optional, so an old caller stays
+    #: legal (R6), and legal only on a reason that SELLS credits.
+    price_paid_inr: Decimal | None = Field(default=None, ge=Decimal(0), le=Decimal("9999999999"))
 
     @field_validator("reason")
     @classmethod
@@ -653,6 +659,20 @@ class CreditGrantRequest(BaseModel):
                 f"{sorted(LEDGER_REASONS)} (subscription_console.md SC-4g (v))"
             )
         return value
+
+    @model_validator(mode="after")
+    def _price_only_on_a_sale(self) -> CreditGrantRequest:
+        # A price on a free grant would make a free lot read as bought, and a
+        # price on a negative row has no lot to sit on.
+        if self.price_paid_inr is not None:
+            if self.reason not in (LEDGER_REASON_MANUAL, LEDGER_REASON_PURCHASE):
+                raise ValueError(
+                    "price_paid_inr is only for credits the customer paid for "
+                    f"(reason 'manual' or 'purchase'), not {self.reason!r}"
+                )
+            if self.credits <= 0:
+                raise ValueError("price_paid_inr needs a positive credit amount")
+        return self
 
 
 class ManualActivationRequest(BaseModel):
@@ -6397,6 +6417,7 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 delta=req.credits,
                 reason=req.reason,
                 ref=ref,
+                price_paid_inr=req.price_paid_inr,
             )
         except IntegrityError:
             # The SELECT above cannot hold under concurrency: two grants
@@ -6419,7 +6440,13 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
             conn,
             org_id,
             "credits.grant",
-            {"delta": str(req.credits), "reason": req.reason},
+            {
+                "delta": str(req.credits),
+                "reason": req.reason,
+                "price_paid_inr": (
+                    None if req.price_paid_inr is None else str(req.price_paid_inr)
+                ),
+            },
             actor=staff.actor,
         )
 
