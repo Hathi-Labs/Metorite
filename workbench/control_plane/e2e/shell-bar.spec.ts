@@ -452,12 +452,33 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     await stub(page);
     await page.goto("/tasks");
     await expect(bar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
-    const left = await box(bar(page).locator(":scope > div").nth(1));
     const search = await box(bar(page).getByRole("button", { name: /Search or ask anything/ }));
-    const right = await box(bar(page).locator(":scope > div").nth(2));
-    expect(left.x + left.width).toBeLessThanOrEqual(search.x);
-    expect(search.x + search.width).toBeLessThanOrEqual(right.x);
-    expect(right.x + right.width).toBeLessThanOrEqual(1280);
+    // ⚠️ Measure the CONTENT, not the slot's box. The defect is content that
+    // overflows a narrow slot, and the slot's own box stays left of the
+    // command bar while it does (verifier, 2026-10-09: the box check stayed
+    // green with the overlap put back).
+    const contentEdges = (slot: number) =>
+      bar(page)
+        .locator(":scope > div")
+        .nth(slot)
+        .evaluate((el) => {
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (const d of Array.from(el.querySelectorAll("*"))) {
+            const r = d.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            lo = Math.min(lo, r.left);
+            hi = Math.max(hi, r.right);
+          }
+          return { lo, hi };
+        });
+    const left = await contentEdges(1);
+    const right = await contentEdges(2);
+    expect(left.hi, "the left slot's content ends before the command bar").toBeLessThanOrEqual(search.x);
+    if (Number.isFinite(right.lo)) {
+      expect(right.lo, "the right slot's content starts after the command bar").toBeGreaterThanOrEqual(search.x + search.width);
+      expect(right.hi).toBeLessThanOrEqual(1280);
+    }
   });
 });
 

@@ -240,8 +240,8 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
 Admin, each only when it has an item. Admin holds Approvals, and Organisation
 for an admin. All apps and the account menu are at the foot.
 `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
-`shellNav.test.ts` pins five shapes. They are a full admin, a member who is
-not an admin, a member with three apps, a member with none and an unresolved
+`shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
+The others are a member with three apps, one with none, and an unresolved
 viewer.
 
 ### 3.3 The account menu
@@ -249,7 +249,7 @@ viewer.
 It holds My Profile, My access, Appearance and sign-out. These pages describe
 the member. The member does not work in them, so they leave the sidebar.
 Organisation was in this menu until 2026-10-09. It is an app in Admin now
-(§3.2a item 4), so it has one door, and the menu holds only the member's own
+(§3.2a item 4), so it has one door. The menu holds only the member's own
 pages. Fences: `shellNav.test.ts` and `e2e/account-switcher.spec.ts`.
 
 ⚠️ **Approvals is NOT in this menu** (§3.2a item 2). It keeps its sidebar door
