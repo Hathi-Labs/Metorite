@@ -41,7 +41,12 @@ from acb_common.child_env import child_env, copilot_env
 from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
-from acb_skills.loader import AgentLoadError, load_agent
+from acb_skills.loader import (
+    AgentLoadError,
+    AgentRuntimeUnsupported,
+    is_copilot_agent,
+    load_agent,
+)
 
 # Max self-anneal retries before giving up and falling back to LLM recovery.
 _MAX_ANNEAL_ATTEMPTS = 2
@@ -1125,8 +1130,12 @@ async def _run_sub_agent_streaming(
                 ),
                 organization_id=_resolve_sub_agent_org(),
             )
+            # WS-43n: the label OR the object. A repo agent registered after
+            # WS-43n gets "maf" when its config.json declares nothing, so the
+            # label alone no longer finds every Copilot object (§15.5).
+            _sub_is_copilot = _runtime == "github-copilot" or is_copilot_agent(agent)
             if (
-                _runtime == "github-copilot"
+                _sub_is_copilot
                 and hasattr(agent, "_default_options")
                 and agent._default_options is not None
             ):
@@ -1195,7 +1204,7 @@ async def _run_sub_agent_streaming(
                 os.environ.get("SUB_AGENT_MAX_RESULT_CHARS", "8000")
             )
 
-            if _runtime == "github-copilot" and hasattr(agent, "run"):
+            if _sub_is_copilot and hasattr(agent, "run"):
                 # Resolve model with priority:
                 #   1. parent run's resolved tier (model arg) — tier inheritance
                 #   2. copilot_chat_model (global setting)
@@ -2984,6 +2993,10 @@ async def _run_agent_inner(
                 )
 
             agents = loaded.build_agents()
+            # WS-43n: the label OR the object, as the stream path decides. A
+            # repo agent that declares no runtime is labelled "maf" (§15.5).
+            if not _is_copilot_agent and any(is_copilot_agent(a) for a in agents):
+                _is_copilot_agent = True
             # Honour .github/agents/<name>.agent.md (instructions override).
             _batch_md_spec = _apply_agent_md_overrides(
                 agents, loaded.agent_dir, agent_name,
@@ -3229,6 +3242,18 @@ async def _run_agent_inner(
         # §15.4: refused as absent. Before the AgentLoadError clause, because
         # that one starts a self-mutation. The agent is fine, and this caller
         # may not run it. The gate already logged the reason.
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentRuntimeUnsupported as exc:
+        # WS-43n: a Copilot agent after WS-43r. Before the AgentLoadError
+        # clause, because that one starts a self-mutation, and a run of a
+        # refused runtime must not open a repair PR on every call. The text
+        # carries the migration steps of §15.5.
+        _log.warning(
+            "executor.runtime_unsupported", agent=agent_name, run_id=run_id,
+        )
         raise AgentRunError(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc

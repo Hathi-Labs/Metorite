@@ -1353,19 +1353,19 @@ async def list_agents(
     dynamic = _load_dynamic_agents()
     dynamic_names = {a["name"] for a in dynamic}
     # Static agents not overridden by dynamic entries come first
-    static = [a for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
+    # A COPY of each entry. The loop below writes each declared runtime into
+    # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
+    # write into the shared dict changed the label of the process on the first
+    # GET /agent (WS-43n review): task-manager and app-builder declare "maf"
+    # in config.json and are labelled "github-copilot" here, on purpose.
+    static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
-    # or have NULL in the DB column.  Rule: only entries registered FROM a
-    # GitHub repo URL are "github-copilot"; everything else (local path,
-    # unknown) is plain MAF.
+    # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for
+    # every source. A repo URL no longer implies the Copilot SDK. An entry
+    # that names a runtime keeps it, and its config.json still wins below.
     for a in dynamic:
         if not a.get("agent_runtime"):
-            a["agent_runtime"] = (
-                "github-copilot"
-                if (a.get("repo_name") or a.get("repo_url"))
-                and not a.get("local_path")
-                else "maf"
-            )
+            a["agent_runtime"] = "maf"
     merged = static + dynamic
 
     # Honor each agent's declared config.json runtime (authoritative over the
@@ -1589,6 +1589,12 @@ async def register_agent(
     repo_url: str = (req.repo_url or "").strip().rstrip("/")
     repo_name: str = ""
 
+    # WS-43n (maf_coding_engine.md §15.5): the repo's own config.json
+    # "runtime" is the one source of the runtime. The request carries no
+    # runtime field. So config.json is read on EVERY registration, not only
+    # when the request leaves the metadata empty.
+    declared_runtime: str | None = None
+
     # Detect local path: req.local_path set, or repo_url is an absolute path
     raw_input = req.local_path or (repo_url if Path(repo_url).is_absolute() else None)
     if raw_input:
@@ -1599,81 +1605,131 @@ async def register_agent(
                 detail=f"Local path does not exist: {raw_input}",
             )
         local_path = str(resolved)
-        # Auto-read config.json from disk if metadata is missing
-        if not description or not integrations:
-            config_file = resolved / "config.json"
-            if config_file.exists():
-                try:
-                    cfg: dict = json.loads(config_file.read_text(encoding="utf-8"))
+        config_file = resolved / "config.json"
+        if config_file.exists():
+            try:
+                cfg: dict = json.loads(config_file.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict):
+                    declared_runtime = _normalize_runtime(cfg.get("runtime"))
+                    # Fill only the metadata that the request left empty.
                     description = description or cfg.get("description", "")
                     tags = tags or cfg.get("tags", [])
                     integrations = integrations or cfg.get("integrations", [])
                     optional_integrations = optional_integrations or cfg.get("optional_integrations", [])
-                    _log.info("agent.config_read_local", name=req.name, path=local_path)
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning("agent.config_parse_failed", name=req.name, error=str(exc))
+                _log.info("agent.config_read_local", name=req.name, path=local_path)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("agent.config_parse_failed", name=req.name, error=str(exc))
     else:
         # GitHub URL
         repo_name = repo_url.removeprefix("https://github.com/").removeprefix("http://github.com/")
-        if not description or not integrations:
-            settings = get_settings()
-            gh_token: str = getattr(settings, "github_token", "") or ""
-            headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
-            if gh_token:
-                headers["Authorization"] = f"token {gh_token}"
-            last_status: int = 0
-            try:
-                async with httpx.AsyncClient(timeout=8) as client:
-                    cfg = {}
-                    for branch in ("main", "master", "HEAD"):
-                        url = (
-                            "https://raw.githubusercontent.com"
-                            f"/{repo_name}/{branch}/config.json"
-                        )
-                        resp = await client.get(url, headers=headers)
-                        last_status = resp.status_code
-                        if resp.status_code == 200:
-                            try:
-                                cfg = resp.json()
-                            except Exception:  # noqa: BLE001
-                                cfg = {}
-                            break
-                    if cfg:
-                        description = description or cfg.get("description", "")
-                        tags = tags or cfg.get("tags", [])
-                        integrations = integrations or cfg.get(
-                            "integrations", []
-                        )
-                        optional_integrations = (
-                            optional_integrations
-                            or cfg.get("optional_integrations", [])
-                        )
-                        _log.info(
-                            "agent.config_fetched",
-                            name=req.name,
-                            repo=repo_name,
-                        )
-                    elif last_status in (403, 404):
-                        _log.warning(
-                            "agent.config_not_found_or_forbidden",
-                            name=req.name,
-                            repo=repo_name,
-                            status=last_status,
-                            hint=(
-                                "Repo may be private or the GitHub token "
-                                "may not have access to this organisation."
-                            ),
-                        )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "agent.config_fetch_failed",
-                    name=req.name,
-                    error=str(exc),
-                )
+        # WS-43n: config.json is fetched on every registration, for its
+        # "runtime". The fetch fails CLOSED: when GitHub cannot answer, the
+        # gateway cannot tell a Copilot repo from a MAF one, so it registers
+        # nothing. A 404 means the repo declares nothing, so it gets "maf".
+        # A 403 also registers as before, because the loader cannot clone a
+        # repo that the token cannot read.
+        settings = get_settings()
+        gh_token: str = getattr(settings, "github_token", "") or ""
+        headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+        last_status: int = 0
+        cfg = {}
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                for branch in ("main", "master", "HEAD"):
+                    url = (
+                        "https://raw.githubusercontent.com"
+                        f"/{repo_name}/{branch}/config.json"
+                    )
+                    resp = await client.get(url, headers=headers)
+                    last_status = resp.status_code
+                    if resp.status_code == 200:
+                        try:
+                            cfg = resp.json()
+                        except Exception:  # noqa: BLE001
+                            cfg = {}
+                        break
+                    # Only a 404 tries the next branch. Any other status
+                    # stops here, so a 5xx on main is not hidden by a 404 on
+                    # master and HEAD.
+                    if resp.status_code != 404:
+                        break
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "agent.config_fetch_failed",
+                name=req.name,
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    f"Could not read config.json from {repo_name!r}, so the "
+                    "agent runtime is unknown. Try again."
+                ),
+            ) from exc
+        if last_status not in (200, 403, 404):
+            _log.warning(
+                "agent.config_fetch_failed",
+                name=req.name,
+                repo=repo_name,
+                status=last_status,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    f"GitHub answered {last_status} for the config.json of "
+                    f"{repo_name!r}, so the agent runtime is unknown. Try again."
+                ),
+            )
+        if cfg and isinstance(cfg, dict):
+            declared_runtime = _normalize_runtime(cfg.get("runtime"))
+            description = description or cfg.get("description", "")
+            tags = tags or cfg.get("tags", [])
+            integrations = integrations or cfg.get("integrations", [])
+            optional_integrations = (
+                optional_integrations
+                or cfg.get("optional_integrations", [])
+            )
+            _log.info(
+                "agent.config_fetched",
+                name=req.name,
+                repo=repo_name,
+            )
+        elif last_status in (403, 404):
+            _log.warning(
+                "agent.config_not_found_or_forbidden",
+                name=req.name,
+                repo=repo_name,
+                status=last_status,
+                hint=(
+                    "Repo may be private or the GitHub token "
+                    "may not have access to this organisation."
+                ),
+            )
 
-    # agent_runtime: only agents registered FROM a GitHub repo URL run via the
-    # GitHub Copilot SDK (GitHubCopilotAgent). Local-path agents are plain MAF.
-    agent_runtime = "github-copilot" if (repo_name and not local_path) else "maf"
+    # WS-43n (D84, D92): a repo whose config.json DECLARES the Copilot
+    # runtime gets a 400 with the migration text of §15.5. A repo that
+    # declares nothing gets "maf". If such a repo still builds a Copilot
+    # agent, the loader logs its deprecation line and the executor finds it
+    # by the object (``is_copilot_agent``) until WS-43r refuses it. Agents
+    # registered before this change keep their row and still run.
+    if declared_runtime == "github-copilot":
+        from acb_skills.loader import COPILOT_MIGRATION_TEXT
+
+        _log.info(
+            "agent.register_refused_copilot",
+            name=req.name,
+            source="local" if local_path else "github",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Agent {req.name!r}: its config.json declares the runtime "
+                "\"github-copilot\". " + COPILOT_MIGRATION_TEXT
+            ),
+        )
+    agent_runtime = "maf"
 
     entry: dict = {
         "name": req.name,
