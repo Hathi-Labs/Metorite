@@ -81,6 +81,22 @@ describe("fleetMoney", () => {
     expect(fleet.totals.profit).toBe(1200 - 935);
   });
 
+  it("states the AI margin apart from seats", () => {
+    // AI alone: ₹200 of bought credits against ₹935 of AI cost, none free.
+    expect(fleet.totals.aiRevenue).toBe(200);
+    expect(fleet.totals.aiMargin).toBeCloseTo((200 - 935) / 200);
+  });
+
+  it("leaves free calls out of the AI margin: they are Given away, not price", () => {
+    const f = fleetMoney(
+      [org("t", 0)],
+      view([usage("t", { paidCredits: "50", paidValueInr: "50", freeCredits: "50", costUsd: "0.4" })]),
+      NOW,
+    );
+    // AI cost ₹34, half of it on free credits: ₹17 paid cost against ₹50.
+    expect(f.totals.aiMargin).toBeCloseTo((50 - 17) / 50);
+  });
+
   it("counts the customers that lose money", () => {
     // b: ₹100 charged, ₹850 AI cost.
     expect(fleet.totals.losing).toBe(1);
