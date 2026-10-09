@@ -499,6 +499,27 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     )
     after = await tree_counts(org)
     check("4.4 the tree is still 5 / 9 / 48", after == kinds, str(after))
+    # The I-10 review, P2-b: a re-upload plans against the spaces' REAL sets,
+    # so nothing the first run made reads as "new" on the Map step.
+    async with tenant_session(org) as db:
+        vis = await resolve_visibility_for(db, ADMIN)
+        facts = await imports._facts(
+            db,
+            bundle,
+            ImportMapping(),
+            vis,
+            org,
+            run_id=str(uuid.uuid4()),
+            file_hashes=[hashlib.sha256(raw).hexdigest()],
+        )
+    replan = build_plan(bundle, ImportMapping(), **facts)
+    check(
+        "4.2b a re-upload's plan reads the real sets: every status exists, none is new",
+        replan["continues"]
+        and all(r["existing"] for r in replan["statuses"])
+        and {s["name"] for s in replan["target_statuses"]} == SIX,
+        str([(r["name"], r["becomes"], r["existing"]) for r in replan["statuses"]]),
+    )
 
     # ── 4b. a NEW export of the same workspace updates the tasks ────────
     # Owner decision 2026-09-28 (§11 Q-5). Four tasks, four cases:
@@ -1230,6 +1251,52 @@ async def fifth_org(org: str, bundle: object, raw: bytes) -> None:
         "9.2 the writer finds the renamed lane by id, for a List with no map of its own",
         ["backlog", lane, "backlog"] in have and lanes_after == lanes_before,
         f"lanes {lanes_before}->{lanes_after}",
+    )
+
+    # The I-10 review, P2-b: a member renames "Review" in every space. A
+    # re-upload's plan shows "In review" as a status that exists, and the run
+    # adds no "Review" lane back.
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "UPDATE pm_task_statuses s SET name = 'In review' FROM pm_projects p "
+                " WHERE p.id = s.project_id AND p.organization_id = CAST(:o AS uuid) "
+                "   AND s.name = 'Review'"
+            ),
+            {"o": org},
+        )
+        vis = await resolve_visibility_for(db, ADMIN5)
+        facts = await imports._facts(
+            db,
+            bundle,
+            ImportMapping(),
+            vis,
+            org,
+            run_id=str(uuid.uuid4()),
+            file_hashes=[hashlib.sha256(raw).hexdigest()],
+        )
+    replan = build_plan(bundle, ImportMapping(), **facts)
+    review = next(r for r in replan["statuses"] if r["name"] == "review")
+    names = {s["name"] for s in replan["target_statuses"]}
+    third, lease = await new_run(org, ADMIN5, bundle, raw, ImportMapping())
+    await import_writer.apply_run(org, third, lease)
+    report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=third)
+    )
+    back = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) AND lower(s.name) = 'review'",
+    )
+    check(
+        "9.3 a re-upload follows a renamed lane: the plan shows it, the run adds none",
+        (review["becomes"], review["existing"]) == ("In review", True)
+        and "In review" in names
+        and "Review" not in names
+        and report.get("lanes_added") == 0
+        and back == 0,
+        f"plan={review['becomes']},{review['existing']} names={sorted(names)} "
+        f"lanes_added={report.get('lanes_added')} review lanes={back}",
     )
 
 
