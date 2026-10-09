@@ -38,7 +38,11 @@ back out:
 * a description reaches the decide request ->
   ``test_no_full_body_reaches_the_engine``;
 * two close people are not offered as options ->
-  ``test_one_of_several_close_people_is_resolved``.
+  ``test_one_of_several_close_people_is_resolved``;
+* the card of a project resolved by name does not name it (review P1) ->
+  ``test_the_card_names_a_project_resolved_by_name``;
+* the twin context passes the short bound (review P1) ->
+  ``test_the_twin_context_keeps_the_short_bound``.
 """
 from __future__ import annotations
 
@@ -238,7 +242,47 @@ async def test_a_project_name_resolves(monkeypatch) -> None:
         await W._project_id("Archive")
 
 
+async def test_the_card_names_a_project_resolved_by_name(monkeypatch) -> None:
+    """Review P1: a card that names the project only by its id is not
+    consent to the project that a model chose."""
+    calls = fake_gateway(monkeypatch, _gateway())
+    cards = approve(monkeypatch)
+    _door(monkeypatch, _choice("Website relaunch"))
+    _wire(monkeypatch, _fast_ok)
+    await W.create_task(project_id="website relanch", title="Order filament")
+    assert cards[0]["context"].splitlines()[1] == "project: «Website relaunch»"
+    assert "project_id" not in cards[0]["context"]
+    assert "in «Website relaunch»" in cards[0]["detail"]
+    posted = [c for c in writes(calls) if c["path"] == "/projects/tasks"]
+    assert posted[0]["json"]["project_id"] == WEB
+
+
+async def test_a_uuid_project_keeps_the_card_of_before(monkeypatch) -> None:
+    fake_gateway(monkeypatch, _gateway())
+    cards = approve(monkeypatch)
+    _door(monkeypatch, _choice("In progress"))
+    _wire(monkeypatch, _fast_ok)
+    await W.create_task(project_id=PID, title="Order filament")
+    assert "project: " not in cards[0]["context"]
+
+
 # ── 2. A twin before a create ────────────────────────────────────────────────
+
+
+def test_the_twin_context_keeps_the_short_bound(monkeypatch) -> None:
+    from acb_skills import decide_tools
+
+    titles = [f"Prepare the quarterly supplier review pack number {n} " + "x" * 40
+              for n in range(10)]
+    existing = [{"id": f"id-{n}", "title": t, "task_number": n} for n, t in enumerate(titles)]
+    pairs = choices.twin_pairs(titles, existing)
+    assert len(pairs) == choices.TWIN_PAIRS_MAX
+    context, _new, _old = choices._twin_context(titles, pairs)
+    assert not decide_tools.short_context(context)
+    while len(pairs) > 1 and not choices._short(context):
+        pairs = pairs[:-1]
+        context, _new, _old = choices._twin_context(titles, pairs)
+    assert decide_tools.short_context(context) and pairs
 
 
 async def test_a_twin_is_flagged_and_the_task_is_still_made(monkeypatch) -> None:

@@ -37,6 +37,8 @@ Mutations this file catches (R7), each one run red before the change:
   ``DECIDE_IN_NO_EGRESS`` is off -> ``TestNoEgress``. With the switch on
   (the owner's default, 2026-10-09), such a run asks the door ->
   ``TestNoEgress::test_with_the_switch_on_a_no_egress_run_asks_the_door``;
+* a ``no_egress`` batch past the short bound reaches the door (review P1,
+  2026-10-09) -> ``TestNoEgress::test_a_no_egress_batch_past_the_bound_goes_to_system_one``;
 * the candidate cap, the read cap or the body clip goes -> ``TestCaps``;
 * a count of the count line is wrong -> ``TestCounts``;
 * the dropped list leaks to another org, member or thread, or outlives 15
@@ -541,12 +543,32 @@ class TestNoEgress:
         monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "true")
         get_settings.cache_clear()
         _bind(no_egress=True)
-        await _tool(Adapter(20))(QUERY)
-        assert len(door.bodies) == 2, "the switch on must reach the door"
+        await _tool(Adapter(5))(QUERY)
+        assert len(door.bodies) == 1, "the switch on must reach the door"
         assert s1.sizes == []
         for body in door.bodies:
             assert BODY_CANARY not in json.dumps(body)
             assert set(body["state"]) == {"query", "items"}
+
+    async def test_a_no_egress_batch_past_the_bound_goes_to_system_one(
+        self, door: Door, s1: SystemOne, monkeypatch,
+    ) -> None:
+        """Review P1: ONE short bound holds every path of a ``no_egress`` run.
+        A batch of 16 summaries is not short, so System 1 asks it, and the
+        door never gets a state past the bound."""
+        from acb_skills import decide_tools
+
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "true")
+        get_settings.cache_clear()
+        _bind(no_egress=True)
+        with structlog.testing.capture_logs() as logs:
+            await _tool(Adapter(20))(QUERY)
+        assert 16 in s1.sizes, "the long batch reached the door"
+        for body in door.bodies:
+            state = json.dumps(body["state"], ensure_ascii=False)
+            assert len(state) <= decide_tools.NO_EGRESS_CONTEXT_MAX
+        reasons = [e.get("reason") for e in logs if e["event"] == "narrowing.pick_fallback"]
+        assert decide_tools.NOT_SHORT in reasons
 
     async def test_a_no_egress_run_sends_no_decide_request(
         self, door: Door, s1: SystemOne,

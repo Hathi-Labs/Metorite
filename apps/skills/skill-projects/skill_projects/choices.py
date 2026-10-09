@@ -261,6 +261,34 @@ def _twin_question(new_key: str, old_key: str) -> str:
     )
 
 
+def _twin_context(
+    titles: list[str], pairs: list[tuple[int, dict[str, Any]]],
+) -> tuple[dict[str, Any], dict[int, str], dict[str, str]]:
+    """The twin context: clipped titles and task numbers, and nothing else."""
+    new_keys = {i: f"n{k}" for k, i in enumerate(sorted({i for i, _r in pairs}), start=1)}
+    old_ids: dict[str, str] = {}
+    old: dict[str, dict[str, str]] = {}
+    for _i, row in pairs:
+        rid = str(row.get("id"))
+        if rid not in old_ids:
+            key = f"o{len(old_ids) + 1}"
+            old_ids[rid] = key
+            old[key] = {"title": str(row.get("title") or "")[:TITLE_CLIP], "number": _number(row)}
+    context = {
+        "new": {key: str(titles[i] or "")[:TITLE_CLIP] for i, key in new_keys.items()},
+        "open": old,
+    }
+    return context, new_keys, old_ids
+
+
+def _short(context: dict[str, Any]) -> bool:
+    try:
+        from acb_skills.decide_tools import short_context
+    except Exception:  # pragma: no cover — no platform package
+        return True
+    return short_context(context)
+
+
 async def twin_flags(
     get: Any, project_id: str, titles: list[str],
 ) -> dict[int, dict[str, Any]]:
@@ -289,19 +317,12 @@ async def twin_flags(
         return {}
     from acb_skills.system_one import YES_NO, Item
 
-    new_keys = {i: f"n{k}" for k, i in enumerate(sorted({i for i, _r in pairs}), start=1)}
-    old_ids: dict[str, str] = {}
-    old: dict[str, dict[str, str]] = {}
-    for _i, row in pairs:
-        rid = str(row.get("id"))
-        if rid not in old_ids:
-            key = f"o{len(old_ids) + 1}"
-            old_ids[rid] = key
-            old[key] = {"title": str(row.get("title") or "")[:TITLE_CLIP], "number": _number(row)}
-    context = {
-        "new": {key: str(titles[i] or "")[:TITLE_CLIP] for i, key in new_keys.items()},
-        "open": old,
-    }
+    # The context keeps the short bound of a `no_egress` run, so the closest
+    # pairs stay and the rest are not asked (review P1, 2026-10-09).
+    context, new_keys, old_ids = _twin_context(titles, pairs)
+    while len(pairs) > 1 and not _short(context):
+        pairs = pairs[:-1]
+        context, new_keys, old_ids = _twin_context(titles, pairs)
     items = [
         Item(id=f"t{k}", question=_twin_question(new_keys[i], old_ids[str(row.get("id"))]),
              kind="yes_no", options=YES_NO)
@@ -321,4 +342,5 @@ def twin_note(row: dict[str, Any]) -> str:
     """The flag on the card: the open task's number and its fenced title."""
     from skill_projects.client import data
 
-    return f"may be the same task as {_number(row)} {data(row.get('title'))}, which is open"
+    title = str(row.get("title") or "")[:TITLE_CLIP]
+    return f"may be the same task as {_number(row)} {data(title)}, which is open"

@@ -571,10 +571,25 @@ async def _pick_batch(
     *,
     use_decide: bool,
     attribution: Mapping[str, Any],
+    short_only: bool = False,
 ) -> _Batch:
-    """Ask one batch. Never raises. A failure in both engines checks nothing."""
+    """Ask one batch. Never raises. A failure in both engines checks nothing.
+
+    *short_only* is a ``no_egress`` run (owner, 2026-10-09): the batch goes to
+    the door only when its state fits the ONE short bound of
+    ``decide_tools.short_context``. A longer state is not a short summary, so
+    it goes to System 1 and logs ``narrowing.pick_fallback`` with the reason
+    ``no_egress_not_short`` (review P1).
+    """
     keys = _keys(batch)
     state = _state(query, batch, keys)
+    if use_decide and short_only:
+        from acb_skills.decide_tools import NOT_SHORT, short_context
+
+        if not short_context(state):
+            _log.info("narrowing.pick_fallback", reason=NOT_SHORT,
+                      batch_size=len(batch), request=number)
+            use_decide = False
     if use_decide:
         reason: str
         try:
@@ -733,7 +748,8 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
     # asks System 1 only, as before.
     from acb_skills.decide_tools import decide_in_no_egress
 
-    use_decide = not no_egress_for_this_run() or decide_in_no_egress()
+    no_egress = no_egress_for_this_run()
+    use_decide = not no_egress or decide_in_no_egress()
     attribution: Mapping[str, Any] = {}
     if use_decide:
         from acb_llm.routed import run_attribution
@@ -747,6 +763,7 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
         async with gate:
             results[n] = await _pick_batch(
                 n + 1, query, batch, use_decide=use_decide, attribution=attribution,
+                short_only=no_egress,
             )
 
     tasks = [asyncio.create_task(_one(n, b)) for n, b in enumerate(batches)]

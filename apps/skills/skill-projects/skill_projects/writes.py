@@ -596,7 +596,16 @@ async def _resolve_type(project_id: str, name: str) -> dict[str, Any]:
 
 
 async def _project_id(value: str) -> str:
-    """The project's canonical id: a UUID, or (owner, 2026-10-09) its NAME.
+    """The project's canonical id: a UUID, or (owner, 2026-10-09) its NAME."""
+    return (await _project_ref(value))[0]
+
+
+async def _project_ref(value: str) -> tuple[str, str | None]:
+    """``(canonical id, name)``. The name is set only when *value* was a name.
+
+    A caller with a card MUST show that name (review P1, 2026-10-09): a card
+    that names the project only by its id is not consent to the project that
+    a model chose.
 
     A UUID passes as before. With the typed choices on
     (``choices.assist_on``), a value that is not a UUID is read as a project
@@ -607,14 +616,14 @@ async def _project_id(value: str) -> str:
     """
     project_id_text = str(value or "").strip()
     try:
-        return uuid_of(project_id_text, "project_id")
+        return uuid_of(project_id_text, "project_id"), None
     except GatewayRefusal as refusal:
         if not project_id_text or not choices.assist_on():
             raise
         nodes = _project_nodes(await get("/projects/tree"))
         exact = _matches_by_name(nodes, project_id_text)
         if len(exact) == 1:
-            return uuid_of(str(exact[0].get("id")), "project_id")
+            return uuid_of(str(exact[0].get("id")), "project_id"), str(exact[0].get("name"))
         if len(exact) > 1:
             raise GatewayRefusal(
                 f"{data(project_id_text)} matches more than one project ({_names(exact)}). "
@@ -622,7 +631,7 @@ async def _project_id(value: str) -> str:
             ) from None
         row = await choices.resolve_name(nodes, project_id_text, "project")
         if row is not None:
-            return uuid_of(str(row.get("id")), "project_id")
+            return uuid_of(str(row.get("id")), "project_id"), str(row.get("name"))
         close = choices.close_rows(nodes, project_id_text)
         if close:
             raise GatewayRefusal(
@@ -854,7 +863,7 @@ async def create_task(
     object keyed by field NAME, for example {"Customer": "Acme"}. A choice
     field takes one of its options, and the card shows every value.
     The card may flag an open task that looks the same."""
-    pid = await _project_id(project_id)
+    pid, by_name = await _project_ref(project_id)
     name = str(title or "").strip()
     if not name:
         return "A task needs a title."
@@ -903,9 +912,15 @@ async def create_task(
     twin = (await choices.twin_flags(get, pid, [name])).get(0)
     if twin is not None:
         card["note"] = choices.twin_note(twin)
+    where = ""
+    if by_name is not None:
+        # The project came from a NAME, so the card names it, first (review
+        # P1). The id line alone would not tell the member where it goes.
+        card = {"project": data(by_name), **{k: v for k, v in card.items() if k != "project_id"}}
+        where = f" · in {data(by_name)}"
     if not await _confirm(
         title=repeating.card_title,
-        detail=f"{data(name)} · status {new.status_label}"
+        detail=f"{data(name)}{where} · status {new.status_label}"
         + (f" · {', '.join(new.who)}" if new.who else "")
         + repeating.detail(),
         context=_fields_block(card),

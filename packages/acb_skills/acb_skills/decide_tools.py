@@ -474,7 +474,7 @@ ROUTE_SHORT = "short"
 #: that a ``no_egress`` run sends to ``tier-decide`` (owner, 2026-10-09).
 #: The owner allows typed questions with SHORT summaries. A longer item is
 #: free-form work, and it stays on ``tier-fast``, our own chat tier.
-NO_EGRESS_CONTEXT_MAX = 4000
+NO_EGRESS_CONTEXT_MAX = 1500
 NO_EGRESS_QUESTION_MAX = 400
 NO_EGRESS_OPTION_MAX = 120
 
@@ -528,6 +528,18 @@ def _on_decide() -> bool:
     return _decide_route() is not None
 
 
+def short_context(context: Any) -> bool:
+    """True when *context* fits the short bound of a ``no_egress`` run.
+
+    A mapping or a list is measured as the JSON that the door receives. The
+    PICK step of ``narrowing`` asks this too, so ONE bound holds every path
+    from a ``no_egress`` run to ``tier-decide`` (review P1, 2026-10-09).
+    """
+    if not isinstance(context, str):
+        context = json.dumps(context, ensure_ascii=False)
+    return len(context) <= NO_EGRESS_CONTEXT_MAX
+
+
 def _short_enough(context: str, item: Any) -> bool:
     """True when *item* about *context* is a SHORT typed question.
 
@@ -535,7 +547,7 @@ def _short_enough(context: str, item: Any) -> bool:
     the text that leaves: the context, the question and each option.
     """
     return (
-        len(context or "") <= NO_EGRESS_CONTEXT_MAX
+        short_context(context or "")
         and len(str(item.question or "")) <= NO_EGRESS_QUESTION_MAX
         and all(len(str(o)) <= NO_EGRESS_OPTION_MAX for o in item.options)
     )
