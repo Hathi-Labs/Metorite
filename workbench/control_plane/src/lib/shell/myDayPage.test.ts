@@ -88,6 +88,16 @@ describe("/ with the My Day flag", () => {
     expect(html).not.toContain('data-testid="next-actions"');
   });
 
+  it("gives a member with My Tasks but not Projects no card that can only fail", async () => {
+    // The lens and the feed's task source both need `feature:projects`.
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    access.features = ["tasks", "email"];
+    const html = await renderHome();
+    expect(html).toContain('data-testid="needs-you"');
+    expect(html).not.toContain('data-testid="today"');
+    expect(html).not.toContain('data-testid="next-actions"');
+  });
+
   it("explains itself to a member who holds nothing", async () => {
     vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
     access.features = [];

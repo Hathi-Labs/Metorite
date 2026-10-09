@@ -1003,10 +1003,20 @@ belong to slice A, the gateway feed.
 - **The feed's door.** `src/app/api/shell/needs/route.ts` sends the feed on
   from the gateway. When the gateway is down, it answers 502. An empty feed
   would say "Nothing needs you", and that is a claim, not a silence.
-- **The acts.** A one-click act runs through the client of the app that owns
-  it (`src/lib/shell/needs.ts`). My Day adds no write route. A completion
-  offers Undo, by the D79 rule. A notification marked read has no Undo,
-  because the Projects bell has no route that marks a notification unread.
+- **The acts.** A one-click act runs through the code of the app that owns
+  it (`src/lib/shell/needs.ts`). My Day adds no write route. A done is the
+  My Tasks store's own gesture, `quickDispose`, through
+  `app/tasks/lib/completeFromHome.ts`. So a parent with open subtasks asks
+  the D-PM-38 question first, and Undo is the store's toast (D79). The first
+  done on a visit loads the store once. A notification marked read has no
+  Undo, because the Projects bell has no route that marks it unread.
+- **Who gets a card.** A card asks for what the server asks for. Today and
+  Next actions read `/projects/my/*`, and the Projects router demands
+  `feature:projects`. So both cards need `tasks` and `projects`. Needs you
+  needs `projects` or `email`, the features of its sources.
+- **One caveat, once.** When a source does not answer, the Needs you card
+  names the gap and offers Retry. An example is "Email did not answer, so
+  its replies may be missing". The summary then says nothing about needs.
 - **The sidebar.** With the flag on, the first item reads "My Day".
 
 ### NS-4a · Tier 1, record search — AGENT-SAFE · BUILT 2026-10-08, dark

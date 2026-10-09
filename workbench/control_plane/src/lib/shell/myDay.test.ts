@@ -14,6 +14,7 @@ import {
   NEEDS_SHOWN,
   actError,
   appIcon,
+  blockState,
   cardsFor,
   dateLine,
   emptyNeedsLine,
@@ -75,18 +76,26 @@ describe("the header", () => {
     expect(summaryLine(1, 1)).toBe("1 thing needs you, and 1 is on your calendar today.");
     expect(summaryLine(2, 0)).toBe("2 things need you.");
     expect(summaryLine(2, null)).toBe("2 things need you.");
-    expect(summaryLine(0, 0)).toBe("Nothing needs you, and your calendar is clear.");
+    expect(summaryLine(0, 0)).toBe("Nothing needs you right now, and your calendar is clear.");
     expect(summaryLine(0, null)).toBe("Nothing needs you right now.");
-    expect(summaryLine(0, 2)).toBe("Nothing needs you. 2 things are on your calendar today.");
-    expect(summaryLine(0, 1)).toBe("Nothing needs you. 1 thing is on your calendar today.");
+    expect(summaryLine(0, 2)).toBe("Nothing needs you right now. 2 things are on your calendar today.");
+    expect(summaryLine(0, 1)).toBe("Nothing needs you right now. 1 thing is on your calendar today.");
   });
 
-  it("claims nothing about an app that did not answer", () => {
-    expect(summaryLine(0, 0, true)).toBe("Nothing needs you in the apps that answered, and your calendar is clear.");
-    expect(summaryLine(0, null, true)).toBe("Nothing needs you in the apps that answered.");
+  it("says the caveat once, in the card, and the summary claims nothing about needs", () => {
+    // A source failed: the summary speaks of the calendar only.
+    expect(summaryLine(0, 0, true)).toBe("Your calendar is clear.");
+    expect(summaryLine(0, 2, true)).toBe("2 things are on your calendar today.");
+    expect(summaryLine(0, null, true)).toBeNull();
+    // Rows that DID arrive are still a fact.
     expect(summaryLine(2, 1, true)).toBe("2 things need you, and 1 is on your calendar today.");
+    // The card: plain when every source answered, "else" when one did not.
     expect(emptyNeedsLine(false)).toBe("Nothing needs you right now.");
-    expect(emptyNeedsLine(true)).toBe("Nothing needs you in the apps that answered.");
+    expect(emptyNeedsLine(true)).toBe("Nothing else needs you right now.");
+    // No sentence says "in the apps that answered" any more.
+    for (const line of [summaryLine(0, 0, true), summaryLine(0, 1, true), emptyNeedsLine(true)]) {
+      expect(line ?? "").not.toMatch(/apps that answered/);
+    }
   });
 });
 
@@ -139,7 +148,7 @@ describe("Needs you", () => {
 
   it("names a failed source in one muted line, and only a failed one", () => {
     expect(failedLines({ tasks: "ok", projects: "failed", email: "absent" })).toEqual([
-      "Projects did not answer. Showing the rest.",
+      "Projects did not answer, so its notifications may be missing.",
     ]);
     expect(failedLines({})).toEqual([]);
     expect(APP_NAMES.email).toBe("Email");
@@ -184,6 +193,29 @@ describe("Today", () => {
   });
 });
 
+describe("Today's rows against the clock", () => {
+  const now = Date.parse("2026-10-09T16:40:00Z");
+  it("calls a block past once its end is behind now", () => {
+    expect(blockState("2026-10-09T09:30:00Z", "2026-10-09T10:00:00Z", now)).toBe("past");
+    expect(blockState("2026-10-09T16:00:00Z", "2026-10-09T16:40:00Z", now)).toBe("past");
+  });
+  it("calls a block that has started and not ended 'now'", () => {
+    expect(blockState("2026-10-09T16:30:00Z", "2026-10-09T17:30:00Z", now)).toBe("now");
+  });
+  it("calls a block still to come 'later', and reads a missing end safely", () => {
+    expect(blockState("2026-10-09T18:00:00Z", "2026-10-09T19:00:00Z", now)).toBe("later");
+    expect(blockState("2026-10-09T18:00:00Z", null, now)).toBe("later");
+    expect(blockState("2026-10-09T08:00:00Z", null, now)).toBe("past");
+    expect(blockState(null, null, now)).toBe("later");
+  });
+  it("is the rule the Today card draws muted by", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../../app/calendar/components/TodayCard.tsx", import.meta.url), "utf8");
+    expect(src).toMatch(/blockState\(task\.scheduledStart, task\.scheduledEnd, nowMs\) === "past"/);
+    expect(src).toMatch(/over \? "text-muted-foreground"/);
+  });
+});
+
 describe("which cards a member gets", () => {
   it("shows a card only for an app the member holds", () => {
     expect(cardsFor(["tasks", "projects", "email"])).toEqual({ needs: true, today: true, next: true });
@@ -191,5 +223,14 @@ describe("which cards a member gets", () => {
     expect(cardsFor(["projects"])).toEqual({ needs: true, today: false, next: false });
     expect(cardsFor(["chat"])).toEqual({ needs: false, today: false, next: false });
     expect(cardsFor([])).toEqual({ needs: false, today: false, next: false });
+  });
+
+  it("asks for what the server asks for: the lens needs feature:projects", () => {
+    // `/projects/my/*` sits on the Projects router, which demands
+    // `projects`. A member with the My Tasks pane alone must see no card
+    // that can only fail, and the feed gives them nothing either.
+    expect(cardsFor(["tasks"])).toEqual({ needs: false, today: false, next: false });
+    expect(cardsFor(["tasks", "email"])).toEqual({ needs: true, today: false, next: false });
+    expect(cardsFor(["tasks", "projects"])).toEqual({ needs: true, today: true, next: true });
   });
 });

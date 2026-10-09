@@ -9,9 +9,10 @@
  * `lib/shell/myDay.ts`).
  *
  * Each row has one quiet complete control, and its title opens the task. The
- * completion runs through the lens, as My Tasks' own checkbox does, and it
- * offers Undo in the app's toast. Lists, fields and capture stay in My Tasks
- * (§4.3), so the footer links there.
+ * completion is My Tasks' own gesture (`completeFromHome`): a parent with
+ * open subtasks asks first (D-PM-38), and Undo is the store's toast (D79).
+ * Lists, fields and capture stay in My Tasks (§4.3), so the footer links
+ * there.
  */
 import Link from "next/link";
 import { useCallback, useState } from "react";
@@ -22,10 +23,10 @@ import { lensFetchNext } from "@/app/tasks/lib/lens";
 import type { MyTask } from "@/app/tasks/lib/types";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { useToast } from "@/components/ui/Toast";
 import { CardError, FooterLink, HomeCard } from "@/lib/shell/HomeCard";
 import { NEXT_SHOWN, nextActions } from "@/lib/shell/myDay";
-import { type NeedsItem, completeTask, undoCompletion } from "@/lib/shell/needs";
+import { completeFromHome, onNextSyncFailure } from "@/app/tasks/lib/completeFromHome";
+import type { NeedsItem } from "@/lib/shell/needs";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -49,7 +50,6 @@ export default function NextActionsCard({
     enabled ? projectsKey("my/inbox", { disposition: "NEXT", limit: NEXT_FETCH }) : null,
     () => lensFetchNext(NEXT_FETCH),
   );
-  const toast = useToast();
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
 
@@ -82,36 +82,19 @@ export default function NextActionsCard({
         delete e[task.id];
         return e;
       });
-      completeTask(task.id).then(
-        (plan) => {
-          toast.show({
-            key: `my-day:done:${task.id}`,
-            variant: "success",
-            title: "Marked done",
-            action: plan
-              ? {
-                  label: "Undo",
-                  onClick: () =>
-                    void undoCompletion(plan).then(
-                      () => mark(task.id, false),
-                      () =>
-                        toast.show({
-                          key: `my-day:undo:${task.id}`,
-                          variant: "error",
-                          title: "Could not undo. The task changed since.",
-                        }),
-                    ),
-                }
-              : undefined,
-          });
-        },
-        () => {
-          mark(task.id, false);
-          setErrors((prev) => ({ ...prev, [task.id]: "Could not mark it done. Try again." }));
-        },
-      );
+      const fail = (message: string) => {
+        mark(task.id, false);
+        setErrors((prev) => ({ ...prev, [task.id]: message }));
+      };
+      // My Tasks' own gesture: it asks first for a parent with open
+      // subtasks (D-PM-38), and its Undo is the store's toast (D79).
+      const stop = onNextSyncFailure(() => fail("Could not mark it done. Try again."));
+      completeFromHome(task.id).catch((err: unknown) => {
+        stop();
+        fail(err instanceof Error && err.message ? err.message : "Could not mark it done. Try again.");
+      });
     },
-    [mark, toast],
+    [mark],
   );
 
   let body: React.ReactNode;

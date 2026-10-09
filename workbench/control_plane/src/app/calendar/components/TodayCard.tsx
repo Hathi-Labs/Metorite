@@ -20,7 +20,7 @@ import type { MyTask } from "@/app/tasks/lib/types";
 import { fmtClock } from "@/app/tasks/lib/utils";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { CardError, HomeCard } from "@/lib/shell/HomeCard";
-import { todayWindow } from "@/lib/shell/myDay";
+import { blockState, todayWindow } from "@/lib/shell/myDay";
 import { type CachedResource, useCachedResource } from "@/lib/useCachedResource";
 
 /** Rows shown before "more in Calendar". Today is a glance, not the grid. */
@@ -74,7 +74,8 @@ export default function TodayCard({
     body = (
       <ul className="flex flex-col">
         {shown.map((task) => {
-          const over = task.scheduledEnd ? new Date(task.scheduledEnd).getTime() < nowMs : false;
+          // A block already over draws muted, so the eye goes to what is left.
+          const over = now !== null && blockState(task.scheduledStart, task.scheduledEnd, nowMs) === "past";
           return (
             <li key={task.id}>
               {/* The time sits over the title, not beside it. Today is a

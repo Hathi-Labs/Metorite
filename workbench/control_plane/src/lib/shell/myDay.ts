@@ -54,36 +54,37 @@ export function dateLine(now: Date): string {
 const things = (n: number) => (n === 1 ? "1 thing" : `${n} things`);
 
 /**
- * The one summary sentence. `today` is `null` when the member has no
- * calendar (no My Tasks), so the sentence does not claim an empty one.
+ * The one summary sentence, or `null` for no sentence. `today` is `null`
+ * when the member has no calendar, so the sentence does not claim an empty
+ * one.
  *
- * `partial` is true when a source did not answer. Then "nothing" is only
- * true of the apps that did, and the sentence says so.
- *
- * ⚠️ When nothing needs the member, the sentence does not repeat the card's
- * own line ("Nothing needs you right now."). Two identical lines 100px apart
- * read as a fault.
+ * `partial` is true when a source did not answer. The page then says the
+ * caveat ONCE, in the card, beside the gap ("Email did not answer, so its
+ * replies may be missing."). So the summary makes no claim about needs at
+ * all, and says only what the calendar holds.
  */
-export function summaryLine(needs: number, today: number | null, partial = false): string {
-  const cal =
-    today === null || today === 0
-      ? null
-      : today === 1
-        ? "1 is on your calendar today"
-        : `${today} are on your calendar today`;
+export function summaryLine(needs: number, today: number | null, partial = false): string | null {
+  const calCount = today === null || today === 0 ? null : `${things(today)} ${today === 1 ? "is" : "are"} on your calendar today.`;
   if (needs > 0) {
     const head = `${things(needs)} ${needs === 1 ? "needs" : "need"} you`;
-    return cal ? `${head}, and ${cal}.` : `${head}.`;
+    if (today === null || today === 0) return `${head}.`;
+    return `${head}, and ${today === 1 ? "1 is" : `${today} are`} on your calendar today.`;
   }
-  const nothing = partial ? "Nothing needs you in the apps that answered" : "Nothing needs you";
-  if (cal) return `${nothing}. ${things(today!)} ${today === 1 ? "is" : "are"} on your calendar today.`;
-  if (today === 0) return `${nothing}, and your calendar is clear.`;
-  return partial ? `${nothing}.` : `${nothing} right now.`;
+  if (partial) {
+    if (today === null) return null;
+    return calCount ?? "Your calendar is clear.";
+  }
+  if (calCount) return `Nothing needs you right now. ${calCount}`;
+  if (today === 0) return "Nothing needs you right now, and your calendar is clear.";
+  return "Nothing needs you right now.";
 }
 
-/** The Needs you card's empty line. A failed source makes it say less. */
+/**
+ * The Needs you card's empty line. With a source missing it says "else",
+ * because the card cannot vouch for an app that did not answer.
+ */
 export function emptyNeedsLine(partial: boolean): string {
-  return partial ? "Nothing needs you in the apps that answered." : "Nothing needs you right now.";
+  return partial ? "Nothing else needs you right now." : "Nothing needs you right now.";
 }
 
 // ── Needs you ───────────────────────────────────────────────────────────────
@@ -169,8 +170,15 @@ export function appIcon(app: NeedsApp): string {
 export function failedLines(sources: Partial<Record<NeedsApp, SourceState>>): string[] {
   return (Object.keys(APP_NAMES) as NeedsApp[])
     .filter((app) => sources[app] === "failed")
-    .map((app) => `${APP_NAMES[app]} did not answer. Showing the rest.`);
+    .map((app) => `${APP_NAMES[app]} did not answer, so its ${MISSING[app]} may be missing.`);
 }
+
+/** What a source's silence can hide, in the member's words. */
+const MISSING: Readonly<Record<NeedsApp, string>> = {
+  tasks: "due tasks",
+  projects: "notifications",
+  email: "replies",
+};
 
 // ── Next actions ────────────────────────────────────────────────────────────
 
@@ -229,15 +237,39 @@ export interface MyDayCards {
 
 /**
  * Which cards a member gets. A card shows only for an app the member holds:
- * a placeholder for an app they lack is a defect (§4.5). Today and Next
- * actions belong to Calendar and My Tasks, which both ride `feature:tasks`.
- * Needs you shows when any app that feeds it is held.
+ * a placeholder for an app they lack is a defect (§4.5).
+ *
+ * ⚠️ A card asks for what the SERVER asks for, not only for its pane's
+ * feature. Today and Next actions read the lens (`/projects/my/*`), and the
+ * Projects router demands `feature:projects` for it. The My Tasks pane and
+ * the Calendar pane ride `feature:tasks`. So both cards need both. A member
+ * with `tasks` and no `projects` would otherwise get two error cards.
+ *
+ * Needs you shows when any source of the feed is open to the member. The
+ * feed's tasks and Projects sources need `feature:projects`, and its email
+ * source needs `feature:email` (`routes/shell/needs.py`, `PROVIDERS`).
  */
 export function cardsFor(features: readonly string[]): MyDayCards {
   const has = new Set(features);
+  const lens = has.has("tasks") && has.has("projects");
   return {
-    needs: has.has("tasks") || has.has("projects") || has.has("email"),
-    today: has.has("tasks"),
-    next: has.has("tasks"),
+    needs: has.has("projects") || has.has("email"),
+    today: lens,
+    next: lens,
   };
+}
+
+// ── Today's rows ────────────────────────────────────────────────────────────
+
+/** Where a scheduled block sits against now. A past block draws muted. */
+export function blockState(
+  start: string | null | undefined,
+  end: string | null | undefined,
+  nowMs: number,
+): "past" | "now" | "later" {
+  const s = start ? Date.parse(start) : NaN;
+  const e = end ? Date.parse(end) : NaN;
+  if (!Number.isNaN(e) && e <= nowMs) return "past";
+  if (!Number.isNaN(s) && s <= nowMs) return Number.isNaN(e) ? "past" : "now";
+  return "later";
 }

@@ -22,6 +22,7 @@ import { useSession } from "next-auth/react";
 import { useState, useSyncExternalStore } from "react";
 
 import TodayCard, { useTodayItems } from "@/app/calendar/components/TodayCard";
+import { UndoToast } from "@/app/tasks/components/UndoToast";
 import NextActionsCard from "@/app/tasks/components/NextActionsCard";
 import { useAccess } from "@/components/AccessProvider";
 import PageHeader from "@/components/PageHeader";
@@ -142,6 +143,9 @@ export default function MyDay() {
           </Button>
         </div>
       ) : null}
+      {/* The store's own Undo for a done (D79), as `/calendar` mounts it.
+          The subtask question needs no mount here: `AppShell` hosts it. */}
+      {cards.needs || cards.next ? <UndoToast /> : null}
       <AppLauncher
         open={launcherOpen}
         onClose={() => setLauncherOpen(false)}

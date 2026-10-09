@@ -12,9 +12,10 @@
  * so the reply rows are this card's last group (the spec records the call).
  *
  * A row opens its app at `href`. A row with an act carries ONE quiet button,
- * and the act runs through the owning app's own client (`needs.ts`). The row
- * leaves at once. A completion offers Undo in the app's toast, and a failure
- * brings the row back with a short error.
+ * and the act runs through the owning app's own code (`needs.ts`). The row
+ * leaves at once. A done is the My Tasks store's gesture, so a parent with
+ * open subtasks asks first and Undo is the store's own. A failure brings the
+ * row back with a short error.
  *
  * Only the overdue tone is coloured, and it comes from `statusAccent.ts`.
  */
@@ -24,21 +25,13 @@ import { useCallback, useMemo, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { useToast } from "@/components/ui/Toast";
+import { onNextSyncFailure } from "@/app/tasks/lib/completeFromHome";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard } from "./HomeCard";
 import { actError, appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
-import {
-  type CompletionUndo,
-  type NeedsFeed,
-  type NeedsItem,
-  fetchNeeds,
-  needsKey,
-  runAct,
-  undoCompletion,
-} from "./needs";
+import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
 
 const DANGER = accentForHue("red");
 
@@ -61,7 +54,6 @@ export interface NeedsYou {
  */
 export function useNeedsYou(enabled: boolean): NeedsYou {
   const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds());
-  const toast = useToast();
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
 
@@ -88,22 +80,6 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
     });
   }, []);
 
-  const undo = useCallback(
-    async (item: NeedsItem, plan: CompletionUndo) => {
-      try {
-        await undoCompletion(plan);
-        remove(item.id, false);
-      } catch {
-        toast.show({
-          key: `my-day:undo:${item.id}`,
-          variant: "error",
-          title: "Could not undo. The task changed since.",
-        });
-      }
-    },
-    [remove, toast],
-  );
-
   const act = useCallback(
     (item: NeedsItem) => {
       remove(item.id, true);
@@ -112,23 +88,20 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
         delete next[item.id];
         return next;
       });
-      runAct(item).then(
-        (plan) => {
-          if (item.act !== "done") return;
-          toast.show({
-            key: `my-day:done:${item.id}`,
-            variant: "success",
-            title: "Marked done",
-            action: plan ? { label: "Undo", onClick: () => void undo(item, plan) } : undefined,
-          });
-        },
-        () => {
-          remove(item.id, false);
-          setErrors((prev) => ({ ...prev, [item.id]: actError(item.act) }));
-        },
-      );
+      const fail = (message: string) => {
+        remove(item.id, false);
+        setErrors((prev) => ({ ...prev, [item.id]: message }));
+      };
+      // A done is the My Tasks store's own gesture. It may ask the subtask
+      // question first, its Undo is the store's toast (`UndoToast`, mounted
+      // by My Day), and its failure arrives as `syncFailure`.
+      const stop = item.act === "done" ? onNextSyncFailure(() => fail(actError("done"))) : () => {};
+      runAct(item).catch((err: unknown) => {
+        stop();
+        fail(item.act === "done" && err instanceof Error && err.message ? err.message : actError(item.act));
+      });
     },
-    [remove, toast, undo],
+    [remove],
   );
 
   const items = useMemo(
@@ -226,23 +199,27 @@ export default function NeedsYouCard({
   return (
     <HomeCard title="Needs you" icon="Bell" testId="needs-you" className={className}>
       {body}
+      {/* The caveat, said ONCE and where the gap is: one muted line per
+          silent source, or one for a refresh that failed, and one Retry. */}
       {failed.length > 0 || stale ? (
-        <div className="mt-1 flex flex-col gap-0.5 px-2 pb-1">
-          {failed.map((line) => (
-            <p key={line} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Icon name="Info" size={12} className="shrink-0" />
-              {line}
-            </p>
-          ))}
-          {stale ? (
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Icon name="Info" size={12} className="shrink-0" />
-              Could not refresh this list.
-              <Button variant="text" size="none" onClick={needs.refresh} className="font-medium">
-                Retry
-              </Button>
-            </p>
-          ) : null}
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 pb-1">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            {failed.map((line) => (
+              <p key={line} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Icon name="Info" size={12} className="shrink-0" />
+                {line}
+              </p>
+            ))}
+            {stale ? (
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Icon name="Info" size={12} className="shrink-0" />
+                Could not refresh this list.
+              </p>
+            ) : null}
+          </div>
+          <Button variant="text" size="none" icon="RefreshCw" onClick={needs.refresh} className="min-h-8 gap-1 text-xs font-medium">
+            Retry
+          </Button>
         </div>
       ) : null}
     </HomeCard>
