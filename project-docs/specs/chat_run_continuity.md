@@ -277,13 +277,13 @@ default. OFF writes no row, parks no run, and reports every run as
 | Fence | What it holds |
 |---|---|
 | `tests/unit/test_pending_ask_store.py` | R8 as the NOBYPASSRLS role: the migration's own policy block, FORCE, two tenants, an unbound session, a write stamped with another org, one move, expiry, the late answer, and the list |
-| `tests/unit/test_pending_ask_flow.py` | One row per waiting card, park and end, the open card, the late answer, the race, another org, needs_input after a restart, and the pending-asks route |
+| `tests/unit/test_pending_ask_flow.py` | One row per waiting card, a run end that closes a card no wait settled, park and end, the open card, the late answer, the race, another org, needs_input after a restart, and the pending-asks route |
 | `tests/unit/test_tenant_coverage.py` | The table is scoped and never exempt |
 | `src/lib/runActivity.test.ts`, `src/components/navBadge.test.ts` | Amber wins over green, on the sidebar and on the phone |
 | `src/lib/liveRuns.test.ts` | The poller carries `state` |
 | `src/lib/pendingAsks.test.ts`, `src/lib/respondInput.test.ts` | The cards that come back, and the other-account refusal |
 
-**Mutation record (2026-10-10).** Ten mutants, eight killed on the first
+**Mutation record (2026-10-10).** Eleven mutants, nine killed on the first
 run. The two that lived led to two new tests:
 
 - A policy with no WITH CHECK lived. That mutant does the same thing,
