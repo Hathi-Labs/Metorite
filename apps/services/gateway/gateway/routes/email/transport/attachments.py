@@ -27,9 +27,9 @@ from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from acb_skills.attachment_text import (
     PAGE_UNREADABLE,
-    SUPPORTED_SENTENCE,
     SUPPORTED_SUFFIXES,
     Extracted,
+    unsupported_sentence,
 )
 from acb_skills.attachment_tools import parse_bounded
 from fastapi import Depends, HTTPException, Query
@@ -345,10 +345,27 @@ _SUFFIX_OF_MIME = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
     "text/html": ".html",
     "text/plain": ".txt",
     "text/markdown": ".md",
     "text/csv": ".csv",
+    "text/tab-separated-values": ".tsv",
+    "application/json": ".json",
+    "application/xml": ".xml",
+    "text/xml": ".xml",
+    "application/yaml": ".yaml",
+    "text/yaml": ".yaml",
+    # The older Office kinds map too, so they get the sentence that says how
+    # to save them again (``attachment_text.LEGACY_OFFICE``).
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-powerpoint": ".ppt",
 }
 _IMAGE_SUFFIXES = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic",
@@ -395,9 +412,9 @@ _BUSY_REASON = (
 class AttachmentTextModel(BaseModel):
     """The answer of ``GET /email/attachments/{id}/text``.
 
-    ``kind`` is the type that the shared reader read (``pdf``, ``docx``,
-    ``xlsx``, ``html``, ``txt``, ``md`` or ``csv``), or one of three answers
-    with no text:
+    ``kind`` is the type that the shared reader read (a key of
+    ``acb_skills.attachment_text.KIND_NAMES``, such as ``pdf``, ``docx`` or
+    ``pptx``), or one of three answers with no text:
     ``unsupported`` (a type or a source that the slice does not read),
     ``no_text`` (an image, or a file with no text layer) and ``unreadable``
     (the reader refused the file: a password, a limit, a broken file, no page
@@ -459,9 +476,7 @@ def _no_fetch(row: Any) -> tuple[str, str] | None:
     if suffix in _IMAGE_SUFFIXES or (not named and mime.startswith("image/")):
         return "no_text", _IMAGE_REASON
     if suffix not in SUPPORTED_SUFFIXES:
-        return "unsupported", (
-            f"I cannot read a {suffix or 'file without a type'} file. {SUPPORTED_SENTENCE}"
-        )
+        return "unsupported", unsupported_sentence(suffix)
     return None
 
 

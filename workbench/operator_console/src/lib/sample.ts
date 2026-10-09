@@ -501,20 +501,19 @@ export const SAMPLE_CATALOG: AiCatalog = {
 export const OWED = {
   models:
     "The catalog reads live. Context window, vendor price and the image and " +
-    "reasoning chips come from `model_profile` (migration 012) — a model with " +
-    "no profile row yet shows a dash, which is true rather than guessed. " +
-    "Vendor facts fetch live from litellm's price map (migration 014); " +
-    "'Fetch the latest' fills `vendor_price_feed` and this page reads it back.",
+    "reasoning chips come from each model's saved details. A model with no " +
+    "details yet shows a dash, which is true rather than guessed. Vendor " +
+    "facts come live from the vendors' price list: 'Fetch the latest' " +
+    "refreshes it and this page reads it back.",
   tiers:
-    "Chains read and save live, ranks included (migration 011), and the " +
-    "Router walks them (D-AI-6). The registry and the tier prices are " +
-    "migration 015: what a customer pays is keyed on the tier they picked " +
-    "(D67), and a failover changes our cost, never their price.",
+    "Chains read and save live, in order, and the Router walks them. What a " +
+    "customer pays is set by the tier they picked, so a switch to a backup " +
+    "model changes our cost, never their price.",
   providers:
     "Accounts read live. Health needs a probe that nothing runs yet, which " +
     "is why the cards no longer draw a health chip at all.",
   failovers:
-    "Live since migration 013: `served_rank` above 1 on a usage row is the " +
-    "proof. This sample shows the SHAPE of the table; the real one starts " +
-    "empty and that is good news.",
+    "Live: a call that a backup model answered is the proof. This sample " +
+    "shows the SHAPE of the table. The real one starts empty, and that is " +
+    "good news.",
 } as const;

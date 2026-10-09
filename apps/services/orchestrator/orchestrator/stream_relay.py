@@ -503,6 +503,182 @@ async def touch_active(thread_id: str) -> None:
         _log.warning("stream_relay.touch_active_failed", thread_id=thread_id[:12])
 
 
+# ---------------------------------------------------------------------------
+# The live-run index: which runs are in flight, PER ORGANIZATION
+# ---------------------------------------------------------------------------
+#
+# ``GET /chat/active-sessions`` used to SCAN ``cc:active:*``. That key carries
+# no tenant, so the scan listed the live thread ids of EVERY organization, and
+# the route's "no session row yet" fallback then handed them to the caller: the
+# other org's ``chat_session`` row is invisible under FORCE RLS, so it looked
+# like a row that did not exist yet. The scan was also O(every key in Redis),
+# every 5 s, per open chat surface.
+#
+# This index replaces the scan. It is ONE hash per organization, built through
+# the tenant-prefix wrapper (``acb_common.tenant_redis``, R5c), so the key is
+# ``cc:<org>:liveruns`` and a key without a tenant cannot be built:
+#
+#     field = thread_id
+#     value = {"actor": <email or "">, "startedAt": <ISO-8601>, "token": <run>}
+#
+# The org of a run is therefore WHICH HASH it is in, written at run start from
+# the server-side ``organization_id`` (never from the payload, R11). The actor
+# is recorded HERE and not read from ``cc:runactor``, because the executor's own
+# ``mark_active(thread_id)`` call clears ``cc:runactor`` mid-run.
+#
+# Why per organization and not per member: a shared room shows the green dot to
+# every participant, and the run belongs to only one of them. A per-member set
+# cannot answer "which live runs may this member SEE"; the org hash can, and
+# Postgres (``SESSION_VISIBLE_SQL`` under RLS) answers the rest.
+#
+# Liveness stays with ``cc:active:{tid}``. A field whose flag is gone is a run
+# that ended without its ``finally`` (a crash, a restart), and the reader prunes
+# it. The hash TTL only bounds that garbage. It is twice the stream TTL, so a
+# run parked on a HITL question for the whole ask_user budget, which pushes no
+# event, still outlives one TTL from its last refresh.
+#
+# Fence (R7): ``tests/unit/test_active_sessions_tenant.py``.
+
+LIVE_RUNS_NAMESPACE = "liveruns"
+LIVE_RUNS_TTL_SECONDS = 2 * STREAM_TTL_SECONDS
+
+
+def _live_runs_key(organization_id: str):
+    """``cc:<org>:liveruns``. Call only inside ``organization_scope(org)``.
+
+    The key refuses to build when *organization_id* is not the bound tenant.
+    """
+    from acb_common.tenant_redis import TenantKey  # noqa: PLC0415
+
+    return TenantKey(organization_id, LIVE_RUNS_NAMESPACE)
+
+
+async def _tenant_client():
+    """The relay's pooled client, behind the tenant-prefix wrapper."""
+    from acb_common.tenant_redis import TenantRedis  # noqa: PLC0415
+
+    return TenantRedis(await _get_client())
+
+
+async def register_live_run(
+    thread_id: str,
+    *,
+    organization_id: str | None,
+    actor: str | None,
+    token: str,
+) -> None:
+    """Record a starting run in its organization's live-run index.
+
+    *organization_id* and *actor* come from the authenticated session, server
+    side. With no organization nothing is written, so the run is never listed.
+    That is the fail-closed answer, because a run with no org has no tenant to
+    be listed under. Best-effort: Redis trouble never blocks a run.
+    """
+    if not organization_id or not thread_id:
+        return
+    try:
+        from datetime import UTC, datetime
+
+        from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+        value = json.dumps({
+            "actor": (actor or "").strip().lower(),
+            "startedAt": datetime.now(UTC).isoformat(),
+            "token": token,
+        })
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            k = _live_runs_key(organization_id)
+            await r.hset(k, thread_id, value)
+            await r.expire(k, LIVE_RUNS_TTL_SECONDS)
+    except Exception:  # noqa: BLE001 — the index is advisory, never a blocker
+        _log.warning("stream_relay.register_live_run_failed",
+                     thread_id=thread_id[:12])
+
+
+async def unregister_live_run(
+    thread_id: str, *, organization_id: str | None, token: str,
+) -> None:
+    """Remove a finished run from the index, ONLY if the entry is still its own.
+
+    A superseded run's ``finally`` can run after the new run registered. The
+    token check stops it from deleting the new run's entry.
+    """
+    if not organization_id or not thread_id:
+        return
+    try:
+        from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            k = _live_runs_key(organization_id)
+            raw = await r.hget(k, thread_id)
+            if raw is None:
+                return
+            try:
+                held = json.loads(raw).get("token")
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                held = None
+            if held == token:
+                await r.hdel(k, thread_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("stream_relay.unregister_live_run_failed",
+                     thread_id=thread_id[:12])
+
+
+async def refresh_live_runs(organization_id: str | None) -> None:
+    """Push the index's TTL out again. A long run calls this as it streams."""
+    if not organization_id:
+        return
+    try:
+        from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            await r.expire(_live_runs_key(organization_id), LIVE_RUNS_TTL_SECONDS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
+    """The live runs of ONE organization: ``threadId``, ``actor``, ``startedAt``.
+
+    Reads one hash. It never scans the keyspace. A field whose ``cc:active``
+    flag is gone is pruned and left out. Raises on a Redis error, so the caller
+    can tell "no runs" from "could not ask".
+    """
+    from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+
+    raw_client = await _get_client()
+    out: list[dict[str, str]] = []
+    with organization_scope(organization_id):
+        r = await _tenant_client()
+        k = _live_runs_key(organization_id)
+        entries = await r.hgetall(k) or {}
+        dead: list[str] = []
+        for tid, raw in entries.items():
+            if not tid:
+                continue
+            if await raw_client.get(_active_key(tid)) != "1":
+                dead.append(tid)
+                continue
+            try:
+                meta = json.loads(raw) if raw else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            out.append({
+                "threadId": tid,
+                "actor": str(meta.get("actor") or ""),
+                "startedAt": str(meta.get("startedAt") or ""),
+            })
+        if dead:
+            with contextlib.suppress(Exception):
+                await r.hdel(k, *dead)
+    return out
+
+
 async def stream_exists(thread_id: str) -> bool:
     """Check whether the event stream still exists (not expired)."""
     r = await _get_client()
@@ -930,6 +1106,13 @@ async def run_detached(
     await mark_active(
         thread_id, reset=True, actor=actor, source=source, floor=floor,
     )
+    # The org's live-run index (``/chat/active-sessions``). Server-side org and
+    # actor only. The token lets this run's ``finally`` remove its OWN entry.
+    _live_token = uuid.uuid4().hex
+    await register_live_run(
+        thread_id, organization_id=organization_id, actor=actor,
+        token=_live_token,
+    )
 
     # A note buffered for a run that never got to a tool boundary must not leak
     # into the next one; the durable store (cc:steer:) is what carries anything
@@ -963,8 +1146,15 @@ async def run_detached(
                 "stream_relay.detached_run_missing_org",
                 thread_id=thread_id[:12], source=source,
             )
+        _live_refreshed = asyncio.get_running_loop().time()
         try:
             async for line in gen:
+                # Keep the org's live-run index alive on a long run, at most
+                # once a minute. One EXPIRE, never one per token delta.
+                _now = asyncio.get_running_loop().time()
+                if organization_id and _now - _live_refreshed >= 60:
+                    _live_refreshed = _now
+                    await refresh_live_runs(organization_id)
                 if tee:
                     try:
                         await push_sse_event(thread_id, line)
@@ -1001,6 +1191,11 @@ async def run_detached(
                 await mark_inactive(thread_id)
             except Exception:  # noqa: BLE001
                 pass
+            with contextlib.suppress(BaseException):
+                await unregister_live_run(
+                    thread_id, organization_id=organization_id,
+                    token=_live_token,
+                )
             # Tear down the cross-worker control bus for this run (P1-2).
             # Await the listener's shutdown so its pub/sub connection closes
             # before this run boundary returns (no post-loop cleanup dangle).

@@ -203,10 +203,10 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
             ? `Every tier job a customer can call has a decided price ` +
               `(${decidedTier.size} priced or absorbed). ` +
               (cat.creditPrice
-                ? "A failover changes our cost, never theirs (D67)."
-                : "One gap: the credit itself has no rupee price - save " +
-                  "it on the Pricing page (H-42), or a bank transfer has " +
-                  "no official credit conversion.")
+                ? "A switch to a backup model changes our cost, never the customer's price."
+                : "One gap: a credit has no rupee price yet. Save it on the " +
+                  "Pricing page, or a bank transfer has no official number " +
+                  "of credits, and no page can show money in rupees.")
             : `${boundUndecided.length} bound tier ${
                 boundUndecided.length === 1 ? "job" : "jobs"
               } will answer customers and bill NOTHING — ` +
@@ -215,8 +215,8 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
                 .map((j) => `${j.tier} (${j.task})`)
                 .join(", ") +
               `${boundUndecided.length > 3 ? "…" : ""}. Price them, or mark ` +
-              "them absorbed on purpose. What a credit costs in rupees is " +
-              "saved on the same page (H-42).",
+              "them free on purpose. The rupee price of a credit is saved " +
+              "on the same Pricing page.",
       href: "/pricing",
       linkText: "Price the tiers",
     },
@@ -233,15 +233,15 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
           ? "done"
           : "todo",
       detail: !keys.known
-        ? "On the customer's page: issue their cc_live_ key (shown exactly " +
-          "once) and grant credits. Their deployment presents that key to " +
-          "the Router on every call."
+        ? "On the customer's page: issue their API key (shown exactly " +
+          "once) and add credits. Their deployment sends that key with " +
+          "every AI call."
         : keys.missing.length === 0
           ? `Every active customer holds a key (${keys.live}). Grant them ` +
             "credits on the customer's page if you have not."
           : `${keys.missing.length} of ${keys.live} active ` +
             `customer${keys.live === 1 ? "" : "s"} ` +
-            `${keys.missing.length === 1 ? "holds" : "hold"} NO cc_live_ ` +
+            `${keys.missing.length === 1 ? "holds" : "hold"} NO API ` +
             `key: ${keys.missing.slice(0, 3).join(", ")}` +
             `${keys.missing.length > 3 ? "…" : ""}. Nothing their ` +
             "deployment does can be served until one is issued — on their " +
@@ -255,14 +255,16 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
       title: "Turn it on",
       state: "info",
       detail:
-        "Two switches on the customer's box, in this order: " +
-        "ROUTER_SERVING_ENABLED routes their traffic through the Router " +
-        "(H-69), and CUSTOMER_CONSOLE_SPEND_GATE starts refusing at zero " +
-        "balance — only after prices are set, or funded customers get all " +
-        "of the gate and none of the billing. Owner acts. Verify by the " +
-        "deploy log line, not by this page.",
+        "Two settings on the customer's box, in this order. First " +
+        "ROUTER_SERVING_ENABLED, which sends their AI calls through the " +
+        "Router so each one is metered. Then CUSTOMER_CONSOLE_SPEND_GATE, " +
+        "which stops AI for a customer whose balance reaches zero. Price " +
+        "every tier first: an unpriced tier charges nothing, so a funded " +
+        "customer is served free and only a customer at zero is stopped. " +
+        "Check the box's log after you change them: this page cannot see " +
+        "the box.",
       href: "/money",
-      linkText: "Watch usage",
+      linkText: "Open Money",
     },
   ];
   return steps;

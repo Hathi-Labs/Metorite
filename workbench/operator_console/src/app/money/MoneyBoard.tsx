@@ -18,7 +18,7 @@ import Explain from "../Explain";
 import Spark from "../Spark";
 import { type Fleet, type FleetRow, type FleetSort, sortFleet, totalsHow } from "@/lib/fleet";
 import { formatDate } from "@/lib/format";
-import { daysLeftLabel, formatCr, formatInr, formatPct } from "@/lib/money";
+import { aiMarginOf, daysLeftLabel, formatCr, formatInr, formatPct } from "@/lib/money";
 import { chipClass, lifecycleTone } from "@/lib/tone";
 import {
   type OrgUsageRow,
@@ -170,6 +170,8 @@ export default function MoneyBoard({
             <div className="sub">
               Margin {formatPct(totals.margin)}
               <Explain term="margin" />
+              {" · "}AI margin {formatPct(totals.aiMargin)}
+              <Explain term="aiMargin" />
             </div>
           </div>
           <div className={`stat${totals.losing > 0 ? " loss" : ""}`}>
@@ -249,6 +251,10 @@ export default function MoneyBoard({
                   <Explain term="margin" />
                 </th>
                 <th>
+                  AI margin
+                  <Explain term="aiMargin" />
+                </th>
+                <th>
                   Credits left
                   <Explain term="creditsLeft" />
                 </th>
@@ -297,6 +303,7 @@ export default function MoneyBoard({
                           {money.profit.estimated && <span className="est">est.</span>}
                         </td>
                         <td className="mono">{formatPct(money.margin.value)}</td>
+                        <td className="mono">{formatPct(aiMarginOf(money))}</td>
                         <td className="mono">{formatCr(money.creditsLeft)}</td>
                         <td>
                           <span className={chipClass(runwayTone(money.daysLeft.days))}>
@@ -306,7 +313,7 @@ export default function MoneyBoard({
                         </td>
                       </>
                     ) : (
-                      <td colSpan={6} className="muted">
+                      <td colSpan={7} className="muted">
                         Not in the usage read, so its money is unknown here. Open the
                         customer to see it.
                       </td>

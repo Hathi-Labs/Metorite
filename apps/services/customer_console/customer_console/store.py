@@ -808,7 +808,13 @@ def record_draws(
 LOT_PAID_SOURCES: tuple[str, ...] = ("purchase",)
 
 
-def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
+def draws_by_org(
+    conn: Connection,
+    *,
+    days: int,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, Any]:
     """Paid and free credits each organization SPENT in the window. Operator-only.
 
     Spec: `operator_console_money.md` §3. Returns
@@ -856,11 +862,12 @@ def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
             FROM credit_draw d
             JOIN organization o ON o.id = d.organization_id
             LEFT JOIN credit_lot l ON l.id = d.lot_id
-            WHERE d.created_at >= now() - make_interval(days => :days)
+            WHERE d.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND d.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             GROUP BY o.slug
             """
         ),
-        {"days": days, "paid": list(LOT_PAID_SOURCES)},
+        {"days": days, "start": start, "end": end, "paid": list(LOT_PAID_SOURCES)},
     ).all()
     lifetime = conn.execute(
         text(
@@ -1259,6 +1266,8 @@ def usage_by_activity(
     *,
     org_id: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     member: str | None = None,
 ) -> list[dict[str, Any]]:
     """What this organization ran, and what it cost. **Never what it ran ON.**
@@ -1285,7 +1294,8 @@ def usage_by_activity(
                    COALESCE(SUM(billed_credits), 0)            AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Without
               -- this the call count inflates while the credit sum stays
               -- right, because a refusal bills 0 — so the two columns
@@ -1306,7 +1316,7 @@ def usage_by_activity(
         ),
         {
             "org": org_id,
-            "days": days,
+            "days": days, "start": start, "end": end,
             "member": member,
             "unattributed": UNATTRIBUTED_ACTIVITY,
             "lim": SPEND_PAGE_SIZE,
@@ -1323,6 +1333,8 @@ def usage_by_member(
     *,
     org_id: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Per-member cost for one organization — D66 (b), the admin's read.
 
@@ -1353,7 +1365,8 @@ def usage_by_member(
                    COALESCE(SUM(billed_credits), 0)               AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Same
               -- argument as `usage_by_activity`: the count inflates and the
               -- credits do not, so the admin reads two numbers that disagree.
@@ -1365,7 +1378,7 @@ def usage_by_member(
         ),
         {
             "org": org_id,
-            "days": days,
+            "days": days, "start": start, "end": end,
             "unattributed": UNATTRIBUTED_ACTIVITY,
             "lim": SPEND_PAGE_SIZE,
         },
@@ -1380,6 +1393,8 @@ def usage_by_app(
     *,
     org_id: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     member: str | None = None,
 ) -> list[dict[str, Any]]:
     """What each APP spent, and which agents inside it spent it. Usage slice 2.
@@ -1416,7 +1431,8 @@ def usage_by_app(
                    COALESCE(SUM(billed_credits), 0)     AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). The same
               -- filter `usage_by_activity` carries, for the same reason.
               AND refusal_reason IS NULL
@@ -1426,7 +1442,7 @@ def usage_by_app(
             GROUP BY 1, 2
             """
         ),
-        {"org": org_id, "days": days, "member": member,
+        {"org": org_id, "days": days, "start": start, "end": end, "member": member,
          "unattributed": UNATTRIBUTED_ACTIVITY},
     )
     apps: dict[str, dict[str, Any]] = {}
@@ -1467,6 +1483,8 @@ def usage_cost_by(
     org_id: str,
     by: str,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> dict[Any, Decimal]:
     """What the VENDOR charged us, per app, per member or per app-and-agent.
 
@@ -1498,12 +1516,13 @@ def usage_cost_by(
                    COALESCE(SUM(provider_cost_usd), 0) AS cost
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               AND refusal_reason IS NULL
             GROUP BY {group}
             """  # every fragment is a literal from _COST_DIMENSIONS
         ),
-        {"org": org_id, "days": days, "unattributed": UNATTRIBUTED_ACTIVITY},
+        {"org": org_id, "days": days, "start": start, "end": end, "unattributed": UNATTRIBUTED_ACTIVITY},
     )
     out: dict[Any, Decimal] = {}
     for r in rows:
@@ -1571,8 +1590,19 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
 #: unbounded window lets one request scan the whole table.
 USAGE_MAX_DAYS = 365
 
+#: WS-50 slice 7: a chosen date range starts and ends at midnight in India,
+#: where the business runs. The default "last N days" window keeps its UTC
+#: day buckets, so no existing caller changes.
+RANGE_TZ = "Asia/Kolkata"
 
-def unbilled_fleet_total(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> dict[str, int]:
+
+def unbilled_fleet_total(
+    conn: Connection,
+    *,
+    days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, int]:
     """Consumption we served and did not bill, over EVERY organization.
 
     🔴 **This read exists because computing it from the page would never
@@ -1599,10 +1629,11 @@ def unbilled_fleet_total(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> 
                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
             FROM usage_event
             WHERE metering_fault IS NOT NULL
-              AND created_at >= now() - make_interval(days => :days)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             """
         ),
-        {"days": days},
+        {"days": days, "start": start, "end": end},
     ).one()
     return {
         "orgs": int(row.orgs),
@@ -1638,6 +1669,8 @@ def usage_by_org(
     conn: Connection,
     *,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = SPEND_PAGE_SIZE,
     slug: str | None = None,
 ) -> dict[str, Any]:
@@ -1758,7 +1791,8 @@ def usage_by_org(
             FROM organization o
             LEFT JOIN usage_event u
                    ON u.organization_id = o.id
-                  AND u.created_at >= now() - make_interval(days => :days)
+                  AND u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             -- 🔴 **A WHERE on `o`, and it does NOT undo the LEFT JOIN.** The
             -- rule this file repeats is about the RIGHT-hand table: a WHERE on
             -- `u` drops the rows the join exists to keep. `o.slug` is the LEFT
@@ -1774,7 +1808,7 @@ def usage_by_org(
             LIMIT :lim
             """
         ),
-        {"days": days, "lim": max(1, int(limit)), "slug": slug},
+        {"days": days, "start": start, "end": end, "lim": max(1, int(limit)), "slug": slug},
     )
     out = [
         {
@@ -1818,6 +1852,8 @@ def usage_daily(
     conn: Connection,
     *,
     days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
     org_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """AI usage per day. One series, two callers.
@@ -1841,9 +1877,15 @@ def usage_daily(
         text(
             """
             WITH span AS (
+              -- WS-50 slice 7: a chosen range draws its own days, cut at
+              -- midnight in :tz. With no range, the last :days days, as before.
               SELECT generate_series(
-                       date_trunc('day', now() - make_interval(days => :days - 1)),
-                       date_trunc('day', now()),
+                       COALESCE(date_trunc('day', CAST(:start AS timestamptz) AT TIME ZONE :tz),
+                                date_trunc('day', now() AT TIME ZONE :tz
+                                                  - make_interval(days => :days - 1))),
+                       COALESCE(date_trunc('day', (CAST(:end AS timestamptz) - interval '1 second')
+                                                  AT TIME ZONE :tz),
+                                date_trunc('day', now() AT TIME ZONE :tz)),
                        interval '1 day'
                      ) AS day
             )
@@ -1858,14 +1900,15 @@ def usage_daily(
                    COALESCE(SUM(u.billed_credits), 0) AS credits
             FROM span s
             LEFT JOIN usage_event u
-                   ON date_trunc('day', u.created_at) = s.day
+                   ON date_trunc('day', u.created_at AT TIME ZONE :tz) = s.day
                   AND (CAST(:org AS UUID) IS NULL
                        OR u.organization_id = CAST(:org AS UUID))
             GROUP BY s.day
             ORDER BY s.day
             """
         ),
-        {"days": days, "org": org_id},
+        {"days": days, "start": start, "end": end, "org": org_id,
+         "tz": "UTC" if start is None else RANGE_TZ},
     )
     return [
         {"day": r.day.isoformat(), "calls": int(r.calls), "credits": Decimal(r.credits)}
@@ -3931,7 +3974,13 @@ def provider_credential_revoke(
     return int(result.rowcount or 0)
 
 
-def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> list[dict[str, Any]]:
+def spend_by_provider(
+    conn: Connection,
+    *,
+    days: int = SPEND_WINDOW_DAYS,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[dict[str, Any]]:
     """What each VENDOR cost us over the window. **Operator-only.**
 
     🔴 **The other half of the money, and nothing showed it before.** Every
@@ -3979,7 +4028,8 @@ def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> lis
                            WHERE u.cost_source = 'vendor'
                        ), 0) AS measured_usd
                 FROM usage_event u
-                WHERE u.created_at >= now() - make_interval(days => :days)
+                WHERE u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
                   AND u.refusal_reason IS NULL
                   AND u.metering_fault IS NULL
                   AND u.byok_served = false
@@ -3990,7 +4040,7 @@ def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> lis
                          split_part(u.model, '/', 1)
                 """
             ),
-            {"days": days},
+            {"days": days, "start": start, "end": end},
         )
     ]
 

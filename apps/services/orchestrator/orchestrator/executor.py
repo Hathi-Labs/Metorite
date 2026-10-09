@@ -3725,10 +3725,14 @@ async def run_agent_stream(
     _tier_run: Any = None
     _relay_mark_inactive = None  # type: ignore[assignment]
     _relay_mark_active = None  # type: ignore[assignment]
+    _relay_register_live = None  # type: ignore[assignment]
+    _relay_unregister_live = None  # type: ignore[assignment]
     with contextlib.suppress(Exception):
         from orchestrator.stream_relay import (
             mark_active as _relay_mark_active,
             mark_inactive as _relay_mark_inactive,
+            register_live_run as _relay_register_live,
+            unregister_live_run as _relay_unregister_live,
         )
     # H-201 part 3: the relay mark and the RUN_STARTED yield run INSIDE the
     # main try below. A consumer that closes the stream at the first event, or
@@ -3775,6 +3779,14 @@ async def run_agent_stream(
         if _relay_mark_active is not None:
             with contextlib.suppress(Exception):
                 await _relay_mark_active(thread_id)
+        # The org's live-run index (/chat/active-sessions), for a run that no
+        # run_detached wraps. Server-side org and member only, never the body.
+        if _relay_register_live is not None and thread_id:
+            with contextlib.suppress(Exception):
+                await _relay_register_live(
+                    thread_id, organization_id=organization_id,
+                    actor=session_user, token=run_id,
+                )
 
         # Fresh per-thread emit ordinal for this run (P1-5): the stream was just
         # reset, so the next event emitted is entry #1 in Redis.
@@ -5739,6 +5751,11 @@ async def run_agent_stream(
                 await _relay_mark_inactive(thread_id)
             except Exception:
                 pass
+        if _relay_unregister_live is not None and thread_id:
+            with contextlib.suppress(Exception):
+                await _relay_unregister_live(
+                    thread_id, organization_id=organization_id, token=run_id,
+                )
 
 
 # ---------------------------------------------------------------------------
