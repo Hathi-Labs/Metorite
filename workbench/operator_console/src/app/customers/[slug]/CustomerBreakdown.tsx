@@ -1,66 +1,140 @@
-// Where this customer's credits went: by app, by agent, by person. Usage slice 3.
+// Where this customer's credits went: by app, by agent, by person. Usage
+// slice 3, rewritten for WS-50 (decision D94).
 //
-// 🔴 **The panel above says HOW MUCH, and this one says ON WHAT.** H-133 put
-// the total and the daily series on this page. When a customer asks where the
-// credits went, the operator needs the split the customer's own admin sees,
-// plus the one thing that admin never sees: what the vendor charged US, and
-// the margin left over.
+// 🔴 **"Our cost" read as the customer's price.** The owner asked whether
+// "Our cost" was what the vendor charges us or what we charge the customer.
+// The columns now say it in words: "We charged" and "AI cost", both in
+// rupees, and each heading has an ⓘ.
+//
+// ⚠️ **We charged, per row, is an ESTIMATE, and the table says so.** The
+// Console records which lots paid for each CHARGE, not for each app. A row is
+// valued at this customer's average rupees per credit used in the window.
+// The AI cost per row is exact.
 //
 // ⚠️ **The rows are the customer's own.** `/admin/usage/breakdown` serves the
-// same grouping as the customer's `/my/usage/apps` and `/my/usage/members`,
-// with our cost joined on by key. So this table and the customer's page can
-// never quote two totals for one app.
+// same grouping as the customer's `/my/usage/apps` and `/my/usage/members`.
 //
-// ⚠️ **A server component.** It renders numbers the page already fetched
-// with the caller's session, and it writes nothing.
+// ⚠️ **A server component.** It renders numbers the page already fetched.
 
-import { marginPct } from "@/lib/priceboard";
-import { formatCredits, formatUsd } from "@/lib/format";
+import Explain from "../../Explain";
+import {
+  earnedPerCredit,
+  formatCr,
+  formatInr,
+  formatPct,
+  rowMoney,
+  type CustomerMoney,
+  type Price,
+} from "@/lib/money";
 import { chipClass } from "@/lib/tone";
-import { breakdownCut, isLoss, type UsageBreakdown } from "@/lib/usage";
+import { breakdownCut, type UsageBreakdown } from "@/lib/usage";
 
 /** What the Console calls a call it could not attribute. */
 const UNATTRIBUTED = "unattributed";
 
 function Name({ value }: { value: string }) {
-  // ⚠️ A gap is NAMED, never blank. "unattributed" rows are how the operator
-  // sees that some caller is still not stamping who or which app.
+  // A gap is NAMED, never blank: the operator sees that some caller is still
+  // not recording who or which app.
   return value === UNATTRIBUTED ? (
-    <span className="muted">not attributed</span>
+    <span className="muted">
+      not attributed
+      <Explain term="notAttributed" />
+    </span>
   ) : (
     <span className="mono">{value}</span>
   );
 }
 
-function Margin({ value }: { value: string | null }) {
-  // NULL is NEUTRAL: no saved credit price, so no margin. Never a zero.
+function MarginCell({ value }: { value: number | null }) {
   if (value === null) return <span className="muted">—</span>;
-  // A LOSS wears the danger chip, the console's one colour for "look now".
-  // No hand-rolled red: `lib/tone.ts` owns what danger looks like.
-  return isLoss(value) ? (
-    <span className={chipClass("danger")}>{marginPct(value)}</span>
+  return value < 0 ? (
+    <span className={chipClass("danger")}>{formatPct(value)}</span>
   ) : (
-    <span className="mono">{marginPct(value)}</span>
+    <span className="mono">{formatPct(value)}</span>
+  );
+}
+
+function Head({ first }: { first: string }) {
+  return (
+    <thead>
+      <tr>
+        <th>{first}</th>
+        <th>
+          AI calls
+          <Explain term="calls" />
+        </th>
+        <th>
+          Credits used
+          <Explain term="creditsUsed" />
+        </th>
+        <th>
+          We charged
+          <Explain term="weCharged" />
+        </th>
+        <th>
+          AI cost
+          <Explain term="aiCost" />
+        </th>
+        <th>
+          Margin
+          <Explain term="margin" />
+        </th>
+      </tr>
+    </thead>
+  );
+}
+
+type Part = { calls: number; credits: string; costUsd: string };
+
+function Cells({
+  part,
+  money,
+  price,
+  quiet,
+}: {
+  part: Part;
+  money: CustomerMoney | null;
+  price: Price | null;
+  quiet?: boolean;
+}) {
+  const m = money
+    ? rowMoney(part, money, price)
+    : { charged: null, aiCost: null, profit: null, margin: null };
+  const cls = quiet ? "mono muted" : "mono";
+  return (
+    <>
+      <td className={cls}>{part.calls.toLocaleString("en-IN")}</td>
+      <td className={cls}>{formatCr(Number(part.credits) || 0)}</td>
+      <td className={cls}>{formatInr(m.charged)}</td>
+      <td className={cls}>{formatInr(m.aiCost)}</td>
+      <td>
+        <MarginCell value={m.margin} />
+      </td>
+    </>
   );
 }
 
 export default function CustomerBreakdown({
   data,
   error,
+  money,
+  price,
 }: {
   data: UsageBreakdown | null;
   /** The read failed or the body was not understood. Said, never blanked. */
   error: string | null;
+  /** The customer's whole-window figures, which value each row. */
+  money: CustomerMoney | null;
+  price: Price | null;
 }) {
+  const perCredit = money ? earnedPerCredit(money) : null;
   return (
     <section className="panel">
       <div className="panel-head">
         <h2>Where it went</h2>
         <p>
-          By app, by agent and by person, over the last{" "}
-          {data?.windowDays ?? 30} days. <b>Our cost</b> and <b>margin</b>{" "}
-          are ours alone — the customer&apos;s admin sees the same rows with
-          credits only.
+          {`The same ${data?.windowDays ?? 30} days, split by app, by agent and by person. `} The customer&apos;s own admin sees these rows with credits
+          only. They never see the AI cost or the margin.
         </p>
       </div>
 
@@ -68,12 +142,23 @@ export default function CustomerBreakdown({
 
       {!error && data && data.apps.length === 0 && data.members.length === 0 && (
         <div className="empty">
-          <h3>Nothing to break down</h3>
+          <h3>Nothing to split</h3>
           <p className="muted">
-            No metered calls in the window, so there is no app or person to
-            split them by.
+            No AI calls in this period, so there is no app or person to split
+            them by.
           </p>
         </div>
+      )}
+
+      {!error && data && (data.apps.length > 0 || data.members.length > 0) && (
+        <p className="field-hint">
+          {perCredit !== null
+            ? `"We charged" for each row is estimated: its credits used × ${formatInr(
+                perCredit,
+              )}, this customer's average earned per credit in the period. Free credits ` +
+              `bring that average down. "AI cost" is exact.`
+            : `"We charged" needs the credit price, which is not saved yet. "AI cost" is exact.`}
+        </p>
       )}
 
       {!error && data && data.apps.length > 0 && (
@@ -83,18 +168,10 @@ export default function CustomerBreakdown({
             <p className="field-hint">{breakdownCut(data.apps.length, data.appsTotal)}</p>
           )}
           <div className="tablewrap">
-            {/* ⚠️ Scrolls inside its own box, so a wide table never moves
-                the page sideways (measured at 390px on 2026-09-20). */}
+            {/* Scrolls inside its own box, so a wide table never moves the
+                page sideways (measured at 390px on 2026-09-20). */}
             <table className="grid">
-              <thead>
-                <tr>
-                  <th>App · agent</th>
-                  <th>Calls</th>
-                  <th>Credits</th>
-                  <th>Our cost</th>
-                  <th>Margin</th>
-                </tr>
-              </thead>
+              <Head first="App · agent" />
               <tbody>
                 {data.apps.flatMap((a) => [
                   <tr key={`app:${a.app}`}>
@@ -103,12 +180,7 @@ export default function CustomerBreakdown({
                         <Name value={a.app} />
                       </strong>
                     </td>
-                    <td className="mono">{a.calls.toLocaleString("en-IN")}</td>
-                    <td className="mono">{formatCredits(a.credits)}</td>
-                    <td className="mono">{formatUsd(a.costUsd)}</td>
-                    <td>
-                      <Margin value={a.realisedMargin} />
-                    </td>
+                    <Cells part={a} money={money} price={price} />
                   </tr>,
                   // The agents inside, indented. Omitted when one agent is the
                   // whole app, because its row would repeat the app's.
@@ -118,12 +190,7 @@ export default function CustomerBreakdown({
                           <td style={{ paddingLeft: "1.5rem" }}>
                             <Name value={g.agent} />
                           </td>
-                          <td className="mono muted">{g.calls.toLocaleString("en-IN")}</td>
-                          <td className="mono muted">{formatCredits(g.credits)}</td>
-                          <td className="mono muted">{formatUsd(g.costUsd)}</td>
-                          <td>
-                            <Margin value={g.realisedMargin} />
-                          </td>
+                          <Cells part={g} money={money} price={price} quiet />
                         </tr>
                       ))
                     : []),
@@ -144,27 +211,14 @@ export default function CustomerBreakdown({
           )}
           <div className="tablewrap">
             <table className="grid">
-              <thead>
-                <tr>
-                  <th>Person</th>
-                  <th>Calls</th>
-                  <th>Credits</th>
-                  <th>Our cost</th>
-                  <th>Margin</th>
-                </tr>
-              </thead>
+              <Head first="Person" />
               <tbody>
                 {data.members.map((m) => (
                   <tr key={m.member}>
                     <td>
                       <Name value={m.member} />
                     </td>
-                    <td className="mono">{m.calls.toLocaleString("en-IN")}</td>
-                    <td className="mono">{formatCredits(m.credits)}</td>
-                    <td className="mono">{formatUsd(m.costUsd)}</td>
-                    <td>
-                      <Margin value={m.realisedMargin} />
-                    </td>
+                    <Cells part={m} money={money} price={price} />
                   </tr>
                 ))}
               </tbody>

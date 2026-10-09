@@ -35,9 +35,11 @@ import {
   type Catalog,
   type CatalogPlan,
 } from "@/lib/format";
+import { customerMoney, priceFrom, type Price } from "@/lib/money";
 import {
   readBreakdown,
   type OrgUsageRow,
+  type OrgUsageView,
   type UsageBreakdown,
   type UsageDay,
 } from "@/lib/usage";
@@ -100,6 +102,9 @@ type Loaded = {
   usageRow: OrgUsageRow | null;
   usageDays: UsageDay[];
   usageError: string | null;
+  /** WS-50: the saved credit price and when draws began, from the same read. */
+  price: Price | null;
+  drawsSince: string | null;
   /** Usage slice 3 — by app, agent and person, with our cost. `null` with no
    *  error means the read was not attempted; with an error, it failed. */
   breakdown: UsageBreakdown | null;
@@ -151,6 +156,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         usageRow: null,
         usageDays: [],
         usageError: null,
+        price: null,
+        drawsSince: null,
         breakdown: null,
         breakdownError: null,
         error: `Console returned ${listRes.status}`,
@@ -215,13 +222,16 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
     let usageRow: OrgUsageRow | null = null;
     let usageDays: UsageDay[] = [];
     let usageError: string | null = null;
+    let price: Price | null = null;
+    let drawsSince: string | null = null;
     if (usageRes.status !== 200) {
       usageError = `The usage read returned ${usageRes.status}.`;
     } else {
       try {
-        const all = (JSON.parse(usageRes.body) as { rows?: OrgUsageRow[] })
-          .rows ?? [];
-        usageRow = all.find((r) => r.slug === slug) ?? null;
+        const view = JSON.parse(usageRes.body) as Partial<OrgUsageView>;
+        usageRow = (view.rows ?? []).find((r) => r.slug === slug) ?? null;
+        price = priceFrom(view.inrPerCredit, view.usdToInr);
+        drawsSince = view.drawsSince ?? null;
       } catch {
         usageError = "The usage read could not be parsed.";
       }
@@ -268,6 +278,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       usageRow,
       usageDays,
       usageError,
+      price,
+      drawsSince,
       breakdown,
       breakdownError,
       error: null,
@@ -286,6 +298,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       usageRow: null,
       usageDays: [],
       usageError: null,
+      price: null,
+      drawsSince: null,
       breakdown: null,
       breakdownError: null,
       error:
@@ -308,7 +322,7 @@ export default async function CustomerDetailPage({
   const { slug } = await params;
   const {
     org, plans, plansError, members, membersError, lots, keys, keysError,
-    usageRow, usageDays, usageError,
+    usageRow, usageDays, usageError, price, drawsSince,
     breakdown, breakdownError,
     ledger, ledgerError, error,
   } = await loadOrg(slug, gate.authToken);
@@ -346,6 +360,18 @@ export default async function CustomerDetailPage({
   // The trial banner's advice is WRONG once the subscription is already active
   // — "use Activate subscription" is the step they just did. See lifecycleHint.
   const lifeHint = lifecycleHint(org.status, org.subscription_status);
+  // WS-50: every money figure for this customer, computed once.
+  const money = usageRow
+    ? customerMoney({
+        row: usageRow,
+        price,
+        seatsMonthlyInr: Number.isFinite(org.mrr_paise) ? org.mrr_paise / 100 : null,
+        seatsBought: totals?.purchased ?? null,
+        windowDays: USAGE_WINDOW_DAYS,
+        drawsSince,
+        now,
+      })
+    : null;
 
   return (
     <main className="wrap">
@@ -442,6 +468,25 @@ export default async function CustomerDetailPage({
           </div>
         </div>
       </div>
+
+      {/* 🔴 WS-50: money FIRST. The owner opens a customer to learn what we
+          charge them and what they cost us, so that answer sits directly
+          under the headline figures, above the lots and the ledger. */}
+      <CustomerUsage
+        row={usageRow}
+        days={usageDays}
+        windowDays={USAGE_WINDOW_DAYS}
+        error={usageError}
+        money={money}
+        price={price}
+      />
+
+      <CustomerBreakdown
+        data={breakdown}
+        error={breakdownError}
+        money={money}
+        price={price}
+      />
 
       {/* ── Where the credits came from (migration 028, §6) ──────────── */}
       <section className="panel">
@@ -600,19 +645,6 @@ export default async function CustomerDetailPage({
           </div>
         )}
       </div>
-
-      {/* 🔴 H-133 — under the ledger, because the ledger is where the
-          question starts. "usage -1.29, eight hundred times" is what an
-          operator was left holding when a customer asked why their credits
-          went fast. */}
-      <CustomerUsage
-        row={usageRow}
-        days={usageDays}
-        windowDays={USAGE_WINDOW_DAYS}
-        error={usageError}
-      />
-
-      <CustomerBreakdown data={breakdown} error={breakdownError} />
 
       <Actions
         slug={org.slug}
