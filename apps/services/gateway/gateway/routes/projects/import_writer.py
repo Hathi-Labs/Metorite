@@ -76,6 +76,7 @@ from gateway.routes.projects.importer.layout import (
     project_statuses,
     snapshot,
     source_values,
+    status_ids_by_name,
 )
 from gateway.routes.projects.importer.plan import (
     ImportMapping,
@@ -453,13 +454,16 @@ async def _write_nodes(
         reusable, continued, earlier_status, _names = await _earlier_nodes(
             db, organization_id, run_id, bundle, mapping, file_hashes
         )
+        # Every List reads the union of the earlier maps, so a List this run
+        # creates follows a renamed lane too (the I-10 review, P1-a).
+        earlier_ids = status_ids_by_name(earlier_status)
 
         async def statuses_for(ref: str) -> list[list[str]]:
             return await _reuse_statuses(
                 db,
                 node_ids[ref],
                 wanted.get(ref, []),
-                earlier_status.get(ref),
+                earlier_ids,
                 added=lanes_added,
                 fresh=set(created_nodes),
                 done_sets=done_sets,
@@ -693,7 +697,7 @@ async def _reuse_statuses(
     db: Any,
     project_id: str,
     wanted: list[tuple[str, Any]],
-    earlier: dict[str, str] | None = None,
+    earlier: dict[str, set[str]] | None = None,
     added: list[str] | None = None,
     fresh: set[str] | None = None,
     done_sets: set[str] | None = None,
@@ -747,9 +751,13 @@ async def _reuse_statuses(
         if name.lower() in {n for n, _, _ in have}:
             continue
         # A member renamed the lane an earlier run made for this name: keep
-        # using that lane, under the source's name, with its own stage.
-        renamed = (earlier or {}).get(name.lower())
-        if renamed in by_id:
+        # using that lane, under the source's name, with its own stage. Only
+        # an id of THIS set counts (`by_id`), so the union of every List's
+        # earlier map cannot reach into another set (`status_ids_by_name`).
+        renamed = next(
+            (sid for sid in sorted((earlier or {}).get(name.lower(), ())) if sid in by_id), None
+        )
+        if renamed is not None:
             have.append([name.lower(), renamed, by_id[renamed][1]])
             continue
         await add(name, category)

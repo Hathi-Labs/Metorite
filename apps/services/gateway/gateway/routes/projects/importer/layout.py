@@ -143,6 +143,22 @@ def project_statuses(
     return {ref: sorted(names, key=lambda nc: STAGE_ORDER[nc[1]]) for ref, names in used.items()}
 
 
+def status_ids_by_name(earlier: dict[str, dict[str, str]]) -> dict[str, set[str]]:
+    """``status name → every status id`` that earlier runs recorded for it, over
+    ALL their Lists (the I-10 review, P1-a).
+
+    The writer follows a lane a member renamed through these ids. Keyed by one
+    List's own ref, a List this run CREATES had no entry, so it added a second
+    "Review" beside the renamed one in the space's ONE set. A name can map to
+    many ids: before I-10 each List held a set of its own. The writer takes
+    only an id that the set it writes into still holds."""
+    out: dict[str, set[str]] = {}
+    for names in earlier.values():
+        for name, status_id in names.items():
+            out.setdefault(name, set()).add(status_id)
+    return out
+
+
 def order_tasks(bundle: ImportBundle) -> list[Task]:
     """Parents before children, so a child's parent always exists when the
     child is written. Stable inside one depth: the file's own order."""
