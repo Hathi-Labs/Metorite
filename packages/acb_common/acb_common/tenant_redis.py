@@ -350,9 +350,10 @@ class ScanPattern:
 
     Built by :func:`match`. The fixed segments are glob-escaped and only the
     trailing wildcard is free, so ``cc:<org>:active:*`` is expressible and
-    ``cc:*:active:*`` is not. This matters more than it looks: the one scan in
-    the tree today (``chat.py`` listing active sessions via ``cc:active:*``)
-    becomes a cross-tenant enumeration the moment a second tenant exists.
+    ``cc:*:active:*`` is not. This matters more than it looks: ``chat.py``
+    once listed active sessions with a ``cc:active:*`` scan, and that scan was
+    a cross-tenant enumeration the moment a second tenant existed. It now reads
+    the per-org ``liveruns`` hash instead.
     """
 
     organization_id: str
@@ -488,6 +489,15 @@ class TenantRedis:
 
     async def get(self, k: TenantKey) -> Any:
         return await self._client.get(self._raw(k))
+
+    async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
+        """Read many keys in ONE round trip. Each key goes through
+        :meth:`_raw`, so one ``str`` or one key of another tenant refuses the
+        whole call. An empty list sends nothing (WS-17 EM-T16 PR-A)."""
+        raw = [self._raw(k) for k in keys]
+        if not raw:
+            return []
+        return list(await self._client.mget(raw))
 
     async def set(self, k: TenantKey, value: Any, **kwargs: Any) -> Any:
         return await self._client.set(self._raw(k), value, **kwargs)

@@ -388,14 +388,14 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                     <td>
                       {/* ⚠️ Says WHY the dash is there. A bare "—" beside an Add
                           button that behaves identically taught nothing — the
-                          model lands costs-blind and the reader finds out on the
+                          model lands with no vendor price and the reader finds out on the
                           page above. */}
                       {feedPriceLabel(f) !== null ? (
                         <span className="mono small">{feedPriceLabel(f)}</span>
                       ) : (
                         <span
                           className="chip warn"
-                          title="The feed carries no price for this model. Adding it lands a costs-blind model, and its margin reads as unknown until somebody records a price by hand."
+                          title="The feed carries no price for this model. Adding it lands a model with no vendor price, and its margin reads as unknown until somebody records a price by hand."
                         >
                           no price upstream
                         </span>
@@ -427,7 +427,7 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                       ) : (
                         <span
                           className="muted small"
-                          title={`litellm calls this mode "${f.mode}" and the Router has no verb for it yet`}
+                          title={`The vendor price list calls this mode "${f.mode}", and the Router has no way to serve it yet`}
                         >
                           not servable yet
                         </span>

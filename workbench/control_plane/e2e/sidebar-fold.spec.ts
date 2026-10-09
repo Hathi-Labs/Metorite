@@ -149,6 +149,58 @@ test("a first click that opens a menu waits for the menu to close", async ({ pag
   await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
 });
 
+test("flag off: the fold control and the logo stay in the sidebar's head", async ({ page }) => {
+  // The frame with both shell flags off is the one this sidebar always had.
+  await expect(rail(page).getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
+  await expect(rail(page).locator("a[href='/']").first()).toBeVisible();
+});
+
+/**
+ * The full-width bar (owner, 2026-10-09). The control moved into the bar, so
+ * the fold, the pulse and the tip must still reach the member from there.
+ */
+test.describe("with the full-width shell bar", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("cc-shell-bar", "1");
+      localStorage.setItem("cc-shell-nav", "1");
+    });
+    await page.goto("/settings/appearance");
+    await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+  });
+
+  test("a sidebar link, then work, folds the rail, and the tip points at the bar's button", async ({ page }) => {
+    await openFromSidebar(page, "Organisation");
+    await page.waitForURL("**/settings/organization**");
+    await workInApp(page);
+    await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
+    const button = page.locator("[data-shell-bar]").getByRole("button", { name: "Expand sidebar" });
+    await expect(button).toBeVisible();
+    await expect(tip(page)).toBeVisible();
+    // Under the button, not over the logo beside it.
+    const b = (await button.boundingBox())!;
+    const t = (await tip(page).boundingBox())!;
+    expect(t.y).toBeGreaterThan(b.y + b.height);
+    expect(t.x).toBeLessThan(b.x + b.width);
+
+    await tip(page).getByRole("button", { name: "Keep it open" }).click();
+    await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+  });
+
+  test("a press on the bar's button is the member's own choice, so work does not fold it again", async ({ page }) => {
+    await openFromSidebar(page, "Organisation");
+    await page.waitForURL("**/settings/organization**");
+    await workInApp(page);
+    await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
+    await page.locator("[data-shell-bar]").getByRole("button", { name: "Expand sidebar" }).click();
+    await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+    await workInApp(page);
+    await workInApp(page);
+    await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+  });
+});
+
 test("Keep it open on the Appearance page keeps the sidebar open", async ({ page }) => {
   await openFromSidebar(page, "Appearance");
   const keep = page.locator("main").getByRole("button", { name: "Keep it open" });

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { actionWords, describeDetail } from "@/lib/activityWords";
+
 import { formatDateTime } from "@/lib/format";
 import { chipClass } from "@/lib/tone";
 import { refusalTitle } from "@/lib/refusal";
@@ -77,8 +79,8 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
           };
           setError(
             res.status === 500
-              ? "The Console answered 500. On a newly deployed box this is " +
-                "usually migration 009 not applied yet (H-64)."
+              ? "The Console answered 500. On a newly deployed box, the " +
+                "activity log is usually not set up on this Console yet."
               // The BFF gate speaks in `error`, the Console in `detail` —
               // read both, or a signed-out 401 loses its one useful sentence.
               : body.detail ?? body.error ?? `The Console answered ${res.status}.`,
@@ -130,7 +132,7 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
               <option value="">Everything</option>
               {actions.map((a) => (
                 <option key={a} value={a}>
-                  {a}
+                  {actionWords(a)}
                 </option>
               ))}
             </select>
@@ -193,7 +195,7 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
                         refused
                       </span>
                     ) : (
-                      r.action
+                      <span title={r.action}>{actionWords(r.action)}</span>
                     )}
                   </td>
                   <td>
@@ -213,7 +215,7 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
                     {r.action === "refused" ? (
                       <span>{refusalTitle(r.detail)}</span>
                     ) : (
-                      <code>{JSON.stringify(r.detail)}</code>
+                      <span>{describeDetail(r.detail)}</span>
                     )}
                   </td>
                 </tr>

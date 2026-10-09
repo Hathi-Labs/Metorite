@@ -11,6 +11,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
+from email_ingestion.post_sync import triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
@@ -2103,7 +2104,7 @@ async def ask_job_status(read: StatusRead | None) -> JobStatus:
 async def _mark_thread_replied(
     account_id: str, thread_id: str,
     sent_body: str | None = None, sent_subject: str | None = None,
-) -> None:
+) -> JobStatus | None:
     """After the user sends a reply, re-determine the thread's status with the
     AI (exact inbox-zero aiDetermineThreadStatus parity) and reconcile labels:
     set the Reply Zero status and collapse the thread to a SINGLE conversation
@@ -2136,9 +2137,13 @@ async def _mark_thread_replied(
 
     The steps after Block A take the account, the member and the self
     addresses from the read, and never read them again.
+
+    WS-17 EM-T16 PR-A: it returns :data:`UNDECIDED` when the ask gave no
+    decision, and None in every other case. The Reply Zero backfill then
+    writes its back-off mark. The send and draft routes drop the value.
     """
     if not thread_id:
-        return
+        return None
     try:
         read: StatusRead | None = None
         result: tuple[str, str] | None = None
@@ -2169,7 +2174,7 @@ async def _mark_thread_replied(
             # EM-T4a-2: the status ask runs with NO session open.
             verdict = await ask_thread_status(read)
             if verdict is None:
-                return
+                return UNDECIDED  # D-EM-8: no row, and the labels stay
             async with _tenant_session() as db:
                 result = await write_thread_status(db, read, verdict)
         if result is None:
@@ -2334,6 +2339,99 @@ _NEEDS_STATUS_SQL = f"""(s.thread_id IS NULL
            AND (s.classified_at IS NULL
                 OR s.classified_at < now() - interval '{_PROVISIONAL_RECHECK_HOURS} hours')))"""
 
+# ── The back-off of an undecided status ask in `on` (WS-17 EM-T16 PR-A) ──────
+# In `on` of `email.thread_status`, an undecided ask writes no row (D-EM-8),
+# so the next cycle selected the thread and asked again. With the flag
+# `email_triage_once_per_cycle`, the backfill keeps a mark for each account,
+# thread and last message id in tenant Redis, and skips a marked thread
+# BEFORE its caps. The mark holds no verdict. A new message makes a new key.
+# Outside `on`, `_PROVISIONAL_RECHECK_HOURS` does this job. Spec:
+# `email_app_master_plan.md` §10.4.17 PR-A. Fence: `test_email_ai_cost.py`.
+
+STATUS_BACKOFF_NAMESPACE = "email-status-backoff"
+STATUS_BACKOFF_TTL_SECS = 1800
+
+
+def _status_backoff_on() -> bool:
+    """True when the backfill keeps back-off marks: the flag is on, and
+    ``email.thread_status`` is ``on`` for the bound tenant."""
+    return (triage_once_per_cycle()
+            and decide_features.mode_for("email.thread_status") == "on")
+
+
+def _backoff_org() -> str | None:
+    """The organization of the marks: the tenant that the sync loop or the
+    request bound. Never a value from input (R5). None: no mark."""
+    from acb_common.db import current_tenant
+
+    return current_tenant()
+
+
+async def _status_backoff_marked(account_id: str, rows: list[Any]) -> set[str]:
+    """The thread ids of ``rows`` that hold a mark, in ONE ``mget``. Each
+    row is the latest message of its thread. No tenant, or a Redis failure,
+    gives no mark, and the backfill asks as before."""
+    org = _backoff_org()
+    if not org or not rows:
+        return set()
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+        client = get_tenant_redis()
+        with organization_scope(org):
+            keys = [key(STATUS_BACKOFF_NAMESPACE, str(account_id),
+                        str(r.thread_id), str(r.id)) for r in rows]
+            values = await client.mget(keys)
+    except Exception as exc:  # the mark is best effort
+        _log.info("email.status_backoff_unavailable", account_id=account_id,
+                  error_type=type(exc).__name__)
+        return set()
+    return {str(r.thread_id) for r, v in zip(rows, values, strict=False) if v}
+
+
+async def _mark_status_backoff(
+    account_id: str, thread_id: str, message_id: Any,
+) -> None:
+    """Keep the mark of an undecided status ask for
+    :data:`STATUS_BACKOFF_TTL_SECS`, with one ``setex``. Best effort."""
+    org = _backoff_org()
+    if not org:
+        return
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+        client = get_tenant_redis()
+        with organization_scope(org):
+            await client.setex(
+                key(STATUS_BACKOFF_NAMESPACE, str(account_id), str(thread_id),
+                    str(message_id)),
+                STATUS_BACKOFF_TTL_SECS, "1")
+    except Exception as exc:  # the mark is best effort
+        _log.info("email.status_backoff_unavailable", account_id=account_id,
+                  error_type=type(exc).__name__)
+
+
+async def _drop_marked_rows(
+    account_id: str, rows: list[Any], backoff: bool,
+) -> list[Any]:
+    """The backfill rows without a marked thread. The backfill calls it
+    BEFORE its two caps, so a marked thread takes no slot. Only inbox and
+    sent rows are asked, so only they can hold a mark."""
+    if not backoff:
+        return rows
+    marked = await _status_backoff_marked(account_id, [
+        r for r in rows if (r.folder or "").lower() in ("inbox", "sent")])
+    return [r for r in rows if str(r.thread_id) not in marked]
+
+
+async def _back_off_if_undecided(
+    backoff: bool, status: JobStatus | None, account_id: str,
+    thread_id: str, message_id: Any,
+) -> None:
+    """Keep the mark when the status ask of this row was undecided."""
+    if backoff and status == UNDECIDED:
+        await _mark_status_backoff(account_id, thread_id, message_id)
+
 
 def _split_backfill_rows(
     rows: list[Any], existing: dict[str, tuple[str, str]],
@@ -2436,9 +2534,14 @@ async def _maybe_classify_threads(account_id: str) -> None:
     In ``on``, the status-first ask also runs with no block open, after
     Block R and before the rule-match ask (PR-B3).
     A last block persists rotated credentials.
+
+    EM-T16 PR-A: in ``on``, with ``email_triage_once_per_cycle``, an
+    undecided status ask keeps a back-off mark (:func:`_mark_status_backoff`),
+    and the selection drops a marked thread before both caps.
     """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
+            DecisionUnavailable,
             LLMUnavailable,
             ask_rule_match,
             email_dict_from_row,
@@ -2517,6 +2620,12 @@ async def _maybe_classify_threads(account_id: str) -> None:
             self_email = me.address
             extra_domains = await resolve_org_domains(db, account_id)
 
+        # EM-T16 PR-A: in `on`, with the flag, skip a thread whose last
+        # status ask was undecided, BEFORE the two caps. No session is open.
+        backoff = _status_backoff_on()
+        latest_ids = {r.thread_id: r.id for r in rows}
+        rows = await _drop_marked_rows(account_id, rows, backoff)
+
         sent_threads, gap_inbound, filed_rows = _split_backfill_rows(
             rows, existing)
 
@@ -2535,7 +2644,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # 2026-08-06: a session parked mid-LLM-call, a migration's ALTER
             # TABLE queued behind its lock, and Postgres's FIFO lock queue then
             # stalling every later reader of that table.
-            await _mark_thread_replied(account_id, tid)
+            outcome = await _mark_thread_replied(account_id, tid)
+            await _back_off_if_undecided(
+                backoff, outcome, account_id, tid, latest_ids[tid])
 
         gap = gap_inbound[:_BACKFILL_INBOUND_CAP]  # cap engine work per cycle
         if not gap:
@@ -2567,6 +2678,7 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # split form of engine.classify_matches (the SAME #110 path the
             # live runner uses, EM-T4a-2 PR-B1, §10.4.6). Block R reads, the
             # rule-match ask runs with NO block open, and Block W writes.
+            status: JobStatus | None = None
             try:
                 async with _tenant_session() as db:
                     plan = await read_classification(
@@ -2575,7 +2687,11 @@ async def _maybe_classify_threads(account_id: str) -> None:
                     await db.execute(text("SELECT 1"))
                 # PR-B3: in `on`, the status-first ask runs with NO block
                 # open, before the rule match. "Undecided" raises here.
-                status = await ask_status_first(plan.first)
+                try:
+                    status = await ask_status_first(plan.first)
+                except DecisionUnavailable:
+                    status = UNDECIDED  # EM-T16 PR-A: the back-off below
+                    raise
                 asked = await ask_rule_match(plan.match)
                 # Block S (EM-T4a-2 PR-B2): only when the job asks the
                 # status. The ask runs with NO block open after it.
@@ -2606,11 +2722,20 @@ async def _maybe_classify_threads(account_id: str) -> None:
                     if keep_label:
                         await _reconcile_thread_labels(
                             db, provider, account_id, r.thread_id, keep_label)
-            except LLMUnavailable:
+            except LLMUnavailable as exc:
                 # Classifier down for this one — skip it (this backfill writes
                 # no watermark, so the gap query re-selects it next cycle)
                 # rather than abort the whole batch on the outer handler. The
                 # raise comes before any write of Block W, which rolls back.
+                #
+                # EM-T16 PR-A: an undecided STATUS ask in `on` keeps a mark,
+                # from `ask_status_first` or from `_resolve_on` in Block W.
+                # An undecided rule match leaves `status` at no verdict, and
+                # a spent budget is not `DecisionUnavailable`, so neither
+                # keeps one. No session is open here.
+                await _back_off_if_undecided(
+                    backoff and isinstance(exc, DecisionUnavailable), status,
+                    account_id, r.thread_id, r.id)
                 continue
         if provider is not None and store is not None \
                 and provider.credentials_dirty():

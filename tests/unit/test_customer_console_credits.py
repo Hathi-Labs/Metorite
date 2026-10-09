@@ -623,7 +623,8 @@ class TestTheUnbilledFleetRead:
             "unbilled_fleet_total must not take a limit — a leak bills zero "
             "and a capped read drops exactly the row it exists to find"
         )
-        assert set(params) == {"conn", "days"}
+        # WS-50 slice 7 added the optional range bounds. Still no limit.
+        assert set(params) == {"conn", "days", "start", "end"}
 
     def test_it_counts_organizations_AND_calls(self):
         """One customer with 400 leaks is a broken integration. 400 customers
@@ -697,7 +698,7 @@ class TestTheChargeFloor:
         """
         from customer_console import credits as c
 
-        assert c.NO_MIN_CHARGE_TASKS == frozenset({"embed"})
+        assert frozenset({"embed"}) == c.NO_MIN_CHARGE_TASKS
 
     def test_a_ZERO_stays_zero_even_when_armed(self, monkeypatch):
         """⚠️ An absorbed task (D19.2) and an unpriced card both rate to

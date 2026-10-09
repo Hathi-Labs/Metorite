@@ -6,8 +6,8 @@
  * Three outputs:
  *
  * - `shellSidebar` — the sidebar's groups. Only places where the member works.
- * - `accountPanes` — the account menu's links: pages about the member or the
- *   organization (My Profile, Appearance, Organisation).
+ * - `accountPanes` — the account menu's links: pages about the member (My
+ *   Profile, Appearance). Organisation is an app in Admin since 2026-10-09.
  * - `launcherGroups` — All apps: every app the member holds, by team, each
  *   with its purpose. A `setting` is not an app, so it never shows there.
  *
@@ -41,6 +41,26 @@ export function shellNavOn(): boolean {
     }
   }
   return false;
+}
+
+/**
+ * The desktop frame, from the two shell flags (`navigation_shell.md` §3.1).
+ *
+ * - `classic` — no shell bar. The sidebar carries the logo, as before NS-1.
+ * - `column` — the shell bar only (NS-1). The bar sits over the page column,
+ *   and the sidebar still carries the logo and the fold control.
+ * - `full` — both flags (owner, 2026-10-09). One bar spans the whole width
+ *   and carries the fold control and the organization's logo, so the logo
+ *   stays in view when the sidebar is folded. The sidebar has no head.
+ *
+ * ⚠️ The shell nav alone, with no bar, stays `classic`: there is no bar to
+ * carry the logo, and the sidebar must not lose it.
+ */
+export type DesktopFrame = "classic" | "column" | "full";
+
+export function desktopFrame(bar: boolean, nav: boolean): DesktopFrame {
+  if (!bar) return "classic";
+  return nav ? "full" : "column";
 }
 
 /** The groups, in the order the sidebar and All apps show them. */
@@ -116,8 +136,10 @@ export interface AccountLink {
 export const MY_ACCESS: AccountLink = { href: "/people/access", label: "My access", icon: "KeyRound" };
 
 /**
- * The account menu's rows: the member's own pages first, then "My access",
- * then the organization's. A member sees only what `visibleSections` gave.
+ * The account menu's rows: the member's own pages, with "My access" after My
+ * Profile. A member sees only what `visibleSections` gave. An `account` pane
+ * of another team would follow them, and none exists since Organisation
+ * became an app in Admin (owner, 2026-10-09).
  */
 export function accountLinks(sections: readonly NavSection[]): AccountLink[] {
   // No sections is an unresolved viewer (`visibleSections(null)`). A member

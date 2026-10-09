@@ -163,16 +163,18 @@ export const billingSummary = (orgSlug: string, d?: Deps) =>
 // caller's OWN token must be passed — a shared token reaches the Console as
 // `breakglass` and bypasses the role matrix.
 
-export const orgUsage = (days: number, d?: Deps) =>
+/** `rangeQ` is `lib/range.ts`'s `consoleQuery`: "days=N" or "from=…&to=…".
+ *  It replaces the `days` query when given (WS-50 slice 7). */
+export const orgUsage = (days: number, d?: Deps, rangeQ?: string) =>
   callConsole(
-    `/admin/usage/orgs?days=${encodeURIComponent(String(days))}`,
+    `/admin/usage/orgs?${rangeQ ?? `days=${encodeURIComponent(String(days))}`}`,
     { method: "GET" },
     d ?? {},
   );
 
-export const usageDaily = (days: number, orgSlug?: string, d?: Deps) =>
+export const usageDaily = (days: number, orgSlug?: string, d?: Deps, rangeQ?: string) =>
   callConsole(
-    `/admin/usage/daily?days=${encodeURIComponent(String(days))}` +
+    `/admin/usage/daily?${rangeQ ?? `days=${encodeURIComponent(String(days))}`}` +
       (orgSlug ? `&org_slug=${encodeURIComponent(orgSlug)}` : ""),
     { method: "GET" },
     d ?? {},
@@ -180,9 +182,9 @@ export const usageDaily = (days: number, orgSlug?: string, d?: Deps) =>
 
 /** One customer's spend by app, agent and person, with OUR cost. Usage
  *  slice 2. `admin`-door (VIEWER), like the two usage reads above it. */
-export const usageBreakdown = (days: number, orgSlug: string, d?: Deps) =>
+export const usageBreakdown = (days: number, orgSlug: string, d?: Deps, rangeQ?: string) =>
   callConsole(
-    `/admin/usage/breakdown?days=${encodeURIComponent(String(days))}` +
+    `/admin/usage/breakdown?${rangeQ ?? `days=${encodeURIComponent(String(days))}`}` +
       `&org_slug=${encodeURIComponent(orgSlug)}`,
     { method: "GET" },
     d ?? {},
@@ -437,8 +439,8 @@ export const listProviderCreds = (includeRevoked: boolean, d?: Deps) =>
  * ⚠️ Read server-side with the caller's own token, like the credential list
  * beside it. It is an operator-wide money figure and belongs on no path the
  * browser can replay. */
-export const providerSpend = (d?: Deps) =>
-  callConsole("/providers/spend", { method: "GET" }, d ?? {});
+export const providerSpend = (d?: Deps, rangeQ?: string) =>
+  callConsole(`/providers/spend${rangeQ ? `?${rangeQ}` : ""}`, { method: "GET" }, d ?? {});
 
 /** Can each vendor account serve? The balance each vendor reported, and the
  * refusals the Router saw (owner request, 2026-09-28). No secret in it: the
