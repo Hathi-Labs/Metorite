@@ -474,7 +474,7 @@ ROUTE_SHORT = "short"
 #: that a ``no_egress`` run sends to ``tier-decide`` (owner, 2026-10-09).
 #: The owner allows typed questions with SHORT summaries. A longer item is
 #: free-form work, and it stays on ``tier-fast``, our own chat tier.
-NO_EGRESS_CONTEXT_MAX = 1500
+NO_EGRESS_CONTEXT_MAX = 4000
 NO_EGRESS_QUESTION_MAX = 400
 NO_EGRESS_OPTION_MAX = 120
 

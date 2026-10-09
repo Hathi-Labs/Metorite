@@ -42,6 +42,7 @@ import httpx
 from acb_common import get_logger
 from acb_common.priority import importance_for, important_from_importance
 
+from skill_projects import choices
 from skill_projects.client import GatewayRefusal, data, get, post, put, uuid_of
 from skill_projects.priority import (
     card_view,
@@ -68,6 +69,7 @@ from skill_projects.writes import (
     _node,
     _post_new_task,
     _prepare_new_task,
+    _project_id,
     _resolve_assignee,
     _root_of,
     _split,
@@ -1152,6 +1154,9 @@ class _BatchRow:
         self.new = new
         #: A task with this title made in the last :data:`RECENT_MINUTES`.
         self.recent: dict[str, Any] | None = None
+        #: An open task that the typed twin check calls the same (owner,
+        #: 2026-10-09). A flag on the card only: the row stays ticked.
+        self.twin: dict[str, Any] | None = None
         #: The full line of the confirmation card, fenced.
         self.line = ""
         #: The same facts with no title: the row's hint on the card.
@@ -1460,6 +1465,8 @@ def _card_row(p: _BatchRow) -> dict[str, Any]:
     hint = _unfenced(p.facts)
     if p.recent is not None:
         hint += f" · {_recent_note(p.recent)}, so it starts unticked"
+    if p.twin is not None:
+        hint += f" · {_unfenced(choices.twin_note(p.twin))}"
     return {"id": _row_id(p), "label": _plain(p.title), "hint": hint, "checked": p.recent is None}
 
 
@@ -1490,6 +1497,8 @@ def _fits(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str]) -> 
         card[f"row {p.index}"] = p.line
         if p.recent is not None:
             card[f"row {p.index} check"] = _recent_note(p.recent)
+        if p.twin is not None:
+            card[f"row {p.index} twin"] = choices.twin_note(p.twin)
     return _fits_on_card(card)
 
 
@@ -1517,11 +1526,12 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     whole batch and names the row. The member then sees ONE card with a
     checkbox for each task, and approves the ticked tasks once. A task with
     the same title made in this project in the last 10 minutes starts
-    unticked, so a retry makes no second copy. Each row is its own write: a
+    unticked, so a retry makes no second copy. A row may also carry a flag
+    for an open task that looks the same. Each row is its own write: a
     row that fails does not stop the others, and the receipt names each task
     made and each row that failed. Never create a task again that the
     receipt lists. Archive is the undo."""
-    pid = uuid_of(project_id, "project_id")
+    pid = await _project_id(project_id)
     items = _batch_items(tasks)
     if isinstance(items, str):
         return items
@@ -1539,6 +1549,13 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     for p in rows:
         p.recent = recent.get(p.title.lower())
         _describe(p, names, first_lane)
+    # Owner, 2026-10-09: ONE typed twin check for the rows with no recent
+    # twin. It flags a row on the card, and never unticks or blocks it.
+    twins = await choices.twin_flags(
+        get, pid, ["" if p.recent is not None else p.title for p in rows]
+    )
+    for i, p in enumerate(rows):
+        p.twin = twins.get(i)
     from acb_skills.ask_tools import ROW_LABEL_MAX
 
     long = next((p for p in rows if len(p.title) > ROW_LABEL_MAX), None)

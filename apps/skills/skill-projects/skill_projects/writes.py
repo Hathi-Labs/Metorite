@@ -46,6 +46,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from skill_projects import choices
 from skill_projects.client import (
     GatewayRefusal,
     data,
@@ -225,9 +226,32 @@ def _one_named(
     )
 
 
+async def _named(
+    rows: list[dict[str, Any]], wanted: str, what: str, plural: str = ""
+) -> dict[str, Any]:
+    """:func:`_one_named`, and one typed question when no row matches exactly.
+
+    Owner, 2026-10-09. A name with NO exact match asks the ``decide`` engine
+    which close row it means (``choices.resolve_name``), in place of a
+    main-model round. A sure answer resolves it, and the card shows the row.
+    ``unsure``, a low confidence or a failure raises today's refusal, with
+    the real names. Two rows that share the exact name stay a question for
+    the member, because no model can tell them apart by name.
+    """
+    try:
+        return _one_named(rows, wanted, what, plural)
+    except GatewayRefusal:
+        if _matches_by_name(rows, wanted):
+            raise
+        row = await choices.resolve_name(rows, wanted, what)
+        if row is None:
+            raise
+        return row
+
+
 async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
     """The one status row a spoken name means, or a refusal that lists them."""
-    return _one_named(await _statuses_of(project_id), status, "status", "statuses")
+    return await _named(await _statuses_of(project_id), status, "status", "statuses")
 
 
 #: H-236: the refusal of an agent assignee in a run that may not send.
@@ -319,6 +343,13 @@ async def _resolve_assignee_name(value: str) -> str:
     names = ", ".join(f"{data(p.get('name'))} ({data(p.get('assignee'))})" for p in found[:8])
     if len(exact) > 1:
         raise GatewayRefusal(f"{data(raw)} matches more than one person: {names}. Ask which.")
+    # Owner, 2026-10-09: close matches and no exact one. ONE typed question
+    # picks the person the name means, by NAME only (no address leaves). An
+    # `unsure` or a failure gives the refusal below. The card names the
+    # person and the address before anything is written.
+    picked = await choices.resolve_name(found, raw, "person")
+    if picked is not None and str(picked.get("assignee") or "").strip():
+        return str(picked.get("assignee")).lower()
     raise GatewayRefusal(
         f"No person is called exactly {data(raw)}. Close matches: {names}. "
         "Pass the address, or ask which one."
@@ -561,7 +592,63 @@ def _subtask_receipt(reply: Any, key: str, door: str) -> list[str]:
 
 async def _resolve_type(project_id: str, name: str) -> dict[str, Any]:
     """The one task type a spoken name means, or a refusal that lists them."""
-    return _one_named(await _vocab(project_id, "types"), name, "task type")
+    return await _named(await _vocab(project_id, "types"), name, "task type")
+
+
+async def _project_id(value: str) -> str:
+    """The project's canonical id: a UUID, or (owner, 2026-10-09) its NAME.
+
+    A UUID passes as before. With the typed choices on
+    (``choices.assist_on``), a value that is not a UUID is read as a project
+    name: ONE read of the tree, then one exact match, else one typed
+    question over the close names. Two projects with the same name, an
+    ``unsure`` or a failure raise today's refusal, with the close names. With
+    the typed choices off, every value reads as before.
+    """
+    project_id_text = str(value or "").strip()
+    try:
+        return uuid_of(project_id_text, "project_id")
+    except GatewayRefusal as refusal:
+        if not project_id_text or not choices.assist_on():
+            raise
+        nodes = _project_nodes(await get("/projects/tree"))
+        exact = _matches_by_name(nodes, project_id_text)
+        if len(exact) == 1:
+            return uuid_of(str(exact[0].get("id")), "project_id")
+        if len(exact) > 1:
+            raise GatewayRefusal(
+                f"{data(project_id_text)} matches more than one project ({_names(exact)}). "
+                "Pass the full_id from projects_tree."
+            ) from None
+        row = await choices.resolve_name(nodes, project_id_text, "project")
+        if row is not None:
+            return uuid_of(str(row.get("id")), "project_id")
+        close = choices.close_rows(nodes, project_id_text)
+        if close:
+            raise GatewayRefusal(
+                f"{refusal} No project is called {data(project_id_text)}. "
+                f"Close names: {_names(close)}. Pass the full_id from projects_tree."
+            ) from None
+        raise
+
+
+def _project_nodes(payload: Any) -> list[dict[str, Any]]:
+    """Every project and subproject of the tree that is not archived.
+
+    A folder holds no task, so it is never a match.
+    """
+    out: list[dict[str, Any]] = []
+
+    def walk(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            if node.get("kind") != "folder" and not node.get("archived_at"):
+                out.append(node)
+            walk(node.get("children") or [])
+
+    walk((payload or {}).get("rows") or [])
+    return out
 
 
 def _epic_refusal(row: dict[str, Any], has_parent: bool) -> str:
@@ -765,8 +852,9 @@ async def create_task(
     start is YYYY-MM-DD, the day the work begins. type is a task type by
     NAME (vocabulary lists them). fields sets custom field values: a JSON
     object keyed by field NAME, for example {"Customer": "Acme"}. A choice
-    field takes one of its options, and the card shows every value."""
-    pid = uuid_of(project_id, "project_id")
+    field takes one of its options, and the card shows every value.
+    The card may flag an open task that looks the same."""
+    pid = await _project_id(project_id)
     name = str(title or "").strip()
     if not name:
         return "A task needs a title."
@@ -811,6 +899,10 @@ async def create_task(
     card.update(new.extra.card)
     card.update(await _assignee_card_lines(new.who))
     card.update(repeating.card_lines())
+    # Owner, 2026-10-09: a FLAG, never a block. The member decides.
+    twin = (await choices.twin_flags(get, pid, [name])).get(0)
+    if twin is not None:
+        card["note"] = choices.twin_note(twin)
     if not await _confirm(
         title=repeating.card_title,
         detail=f"{data(name)} · status {new.status_label}"
@@ -827,6 +919,8 @@ async def create_task(
         # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
     lines = [*_task_line(task, status_label), *level_note(priority, task)]
+    if twin is not None:
+        lines.append(f"  note: {choices.twin_note(twin)}")
     return repeating.receipt(task, lines, saved, failed, new.extra)
 
 
@@ -884,7 +978,7 @@ async def _prepare_new_task(
         payload["description"] = description.strip()
     if status.strip():
         rows = statuses if statuses is not None else await _statuses_of(pid)
-        row = _one_named(rows, status, "status", "statuses")
+        row = await _named(rows, status, "status", "statuses")
         payload["status_id"] = str(row.get("id"))
         status_label = str(row.get("name"))
     else:
@@ -1156,7 +1250,7 @@ async def _edit_type(out: _EditFields, task: dict[str, Any], type_name: str, cle
     if clear:
         out.card["type"] = "(none)"
         return
-    row = _one_named(rows, type_name, "task type")
+    row = await _named(rows, type_name, "task type")
     refused = _epic_refusal(row, bool(task.get("parent_task_id")))
     if refused:
         raise GatewayRefusal(refused)
