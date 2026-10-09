@@ -167,6 +167,7 @@ export function BrandMark({
   orgName = "",
   height = 28,
   maxWidth = 152,
+  mode,
 }: {
   branding: OrgBranding | null | undefined;
   fallbackCaption: string;
@@ -174,6 +175,8 @@ export function BrandMark({
   orgName?: string;
   height?: number;
   maxWidth?: number;
+  /** Pin one colour mode, for a preview of it. Absent, the page's mode picks. */
+  mode?: "light" | "dark";
 }) {
   const mark = lockup(branding, fallbackCaption, orgName);
 
@@ -190,6 +193,16 @@ export function BrandMark({
   // Stacking is also simply the right lockup: the customer's mark, and our
   // attribution underneath it.
   if (mark.kind === "org") {
+    // ── One logo, two colour modes (owner request, 2026-10-09) ──────────────
+    // The page root carries `light` or `dark` (next-themes, Providers.tsx),
+    // and dark is the default. So the light image shows only under `.light`,
+    // and the dark one (the white version, or the logo on a light card) shows
+    // everywhere else. Both are in the markup, so a mode switch waits on no
+    // fetch and CSS alone picks one. `mode` pins one, for the editor's preview.
+    const plateInset = mark.plate ? 8 : 0;
+    const darkHeight = height - plateInset;
+    const showLight = mode === "light" ? "block" : mode === "dark" ? "hidden" : "hidden [.light_&]:block";
+    const showDark = mode === "dark" ? "inline-flex" : mode === "light" ? "hidden" : "inline-flex [.light_&]:hidden";
     return (
       <span className="flex min-w-0 flex-col items-start gap-1">
         {/* A `data:` URI from our own gateway, whose MIME type was derived from
@@ -201,8 +214,25 @@ export function BrandMark({
           src={mark.logo.dataUri}
           alt={mark.alt}
           style={{ height, width: logoBoxWidth(mark.logo, height, maxWidth) }}
-          className="shrink-0 object-contain object-left"
+          className={`${showLight} shrink-0 object-contain object-left`}
         />
+        {/* The plate is white on purpose, in every theme: it is the brand's
+            own backing, for a dark, colourful logo, not a surface of ours. */}
+        <span
+          className={`${showDark} shrink-0 items-center ${mark.plate ? "rounded-md bg-white px-1.5" : ""}`}
+          style={{ height }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={mark.logoDark.dataUri}
+            alt={mark.alt}
+            style={{
+              height: darkHeight,
+              width: logoBoxWidth(mark.logoDark, darkHeight, maxWidth - (mark.plate ? 12 : 0)),
+            }}
+            className="object-contain object-left"
+          />
+        </span>
         {/* Ours sits under theirs, quietly. At `text-[10px]` on muted it reads
             as a byline rather than as competing branding, which is the whole
             point of the arrangement. */}
