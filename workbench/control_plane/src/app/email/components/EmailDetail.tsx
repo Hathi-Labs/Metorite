@@ -553,10 +553,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
     view;
   replyTargetRef.current = replyTarget;
   // The files of the email can arrive after the forward opened (the detail
-  // loads lazily). The chips take them once, while the forward has none.
-  if (replyMode === "forward" && forwardFiles.length === 0 && (replyTarget.attachments?.length ?? 0) > 0) {
-    setForwardFiles(forwardFilesOf(replyTarget.attachments));
-  }
+  // loads lazily). The chips take them once, while the forward has none. Only
+  // a non-empty list is set, so a file with no id cannot loop the render.
+  const lateForwardFiles =
+    replyMode === "forward" && forwardFiles.length === 0 ? forwardFilesOf(replyTarget.attachments) : [];
+  if (lateForwardFiles.length > 0) setForwardFiles(lateForwardFiles);
 
   // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
   const saveFailure = saveFailureText(draftStatus);
@@ -749,9 +750,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     if (draft) setAiInstruction("");
   };
 
-  /** Why a forward cannot go yet, or null. The route sends from the mailbox
-   *  that holds the email and refuses any other one, and Outlook forwards
-   *  every file or none (follow-up 4 of #766). Each check sets its words. */
+  /** True when a forward cannot go yet, with its words set. The route sends
+   *  from the mailbox that holds the email and refuses any other one. Outlook
+   *  forwards every file or none (follow-up 4 of #766). */
   const forwardBlocked = (files: readonly ForwardFile[]): boolean => {
     if (!mailboxId || fromId !== mailboxId) {
       const box = accounts.find((a) => a.id === mailboxId);
