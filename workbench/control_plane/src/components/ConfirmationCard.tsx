@@ -81,6 +81,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FIELD = /^([^:«»]{1,48}):\s(.*)$/;
 /** The tools write the truncation marker last. */
 const TRUNCATED = /^…\s*\[truncated/;
+/** The mark of a list row at the start of a key: `- From` reads `From`. */
+const LIST_MARK = /^-\s+/;
 
 /** `«Fix the extruder»` → `Fix the extruder`. A value with more than one
  *  fence (`«a» → «b»`) keeps them, because they mark where each part ends. */
@@ -145,8 +147,10 @@ export function parseCardBody(context: string | undefined): CardBody {
       trailing.push(line.trim());
       continue;
     }
-    if (isHiddenField(m[1], m[2])) continue;
-    const key = m[1].trim();
+    // A list row (`- From: …`, the send and forward cards of the email
+    // assistant) reads by its key, not by the hyphen before it.
+    const key = m[1].trim().replace(LIST_MARK, "");
+    if (isHiddenField(key, m[2])) continue;
     const value = m[2].trim();
     const numbered = runKey(key);
     const last = fields[fields.length - 1];
