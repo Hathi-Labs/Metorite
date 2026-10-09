@@ -610,6 +610,15 @@ _ALLOWED_CC_LITERALS: dict[str, str] = {
         "import ratchet cannot see it",
     "apps/services/gateway/gateway/room_stream.py":
         "FOLLOW-UP: ROOM_STREAM_PREFIX / PRESENCE_PREFIX (:39-40)",
+    # Incident 2026-10-09. Four of the five keys belong to a PROCESS, not to a
+    # tenant: its heartbeat, the set of processes, the runs one process holds,
+    # and the sweep's claim. One process holds the runs of many orgs, so no
+    # single tenant can prefix them. The fifth, RUN_OWNER_PREFIX, sits beside
+    # cc:active:{tid} and is read wherever cc:active is read, so it converts
+    # with stream_relay's prefixes in the same follow-up.
+    "apps/services/orchestrator/orchestrator/run_liveness.py":
+        "FOLLOW-UP: RUN_OWNER_PREFIX converts with stream_relay's ACTIVE_PREFIX; "
+        "INSTANCE_* are process-scoped and hold no one tenant's data",
 }
 
 

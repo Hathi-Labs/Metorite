@@ -410,6 +410,11 @@ async def mark_active(
             )
         elif reset:
             await r.delete(_run_floor_key(thread_id))
+        # Which PROCESS holds this run, so a run whose process died is never
+        # read as live again (orchestrator.run_liveness, incident 2026-10-09).
+        from orchestrator.run_liveness import claim_run  # noqa: PLC0415
+
+        await claim_run(thread_id)
     finally:
         pass  # shared pooled client — never closed per-call
 
@@ -478,6 +483,9 @@ async def mark_inactive(thread_id: str) -> None:
         # finished run must not lend either to whatever starts next.
         await r.delete(_run_source_key(thread_id))
         await r.delete(_run_floor_key(thread_id))
+        from orchestrator.run_liveness import release_run  # noqa: PLC0415
+
+        await release_run(thread_id)
         # Also refresh the stream TTL so late reconnectors can still replay.
         await r.expire(_stream_key(thread_id), STREAM_TTL_SECONDS)
     finally:
@@ -873,9 +881,35 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
     (audit R2: the card cleared while the agent stayed parked for an hour).
     A zero-subscriber publish is retried once (~0.3s) to ride out the short
     listener-startup race at run boundaries.
+
+    After the call, ``command["delivery"]`` says what happened (incident
+    2026-10-09). Read it with :func:`delivery_of`:
+
+    * ``"applied"``: a worker that owns the run applied it.
+    * ``"unacked"``: a listener heard it and sent no ack. A process still
+      holds the run, so this is never read as a dead run.
+    * ``"undelivered"``: no subscriber anywhere, twice. No process holds the
+      run's listener, which ``run_liveness`` reads as a dead run.
     """
+    status = await _deliver_control(thread_id, command)
+    command["delivery"] = status
+    return status == "applied"
+
+
+def delivery_of(command: dict[str, Any]) -> str:
+    """What :func:`dispatch_control` did with *command*.
+
+    ``"unacked"`` when nothing stamped it (a stub, or a dispatch that raised):
+    a delivery nobody can describe proves nothing about the run, so it is
+    never read as "undelivered".
+    """
+    status = command.get("delivery")
+    return status if status in ("applied", "unacked", "undelivered") else "unacked"
+
+
+async def _deliver_control(thread_id: str, command: dict[str, Any]) -> str:
     if _apply_control_local(thread_id, command):
-        return True
+        return "applied"
     # Not ours — relay to the owner and wait for its applied-ack.
     ack_id = command.setdefault("ack_id", uuid.uuid4().hex)
     delivered = await publish_control(thread_id, command)
@@ -887,14 +921,14 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
             "stream_relay.control_undelivered",
             thread_id=thread_id[:12], cmd=str(command.get("cmd")),
         )
-        return False
+        return "undelivered"
     if await wait_control_ack(ack_id):
-        return True
+        return "applied"
     _log.warning(
         "stream_relay.control_unacked",
         thread_id=thread_id[:12], cmd=str(command.get("cmd")),
     )
-    return False
+    return "unacked"
 
 
 async def _control_listener(thread_id: str) -> None:
@@ -1030,6 +1064,7 @@ async def run_detached(
     source: str | None = None,
     floor: list[str] | None = None,
     organization_id: str | None = None,
+    record: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run *gen* (an SSE-line async generator) in a DETACHED background task
     and yield its events from the Redis stream.
@@ -1068,6 +1103,9 @@ async def run_detached(
                    event loop (including the ``on_complete`` persist hook, which
                    runs AFTER the generator's own binding has been released) see
                    the right tenant. WS-29 MT-1d (H4), slice 2 — DARK.
+        record:    What the restart sweep needs to persist this run if its
+                   process dies (``orchestrator.run_liveness``): the message
+                   row id, the agent, the run id. Server-side facts only.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
@@ -1124,6 +1162,22 @@ async def run_detached(
         thread_id, organization_id=organization_id, actor=actor,
         token=_live_token,
     )
+    # What a later process needs to close this run if THIS process dies
+    # (orchestrator.run_liveness, incident 2026-10-09). The executor
+    # re-registers the index entry with the run id as its token, so both
+    # tokens travel.
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        forget_instance_run, record_instance_run,
+    )
+
+    _rec = dict(record or {})
+    await record_instance_run(thread_id, {
+        **_rec,
+        "org": organization_id,
+        "actor": actor,
+        "source": source,
+        "tokens": [t for t in (_live_token, _rec.get("runId")) if t],
+    })
 
     # A note buffered for a run that never got to a tool boundary must not leak
     # into the next one; the durable store (cc:steer:) is what carries anything
@@ -1219,6 +1273,11 @@ async def run_detached(
                 # CancelledError before persistence gets to run.
                 with contextlib.suppress(BaseException):
                     await asyncio.shield(on_complete())
+            # The run is persisted, so the restart sweep has nothing to do
+            # for it. After on_complete, so a death before the persist still
+            # leaves the record for the next process.
+            with contextlib.suppress(BaseException):
+                await forget_instance_run(thread_id)
             # Release this task's tenant binding LAST — after on_complete, which
             # is the write that most needs it (WS-29 MT-1d / H4).
             if _tenant_token is not None:
