@@ -269,9 +269,17 @@ describe("every live pane carries its manifest (D89)", () => {
     expect(PANES.filter((p) => !p.team).map((p) => p.href)).toEqual([]);
   });
 
-  it("puts only pages about the member or the organization in the account menu", () => {
+  it("puts only pages about the member in the account menu", () => {
     const account = PANES.filter((p) => p.door === "account").map((p) => p.href);
-    expect(account).toEqual(["/people/me", "/settings/organization", "/settings/appearance"]);
+    expect(account).toEqual(["/people/me", "/settings/appearance"]);
+  });
+
+  it("gives Organisation a sidebar door in Admin, as an app (owner, 2026-10-09)", () => {
+    const org = PANES.find((p) => p.href === "/settings/organization")!;
+    expect(org.team).toBe("admin");
+    expect(org.door ?? "sidebar").toBe("sidebar");
+    expect(org.adminOnly).toBe(true);
+    expect(org.setting).toBeUndefined();
   });
 
   it("marks only preferences as settings, so All apps lists apps", () => {

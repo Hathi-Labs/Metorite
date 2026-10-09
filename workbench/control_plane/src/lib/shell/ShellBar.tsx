@@ -6,6 +6,10 @@
  *
  *   [ the app's name and its own buttons ]  [ ✦ Search or ask anything  ⌘K ]  [ the app's tools ]
  *
+ * With the shell nav on too, the bar spans the whole window and opens with a
+ * `lead` zone that AppShell fills: the sidebar's fold control and the
+ * organization's logo (owner, 2026-10-09, `desktopFrame` in `shellNav.ts`).
+ *
  * **The app fills the two side slots. The shell owns the middle.** An app that
  * drew `AppTopBar` keeps doing so, and `AppTopBar` portals its title, its rail
  * toggle, its actions and its tools into these slots instead of drawing a row
@@ -68,7 +72,20 @@ function isTyping(target: EventTarget | null): boolean {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
 }
 
-export function ShellFrame({ children, bar = true }: { children: ReactNode; bar?: boolean }) {
+export function ShellFrame({
+  children,
+  bar = true,
+  lead,
+}: {
+  children: ReactNode;
+  bar?: boolean;
+  /**
+   * The bar's first zone, before the app's slot: the sidebar's fold control
+   * and the organization's logo, when the bar spans the whole width (owner,
+   * 2026-10-09). The shell fills it, never an app.
+   */
+  lead?: ReactNode;
+}) {
   const [left, setLeft] = useState<HTMLElement | null>(null);
   const [right, setRight] = useState<HTMLElement | null>(null);
   const [claims, setClaims] = useState(0);
@@ -127,7 +144,14 @@ export function ShellFrame({ children, bar = true }: { children: ReactNode; bar?
     <SlotsContext.Provider value={slots}>
       {/* The phone draws no row: its Menu drawer opens the same bar (§9). */}
       {bar ? (
-        <ShellBarRow here={here} claimed={claims > 0} setLeft={setLeft} setRight={setRight} onOpen={() => openWith("")} />
+        <ShellBarRow
+          here={here}
+          claimed={claims > 0}
+          setLeft={setLeft}
+          setRight={setRight}
+          onOpen={() => openWith("")}
+          lead={lead}
+        />
       ) : null}
       {children}
       <CommandBar
@@ -161,20 +185,28 @@ function ShellBarRow({
   setLeft,
   setRight,
   onOpen,
+  lead,
 }: {
   here: { label: string; icon: string } | null;
   claimed: boolean;
   setLeft: (el: HTMLElement | null) => void;
   setRight: (el: HTMLElement | null) => void;
   onOpen: () => void;
+  lead?: ReactNode;
 }) {
   const shortcut = useShortcutLabel();
+  // ⚠️ With the brand zone, a side slot never gets LESS than its content, and
+  // the command bar gives way instead. The zone keeps its width when the
+  // sidebar folds, so at 1280px My Tasks' title, Capture and My day ran under
+  // the command bar (measured 2026-10-09). The bar stays centred while it fits.
+  const side = lead ? "min-w-max" : "min-w-0";
   return (
     <header
       data-shell-bar
-      className="flex h-11 shrink-0 items-center gap-3 border-b border-border bg-card px-2"
+      className={`flex h-11 shrink-0 items-center gap-3 border-b border-border bg-card ${lead ? "pr-2" : "px-2"}`}
     >
-      <div className="flex min-w-0 flex-1 basis-0 items-center gap-2">
+      {lead}
+      <div className={`flex ${side} flex-1 basis-0 items-center gap-2`}>
         {/* The app's name for a page with no AppTopBar. Not an h1: such a
             page already has its own heading. */}
         {!claimed && here ? (
@@ -207,7 +239,7 @@ function ShellBarRow({
         </kbd>
       </button>
 
-      <div ref={setRight} className="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1" />
+      <div ref={setRight} className={`flex ${side} flex-1 basis-0 items-center justify-end gap-1`} />
     </header>
   );
 }

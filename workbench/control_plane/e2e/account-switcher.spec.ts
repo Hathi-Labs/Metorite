@@ -91,6 +91,47 @@ test.describe("desktop", () => {
   });
 });
 
+/**
+ * Organisation is an app in Admin, not an account page (owner, 2026-10-09):
+ * "organization should be an app under admin if I have access to
+ * organization, rather than something that only appears under my personal
+ * section". So an admin finds it in the sidebar, and the menu holds only the
+ * member's own pages.
+ */
+const ADMIN_ME = {
+  authenticated: true,
+  email: "vjvarada@hathilabs.com",
+  is_admin: true,
+  features: ["tasks", "email", "chat"],
+  permissions: ["*"],
+  roles: ["admin"],
+  organization: { id: "org1", slug: "hathi", display_name: "Hathi Labs LLP" },
+};
+
+async function asAdminWithShellNav(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
+  await stub(page, ACCOUNTS);
+  await page.route("**/api/auth/me", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ADMIN_ME) }),
+  );
+  await page.goto("/settings/appearance");
+}
+
+test.describe("desktop, Organisation's door", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test("an admin finds Organisation in the sidebar's Admin group, and not in the account menu", async ({ page }) => {
+    await asAdminWithShellNav(page);
+    await expect(page.locator("aside").getByRole("link", { name: "Organisation" })).toBeVisible();
+    await footerButton(page).click();
+    const menu = page.getByRole("dialog", { name: "Accounts" });
+    await expect(menu.getByRole("link", { name: "My Profile" })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "My access" })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "Appearance" })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "Organisation" })).toHaveCount(0);
+  });
+});
+
 test.describe("two tabs", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -175,6 +216,15 @@ test.describe("phone", () => {
     const foot = page.getByRole("region", { name: "Account and settings" });
     await expect(foot.getByRole("button", { name: "Desktop view" })).toBeVisible();
     await expect(foot.getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
+  });
+
+  test("an admin's drawer lists Organisation under Admin, and its foot does not", async ({ page }) => {
+    await asAdminWithShellNav(page);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await expect(page.getByRole("link", { name: "Organisation" })).toHaveCount(1);
+    const foot = page.getByRole("region", { name: "Account and settings" });
+    await expect(foot.getByRole("link", { name: "My Profile" })).toBeVisible();
+    await expect(foot.getByRole("link", { name: "Organisation" })).toHaveCount(0);
   });
 
   test("one tap in the open header switches to that account", async ({ page }) => {

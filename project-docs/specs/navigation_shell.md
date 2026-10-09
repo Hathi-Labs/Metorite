@@ -8,6 +8,11 @@ since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 NS-2 slice 2 (2026-10-09) adds three jobs and the job route fence. It rides
 the shell bar flag, which is on.
 
+**BUILT 2026-10-09, by owner direction:** the shell bar spans the full width
+and carries the organization's logo (§3.1). Organisation is an app in Admin,
+and it left the account menu (§3.2a item 4). Both ride the two shell flags,
+which are on in production.
+
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -121,8 +126,28 @@ had no seam to offer them.
 One row across the top of every desktop surface. Its height is `h-10`, the
 height of today's app bar, so no app loses height.
 
+**The bar spans the full width, and it carries the logo** (owner,
+2026-10-09). The sidebar and the page sit under the bar. Before, the logo sat
+in the sidebar's head and went away when the sidebar folded. Now a member
+sees whose workspace this is at all times (D51).
+
+- The brand zone is as wide as the open sidebar (`w-64`). It keeps that width
+  when the sidebar folds, so the logo does not move.
+- The zone holds the sidebar's fold control, then the logo on one line, 24px
+  tall. A logo-less organization shows our mark and its own name.
+- "powered by Metorite" follows the logo from the `lg` width up. Below `lg`
+  it hides, because a cut byline reads as a defect.
+- The fold tip points up at the bar's control. The fold rules of §3.2 do not
+  change.
+
+This frame needs both shell flags. With the shell bar alone, the bar sits
+over the page column, as NS-1 built it. `desktopFrame` in
+`src/lib/shell/shellNav.ts` holds the rule. Fences: `shellNav.test.ts`,
+`e2e/shell-bar.spec.ts` and `e2e/sidebar-fold.spec.ts`.
+
 | Slot | Owner | What it holds |
 |---|---|---|
+| Brand | The shell | The fold control and the organization's logo, on one line |
 | Title | The app | The rail toggle and the app's name. The app keeps its one `h1` |
 | Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked |
 | Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
@@ -152,10 +177,10 @@ The launcher lists every app the member holds, grouped by team. Each tile
 shows the name and the manifest's one-line purpose. A star pins or unpins.
 
 **Admin panes leave the sidebar.** Approvals and Organisation appear in the
-launcher under Admin, for a member who holds them. Organisation also opens
-from the account menu. Approvals' items reach every approver through the bell
-and My Day. ⚠️ Until NS-6 builds the bell, Approvals keeps its sidebar door
-(§3.2a item 2).
+launcher under Admin, for a member who holds them. ⚠️ The owner reversed this
+for Organisation on 2026-10-09 (§3.2a item 4). Approvals' items reach every
+approver through the bell and My Day. ⚠️ Until NS-6 builds the bell,
+Approvals keeps its sidebar door (§3.2a item 2).
 Appearance is a personal preference, so it moves to every member's avatar
 menu.
 
@@ -189,7 +214,7 @@ The owner asked on 2026-10-09 that every shell change be "genuinely a step
 ahead" for a member who is not technical. Slice 1 was measured against that
 on screen, before and after, and three parts of §3.2 changed. Each one waits
 on a ticket that is not built yet. When that ticket lands, the §3.2 shape
-applies.
+applies. Item 4 is a later owner change, and it does not wait on a ticket.
 
 1. **No "My apps" group, and the top item is "Home".** Pins need NS-7, so
    the group would be empty for every member. A heading over nothing costs
@@ -205,18 +230,27 @@ applies.
    taller than a 900px screen. A member who opens the sidebar every day reads
    that line once. The purpose now shows on hover. All apps prints it in
    full, because a member goes there to find out what an app is.
+4. **Organisation is an app in Admin, in the sidebar** (owner, 2026-10-09).
+   Slice 1 put its door in the account menu, so an admin found it only by
+   opening their own account. An admin works in Organisation, so it is an
+   app and not a page about the member. ⚠️ This item does not wait on a
+   ticket. It replaces the §3.2 shape for Organisation.
 
 **Groups, in order:** Home, then Personal Center, Across teams, AI Studio and
-Admin, each only when it has an item. All apps and the account menu are at the
-foot. `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
-`shellNav.test.ts` pins four shapes: a full admin, a member with three apps, a
-member with none, and an unresolved viewer.
+Admin, each only when it has an item. Admin holds Approvals, and Organisation
+for an admin. All apps and the account menu are at the foot.
+`src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
+`shellNav.test.ts` pins five shapes. They are a full admin, a member who is
+not an admin, a member with three apps, a member with none and an unresolved
+viewer.
 
 ### 3.3 The account menu
 
-It holds My Profile, My access, Appearance and sign-out, and Organisation for
-an admin. These pages describe the member or the organization. The member does
-not work in them, so they leave the sidebar.
+It holds My Profile, My access, Appearance and sign-out. These pages describe
+the member. The member does not work in them, so they leave the sidebar.
+Organisation was in this menu until 2026-10-09. It is an app in Admin now
+(§3.2a item 4), so it has one door, and the menu holds only the member's own
+pages. Fences: `shellNav.test.ts` and `e2e/account-switcher.spec.ts`.
 
 ⚠️ **Approvals is NOT in this menu** (§3.2a item 2). It keeps its sidebar door
 until NS-6 builds the bell. The colour-mode toggle sits beside the foot's
@@ -234,7 +268,7 @@ Slack, Notion and Linear put the menu in the same place.
 The foot's menu holds these rows, in order:
 
 1. the active account
-2. My Profile, My access and Appearance, and Organisation for an admin
+2. My Profile, My access and Appearance
 3. the other accounts
 4. "Add another account" and sign-out
 
@@ -251,8 +285,8 @@ accounts.
   control, and "Add another account". Nothing else.
 - **The apps come next,** because opening an app is the frequent act.
 - **The foot holds the rare acts,** under "Account and settings": My Profile,
-  My access, Appearance, Organisation for an admin, Dark mode, Desktop view and
-  sign-out.
+  My access, Appearance, Dark mode, Desktop view and sign-out. Organisation is
+  in the drawer's Admin group, with the apps.
 - The sheet is solid. A translucent sheet let the page's words read through.
 
 The phone has no account tab in the bottom bar. `DrawerAccountHeader` and
@@ -465,7 +499,7 @@ manifest" section, and the spec-auditor refuses one without it.
 | My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | Review pending approvals (a link) | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
-| Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the account menu |
+| Organisation | admin | Invite a member | members | seat requests | — | — | An app in Admin, in the sidebar (§3.2a item 4) |
 | Appearance | personal | Change how Metorite looks | — | — | — | — | Moves to every member's account menu |
 
 A `preview` app writes its manifest in the pull request that promotes it.
