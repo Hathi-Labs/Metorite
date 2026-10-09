@@ -2133,6 +2133,37 @@ async def run_agent_stream_endpoint(
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     await _prepare_if_new_thread(room, req.thread_id, _room_org)
 
+    # ── An edited message SUPERSEDES the last one (owner, 2026-10-09) ────────
+    # Before the steer decision: the member's own run stops first, so the
+    # edit starts a run of its own and never folds into the old one as a
+    # steer. The old turn and its replies go, and the note composed from
+    # their stored tool events rides on the new run's message, below.
+    # gateway/chat_supersede.py holds the rules.
+    _supersede_note = ""
+    _superseded_ids: list[str] = []
+    _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
+    _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            compose_supersede_note,
+            supersede_turn,
+        )
+        try:
+            _plan = await supersede_turn(
+                req.thread_id, _supersedes,
+                actor=actor_email,
+                keep_ids=[_new_user_id, req.assistant_message_id or ""],
+                shared=bool(room is not None and room.is_shared),
+                organization_id=_room_org,
+            )
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+        _supersede_note = compose_supersede_note(_plan)
+        _superseded_ids = _plan.removed_ids
+
     # The other people in the room find out what was asked, and by whom, the
     # moment it is asked — the run stream carries only the agent's side.
     if room is not None and room.is_shared:
@@ -2402,6 +2433,19 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
         )
+        if _superseded_ids:
+            # A cancelled run on another worker can fold its row after the
+            # edit deleted it. Delete the superseded rows again, by id.
+            from gateway.chat_supersede import delete_rows  # noqa: PLC0415
+            try:
+                await asyncio.to_thread(
+                    delete_rows, thread_id, _superseded_ids,
+                    organization_id=_room_org,
+                )
+            except Exception:  # noqa: BLE001 — best effort, never fail the fold
+                _log.warning(
+                    "agent.supersede_redelete_failed", thread_id=thread_id[:12],
+                )
         # Memory extraction at the SAME run boundary (review P1-9): the Next
         # translator only extracted while its reader was alive, so turns
         # completed after a browser-gone/reconnect contributed nothing to
@@ -2436,6 +2480,18 @@ async def run_agent_stream_endpoint(
     # sourcing the tenant from it is a tenant-spoofing hole (R11,
     # user_management_contract.md; §0.9.3). No DB write is converted this slice.
     _organization_id = getattr(user, "organization_id", None)
+
+    # The supersede note goes in LAST, after memory search, the Graphiti
+    # episode and the extraction input read the message: memory files the
+    # member's words, never the platform's note. `message` is what every
+    # runtime reads as the current turn (the Copilot SDK path, the MAF string
+    # path and a MAF native session alike), so the note reaches the model on
+    # each of them.
+    if _supersede_note:
+        _edited = str(req.payload.get("message") or "")
+        req.payload["message"] = (
+            f"{_supersede_note}\n\n{_edited}" if _edited else _supersede_note
+        )
 
     agent_gen = run_agent_stream(
         agent_name,

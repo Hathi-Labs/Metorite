@@ -361,7 +361,9 @@ describe("solid controls go through the Button primitive", () => {
   // budget for the next regression to spend.
   // 24 since 2026-09-24: My Tasks' DeleteConfirmModal moved onto ConfirmDialog.
   // 23 since 2026-10-09: ElicitationCard's Submit is a `Button` now.
-  const SOLID_BUTTON_DEBT = 23;
+  // 22 since 2026-10-09: the edit composer's own coral Send pill is gone. It
+  // draws the composer's one Send button (`components/ChatSendButton.tsx`).
+  const SOLID_BUTTON_DEBT = 22;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};

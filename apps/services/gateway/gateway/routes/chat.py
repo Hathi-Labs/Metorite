@@ -9,6 +9,7 @@ DELETE /chat/sessions/{session_id}             Delete session + all its messages
 
 GET    /chat/sessions/{session_id}/messages    Fetch messages the caller may read
 POST   /chat/sessions/{session_id}/messages    Upsert a batch of messages
+POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -1079,6 +1080,51 @@ async def save_messages(
         "saved": len(messages) - len(unchanged),
         "unchanged": unchanged,
     }
+
+
+class SupersedeRequest(BaseModel):
+    """The member edited their last message (``gateway/chat_supersede.py``)."""
+
+    superseded_id: str
+    #: The rows of the NEW turn, which a browser save may already have written.
+    keep_ids: list[str] = []
+
+
+@router.post(
+    "/sessions/{session_id}/supersede",
+    status_code=status.HTTP_200_OK,
+    summary="Remove the last message and its replies, because an edit replaces it",
+)
+async def supersede_message(
+    session_id: str,
+    req: SupersedeRequest,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The edit path of a run that does not go through ``/agent/run/stream``.
+
+    ``/agent/run/stream`` does the same work inline, because it also composes
+    the supersede note for the new run. This route serves the paths with no
+    gateway run (the LiteLLM chat), where the history the browser sends is the
+    model's whole memory, so removing the rows is the whole job.
+    """
+    from gateway.chat_supersede import SupersedeRefused, supersede_turn
+
+    email = user.email or ""
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
+    if not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("edit messages"))
+    try:
+        plan = await supersede_turn(
+            session_id, req.superseded_id,
+            actor=email, keep_ids=req.keep_ids[:4], shared=room.is_shared,
+            organization_id=user.organization_id,
+        )
+    except SupersedeRefused as refused:
+        raise HTTPException(status_code=refused.status, detail=refused.detail()) from None
+    return {"ok": True, "removed": plan.removed_ids}
 
 
 class MessageFeedbackRequest(BaseModel):

@@ -32,6 +32,7 @@ import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
 import { chatModelField } from "@/lib/tierRouting";
+import { editedMarker, isSuperseded, supersedeLocal } from "@/lib/chatEdit";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -132,9 +133,13 @@ interface UseAgentChatReturn {
   messages: ChatMessage[];
   isLoading: boolean;
   error: string | null;
-  sendMessage: (content: string) => Promise<void>;
+  /** `supersedes`: the id of the last user message this turn EDITS. The
+   *  edit replaces that message and every reply after it (`lib/chatEdit.ts`). */
+  sendMessage: (content: string, opts?: { supersedes?: string }) => Promise<void>;
   clearMessages: () => void;
-  stopGeneration: () => void;
+  /** Resolves when the server has answered the cancel, so an edit can wait
+   *  for the old run to stop before it starts the new one. */
+  stopGeneration: () => Promise<void>;
   /** Replace the messages array (used to hydrate from Postgres on mount). */
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   /** True while polling is actively recovering a stream that was interrupted
@@ -215,8 +220,9 @@ export function useAgentChat({
   );
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, opts?: { supersedes?: string }) => {
       if (!content.trim() || getSessionState(threadId).isLoading) return;
+      const supersedes = opts?.supersedes;
 
       const controller = new AbortController();
       // Stamp the assistant 1ms after the user so the pair never shares a
@@ -225,6 +231,9 @@ export function useAgentChat({
       const turnTs = Date.now();
       const userMsg: ChatMessage = {
         id: nanoid(), role: "user", content: content.trim(), timestamp: turnTs,
+        // An edit carries its marker, so the bubble draws "Edited" after a
+        // reload too (the marker persists in custom_events).
+        ...(supersedes ? { customEvents: [editedMarker(supersedes)] } : {}),
       };
       const assistantId = nanoid();
       const assistantMsg: ChatMessage = {
@@ -241,9 +250,14 @@ export function useAgentChat({
       const streamToken = nanoid();
       claimStreamOwnership(threadId, assistantId, streamToken);
 
+      // An edit REPLACES the superseded turn and every reply after it, in
+      // this one state change. It never appends, so the thread never shows
+      // the old message beside the new one.
       setSessionState(threadId, (prev) => ({
         ...prev,
-        messages: [...prev.messages, userMsg, assistantMsg],
+        messages:
+          (supersedes ? supersedeLocal(prev.messages, supersedes, [userMsg, assistantMsg]) : null)
+          ?? [...prev.messages, userMsg, assistantMsg],
         isLoading: true, error: null, abortController: controller,
       }));
 
@@ -288,6 +302,9 @@ export function useAgentChat({
             // every turn and never correlated with the frontend's nanoid —
             // breaking refresh recovery.
             assistantMessageId: assistantId,
+            // The gateway stops the old run, removes the old turn and tells
+            // the model about the edit (gateway/chat_supersede.py).
+            ...(supersedes ? { supersedes, userMessageId: userMsg.id } : {}),
           }),
         });
 
@@ -469,7 +486,12 @@ export function useAgentChat({
         // clobbers the replay). Only the still-current owner clears them.
         const stillOwner = ownsStream(threadId, assistantId, streamToken);
         releaseStreamOwnership(threadId, assistantId, streamToken);
-        if (stillOwner) {
+        // A Stop cleared the controller, and an edit may have started a new
+        // run since, with a controller of its own. Only the loop whose
+        // controller is still current (or none is) may clear the loading
+        // state, or the old loop's late exit marks the new run idle.
+        const currentController = getSessionState(threadId).abortController;
+        if (stillOwner && (currentController === controller || currentController === null)) {
           setSessionState(threadId, (prev) => ({ ...prev, isLoading: false, abortController: null }));
         }
       }
@@ -829,20 +851,21 @@ export function useAgentChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
-  const stopGeneration = useCallback(() => {
+  const stopGeneration = useCallback((): Promise<void> => {
     const current = getSessionState(threadId);
     // 1. Abort the local SSE fetch (stops the browser reading the stream).
     current.abortController?.abort();
     // 2. Tell the backend to ACTUALLY cancel the run.  Without this the agent
     //    keeps executing detached server-side (burning tokens, writing files)
-    //    because it's decoupled from the HTTP response lifecycle.  Fire-and-
-    //    forget — the UI shouldn't block on it.
-    void fetch("/api/agent/cancel", {
+    //    because it's decoupled from the HTTP response lifecycle.  The Stop
+    //    button does not wait on it. An edit awaits the returned promise, so
+    //    the new run starts only after the old one stopped.
+    const settled = fetch("/api/agent/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ threadId }),
       keepalive: true,
-    }).catch(() => {});
+    }).then(() => undefined, () => undefined);
     // 3. Immediately clear loading/recovering state so the UI reflects idle
     //    (don't wait for the next polling tick to clear the stale flag).
     setSessionState(threadId, (prev) => ({
@@ -852,6 +875,7 @@ export function useAgentChat({
       recovering: false,
       runStatus: "idle",
     }));
+    return settled;
   }, [threadId]);
 
   // ── Reconnection & cross-device polling ─────────────────────────────
@@ -992,6 +1016,9 @@ export function useAgentChat({
         const merged: ChatMessage[] = [...cur.messages];
 
         for (const rm of remoteMsgs) {
+          // An edit removed this row. A read from before the gateway's
+          // delete must not bring it back (lib/chatEdit.ts tombstones).
+          if (isSuperseded(threadId, rm.id)) continue;
           const localMatch = localById.get(rm.id);
           if (localMatch) {
             // Same id — update if the server has more content/tool events/
