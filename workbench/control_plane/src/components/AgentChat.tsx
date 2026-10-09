@@ -22,6 +22,7 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } from "@/lib/sidePanelStore";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
+import { uploadNote } from "@/lib/chatUpload";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
@@ -1953,9 +1954,10 @@ export default function AgentChat({
             <div className="flex items-end gap-2 px-2 pt-2 pb-1">
               <FileUploadButton sessionId={sessionId}
                 onUploadComplete={(files) => {
-                  const names = files.map((f) => f.name).join(", ");
-                  const paths = files.map((f) => `\`${f.path}\``).join(", ");
-                  const ctx = `📎 Uploaded ${files.length} file(s): ${names}\n\nThese files are available in the workspace at:\n${paths}\n\nYou can read them with the read_file tool. Refer to them whenever I mention the uploaded content.`;
+                  // The note names read_attachment, the one reader of an
+                  // upload (lib/chatUpload.ts). It named a read_file tool
+                  // that does not exist until 2026-10-09.
+                  const ctx = uploadNote(files);
                   setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
                   inputRef.current?.focus();
                 }}

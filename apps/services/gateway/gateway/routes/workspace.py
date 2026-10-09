@@ -2005,9 +2005,11 @@ async def stream_artifact_events(
 from fastapi import UploadFile
 
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
+#: Every kind that ``read_attachment`` reads must be here, ``.htm`` too
+#: (2026-10-09). Fence: ``workbench/control_plane/src/lib/chatUpload.test.ts``.
 _ALLOWED_EXTENSIONS = {
     ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
-    ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".js", ".ts",
+    ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
     ".py", ".sh", ".ps1", ".toml", ".ini", ".cfg",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
     ".mp3", ".wav", ".mp4", ".webm",
