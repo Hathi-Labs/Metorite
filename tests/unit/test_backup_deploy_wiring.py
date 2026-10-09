@@ -470,6 +470,13 @@ printf 'POSTGRES_USER=acb\n' > "$W/app/.env"
 CALLS="$W/calls.log"
 : > "$CALLS"
 export CALLS
+# WS-49 BH-6a: a root run, and the rclone child, keep only an ALLOW list of
+# env names. These are the knobs of the stubs below, so a test can still steer
+# them. The scripts honour this list only when they do NOT run as uid 0.
+export BACKUP_ENV_GUARD_KEEP="W CALLS S3 KEYFPR VOL_DIR STUB_UID STUB_KEYFILE_STAT \
+STUB_DF_FREE_KB STUB_ELAPSED STUB_ENCRYPT_FAILS_ON STUB_RCLONE_HANGS STUB_UPLOAD_FAILS \
+STUB_COPY_FAILS STUB_CONSOLE_DUMP_FAILS KEY_MODE KEY_VALIDITY RESTORE_FAILS COUNT_RC \
+RM_FAILS STUB_DBS"
 psql() {
   printf 'psql %s\n' "$*" >> "$CALLS"
   # First match wins. The table count goes first: it holds `select 1` too.

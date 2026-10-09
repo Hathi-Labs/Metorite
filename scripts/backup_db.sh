@@ -41,6 +41,9 @@
 #   VALIDATED  taken only in a strict shape. Else a WARN names the variable
 #              (never its value), and the default applies
 #   HARMLESS   a bad value can only make the backup FAIL
+#   ALLOWED    the root run starts again under `env -i`, and only the names of
+#              the allow list (offbox_clean_env_reexec) reach it. Any name
+#              NOT in this header is gone in a root run.
 # "The root run" is any run as uid 0. BACKUP_ENV_GUARD=1 forces it for a
 # test. It can only make a run stricter, so the env may hold it. A run as
 # another user (the pre-migration backup, as acb) keeps the env, because that
@@ -56,8 +59,10 @@
 #   APP_DIR         PINNED. /opt/acb/app (a non-root run: the env, same default)
 #   BACKUP_OFFBOX_ENV_FILE   PINNED. /etc/acb/backup-offbox.env. Only a
 #                   non-root run (the tests) may move it.
-#   PATH, HOME      PINNED by offbox_scrub_env (scripts/offbox_lib.sh), which
-#                   also unsets the tool names it lists
+#   PATH, HOME, LANG, LC_ALL   PINNED by the clean start (scripts/offbox_lib.sh):
+#                   the system PATH, /root, C.UTF-8 and C.UTF-8
+#   PGGSSENCMODE, PGSSLCERTMODE   PINNED to disable in a root run. GSSAPI and
+#                   a client certificate are not used.
 #   KEEP_DAILY      VALIDATED. A whole number, 3 or more (default 14)
 #   BACKUP_VERIFY_IMAGE   VALIDATED. pgvector/pgvector:pg<N>, with an optional
 #                   @sha256:<64 hex>. Default pgvector/pgvector:pg<live major>.
@@ -69,8 +74,19 @@
 #   CUSTOMER_CONSOLE_DATABASE_URL   VALIDATED. A postgresql:// URL whose only
 #                   options are sslmode, connect_timeout and application_name.
 #                   libpq has options that make root read or write a file.
-#   PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, PGSSLMODE   HARMLESS. They
-#                   choose which server root reads. They stay in the .env.
+#   PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, PGSSLMODE, PGCONNECT_TIMEOUT
+#                   ALLOWED. They choose WHICH data is backed up, so the root
+#                   file PINS the target when it holds BACKUP_PG_HOST and
+#                   BACKUP_PG_USER_SUFFIX (and BACKUP_CC_PG_HOST and
+#                   BACKUP_CC_PG_USER_SUFFIX for the Console). Unpinned, a
+#                   root run WARNs.
+#   PGHOSTADDR, PGSERVICE, PGSERVICEFILE, PGPASSFILE, PGSSLCERT, PGSSLKEY,
+#   PGSSLROOTCERT, PGSSLCRL, PGSSLCERTMODE, PGOPTIONS, PGSYSCONFDIR, PGAPPNAME,
+#   PGTARGETSESSIONATTRS, PSQLRC and every other PG* name   DROPPED by the allow
+#                   list in a root run. Each one picks a file, an address or a
+#                   server option, and the dump needs none of them. (A root
+#                   run sets PGSSLCERTMODE=disable and PGGSSENCMODE=disable
+#                   itself.) A non-root run keeps them: that env is its own.
 #   BACKUP_REMOTE   ROOT FILE. An optional rsync destination, for example
 #                   user@host:/srv/cc-backups . UNSET BY DEFAULT, and the
 #                   script says so loudly — see "Off-box" below.
@@ -94,11 +110,15 @@
 #   BACKUP_S3_KEEP        COMPLETE nights to keep in the bucket (default 14)
 #   BACKUP_S3_TIMEOUT_SECS  the deadline of the whole off-box step (default 1200),
 #                         cut down to the time left in the unit (see below)
+#   ROOT FILE too, and read by a root run with or without --offbox:
+#   BACKUP_PG_HOST, BACKUP_PG_USER_SUFFIX   the server and the user (or the
+#                         ".<ref>" end of it) that the app dump must use
+#   BACKUP_CC_PG_HOST, BACKUP_CC_PG_USER_SUFFIX   the same, for the Console
 #   Read by backup_offbox.sh, from the env:
 #   BACKUP_FILE_DIRS      VALIDATED. File-data directories, split by spaces.
-#                         Each must resolve under $APP_DIR/data or
-#                         /home/acb/.acb/agents. One that does not means the
-#                         default list.
+#                         Each must sit under $APP_DIR/data or
+#                         /home/acb/.acb/agents as WRITTEN, with no symlink at
+#                         or below that root. Outside: the default list.
 #   BACKUP_MEETING_BOT_VOLUME   VALIDATED. Docker volume names.
 #   VERIFY_RESTORE  PINNED. Only the --verify-restore argument sets it.
 set -euo pipefail
@@ -122,6 +142,7 @@ warn() { printf "  !! %s\n" "$*" >&2; }
 # ── BH-6a: the root run (see the header) ─────────────────────────────────────
 # EUID is a bash variable that the env cannot set. PATH is pinned BEFORE the
 # first external command, so a PATH from the env never picks a binary for root.
+# Up to the clean start below, this script runs builtins only.
 env_guard=0
 if [ "$EUID" = "0" ] || [ "${BACKUP_ENV_GUARD:-0}" = "1" ]; then
   env_guard=1
@@ -129,17 +150,19 @@ if [ "$EUID" = "0" ] || [ "${BACKUP_ENV_GUARD:-0}" = "1" ]; then
   PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
   export PATH
 fi
-# Absolute, because retention below runs `cd "$BACKUP_DIR"`.
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Absolute, because retention below runs `cd "$BACKUP_DIR"`. `cd` and `pwd`
+# are builtins, and dirname is not, so the dir comes from a string cut.
+case "${BASH_SOURCE[0]}" in
+  */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
+  *) script_dir=. ;;
+esac
+script_dir="$(cd "$script_dir" && pwd)"
 # shellcheck source=scripts/offbox_lib.sh
 . "$script_dir/offbox_lib.sh"
 
 # An rsync destination that a non-root run takes from its own env.
 remote_from_env="${BACKUP_REMOTE:-}"
 if [ "$env_guard" = "1" ]; then
-  offbox_scrub_env
-  # Every off-box name comes from the root file below, or it stays unset.
-  offbox_drop_root_names
   layout_root="${script_dir%/opt/acb/app/scripts}"
   if [ "$layout_root/opt/acb/app/scripts" != "$script_dir" ]; then
     echo "ERROR: a root run must start from /opt/acb/app/scripts/backup_db.sh, the path" >&2
@@ -157,6 +180,20 @@ if [ "$env_guard" = "1" ]; then
   pinned_name BACKUP_DIR "$layout_root/opt/acb/backups"
   pinned_name PG_CONTAINER acb-postgres
   pinned_name BACKUP_OFFBOX_ENV_FILE "$layout_root/etc/acb/backup-offbox.env"
+  # 🔴 THE ALLOW LIST (fix round 1). Start again under `env -i` with only
+  # these names, plus PATH, HOME, LANG and LC_ALL (offbox_lib.sh). Each name
+  # is one the header classes as VALIDATED or HARMLESS. POSTGRES_USER and
+  # DATABASE_URL are not here: the script reads them from the file, never
+  # from the env. Every other name is gone: a proxy, SSL_CERT_*, KRB5*,
+  # QUOTING_STYLE, and each name nobody has thought of yet. The off-box child
+  # inherits this env. The warnings above print on the first pass only,
+  # because the names they read are gone on the second.
+  offbox_clean_env_reexec "$script_dir/backup_db.sh" \
+    PG_MODE PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE PGCONNECT_TIMEOUT \
+    CUSTOMER_CONSOLE_DATABASE_URL KEEP_DAILY BACKUP_VERIFY_IMAGE BACKUP_VERIFY_MEMORY \
+    BACKUP_FILE_DIRS BACKUP_MEETING_BOT_VOLUME -- "$@"
+  # libpq: GSSAPI is not used, so it is off. No client certificate is used.
+  export PGGSSENCMODE=disable PGSSLCERTMODE=disable
   APP_DIR="$layout_root/opt/acb/app"
   BACKUP_DIR="$layout_root/opt/acb/backups"
   PG_CONTAINER=acb-postgres
@@ -272,6 +309,75 @@ require_postgres() {
     exit 1
   fi
 }
+
+# ── The root key file (BH-6a) ────────────────────────────────────────────────
+# Read here, before any dump, by a root run always and by another run only
+# with --offbox. offbox_root_file_ok checks root:root 0600 and no symlink.
+offbox_file_state=absent
+if [ "$env_guard" = "1" ] || [ "$offbox_requested" = "1" ]; then
+  if [ -e "$offbox_key_file" ] || [ -L "$offbox_key_file" ]; then
+    if offbox_root_file_ok "$offbox_key_file"; then
+      offbox_load_root_file "$offbox_key_file"
+      offbox_file_state=loaded
+    else
+      offbox_file_state=refused
+    fi
+  fi
+fi
+
+# ── The server that the dump reads (BH-6a fix round 1) ──────────────────────
+# 🔴 The PG* names choose WHICH data is backed up. A changed .env can point the
+# nightly dump at a server that someone else controls, and the night then
+# holds that server's data, encrypted and kept as if it were ours. So the root
+# key file can PIN the target, and a root run then refuses any other.
+# Where the target comes from:
+#   PG_MODE=local   libpq reaches PGHOST (and PGPORT) as PG_USER, which is the
+#                   -U from POSTGRES_USER in $ENV_FILE. DATABASE_URL gives the
+#                   database NAME only. It never picks the server.
+#   PG_MODE=docker  `docker exec acb-postgres`, the pinned local container.
+#                   PGHOST plays no part, so a pinned run must be local.
+# A Supabase pooler host serves many projects, and the user suffix .<ref>
+# picks the project. So the host AND the user are pinned:
+#   BACKUP_PG_HOST         PGHOST must equal it
+#   BACKUP_PG_USER_SUFFIX  starts with ".": POSTGRES_USER must end with it.
+#                          Else POSTGRES_USER must equal it.
+# A mismatch stops the run HERE: nothing is dumped, nothing is deleted, and
+# retention does not run. An absent pin is a WARN, so a box without the pins
+# still backs up. The Console has its own pair: BACKUP_CC_PG_HOST and
+# BACKUP_CC_PG_USER_SUFFIX (the Console section below).
+# pg_user_matches <user> <pin>
+pg_user_matches() {
+  case "$2" in
+    .*) case "$1" in *"$2") return 0 ;; esac; return 1 ;;
+    *) [ "$1" = "$2" ] ;;
+  esac
+}
+if [ "$env_guard" = "1" ]; then
+  target_refused=0
+  if [ -n "${BACKUP_PG_HOST:-}${BACKUP_PG_USER_SUFFIX:-}" ] && [ "$PG_MODE" != "local" ]; then
+    echo "ERROR: $offbox_key_file pins the database server, and PG_MODE is not local." >&2
+    target_refused=1
+  fi
+  if [ -z "${BACKUP_PG_HOST:-}" ]; then
+    warn "BACKUP_PG_HOST is not set in $offbox_key_file. A changed .env can point"
+    warn "this root backup at another server. Set it with scripts/secrets.sh."
+  elif [ "${PGHOST:-}" != "$BACKUP_PG_HOST" ]; then
+    echo "ERROR: PGHOST is not the server that BACKUP_PG_HOST in $offbox_key_file pins." >&2
+    target_refused=1
+  fi
+  if [ -z "${BACKUP_PG_USER_SUFFIX:-}" ]; then
+    warn "BACKUP_PG_USER_SUFFIX is not set in $offbox_key_file. A changed .env can"
+    warn "point this root backup at another project. Set it with scripts/secrets.sh."
+  elif ! pg_user_matches "$PG_USER" "$BACKUP_PG_USER_SUFFIX"; then
+    echo "ERROR: POSTGRES_USER in $ENV_FILE is not the user that BACKUP_PG_USER_SUFFIX pins." >&2
+    target_refused=1
+  fi
+  if [ "$target_refused" = "1" ]; then
+    echo "       The backup REFUSED this server. Nothing was dumped, and no night was" >&2
+    echo "       deleted. Check PGHOST, PG_MODE and POSTGRES_USER in $ENV_FILE." >&2
+    exit 1
+  fi
+fi
 
 require_postgres
 
@@ -425,8 +531,11 @@ DBS="$(pg psql -U "$PG_USER" -d postgres -tAc \
 # 🔴 VALIDATED, one name at a time (BH-6a). A database name becomes a FILE
 # name below, as root. A name such as `../../etc/x` would write outside
 # $DEST, and anyone who holds the database password can create one. So a
-# name of another shape is NOT dumped, and the run exits 1 at the end. Read
-# into an array, never `for db in $DBS`, which would also expand a `*`.
+# name of another shape is NOT dumped. A ROOT run then exits 1 at the end. A
+# non-root run (the pre-migration backup, as acb) only warns, so a migration
+# deploy never blocks on a database it did not need. The box's own names
+# (`postgres`, `_supabase`) pass. Read into an array, never `for db in $DBS`,
+# which would also expand a `*`.
 db_skipped=0
 dumped_dbs=()
 mapfile -t db_list <<< "$DBS"
@@ -856,6 +965,42 @@ if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && ! cc_dsn_ok "$CUSTOMER_CONSOLE
   warn "sslmode, connect_timeout and application_name. The Console database is NOT"
   warn "in this backup. The run goes on, and exits 1 at the end."
   console_failed=1
+fi
+# The Console's own server pins (see "The server that the dump reads" above).
+# A mismatch skips the Console dump only: the app night is real, so it stays,
+# and the run exits 1 at the end. The host and the user come from the URL:
+# postgresql://<user>[:<password>]@<host>[:<port>]/<db>.
+cc_target_ok=1
+if [ "$env_guard" = "1" ] && [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && [ "$console_failed" = "0" ]; then
+  cc_auth="${CUSTOMER_CONSOLE_DATABASE_URL#*://}"
+  cc_auth="${cc_auth%%/*}"
+  cc_auth="${cc_auth%%\?*}"
+  case "$cc_auth" in
+    *@*) cc_user="${cc_auth%@*}"; cc_host="${cc_auth##*@}" ;;
+    *) cc_user=""; cc_host="$cc_auth" ;;
+  esac
+  cc_user="${cc_user%%:*}"
+  cc_host="${cc_host%%:*}"
+  if [ -z "${BACKUP_CC_PG_HOST:-}" ] || [ -z "${BACKUP_CC_PG_USER_SUFFIX:-}" ]; then
+    warn "BACKUP_CC_PG_HOST or BACKUP_CC_PG_USER_SUFFIX is not set in $offbox_key_file."
+    warn "A changed Console .env can point the Console dump at another server."
+  fi
+  if [ -n "${BACKUP_CC_PG_HOST:-}" ] && [ "$cc_host" != "$BACKUP_CC_PG_HOST" ]; then
+    cc_target_ok=0
+  fi
+  if [ -n "${BACKUP_CC_PG_USER_SUFFIX:-}" ] && ! pg_user_matches "$cc_user" "$BACKUP_CC_PG_USER_SUFFIX"; then
+    cc_target_ok=0
+  fi
+  if [ "$cc_target_ok" = "0" ]; then
+    say "Customer Console cluster (separate project)"
+    echo "ERROR: CUSTOMER_CONSOLE_DATABASE_URL is not the server that BACKUP_CC_PG_HOST" >&2
+    echo "       and BACKUP_CC_PG_USER_SUFFIX in $offbox_key_file pin. The Console" >&2
+    echo "       database is NOT in this backup. The run goes on, and exits 1 at the end." >&2
+    console_failed=1
+  fi
+fi
+if [ "$console_failed" = "1" ]; then
+  :
 elif [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
   say "Customer Console cluster (separate project)"
   # The app's DSN carries a SQLAlchemy driver suffix libpq does not understand.
@@ -942,18 +1087,9 @@ echo "    $(ls -1d [0-9]*Z 2>/dev/null | wc -l) backup(s) retained, $(du -sh "$B
 # 🔴 **The off-box settings come from the ROOT key file only (BH-6a).** The
 # root run reads $offbox_key_file itself, after a check that it is root:root
 # 0600, and the env holds none of those names (see the top). A non-root run
-# reads the file only with --offbox, and in production only root may.
-offbox_file_state=absent
-if [ "$env_guard" = "1" ] || [ "$offbox_requested" = "1" ]; then
-  if [ -e "$offbox_key_file" ] || [ -L "$offbox_key_file" ]; then
-    if offbox_root_file_ok "$offbox_key_file"; then
-      offbox_load_root_file "$offbox_key_file"
-      offbox_file_state=loaded
-    else
-      offbox_file_state=refused
-    fi
-  fi
-fi
+# reads the file only with --offbox, and in production only root may. The
+# read itself is near the top ("The root key file"), because the server pins
+# in that file must be checked before the first dump.
 # 🔴 A key line in an acb-writable env file is ignored, and it turns the run
 # red. The gateway loads /opt/acb/app/.env, so a key there is in its env.
 # (H-123 refused the upload for it. Now the night still goes up with the
@@ -1115,8 +1251,9 @@ if [ "$offbox_failed" -gt 0 ]; then
   final_rc=1
 fi
 # --- A database that was not dumped (BH-6a) ---------------------------------
-# Checked LAST, for the reason above. Its name was not of a safe shape.
-if [ "$db_skipped" -gt 0 ]; then
+# Checked LAST, for the reason above. Its name was not of a safe shape. A
+# root run only: the warning above is enough for the pre-migration backup.
+if [ "$db_skipped" -gt 0 ] && [ "$env_guard" = "1" ]; then
   echo "ERROR: $db_skipped database(s) had a name of an unsafe shape, and are NOT in" >&2
   echo "       this backup. See the warning above. The other dumps at $DEST are good." >&2
   final_rc=1

@@ -36,8 +36,8 @@
 # and gpg encrypts it to the owner's PUBLIC key. The box never holds the
 # private key. The key is checked in full BEFORE anything is staged.
 set -euo pipefail
-# PATH first, before any external command (BH-6a). offbox_scrub_env below
-# also pins HOME and drops the tool names from the env.
+# PATH first, before any external command (BH-6a). Up to the clean start
+# below, this script runs builtins only.
 PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 export PATH
 unset CDPATH
@@ -46,10 +46,23 @@ dest="${1:?usage: backup_offbox.sh <backup dir> <stamp> <app dir> [<key file>]}"
 stamp="${2:?usage: backup_offbox.sh <backup dir> <stamp> <app dir> [<key file>]}"
 app_dir="${3:?usage: backup_offbox.sh <backup dir> <stamp> <app dir> [<key file>]}"
 key_env_file="${4:-/etc/acb/backup-offbox.env}"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${BASH_SOURCE[0]}" in
+  */*) here="${BASH_SOURCE[0]%/*}" ;;
+  *) here=. ;;
+esac
+here="$(cd "$here" && pwd)"
 # shellcheck source=scripts/offbox_lib.sh
 . "$here/offbox_lib.sh"
-offbox_scrub_env
+# 🔴 The ALLOW list (fix round 1). This script runs as root, as the child of
+# backup_db.sh (whose env is already clean) or by hand. Either way it starts
+# again under `env -i` with only the two names it reads, so tar, gpg, zstd and
+# docker see no TAR_OPTIONS, proxy or loader name. rclone gets its own, still
+# smaller, allow list (offbox_env_only_rclone).
+if [ "$EUID" = "0" ] || [ "${BACKUP_ENV_GUARD:-0}" = "1" ]; then
+  offbox_clean_env_reexec "$here/backup_offbox.sh" BACKUP_FILE_DIRS BACKUP_MEETING_BOT_VOLUME \
+    -- "$dest" "$stamp" "$app_dir" "$key_env_file"
+fi
+offbox_rclone_allowlist=1
 
 # 🔴 The ONE shape of the dir this script stages in and deletes (BH-6a):
 # <absolute dir>/<stamp>/offbox.work. Checked before the trap is set, so a
@@ -187,27 +200,64 @@ done
 # The file data: Tasks and Projects attachments, meeting audio and the agent
 # workspaces. Paths are absolute, and the tar keeps them under /.
 # 🔴 VALIDATED (BH-6a). Root tars each dir, so the env must not name /etc or
-# /root. Each entry must resolve, through `realpath -m`, under one of the two
-# roots that the defaults use. One entry outside them means the default list.
-# The tar takes the RESOLVED path, so a symlink cannot lead it out later.
-file_roots=("$app_dir/data" "/home/acb/.acb/agents")
-default_dirs="$app_dir/data/gtd_attachments $app_dir/data/notes_media /home/acb/.acb/agents"
-# dir_allowed <dir> — print its resolved path when it is under a root.
+# /root. The two ROOTS are LITERAL, and an entry must sit under one of them
+# as written, before any symlink is followed (fix round 1, P2: a symlinked
+# root once moved the allow list itself). Then:
+#   - the root must not be a symlink, and no dir above it, up to /, may be a
+#     symlink that a user other than root owns
+#   - no part of the entry BELOW the root may be a symlink
+# An entry outside both roots means the default list, with a WARN. An entry
+# that fails a symlink rule is skipped, with a WARN. So tar gets a path that
+# is exactly where it says, and a link cannot lead it out.
+# The agents root follows the layout of <app dir>: /opt/acb/app gives
+# /home/acb/.acb/agents, and a test layout <R>/opt/acb/app gives
+# <R>/home/acb/.acb/agents.
+layout_root="${app_dir%/opt/acb/app}"
+if [ "$layout_root/opt/acb/app" = "$app_dir" ]; then
+  agents_root="$layout_root/home/acb/.acb/agents"
+else
+  agents_root=/home/acb/.acb/agents
+fi
+file_roots=("$app_dir/data" "$agents_root")
+default_dirs="$app_dir/data/gtd_attachments $app_dir/data/notes_media $agents_root"
+# root_trusted <root> — the root is no symlink, and no dir above it is a
+# symlink that a non-root user owns.
+root_trusted() {
+  local p="$1"
+  if [ -L "$p" ]; then return 1; fi
+  while [ "$p" != "/" ] && [ -n "$p" ]; do
+    p="${p%/*}"
+    if [ -z "$p" ]; then p=/; fi
+    if [ -L "$p" ] && [ -n "$(find "$p" -maxdepth 0 ! -user 0 -print 2>/dev/null)" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+# dir_allowed <dir> — print the path to tar, and return 0. Return 1 when the
+# dir is outside both roots, and 2 when a symlink rule fails.
 dir_allowed() {
-  local d="$1" real root
+  local d="$1" lexical real root
   [ "${d#/}" != "$d" ] || return 1
+  lexical="$(realpath -m -s -- "$d")" || return 1
   real="$(realpath -m -- "$d")" || return 1
   for root in "${file_roots[@]}"; do
-    root="$(realpath -m -- "$root")" || continue
-    case "$real/" in
-      "$root"/*) echo "$real"; return 0 ;;
+    case "$lexical/" in
+      "$root"/*) ;;
+      *) continue ;;
     esac
+    root_trusted "$root" || return 2
+    [ "$real" = "$(realpath -m -- "$root")${lexical#"$root"}" ] || return 2
+    echo "$real"
+    return 0
   done
   return 1
 }
 read -r -a file_dirs <<< "${BACKUP_FILE_DIRS:-$default_dirs}"
 for d in "${file_dirs[@]}"; do
-  if ! dir_allowed "$d" >/dev/null; then
+  rc=0
+  dir_allowed "$d" >/dev/null || rc=$?
+  if [ "$rc" = "1" ]; then
     echo "    !! BACKUP_FILE_DIRS names a directory outside ${file_roots[*]}." >&2
     echo "    !! The copy uses the default list instead." >&2
     read -r -a file_dirs <<< "$default_dirs"
@@ -216,8 +266,12 @@ for d in "${file_dirs[@]}"; do
 done
 present=()
 for d in "${file_dirs[@]}"; do
-  if ! real="$(dir_allowed "$d")"; then
+  rc=0
+  real="$(dir_allowed "$d")" || rc=$?
+  if [ "$rc" = "1" ]; then
     echo "    skip $d (outside ${file_roots[*]})"
+  elif [ "$rc" != "0" ]; then
+    echo "    !! skip $d: it, or its root, goes through a symlink." >&2
   elif [ -d "$real" ]; then
     present+=("${real#/}")
   else

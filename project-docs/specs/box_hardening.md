@@ -1288,15 +1288,15 @@ drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
 
 ### BH-6 — Root units run only root-owned files
 
-**Status, BH-6a, value guard (2026-10-09):** built on the branch
-`sec-backup-env-values`, and not merged. BH-6a closes finding B3 of the
-BH-6 audit, which is one part of P3. The three backup scripts now trust no
-value from `/opt/acb/app/.env`. A root run pins its paths, checks each value
-that it takes, and reads the off-box names from `/etc/acb/backup-offbox.env`
-only. The names that act before a script runs, such as `BASH_ENV` and
-`LD_PRELOAD`, are now closed by `UnsetEnvironment=` in `acb-backup.service`
-and `acb.service`, as a stopgap until BH-6. The fence is
-`tests/unit/test_backup_env_values.py`, and the rest of BH-6 is still open.
+**Status, BH-6a, value guard (2026-10-09):** built on
+`sec-backup-env-values`. BH-6a closes the `.env` part of P3 (§0) for
+`acb-backup.service` and `acb.service`. A root backup starts again under
+`env -i` with an allow list. It reads the off-box names and the server pins
+from `/etc/acb/backup-offbox.env` only. `acb-backup.service` drops
+`BASH_ENV`, `LD_PRELOAD` and the other pre-script names with
+`UnsetEnvironment=`, and `acb.service` loads no env file and starts docker
+under `env -i`. The fence is `tests/unit/test_backup_env_values.py`, and the
+rest of BH-6 is still open.
 
 **Fix round 2, 2026-10-08.** The second audit returned NO-GO. This version
 applies C1 to C4.

@@ -14,28 +14,30 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/acb/app
-EnvironmentFile=/opt/acb/app/.env
-# 🔴 **WS-49 BH-6a stopgap: the names that act WITHOUT the script.** The
-# EnvironmentFile above is acb-writable. bash reads BASH_ENV, SHELLOPTS and PS4
-# before the first line of a script, and ld.so reads LD_PRELOAD before bash
-# runs at all. So no script can refuse them, and each one is root code
-# execution. systemd applies UnsetEnvironment= as the LAST step, after every
-# Environment= and EnvironmentFile= line (systemd.exec(5), v255). These lines
-# remove each such name. The list also takes the names that a root child
-# (psql, tar, git, docker, a python or node tool) reads as code or config.
-# Each name here is one that no root unit needs from .env. box_hardening.md
-# BH-6 removes the .env line itself, and these lines can go with it.
-# Fence: tests/unit/test_backup_env_values.py (every root unit that loads an
-# env file under /opt/acb carries this block).
-UnsetEnvironment=BASH_ENV ENV SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND BASH_XTRACEFD GLOBIGNORE CDPATH IFS
-UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_BIND_NOW
-UnsetEnvironment=GCONV_PATH LOCPATH NLSPATH HOSTALIASES RESOLV_HOST_CONF MALLOC_CHECK_ OPENSSL_CONF OPENSSL_ENGINES
-UnsetEnvironment=PYTHONSTARTUP PYTHONPATH PYTHONHOME PERL5LIB PERL5OPT NODE_OPTIONS RUBYOPT
-UnsetEnvironment=GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_EXEC_PATH GIT_SSH_COMMAND
-UnsetEnvironment=DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY
-UnsetEnvironment=TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR
-ExecStart=/usr/bin/docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans
-ExecStop=/usr/bin/docker compose -f infra/docker-compose.yml down
+# 🔴 **WS-49 BH-6a fix round 1 (F1): NO EnvironmentFile here, on purpose.**
+# /opt/acb/app/.env is acb-writable, and this unit runs as root. Docker reads
+# $HOME/.docker/config.json, and it searches the cli-plugins dir there BEFORE
+# the system dirs. So a HOME from .env made root docker run an acb-written
+# plugin (proved under systemd 255). Blocking HOME and PATH one by one does
+# not close it. So:
+#   - the unit loads no env file, and `env -i` starts docker with ONLY a
+#     pinned PATH and HOME=/root
+#   - compose reads .env itself, through --env-file, for interpolation only
+#     (POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB for the core
+#     profile). An explicit --env-file also replaces the infra/.env lookup.
+#   - `-p acb` is the project name of infra/docker-compose.yml (`name: acb`).
+#     Without it, a COMPOSE_PROJECT_NAME line in .env renames the project,
+#     because compose reads COMPOSE_* from the --env-file (measured on
+#     Compose v5.6.0). --profile and -f already win over COMPOSE_PROFILES and
+#     COMPOSE_FILE, and compose does not take DOCKER_HOST from the file.
+# `docker compose config` is the same under the old and the new shape, for a
+# .env without `$` or ` #` in a value (tests/unit/test_backup_env_values.py
+# and the BH-6a report). No UnsetEnvironment= list: with no env file and
+# `env -i`, nothing from .env reaches the process.
+# Fence: tests/unit/test_backup_env_values.py (no root unit that runs docker
+# loads an env file under /opt/acb).
+ExecStart=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb -f infra/docker-compose.yml --profile core up -d --remove-orphans
+ExecStop=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb -f infra/docker-compose.yml down
 
 [Install]
 WantedBy=multi-user.target

@@ -311,18 +311,28 @@ def test_the_migration_backup_as_acb_still_runs() -> None:
 # ── VALIDATED: the names read from the pinned .env, and the database list ──
 
 
-def test_a_database_name_of_an_unsafe_shape_is_not_dumped() -> None:
+@pytest.mark.parametrize("root", [False, True], ids=["acb-run", "root-run"])
+def test_a_database_name_of_an_unsafe_shape_is_not_dumped(root: bool) -> None:
     """🔴 A database name becomes a FILE name, as root. Anyone with the DB
     password can create `../../evil`, and the dump then lands outside the
-    night. It is skipped, the others are dumped, and the run exits 1.
-    Mutation: drop the name check, and $W/evil.dump appears."""
-    r = _run("STUB_DBS='acb ../../evil litellm_proxy'")
-    assert r["rc"] != 0, f"exit 0:\n{r['out']}\n{r['err']}"
+    night. It is skipped, and the box's own names (`postgres`, `_supabase`)
+    and the others are dumped. A root run then exits 1. The acb run (the
+    pre-migration backup) only warns, so a migration deploy never blocks on
+    it. Mutation: drop the name check, and evil.dump appears."""
+    r = _run(
+        "STUB_DBS='acb ../../evil _supabase postgres'" + (" PGHOST=db.example" if root else ""),
+        root=root,
+    )
+    if root:
+        assert r["rc"] == 1, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+        assert "had a name of an unsafe shape" in str(r["err"]), r["err"]
+    else:
+        assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
     assert "evil.dump" not in " ".join(r["files"]), r["files"]  # type: ignore[arg-type]
     assert not any("evil" in ln for ln in _lines(r, "pg_dump")), r["calls"]
     dumps = [f for f in r["files"] if f.endswith(".dump")]  # type: ignore[union-attr]
-    assert sorted(f.rsplit("/", 1)[1] for f in dumps) == ["acb.dump", "litellm_proxy.dump"], dumps
-    assert "unsafe shape" in str(r["err"]), r["err"]
+    assert sorted(f.rsplit("/", 1)[1] for f in dumps) == ["_supabase.dump", "acb.dump", "postgres.dump"], dumps
+    assert "a database name is not of the shape" in str(r["err"]), r["err"]
 
 
 @pytest.mark.parametrize(
@@ -505,22 +515,27 @@ def test_an_rsync_destination_of_another_shape_is_refused(remote: str) -> None:
 _SYMLINK_SKIP = pytest.mark.skipif(sys.platform == "win32", reason="MSYS ln -s copies instead of linking")
 
 
+_OUTSIDE = "BACKUP_FILE_DIRS names a directory outside"
+_VIA_LINK = "goes through a symlink"
+
+
 @pytest.mark.parametrize(
-    "dirs",
+    ("dirs", "why"),
     [
-        "/etc",
-        "/root",
-        "/home/acb/.ssh",
-        "$W/app/data/../../../../etc",
-        pytest.param("$W/app/data/link", marks=_SYMLINK_SKIP),
-        "$W/app/data/att /etc",
+        ("/etc", _OUTSIDE),
+        ("/root", _OUTSIDE),
+        ("/home/acb/.ssh", _OUTSIDE),
+        ("$W/app/data/../../../../etc", _OUTSIDE),
+        pytest.param("$W/app/data/link", _VIA_LINK, marks=_SYMLINK_SKIP),
+        ("$W/app/data/att /etc", _OUTSIDE),
     ],
 )
-def test_file_dirs_outside_the_allowlist_are_not_tarred(dirs: str) -> None:
+def test_file_dirs_outside_the_allowlist_are_not_tarred(dirs: str, why: str) -> None:
     """🔴 Root tars every dir that BACKUP_FILE_DIRS names. Only dirs under
-    $APP_DIR/data and /home/acb/.acb/agents, resolved through symlinks and
-    `..`. One dir outside means the default list, with a WARN. Mutation:
-    take the list as it comes, and tar gets etc."""
+    $APP_DIR/data and /home/acb/.acb/agents AS WRITTEN (`..` is folded
+    first), with no symlink at or below the root. Outside means the default
+    list, and a link means a skip, each with a WARN. Mutation: take the list
+    as it comes, and tar gets etc."""
     setup = _ROOT_KEYS + 'mkdir -p "$W/app/data/att"; ln -s /etc "$W/app/data/link"\n'
     r = _run(_S3_ENV + _GPG_ENV + f'BACKUP_FILE_DIRS="{dirs}"', setup=setup, offbox=True, flags="--offbox")
     for ln in _lines(r, "tar "):
@@ -530,7 +545,60 @@ def test_file_dirs_outside_the_allowlist_are_not_tarred(dirs: str) -> None:
             or a.endswith("/link")
             for a in args
         ), ln
-    assert "BACKUP_FILE_DIRS names a directory outside" in str(r["err"]), r["err"]
+    assert why in str(r["err"]), r["err"]
+    assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="MSYS ln -s copies instead of linking")
+def test_a_symlinked_app_data_root_cannot_move_the_allow_list() -> None:
+    """🔴 Fix round 1, P2. $APP_DIR/data is a symlink to /etc. Round 0
+    resolved the ROOT through it, so /etc became the allow list and
+    /etc/default was tarred. The roots are literal now, and a root that is a
+    symlink is skipped. Mutation: resolve the root again, and tar gets etc."""
+    setup = (
+        _ROOT_KEYS
+        + 'mkdir -p "$W/app2"; printf "POSTGRES_USER=acb\\n" > "$W/app2/.env"; ln -s /etc "$W/app2/data"\n'
+    )
+    r = _run(
+        command=_S3_ENV + _GPG_ENV + 'BACKUP_FILE_DIRS="$W/app2/data/default" PG_MODE=local '
+        'APP_DIR="$W/app2" BACKUP_DIR="$W/backups" bash scripts/backup_db.sh --offbox',
+        setup=setup, offbox=True,
+    )
+    for ln in _lines(r, "tar "):
+        assert not any(a == "etc" or a.startswith("etc/") for a in ln.split()), ln
+    assert _VIA_LINK in str(r["err"]), r["err"]
+    assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
+
+
+_AGENTS_SETUP = (
+    _ROOT_KEYS
+    + 'cp "$BACKUP_OFFBOX_ENV_FILE" {keyfile}\n'
+    + 'mkdir -p "$R/opt/acb/app/data/gtd_attachments"; echo cv > "$R/opt/acb/app/data/gtd_attachments/cv.txt"\n'
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="MSYS ln -s copies instead of linking")
+@pytest.mark.parametrize("how", ["root-is-a-link", "a-dir-above-is-a-link"])
+def test_a_symlinked_agents_root_is_skipped_and_the_default_list_still_works(how: str) -> None:
+    """🔴 Fix round 1, P2. A root run, default list. The agents root is a
+    symlink to /etc, or a dir above it is a symlink that a non-root user
+    owns. Either way it is skipped with a WARN, /etc is not tarred, and the
+    real attachments dir IS still tarred (the default list does not
+    regress). Mutation: drop root_trusted, and tar gets etc."""
+    if how == "root-is-a-link":
+        link = 'mkdir -p "$R/home/acb/.acb"; ln -s /etc "$R/home/acb/.acb/agents"\n'
+    else:
+        link = 'mkdir -p "$W/elsewhere/acb/.acb/agents"; ln -s "$W/elsewhere" "$R/home"\n'
+    setup = _AGENTS_SETUP.replace("{keyfile}", _ROOT_RUN_KEYFILE) + link
+    r = _run(
+        _LAYOUT_PATHS + _S3_ENV + _GPG_ENV + "BACKUP_FILE_DIRS=",
+        setup=setup, root=True, offbox=True, flags="--offbox",
+    )
+    tars = _lines(r, "tar ")
+    assert any("opt/acb/app/data/gtd_attachments" in ln for ln in tars), (tars, r["err"])
+    for ln in tars:
+        assert not any(a == "etc" or a.startswith("etc/") or "/home/" in a for a in ln.split()[4:]), ln
+    assert _VIA_LINK in str(r["err"]), r["err"]
     assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
 
 
@@ -551,8 +619,8 @@ def test_a_meeting_bot_volume_of_another_shape_is_refused(volume: str) -> None:
 def test_tool_settings_in_the_env_never_reach_the_off_box_child() -> None:
     """🔴 GNU tar takes options from TAR_OPTIONS (--checkpoint-action=exec
     runs a program), and a child bash runs the file BASH_ENV names. The
-    off-box step runs both as root. Mutation: drop offbox_scrub_env, and the
-    marker files appear.
+    off-box step runs both as root. Mutation: drop the clean start of
+    backup_db.sh AND of backup_offbox.sh, and the marker files appear.
 
     ⚠️ The PARENT bash still reads BASH_ENV before its first line, so its
     own line is in the log. Only the unit can stop that (box_hardening.md
@@ -582,11 +650,11 @@ def test_tool_settings_in_the_env_never_reach_the_off_box_child() -> None:
     assert not any(ln.endswith("backup_offbox.sh") for ln in ran_in), ran_in
 
 
-def test_the_off_box_step_scrubs_its_own_env() -> None:
+def test_the_off_box_step_starts_clean_on_its_own() -> None:
     """🔴 backup_offbox.sh runs as root and can be started on its own (by
-    hand, or by a parent that did not scrub). It scrubs its own env, so
-    TAR_OPTIONS never reaches its tar. Mutation: drop its offbox_scrub_env
-    call, and the marker file appears."""
+    hand, or by a parent that did not start clean). It starts again under
+    its own allow list, so TAR_OPTIONS never reaches its tar. Mutation: drop
+    its offbox_clean_env_reexec call, and the marker file appears."""
     night = "$W/backups/2026-01-01T000000Z"
     setup = (
         _ROOT_KEYS
@@ -595,8 +663,8 @@ def test_the_off_box_step_scrubs_its_own_env() -> None:
     )
     env = _S3_ENV + _GPG_ENV + 'TAR_OPTIONS="--checkpoint=1 --checkpoint-action=exec=$W/pwn.sh"'
     r = _run(
-        command=f'{env} bash scripts/backup_offbox.sh "{night}" 2026-01-01T000000Z "$W/app" '
-                '"$BACKUP_OFFBOX_ENV_FILE"',
+        command=f'{env} BACKUP_ENV_GUARD=1 bash scripts/backup_offbox.sh "{night}" 2026-01-01T000000Z '
+                '"$W/app" "$BACKUP_OFFBOX_ENV_FILE"',
         setup=setup, offbox=True,
     )
     assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
@@ -679,7 +747,12 @@ _PRE_SCRIPT_TEXT = (
     "OPENSSL_ENGINES PYTHONSTARTUP PYTHONPATH PYTHONHOME PERL5LIB PERL5OPT NODE_OPTIONS RUBYOPT "
     "GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_EXEC_PATH GIT_SSH_COMMAND "
     "DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY "
-    "TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR"
+    "TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR "
+    # Fix round 1: proxies, CAs, Kerberos and GSSAPI, ls, and compose (P3).
+    "http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ftp_proxy FTP_PROXY all_proxy ALL_PROXY "
+    "no_proxy NO_PROXY SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE KRB5_CONFIG KRB5CCNAME "
+    "KRB5_KTNAME KRB5_CLIENT_KTNAME KRB5_TRACE KRB5RCACHETYPE KRB5RCACHEDIR GSS_MECH_CONFIG "
+    "QUOTING_STYLE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES"
 )
 _PRE_SCRIPT_NAMES = frozenset(_PRE_SCRIPT_TEXT.split())
 #: The floor the coordinator named. Kept apart, so a mutation of the list
@@ -721,18 +794,236 @@ def _root_units_with_an_app_env_file() -> list[str]:
     return found
 
 
-def test_the_scan_finds_both_root_units_that_load_the_app_env() -> None:
-    """The companion: a scan that finds nothing passes the test below."""
-    assert {"acb.service", "acb-backup.service"} <= set(_root_units_with_an_app_env_file())
+def test_the_scan_finds_the_root_unit_that_loads_the_app_env() -> None:
+    """The companion: a scan that finds nothing passes the test below.
+    acb.service loads NO env file since fix round 1 (F1), so it is not here."""
+    found = set(_root_units_with_an_app_env_file())
+    assert "acb-backup.service" in found, found
+    assert "acb.service" not in found, "acb.service loads an env file again"
+
+
+_PINNED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def _root_units_that_run_docker() -> list[str]:
+    found = []
+    for unit in sorted(_UNITS.glob("*.service")):
+        keys = _effective_service_keys(unit)
+        if (keys.get("User") or ["root"])[-1] not in ("root", "0"):
+            continue
+        execs = [v for k in ("ExecStartPre", "ExecStart", "ExecStartPost", "ExecReload", "ExecStop")
+                 for v in keys.get(k, [])]
+        if any("/docker " in v or v.startswith("docker ") for v in execs):
+            found.append(unit.name)
+    return found
+
+
+def test_no_root_unit_that_runs_docker_loads_an_env_file_under_opt_acb() -> None:
+    """🔴 Fix round 1, F1. Docker reads $HOME/.docker/config.json and its
+    cli-plugins dir, and an acb-writable HOME made root docker run a plugin.
+    So a root unit that runs docker loads NO env file under /opt/acb, and
+    each of its docker calls starts under `env -i` with a pinned PATH and
+    HOME=/root. A compose call that reads .env names the project with
+    `-p acb`, or a COMPOSE_PROJECT_NAME line in .env renames it. Mutation:
+    put EnvironmentFile=/opt/acb/app/.env back in acb.service, and this goes
+    red."""
+    units = _root_units_that_run_docker()
+    assert "acb.service" in units, units
+    clean = f"/usr/bin/env -i PATH={_PINNED_PATH} HOME=/root /usr/bin/docker "
+    for unit in units:
+        keys = _effective_service_keys(_UNITS / unit)
+        env_files = [v.lstrip("-") for v in keys.get("EnvironmentFile", [])]
+        assert not [f for f in env_files if f.startswith("/opt/acb/")], f"{unit} loads {env_files}"
+        for k in ("ExecStartPre", "ExecStart", "ExecStartPost", "ExecReload", "ExecStop"):
+            for v in keys.get(k, []):
+                if "docker" not in v:
+                    continue
+                assert v.startswith(clean), f"{unit} {k} runs docker with an inherited env: {v}"
+                if "--env-file" in v:
+                    assert " -p acb " in v, f"{unit} {k} reads .env with no -p acb: {v}"
 
 
 @pytest.mark.parametrize("unit", _root_units_with_an_app_env_file())
 def test_a_root_unit_that_loads_the_app_env_drops_the_pre_script_names(unit: str) -> None:
     """🔴 Each root unit that loads an env file under /opt/acb drops every
     name of the list with UnsetEnvironment=. Mutation: delete the
-    UnsetEnvironment= lines from acb.service, and this goes red."""
+    UnsetEnvironment= lines from acb-backup.service, and this goes red."""
     keys = _effective_service_keys(_UNITS / unit)
     dropped = {n for v in keys.get("UnsetEnvironment", []) for n in v.split()}
     assert not _PRE_SCRIPT_FLOOR - dropped, f"{unit} keeps {sorted(_PRE_SCRIPT_FLOOR - dropped)}"
     assert not _PRE_SCRIPT_NAMES - dropped, f"{unit} keeps {sorted(_PRE_SCRIPT_NAMES - dropped)}"
     assert not [n for n in dropped if "=" in n], "drop by NAME, so every value of it goes"
+
+
+# ── Fix round 1: the ALLOW list of the root run ────────────────────────────
+#
+# A deny list misses the name nobody thought of. The root run now starts
+# again under `env -i` with an explicit allow list (offbox_clean_env_reexec).
+# These stubs print the names of the env they got, so the test sees exactly
+# what pg_dump, rclone and ls would get.
+
+_ENV_LOG = r"""
+envlog() { printf 'ENV %s %s\n' "$1" "$(compgen -e | sort | tr '\n' ' ')" >> "$CALLS"; }
+eval "_orig_pg_dump () $(declare -f pg_dump | sed 1d)"
+eval "_orig_rclone () $(declare -f rclone | sed 1d)"
+pg_dump() { envlog pg_dump; _orig_pg_dump "$@"; }
+rclone() { envlog rclone; _orig_rclone "$@"; }
+ls() { envlog ls; command ls "$@"; }
+export -f envlog _orig_pg_dump _orig_rclone pg_dump rclone ls
+"""
+
+_HOSTILE = {
+    "https_proxy": "http://evil.example:3128", "HTTPS_PROXY": "http://evil.example:3128",
+    "SSL_CERT_FILE": "/tmp/evil.pem", "KRB5_TRACE": "/tmp/krb5.trace",
+    "QUOTING_STYLE": "shell-escape", "AWS_ACCESS_KEY_ID": "AKIAEVIL",
+    "SOME_NAME_NOBODY_LISTED": "x",
+}
+
+
+def _reexec_allow_list(script: str) -> set[str]:
+    """The names a script passes to offbox_clean_env_reexec, read from the
+    script itself, so this test checks the list the code really uses."""
+    text = (_ROOT / script).read_text(encoding="utf-8").replace("\\\n", " ")
+    line = next(ln for ln in text.splitlines() if ln.strip().startswith("offbox_clean_env_reexec "))
+    return set(line.split(" -- ")[0].split()[2:])
+
+
+def _keep_names() -> set[str]:
+    import re
+
+    m = re.search(r'export BACKUP_ENV_GUARD_KEEP="([^"]*)"', _STUBS.replace("\\\n", ""))
+    assert m, "the harness lost its BACKUP_ENV_GUARD_KEEP"
+    return set(m.group(1).split())
+
+
+def test_the_allow_list_is_the_only_source_of_a_root_child_env() -> None:
+    """🔴 A root run with a hostile .env: a proxy, a CA file, a Kerberos
+    trace, QUOTING_STYLE (ls), a cloud key and a name that NO list knows.
+    pg_dump, rclone and ls see none of them. Every name they DO see is on
+    the allow list of backup_db.sh or backup_offbox.sh, or is one the clean
+    start sets itself, or a test knob. Mutation: drop the clean start, and
+    every hostile name reaches them."""
+    setup = _ROOT_KEYS + f'cp "$BACKUP_OFFBOX_ENV_FILE" {_ROOT_RUN_KEYFILE}\n' + _ENV_LOG
+    hostile = " ".join(f"{k}='{v}'" for k, v in _HOSTILE.items())
+    r = _run(
+        _LAYOUT_PATHS + _S3_ENV + _GPG_ENV + hostile,
+        setup=setup, root=True, offbox=True, flags="--offbox",
+    )
+    assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
+    seen: dict[str, set[str]] = {}
+    for ln in _lines(r, "ENV "):
+        _tag, who, *names = ln.split()
+        seen.setdefault(who, set()).update(names)
+    assert {"pg_dump", "rclone", "ls"} <= set(seen), sorted(seen)
+    allowed = (
+        _reexec_allow_list("scripts/backup_db.sh") | _reexec_allow_list("scripts/backup_offbox.sh")
+        | {"PATH", "HOME", "LANG", "LC_ALL", "PWD", "SHLVL", "_", "OLDPWD", "BACKUP_ENV_GUARD",
+           "BACKUP_ENV_GUARD_KEEP", "PGGSSENCMODE", "PGSSLCERTMODE"}
+        | _keep_names()
+    )
+    for who, names in seen.items():
+        assert not set(_HOSTILE) & names, f"{who} got {sorted(set(_HOSTILE) & names)}"
+        extra = {n for n in names - allowed if not n.startswith("RCLONE_CONFIG")}
+        assert not extra, f"{who} got names that no allow list holds: {sorted(extra)}"
+    rclone_names = seen["rclone"] - _keep_names()
+    assert rclone_names <= {"PATH", "HOME", "LANG", "LC_ALL", "PWD", "SHLVL", "_", "OLDPWD"} | {
+        n for n in rclone_names if n.startswith("RCLONE_CONFIG")
+    }, f"rclone got more than its own allow list: {sorted(rclone_names)}"
+    assert "PGGSSENCMODE" in seen["pg_dump"], "the root run did not turn GSSAPI off for libpq"
+
+
+def test_the_clean_start_runs_env_i_and_refuses_a_dirty_second_pass() -> None:
+    """Static half. The clean start is `exec /usr/bin/env -i`, and its second
+    pass refuses any name that is not on the list. Mutation: replace `env -i`
+    with plain `env`, and the dynamic test above goes red."""
+    lib = (_ROOT / "scripts/offbox_lib.sh").read_text(encoding="utf-8")
+    assert 'exec /usr/bin/env -i "${env_args[@]}" /bin/bash "$script" "$@"' in lib
+    assert "after the clean start, the env still holds" in lib
+
+
+# ── Fix round 1: the server that a root run dumps is pinned ─────────────────
+
+_PIN_FILE = (
+    "printf 'BACKUP_PG_HOST=db.example\\nBACKUP_PG_USER_SUFFIX=.abcref\\n"
+    "BACKUP_CC_PG_HOST=cc.example\\nBACKUP_CC_PG_USER_SUFFIX=cc\\n' > " + _ROOT_RUN_KEYFILE + "\n"
+    "printf 'POSTGRES_USER=postgres.abcref\\n' > \"$R/opt/acb/app/.env\"\n"
+)
+_PLANT_R = (
+    'for d in $(seq -w 1 20); do mkdir -p "$R/opt/acb/backups/2026-01-${d}T000000Z"; done\n'
+)
+_COUNT_R = 'echo "NIGHTS=$(ls -1d "$R"/opt/acb/backups/2*Z 2>/dev/null | wc -l)" >&2\n'
+
+
+def test_a_pinned_server_that_matches_is_dumped() -> None:
+    """The companion: with the pins set and matched, the night is dumped,
+    and no pin WARN is printed."""
+    r = _run(
+        "PGHOST=db.example CUSTOMER_CONSOLE_DATABASE_URL=postgresql://cc:pw@cc.example:5432/postgres",
+        setup=_PIN_FILE, root=True, offbox=True,
+    )
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert any(" -U postgres.abcref -d acb " in ln for ln in _lines(r, "pg_dump ")), r["calls"]
+    assert _lines(r, "pg_dump -d postgresql://cc:pw@cc.example"), "the Console was not dumped"
+    assert "is not set in" not in str(r["err"]), r["err"]
+
+
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        (f"PGHOST=evil.example {_ROOT_RUN}", "PGHOST is not the server that BACKUP_PG_HOST"),
+        (
+            "PGHOST=db.example " + _ROOT_RUN,
+            "POSTGRES_USER in",
+        ),
+        (
+            'BACKUP_ENV_GUARD=1 PG_MODE=docker PGHOST=db.example '
+            'bash "$W/root/opt/acb/app/scripts/backup_db.sh"',
+            "pins the database server, and PG_MODE is not local",
+        ),
+    ],
+    ids=["host", "user", "docker-mode"],
+)
+def test_a_pinned_server_that_does_not_match_is_refused_with_no_prune(command: str, why: str) -> None:
+    """🔴 Fix round 1, P2. A changed .env points the root dump at another
+    server, another project, or the empty local container. The run stops
+    before the first dump: exit 1, no dump, and retention does NOT run, so
+    20 old nights stay. Mutation: drop the host check (or the user check,
+    or the PG_MODE check), and its case dumps."""
+    setup = _PIN_FILE + _PLANT_R
+    if "user" in why or "POSTGRES_USER" in why:
+        setup += "printf 'POSTGRES_USER=postgres.evilref\\n' > \"$R/opt/acb/app/.env\"\n"
+    r = _run(command=f"KEEP_DAILY=3 {command}", setup=setup, root=True, offbox=True, after=_COUNT_R)
+    assert r["rc"] == 1, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert why in str(r["err"]), r["err"]
+    assert "The backup REFUSED this server" in str(r["err"])
+    assert not _lines(r, "pg_dump") and not _lines(r, "pg_dumpall"), r["calls"]
+    assert "NIGHTS=20" in str(r["err"]), "a refused night pruned the old ones"
+
+
+def test_an_absent_pin_warns_and_still_backs_up() -> None:
+    """Rollout: a box whose root file has no pins yet still backs up, and
+    says loudly that the target is not pinned."""
+    r = _run("PGHOST=db.example", root=True, offbox=True)
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert "BACKUP_PG_HOST is not set in" in str(r["err"]), r["err"]
+    assert "BACKUP_PG_USER_SUFFIX is not set in" in str(r["err"]), r["err"]
+    assert _lines(r, "pg_dump "), "an unpinned box stopped backing up"
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://cc:pw@evil.example:5432/postgres",
+        "postgresql://evil:pw@cc.example:5432/postgres",
+    ],
+    ids=["host", "user"],
+)
+def test_a_console_dsn_that_misses_its_pins_skips_the_console_only(dsn: str) -> None:
+    """🔴 The Console has its own pins. A mismatch skips the Console dump,
+    keeps the app night, and exits 1 at the end. Mutation: drop the Console
+    host check, and pg_dump gets evil.example."""
+    r = _run(f"PGHOST=db.example CUSTOMER_CONSOLE_DATABASE_URL='{dsn}'", setup=_PIN_FILE, root=True, offbox=True)
+    assert r["rc"] != 0, f"exit 0:\n{r['out']}\n{r['err']}"
+    assert not _lines(r, "pg_dump -d "), "the Console was dumped from a server that is not pinned"
+    assert "BACKUP_CC_PG_USER_SUFFIX" in str(r["err"]) and "is NOT in this backup" in str(r["err"])
+    assert any(f.endswith("/acb.dump") for f in r["files"]), "the app night was lost"  # type: ignore[union-attr]

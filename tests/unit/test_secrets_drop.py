@@ -370,7 +370,14 @@ def test_the_manifest_ships_the_three_entries() -> None:
     }
     assert (off["kind"], off["remote_path"]) == ("env-file", "/etc/acb/backup-offbox.env")
     assert (off["owner"], off["group"], off["mode"]) == ("root", "root", "0600")
-    assert set(off["allowed_keys"]) == seven == set(off["required_keys"])
+    # The optional names live in the root file only (WS-49 BH-6a): the backup
+    # reads them from nowhere else, so the drop must be able to write them.
+    optional = {
+        "BACKUP_S3_PREFIX", "BACKUP_S3_KEEP", "BACKUP_S3_TIMEOUT_SECS", "BACKUP_REMOTE",
+        "BACKUP_PG_HOST", "BACKUP_PG_USER_SUFFIX", "BACKUP_CC_PG_HOST", "BACKUP_CC_PG_USER_SUFFIX",
+    }
+    assert set(off["allowed_keys"]) == seven | optional
+    assert set(off["required_keys"]) == seven
     assert off["restart"] == []
     assert off["validators"]["BACKUP_GPG_RECIPIENT"] == ["gpg_fingerprint"]
     assert off["prefill"] == {
@@ -805,13 +812,15 @@ def test_the_probe_hashes_only_the_allowed_keys() -> None:
 
     res = _run(
         "SD init >/dev/null\n" + _offbox_env()
-        + "mkdir -p \"$BOX/etc/acb\"; printf 'BACKUP_S3_KEEP=3\\nBACKUP_S3_REGION=ap-south-1\\n' > \"$BOX/etc/acb/backup-offbox.env\"\n"
+        # A name the manifest does not manage. (This was BACKUP_S3_KEEP until
+        # WS-49 BH-6a made that one an allowed key of the root file.)
+        + "mkdir -p \"$BOX/etc/acb\"; printf 'BACKUP_LEGACY_KNOB=3\\nBACKUP_S3_REGION=ap-south-1\\n' > \"$BOX/etc/acb/backup-offbox.env\"\n"
         + "SD diff backup-offbox\n"
     )
     assert res["rc"] == 0, res["err"]
-    assert "R other BACKUP_S3_KEEP\n" in res["remote"]
-    assert not [ln for ln in res["remote"].splitlines() if ln.startswith("R key BACKUP_S3_KEEP")]
-    assert "  - BACKUP_S3_KEEP" in res["out"]
+    assert "R other BACKUP_LEGACY_KNOB\n" in res["remote"]
+    assert not [ln for ln in res["remote"].splitlines() if ln.startswith("R key BACKUP_LEGACY_KNOB")]
+    assert "  - BACKUP_LEGACY_KNOB" in res["out"]
     assert "  + BACKUP_S3_SECRET_ACCESS_KEY" in res["out"]
     assert "= 1 key(s) the same" in res["out"]
 

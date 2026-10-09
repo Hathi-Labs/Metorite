@@ -77,6 +77,12 @@ UnsetEnvironment=PYTHONSTARTUP PYTHONPATH PYTHONHOME PERL5LIB PERL5OPT NODE_OPTI
 UnsetEnvironment=GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_EXEC_PATH GIT_SSH_COMMAND
 UnsetEnvironment=DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY
 UnsetEnvironment=TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR
+# Fix round 1: the proxy, CA, Kerberos and GSSAPI names, QUOTING_STYLE (ls),
+# and the compose names. backup_db.sh also starts again under `env -i`, so
+# these lines guard only the first bash, before that clean start.
+UnsetEnvironment=http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ftp_proxy FTP_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+UnsetEnvironment=SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE KRB5_CONFIG KRB5CCNAME KRB5_KTNAME KRB5_CLIENT_KTNAME KRB5_TRACE
+UnsetEnvironment=KRB5RCACHETYPE KRB5RCACHEDIR GSS_MECH_CONFIG QUOTING_STYLE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES
 # Invoked through bash on purpose — a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise fail with a bare
 # "Permission denied" and backups would silently never run. Same reasoning as

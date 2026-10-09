@@ -31,49 +31,109 @@
 # ── BH-6a: the root run takes no setting from the acb-writable env ───────────
 # acb-backup.service runs as root and loads /opt/acb/app/.env, which the
 # gateway can write. So a value in that env must never choose what root runs,
-# reads, deletes or uploads. Three helpers here, shared by backup_db.sh and
+# reads, deletes or uploads. The helpers here, shared by backup_db.sh and
 # backup_offbox.sh:
-#   offbox_scrub_env       pins PATH and HOME, and unsets each env name that a
-#                          tool of this chain reads as config or as code to load
-#   offbox_root_file_ok    the key file is root:root 0600, and not a symlink
-#   offbox_load_root_file  reads the off-box names from that file ONLY. It
-#                          unsets each one first, so an inherited value is gone
+#   offbox_clean_env_reexec  an ALLOW list. The root run starts again under
+#                            `env -i` with only the names it needs
+#   offbox_env_only_rclone   the allow list of the rclone child
+#   offbox_root_file_ok      the key file is root:root 0600, and not a symlink
+#   offbox_load_root_file    reads the off-box names from that file ONLY. It
+#                            unsets each one first, so an inherited value is gone
 # The fence is tests/unit/test_backup_env_values.py.
+# ⚠️ Fix round 1 (2026-10-09) replaced a DENY list here (offbox_scrub_env). A
+# deny list misses each name nobody thought of: https_proxy, SSL_CERT_FILE,
+# KRB5_TRACE, QUOTING_STYLE. An allow list cannot miss a new name.
 # ⚠️ What this cannot reach. bash reads BASH_ENV and SHELLOPTS, and ld.so reads
-# LD_PRELOAD, BEFORE the first line of backup_db.sh runs. Only the unit can
-# keep those from root, and box_hardening.md BH-6 does that. The scrub keeps
-# them from every CHILD of the backup.
+# LD_PRELOAD, BEFORE the first line of backup_db.sh runs. The UnsetEnvironment=
+# block of the unit keeps those from root (and box_hardening.md BH-6 removes
+# the .env line).
 
-# The names that come from the root key file and from nowhere else.
+# The names that come from the root key file and from nowhere else. The
+# BACKUP_PG_* and BACKUP_CC_PG_* names pin the server that a root run dumps.
 offbox_root_names=(
   BACKUP_S3_ENDPOINT BACKUP_S3_REGION BACKUP_S3_BUCKET
   BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY
   BACKUP_S3_PREFIX BACKUP_S3_KEEP BACKUP_S3_TIMEOUT_SECS
   BACKUP_GPG_RECIPIENT BACKUP_GPG_PUBLIC_KEY_FILE BACKUP_REMOTE
+  BACKUP_PG_HOST BACKUP_PG_USER_SUFFIX BACKUP_CC_PG_HOST BACKUP_CC_PG_USER_SUFFIX
 )
 offbox_root_path='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
-# offbox_scrub_env — pin PATH and HOME, and drop the env names that steer a
-# tool of this chain. A deny list by tool family, so a new tool needs a line:
-#   LD_* GCONV_PATH OPENSSL_*   the loader and libcrypto load code from these
-#   BASH_ENV ENV                a child bash runs the file they name
-#   CDPATH GLOBIGNORE           they steer this script's own `cd` and globs
-#   PSQLRC PGSYSCONFDIR PGSERVICEFILE   psql runs `\!` lines from its rc file
-#   TAR_OPTIONS                 GNU tar takes options from it (--to-command)
-#   DOCKER_* RSYNC_* GIT_*      the daemon, the remote shell, the git config
-#   TMPDIR XDG_*                where tools write temp files and read config
-offbox_scrub_env() {
-  local v
+# offbox_clean_env_reexec <script> <allowed name>... -- <argument>...
+# Start <script> again under `env -i`, with ONLY:
+#   PATH (pinned), HOME=/root, LANG=C.UTF-8 and LC_ALL=C.UTF-8
+#   each <allowed name> that is set, and BACKUP_ENV_GUARD
+#   _ACB_CLEAN_ENV=<pid>, the mark of a run that already started again
+# Every other name is gone, a name that nobody listed too. `exec` keeps the
+# pid, so on the second pass the mark equals $$ and the function checks that
+# the env holds no other name, then returns. A mark that the env file sets
+# cannot match a pid it does not know, and a dirty env is refused anyway.
+# Builtins only before the exec, so no binary that the env picks runs first.
+# TEST MODE. A run that is NOT uid 0 (BACKUP_ENV_GUARD=1 in a test) also keeps
+# its exported functions and the names that BACKUP_ENV_GUARD_KEEP lists, so a
+# hermetic test can stub a tool. A run as uid 0 keeps neither: EUID is a bash
+# variable, and no env file can set it.
+offbox_clean_env_reexec() {
+  local script="$1" n v f body bad="" keep=""
+  local -a allowed=() env_args=()
+  shift
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    allowed+=("$1")
+    shift
+  done
+  if [ "${1:-}" = "--" ]; then shift; fi
+  allowed+=(BACKUP_ENV_GUARD)
+  if [ "$EUID" != "0" ]; then
+    keep="${BACKUP_ENV_GUARD_KEEP:-}"
+    allowed+=(BACKUP_ENV_GUARD_KEEP)
+  fi
+  if [ "${_ACB_CLEAN_ENV:-}" = "$$" ]; then
+    while IFS= read -r v; do
+      case " PATH HOME LANG LC_ALL PWD SHLVL _ OLDPWD _ACB_CLEAN_ENV ${allowed[*]} $keep " in
+        *" $v "*) ;;
+        *) bad="$bad $v" ;;
+      esac
+    done < <(compgen -e)
+    if [ -n "$bad" ]; then
+      echo "ERROR: after the clean start, the env still holds:$bad" >&2
+      exit 2
+    fi
+    unset _ACB_CLEAN_ENV
+    return 0
+  fi
+  env_args=("PATH=$offbox_root_path" HOME=/root LANG=C.UTF-8 LC_ALL=C.UTF-8 "_ACB_CLEAN_ENV=$$")
+  for n in "${allowed[@]}" $keep; do
+    [[ "$n" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if [ -n "${!n+x}" ]; then
+      env_args+=("$n=${!n}")
+    fi
+  done
+  if [ "$EUID" != "0" ]; then
+    while read -r _d _o f; do
+      body="$(declare -f "$f")"
+      env_args+=("BASH_FUNC_${f}%%=() ${body#*$'\n'}")
+    done < <(declare -F -x)
+  fi
+  exec /usr/bin/env -i "${env_args[@]}" /bin/bash "$script" "$@"
+}
+
+# offbox_env_only_rclone — in a SUBSHELL, unset every exported name that the
+# rclone child does not need: it keeps PATH, HOME, LANG, LC_ALL, RCLONE_CONFIG
+# and the RCLONE_CONFIG_OFFBOX_* names that offbox_rclone_env sets from the
+# root file. Test mode (not uid 0) also keeps BACKUP_ENV_GUARD_KEEP's names.
+# backup_offbox.sh turns it on. restore_offbox.sh runs on an operator's own
+# machine, behind its own proxy maybe, so it does not.
+offbox_rclone_allowlist=0
+offbox_env_only_rclone() {
+  local v keep=""
+  if [ "$EUID" != "0" ]; then keep="${BACKUP_ENV_GUARD_KEEP:-}"; fi
   while IFS= read -r v; do
     case "$v" in
-      LD_*|GCONV_PATH|OPENSSL_*|BASH_ENV|ENV|CDPATH|GLOBIGNORE|PSQLRC|PGSYSCONFDIR|PGSERVICEFILE|TAR_OPTIONS|DOCKER_*|RSYNC_*|GIT_*|TMPDIR|XDG_*)
-        unset "$v" ;;
+      PATH|HOME|LANG|LC_ALL|RCLONE_CONFIG|RCLONE_CONFIG_OFFBOX_*) continue ;;
     esac
+    case " $keep " in *" $v "*) continue ;; esac
+    unset "$v" 2>/dev/null || true
   done < <(compgen -e)
-  unset CDPATH GLOBIGNORE
-  PATH="$offbox_root_path"
-  HOME=/root
-  export PATH HOME
 }
 
 # offbox_drop_root_names — unset every name of offbox_root_names.
@@ -219,7 +279,10 @@ offbox_redact() {
 # through offbox_redact, and its exit code is kept.
 offbox_rclone() {
   local out rc=0
-  out="$(rclone --retries 3 --low-level-retries 10 --stats 0 --log-level ERROR "$@" 2>&1)" || rc=$?
+  out="$(
+    if [ "$offbox_rclone_allowlist" = "1" ]; then offbox_env_only_rclone; fi
+    rclone --retries 3 --low-level-retries 10 --stats 0 --log-level ERROR "$@" 2>&1
+  )" || rc=$?
   if [ -n "$out" ]; then
     printf '%s\n' "$out" | offbox_redact
   fi
