@@ -2665,11 +2665,31 @@ def _forward_files(files: list[dict[str, Any]]) -> list[str]:
     shown = []
     for a in files:
         size = _size_text(a.get("size_bytes"))
-        # ``_card_text`` drops a format character too, so a right-to-left
-        # mark cannot turn "invoice<RLO>fdp.exe" into "invoiceexe.pdf".
-        name = _card_text(a.get("filename") or "file", 60)
+        name = _card_file_name(a.get("filename") or "file")
         shown.append(f"{name} ({size})" if size else name)
     return shown
+
+
+#: The longest file name that a send card shows whole, and the end of a
+#: longer name that the card always keeps.
+_CARD_FILE_NAME_LIMIT = 60
+_CARD_FILE_NAME_TAIL = 16
+
+
+def _card_file_name(value: Any) -> str:
+    """A file name for a card, at most :data:`_CARD_FILE_NAME_LIMIT` long.
+
+    ``_card_text`` drops a format character too, so a right-to-left mark
+    cannot turn "invoice<RLO>fdp.exe" into "invoiceexe.pdf". A long name
+    keeps its end, because the extension says what the file is. So the cut
+    goes in the middle ("invoice-2026-10-…-quote-revision.pdf"). A plain cut
+    at 60 showed "revision.pd" (follow-up 5 of #766, the screenshots).
+    """
+    name = _card_text(value, 1000)
+    if len(name) <= _CARD_FILE_NAME_LIMIT:
+        return name
+    head = _CARD_FILE_NAME_LIMIT - _CARD_FILE_NAME_TAIL - 1
+    return f"{name[:head]}…{name[-_CARD_FILE_NAME_TAIL:]}"
 
 
 @_annotate_risk(destructive=True, open_world=True)

@@ -33,7 +33,7 @@
  * the paint) and `src/lib/cardFields.test.ts` (the words and the kinds).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import FencedText from "@/components/FencedText";
@@ -118,6 +118,21 @@ export function runKey(key: string): string {
   if (/^field\s/i.test(k)) return "";
   const m = /^([a-z][a-z ]*?)\s+\d+$/i.exec(k);
   return m ? m[1].toLowerCase() : "";
+}
+
+/** A note that leads into the rows below it: it ends with a colon. */
+export function isLeadIn(note: string): boolean {
+  return /:\s*$/.test(note);
+}
+
+/**
+ * The notes of a body, split by where they draw. A lead-in ("Each recipient
+ * of this draft:") draws above the rows. Every other note draws after them.
+ * With no rows, every note draws after the text.
+ */
+export function splitNotes(body: CardBody): { leadIn: string[]; after: string[] } {
+  if (body.fields.length === 0) return { leadIn: [], after: body.notes };
+  return { leadIn: body.notes.filter(isLeadIn), after: body.notes.filter((n) => !isLeadIn(n)) };
 }
 
 /** The plural of a numbered field's label: "Task" → "Tasks". */
@@ -253,6 +268,18 @@ export default function ConfirmationCard({
   // A field that repeats the detail or the summary is drawn once (owner
   // report, 2026-10-07: "Impact" restated the detail word for word).
   const body = { ...parsed, fields: withoutRepeats(parsed.fields, [rest, summary]) };
+  // A note that ends with a colon leads into the rows ("Each recipient of
+  // this draft:"), so it draws above them. Any other note draws after them
+  // (the screenshots of follow-up 5 of #766).
+  const { leadIn, after: afterNotes } = splitNotes(body);
+  // The text box scrolls at `max-h-40`. A long email card hid its files and
+  // its note below that line with no sign, so a box that scrolls says so.
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => {
+    const el = textRef.current;
+    setClipped(!!el && el.scrollHeight > el.clientHeight + 1);
+  }, [body.text]);
   const many = position && position.total > 1;
   const hasBody =
     hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
@@ -337,6 +364,11 @@ export default function ConfirmationCard({
               ))}
             </ul>
           )}
+          {leadIn.map((note, i) => (
+            <p key={`lead-${i}`} className="text-[11px] text-muted-foreground">
+              <CardText text={note} fenced={fenced} />
+            </p>
+          ))}
           {body.fields.length > 0 && (
             <dl className="space-y-1">
               {body.fields.map((f, i) => {
@@ -363,11 +395,20 @@ export default function ConfirmationCard({
             </dl>
           )}
           {body.text && (
-            <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground">
+            <p
+              ref={textRef}
+              className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground"
+            >
               {body.text}
             </p>
           )}
-          {[...body.notes, ...body.trailing].map((note, i) => (
+          {body.text && clipped && (
+            <p className="flex items-center gap-1 text-[11px] text-muted-foreground" data-card-more="">
+              <Icon name="ChevronsDown" size={12} />
+              Scroll the text above to read all of it.
+            </p>
+          )}
+          {[...afterNotes, ...body.trailing].map((note, i) => (
             <p key={i} className="text-[11px] text-muted-foreground">
               <CardText text={note} fenced={fenced} />
             </p>

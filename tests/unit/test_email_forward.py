@@ -641,6 +641,15 @@ class TestTheForwardTool:
         shown = agents._forward_files([{"filename": "invoice‮fdp.exe", "size_bytes": 2048}])
         assert shown == ["invoicefdp.exe (2 KB)"]
 
+    def test_a_long_file_name_keeps_its_extension(self) -> None:
+        """Follow-up 5 of #766: a plain cut at 60 showed "revision.pd"."""
+        name = "invoice-2026-10-00-fracktal-works-extruder-quote-revision.pdf.exe"
+        [shown] = agents._forward_files([{"filename": name, "size_bytes": 2048}])
+        assert shown.endswith("revision.pdf.exe (2 KB)")
+        assert shown.startswith("invoice-2026-10-00-")
+        assert len(shown.removesuffix(" (2 KB)")) == agents._CARD_FILE_NAME_LIMIT
+        assert "…" in shown
+
     async def test_six_workspace_files_cannot_hide_the_to_of_a_send(self, chat) -> None:
         paths = [f"outputs/report-{i}-" + "y" * 80 + ".pdf" for i in range(6)]
         await agents.send_email(BOX, body="See attached.", to=["kim@contoso.test"],
