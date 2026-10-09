@@ -175,8 +175,18 @@ second account's cookie, so it takes the full review loop.
 - the owner check of `releaseLoading`, and its unmount call
 - the badge tone, the motion rule and the Menu badge
 
-**Known limits.** A folded sidebar section hides its items, and with them
-their badges. The phone drawer shows the counts of the moment it opened.
+**Known limits.** Each item below is open, and none blocks S1.
+
+- A folded sidebar section hides its items, and with them their badges.
+- The phone drawer shows the counts of the moment it opened.
+- A member with no `chat` feature has no Chat pane. A run that folds to Chat
+  then shows only in the phone total. The review of 2026-10-10 found this.
+- A replay that ends with no content keeps its controller
+  (`useAgentChat.ts`, the `done` case and the end of the stream). The badge
+  then counts the run until the chat unmounts. This defect is older than S1.
+
+The run list is bound to the member like the read cache. `bindIdentity` in
+`lib/dataCache.ts` empties it through `onClear`.
 
 ### S2 — a durable "needs input"
 

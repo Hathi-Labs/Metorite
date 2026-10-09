@@ -23,6 +23,7 @@ import {
   pollIntervalMs,
   subscribeLiveRuns,
 } from "./liveRuns";
+import { bindIdentity } from "./dataCache";
 
 type FakeDoc = EventTarget & { visibilityState: "visible" | "hidden" };
 
@@ -137,6 +138,21 @@ describe("one poller for the whole app", () => {
     expect(getLiveRuns()).toEqual([
       { threadId: "t1", agentName: "unknown", title: null, startedAt: null },
     ]);
+    off();
+  });
+});
+
+describe("the list belongs to the signed-in member", () => {
+  it("a change of member empties it", async () => {
+    bindIdentity("a@example.com");
+    payload = [{ threadId: "t1", agentName: "orchestrator" }];
+    let calls = 0;
+    const off = subscribeLiveRuns(() => { calls += 1; });
+    await flush();
+    expect(getLiveRuns()).toHaveLength(1);
+    bindIdentity("b@example.com");
+    expect(getLiveRuns()).toHaveLength(0);
+    expect(calls).toBe(2);
     off();
   });
 });

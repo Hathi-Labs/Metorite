@@ -10,12 +10,15 @@
  * leaves. Owning spec: `project-docs/specs/chat_run_continuity.md` §4 S1.
  *
  * Memory only. Nothing here reaches `localStorage`: a run list names another
- * member's threads in the same org, and an account switch reloads the page,
- * which empties this module.
+ * member's threads in the same org. It is bound to the signed-in member like
+ * the read cache: `bindIdentity` in `lib/dataCache.ts` empties it through
+ * `onClear`, so it never rests on a page reload alone.
  *
  * Fence (R7): `liveRuns.test.ts` — one fetch for N subscribers, and the
  * hidden-tab interval.
  */
+
+import { onClear } from "@/lib/dataCache";
 
 export type LiveRun = {
   threadId: string;
@@ -124,6 +127,14 @@ export function subscribeLiveRuns(listener: () => void): () => void {
     }
   };
 }
+
+// A new member on this browser starts with no runs, not the last member's.
+onClear(() => {
+  if (_runs === EMPTY) return;
+  _key = "";
+  _runs = EMPTY;
+  _listeners.forEach((l) => l());
+});
 
 /** The last list the server returned. A stable reference while unchanged. */
 export function getLiveRuns(): readonly LiveRun[] {
