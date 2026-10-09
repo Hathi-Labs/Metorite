@@ -264,7 +264,7 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
         "Check the box's log after you change them: this page cannot see " +
         "the box.",
       href: "/money",
-      linkText: "Watch usage",
+      linkText: "Open Money",
     },
   ];
   return steps;
