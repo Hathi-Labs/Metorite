@@ -11,10 +11,19 @@ data of the beta customers arrives. This spec owns H-270 and H-271 in
 rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
 BH-7. `50-hardening.conf`, the staging and the strict check wait.
 
-**BH-7 BUILT, not merged, 2026-10-09 on `sec-bh7-agent-site`.** Agent
+**BH-7 MERGED as 469f5081 (#756), deployed and live-checked on
+2026-10-09.** Agent
 installs go to `agent-site`, and the T2 vendor step runs no scripts. The slice
 adds the drop-in installer and `40-agent-site.conf`. It also adds the drop-ins
 of the four other units from BH-2 item 3.
+
+**Deploy re-exec fix BUILT, not merged, 2026-10-09 on `deploy-reexec-apply`.**
+On 2026-10-08 an apply that started before the BH-7 merge recorded 469f5081
+as applied, but it did not run the BH-7 step. Each step of
+`scripts/vps_apply.sh` after the pull now runs from the pulled commit's own
+copy. The pull block runs from the copy that started. The script also refuses to
+record a sha whose own copy did not run the steps. The fence is
+`tests/unit/test_deploy_reexec.py`.
 
 **Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
 GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
