@@ -157,7 +157,8 @@ export default function CustomerBreakdown({
                 perCredit,
               )}, this customer's average earned per credit in the period. Free credits ` +
               `bring that average down. Seats are not split by app or person, so they are ` +
-              `not in these rows. "AI cost" is exact.`
+              `not in these rows. "AI cost" is exact. "AI margin" tests the price: the row's ` +
+              `credits at what a bought credit sold for, against its AI cost.`
             : `"Charged for AI" needs the credit price, which is not saved yet. "AI cost" is exact.`}
         </p>
       )}

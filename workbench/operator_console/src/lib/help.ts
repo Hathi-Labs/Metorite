@@ -310,7 +310,7 @@ export const HELP_PRICING = {
     "figure we choose, not a live market feed, so it moves only when you " +
     "change it.",
   saveCredit:
-    "Records the credit's value. It is a commercial act, so it needs an " +
+    "Records the credit's value. It is a commercial act, so it needs " +
     "an admin, and every save is kept as history.",
   costsUs:
     "What the VENDOR charges us for this tier's first model, converted to " +

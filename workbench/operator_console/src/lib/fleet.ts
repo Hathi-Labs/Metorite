@@ -32,6 +32,10 @@ export type FleetTotals = {
   profit: number | null;
   /** A FRACTION. */
   margin: number | null;
+  /** Bought credits used, in rupees: what AI alone earned. */
+  aiRevenue: number | null;
+  /** A FRACTION: AI alone, seats left out. */
+  aiMargin: number | null;
   owed: number;
   /** Customers whose profit for the window is below zero. */
   losing: number;
@@ -107,13 +111,19 @@ export function fleetTotals(rows: FleetRow[]): FleetTotals {
   const givenAway = sum(rows, (m) => m.givenAway.value);
   const profit = charged === null || aiCost === null ? null : charged - aiCost;
   const margin = profit === null || charged === null || charged <= 0 ? null : profit / charged;
+  const aiRevenue = sum(rows, (m) => m.paidCredits.value);
+  // The margin on PAID traffic, as `aiMarginOf`: free calls stay in Given away.
+  const aiMargin =
+    aiRevenue === null || aiCost === null || aiRevenue <= 0
+      ? null
+      : (aiRevenue - (aiCost - (givenAway ?? 0))) / aiRevenue;
   const owed = rows.reduce((n, r) => n + (r.money?.owed.value ?? 0), 0);
   const losing = rows.filter((r) => (r.money?.profit.value ?? 0) < 0).length;
   const missing = rows.filter((r) => r.money === null).length;
   const estimated =
     missing > 0 ||
     rows.some((r) => r.money && (r.money.profit.estimated || r.money.charged.estimated));
-  return { charged, aiCost, givenAway, profit, margin, owed, losing, estimated, missing };
+  return { charged, aiCost, givenAway, profit, margin, aiRevenue, aiMargin, owed, losing, estimated, missing };
 }
 
 export type FleetSort = "charged" | "profit";

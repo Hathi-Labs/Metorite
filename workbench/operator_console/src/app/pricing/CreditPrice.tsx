@@ -81,7 +81,7 @@ export default function CreditPrice({ price }: { price: Price | null }) {
           The rupee price of <strong>one credit</strong> — the number a bank
           transfer is converted with — and the ₹/$ planning rate the margins
           below use. Billing burns credits either way; this prices the
-          credits themselves. Saving is a commercial act: it needs an
+          credits themselves. Saving is a commercial act: it needs
           an admin, and every save keeps history.
         </p>
       </div>

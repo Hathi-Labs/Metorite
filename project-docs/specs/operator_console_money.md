@@ -8,7 +8,11 @@
 - Slice 3a (a price on a manual grant): merged in PR #786.
 - Slice 3: merged in PR #789.
 - Slice 4: merged in PR #788.
-- Slice 5: BUILT. Slice 6 (the visual pass) ran on every slice before its PR.
+- Slice 5: merged in PR #794. Slice 6 (the visual pass) ran on every slice
+  before its PR.
+- Slice 5b (a margin per price, the cached price on every card, AI margin on
+  Money): BUILT. The owner set every price at a 60 percent margin on
+  2026-10-09 (D94 follow-up, recorded in the PR).
 - Open gaps: HANDOFF H-283 and H-284.
 
 **Owner request, 2026-10-09.** The owner wants to see, for each customer, what
@@ -109,6 +113,7 @@ organization.
 | 3a | `POST /credits/grant` takes an optional `price_paid_inr`, legal only on `manual` or `purchase` with positive credits. The lot records what the customer paid | `test_customer_console_manual_credits.py` passes against a real Postgres |
 | 4 | Customer list columns from §3, and a Money page that replaces AI usage, with the vendor bill moved onto it | The ratio "× cost" appears on no page |
 | 5 | Navigation groups, plain words, no internal codes, Activity in sentences, a Setup page for the go-live checklist | `words`-style test refuses `H-[0-9]`, `D[0-9]`, `migration [0-9]` and env names in rendered strings |
+| 7 | A chosen date range. `/admin/usage/orgs`, `/admin/usage/daily`, `/admin/usage/breakdown` and `/providers/spend` take `from` and `to`: inclusive calendar days in India. With no `from`, every read answers the last N days as before. The Money page and the customer page get a range picker | `test_customer_console_usage_range.py` passes against a real Postgres: the India-midnight edges, the daily span, the default unchanged, and a 422 for an unanswerable range |
 | 6 | A visual pass: dark, light and phone width, with the fixture rig in `e2e/visual/` | Screenshots of every page reviewed before each PR |
 
 ## 5. Files
