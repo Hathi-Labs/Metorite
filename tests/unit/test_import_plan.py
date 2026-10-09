@@ -355,7 +355,24 @@ def test_a_merge_across_two_stages_is_refused() -> None:
 
 def test_a_status_name_is_bounded() -> None:
     with pytest.raises(ValueError):
-        StatusChoice(category="todo", name="x" * 65)
+        StatusChoice(category="todo", name="x" * 501)
+
+
+def test_a_long_name_is_refused_only_for_a_NEW_status() -> None:
+    """The I-10 review: ``admin.create_status`` sets no length limit, so a
+    space can hold a lane longer than 64 characters. A choice of that lane
+    is valid. A NEW status still holds at most 64 characters."""
+    long_lane = "Waiting for the customer to sign the statement of work, then go"  # 63
+    long_lane += " on"
+    b = _small(_row("a", status="waiting"))
+    target = [(long_lane, "backlog")]
+    pick = ImportMapping(statuses={"waiting": StatusChoice(category="todo", name=long_lane)})
+    p = build_plan(b, pick, {}, target_statuses=target)
+    assert p["ready"] and p["statuses"][0]["existing"]
+    fresh = ImportMapping(statuses={"waiting": StatusChoice(category="todo", name="y" * 65)})
+    refused = build_plan(b, fresh, {}, target_statuses=target)
+    assert not refused["ready"]
+    assert any("64 characters" in e for e in refused["errors"])
 
 
 # ── §6.9 work that exists ───────────────────────────────────────────────────

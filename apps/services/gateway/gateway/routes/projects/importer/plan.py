@@ -65,8 +65,14 @@ _SYNONYMS: dict[str, tuple[str, Category]] = {
     },
 }
 
-#: A status name holds 1 to this many characters (``StatusChoice``).
+#: A NEW status name holds 1 to this many characters. The plan refuses a
+#: longer one (``_statuses``).
 MAX_STATUS = 64
+#: What a choice may name at most. A lane the space already holds can be
+#: longer than ``MAX_STATUS``, because ``admin.create_status`` sets no limit.
+#: So the choice takes it, and the plan checks only a NEW name (the I-10
+#: review). A cap stays, because a choice is request input.
+MAX_CHOICE = 500
 #: What a target takes when an intake lane holds its name (§6.3, P1-b).
 IMPORTED = " (imported)"
 
@@ -116,8 +122,8 @@ class StatusChoice(BaseModel):
         if value is None:
             return None
         value = " ".join(value.split())
-        if not value or len(value) > 64:
-            raise ValueError("a status name holds 1 to 64 characters")
+        if not value or len(value) > MAX_CHOICE:
+            raise ValueError(f"a status name holds 1 to {MAX_CHOICE} characters")
         return value
 
 
@@ -518,6 +524,10 @@ def _statuses(
         if existing:
             # The status exists: it keeps its own stage and spelling.
             target_name, category = held[_fold(target_name)]
+        elif len(target_name) > MAX_STATUS and not continues:
+            # Only a NEW status has the limit. A run that continues keeps the
+            # names of the earlier tree, as before I-10.
+            errors.append(f"A new status name holds 1 to {MAX_STATUS} characters: {name}.")
         final[name] = (target_name, category)
         rows.append(
             {
