@@ -4460,6 +4460,24 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
+- **Done, the Action Broker queue (2026-10-09).** `enqueue`, `list_pending`,
+  `_load_proposal` and `_mark` in `action_broker/broker.py` open
+  `acb_graph.tenant_session(org)`. The tenant comes from `current_tenant()`.
+  With no tenant, a read gives no row and the broker refuses a write. This
+  also closes the queue half of leak-audit S2-7. The fence is
+  `tests/unit/test_action_broker_tenancy_r8.py`. Do not do it again.
+- **Still open from the broker work.** Two kinds of caller bind no tenant,
+  so the broker refuses their queue write. The RLS policy refused it before
+  too. A third note follows them.
+  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). With
+    `ACTION_BROKER_ENFORCE` off it never reaches the queue.
+  - A CRON or webhook workflow run (`workflows/service.py` and
+    `workflows/tools.py`). A manual run has the request's tenant. A trigger
+    run would inherit the tenant of the request that emits its event, but
+    `triggers.py` reads `workflow_triggers` unbound, so no trigger run starts.
+  - A manual `POST /crm/sync/zoho` runs the cycle in the request. So its
+    queue row goes to the admin's tenant. The sync configuration has no
+    tenant yet. When it gets one, bind that tenant.
 - **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
   artifact context is a ContextVar, and `artifact_context()` is its one
   reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
@@ -4555,7 +4573,6 @@ line — never reclaim a number by deleting the other entry.
     and `mcp_servers` (no policy).
   - `routes/integrations_skills.py` reads `agent_skill_setting`.
     Tenant-scoped.
-  - `action_broker/broker.py` writes `pending_actions`. Tenant-scoped.
   - `acb_skills/loader.py` writes `pending_commit`. Tenant-scoped.
   - Already bound behind `ACB_GRAPH_TENANT_BIND`, no work: `executor.py`,
     `mutation.py`, `_tool_injection.py` and `acb_audit/log.py`.
