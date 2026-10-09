@@ -172,6 +172,22 @@ describe("a poll in flight belongs to the member who asked", () => {
     expect(getLiveRuns()).toEqual([]);
     off();
   });
+
+  it("drops an answer whose body is read across a change of member", async () => {
+    bindIdentity("a@example.com");
+    let release: (v: unknown) => void = () => {};
+    fetchMock.mockImplementationOnce(async () => ({
+      ok: true,
+      json: () => new Promise((resolve) => { release = resolve; }),
+    }));
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    bindIdentity("b@example.com");
+    release([{ threadId: "a-run", agentName: "orchestrator" }]);
+    await flush();
+    expect(getLiveRuns()).toEqual([]);
+    off();
+  });
 });
 
 describe("a hidden tab polls slower", () => {
