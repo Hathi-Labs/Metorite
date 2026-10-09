@@ -1,6 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-1 BUILT 2026-10-09, and it ships dark. WAC-2 is next. Board row
+**Status:** WAC-2 built, dark (2026-10-09), after WAC-1 on the same day. WAC-3
+is next. Board row
 **WS-47**. WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test
 number. WAC-0 (the number) is the owner's, and it gates production only. HANDOFF
 **H-251** carries it.
@@ -11,6 +12,19 @@ routes are in `gateway/routes/whatsapp_channel/`, and the section is
 `whatsapp_channel/flags.py`. Fences: `tests/unit/test_wac_link_code.py`,
 `tests/unit/test_wac_link_table.py` (R8) and
 `workbench/control_plane/src/app/people/lib/whatsappLink.test.ts`.
+
+**WAC-2 as built (2026-10-09).** `receive_webhook` sends the group of
+`WHATSAPP_ASSISTANT_PHONE_NUMBER_ID` to `whatsapp_channel/inbound.py`, and
+the group never reaches the WS-20 path. The bot replies with
+`WHATSAPP_ASSISTANT_ACCESS_TOKEN`, after the 200. `flags.py` reads both.
+
+The migration `whatsapp_member_link_lookups` adds the two SECURITY DEFINER reads
+of §5.3: `whatsapp_member_links_for_phone` and
+`whatsapp_member_link_for_code`. The code function also returns an active
+row of the SAME phone, for the redelivery rule. A new code for a phone that
+the member already linked in that org revokes the old row, so the unique
+index holds. Fences: `tests/unit/test_wac_bot_inbound.py` and
+`tests/unit/test_wac_bot_link_r8.py` (R8).
 
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
@@ -578,7 +592,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 |---|---|---|---|
 | **WAC-0** | The Meta setup of §6 | **OWNER-GATE** | The five values of §5.1 are on the box, and `GET /whatsapp/webhook` answers Meta's handshake |
 | **WAC-1** ✅ built 2026-10-09 | The link table (§5.3), its migration, the code-issue route, and "Chat on WhatsApp" in member settings | AGENT-SAFE | A signed-in member gets a `wa.me` link and a QR. The code is stored as a hash and expires. The migration applies on a real database (R8). `test_tenant_coverage.py` passes |
-| **WAC-2** | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
+| **WAC-2** ✅ built 2026-10-09, dark | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
 | **WAC-3** | A linked text runs the assistant and the reply comes back (§5.5, §5.6, read tools and capture only) | AGENT-SAFE | "What is due today?" from the test phone returns the member's tasks. A member of two orgs gets answers from the LINKED org. One `wamid` delivered twice starts one run. A removed member gets no answer. The thread shows in the web chat |
 | **WAC-4** | Confirmation by reply buttons for class B writes, and the web-app link for guarded acts (§5.6) | AGENT-SAFE | "Add a task: call the vendor tomorrow" asks with buttons, and Confirm writes exactly one task. A tap from another phone or after expiry writes nothing. A delete request answers with a web link and changes nothing |
 | **WAC-5** | Voice notes (§5.7) | AGENT-SAFE | A voice note runs as its transcript, the reply echoes the transcript, and no audio file remains after the run |

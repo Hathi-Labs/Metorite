@@ -439,6 +439,33 @@ async def test_a_used_code_links_nothing_for_a_second_phone(granted, sent) -> No
     assert sent[-1] == (second, _FAILED)
 
 
+async def test_a_stale_read_of_a_used_code_writes_nothing(granted, sent) -> None:
+    """Two phones send one code at once. Both reads see the row pending, and
+    the first redemption commits. The second then holds a stale row, and the
+    re-check under the row lock must refuse it."""
+    from acb_common.db import release_tenant, tenant_session
+    from gateway.routes.whatsapp_channel import inbound
+
+    p, email, code = granted, _member(), _code()
+    first, second = _phone(), _phone()
+    link_id = _pending(p.admin_engine, org=p.org_a, email=email, code=code)
+    await _link_message(p, first, code)
+    stale = {"id": link_id, "organization_id": p.org_a, "member_email": email,
+             "status": "pending", "code_expires_at": None}
+
+    async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        token = bind_tenant(p.org_a)
+        try:
+            async with tenant_session() as db:
+                outcome = await inbound._activate(db, stale, second)
+        finally:
+            release_tenant(token)
+
+    assert outcome == "failed"
+    row = _row(p.admin_engine, link_id)
+    assert (row.status, row.wa_id) == ("active", first)
+
+
 async def test_an_expired_code_links_nothing(granted, sent) -> None:
     p, phone, code = granted, _phone(), _code()
     link_id = _pending(p.admin_engine, org=p.org_a, email=_member(), code=code,
