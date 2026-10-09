@@ -339,6 +339,7 @@ async def apply_run(
         facts["target_statuses"],
         facts["continues"],
         facts["earlier_names"],
+        facts["reserved_statuses"],
     )
 
     if not progress.get("nodes"):
@@ -721,8 +722,14 @@ async def _reuse_statuses(
     owner is not in ``fresh`` (the nodes this run created) joins ``added``."""
     owner = await status_owner_id(db, project_id)
     rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
-    have = [[str(r.name).lower(), str(r.id), str(r.category)] for r in rows]
-    positions = [(STAGE_ORDER.get(str(r.category), 2), int(r.position or 0)) for r in rows]
+    # The intake pen (`core.TRIAGE_CATEGORY`) is no lane an import matches or
+    # writes into: a task there is hidden from every list and board. Its name
+    # stays reserved, because UNIQUE (project_id, name) still holds it (the
+    # I-10 review, P1-b). The plan keeps every target away from it (§6.3).
+    lanes = [r for r in rows if str(r.category) in STAGE_ORDER]
+    reserved = {str(r.name).lower() for r in rows if str(r.category) not in STAGE_ORDER}
+    have = [[str(r.name).lower(), str(r.id), str(r.category)] for r in lanes]
+    positions = [(STAGE_ORDER[str(r.category)], int(r.position or 0)) for r in lanes]
     by_id = {status_id: (n, c) for n, status_id, c in have}
     needs = sorted(wanted, key=lambda nc: STAGE_ORDER[nc[1]])
 
@@ -760,9 +767,17 @@ async def _reuse_statuses(
         if renamed is not None:
             have.append([name.lower(), renamed, by_id[renamed][1]])
             continue
+        if name.lower() in reserved:
+            # The plan renames such a target, so only a lane made since the
+            # plan's read reaches here. Stop with the reason, before any task.
+            raise ImportRefused(
+                f'"{name}" is now the name of the intake lane in this space. '
+                "Upload the file again to plan the import with it."
+            )
         await add(name, category)
     if not any(c == "done" for _, _, c in have):
-        await add("Done" if "done" not in {n for n, _, _ in have} else "Done (imported)", "done")
+        taken = {n for n, _, _ in have} | reserved
+        await add("Done" if "done" not in taken else "Done (imported)", "done")
         if done_sets is not None:
             done_sets.add(owner)
     # A task with no status takes `have[0]` (`_status_for`). That is the lane
@@ -776,23 +791,28 @@ async def _reuse_statuses(
 
 async def target_statuses(
     db: Any, mapping: ImportMapping, target_ok: bool = True
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[str]]:
     """The status set a run writes into, as ``(name, stage)`` in its order
-    (I-10, §6.3). A new space starts with the root seed of ``_seed_root``. An
-    existing space uses the set of its status owner. The plan reads it as a
-    fact, so a second copy of the seed cannot drift from the one written."""
+    (I-10, §6.3), and the names that set RESERVES: its intake lanes. A new
+    space starts with the root seed of ``_seed_root``. An existing space uses
+    the set of its status owner. The plan reads both as facts, so a second
+    copy of the seed cannot drift from the one written."""
     target = mapping.target
     if target.kind != "existing":
-        return [(name, category) for name, _color, _pos, category, _default in _SEED_STATUSES]
+        seed = [(name, category) for name, _color, _pos, category, _default in _SEED_STATUSES]
+        return seed, []
     if not (target.project_id and target_ok):
-        return []
+        return [], []
     try:
         owner = await status_owner_id(db, target.project_id)
     except HTTPException:
-        return []
+        return [], []
     rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
-    # A triage lane is no stage a source status can land in.
-    return [(str(r.name), str(r.category)) for r in rows if str(r.category) in STAGE_ORDER]
+    # A triage lane is no stage a source status can land in (the I-10 review,
+    # P1-b). Its name is still taken, so the plan must keep away from it.
+    lanes = [(str(r.name), str(r.category)) for r in rows if str(r.category) in STAGE_ORDER]
+    reserved = [str(r.name) for r in rows if str(r.category) not in STAGE_ORDER]
+    return lanes, reserved
 
 
 async def _check_grant(db: Any, organization_id: str, grant: str) -> None:

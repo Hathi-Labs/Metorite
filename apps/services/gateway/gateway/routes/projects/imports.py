@@ -738,14 +738,18 @@ async def _facts(
             earlier = await earlier_status_names(
                 db, organization_id, run_id, chosen, mapping, hashes
             )
+    statuses, reserved = await target_statuses(db, mapping, target_ok)
     return {
         "directory": directory,
         "existing_refs": existing,
         "legacy_refs": legacy,
         "target_ok": target_ok,
-        "target_statuses": await target_statuses(db, mapping, target_ok),
+        "target_statuses": statuses,
         "continues": continues,
         "earlier_names": earlier,
+        # The intake lanes of the target set: no import target takes their
+        # names (the I-10 review, P1-b).
+        "reserved_statuses": reserved,
     }
 
 

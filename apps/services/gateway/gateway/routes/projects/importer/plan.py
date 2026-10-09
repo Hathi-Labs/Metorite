@@ -67,6 +67,8 @@ _SYNONYMS: dict[str, tuple[str, Category]] = {
 
 #: A status name holds 1 to this many characters (``StatusChoice``).
 MAX_STATUS = 64
+#: What a target takes when an intake lane holds its name (§6.3, P1-b).
+IMPORTED = " (imported)"
 
 #: One status of a target set: its name and its stage.
 StatusTarget = tuple[str, Category]
@@ -269,6 +271,7 @@ def build_plan(
     target_statuses: list[StatusTarget] | None = None,
     continues: bool = False,
     earlier_names: dict[str, StatusTarget] | None = None,
+    reserved_statuses: list[str] | None = None,
 ) -> dict[str, Any]:
     """The dry run.
 
@@ -284,7 +287,8 @@ def build_plan(
     status owner. ``continues`` says that the writer goes into an earlier
     import's tree (``import_writer.continues_earlier``), and
     ``earlier_names`` holds the status each source name became in that tree.
-    The route reads all three, as it reads the directory.
+    ``reserved_statuses`` names the target set's intake lanes. The route
+    reads all four, as it reads the directory.
     """
     existing_refs = existing_refs or set()
     legacy_refs = legacy_refs or set()
@@ -304,7 +308,13 @@ def build_plan(
 
     people = _people(bundle, mapping, directory, errors)
     statuses, final = _statuses(
-        bundle, mapping, errors, target_statuses, continues, earlier_names or {}
+        bundle,
+        mapping,
+        errors,
+        target_statuses,
+        continues,
+        earlier_names or {},
+        reserved_statuses,
     )
 
     closed = [t for t in bundle.tasks if t.status_name and final[t.status_name][1] in CLOSED]
@@ -348,6 +358,8 @@ def build_plan(
         # I-10: the set the statuses land in, in its own order. The Map step
         # offers it as "In this space", and shows its stage as fixed.
         "target_statuses": [{"name": n, "category": c} for n, c in target_statuses],
+        # The intake lanes' names, which no target takes (P1-b, §6.3).
+        "reserved_statuses": list(reserved_statuses or []),
         "continues": continues,
         "tree": tree,
         "columns": columns,
@@ -443,6 +455,7 @@ def _statuses(
     target: list[StatusTarget] | None = None,
     continues: bool = False,
     earlier: dict[str, StatusTarget] | None = None,
+    reserved: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, tuple[str, Category]]]:
     """§6.3 — one row per distinct source name, across every List. Returns the
     rows and ``source name → (Metorite name, category)``.
@@ -452,10 +465,21 @@ def _statuses(
     continues an earlier import keeps that import's names: the status each
     source name became then (``earlier``), and else the source name, as
     before I-10. Either way, a name the target set holds takes the stage of
-    that status, and the plan shows it as fixed."""
+    that status, and the plan shows it as fixed.
+
+    ``reserved`` names the intake lanes of the target set (the I-10 review,
+    P1-b). No task of an import lands in one, and the name is taken, so a
+    target with that name becomes "<name> (imported)" instead."""
     target = list(target or [])
     earlier = earlier or {}
     held = {_fold(n): (n, c) for n, c in target}
+    pen = {_fold(n) for n in reserved or []}
+
+    def off_the_pen(name: str) -> str:
+        if _fold(name) in pen and _fold(name) not in held:
+            return f"{name[: MAX_STATUS - len(IMPORTED)]}{IMPORTED}"
+        return name
+
     tasks: Counter[str] = Counter()
     lists: dict[str, set[str]] = defaultdict(set)
     order: list[str] = []
@@ -473,8 +497,9 @@ def _statuses(
             proposed_name, proposed = earlier.get(name, (name, propose_category(name)))
         else:
             proposed_name, proposed, _held = propose_target(name, target)
+        proposed_name = off_the_pen(proposed_name)
         named = bool(choice and choice.name)
-        target_name = choice.name if choice and choice.name else proposed_name
+        target_name = off_the_pen(choice.name if choice and choice.name else proposed_name)
         # On a new tree, a choice with no name comes only from a mapping made
         # before I-10, and it takes the whole proposal. A run that continues
         # keeps the choice's stage, as before I-10.
@@ -589,7 +614,10 @@ def resolve_statuses(
     target_statuses: list[StatusTarget] | None = None,
     continues: bool = False,
     earlier_names: dict[str, StatusTarget] | None = None,
+    reserved_statuses: list[str] | None = None,
 ) -> dict[str, tuple[str, Category]]:
     """Source status name → (Metorite status name, stage). It takes the same
     facts as :func:`build_plan`, so the writer lands what the plan showed."""
-    return _statuses(bundle, mapping, [], target_statuses, continues, earlier_names)[1]
+    return _statuses(
+        bundle, mapping, [], target_statuses, continues, earlier_names, reserved_statuses
+    )[1]
