@@ -112,9 +112,9 @@ export default function CustomerUsage({
       {!error && state.kind === "truncated" && (
         <div className="banner">
           <strong>This customer made AI calls, but the money figures did not
-          load.</strong> The fleet read lists the biggest spenders first and
+          load.</strong> The usage read lists the biggest spenders first and
           stops at a page limit, and this customer is below it. The daily
-          chart below is complete. <a href="/usage">Open the fleet view →</a>
+          chart below is complete. <a href="/money">Open the Money page →</a>
         </div>
       )}
 
@@ -124,9 +124,9 @@ export default function CustomerUsage({
 
       {!error && state.kind === "full" && money && (
         <>
-          {orgFlags(state.row).length > 0 && (
+          {orgFlags(state.row, money.profit.value).length > 0 && (
             <p className="rowline">
-              {orgFlags(state.row).map((f) => (
+              {orgFlags(state.row, money.profit.value).map((f) => (
                 <span key={f.label} className={chipClass(f.tone)}>
                   {f.label}
                 </span>
