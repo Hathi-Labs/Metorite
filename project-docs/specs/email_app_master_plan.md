@@ -631,7 +631,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
-| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09, not built (D-EM-62).** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
+| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). 🔨 **PR-A BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-pra`), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -6074,8 +6074,11 @@ new schema.
 > affordable. The answer: "let's go ahead with your recommendations about what
 > to do next."
 
-**Status.** 📝 SPECIFIED 2026-10-09, not built. No migration. Each new
-`decide` feature starts `off`.
+**Status.** 📝 SPECIFIED 2026-10-09. No migration. Each new `decide`
+feature starts `off`. ✅ PR-0 MERGED (#783, 2026-10-09). 🔨 PR-A BUILT, NOT
+MERGED (2026-10-09, branch `email-em-t16-pra`). It is dark behind
+`EMAIL_TRIAGE_ONCE_PER_CYCLE`, and a value of `true` on a box is gate
+`enforcement-flip`. PR-B to PR-D are not built.
 
 **Why this section exists.** The spec audit of 2026-10-09 found four places
 where email triage asks a model more often than it must. No section owned that
@@ -6197,6 +6200,35 @@ The line numbers are those of PR-B3 (`64e9f9bb0`).
   marked threads. So `TestNoReAskStorm::test_the_count_agrees_with_the_selection`
   cannot hold in `on`. The test stays true outside `on`. In `on`, the drain of
   a reclassify stops at the first pass with no progress, as it does today.
+
+**PR-A as built (2026-10-09, branch `email-em-t16-pra`).**
+
+- `scheduler.py` skips the `classify_threads` hook as item 3 says.
+  `post_sync.triage_once_per_cycle` is the one reader of the flag.
+- `replyzero.py` holds the mark helpers beside `_NEEDS_STATUS_SQL`.
+  `_drop_marked_rows` runs before `_split_backfill_rows` and the inbound cap.
+- `TenantRedis.mget` refuses the whole call when one key is a `str` or a key
+  of another tenant.
+- Fences: `test_email_triage_once.py` (A1, over the real hook wiring),
+  `test_email_ai_cost.py` (`TestTheOnBackoff`, R8, and
+  `TestTheBackoffNeedsATenant`) and `test_tenant_redis.py` (section 5c).
+
+**Mutations of PR-A.** Each one ran red, and the file came back to the same
+SHA-256 after each one.
+
+- The scheduler loses the skip. `test_one_classify_in_a_cycle_with_new_mail`
+  fails.
+- The mark ignores the state of the ask, so (d) writes one.
+  `test_an_undecided_rule_match_keeps_no_mark` fails.
+- `set` with no time to live replaces `setex`.
+  `test_an_undecided_first_ask_waits_and_new_mail_asks_again` fails.
+- The tenant guard goes. `test_no_tenant_no_mark` fails.
+- The back-off ignores the flag.
+  `test_flag_off_asks_in_each_cycle_and_touches_no_redis` fails.
+- The A1 skip ignores the flag. `test_flag_off_keeps_the_two_classifies`
+  fails.
+- The selection keeps marked rows. `test_a_marked_thread_takes_no_slot_of_the_cap`
+  fails.
 
 ##### PR-B — no rule match when the conversation status decides
 
@@ -6351,7 +6383,7 @@ database ran, and then the run proves nothing.
 ```
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_ai_cost.py tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_on.py tests/unit/test_email_llm_cap.py tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_single_classification.py tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_cold_gate_case.py tests/unit/test_crm_auto_lead.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_draft_fallback.py tests/unit/test_email_draft_context.py tests/unit/test_email_no_tier_choice.py tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_rules_engine.py tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_insights_screen.py -q -rs
-uv run pytest tests/unit/test_email_layering.py tests/unit/test_email_reclassify_resumable.py tests/unit/test_tenant_redis.py tests/unit/test_email_automation_tenancy.py -q -rs
+uv run pytest tests/unit/test_email_layering.py tests/unit/test_email_reclassify_resumable.py tests/unit/test_tenant_redis.py tests/unit/test_email_automation_tenancy.py tests/unit/test_email_triage_once.py -q -rs
 uv run ruff check <each changed file>
 ```
 
