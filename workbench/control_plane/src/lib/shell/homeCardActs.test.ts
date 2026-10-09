@@ -19,7 +19,7 @@ vi.mock("@/app/tasks/lib/taskStore", () => ({ useTaskStore: {} }));
 
 import type { CompletionStore } from "@/app/tasks/lib/completeFromHome";
 
-import { focusTarget, rowMover } from "./HomeCard";
+import { focusTarget, keepRemoved, rowMover } from "./HomeCard";
 import { type NeedsItem, runAct } from "./needs";
 
 interface State {
@@ -27,6 +27,7 @@ interface State {
   items: { id: string; subtaskCount?: number; disposition?: string }[];
   subtaskPrompt: { ids: string[] } | null;
   syncFailure: null;
+  undoSnapshot: { changedIds: string[]; items: State["items"] } | null;
   refreshItem: (id: string) => Promise<void>;
   hydrate: () => Promise<void>;
   quickDispose: (id: string, d: string, opts?: { includeSubtasks?: boolean }) => void;
@@ -43,6 +44,7 @@ function store(items: State["items"]) {
     items,
     subtaskPrompt: null,
     syncFailure: null,
+    undoSnapshot: null,
     refreshItem: async () => {},
     hydrate: async () => {},
     quickDispose: (id, _d, opts) => {
@@ -51,7 +53,10 @@ function store(items: State["items"]) {
         emit({ subtaskPrompt: { ids: [id] } });
         return;
       }
-      emit({ items: state.items.map((i) => (i.id === id ? { ...i, disposition: "DONE" } : i)) });
+      emit({
+        undoSnapshot: { changedIds: [id], items: state.items },
+        items: state.items.map((i) => (i.id === id ? { ...i, disposition: "DONE" } : i)),
+      });
     },
   };
   const s = {
@@ -64,6 +69,8 @@ function store(items: State["items"]) {
   return {
     s,
     cancel: () => emit({ subtaskPrompt: null }),
+    // The store's Undo: the rows and the snapshot go back in ONE set.
+    undo: () => emit({ items: state.undoSnapshot!.items, undoSnapshot: null }),
     answer: (all: boolean) => {
       const id = state.subtaskPrompt!.ids[0];
       emit({ subtaskPrompt: null });
@@ -74,14 +81,20 @@ function store(items: State["items"]) {
 
 /** The card's two pieces of state, as the hooks hold them. */
 function card() {
-  const removed = new Set<string>();
+  let removed = new Set<string>();
   const errors: Record<string, string> = {};
   const remove = (id: string, gone: boolean) => (gone ? removed.add(id) : removed.delete(id));
   const setError = (id: string, m: string | null) => {
     if (m) errors[id] = m;
     else delete errors[id];
   };
-  return { removed, errors, remove, setError };
+  // The hooks' rule when a new feed answer lands (`keepRemoved`).
+  const answer = (held: string[]) => {
+    removed = new Set(keepRemoved(removed, held));
+  };
+  /** The rows the card draws for a feed answer. */
+  const drawn = (held: string[]) => held.filter((id) => !removed.has(id));
+  return { get removed() { return removed; }, errors, remove, setError, answer, drawn };
 }
 
 const row = (id: string): NeedsItem => ({
@@ -131,6 +144,25 @@ describe("a Needs you row through a Done", () => {
     expect(c.removed.has(item.id)).toBe(true); // before any answer comes back
     await expect(out).resolves.toBe("done");
     expect(c.removed.has(item.id)).toBe(true);
+  });
+});
+
+describe("Done, then Undo, while the feed reads again (review round 3)", () => {
+  it("draws A again when the feed answers WITH A after the Undo", async () => {
+    const st = store([{ id: "A" }, { id: "B" }]);
+    const c = card();
+    const a = row("A");
+    await runAct(a, rowMover(a.id, c.remove, c.setError), st.s);
+    expect(c.drawn(["tasks:A", "tasks:B"])).toEqual(["tasks:B"]);
+    st.undo(); // the store's Undo, before the feed's re-read lands
+    c.answer(["tasks:A", "tasks:B"]); // the cache's right answer, A held
+    expect(c.drawn(["tasks:A", "tasks:B"])).toEqual(["tasks:A", "tasks:B"]);
+  });
+
+  it("keepRemoved forgets a hidden row the answer no longer holds, and keeps the rest", () => {
+    const hidden = new Set(["x", "y"]);
+    expect([...keepRemoved(hidden, ["y", "z"])]).toEqual(["y"]);
+    expect(keepRemoved(hidden, ["x", "y"])).toBe(hidden); // nothing to change
   });
 });
 

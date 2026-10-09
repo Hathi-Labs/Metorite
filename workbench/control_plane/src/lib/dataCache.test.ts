@@ -220,7 +220,10 @@ describe("🔴 a write that lands while a re-read is in flight (NS-3 review)", (
     release("old");
     await pending;
     off();
-    expect(seen).toEqual(["new"]);
+    // The write wakes the watcher at once (with nothing stored yet), and the
+    // fresh answer wakes it again. The stale one never reaches it.
+    expect(seen).not.toContain("old");
+    expect(seen.at(-1)).toBe("new");
   });
 
   it("stores nothing from before a clearAll (a change of member)", async () => {
@@ -235,6 +238,31 @@ describe("🔴 a write that lands while a re-read is in flight (NS-3 review)", (
     release("member-a");
     await expect(pending).resolves.toBe("member-b");
     expect(peek(key)?.data).toBe("member-b");
+  });
+
+  it("after the cap, the writes have woken the watcher, and its re-read stores the fresh answer", async () => {
+    // A board drag burst: every read meets a write. The read gives up and
+    // answers stale. Nothing may leave that stale answer on screen as current.
+    const key = cacheKey("projects/tree");
+    let burst = true;
+    let calls = 0;
+    const fetcher = async () => {
+      calls += 1;
+      await Promise.resolve();
+      if (burst) invalidate("projects/tree");
+      return burst ? `stale-${calls}` : "settled";
+    };
+    let wakes = 0;
+    const off = subscribe(key, () => {
+      wakes += 1;
+    });
+    await read(key, fetcher); // gives up after the cap, stores nothing
+    expect(peek(key)).toBeUndefined();
+    expect(wakes).toBeGreaterThan(0); // each bump woke the watcher
+    burst = false; // the writes stop; the watcher's coalesced re-read lands
+    await expect(read(key, fetcher)).resolves.toBe("settled");
+    expect(peek(key)?.data).toBe("settled");
+    off();
   });
 
   it("stops asking after a few writes in a row, and stores nothing stale", async () => {

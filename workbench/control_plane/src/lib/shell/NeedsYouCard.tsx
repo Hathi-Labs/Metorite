@@ -28,7 +28,7 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { CardError, HomeCard, rowMover } from "./HomeCard";
+import { CardError, HomeCard, keepRemoved, rowMover } from "./HomeCard";
 import { appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
 import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
 
@@ -64,9 +64,8 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
   if (feed.data !== seen) {
     setSeen(feed.data);
     if (feed.data && removed.size > 0) {
-      const held = new Set(feed.data.items.map((i) => i.id));
-      const kept = new Set([...removed].filter((id) => held.has(id)));
-      if (kept.size !== removed.size) setRemoved(kept);
+      const kept = keepRemoved(removed, feed.data.items.map((i) => i.id));
+      if (kept !== removed) setRemoved(kept);
     }
   }
 

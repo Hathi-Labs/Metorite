@@ -23,7 +23,7 @@ import { lensFetchNext } from "@/app/tasks/lib/lens";
 import type { MyTask } from "@/app/tasks/lib/types";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { CardError, FooterLink, HomeCard, rowMover } from "@/lib/shell/HomeCard";
+import { CardError, FooterLink, HomeCard, keepRemoved, rowMover } from "@/lib/shell/HomeCard";
 import { NEXT_SHOWN, nextActions } from "@/lib/shell/myDay";
 import { markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
 import type { NeedsItem } from "@/lib/shell/needs";
@@ -59,9 +59,8 @@ export default function NextActionsCard({
   if (next.data !== seen) {
     setSeen(next.data);
     if (next.data && removed.size > 0) {
-      const held = new Set(next.data.map((t) => t.id));
-      const kept = new Set([...removed].filter((id) => held.has(id)));
-      if (kept.size !== removed.size) setRemoved(kept);
+      const kept = keepRemoved(removed, next.data.map((t) => t.id));
+      if (kept !== removed) setRemoved(kept);
     }
   }
 

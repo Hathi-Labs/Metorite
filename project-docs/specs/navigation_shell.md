@@ -1045,14 +1045,16 @@ belong to slice A, the gateway feed.
   done on a visit loads the store once. Before each later done, the store
   reads that one task again (`refreshItem`). A task that the store never saw
   makes it load again. While the question is up, the row stays on the card.
-  It leaves only when the answer completes the task. The watch for a failed
+  It leaves only when the answer completes the task. When the store's Undo
+  puts the task back from done, the row comes back too. The watch for a failed
   write starts when the store writes, so it also sees a late answer. A
   notification marked read has no Undo, because the Projects bell has no
   route that marks it unread.
 - **The cache.** A write that lands while a read of the same key is in
   flight makes that read's answer stale (`lib/dataCache.ts`). The read does
   not store it, and it reads again. Before this, an Undo during the re-read
-  after a Done showed the state from before the Undo.
+  after a Done showed the state from before the Undo. Each such write also
+  wakes the key's watchers, so a read that gave up never stays on screen.
 - **Not yet in the manifest.** My Day imports its three cards directly. They
   are not declared through the `cards` field of §5.1 yet. The manifest slice,
   with NS-7, moves them there.

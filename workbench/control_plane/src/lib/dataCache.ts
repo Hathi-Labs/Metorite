@@ -68,8 +68,10 @@ const watchers = new Map<CacheKey, Set<() => void>>();
 /**
  * A write counter per key, bumped by `invalidate` and `clearAll` while a read
  * of that key is IN FLIGHT. A read compares it before and after its fetch.
- * If it moved, a write landed during the read, the answer predates it, and
- * the read neither stores it nor hands it back as current (see `read`).
+ * If it moved, a write landed during the read and the answer predates it.
+ * The read then does not store it (see `read`). It may still hand it back
+ * after `MAX_REREADS` tries, so each bump also WAKES the key's watchers, and
+ * their re-read replaces the answer once the writes stop.
  *
  * Never deleted, on purpose: a counter that went back to zero could make an
  * old read's number match again. One small integer per key ever invalidated
@@ -258,12 +260,18 @@ export function invalidate(match: string | ((key: CacheKey) => boolean)): number
   // write. Forget them too, so the next read starts a new request rather than
   // joining one already carrying a stale answer. And mark them stale, so the
   // forgotten read does not STORE its answer when it lands (see `read`).
+  const bumped: CacheKey[] = [];
   for (const key of [...inflight.keys()]) {
     if (!hit(key)) continue;
     bump(key);
     inflight.delete(key);
+    bumped.push(key);
   }
-  for (const key of dropped) notify(key);
+  // A bumped key may be in no store entry at all (its re-read was in
+  // flight). Wake its watchers too: a read that gave up after
+  // `MAX_REREADS` answered stale and stored nothing, and only a new read
+  // replaces that answer.
+  for (const key of new Set([...dropped, ...bumped])) notify(key);
   return dropped.length;
 }
 

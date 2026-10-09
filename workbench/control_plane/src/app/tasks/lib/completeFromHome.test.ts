@@ -30,6 +30,7 @@ import {
   type DoneRow,
   completeFromHome,
   markDoneFromHome,
+  onUndone,
   onNextSyncFailure,
   whenAnswered,
 } from "./completeFromHome";
@@ -46,11 +47,13 @@ interface FakeState {
   items: Row[];
   subtaskPrompt: { ids: string[] } | null;
   syncFailure: { message: string; at: number } | null;
+  undoSnapshot: { changedIds: string[]; items: Row[] } | null;
   hydrate: () => Promise<void>;
   refreshItem: (id: string) => Promise<void>;
   quickDispose: (id: string, disposition: string, opts?: { includeSubtasks?: boolean }) => void;
   answerSubtaskPrompt: (includeSubtasks: boolean) => void;
   cancelSubtaskPrompt: () => void;
+  undoLastChange: () => void;
 }
 
 function fakeStore(
@@ -69,6 +72,7 @@ function fakeStore(
     items: [],
     subtaskPrompt: null,
     syncFailure: null,
+    undoSnapshot: null,
     hydrate: async () => {
       hydrations += 1;
       await Promise.resolve();
@@ -89,7 +93,10 @@ function fakeStore(
         return;
       }
       disposed.push([id, disposition]);
-      emit({ items: state.items.map((i) => (i.id === id ? { ...i, disposition: "DONE" } : i)) });
+      emit({
+        undoSnapshot: { changedIds: [id], items: state.items },
+        items: state.items.map((i) => (i.id === id ? { ...i, disposition: "DONE" } : i)),
+      });
     },
     // As the real store: clear the question, THEN run the gesture.
     answerSubtaskPrompt: (includeSubtasks) => {
@@ -98,6 +105,11 @@ function fakeStore(
       state.quickDispose(ids[0], "DONE", { includeSubtasks });
     },
     cancelSubtaskPrompt: () => emit({ subtaskPrompt: null }),
+    // As the real store: the rows and the snapshot go back in ONE set.
+    undoLastChange: () => {
+      const snap = state.undoSnapshot;
+      if (snap) emit({ items: snap.items, undoSnapshot: null });
+    },
     ...init,
   };
   const store = {
@@ -257,6 +269,36 @@ describe("markDoneFromHome, the optimistic row", () => {
     await expect(markDoneFromHome("t1", r.row, f.store)).resolves.toBe("failed");
     expect(r.log).toEqual(["hide", "fail"]);
     expect(r.error()).toMatch(/could not load/);
+  });
+});
+
+describe("the store's Undo brings the row back", () => {
+  it("shows the row again when Undo puts the task back from DONE", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "t1" }] });
+    const r = recorder();
+    await markDoneFromHome("t1", r.row, f.store);
+    expect(r.hidden()).toBe(true);
+    f.state.undoLastChange();
+    expect(r.hidden()).toBe(false);
+    expect(r.log).toEqual(["hide", "show"]);
+  });
+
+  it("watches nothing when the store holds no Undo for this task", () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "t1" }] });
+    let back = 0;
+    onUndone("t1", () => (back += 1), f.store);
+    expect(f.listeners.size).toBe(0);
+    expect(back).toBe(0);
+  });
+
+  it("stops watching when a newer change takes the Undo", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "t1" }, { id: "t2" }] });
+    const r = recorder();
+    await markDoneFromHome("t1", r.row, f.store);
+    f.state.quickDispose("t2", "DONE"); // a newer change, its own Undo
+    f.state.undoLastChange(); // undoes t2, not t1
+    expect(r.hidden()).toBe(true);
+    expect(f.listeners.size).toBe(1); // only the 30 s failure watch is left
   });
 });
 

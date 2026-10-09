@@ -148,3 +148,14 @@ export function rowMover(
     },
   };
 }
+
+/**
+ * The rows a card still hides once a new answer lands: only those the answer
+ * still holds. A row the answer no longer holds is gone for real, and if it
+ * comes back later it must show. Pure, so both cards share one rule.
+ */
+export function keepRemoved(removed: ReadonlySet<string>, held: Iterable<string>): ReadonlySet<string> {
+  const ids = new Set(held);
+  const kept = new Set([...removed].filter((id) => ids.has(id)));
+  return kept.size === removed.size ? removed : kept;
+}

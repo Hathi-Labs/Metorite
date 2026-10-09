@@ -70,6 +70,11 @@ export async function completeFromHome(
   }
   if (!held()) throw new Error("Open it in My Tasks to finish it.");
   // The row the store holds may be older than the one My Day drew.
+  // ⚠️ This is a second read of the task, and both are needed. The store
+  // decides to ASK (D-PM-38) from the row it holds, BEFORE it writes, so the
+  // row must be fresh first. Its own `priorRead` inside `quickDispose` comes
+  // after that decision, and it keeps the status for Undo (D79). Skipped
+  // right after a hydrate, when the store's copy is new anyway.
   if (!fresh) await store.getState().refreshItem(id);
   store.getState().quickDispose(id, "DONE");
   return store.getState().subtaskPrompt?.ids.includes(id) ? "asked" : "completing";
@@ -131,7 +136,32 @@ export async function markDoneFromHome(
     row.hide();
   }
   onNextSyncFailure(() => row.fail(failure), store);
+  onUndone(id, () => row.show(), store);
   return "done";
+}
+
+/**
+ * Call `onBack` once if the store puts the task back from DONE, which is
+ * what its Undo does (`undoLastChange`). Without this, a card that hid the
+ * row would keep it hidden after an Undo: the cache answers WITH the task
+ * again, and the card's "removed" mark outlives it.
+ *
+ * It watches while the store's Undo is for this change (`changedIds` holds
+ * the id). A newer change, or a closed Undo window, ends the watch.
+ */
+export function onUndone(id: string, onBack: () => void, store: CompletionStore = useTaskStore): () => void {
+  const ours = (s: ReturnType<CompletionStore["getState"]>) => !!s.undoSnapshot?.changedIds?.includes(id);
+  if (!ours(store.getState())) return () => {};
+  const off = store.subscribe((state) => {
+    const task = state.items.find((i) => i.id === id);
+    if (task && task.disposition !== "DONE") {
+      off();
+      onBack();
+      return;
+    }
+    if (!ours(state)) off();
+  });
+  return off;
 }
 
 /**
