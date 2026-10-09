@@ -2,15 +2,15 @@
  * The branding rules that decide what a customer sees at the top of the app.
  *
  * The cases worth pinning are the ones a plausible implementation gets wrong
- * quietly: an org with no logo rendering an empty box instead of our mark, an
- * SVG rejected with a message that does not say what to do instead, and a
- * square logo allotted a wordmark's width.
+ * quietly: an org with no logo rendering an empty box instead of our mark, a
+ * file the editor could have opened refused at the door, and a square logo
+ * allotted a wordmark's width.
  */
 import { describe, expect, it } from "vitest";
 
 import {
   LOGO_MAX_BYTES,
-  LOGO_ACCEPT,
+  LOGO_PICK_MAX_BYTES,
   POWERED_BY,
   formatBytes,
   lockup,
@@ -33,35 +33,53 @@ const logo = (over: Partial<OrgLogo> = {}): OrgLogo => ({
 });
 
 describe("the file pre-check", () => {
-  it("accepts the three raster formats", () => {
-    for (const type of ["image/png", "image/jpeg", "image/webp"]) {
-      expect(precheckLogoFile({ type, size: 20_000 })).toBeNull();
+  // Since 2026-10-09 the editor draws a small PNG from whatever the admin
+  // picks (`logoCanvas.ts`), so the pre-check refuses only what cannot be
+  // opened at all. The stored file is never an SVG, and never large.
+  it("opens every common image, SVG included", () => {
+    for (const type of ["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"]) {
+      expect(precheckLogoFile({ type, size: 2_000_000 })).toBeNull();
     }
   });
 
-  it("tells an SVG uploader what to do instead of just refusing", () => {
-    // SVG is what a designer hands over, so this is the likeliest rejection.
-    // "Unsupported file type" sends someone back to guess.
-    const msg = precheckLogoFile({ type: "image/svg+xml", size: 4_000 });
-    expect(msg).toMatch(/SVG/);
+  it("refuses a file that is not an image, and says which ones are", () => {
+    const msg = precheckLogoFile({ type: "application/pdf", size: 4_000 });
     expect(msg).toMatch(/PNG/);
+    expect(msg).toMatch(/SVG/);
   });
 
-  it("never lists SVG as acceptable to the picker", () => {
-    expect(LOGO_ACCEPT).not.toContain("svg");
-  });
-
-  it("rejects an oversized file and says by how much", () => {
-    const msg = precheckLogoFile({ type: "image/png", size: LOGO_MAX_BYTES + 1 });
-    expect(msg).toMatch(/128 KB/);
+  it("refuses only a file too big to open, not one too big to store", () => {
+    expect(precheckLogoFile({ type: "image/png", size: LOGO_MAX_BYTES * 10 })).toBeNull();
+    expect(precheckLogoFile({ type: "image/png", size: LOGO_PICK_MAX_BYTES + 1 })).toMatch(/20\.0 MB/);
   });
 
   it("rejects an empty file", () => {
     expect(precheckLogoFile({ type: "image/png", size: 0 })).toMatch(/empty/i);
   });
+});
 
-  it("accepts a file exactly at the limit", () => {
-    expect(precheckLogoFile({ type: "image/png", size: LOGO_MAX_BYTES })).toBeNull();
+describe("the lockup in dark mode", () => {
+  const base = (over: Partial<OrgBranding>): OrgBranding => ({ logo: logo(), updatedBy: "", updatedAt: "", ...over });
+
+  it("shows the white version in dark mode with the white style", () => {
+    const white = logo({ dataUri: "data:image/png;base64,BBBB" });
+    const l = lockup(base({ logoDark: white, darkStyle: "white" }), "x");
+    expect(l.kind === "org" && l.logoDark.dataUri).toBe("data:image/png;base64,BBBB");
+  });
+
+  it("shows the logo itself on a light card with the plate style", () => {
+    const l = lockup(base({ darkStyle: "plate" }), "x");
+    expect(l.kind === "org" && [l.plate, l.logoDark.dataUri]).toEqual([true, logo().dataUri]);
+  });
+
+  it("shows the logo itself in both modes for a row written before dark styles", () => {
+    const l = lockup(base({}), "x");
+    expect(l.kind === "org" && [l.plate, l.logoDark.dataUri]).toEqual([false, logo().dataUri]);
+  });
+
+  it("falls back to the logo when the white style has no image", () => {
+    const l = lockup(base({ darkStyle: "white", logoDark: null }), "x");
+    expect(l.kind === "org" && l.logoDark.dataUri).toBe(logo().dataUri);
   });
 });
 
@@ -166,6 +184,19 @@ describe("the first-paint cache (OI-3a)", () => {
     const s = fakeStore();
     writeCachedBranding(s, good);
     expect(readCachedBranding(s)?.logo?.dataUri).toBe("data:image/png;base64,AAAA");
+  });
+
+  it("drops a bad cached dark image and keeps the logo", () => {
+    const s = fakeStore();
+    writeCachedBranding(s, {
+      ...good,
+      logoDark: { ...good.logo!, dataUri: "javascript:alert(1)" },
+      darkStyle: "white",
+    });
+    const read = readCachedBranding(s);
+    expect(read?.logo?.dataUri).toBe("data:image/png;base64,AAAA");
+    expect(read?.logoDark).toBeNull();
+    expect(read?.darkStyle).toBe("same");
   });
 
   it("treats a cached 'no logo' as a real answer, not a miss", () => {

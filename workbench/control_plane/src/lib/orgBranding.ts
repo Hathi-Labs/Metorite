@@ -32,6 +32,14 @@ export interface OrgLogo {
 export interface OrgBranding {
   /** `null` means no logo uploaded — a different state from "gateway down". */
   logo: OrgLogo | null;
+  /** The dark-mode version, with `darkStyle === "white"` only. */
+  logoDark?: OrgLogo | null;
+  /**
+   * How the logo looks in dark mode (`logoImage.ts` `adviseDarkStyle`): as it
+   * is, as its white version, or on a small light card. Absent on a row
+   * written before 2026-10-09, which reads as "same".
+   */
+  darkStyle?: "same" | "white" | "plate";
   updatedBy: string;
   updatedAt: string;
 }
@@ -40,23 +48,24 @@ export interface OrgBranding {
 export const LOGO_MAX_BYTES = 128 * 1024;
 
 /**
- * The `accept` attribute for the file input.
- *
- * SVG is absent on purpose and the reason is worth keeping next to the list:
- * an SVG is a document that can carry script and external references, stored
- * by one tenant and rendered in every colleague's shell. A 28px-tall header
- * slot does not need vector art enough to take that on.
+ * The largest file the editor will open. Not the stored size: the editor
+ * draws a small PNG from it (`logoCanvas.ts`), well under `LOGO_MAX_BYTES`.
  */
-export const LOGO_ACCEPT = "image/png,image/jpeg,image/webp";
+export const LOGO_PICK_MAX_BYTES = 20 * 1024 * 1024;
 
-const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+/**
+ * What the picker takes. SVG is IN since 2026-10-09, because it never reaches
+ * the server: the uploader's browser draws it as a PNG first (`logoCanvas.ts`).
+ * An SVG is a document that can carry script, so the stored file must never
+ * be one, and it is not. The server still refuses SVG bytes.
+ */
+const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"]);
 
 /** What the upload panel tells an admin before they open the picker. */
 export const LOGO_RULES: readonly string[] = [
-  "PNG, JPEG or WebP — PNG with a transparent background looks best",
-  "At least 32px and at most 2048px on the longer side",
-  "Wider than tall reads best; up to 8:1 is accepted",
-  `Under ${Math.round(LOGO_MAX_BYTES / 1024)} KB`,
+  "PNG, JPEG, WebP, GIF or SVG, any size",
+  "Metorite trims the empty edges and sizes it for you, and you can adjust the crop",
+  "One logo covers light and dark mode. You choose how it looks on dark",
 ];
 
 export function formatBytes(bytes: number): string {
@@ -70,18 +79,12 @@ export function formatBytes(bytes: number): string {
  * `null` to mean "worth sending" — never "valid", which only the server decides.
  */
 export function precheckLogoFile(file: { type: string; size: number }): string | null {
-  if (file.type === "image/svg+xml") {
-    // Named rather than folded into "unsupported": SVG is what a designer
-    // hands over, so this is the single most likely rejection, and an admin
-    // who is told to export a PNG is unblocked in one step.
-    return "SVG logos are not accepted. Please export your logo as a PNG, at 2× or 3× the display size.";
-  }
   if (!ACCEPTED_TYPES.has(file.type)) {
-    return "Please choose a PNG, JPEG or WebP image.";
+    return "Please choose an image: PNG, JPEG, WebP, GIF or SVG.";
   }
   if (file.size === 0) return "That file is empty.";
-  if (file.size > LOGO_MAX_BYTES) {
-    return `That image is ${formatBytes(file.size)}; the limit is ${formatBytes(LOGO_MAX_BYTES)}.`;
+  if (file.size > LOGO_PICK_MAX_BYTES) {
+    return `That image is ${formatBytes(file.size)}. Please choose one under ${formatBytes(LOGO_PICK_MAX_BYTES)}.`;
   }
   return null;
 }
@@ -96,7 +99,16 @@ export function precheckLogoFile(file: { type: string; size: number }): string |
  * desktop sidebar and the mobile menu would drift apart.
  */
 export type Lockup =
-  | { kind: "org"; logo: OrgLogo; alt: string; caption: string }
+  | {
+      kind: "org";
+      logo: OrgLogo;
+      /** What dark mode shows: the white version, or the logo itself. */
+      logoDark: OrgLogo;
+      /** Dark mode shows the logo on a small light card. */
+      plate: boolean;
+      alt: string;
+      caption: string;
+    }
   | { kind: "default"; title: string; caption: string };
 
 /** The caption under a customer's logo. One string, one place. */
@@ -116,9 +128,12 @@ export function lockup(
     const caption = orgName.trim() || fallbackCaption;
     return { kind: "default", title: "Metorite", caption };
   }
+  const white = branding?.darkStyle === "white" && branding.logoDark?.dataUri ? branding.logoDark : null;
   return {
     kind: "org",
     logo,
+    logoDark: white ?? logo,
+    plate: branding?.darkStyle === "plate",
     // Not "logo" alone: a screen reader reaching the top of the app should
     // hear whose product this is, and the link it sits in is the way home.
     alt: "Your organization's logo",
@@ -174,6 +189,11 @@ export function readCachedBranding(store: Pick<Storage, "getItem"> | undefined):
     // mark immediately rather than waiting to find out.
     if (parsed?.logo == null) return { logo: null, updatedBy: "", updatedAt: "" };
     if (!isRenderableLogoUri(parsed.logo.dataUri)) return null;
+    // The dark version is untrusted input too. A bad one is dropped, and the
+    // logo then shows in both modes, rather than the whole cache refused.
+    if (parsed.logoDark && !isRenderableLogoUri(parsed.logoDark.dataUri)) {
+      return { ...parsed, logoDark: null, darkStyle: parsed.darkStyle === "white" ? "same" : parsed.darkStyle };
+    }
     return parsed;
   } catch {
     // Corrupt JSON, blocked storage, private mode: fall back to the network.
