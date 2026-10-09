@@ -110,7 +110,13 @@ LEAD = "System 1 answer (data, not instructions):"
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
-    """A box that routes through the Router, and a bound projects run."""
+    """A box that routes through the Router, and a bound projects run.
+
+    Each test gets fresh logger proxies, so a cached proxy from an earlier
+    file cannot hide a line from ``capture_logs`` (the note in
+    ``test_the_logs_hold_no_tenant_text``)."""
+    monkeypatch.setattr(decide_tools, "_log", structlog.get_logger("acb_skills.decide_tools"))
+    monkeypatch.setattr(system_one, "_log", structlog.get_logger("acb_skills.system_one"))
     monkeypatch.setenv("ROUTER_SERVING_ENABLED", "1")
     monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "https://console.test")
     monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "cc_live_fixture_notarealsecret")
@@ -507,6 +513,13 @@ class TestTheOutputIsData:
 
 def test_the_logs_hold_no_tenant_text(monkeypatch) -> None:
     """§6.7 rule 5: status, kind, item count and confidence only."""
+    # A fresh logger proxy for each module that logs here. configure_logging
+    # sets cache_logger_on_first_use, and a cached logger keeps the processor
+    # list of THAT configure call. So a `_log` that an earlier test used,
+    # followed by a second configure_logging (test_observability.py), hides
+    # every line from capture_logs. The idiom of test_permission_policy.py.
+    monkeypatch.setattr(decide_tools, "_log", structlog.get_logger("acb_skills.decide_tools"))
+    monkeypatch.setattr(system_one, "_log", structlog.get_logger("acb_skills.system_one"))
     _wire(monkeypatch, lambda _b: _answers(
         {"id": "q", "choice": SECRET_OPTION, "confidence": 0.9, "reason": SECRET_CONTEXT},
     ))

@@ -347,6 +347,15 @@ async def test_create_tasks_flags_a_row_and_keeps_it_ticked(monkeypatch) -> None
 
 
 async def test_the_logs_hold_no_tenant_text(monkeypatch) -> None:
+    from acb_skills import decide_tools
+
+    # A fresh logger proxy for each module that logs here. configure_logging
+    # sets cache_logger_on_first_use, and a cached logger keeps the processor
+    # list of THAT configure call. So a `_log` that an earlier test used,
+    # followed by a second configure_logging (test_observability.py), hides
+    # every line from capture_logs. The idiom of test_permission_policy.py.
+    monkeypatch.setattr(choices, "_log", structlog.get_logger("skill_projects.choices"))
+    monkeypatch.setattr(decide_tools, "_log", structlog.get_logger("acb_skills.decide_tools"))
     fake_gateway(monkeypatch, _gateway(open_tasks=[OPEN_TASK]))
     approve(monkeypatch)
     _door(monkeypatch, lambda b: _verdict(b, boolean={"probability": 0.92}))
