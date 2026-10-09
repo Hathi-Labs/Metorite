@@ -1,8 +1,12 @@
 # Operator Console — money clarity and the UI rebuild (WS-50)
 
 **Status:** ACTIVE. Minted 2026-10-09 by **D94**. Verified against the code on
-2026-10-09 at `main` `5405a0b7f`. Slice 0 (the backend) is BUILT and merged in PR #779.
-Slices 1 and 2 are BUILT in PR #782. Slices 3 to 6 are spec only.
+2026-10-09 at `main` `5405a0b7f`.
+
+- Slice 0 (the backend): merged in PR #779.
+- Slices 1 and 2: merged in PR #782.
+- Slice 4: BUILT.
+- Slices 3, 5 and 6: spec only.
 
 **Owner request, 2026-10-09.** The owner wants to see, for each customer, what
 their AI costs us and what we charge them. The owner also wants no ambiguity
