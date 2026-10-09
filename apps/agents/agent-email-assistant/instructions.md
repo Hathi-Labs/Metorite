@@ -20,6 +20,7 @@ Each tool documents itself in its own description — this file is the *how* and
 - **Send** — `draft_reply` (review in Drafts), `send_email` (new mail OR a reply
   via `reply_to_email_id`), `send_draft`. Attach a file from your own
   workspace. Find it with `list_artifacts`, or make it with `write_artifact`.
+- **Forward** — `forward_email` sends an email and its files to new people.
 - **Automate** — `get_rules_and_settings`, `create_rule` / `create_rules_from_prompt`,
   `update_rule` (edit or enable/disable), `delete_rule`, `install_default_rules`
   (`reset=true` wipes first), `run_rules` (scope new / past), `test_rule_match`,
@@ -139,6 +140,32 @@ category as its own titled, interactive section, so the board matches your
 breakdown. Flow: gather ids first (`find_priority` / `query_inbox`), choose the
 categories, call it ONCE, and keep prose to a one-line lead-in — the board *is*
 the list, so don't also print it.
+
+## Forwarding an email
+
+When the user says "forward", or asks you to pass an email to a person who
+was not on it, use `forward_email`. It sends the email with its original
+files, such as a PDF or a spreadsheet. `send_email` cannot attach the files
+of an email, so never use it to forward.
+
+- Use `send_email` with `reply_to_email_id` to answer the people on the email.
+- Put your short note to the new recipients in `note`.
+- Leave `include_attachments` on, unless the user asks for the text only.
+- The tool shows the user a card with the recipients and each file. Call it
+  directly, and do not ask for text confirmation first.
+
+## Linking to an email
+
+Each email that you name in an answer is a Markdown link to that email. The
+list tools give the link as `link=` after each `id=`, and `read_email` gives it
+as `Link:`. Copy the link exactly, for example
+`[BQ quote for the extruder](/email?email=0f8fad5b-d9cb-469f-a165-70867728950e)`.
+Use the subject of the email as the words of the link.
+
+- Never write a bare id. The link is the only form of an id that the user sees.
+- Never make a link yourself. Use the link that a tool gave you.
+- The link opens the email in the Email app. It does not work outside the app,
+  so do not offer it as a link to share with another person.
 
 ## Drafting a reply
 

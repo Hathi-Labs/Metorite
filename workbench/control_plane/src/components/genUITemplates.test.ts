@@ -207,3 +207,44 @@ describe("the form card's checkbox (WS-46 P13, the batch of new tasks)", () => {
     expect(entry?.data).toContain("hint?");
   });
 });
+
+describe("a recommended option says so (owner report, 2026-10-09)", () => {
+  // Mutations caught: the badge goes back to a bare star; the picker's motion
+  // goes back to a `both` fill, which held every option at full opacity after
+  // the click; the picker answers a click with no handler.
+  const options = [
+    { id: "fwd", label: "Forward with the PDF", recommended: true, badge: "Fast" },
+    { id: "link", label: "Send a link" },
+  ];
+  const picker = (ctx?: { onAction?: (a: string) => void }) =>
+    renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.optionPicker({ title: "How?", options }, ctx)));
+
+  it("the option picker draws the word Recommended, and no star", () => {
+    const html = picker({ onAction: () => {} });
+    expect(html).toContain(">Recommended<");
+    expect(html).not.toMatch(/[★⭐]/);
+    // The option's own badge is the shared Badge too, not a hand-made pill.
+    expect(html).toMatch(/cc-control[^"]*bg-primary\/10[^"]*">Fast</);
+  });
+
+  it("the comparison draws the word Recommended, and no star", () => {
+    const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY.comparison({
+      options: [{ name: "A", recommended: true, rows: [] }, { name: "B", rows: [] }],
+    })));
+    expect(html).toContain(">Recommended<");
+    expect(html).not.toMatch(/[★⭐]/);
+  });
+
+  it("each option is a pressed or unpressed toggle, and its motion never holds the opacity", () => {
+    const html = picker({ onAction: () => {} });
+    expect(html.match(/aria-pressed="false"/g)?.length).toBe(2);
+    expect(html).toContain("backwards");
+    expect(html).not.toMatch(/ccFadeUp[^;"]* both/);
+  });
+
+  it("with no handler the options take no click, and the card says why", () => {
+    const html = picker(undefined);
+    expect(html.match(/<button[^>]* disabled=""/g)?.length).toBe(2);
+    expect(html).toContain("This card cannot send an answer here.");
+  });
+});

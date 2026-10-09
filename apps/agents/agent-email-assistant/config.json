@@ -60,6 +60,7 @@
     "create_label",
     "draft_reply",
     "send_email",
+    "forward_email",
     "send_draft",
     "list_artifacts",
     "categorize_senders",

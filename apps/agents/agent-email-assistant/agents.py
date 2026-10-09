@@ -491,7 +491,8 @@ async def search_emails(
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
         lines.append(
-            f"• id={e.get('id')}{acct} | {frm.get('name') or frm.get('email')}: "
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'))} | "
+            f"{frm.get('name') or frm.get('email')}: "
             f"{e.get('subject', '(no subject)')} — {(e.get('snippet') or '')[:90]}"
         )
     if total > 10:
@@ -550,6 +551,11 @@ async def read_email(email_id: str, full: bool = False) -> str:
         lines.append(f"Cc: {cc}")
     lines.append(f"Subject: {e.get('subject', '(no subject)')}")
     lines.append(f"Date: {e.get('received_at', '')}")
+    # The link to cite this email by (owner report, 2026-10-09). Never "id=":
+    # the chat cards read "id=" as the id of a mail or of a rule.
+    link = _email_link(e.get("id") or email_id, e.get("account_id"))
+    if link:
+        lines.append(f"Link: {link}")
     atts = [a for a in (e.get("attachments") or []) if isinstance(a, dict)]
     if atts:
         # Each id, so read_email_attachment can read the file (EM-T11). Never
@@ -605,6 +611,31 @@ def _canonical_id(value: Any) -> str | None:
         return str(uuid.UUID(str(value or "").strip()))
     except ValueError:
         return None
+
+
+def _email_link(email_id: Any, account_id: Any = None) -> str:
+    """The in-app link to one email, or ``""`` for an id that is not a UUID.
+
+    ``/email?email=<id>&account=<account id>``, the shape that ``emailLink``
+    in ``workbench/control_plane/src/app/email/lib/emailLink.ts`` builds and
+    the email page reads. The tool output carries it as ``link=``, so the
+    model cites an email as ``[subject](link)`` and never builds a link
+    (owner report, 2026-10-09). ``test_email_forward.py`` holds the two
+    shapes to one.
+    """
+    mail = _canonical_id(email_id)
+    if mail is None:
+        return ""
+    box = _canonical_id(account_id) if account_id else None
+    return f"/email?email={mail}" + (f"&account={box}" if box else "")
+
+
+def _link_field(email_id: Any) -> str:
+    """`` link=<link>`` for a list line, after the id. The chat cards read
+    ``id=`` and the text after the last ``|``, so the field sits before the
+    first ``|`` (``parseEmailRows`` in ``EmailToolCards.tsx``)."""
+    link = _email_link(email_id)
+    return f" link={link}" if link else ""
 
 
 def _attachment_line(a: dict[str, Any]) -> str:
@@ -786,8 +817,8 @@ async def find_urgent(account_id: str | None = None) -> str:
         frm = e.get("from_address", {}) or {}
         acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
         lines.append(
-            f"• id={e.get('id')}{acct} | {frm.get('name') or frm.get('email')}: "
-            f"{e.get('subject', '(no subject)')}"
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'))} | "
+            f"{frm.get('name') or frm.get('email')}: {e.get('subject', '(no subject)')}"
         )
     return "\n".join(lines)
 
@@ -805,7 +836,8 @@ async def find_needs_reply(account_id: str) -> str:
     lines = ["Needs reply:"]
     for t in threads[:15]:
         lines.append(
-            f"• id={t.get('message_id')} | {t.get('from')}: {t.get('subject')}"
+            f"• id={t.get('message_id')}{_link_field(t.get('message_id'))} | "
+            f"{t.get('from')}: {t.get('subject')}"
         )
     return "\n".join(lines)
 
@@ -930,7 +962,8 @@ async def query_inbox(
             flags.append("attachment")
         flag = f" [{', '.join(flags)}]" if flags else ""
         lines.append(
-            f"• id={e.get('id')} | {(e.get('received_at') or '')[:10]} | "
+            f"• id={e.get('id')}{_link_field(e.get('id'))} | "
+            f"{(e.get('received_at') or '')[:10]} | "
             f"{frm.get('name') or frm.get('email')}: "
             f"{e.get('subject', '(no subject)')}{flag} — "
             f"{(e.get('snippet') or '')[:80]}"
@@ -1143,7 +1176,8 @@ async def get_important_emails(account_id: str, days: int = 30) -> str:
     lines = ["Most important emails to check:"]
     for e in emails:
         lines.append(
-            f"• id={e.get('message_id')} | {e.get('from')}: "
+            f"• id={e.get('message_id')}{_link_field(e.get('message_id'))} | "
+            f"{e.get('from')}: "
             f"{e.get('subject')} — ({e.get('reason')})"
         )
     return "\n".join(lines)
@@ -2445,6 +2479,126 @@ async def send_email(
     return f"{lead} {', '.join(to)} from {sender}{note} (id={res.get('id', '')})."
 
 
+def _size_text(size: Any) -> str:
+    """A file size for a card: "29 KB", "2.0 MB", or "" when unknown."""
+    try:
+        n = int(size)
+    except (TypeError, ValueError):
+        return ""
+    if n < 1024 * 1024:
+        return f"{max(1, round(n / 1024))} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _forward_files_note(files: list[dict[str, Any]]) -> str:
+    """The files of a forward, for its card. At most ten names, each on one
+    line, because a sender chooses each name."""
+    if not files:
+        return "none"
+    shown = []
+    for a in files[:10]:
+        size = _size_text(a.get("size_bytes"))
+        name = _one_line(a.get("filename") or "file", 60)
+        shown.append(f"{name} ({size})" if size else name)
+    more = f", and {len(files) - 10} more" if len(files) > 10 else ""
+    return ", ".join(shown) + more
+
+
+@_annotate_risk(destructive=True, open_world=True)
+async def forward_email(
+    email_id: str,
+    to: list[str],
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    note: str | None = None,
+    include_attachments: bool = True,
+    account_id: str | None = None,
+) -> str:
+    """Forward an email to new people, WITH its original files (a PDF, a sheet).
+
+    Use this, not ``send_email``, when the user says "forward", or asks to pass
+    an email and its files to someone who was not on it. ``send_email`` cannot
+    attach the files of an email. Use ``send_email`` with
+    ``reply_to_email_id`` to answer the people already on the email.
+
+    The forward goes out from the mailbox that holds the email. Leave
+    ``account_id`` out, or pass that mailbox. It shows the user a card that
+    names the recipients and each file, and it sends nothing on a "no".
+
+    Args:
+        email_id: the id of the email to forward.
+        to: the new recipients.
+        cc / bcc: optional carbon-copy recipients.
+        note: your words above the forwarded email, in the user's voice.
+        include_attachments: carry every file of the email (the default).
+            Set false to forward the text only.
+        account_id: the mailbox that holds the email, or leave it out.
+    """
+    mid = _canonical_id(email_id)
+    if mid is None:
+        return f"Not forwarded. {email_id!r} is not the id of an email."
+    to = [t for t in (to or []) if str(t).strip()]
+    if not to:
+        return "Not forwarded. No recipient. Pass `to`."
+    orig = await _get(f"/email/messages/{mid}") or {}
+    own = str(orig.get("account_id") or "")
+    if own and account_id and own != str(account_id):
+        labels = await _account_labels()
+        return (
+            f"Not forwarded. The email is in the mailbox {labels.get(own, own)} "
+            f"(account_id {own}), not in {labels.get(str(account_id), account_id)}. "
+            f"A forward goes out from the mailbox of the email. Call forward_email "
+            f"again with account_id {own}, or leave account_id out."
+        )
+    box = own or str(account_id or "")
+    sender = await _mailbox_name(box)
+    if sender is None:
+        return (
+            f"Not forwarded. No connected mailbox has the id {box}. Call "
+            "list_accounts and ask the user which mailbox to forward from."
+        )
+    files = [a for a in (orig.get("attachments") or []) if isinstance(a, dict)]
+    carried = files if include_attachments else []
+    subject = _card_text(orig.get("subject") or "(no subject)", 120)
+
+    from acb_skills.ask_tools import request_confirmation
+    _cc_note = f", cc {', '.join(cc)}" if cc else ""
+    # A mail body can ask the model to add a hidden recipient, so the card
+    # shows each bcc address, and each file that leaves with the forward.
+    _bcc_note = f", bcc {', '.join(bcc)}" if bcc else ""
+    if not await request_confirmation(
+        title="Forward this email?",
+        detail=(
+            # The card cuts the detail at 500 characters, and the sender of the
+            # mail controls the subject. So the recipients and the files come
+            # first, and the subject is clipped last.
+            f"From {sender} · To {', '.join(to)}{_cc_note}{_bcc_note} · "
+            f"Attachments: {_forward_files_note(carried)} · Subject: {subject}"
+        ),
+        context=note or "",
+    ):
+        return "Forward cancelled. The email was not forwarded."
+    payload: dict[str, Any] = {
+        "message_id": mid,
+        "to": to,
+        "include_attachments": bool(include_attachments),
+        "account_id": box,
+    }
+    if cc:
+        payload["cc"] = cc
+    if bcc:
+        payload["bcc"] = bcc
+    if note:
+        payload["note"] = note
+    res = await _post("/email/forward", payload)
+    sent = res.get("attachments") or []
+    files_note = f" with {len(sent)} attachment(s)" if sent else " with no attachments"
+    return (
+        f"Forwarded \"{_one_line(res.get('subject') or subject, 120)}\" to "
+        f"{', '.join(to)} from {sender}{files_note} (id={res.get('id', '')})."
+    )
+
+
 # ── Attachments / artifacts ──────────────────────────────────────────────────
 
 @_annotate_risk(open_world=False)
@@ -3209,6 +3363,7 @@ _TOOLS = [
     # Drafting / sending
     draft_reply,
     send_email,
+    forward_email,
     send_draft,
     # Attachments / artifacts
     list_artifacts,

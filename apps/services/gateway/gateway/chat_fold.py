@@ -254,9 +254,15 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             pass
 
         elif t == "CUSTOM":
+            # `segmentCutoff`: the count of segments when the card arrived, so
+            # the reloaded card draws before the text that streamed after it.
+            # The same stamp as a tool's, and only for an id-carrying run.
+            # The proxy checkpoint and the live hook stamp it the same way
+            # (`genUiFlow`, workbench lib/chatPlacement.ts).
             custom_events.append({
                 "name": str(ev.get("name") or ""),
                 "value": ev.get("value"),
+                **({"segmentCutoff": len(segments)} if segments else {}),
             })
 
         elif t == "SUB_AGENT_TEXT_DELTA":

@@ -90,7 +90,7 @@ EXPECTED_OPEN_WORLD = frozenset({
     "spawn_copilot_agent", "delegate_to_agent",
     # email-assistant: sends, forward or reply rules and their runs, the
     # knowledge that feeds replies, and the writes to the mail provider
-    "send_email", "send_draft", "unsubscribe_sender", "digest", "create_rule",
+    "send_email", "forward_email", "send_draft", "unsubscribe_sender", "digest", "create_rule",
     "update_rule", "run_rules", "learn_rule_pattern", "create_rules_from_prompt",
     "install_default_rules", "update_assistant_settings", "resolve_execution",
     "save_knowledge", "manage_inbox", "create_label", "draft_reply",

@@ -9,7 +9,7 @@
  *
  * Mirrors VS Code's vscode_askQuestions tool UX:
  *   • Header + question text per item
- *   • Option buttons with recommended star indicator
+ *   • Option buttons, a recommended one marked with the Recommended badge
  *   • Multi-select checkboxes when multiSelect=true
  *   • Freeform text input when allowFreeformInput=true
  *   • Submit button collects all answers and sends them as next message
@@ -22,6 +22,10 @@
  */
 
 import { useState, useCallback } from "react";
+
+import Icon from "@/components/Icon";
+import RecommendedBadge from "@/components/RecommendedBadge";
+import Button from "@/components/ui/Button";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -147,32 +151,29 @@ export default function ElicitationCard({
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {q.options!.map((opt, oi) => {
                     const isSelected = selected.includes(opt.label);
+                    // ON is the house pair through `Button`'s `selected`
+                    // (DESIGN_SYSTEM.md §3), never a hand-made fill. The old
+                    // `bg-primary/20 text-primary-foreground` put light ink on
+                    // a pale tint, which hid the choice (2026-10-09). The
+                    // badge marks a recommended option. A border colour in
+                    // `className` would fight the variant's own border.
                     return (
-                      <button
+                      <Button
                         key={oi}
-                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        selected={isSelected}
                         onClick={() =>
                           toggleOption(q.header, opt.label, !!q.multiSelect)
                         }
                         disabled={disabled}
-                        className={
-                          "text-[11px] sm:text-[12px] px-3 py-1.5 rounded-lg font-medium transition-colors border " +
-                          (isSelected
-                            ? "bg-primary/20 border-primary text-primary-foreground"
-                            : "bg-card border-border text-muted-foreground hover:border-primary/40 hover:text-foreground")
-                        }
+                        className="gap-1.5"
                         title={opt.description ?? undefined}
                       >
-                        {opt.recommended && (
-                          <span className="mr-1" title="Recommended">
-                            ⭐
-                          </span>
-                        )}
+                        {isSelected && <Icon name="Check" size={12} />}
                         {opt.label}
-                        {q.multiSelect && isSelected && (
-                          <span className="ml-1 text-[10px]">✓</span>
-                        )}
-                      </button>
+                        {opt.recommended && <RecommendedBadge />}
+                      </Button>
                     );
                   })}
                 </div>
@@ -205,14 +206,14 @@ export default function ElicitationCard({
 
       {/* Submit */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-t border-primary/20 bg-primary/5">
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={handleSubmit}
           disabled={disabled || !canSubmit}
-          className="text-[12px] px-4 py-1.5 rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/80 disabled:opacity-40 transition-colors"
         >
           Submit
-        </button>
+        </Button>
         <span className="text-[10px] text-muted-foreground">
           Your answers will be sent to the agent
         </span>

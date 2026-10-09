@@ -360,7 +360,8 @@ describe("solid controls go through the Button primitive", () => {
   // this ratchet only holds if a file that got better cannot keep its old
   // budget for the next regression to spend.
   // 24 since 2026-09-24: My Tasks' DeleteConfirmModal moved onto ConfirmDialog.
-  const SOLID_BUTTON_DEBT = 24;
+  // 23 since 2026-10-09: ElicitationCard's Submit is a `Button` now.
+  const SOLID_BUTTON_DEBT = 23;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};

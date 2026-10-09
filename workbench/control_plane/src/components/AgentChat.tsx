@@ -1528,6 +1528,10 @@ export default function AgentChat({
                 postRespondInput(
                   { request_id: reqId, answer, was_freeform: wasFreeform },
                   () => setElicitation(card),
+                  // A 4xx says no question waits on this id (a stale card).
+                  // The answer goes out as a message, as the genUI path
+                  // does, so it is never lost (2026-10-09).
+                  (outcome) => { if (outcome === "drop") submitText(answer); },
                 );
               } else {
                 const formatted = Object.entries(answers)
@@ -1571,6 +1575,7 @@ export default function AgentChat({
               postRespondInput(
                 { request_id: card.requestId, answer, was_freeform: wasFreeform },
                 () => setUserInput(card),
+                (outcome) => { if (outcome === "drop" && answer) submitText(answer); },
               );
             }}
           />

@@ -102,8 +102,9 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # uncategorized-inbox sweep — categorize_senders only re-projects existing
     # rule labels and cannot categorize mail the rules never reached), +1 for
     # read_email_attachment (WS-17 EM-T11, the text of a file of a mail),
-    # +1 for query_insights (WS-17 EM-T14c, the facts of Insights).
-    assert len(tools) == 44
+    # +1 for query_insights (WS-17 EM-T14c, the facts of Insights), +1 for
+    # forward_email (2026-10-09, a mail and its files to new people).
+    assert len(tools) == 45
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",

@@ -6,7 +6,7 @@ import React from "react";
 import type { ChatMessage } from "@/hooks/useAgentChat";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import { parseStoredRunError } from "@/lib/runErrors";
-import MarkdownMessage from "@/components/MarkdownMessage";
+import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
@@ -15,7 +15,7 @@ import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
-import { genUiPlacement } from "@/lib/chatPlacement";
+import { genUiFlow, genUiPlacement } from "@/lib/chatPlacement";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
@@ -250,9 +250,17 @@ function MessageBubble({
   // inline as a first-class element (not buried in the "Interactive view"
   // fold) so on-the-fly UI is prominent. Button actions route through onChoice
   // — the same follow-up contract as the ```choices``` MCQ block.
-  const genUiEvents = (message.customEvents ?? [])
-    .filter((e) => e.name === "generative_ui" && e.value != null)
-    .map((e) => e.value);
+  const genUiRaw = (message.customEvents ?? [])
+    .filter((e) => e.name === "generative_ui" && e.value != null);
+  const genUiEvents = genUiRaw.map((e) => e.value);
+  // Text that streamed AFTER a card draws below that card (owner report,
+  // 2026-10-09: the run's answer to a picked option drew above the picker,
+  // so the click looked dead). `null` keeps the old order: all the text,
+  // then all the cards. `genUiFlow` in lib/chatPlacement.ts is the rule.
+  const flow = genUiFlow(message.segments, genUiRaw.map((e) => e.segmentCutoff));
+  const head = flow && flow[0]?.kind === "text" ? flow[0].text : "";
+  const flowRest = flow ? (head ? flow.slice(1) : flow) : null;
+  const lastTextIdx = flow ? flow.map((b) => b.kind).lastIndexOf("text") : -1;
 
   // The tiers that served this answer (WS-45 S3, D90 Q4), for every member.
   // Null with the UI flag off, so the action row is as it was.
@@ -467,6 +475,56 @@ function MessageBubble({
     );
   }
 
+  // One generative-UI card, by its index in `genUiEvents`. Both orders draw
+  // through it: the old order and the stream order of `genUiFlow`.
+  const renderGenUi = (i: number) => {
+    const spec = genUiEvents[i];
+
+    const rec = (spec && typeof spec === "object"
+      ? spec : {}) as Record<string, unknown>;
+    const requestId =
+      typeof rec.request_id === "string" ? rec.request_id : null;
+    const act = (msg: string) => {
+      if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
+      else onChoice?.(msg);
+    };
+    // An element that needs the member is marked, so the pin above
+    // the composer can find it and scroll to it (§24 rule 1).
+    const ask = genUiPlacement(spec) === "ask";
+    const askAttr = ask ? { "data-chat-ask": genUiTarget(message.id, i, spec) } : {};
+    if (rec.surface === "panel") {
+      const title = typeof rec.title === "string" && rec.title
+        ? rec.title : "Interactive view";
+      return (
+        <button
+          key={i}
+          type="button"
+          onClick={() => openGenUI({
+            id: `${message.id}:${i}`,
+            title,
+            sessionId,
+            spec,
+          })}
+          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-xs text-foreground hover:bg-secondary/60 transition-colors"
+        >
+          <Icon name="AppWindow" size={13} className="text-primary" />
+          <span className="font-medium">{title}</span>
+          <span className="text-muted-foreground">
+            — open in side panel
+          </span>
+        </button>
+      );
+    }
+    if (ask) {
+      return (
+        <div key={i} {...askAttr} className="min-w-0 outline-none">
+          <GenerativeUINode spec={spec} onAction={act} />
+        </div>
+      );
+    }
+    return <GenerativeUINode key={i} spec={spec} onAction={act} />;
+  };
+
   // ═══ Assistant message — no bubble, renders directly ═══
   return (
     <div className="group">
@@ -478,13 +536,14 @@ function MessageBubble({
           ThinkingContainer, code blocks, and artifact cards have their own
           visual containers. Only the timestamp and action bar are added. */}
       <MarkdownMessage
-        content={message.content}
-        streaming={message.streaming}
+        content={flow ? head : message.content}
+        // In flow order the caret sits on the LAST text block, wherever it is.
+        streaming={flow ? message.streaming && !!head && lastTextIdx === 0 : message.streaming}
         toolEvents={dedupedToolEvents}
         progressLines={message.progressLines}
         isThinkingActive={message.isThinkingActive}
         reasoningBlocks={message.reasoningBlocks}
-        segments={message.segments}
+        segments={flow ? (head ? [{ id: "flow-head", text: head }] : undefined) : message.segments}
         onChoice={onChoice}
         sessionId={sessionId}
         entityPills={pills}
@@ -528,55 +587,34 @@ function MessageBubble({
           surface:"panel" specs render as a compact open-chip (the immersive
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
-      {genUiEvents.length > 0 && (
+      {genUiEvents.length > 0 && !flow && (
         <EntityIndexContext.Provider value={entityIndex}>
         <div className="mt-3 space-y-2">
-          {genUiEvents.map((spec, i) => {
-            const rec = (spec && typeof spec === "object"
-              ? spec : {}) as Record<string, unknown>;
-            const requestId =
-              typeof rec.request_id === "string" ? rec.request_id : null;
-            const act = (msg: string) => {
-              if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
-              else onChoice?.(msg);
-            };
-            // An element that needs the member is marked, so the pin above
-            // the composer can find it and scroll to it (§24 rule 1).
-            const ask = genUiPlacement(spec) === "ask";
-            const askAttr = ask ? { "data-chat-ask": genUiTarget(message.id, i, spec) } : {};
-            if (rec.surface === "panel") {
-              const title = typeof rec.title === "string" && rec.title
-                ? rec.title : "Interactive view";
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => openGenUI({
-                    id: `${message.id}:${i}`,
-                    title,
-                    sessionId,
-                    spec,
-                  })}
-                  className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-xs text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  <Icon name="AppWindow" size={13} className="text-primary" />
-                  <span className="font-medium">{title}</span>
-                  <span className="text-muted-foreground">
-                    — open in side panel
-                  </span>
-                </button>
-              );
-            }
-            if (ask) {
-              return (
-                <div key={i} {...askAttr} className="min-w-0 outline-none">
-                  <GenerativeUINode spec={spec} onAction={act} />
-                </div>
-              );
-            }
-            return <GenerativeUINode key={i} spec={spec} onAction={act} />;
-          })}
+          {genUiEvents.map((_, i) => renderGenUi(i))}
         </div>
+        </EntityIndexContext.Provider>
+      )}
+      {flowRest && flowRest.length > 0 && (
+        <EntityIndexContext.Provider value={entityIndex}>
+          {flowRest.map((b, k) =>
+            b.kind === "cards" ? (
+              <div key={`cards-${k}`} className="mt-3 space-y-2">
+                {b.indexes.map((i) => renderGenUi(i))}
+              </div>
+            ) : (
+              <div key={`text-${k}`} className="mt-3 text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0">
+                <MarkdownBody
+                  content={b.text}
+                  onChoice={onChoice}
+                  sessionId={sessionId}
+                  entityPills={pills}
+                  entityIndex={entityIndex ?? undefined}
+                  fences
+                  caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
+                />
+              </div>
+            ),
+          )}
         </EntityIndexContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
@@ -650,6 +688,10 @@ export default React.memo(MessageBubble, (a, b) =>
   a.message === b.message &&
   a.sessionId === b.sessionId &&
   a.onChoice === b.onChoice &&
+  // The blocking-card answer. Left out, a bubble kept the handler of the
+  // render when the card arrived, with a stale `submitText` inside it, so a
+  // 409 fallback could queue the answer behind a run that had ended.
+  a.onHitlRespond === b.onHitlRespond &&
   a.onResend === b.onResend &&
   a.onRetryMessage === b.onRetryMessage &&
   a.onFileOpen === b.onFileOpen &&

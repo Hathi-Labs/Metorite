@@ -311,7 +311,7 @@ class TestTheTool:
         risk = getattr(agents.query_insights, "__tool_risk__", {})
         assert risk.get("open_world") is False and risk.get("destructive") is False
 
-    def test_the_two_tool_lists_agree_with_44_names(self):
+    def test_the_two_tool_lists_agree_with_45_names(self):
         config = json.loads((_AGENT_DIR / "config.json").read_text(encoding="utf-8"))
         # WS-48 N2: ``narrow_and_read`` is in the scope, and only a build
         # with ``NARROWING_AGENTS`` on holds it (test_own_tool_scope_parity.py).
@@ -319,7 +319,8 @@ class TestTheTool:
         assert "narrow_and_read" in config["own_tool_scope"]
         built = [fn.__name__ for fn in agents._TOOLS]
         assert sorted(scope) == sorted(built)
-        assert len(scope) == len(set(scope)) == 44
+        # 45 since ``forward_email`` (2026-10-09, test_email_forward.py).
+        assert len(scope) == len(set(scope)) == 45
         assert "query_insights" in scope
 
 
