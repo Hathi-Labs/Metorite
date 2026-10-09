@@ -469,6 +469,26 @@ async def _thread_turns(
 # ── Before the 200 ──────────────────────────────────────────────────────────
 
 
+#: One lock for each member in each org, in this process. Two copies of one
+#: first message that arrive at once would both open the same thread id, and
+#: the second one's `_refuse_if_elsewhere` can read the first one's row
+#: between its two reads. So the thread write and the insert run one after
+#: the other. Bounded: a full map drops every lock that nobody holds.
+_THREAD_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+_THREAD_LOCKS_MAX = 1024
+
+
+def _thread_lock(org: str, email: str) -> asyncio.Lock:
+    key = (org, email)
+    lock = _THREAD_LOCKS.get(key)
+    if lock is None:
+        if len(_THREAD_LOCKS) >= _THREAD_LOCKS_MAX:
+            for k in [k for k, lk in _THREAD_LOCKS.items() if not lk.locked()]:
+                del _THREAD_LOCKS[k]
+        lock = _THREAD_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
 def current_link(links: list[Any]) -> Any | None:
     """The phone's CURRENT link, or None. Every run uses it (§5.3)."""
     return next((lk for lk in links if lk["is_current"]), None)
@@ -495,6 +515,8 @@ async def record_inbound(
                   organization_id=org)
         return None
 
+    from gateway.rooms import SessionOfAnotherTenant
+
     token = bind_tenant(org)
     try:
         if not await _member_active(org, email):
@@ -504,10 +526,18 @@ async def record_inbound(
             _log.info("whatsapp_channel.run.refused", phone_hint=hint,
                       organization_id=org, reason="inactive")
             return None
-        session_id = await _write_turn(org, email, wamid, body)
-        row_id = await _insert(org=org, email=email, wa_id=wa_id, wamid=wamid,
-                               direction="in", state="received",
-                               session_id=session_id)
+        async with _thread_lock(org, email):
+            try:
+                session_id = await _write_turn(org, email, wamid, body)
+            except SessionOfAnotherTenant:
+                # A copy of this message in ANOTHER process opened the
+                # thread between the two reads of `_refuse_if_elsewhere`.
+                # Once more: the thread read finds it now. A row of another
+                # tenant raises again, and nothing is written.
+                session_id = await _write_turn(org, email, wamid, body)
+            row_id = await _insert(org=org, email=email, wa_id=wa_id,
+                                   wamid=wamid, direction="in",
+                                   state="received", session_id=session_id)
     finally:
         release_tenant(token)
 

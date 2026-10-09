@@ -227,6 +227,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(bot_run, "_RUNS", set())
     monkeypatch.setattr(bot_run, "_LIVE_ROWS", set())
     monkeypatch.setattr(bot_run, "_LIVE_THREADS", set())
+    monkeypatch.setattr(bot_run, "_THREAD_LOCKS", {})
     monkeypatch.setattr(inbound, "_FAILED", {})
     monkeypatch.setattr(inbound, "_HANDLED", OrderedDict())
 
@@ -467,6 +468,42 @@ async def test_a_claimed_row_is_not_run_again(world: _World) -> None:
     await bot_run.run_message(req, stale=True)
     assert len(world.agent.calls) == 1
 
+
+
+async def test_a_thread_opened_by_another_process_at_once_is_retried_once(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_refuse_if_elsewhere`` can read a copy's new thread between its two
+    reads. One retry finds the thread, and the message still runs once."""
+    from gateway.rooms import SessionOfAnotherTenant
+
+    real = world.store.write_turn
+    raised: list[int] = []
+
+    async def _racy(org, email, wamid, body):
+        if not raised:
+            raised.append(1)
+            raise SessionOfAnotherTenant("race")
+        return await real(org, email, wamid, body)
+
+    monkeypatch.setattr(bot_run, "_write_turn", _racy)
+    res = await _post_and_run(_message())
+    assert res.status_code == 200 and raised == [1]
+    assert len(world.agent.calls) == 1
+
+
+async def test_a_thread_of_another_tenant_writes_nothing_and_answers_500(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.rooms import SessionOfAnotherTenant
+
+    async def _elsewhere(org, email, wamid, body):
+        raise SessionOfAnotherTenant("elsewhere")
+
+    monkeypatch.setattr(bot_run, "_write_turn", _elsewhere)
+    res = await _post_and_run(_message())
+    assert res.status_code == 500, "Meta must send the batch again"
+    assert world.store.rows == {} and world.agent.calls == []
 
 # ── A3: the identity check ──────────────────────────────────────────────────
 

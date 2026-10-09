@@ -191,6 +191,7 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bot_run, "_RUNS", set())
     monkeypatch.setattr(bot_run, "_LIVE_ROWS", set())
     monkeypatch.setattr(bot_run, "_LIVE_THREADS", set())
+    monkeypatch.setattr(bot_run, "_THREAD_LOCKS", {})
 
     async def _not_active(_thread_id: str) -> bool:
         return False
