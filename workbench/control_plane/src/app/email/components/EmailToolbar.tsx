@@ -72,7 +72,10 @@ export function EmailToolbar() {
 
       {selectedEmail ? (
         <>
-          <Divider />
+          {/* The actions below act on the open email, which reads in the
+              right-hand pane, so they sit at the right edge. Only New, which
+              needs no open email, stays at the left (owner, 2026-10-09). */}
+          <div className="flex-1" />
           <TBtn icon={themedIcon("ReplyAll")} label="Reply All" onClick={() => setViewerCommand("reply-all")} />
           <TBtn icon={themedIcon("Reply")} label="Reply" onClick={() => setViewerCommand("reply")} />
           <TBtn icon={themedIcon("Forward")} label="Forward" onClick={() => setViewerCommand("forward")} />
@@ -93,7 +96,7 @@ export function EmailToolbar() {
             {showMove && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMove(false)} />
-                <AnchoredPanel anchor={moveAnchor} open={showMove} className="w-44 py-1">
+                <AnchoredPanel anchor={moveAnchor} open={showMove} align="end" className="w-44 py-1">
                   <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">Move to</div>
                   {foldersInScope(folders, viewAll)
                     .filter((f) => isRealFolder(f.key) && f.key !== selectedEmail.folder)
@@ -140,7 +143,7 @@ export function EmailToolbar() {
             {showLabel && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowLabel(false)} />
-                <AnchoredPanel anchor={labelAnchor} open={showLabel} maxHeight={360} className="w-60 py-1">
+                <AnchoredPanel anchor={labelAnchor} open={showLabel} maxHeight={360} align="end" className="w-60 py-1">
                   <LabelMenu email={selectedEmail} embedded />
                 </AnchoredPanel>
               </>
@@ -156,7 +159,7 @@ export function EmailToolbar() {
             {showMore && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMore(false)} />
-                <AnchoredPanel anchor={moreAnchor} open={showMore} className="w-44 py-1">
+                <AnchoredPanel anchor={moreAnchor} open={showMore} align="end" className="w-44 py-1">
                   {[
                     { label: "Mark as spam", run: () => updateEmail(selectedEmail.id, { folder: "junk" }) },
                     { label: "Report phishing", run: () => updateEmail(selectedEmail.id, { folder: "junk" }) },
@@ -178,8 +181,6 @@ export function EmailToolbar() {
               </>
             )}
           </div>
-
-          <div className="flex-1" />
         </>
       ) : (
         <>
