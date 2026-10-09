@@ -241,7 +241,7 @@ export function registerSender(threadId: string, send: Sender): void {
 export function holdForUpdate(
   threadId: string,
   text: string,
-  opts: { userMsgId?: string | null; front?: boolean } = {},
+  opts: { userMsgId?: string | null; front?: boolean; resume?: boolean } = {},
 ): void {
   const t = text.trim();
   setSessionState(threadId, (prev) => {
@@ -253,6 +253,8 @@ export function holdForUpdate(
       outage: true,
       error: null,
       pendingSends: pending,
+      // A held Continue stays a Continue: it goes out with `resume`.
+      pendingResume: opts.resume ? queueOnce(prev.pendingResume, t) : prev.pendingResume,
       messages: opts.userMsgId
         ? prev.messages.map((m) => (m.id === opts.userMsgId ? { ...m, pendingDelivery: true } : m))
         : prev.messages,
@@ -285,8 +287,16 @@ export async function flushHeld(threadId: string): Promise<void> {
       return;
     }
     const heldId = heldBubbleId(st.messages, next);
-    setSessionState(threadId, (prev) => ({ ...prev, outage: false, pendingSends: rest }));
-    await send(next, heldId ? { heldId } : undefined);
+    const resume = st.pendingResume.includes(next);
+    setSessionState(threadId, (prev) => ({
+      ...prev, outage: false, pendingSends: rest,
+      pendingResume: prev.pendingResume.filter((x) => x !== next),
+    }));
+    const opts: SendOptions = {
+      ...(heldId ? { heldId } : {}),
+      ...(resume ? { resume: true } : {}),
+    };
+    await send(next, Object.keys(opts).length ? opts : undefined);
     if (getSessionState(threadId).outage) return;
   }
 }

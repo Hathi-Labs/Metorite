@@ -250,11 +250,11 @@ export function useAgentChat({
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
-        holdForUpdate(threadId, text);
+        holdForUpdate(threadId, text, { resume: opts?.resume });
         return;
       }
       if (plan === "requeue") {
-        holdForUpdate(threadId, text, { front: true });
+        holdForUpdate(threadId, text, { front: true, resume: opts?.resume });
         return;
       }
 
@@ -496,7 +496,9 @@ export function useAgentChat({
             ...prev,
             messages: prev.messages.filter((m) => m.id !== assistantId),
           }));
-          holdForUpdate(threadId, userMsg.content, { userMsgId: userMsg.id, front: !!held });
+          holdForUpdate(threadId, userMsg.content, {
+            userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
+          });
           return;
         }
         const lc = rawErr.toLowerCase();

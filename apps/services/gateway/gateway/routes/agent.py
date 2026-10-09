@@ -201,16 +201,36 @@ async def _route_incoming_turn(
     # process has no heartbeat key, close the run here (its partial reply is
     # saved with an "interrupted" marker) and route as if nothing ran. A bare
     # "stop" to a dead run has nothing left to stop.
-    if active:
-        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+    #
+    # ONE recovery at a time (``cc:recover:{tid}``). A request that loses the
+    # claim waits for the winner, then routes as usual: into the winner's new
+    # run as a steer, so a second run never starts (two held sends that flush
+    # together are the likely case).
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        recovery_in_progress, run_liveness, wait_out_recovery,
+    )
 
-        if await run_liveness(thread_id) == "dead":
+    async def _reread() -> tuple[bool, str]:
+        a = await is_active(thread_id)
+        return a, (await get_run_source(thread_id) if a else "")
+
+    try:
+        if await recovery_in_progress(thread_id):
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+        if active and await run_liveness(thread_id) == "dead":
             from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
 
-            await recover_dead_run(thread_id, why="owner_gone")
-            if is_bare_stop(text):
-                return TurnDecision(Route.DROP, "dead_run_stopped")
-            return TurnDecision(Route.ENGAGE, "dead_run_recovered")
+            stop = is_bare_stop(text)
+            rec = await recover_dead_run(thread_id, why="owner_gone", hold=not stop)
+            if rec is not None:
+                if stop:
+                    return TurnDecision(Route.DROP, "dead_run_stopped")
+                return TurnDecision(Route.ENGAGE, "dead_run_recovered")
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.turn_recovery_failed", thread_id=thread_id[:12])
 
     return route_turn(
         author_kind="human" if actor else "agent",
@@ -222,18 +242,20 @@ async def _route_incoming_turn(
 
 async def _resume_note_for(
     thread_id: str, member: str, organization_id: str | None,
-) -> str:
+) -> str | None:
     """The server's Continue note, built from the thread's saved partial reply.
 
-    Reads the last assistant row of the thread under the caller's tenant. A
-    read that fails still answers with the bare note, so Continue always sends
-    something the model can act on.
+    Reads the last assistant row of the thread under the caller's tenant.
+    ``None`` unless that row carries the restart marker: any member who can
+    send may set ``resume: true``, so the flag counts only for an answer a
+    restart cut. The caller then sends the message as it came.
     """
     import asyncio  # noqa: PLC0415
 
-    from gateway.chat_recovery import compose_resume_note  # noqa: PLC0415
+    from gateway.chat_recovery import (  # noqa: PLC0415
+        compose_resume_note, row_was_interrupted,
+    )
 
-    partial = ""
     try:
         from gateway.routes.chat import _get_messages  # noqa: PLC0415
 
@@ -241,13 +263,14 @@ async def _resume_note_for(
             _get_messages, thread_id, (member or "").strip() or "anonymous",
             limit=20, organization_id=organization_id,
         )
-        for row in reversed(rows or []):
-            if row.get("role") == "assistant" and str(row.get("content") or "").strip():
-                partial = str(row.get("content") or "")
-                break
     except Exception:  # noqa: BLE001
         _log.warning("agent.resume_partial_unread", thread_id=thread_id[:12])
-    return compose_resume_note(partial)
+        return None
+    last = next((r for r in reversed(rows or []) if r.get("role") == "assistant"), None)
+    if last is None or not row_was_interrupted(last):
+        _log.info("agent.resume_refused_no_marker", thread_id=thread_id[:12])
+        return None
+    return compose_resume_note(str(last.get("content") or ""))
 
 
 #: Sources whose runs nobody is standing in. A person's message arriving during
@@ -392,22 +415,28 @@ async def _apply_turn_decision(
     # message itself carries it), and start the next run in this request. The
     # ENGAGE branch replays the steers stored earlier, such as a "Continue"
     # that an earlier request left behind.
+    #
+    # "Nobody heard it" alone proves nothing (a listener can be a moment from
+    # subscribing on another worker). The run must ALSO have lost its owner's
+    # heartbeat. And only the request that wins the recovery claim engages: a
+    # loser keeps its steer stored for replay, as before.
     if signal.get("undelivered"):
         from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
 
-        if await run_liveness(thread_id, undelivered=True) == "dead":
+        if await run_liveness(thread_id) == "dead":
             from orchestrator.steer import Route as _Route  # noqa: PLC0415
             from orchestrator.steer import TurnDecision as _Decision  # noqa: PLC0415
             from orchestrator.steer import discard_signal  # noqa: PLC0415
 
             from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
 
-            await discard_signal(thread_id, str(signal.get("id") or ""))
-            await recover_dead_run(thread_id, why="steer_undelivered")
-            return await _apply_turn_decision(
-                _Decision(_Route.ENGAGE, "dead_run_recovered"),
-                req, agent_name, actor, room,
-            )
+            rec = await recover_dead_run(thread_id, why="steer_undelivered", hold=True)
+            if rec is not None:
+                await discard_signal(thread_id, str(signal.get("id") or ""))
+                return await _apply_turn_decision(
+                    _Decision(_Route.ENGAGE, "dead_run_recovered"),
+                    req, agent_name, actor, room,
+                )
 
     # The room sees WHO redirected the run and when. Deliberately on
     # `cc:room:` and not on the run stream: run events are folded into the
@@ -2221,11 +2250,10 @@ async def run_agent_stream_endpoint(
     # The chat's Continue button sends ``resume: true``. The words the model
     # reads are the SERVER's, built from the saved partial reply, so a client
     # cannot write that instruction. See gateway.chat_recovery.
-    if req.payload.get("resume") and req.thread_id:
-        req.payload["message"] = await _resume_note_for(
-            req.thread_id, actor_email, _room_org,
-        )
-        req.payload.pop("resume", None)
+    if req.payload.pop("resume", None) and req.thread_id:
+        _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
+        if _note is not None:
+            req.payload["message"] = _note
 
     _incoming_text = str(
         req.payload.get("message") or req.payload.get("user_query") or ""

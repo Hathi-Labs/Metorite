@@ -123,12 +123,14 @@ export interface SessionStreamState {
   /** The member's sends held during an update, each once, in order. They go
    *  out when `/api/health` says the gateway is back. */
   pendingSends: string[];
+  /** The held sends that are a Continue: they go out with `resume`. */
+  pendingResume: string[];
 }
 
 function _defaultState(): SessionStreamState {
   return {
     messages: [], isLoading: false, error: null, abortController: null, recovering: false,
-    lastEventId: null, runStatus: "idle", outage: false, pendingSends: [],
+    lastEventId: null, runStatus: "idle", outage: false, pendingSends: [], pendingResume: [],
   };
 }
 

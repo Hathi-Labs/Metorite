@@ -38,6 +38,7 @@ import {
 } from "@/lib/confirmationQueue";
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
+import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
@@ -1446,6 +1447,15 @@ export default function AgentChat({
     setMessages((prev) => prev.filter((x) => !plan.drop.includes(x.id)));
     submitText(plan.resend);
   }, [submitText, setMessages]);
+
+  // While the chat shows its own "Metorite is updating" notice, the shell's
+  // toast stands down, so the member reads it once (review of #797).
+  useEffect(() => {
+    if (!outage) return;
+    const id = `chat:${sessionId}`;
+    coverOutage(id);
+    return () => uncoverOutage(id);
+  }, [outage, sessionId]);
 
   // The last answer an app update cut, if the member has not moved on.
   const interruptedId = useMemo(() => interruptedTurn(messages), [messages]);

@@ -271,3 +271,37 @@ export async function probeHealth(
     return { up: false, build: null };
   }
 }
+
+// ── A surface that already tells the member ─────────────────────────────────
+//
+// The chat shows its own "Metorite is updating" notice while it holds a send
+// (incident 2026-10-09, `lib/chatRecovery.ts`). The shell's toast then says
+// the same thing a second time. So a surface COVERS the outage while its own
+// notice shows, and the shell's toast stands down for that time. "Metorite is
+// back" still shows: nothing else says that.
+
+const covers = new Set<string>();
+const coverListeners = new Set<() => void>();
+
+/** A surface shows its own outage notice. `id` is the surface's own key. */
+export function coverOutage(id: string): void {
+  if (covers.has(id)) return;
+  covers.add(id);
+  coverListeners.forEach((fn) => fn());
+}
+
+export function uncoverOutage(id: string): void {
+  if (!covers.delete(id)) return;
+  coverListeners.forEach((fn) => fn());
+}
+
+/** True while any surface shows its own outage notice. */
+export function outageCovered(): boolean {
+  return covers.size > 0;
+}
+
+/** Hear every change of the cover. Returns the unsubscribe. */
+export function onOutageCover(fn: () => void): () => void {
+  coverListeners.add(fn);
+  return () => { coverListeners.delete(fn); };
+}

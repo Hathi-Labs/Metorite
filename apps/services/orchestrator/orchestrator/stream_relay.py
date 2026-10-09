@@ -1165,7 +1165,7 @@ async def run_detached(
     # What a later process needs to close this run if THIS process dies
     # (orchestrator.run_liveness, incident 2026-10-09). The executor
     # re-registers the index entry with the run id as its token, so both
-    # tokens travel.
+    # tokens travel. No member email: the sweep reads cc:runactor instead.
     from orchestrator.run_liveness import (  # noqa: PLC0415
         forget_instance_run, record_instance_run,
     )
@@ -1174,7 +1174,6 @@ async def run_detached(
     await record_instance_run(thread_id, {
         **_rec,
         "org": organization_id,
-        "actor": actor,
         "source": source,
         "tokens": [t for t in (_live_token, _rec.get("runId")) if t],
     })

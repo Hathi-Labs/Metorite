@@ -34,6 +34,7 @@ import {
 } from "@/lib/chatRecovery";
 import { getSessionState, setSessionState, type ChatMessage } from "@/lib/chatStore";
 import { sendRespondInputResult } from "@/lib/respondInput";
+import { coverOutage, onOutageCover, outageCovered, uncoverOutage } from "@/lib/shell/serviceHealth";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -119,6 +120,36 @@ describe("an app update holds a send once and sends it when the gateway is back"
     expect(sent).toEqual(["one", "two"]);
     expect(getSessionState(tid).pendingSends).toEqual(["two", "three"]);
     expect(getSessionState(tid).outage).toBe(true);
+  });
+
+  it("keeps a held Continue a Continue", async () => {
+    // Review of #797, nit. A Continue held during an update used to go out
+    // as the bare word. Mutation: drop pendingResume from flushHeld.
+    const tid = thread();
+    const sent: Array<[string, SendOptions | undefined]> = [];
+    registerSender(tid, async (text, opts) => { sent.push([text, opts]); });
+    setRecoveryDeps({ probe: async () => false, sleep: () => new Promise(() => {}) });
+    holdForUpdate(tid, CONTINUE_TEXT, { resume: true });
+    holdForUpdate(tid, "plain");
+    await retryHeldNow(tid);
+    expect(sent).toEqual([[CONTINUE_TEXT, { resume: true }], ["plain", undefined]]);
+    expect(getSessionState(tid).pendingResume).toEqual([]);
+  });
+
+  it("lets the shell toast stand down while the chat's notice covers the outage", () => {
+    // Review of #797, nit: the member reads "Metorite is updating" once.
+    const heard: boolean[] = [];
+    const off = onOutageCover(() => heard.push(outageCovered()));
+    expect(outageCovered()).toBe(false);
+    coverOutage("chat:a");
+    coverOutage("chat:a");
+    uncoverOutage("chat:a");
+    off();
+    expect(heard).toEqual([true, false]);
+    const notice = readFileSync(`${SRC}/lib/shell/UpdateNotice.tsx`, "utf8");
+    expect(notice).toContain('if ((state === "updating" || state === "busy") && outageCovered()) {');
+    const chat = readFileSync(`${SRC}/components/AgentChat.tsx`, "utf8");
+    expect(chat).toContain("coverOutage(id);");
   });
 
   it("waits with backoff, and stops when told to", async () => {
@@ -261,10 +292,15 @@ describe("the interrupted notice and its Continue button", () => {
     expect(route).toContain("...(resume === true ? { resume: true } : {})");
   });
 
-  it("marks a stream the restart cut, in the chat route", () => {
+  it("re-opens a stream that ended early, and never marks it on its own", () => {
+    // Review of #797, P2. A run parked on a card outlives the fetch budget,
+    // so a stream with no terminal event is NOT proof the run died. The
+    // route re-opens it; only the gateway (a dead owner) writes the marker.
+    // Mutation: put back the route's own marker, and the last line fails.
     const route = readFileSync(`${SRC}/app/api/agent/chat/route.ts`, "utf8");
-    expect(route).toContain("if (!sawTerminal) {");
-    expect(route).toContain("name: RUN_INTERRUPTED_EVENT");
+    expect(route).toContain("const next = await reattach(lastStreamId).catch(() => null);");
+    expect(route).toContain("threadId ? reattachFor(threadId, runHeaders) : undefined");
+    expect(route).not.toContain("RUN_INTERRUPTED_EVENT");
   });
 
   it("hides the marker from the raw Interactive view", () => {
