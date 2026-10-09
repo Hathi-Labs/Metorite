@@ -1,10 +1,11 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28. I-8 (the Spaces step and unknown columns) is built, and I-5 is deferred. I-10 (one status set per space, a Map section that opens on a summary) is built, 2026-10-09 (§6.3, §7.7). I-11 (tags and types into the shared vocabulary) is spec only (§6.5), and so are the other tools.**
+**Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28. I-8 (the Spaces step and unknown columns) is built, and I-5 is deferred. I-10 (one status set per space, a Map section that opens on a summary) is built, 2026-10-09 (§6.3, §7.7). I-10b (status and stage made plain) is spec, 2026-10-09 (§7.7). I-11 (tags and types into the shared vocabulary) is spec only (§6.5), and so are the other tools.**
 
 Owner directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. The I-10 anchors
-were verified against code on 2026-10-09 at `807be57cb`. One real ClickUp
+were verified against code on 2026-10-09 at `807be57cb`, and the I-10b
+anchors at `dc05d6c57`. One real ClickUp
 export measured on 2026-09-27 (§4.1.1). Board row
 **WS-41**. This spec records **D80**, which amends **D52.2**.
 
@@ -1124,7 +1125,49 @@ words, so that nobody is confused.
 - **Better stage rules (`plan._PROPOSALS`).** Hold, on hold, waiting,
   blocked, paused and stuck go to In progress. Review, QA and testing go to
   In progress by a rule, not by the default, so they are not marked as
-  guesses. Backlog, someday, later, parked and icebox stay in Backlog.
+  guesses. Backlog, someday, later, parked and icebox stay in Backlog. The
+  first match still wins, so the hold rule goes before the backlog rule. A
+  test pins one mixed name, for example "Blocked - backlog".
+
+**The I-10b build rules** (from the audit of 2026-10-09):
+
+1. **The guess field.** Each plan status row carries `guessed: bool`. It is
+   true only when `propose_target` reached the default of
+   `propose_category`, because no rule matched. It is false for a name that
+   the target set holds, a synonym, a rule match, and a stage that an
+   earlier run recorded. A plan saved before I-10b has no field, and a
+   missing field means false (R6). On the client, the mark clears when the
+   admin picks a stage for that row.
+2. **`InfoTip` and its test.** `InfoTip` is a ghost `Button` with
+   `size="icon-xs"` and `icon="Info"`, so it carries `.cc-control`
+   (`AGENTS.md` rules 3 and 8). It imports nothing from `@base-ui/react`.
+   The vitest setup runs in `node` with no DOM, so the test follows
+   `SelectButton.test.ts`: a pure reducer for click, Enter, Space, Escape
+   and an outside press (through `outsideClick.shouldDismiss`), and a
+   `renderToStaticMarkup` check of `aria-expanded`, `aria-label` and the
+   icon. The slice adds no DOM test dependency.
+3. **The status-and-stage text has one home.** A constant
+   `STATUS_AND_STAGE` goes in `src/lib/statusCategory.ts`, beside
+   `CATEGORY_HINT`. Map and Settings both read it.
+4. **The fence.** `src/app/projects/lib/stageHelp.test.ts` reads every
+   `.ts` and `.tsx` file under `src/app/projects/`, test files excluded. It
+   fails when a file holds, as a literal, a value of `CATEGORY_HINT` or of
+   `STATUS_AND_STAGE`. A paraphrase cannot be fenced, so that half of the
+   rule is advisory (R7).
+5. **The stage picker shows each meaning on a second line.** `SelectOption`
+   gains an optional `description`, which `SelectButton` draws under the
+   label. The current `hint` stays beside the label, so no other consumer
+   changes. `SelectButton.test.ts` pins it. At 390 px the open panel stays
+   inside the viewport, with no horizontal scroll.
+6. **The Settings anchor.** The `InfoTip` "Status and stage" sits beside
+   the section heading in `ProjectsSettings.tsx` (the shared `<h2>`), only
+   when the section is Statuses. Each stage heading's bare Info icon in
+   `StatusManager.tsx` becomes an `InfoTip` with that stage's meaning.
+7. **Row order.** The rows that need a check go first. The Map pairs each
+   plan row with its resolved row by `source`, never by index, so a sort
+   cannot pair them wrongly.
+8. **The word "category".** The member-visible text in
+   `statusCategory.ts` that says "status category" says "stage" instead.
 
 **The Tags and types section of Map (I-11)** follows the same shape: a
 summary, one button, and rows with one "Becomes" picker. Its groups are
@@ -1185,7 +1228,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-8** ✅ built 2026-09-30 | The mapping step, made complete (owner, 2026-09-30: "sort out the unknown fields"). A **Spaces** step between Review and Map shows every ClickUp Space, Folder and List. The admin unticks one to leave it out with everything under it, or renames it. The same step sets **who can see** a new space: the organization, or one group (§5.3). On **Map**, a status takes a new name, and two statuses given one name merge (§6.3). The columns the importer does not read are listed with their counts and examples, and each is left out or kept as a line in the task's description (§6.5b) | `plan.choose` is the ONE place the choices apply: the dry run and the writer both read through it (`test_import_choices.py`). A subtask of a skipped task stays out, wherever it lives. **Review fixes:** a later export that keeps OTHER lists still continues the earlier space, because "same export" is judged on every task in the file (`file_task_refs`). A choice for a container the file no longer holds is dropped, never an error. A rename in an existing space keeps the folder a re-run reuses (`source_name`). The Map step never changes a stage by itself, and marks a merge whose stages differ. **Met:** `live_ws41_choices.py` passes 14/14 on Postgres. A skipped list creates no node and no task, a renamed list lands under its new name, a kept column reaches the description, and a second run that keeps everything adds the rest into the same space. The writer, import and discard live suites still pass (58, 21, 33). A browser walk against a real gateway ran the five steps on a fixture with two unknown columns |
 | **I-9** ✅ built 2026-09-30 | People added AFTER an import get their tasks (§6.2, §6.9). A production dry run of the real export (read only, counts only, 2026-09-30) found the organization's People directory holds 1 person, so 50 of 51 ClickUp people had no member and 2,024 assignments would land unassigned. The three-way rule moved nothing on a mapping change, so adding the team later and importing again did not help. Now the unchanged-source branch FILLS A GAP: when no member edited the field, a re-run adds newly matched people to the assignees and rewrites the description's "Assigned in ClickUp to" line (`layout._fills_a_gap`). It never takes anybody off (4c.3 still holds). The Map step and the report say how to close the gap | `tests/live/live_ws41_people_later.py` passes 10/10 on Postgres, through the upload route's own inheritance: an unassigned task is assigned on the next run once the person is in People, the name line goes, and a member's own assignment is kept. `live_ws41_writer.py` still passes 58/58. Unit: `test_import_layout.py` pins the fill, the member-edit guard and the add-only rule |
 | **I-10** ✅ built 2026-10-09 | Statuses: one set per space, a target for each ClickUp status, and a Map section that opens on a summary (§6.3, §7.7). Owner decisions, 2026-10-09 | **Plan:** the plan carries the target set and the proposed target of each ClickUp status. On the fixture, the ten statuses propose six targets, and the plan holds no error. A choice that names an existing status takes that status's stage. **Writer:** `live_ws41_writer.py` gains checks. A new space holds one set, and every List that the run creates sets `owns_statuses = false`. Each task's status comes from the space's set, and a task with no status is in Backlog. An existing-space target gains only the missing names, through `_reuse_statuses`, and keeps them after a discard. A re-upload of a pre-I-10 tree adds 0 lanes. **Checks that change by design, with their new values:** writer 3.5, `done_status_added` goes from 7 to 0. Writer 4c.4 finds its lane as the space's "Backlog", on a node with no parent. Discard 4.5b matches the lane name case-blind. Every other check of the live writer, choices, discard and people-later suites passes unchanged. **Ships under the live flag.** `PROJECTS_IMPORT` is on in production (I-7), so the merge is the release. Production held no applied import on 2026-10-09, only one planned run and two discarded ones. **Surface:** `importFlow.test.ts` pins the summary text, the merge lines and the picker groups. The `visual-review` walk covers the summary and the open rows in light mode, at compact density, under a changed accent, and at 390 px. **Met:** `live_ws41_writer.py` passes 82 of 82 on a fresh private ladder database, with the fixes of the I-10 review (checks 4.2b, 8.1, 8.2 and 9.1 to 9.3). A mutation of each fix fails its check. A new space holds one set of six names, and no List or Folder that the run makes owns one. Each task takes a status of its space's set. A task with no status lands in Backlog. Review lands after In progress, and On hold after Backlog. The hand-made space keeps its "To do", gains the five names it lacks, and keeps them after a discard. A re-upload of a pre-I-10 tree, rebuilt by hand, adds 0 lanes and moves no task. Choices passes 14 of 14, discard 33 of 33, people-later 10 of 10 and import 21 of 21. Two mutations prove the continuation fences. Without `progress.status_names`, check 4.2 fails. A run that continues and still takes the proposals adds 39 lanes, and check 7.2 fails. `importFlow.test.ts` passes 65 of 65. The rig walked Upload, Review, Spaces and Map against the fixture's plan, with the API stubbed, and showed no console error. The chip paint did not move under two accents |
-| **I-10b** 🟢 next | Status and stage, made plain: the two words and their help text on Map and in Settings, the `InfoTip` primitive, a summary grouped by stage, labelled row columns, the "Guessed" mark, and better stage rules (§7.7). Owner directive, 2026-10-09 | **Plan:** on the fixture, "on hold" proposes the In progress stage, and "review" is not marked as a guess. A name that no rule matches is marked. **Surface:** `importFlow.test.ts` pins the summary groups, the guess count and the order of the rows. A test pins that no file under `src/app/projects/` keeps a copy of a stage meaning: every one reads `CATEGORY_HINT`. `InfoTip` has a test for open and close by click, Enter and Escape. The `visual-review` walk covers the Map summary, the open rows and both help panels, and the Settings Statuses screen, in light mode, at compact density, under a changed accent, and at 390 px. The help panel must stay readable at 390 px |
+| **I-10b** 🟢 next | Status and stage, made plain: the two words and their help text on Map and in Settings, the `InfoTip` primitive, a summary grouped by stage, labelled row columns, the "Guessed" mark, and better stage rules (§7.7). Owner directive, 2026-10-09 | **Plan:** on the fixture, "on hold" proposes the In progress stage, and "review" is not marked as a guess. `test_import_plan.py` asserts `guessed` for each fixture row. A name that no rule matches is marked. **Checks that change by design:** `test_import_plan.py` lines 70, 90, 150 and 165 (On hold moves from backlog to in_progress). Live writer 2b.3 (`stage["On hold"]` becomes in_progress) and 2b.6 (On hold lands in the In progress stage, before Done). The hand-made fixture in `importFlow.test.ts` (lines 261, 280 and 321) moves On hold to in_progress, so it matches the plan. Every other check passes unchanged. **Surface:** `importFlow.test.ts` pins the summary groups, the guess count and the order of the rows. A test pins that no file under `src/app/projects/` keeps a copy of a stage meaning: every one reads `CATEGORY_HINT`. `InfoTip` has a test for open and close by click, Enter and Escape. The `visual-review` walk covers the Map summary, the open rows and both help panels, and the Settings Statuses screen, in light mode, at compact density, under a changed accent, and at 390 px. The help panel must stay readable at 390 px |
 | **I-11** | Tags and task types land in the shared vocabulary, with the same summary-first section (§6.5, §7.7). Owner directive, 2026-10-09 | A ClickUp tag that matches an existing org-wide or space tag, case-blind, uses it. A new tag lands org-wide (`project_id IS NULL`). A type follows the same rule. Without `admin:settings:manage` or the flag, both land on the target space, and the step says so before the import. The caps count the effective set. R8: a live check finds the org-wide rows, and finds no tag row on any List that the run creates. The update rule's handling of a tag that moved from a List to the organization is stated in §6.5 and has a test |
 | **I-12** ⏸ waits for a file | A column the importer does not read can become a shared custom field, with the §6.5 type guess. It is a third choice beside "Leave out" and "Keep in the description" (§6.5b) | Build this when a customer's file carries such columns. The Fracktal workspace export carries none, because ClickUp puts custom fields only in a per-view export (I-5) |
 | **I-13** later | Jev proposes a target status, tag or type for a name that the I-10 and I-11 rules cannot place. The admin confirms each one (owner, 2026-10-09: "rules now, Jev later") | Every proposal shows as a proposal, and nothing applies without the admin's choice. The spend goes through the metered path, so H-171 does not grow |
@@ -1292,6 +1335,25 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 Run the four live suites one at a time. They share the scratch database, and
 two runs at once can deadlock each other.
+
+**I-10b:**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_import_plan.py tests/unit/test_import_layout.py \
+  tests/unit/test_import_writer.py tests/unit/test_import_choices.py \
+  tests/unit/test_projects_import_routes.py -q
+uv run python tests/live/live_ws41_writer.py
+uv run python tests/live/live_ws41_choices.py
+uv run python tests/live/live_ws41_discard.py
+uv run ruff check apps/services/gateway/gateway/routes/projects
+uv run mypy apps/services/gateway/gateway/routes/projects/importer
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run \
+  && npx vitest run src/lib/theme/
+node .claude/hooks/ste-lint.mjs project-docs/specs/project_import.md
+```
+
+Then run the `visual-review` walk that the I-10b row names.
 
 Without the database, the live suite SKIPS and the run reads green. Check the
 skip count (CLAUDE.md §6).
