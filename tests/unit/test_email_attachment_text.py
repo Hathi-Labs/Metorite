@@ -91,6 +91,10 @@ from gateway.routes.email.transport import attachments as m  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from tests.unit import _xlsx_build as xb  # noqa: E402
+
+#: The head of an RTF file, built with no escape in the source.
+_RTF_HEAD = b"{" + bytes([92]) + b"rtf1"
+_TSV = "a" + chr(9) + "b" + chr(10) + "1" + chr(9) + "2"
 from tests.unit._tenant_ladder import tenant_engine_scope  # noqa: E402
 
 # Reuse the two-org phase-4 fixture and its DB gate (non-priv role
@@ -350,13 +354,11 @@ class TestTheTextRoute:
 
     @pytest.mark.parametrize(("filename", "mime"), [
         ("archive.zip", "application/zip"),
-        ("old.xls", "application/vnd.ms-excel"),
         ("macros.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
         ("binary.xlsb", "application/vnd.ms-excel.sheet.binary.macroEnabled.12"),
-        ("calc.ods", "application/vnd.oasis.opendocument.spreadsheet"),
         ("tool.exe", "text/plain"),
         ("noname", "application/octet-stream"),
-    ], ids=["zip", "xls", "xlsm", "xlsb", "ods", "exe-claims-text", "no-type"])
+    ], ids=["zip", "xlsm", "xlsb", "exe-claims-text", "no-type"])
     async def test_an_unknown_type_gives_no_text_and_no_fetch(
         self, monkeypatch, filename, mime,
     ) -> None:
@@ -365,10 +367,39 @@ class TestTheTextRoute:
                      mime=mime)
         got = await _text()
         assert (got.kind, got.text, got.chars) == ("unsupported", "", 0)
-        assert got.reason and (
-            "I read .docx, .xlsx, .pdf, .html, .htm, .txt, .md and .csv files." in got.reason
-        )
+        assert got.reason and at.SUPPORTED_SENTENCE in got.reason
         assert h.provider_calls == 0 and h.redis.calls == []
+
+    @pytest.mark.parametrize(("filename", "mime", "app"), [
+        ("old.xls", "application/vnd.ms-excel", "Excel"),
+        ("old.doc", "application/msword", "Word"),
+        ("old.ppt", "application/vnd.ms-powerpoint", "PowerPoint"),
+        ("noname", "application/msword", "Word"),
+    ], ids=["xls", "doc", "ppt", "doc-by-type"])
+    async def test_an_older_office_file_says_how_to_save_it_and_is_not_fetched(
+        self, monkeypatch, filename, mime, app,
+    ) -> None:
+        """Attachment formats: the shared sentence of ``LEGACY_OFFICE``."""
+        h = _Harness(monkeypatch, filename=filename, payload=at._OLE_MAGIC, mime=mime)
+        got = await _text()
+        suffix = {"Excel": ".xls", "Word": ".doc", "PowerPoint": ".ppt"}[app]
+        assert got.kind == "unsupported"
+        assert got.reason == at.unsupported_sentence(suffix)
+        assert f"older {app} file" in got.reason
+        assert h.provider_calls == 0 and h.redis.calls == []
+
+    @pytest.mark.parametrize(("filename", "mime", "payload", "kind", "want"), [
+        ("notes.rtf", "application/rtf", _RTF_HEAD + b" Total due 50}", "rtf", "Total due 50"),
+        ("rows.tsv", "text/tab-separated-values", _TSV.encode(), "tsv", _TSV),
+        ("data.json", "application/json", b'{"total": 50}', "json", '{"total": 50}'),
+        ("noname", "application/rtf", _RTF_HEAD + b" by type}", "rtf", "by type"),
+    ], ids=["rtf", "tsv", "json", "rtf-by-type"])
+    async def test_a_new_kind_reads_through_the_shared_reader(
+        self, monkeypatch, filename, mime, payload, kind, want,
+    ) -> None:
+        _Harness(monkeypatch, filename=filename, payload=payload, mime=mime)
+        got = await _text()
+        assert (got.kind, got.text) == (kind, want)
 
     async def test_a_name_with_no_suffix_takes_the_type(self, monkeypatch) -> None:
         _Harness(monkeypatch, filename="README", payload=b"hello", mime="text/plain")
