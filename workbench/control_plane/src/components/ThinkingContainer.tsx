@@ -37,16 +37,23 @@ import remarkGfm from "remark-gfm";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import MarkdownImage from "@/components/MarkdownImage";
 import { InStepContext } from "@/components/ToolCardShell";
+import Button from "@/components/ui/Button";
+import EntityPill from "@/components/ui/EntityPill";
+import { agentName } from "@/lib/agentName";
+import { fieldSpec } from "@/lib/cardFields";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
+import { argFields, needsClamp } from "@/lib/toolArgs";
 import {
   COMMAND_CAP,
   capOutput,
   commandOf,
   describeToolStep,
+  splitAgentLabel,
   type StepKind,
   type StepStatus,
+  type ToolStep,
 } from "@/lib/toolSteps";
 
 interface ThinkingContainerProps {
@@ -334,26 +341,88 @@ function RunDetail({ event, running, dur }: { event: ToolEvent; running: boolean
   );
 }
 
+/**
+ * A value that may be long: wrapped, in the trail's own type, and never cut.
+ * Past three lines it opens clamped, with a "Show more" toggle that a
+ * keyboard reaches (owner report, 2026-10-09). `needsClamp` in
+ * `lib/toolArgs.ts` decides, so a test reaches the rule without a DOM.
+ */
+export function ClampText({ text, clamp }: { text: string; clamp: boolean }) {
+  const [more, setMore] = useState(false);
+  // The flag is a count of characters, and a wide pane can fit 300 of them
+  // in three lines. So the browser measures as well: a clamped value that
+  // fits needs no toggle, because "Show more" would show nothing more.
+  const [fits, setFits] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!clamp || more || !el) return;
+    const check = () => setFits(el.scrollHeight <= el.clientHeight + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const watch = new ResizeObserver(check);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [clamp, more, text]);
+  const clamped = clamp && !more;
+  return (
+    <div className="min-w-0">
+      <div
+        ref={ref}
+        data-step-value=""
+        {...(clamped ? { "data-clamped": "" } : {})}
+        className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${clamped ? "line-clamp-3" : ""}`}
+      >
+        {text}
+      </div>
+      {clamp && (more || !fits) && (
+        <Button
+          variant="text"
+          size="none"
+          layout=""
+          aria-expanded={more}
+          onClick={() => setMore((m) => !m)}
+          className="mt-0.5 text-[10px] underline-offset-2 hover:underline"
+        >
+          {more ? "Show less" : "Show more"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /** Any other step expands into its arguments and its result. */
-function ArgsDetail({ event, dur }: { event: ToolEvent; dur?: number }) {
+function ArgsDetail({ event, step, dur }: { event: ToolEvent; step: ToolStep; dur?: number }) {
   const out = event.result ? capOutput(String(event.result), 2000) : null;
+  // Each key in product words (`fieldSpec`, the one map of a key to its
+  // label), and each value in full. The keys that the row already shows are
+  // left out.
+  const fields = argFields(event.args, (k) => fieldSpec(k).label, step.shownKeys);
+  // Nothing to show: no empty box. A hand-off that runs has its task in the
+  // row, and no duration or result yet (review round 1).
+  if (fields.length === 0 && dur === undefined && !out) return null;
   return (
     <div className="rounded-md border-l-2 border-border bg-card/40 px-2.5 py-1.5 min-w-0">
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-[10px] text-muted-foreground font-mono truncate">{event.name}</span>
-        {dur !== undefined && <span className="text-[10px] text-muted-foreground tabular-nums ml-auto shrink-0">{dur}ms</span>}
-      </div>
-      {event.args && Object.keys(event.args).length > 0 && (
-        <div className="text-[10px] text-muted-foreground font-mono mt-1 break-all">
-          {Object.entries(event.args).map(([k, v]) => (
-            <span key={k} className="inline-block mr-2">
-              <span className="text-muted-foreground/70">{k}:</span>{" "}
-              <span className="text-muted-foreground">
-                {(typeof v === "string" ? v : JSON.stringify(v) ?? "").slice(0, 80)}
-              </span>
-            </span>
-          ))}
+      {dur !== undefined && (
+        <div className="flex">
+          <span className="text-[10px] text-muted-foreground tabular-nums ml-auto shrink-0">{dur}ms</span>
         </div>
+      )}
+      {fields.length > 0 && (
+        <dl data-step-args="" className="text-[11px] leading-relaxed space-y-1 min-w-0">
+          {fields.map((f) => (
+            <div key={f.key} className="min-w-0">
+              <dt className="text-[10px] text-muted-foreground">{f.label}</dt>
+              <dd className="text-foreground min-w-0">
+                {f.hidden ? (
+                  <span className="text-muted-foreground italic">Hidden</span>
+                ) : (
+                  <ClampText text={f.text} clamp={f.clamp} />
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
       )}
       {out && (
         <pre
@@ -370,20 +439,23 @@ function ArgsDetail({ event, dur }: { event: ToolEvent; dur?: number }) {
 
 /** A hand-off's own steps, as a branch under the step that asked. */
 function SubAgentSteps({ event }: { event: ToolEvent }) {
+  const said = event.subAgentText ? capOutput(event.subAgentText, 2000) : null;
   return (
     <div className="mt-1.5 ml-3 relative">
       <div className="absolute left-[-12px] top-0 bottom-0 w-px bg-border" />
       <div className="absolute left-[-12px] top-3 w-[12px] h-px bg-border" />
       <div className="flex items-center gap-1.5 text-[10px] mb-1 min-w-0">
         <AppIcon name="GitBranch" className="text-muted-foreground shrink-0" size={12} strokeWidth={1.5} />
-        <span className="text-foreground font-medium truncate">{event.subAgentName}</span>
+        <span className="text-foreground font-medium truncate">{agentName(event.subAgentName ?? "")}</span>
         {event.subAgentActive && (
           <span className="text-[10px] text-info animate-pulse shrink-0">working</span>
         )}
       </div>
       {event.subAgentText && (
         <pre className="text-muted-foreground whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed mb-1.5 max-h-24 overflow-y-auto bg-secondary/40 rounded px-2 py-1 border border-border/40">
-          {capOutput(event.subAgentText, 2000).text}
+          {said?.text}
+          {/* A cut says so (owner report, 2026-10-09): never a silent end. */}
+          <CutNote cut={said?.cut ?? 0} />
         </pre>
       )}
       {event.subAgentTools && event.subAgentTools.length > 0 && (
@@ -406,8 +478,13 @@ function SubAgentSteps({ event }: { event: ToolEvent }) {
                   <span className="text-[10px] text-destructive shrink-0">failed</span>
                 )}
                 {st.result && step.status !== "running" && (
-                  <span className="text-[10px] text-muted-foreground font-mono truncate min-w-0">
-                    {String(st.result).slice(0, 60)}
+                  // One line, and an ellipsis where it stops: `truncate`,
+                  // never a silent cut. The tooltip holds the rest.
+                  <span
+                    title={capOutput(String(st.result)).text}
+                    className="text-[10px] text-muted-foreground font-mono truncate min-w-0"
+                  >
+                    {capOutput(String(st.result), 400).text}
                   </span>
                 )}
               </li>
@@ -442,6 +519,7 @@ export function ToolStepRow({
   evidence?: React.ReactNode | null;
 }) {
   const step = describeToolStep(event);
+  const agentWords = splitAgentLabel(step);
   const running = step.status === "running";
   const failed = step.status === "failed";
   const dur = event.endedAt && event.startedAt ? event.endedAt - event.startedAt : undefined;
@@ -478,13 +556,27 @@ export function ToolStepRow({
         >
           {/* The words keep their width and the target gives way: in a
               narrow rail "Ran a script in …" said less than the command. */}
-          <span
-            className={`text-[11.5px] truncate ${step.target ? "flex-none max-w-[75%]" : "min-w-0"} ${
-              running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
-            }`}
-          >
-            {step.label}
-          </span>
+          {/* A hand-off names its agent as a chip: "Asked [Email assistant]". */}
+          {agentWords ? (
+            <span className="flex items-baseline gap-1 min-w-0">
+              <span
+                className={`text-[11.5px] shrink-0 ${
+                  running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
+                }`}
+              >
+                {agentWords.lead}
+              </span>
+              <EntityPill kind="agent" label={agentWords.agent} />
+            </span>
+          ) : (
+            <span
+              className={`text-[11.5px] truncate ${step.target ? "flex-none max-w-[75%]" : "min-w-0"} ${
+                running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
+              }`}
+            >
+              {step.label}
+            </span>
+          )}
           {step.target && (
             <span className="text-[11px] font-mono truncate min-w-0 px-1 py-px rounded bg-secondary/60 border border-border/40 text-muted-foreground">
               {step.target}
@@ -506,6 +598,14 @@ export function ToolStepRow({
           </span>
         </button>
 
+        {/* What a hand-off asked its agent: the most useful text of the
+            step, so it shows open or closed, wrapped, and never cut. */}
+        {step.description && (
+          <div data-step-description="" className="mt-0.5 text-[11px] text-muted-foreground leading-relaxed min-w-0">
+            <ClampText text={step.description} clamp={needsClamp(step.description)} />
+          </div>
+        )}
+
         {hasEvidence && (open || kept) && (
           <div data-step-evidence="" hidden={!open} className="mt-1 min-w-0">
             <InStepContext.Provider value={true}>{evidence}</InStepContext.Provider>
@@ -516,7 +616,7 @@ export function ToolStepRow({
             {step.kind === "run" ? (
               <RunDetail event={event} running={running} dur={dur} />
             ) : (
-              <ArgsDetail event={event} dur={dur} />
+              <ArgsDetail event={event} step={step} dur={dur} />
             )}
             {hasSubAgent && <SubAgentSteps event={event} />}
           </div>
