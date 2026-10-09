@@ -37,9 +37,14 @@ MEMBER = "Alice@Fracktal.in"
 
 
 class _Result:
-    def __init__(self, rows: list[dict[str, Any]], rowcount: int = 0) -> None:
+    def __init__(self, rows: list[dict[str, Any]], rowcount: int = 0,
+                 scalar: int = 0) -> None:
         self._rows = rows
         self.rowcount = rowcount
+        self._scalar = scalar
+
+    def scalar_one(self) -> int:
+        return self._scalar
 
     def mappings(self) -> _Result:
         return self
@@ -59,6 +64,8 @@ class _FakeDb:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.opened = 0
         self.links = links or []
+        #: What the count of codes issued in the last hour answers (WAC-2).
+        self.issued = 0
 
     def factory(self):
         @asynccontextmanager
@@ -77,6 +84,8 @@ class _FakeDb:
                 "id": "33333333-3333-4333-8333-333333333333",
                 "code_expires_at": datetime.now(UTC) + timedelta(minutes=15),
             }])
+        if sql.lstrip().startswith("SELECT count(*) FROM whatsapp_member_links"):
+            return _Result([], scalar=self.issued)
         if "FROM whatsapp_member_links l" in sql:
             return _Result(self.links)
         if sql.lstrip().startswith("UPDATE whatsapp_member_links"):
@@ -180,9 +189,11 @@ def test_the_post_revokes_the_earlier_pending_code_first(channel: _FakeDb) -> No
     _client().post("/me/whatsapp-link/code")
 
     kinds = [sql.lstrip().split()[0] for sql, _ in channel.calls]
-    assert kinds == ["SELECT", "UPDATE", "INSERT"], kinds
-    lock, revoke, _ = channel.calls
+    # The lock, the WAC-2 count of codes in the last hour, the revoke, the insert.
+    assert kinds == ["SELECT", "SELECT", "UPDATE", "INSERT"], kinds
+    lock, count, revoke, _ = channel.calls
     assert "pg_advisory_xact_lock" in lock[0]
+    assert "count(*)" in count[0] and "interval '1 hour'" in count[0]
     assert "status = 'pending'" in revoke[0] and "'revoked'" in revoke[0]
     assert revoke[1] == {"org": ORG_A, "email": "alice@fracktal.in"}
 
@@ -202,6 +213,26 @@ def test_a_body_or_query_naming_another_org_changes_nothing(channel: _FakeDb) ->
     assert res.status_code == 201
     params = _insert(channel)
     assert params["org"] == ORG_A and params["email"] == "alice@fracktal.in"
+
+
+# ── wac-issue-limit (WAC-2) ─────────────────────────────────────────────────
+
+def test_the_eleventh_code_in_an_hour_answers_429_and_writes_nothing(
+    channel: _FakeDb,
+) -> None:
+    channel.issued = link.ISSUE_LIMIT_PER_HOUR
+    res = _client().post("/me/whatsapp-link/code")
+    assert res.status_code == 429
+    assert res.json()["detail"] == link.TOO_MANY_DETAIL
+    kinds = [sql.lstrip().split()[0] for sql, _ in channel.calls]
+    assert kinds == ["SELECT", "SELECT"], "the route wrote after the limit"
+    assert channel.audits == []
+
+
+def test_the_tenth_code_in_an_hour_is_still_issued(channel: _FakeDb) -> None:
+    channel.issued = link.ISSUE_LIMIT_PER_HOUR - 1
+    assert _client().post("/me/whatsapp-link/code").status_code == 201
+    _insert(channel)
 
 
 # ── wac-dark-writes-nothing ─────────────────────────────────────────────────

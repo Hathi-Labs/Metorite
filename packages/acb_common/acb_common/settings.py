@@ -958,7 +958,7 @@ class Settings(BaseSettings):
     # phone number, digits only with the country code and no "+", for the
     # `wa.me` link. A value that is not 8 to 15 digits reads as unset.
     #
-    # The one reader of all three is
+    # The one reader of all five is
     # `gateway.routes.whatsapp_channel.flags`. It takes the organization from
     # `current_tenant()`, never from request input. `env_guard` refuses each
     # `WHATSAPP_*` name on each Integrations write, so only the env file of
@@ -969,6 +969,14 @@ class Settings(BaseSettings):
     whatsapp_assistant_enabled: bool = False
     whatsapp_assistant_orgs: str = ""
     whatsapp_assistant_display_number: str = ""
+    # WAC-2: the webhook sends a batch for this Meta phone number id to the
+    # bot path, and never to the WS-20 inbox. The bot replies with this
+    # System User token. Both are platform configuration (§5.1). The one
+    # reader is `whatsapp_channel.flags`. 🔴 The token is a secret: no log
+    # line, no answer and no error text may carry it. Fence:
+    # tests/unit/test_wac_bot_inbound.py.
+    whatsapp_assistant_phone_number_id: str = ""
+    whatsapp_assistant_access_token: str = ""
 
     # ── Token accessors ────────────────────────────────────────────────────
 

@@ -37,6 +37,10 @@ receives before it hashes it, and may map ``O`` to ``0`` and ``I``/``L`` to
 new one, in one transaction. ``uq_whatsapp_member_links_one_pending`` is the
 backstop, so two concurrent POSTs cannot leave two live codes.
 
+**At most 10 codes per member per org in one hour** (WAC-2, §5.4). Under the
+same lock, the POST counts the member's rows from ``created_at``. The 11th
+answers 429 with a plain sentence, and writes nothing.
+
 Fences: ``tests/unit/test_wac_link_code.py`` (database-free) and
 ``tests/unit/test_wac_link_table.py`` (R8, FORCE RLS as a non-privileged role).
 """
@@ -68,15 +72,27 @@ router = APIRouter(
 CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_LENGTH = 10
 CODE_TTL_MINUTES = 15
+ISSUE_LIMIT_PER_HOUR = 10
 
 CLOSED_DETAIL = "Chat on WhatsApp is not available for your organization."
 NOT_SET_UP_DETAIL = "Chat on WhatsApp is not set up on this deployment yet."
 NO_MEMBER_DETAIL = "Sign in as a member of an organization to link a phone."
+TOO_MANY_DETAIL = (
+    "You asked for too many link codes in the last hour. Wait, then try again."
+)
 
 _LOCK_SQL = (
     "SELECT pg_advisory_xact_lock("
     "hashtextextended('wac_link_code:' || :org || ':' || :email, 0))"
 )
+
+#: Every row is one issued code, whatever its status now.
+_ISSUED_LAST_HOUR_SQL = """
+SELECT count(*) FROM whatsapp_member_links
+ WHERE organization_id = CAST(:org AS uuid)
+   AND member_email = :email
+   AND created_at > now() - interval '1 hour'
+"""
 
 _REVOKE_PENDING_SQL = """
 UPDATE whatsapp_member_links
@@ -247,6 +263,13 @@ async def issue_whatsapp_link_code(
     code = new_code()
     async with tenant_session() as db:
         await db.execute(text(_LOCK_SQL), {"org": org, "email": email})
+        issued = (await db.execute(
+            text(_ISSUED_LAST_HOUR_SQL), {"org": org, "email": email},
+        )).scalar_one()
+        if issued >= ISSUE_LIMIT_PER_HOUR:
+            # The raise rolls the transaction back: nothing is written.
+            _log.info("whatsapp_channel.code_limited", organization_id=org)
+            raise HTTPException(status_code=429, detail=TOO_MANY_DETAIL)
         revoked = await db.execute(
             text(_REVOKE_PENDING_SQL), {"org": org, "email": email}
         )

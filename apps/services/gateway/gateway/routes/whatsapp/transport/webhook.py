@@ -16,6 +16,12 @@ session, so the POST binds the tenant that owns the number. The owner comes
 from ``wa_account_for_phone_number_id``, a SECURITY DEFINER read that sees
 through FORCE RLS. Before WA-C1 the route read ``wa_accounts`` unbound, saw no
 row, and dropped every batch as an unknown number (F1).
+
+WS-47 WAC-2 (``whatsapp_assistant_channel.md`` §5.4). The group of the bot
+number (``whatsapp_channel.flags.bot_phone_number_id``) goes to
+``whatsapp_channel.inbound`` and never reaches :func:`_ingest_number`. Every
+other group takes the path above, unchanged. The bot's replies go out after
+the 200, as a background task.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from gateway.routes.whatsapp.core import (
     router,
 )
 from sqlalchemy import text
+from starlette.background import BackgroundTask
 
 _log = get_logger("gateway.whatsapp.webhook")
 
@@ -150,8 +157,24 @@ async def receive_webhook(request: Request):
     # failed unit must not stop the others. The persist path is idempotent on
     # `wa_message_id`, so the 500 below makes Meta send the whole batch again
     # and the units that landed write nothing new.
+    #
+    # WAC-2: the bot number's group is the assistant channel's, never the
+    # inbox's. Its replies wait for the 200 (below).
+    bot_number_id = _bot_phone_number_id()
+    replies: list[Any] = []
     failed = 0
     for phone_number_id, sub_payload in groups.items():
+        if bot_number_id is not None and phone_number_id == bot_number_id:
+            try:
+                replies.extend(
+                    await _bot_group(sub_payload, signed=bool(app_secret))
+                )
+            except Exception as exc:
+                failed += 1
+                # The class only: a constraint DETAIL can hold a phone number.
+                _log.warning("whatsapp.webhook.bot_group_failed",
+                             error_type=type(exc).__name__)
+            continue
         try:
             await _ingest_number(phone_number_id, sub_payload)
         except Exception as exc:
@@ -161,8 +184,33 @@ async def receive_webhook(request: Request):
                 phone_number_id=phone_number_id, error=str(exc)[:200],
             )
     if failed:
+        # Meta sends the batch again. The bot's replies come again with it:
+        # a redelivered link message gets the success reply again (§5.4).
         return Response(status_code=500, content="retry")
+    if replies:
+        return Response(status_code=200, content="ok",
+                        background=BackgroundTask(_send_bot_replies, replies))
     return Response(status_code=200, content="ok")
+
+
+def _bot_phone_number_id() -> str | None:
+    """The bot number's Meta id, or None when it is unset (WAC-2)."""
+    from gateway.routes.whatsapp_channel import flags
+
+    return flags.bot_phone_number_id()
+
+
+async def _bot_group(sub_payload: dict[str, Any], *, signed: bool) -> list[Any]:
+    """The bot number's group goes to the assistant channel (WAC-2)."""
+    from gateway.routes.whatsapp_channel import inbound
+
+    return await inbound.handle_bot_group(sub_payload, signed=signed)
+
+
+async def _send_bot_replies(replies: list[Any]) -> None:
+    from gateway.routes.whatsapp_channel import inbound
+
+    await inbound.send_replies(replies)
 
 
 def split_by_number(payload: Any) -> tuple[dict[str, dict[str, Any]], int]:
