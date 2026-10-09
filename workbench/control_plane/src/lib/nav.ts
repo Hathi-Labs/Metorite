@@ -114,8 +114,9 @@ export type NavPane = {
   /**
    * Where the pane's door is, with the shell nav on (`shellNavOn`).
    * `sidebar`, the default, puts it in its team's group. `account` puts it in
-   * the account menu at the sidebar's foot, for a page about the member or
-   * the organization rather than a place to work.
+   * the account menu at the sidebar's foot, for a page about the member
+   * rather than a place to work. Organisation is an app in Admin, not an
+   * account page (owner, 2026-10-09).
    */
   door?: "sidebar" | "account";
   /**
@@ -436,10 +437,13 @@ export const NAV_SECTIONS: NavSection[] = [
         // The one admin destination for the organization: members & roles,
         // seat assignments and branding as tabs (launch_surface.md §6.2).
         // `/settings/members` redirects here. British spelling is the owner's.
+        // ⚠️ Its door is the SIDEBAR, in Admin (owner, 2026-10-09). Slice 1 put
+        // it in the account menu, and an admin then found it only by opening
+        // their own account. It is a place an admin works in, so it is an
+        // app (`navigation_shell.md` §3.2a item 4).
         href: "/settings/organization",
         team: "admin",
         blurb: "Members, roles, seats and your brand",
-        door: "account",
         label: "Organisation",
         icon: "Building2",
         note: "Members & roles · seat assignments · branding",

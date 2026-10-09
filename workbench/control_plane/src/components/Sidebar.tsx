@@ -2,26 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
-import {
-  HINT_DISMISS_MS,
-  autoFoldEnabled,
-  floatingOpen,
-  isPlainNavClick,
-  isWorkEvent,
-  readCollapsed,
-  setAutoFoldEnabled,
-  shouldFold,
-  takeHint,
-  writeCollapsed,
-} from "@/lib/sidebarFold";
+import { autoFoldEnabled, floatingOpen, isWorkEvent, shouldFold } from "@/lib/sidebarFold";
 import Icon from "@/components/Icon";
-import Button from "@/components/ui/Button";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
+import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
@@ -37,39 +26,17 @@ type PinnedApp = { slug: string; name: string; icon?: string };
 
 export default function Sidebar() {
   const pathname = usePathname();
-  // ⚠️ Read in the initializer, not in an effect. AppShell mounts this rail
-  // only after access resolves, on the client, so there is no server markup to
-  // disagree with. An effect would draw the open rail and then animate it shut
-  // on every reload.
-  const [collapsed, setCollapsedState] = useState(() =>
-    typeof window === "undefined" ? false : readCollapsed(),
-  );
-  // The fold while you work (`lib/sidebarFold.ts`). `armed` is a ref because
-  // arming must not re-render, and the document listener reads it live.
+  // The fold state has one owner, `SidebarFold.tsx`, because the fold control
+  // may live in the shell bar rather than in this rail's head (owner,
+  // 2026-10-09). This rail reads it, and runs the work listener below, which
+  // needs to know what is inside the rail.
+  const fold = useSidebarFold();
+  const { collapsed, armedRef, foldForWork } = fold;
+  const armFold = fold.arm;
+  // `placement === "bar"`: the full-width bar carries the logo and the
+  // control, so this rail draws no head.
+  const head = fold.placement === "rail";
   const asideRef = useRef<HTMLElement>(null);
-  const toggleRef = useRef<HTMLButtonElement>(null);
-  const armedRef = useRef(false);
-  // `beacon` counts folds and keys the button, so a second fold restarts the
-  // pulse. `pulsing` says whether this fold's pulse still runs. It ends by
-  // itself, and on the member's own toggle, so a later manual collapse does
-  // not pulse and the reduced-motion tint does not stay.
-  const [beacon, setBeacon] = useState(0);
-  const [pulsing, setPulsing] = useState(false);
-  const [tipOpen, setTipOpen] = useState(false);
-  const setCollapsed = useCallback((next: boolean) => {
-    setCollapsedState(next);
-    writeCollapsed(next);
-  }, []);
-  /** The member's own toggle. It wins over the fold until the next app. */
-  const toggleByMember = () => {
-    armedRef.current = false;
-    setTipOpen(false);
-    setPulsing(false);
-    setCollapsed(!collapsed);
-  };
-  const armFold = useCallback((e: MouseEvent) => {
-    if (isPlainNavClick(e)) armedRef.current = true;
-  }, []);
   const { data: session } = useSession();
   // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
   // footer below is the one this sidebar always had.
@@ -231,10 +198,7 @@ export default function Sidebar() {
           return;
         }
         if (!autoFoldEnabled()) return;
-        setCollapsed(true);
-        setBeacon((n) => n + 1);
-        setPulsing(true);
-        if (takeHint()) setTipOpen(true);
+        foldForWork();
       });
     };
     document.addEventListener("click", onWork, true);
@@ -243,28 +207,7 @@ export default function Sidebar() {
       document.removeEventListener("click", onWork, true);
       document.removeEventListener("keydown", onWork, true);
     };
-  }, [collapsed, setCollapsed]);
-
-  // The pulse runs three times (`.sidebar-beacon`, about 3.7s), then ends.
-  useEffect(() => {
-    if (!pulsing) return;
-    const timer = setTimeout(() => setPulsing(false), 4000);
-    return () => clearTimeout(timer);
-  }, [pulsing, beacon]);
-
-  // The tip closes by itself, and on Escape.
-  useEffect(() => {
-    if (!tipOpen) return;
-    const timer = setTimeout(() => setTipOpen(false), HINT_DISMISS_MS);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setTipOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [tipOpen]);
+  }, [collapsed, foldForWork, armedRef]);
 
   // A signed-in person with NO organization is mid-onboarding, not in a
   // workspace — AccessGate is showing them the join-vs-create chooser, and a
@@ -296,39 +239,19 @@ export default function Sidebar() {
         collapsed ? "w-14" : "w-64"
       }`}
     >
-      {/* Header */}
-      <div className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"}`}>
-        {!collapsed && (
-          // The customer's mark when they have uploaded one, ours when they
-          // have not. `maxWidth` is what stops a wide wordmark from pushing the
-          // collapse control off the 256px rail.
-          <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
-        )}
-        <button
-          ref={toggleRef}
-          // `key` restarts the pulse on each fold. Zero means no fold yet.
-          key={beacon}
-          onClick={toggleByMember}
-          className={`shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
-            collapsed && pulsing ? "sidebar-beacon" : ""
-          }`}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? <Icon name="ChevronRight" size={16} /> : <Icon name="ChevronLeft" size={16} />}
-        </button>
-      </div>
-      {tipOpen && collapsed && (
-        <FoldTip
-          anchorRef={toggleRef}
-          onClose={() => setTipOpen(false)}
-          onKeepOpen={() => {
-            setAutoFoldEnabled(false);
-            setTipOpen(false);
-            setCollapsed(false);
-          }}
-        />
+      {/* Header. With the full-width shell bar, the bar carries the logo and
+          the fold control instead, so the logo stays in view when this rail
+          folds (owner, 2026-10-09). */}
+      {head && (
+        <div className={`flex items-center border-b border-sidebar-border ${collapsed ? "justify-center p-3" : "justify-between px-4 py-4"}`}>
+          {!collapsed && (
+            // The customer's mark when they have uploaded one, ours when they
+            // have not. `maxWidth` is what stops a wide wordmark from pushing the
+            // collapse control off the 256px rail.
+            <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
+          )}
+          <SidebarFoldButton />
+        </div>
       )}
 
       {/* Nav sections */}
@@ -692,70 +615,5 @@ function NavLink({
         </div>
       )}
     </>
-  );
-}
-// ---------------------------------------------------------------------------
-// The fold tip
-// ---------------------------------------------------------------------------
-
-/**
- * The tip beside the expand button, on the first three folds (`HINT_LIMIT`).
- *
- * It names the button, so the member learns where the sidebar went, and it
- * offers the way out. `position: fixed`, so the rail's `overflow-hidden` does
- * not clip it. Measured in a layout effect, because the button remounts on the
- * fold (its `key` restarts the pulse) and the ref is current only after commit.
- */
-function FoldTip({
-  anchorRef,
-  onClose,
-  onKeepOpen,
-}: {
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
-  onClose: () => void;
-  onKeepOpen: () => void;
-}) {
-  // ⚠️ Top-aligned with the button, never centred on it. The button sits near
-  // the top of the window, so a centred tip ran off the top and hid its title.
-  const [box, setBox] = useState<{ top: number; caret: number } | null>(null);
-  useLayoutEffect(() => {
-    const rect = anchorRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const top = Math.max(8, rect.top - 6);
-    setBox({ top, caret: rect.top + rect.height / 2 - top });
-  }, [anchorRef]);
-  if (box === null) return null;
-  return (
-    <div
-      role="status"
-      data-testid="sidebar-fold-tip"
-      // 56px rail plus a 12px gap. The rail is that width when the tip shows.
-      style={{ top: box.top, left: 68 }}
-      className="sidebar-tip fixed z-[60] w-64 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
-    >
-      <span
-        aria-hidden
-        style={{ top: box.caret }}
-        className="absolute -left-[5px] h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-l border-border bg-popover"
-      />
-      <div className="flex items-start gap-2">
-        <Icon name="PanelLeftClose" size={15} className="mt-0.5 shrink-0 text-primary" />
-        <div className="min-w-0">
-          <div className="text-[13px] font-semibold">Sidebar folded</div>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            The app has more room now. Select the arrow button to open the
-            sidebar again.
-          </p>
-        </div>
-      </div>
-      <div className="mt-2.5 flex justify-end gap-1.5">
-        <Button variant="ghost" size="sm" onClick={onKeepOpen}>
-          Keep it open
-        </Button>
-        <Button variant="secondary" size="sm" onClick={onClose}>
-          Got it
-        </Button>
-      </div>
-    </div>
   );
 }

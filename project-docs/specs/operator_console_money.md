@@ -11,8 +11,10 @@
 - Slice 5: merged in PR #794. Slice 6 (the visual pass) ran on every slice
   before its PR.
 - Slice 5b (a margin per price, the cached price on every card, AI margin on
-  Money): BUILT. The owner set every price at a 60 percent margin on
+  Money): merged in PR #796. The owner set every price at a 60 percent margin on
   2026-10-09 (D94 follow-up, recorded in the PR).
+- Slice 7a (the usage reads take a date range): merged in PR #798. Slice 7b
+  (the period picker): BUILT.
 - Open gaps: HANDOFF H-283 and H-284.
 
 **Owner request, 2026-10-09.** The owner wants to see, for each customer, what

@@ -4,6 +4,7 @@ import {
   COLLAPSED_KEY,
   HINT_COUNT_KEY,
   HINT_LIMIT,
+  FOLD_CONTROL_ATTR,
   autoFoldEnabled,
   floatingOpen,
   isPlainNavClick,
@@ -174,5 +175,22 @@ describe("floatingOpen", () => {
 
   it("folds when nothing floats", () => {
     expect(floatingOpen(root([]), rail)).toBe(false);
+  });
+
+  it("with no rail to look in, anything open holds the fold", () => {
+    expect(floatingOpen(root([node(false)]), null)).toBe(true);
+  });
+
+  // The full-width shell bar (owner, 2026-10-09) puts the fold control
+  // OUTSIDE the rail, and it is `aria-expanded="true"` while the rail is open.
+  // Read as a menu, it held every fold for ever. Measured in the browser.
+  it("ignores the fold's own control in the shell bar", () => {
+    const control = {
+      inRail: false,
+      closest: (sel: string) => (sel === `[${FOLD_CONTROL_ATTR}]` ? {} : null),
+    } as unknown as Element;
+    expect(floatingOpen(root([control]), rail)).toBe(false);
+    // A real menu beside it still holds the fold.
+    expect(floatingOpen(root([control, node(false)]), rail)).toBe(true);
   });
 });

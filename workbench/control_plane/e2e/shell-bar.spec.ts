@@ -336,6 +336,152 @@ test.describe("the coordinator (NS-4b)", () => {
   });
 });
 
+test.describe("the full-width bar (owner, 2026-10-09)", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  const aside = (page: Page) => page.locator("aside[data-collapsed]");
+  const box = async (l: ReturnType<Page["locator"]>) => (await l.boundingBox())!;
+
+  test("the shell bar alone: the bar sits over the page column, and the sidebar keeps its head", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    await expect(bar(page)).toBeVisible();
+    // Exactly the NS-1 frame: the bar starts where the rail ends.
+    expect(Math.round((await box(bar(page))).x)).toBe(Math.round((await box(aside(page))).width));
+    await expect(aside(page).getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
+    await expect(aside(page).locator("a[href='/']").first()).toBeVisible();
+    await expect(bar(page).getByRole("button", { name: /sidebar/ })).toHaveCount(0);
+  });
+
+  test("both flags: one bar across the whole width, with the fold control and the logo", async ({ page }) => {
+    await shellOn(page);
+    await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
+    await stub(page);
+    await page.goto("/settings/appearance");
+    const b = await box(bar(page));
+    expect(b.x).toBe(0);
+    expect(Math.round(b.width)).toBe(1440);
+    // One row: the bar is its own height, nothing wraps under it.
+    expect(Math.round(b.height)).toBe(44);
+    const brand = bar(page).locator("[data-shell-brand]");
+    const fold = brand.getByRole("button", { name: "Collapse sidebar" });
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    // The Menu glyph, never a panel glyph: an app's own rail toggle in this
+    // bar wears PanelLeftOpen/Close, and two look-alike controls with two
+    // jobs make a member guess (review, 2026-10-09).
+    await expect(fold.locator("svg.lucide-menu")).toHaveCount(1);
+    await expect(fold.locator("svg[class*='lucide-panel-left']")).toHaveCount(0);
+    await expect(brand.locator("a[href='/']")).toContainText("Acme");
+    // The rail has no head of its own now: no second logo, no second control.
+    // (Its Home link also goes to "/", so the logo is found by its name.)
+    await expect(aside(page).getByRole("link", { name: "Acme" })).toHaveCount(0);
+    await expect(aside(page).getByRole("button", { name: /sidebar/ })).toHaveCount(0);
+    // The sidebar starts under the bar.
+    expect(Math.round((await box(aside(page))).y)).toBe(Math.round(b.height));
+  });
+
+  test("both flags: the logo stays in view when the sidebar folds, and the bar button opens it again", async ({ page }) => {
+    await shellOn(page);
+    await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
+    await stub(page);
+    await page.goto("/settings/appearance");
+    const brand = bar(page).locator("[data-shell-brand]");
+    const logo = brand.locator("a[href='/']");
+    const before = await box(logo);
+
+    await brand.getByRole("button", { name: "Collapse sidebar" }).click();
+    await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
+    await expect.poll(async () => (await aside(page).boundingBox())?.width).toBeLessThan(60);
+    // The owner's point: folded, the organization's logo is still there.
+    await expect(logo).toBeVisible();
+    expect(await box(logo)).toEqual(before);
+    expect(Math.round((await box(bar(page))).width)).toBe(1440);
+    // One glyph for both states. `aria-expanded` carries the state.
+    await expect(brand.getByRole("button", { name: "Expand sidebar" }).locator("svg.lucide-menu")).toHaveCount(1);
+    // The state survives a reload, under the same key as before.
+    expect(await page.evaluate(() => localStorage.getItem("cc-sidebar-collapsed"))).toBe("1");
+
+    await brand.getByRole("button", { name: "Expand sidebar" }).click();
+    await expect(aside(page)).toHaveAttribute("data-collapsed", "false");
+  });
+
+  // Measured 2026-10-09: at compact density the brand zone is 224px, and the
+  // px-sized caption ran past it into the app's rail toggle. The logo gives
+  // way instead, and "powered by Metorite" stays whole inside the zone.
+  test("both flags: a customer's logo and its caption fit the brand zone at every density", async ({ page }) => {
+    await shellOn(page);
+    await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
+    await stub(page);
+    const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    await page.route("**/api/settings/branding", (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          logo: { dataUri: `data:image/png;base64,${PIXEL}`, mime: "image/png", width: 600, height: 160, byteSize: 70 },
+          updatedBy: "",
+          updatedAt: "",
+        }),
+      }),
+    );
+    await page.goto("/settings/appearance");
+    const brand = bar(page).locator("[data-shell-brand]");
+    const caption = brand.getByText("powered by Metorite");
+    await expect(caption).toBeVisible();
+    for (const scale of ["0.875", "1", "1.125"]) {
+      await page.evaluate((s) => document.documentElement.style.setProperty("--ui-scale", s), scale);
+      await page.waitForTimeout(200);
+      const zone = await box(brand);
+      const c = await box(caption);
+      expect(c.x + c.width, `the caption stays in the zone at ${scale}`).toBeLessThanOrEqual(zone.x + zone.width);
+      expect(await caption.evaluate((e) => e.scrollWidth > e.clientWidth + 1)).toBe(false);
+    }
+  });
+
+  // Measured 2026-10-09: at 1280px My Tasks' title, Capture and My day ran
+  // under the command bar, because the brand zone keeps its width when the
+  // sidebar folds. The command bar must give way, never sit on top.
+  test("both flags at 1280: the app's buttons never run under the command bar", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await shellOn(page);
+    await page.addInitScript(() => {
+      localStorage.setItem("cc-shell-nav", "1");
+      localStorage.setItem("cc-sidebar-collapsed", "1");
+    });
+    await stub(page);
+    await page.goto("/tasks");
+    await expect(bar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
+    const search = await box(bar(page).getByRole("button", { name: /Search or ask anything/ }));
+    // ⚠️ Measure the CONTENT, not the slot's box. The defect is content that
+    // overflows a narrow slot, and the slot's own box stays left of the
+    // command bar while it does (verifier, 2026-10-09: the box check stayed
+    // green with the overlap put back).
+    const contentEdges = (slot: number) =>
+      bar(page)
+        .locator(":scope > div")
+        .nth(slot)
+        .evaluate((el) => {
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (const d of Array.from(el.querySelectorAll("*"))) {
+            const r = d.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            lo = Math.min(lo, r.left);
+            hi = Math.max(hi, r.right);
+          }
+          return { lo, hi };
+        });
+    const left = await contentEdges(1);
+    const right = await contentEdges(2);
+    expect(left.hi, "the left slot's content ends before the command bar").toBeLessThanOrEqual(search.x);
+    if (Number.isFinite(right.lo)) {
+      expect(right.lo, "the right slot's content starts after the command bar").toBeGreaterThanOrEqual(search.x + search.width);
+      expect(right.hi).toBeLessThanOrEqual(1280);
+    }
+  });
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
