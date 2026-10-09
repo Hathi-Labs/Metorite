@@ -1048,7 +1048,7 @@ function KeysPanel({
       {keysError ? (
         <p className="muted">{keysError}</p>
       ) : live.length === 0 ? (
-        <p className="muted">No live keys. This customer cannot call the Router.</p>
+        <p className="muted">No live keys. This customer cannot use AI.</p>
       ) : (
         <div className="tablewrap">
           {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the

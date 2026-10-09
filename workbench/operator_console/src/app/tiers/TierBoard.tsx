@@ -133,7 +133,7 @@ function Job({
         <span className="job-name">{taskLabel(job.task)}</span>
         {tier.task != null && job.task !== tier.task && (
           <span className={chipClass("warn")}
-            title="A pre-D68 binding: this tier is categorised for a different job. It still serves; move it to the right tier when convenient.">
+            title="An older binding: this tier is set up for a different job. It still serves. Move it to the right tier when you can.">
             wrong kind for this tier
           </span>
         )}

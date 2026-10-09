@@ -108,7 +108,7 @@ export function chainProblems(job: TierJob, ctx: ChainContext): Problem[] {
       bad.push({
         tone: "danger",
         label: "unknown model",
-        detail: `${s.model} is not in the catalog. The Router will refuse it.`,
+        detail: `${s.model} is not in the catalog. Metorite will refuse it.`,
       });
       continue;
     }

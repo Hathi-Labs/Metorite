@@ -51,7 +51,7 @@ function explain(status: number, detail: string): string {
   if (status === 500) {
     return (
       `The Console answered 500. If this console is newly deployed, the ` +
-      `operator tables may not exist yet — migration 009 (H-64). ${detail}`
+      `the operator list is not set up on this Console yet. ${detail}`
     );
   }
   return detail || `The Console answered ${status}.`;

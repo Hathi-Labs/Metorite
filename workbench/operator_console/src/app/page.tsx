@@ -14,7 +14,7 @@ import {
 import { readAiCatalog } from "@/lib/read";
 import { rosterTotals } from "@/lib/roster";
 import CustomerTable from "./CustomerTable";
-import GoLiveRail from "./GoLiveRail";
+import { goLiveSteps, railSummary } from "@/lib/golive";
 import NewCustomer from "./NewCustomer";
 import Header from "./Header";
 
@@ -92,6 +92,10 @@ export default async function CustomersPage() {
   const aiCatalog = await readAiCatalog({ authToken: gate.authToken });
 
   const totals = rosterTotals(rows, new Date());
+  const setupSteps = goLiveSteps(aiCatalog.data, rows);
+  const setupJudged = setupSteps.filter((s) => s.state !== "info").length;
+  const setupDone = setupSteps.filter((s) => s.state === "done").length;
+  const nextSetup = setupSteps.find((s) => s.state === "todo" || s.state === "partial");
   const fleet = fleetMoney(rows, usageView, new Date());
   const moneyBySlug = Object.fromEntries(fleet.rows.map((r) => [r.org.slug, r.money]));
 
@@ -111,10 +115,14 @@ export default async function CustomersPage() {
 
       {error && <div className="banner">{error}</div>}
 
-      {/* 🔴 The orgs go in now. Step 5 could not say whether a customer
-          held a key, so it sat at `info` forever — and a customer with no
-          key cannot be served at all. */}
-      <GoLiveRail catalog={aiCatalog.data} orgs={rows} />
+      {/* WS-50 slice 5: the go-live checklist has its own page. While a step
+          is open, the list carries ONE line that names it and links there. */}
+      {!railSummary(setupSteps) && nextSetup && (
+        <div className="banner info">
+          <strong>Setup: {setupDone} of {setupJudged} steps done.</strong> Next:{" "}
+          {nextSetup.title}. <a href="/setup">Open the setup checklist →</a>
+        </div>
+      )}
 
       {!error && rows.length > 0 && (
         <div className="stats">
