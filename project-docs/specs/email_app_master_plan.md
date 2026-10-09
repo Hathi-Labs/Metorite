@@ -1770,7 +1770,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-09).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ PR-B2 MERGED (#685, 2026-10-06), with review round 1. 🔨 PR-B3 BUILT, NOT MERGED (`email-pr-b3`, 2026-10-09), with the fences `email-decision-core-no-session-across-the-on-status-ask`, `email-decision-core-on-status-parity` and `email-decision-core-on-status-degrades`. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
+**Status (2026-10-09).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ PR-B2 MERGED (#685, 2026-10-06), with review round 1. 🔨 PR-B3 BUILT, NOT MERGED (`email-pr-b3`, 2026-10-09), with the fences `email-decision-core-no-session-across-the-on-status-ask`, `email-decision-core-on-status-parity` and `email-decision-core-on-status-degrades`. The mutation run killed each of the 10 mutants that it ran, and no claim covers a mutant outside that run. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
