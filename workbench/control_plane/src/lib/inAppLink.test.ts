@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { MarkdownBody } from "@/components/MarkdownMessage";
+import { isInAppPath } from "@/components/ui/EntityPill";
 import { IN_APP_LINK_EVENT, externalHost } from "./inAppLink";
 
 const md = (content: string) => renderToStaticMarkup(createElement(MarkdownBody, { content }));
@@ -27,6 +28,43 @@ describe("externalHost", () => {
     expect(externalHost("mailto:a@b.test")).toBeNull();
     expect(externalHost("javascript:alert(1)")).toBeNull();
     expect(externalHost(undefined)).toBeNull();
+  });
+});
+
+describe("a scheme-less link that leaves the app is external (review round 2, P2)", () => {
+  const APP = "https://app.metorite.com";
+
+  it("//host, /\\host and \\\\host reach the other host", () => {
+    expect(externalHost("//evil.example/login", APP)).toBe("evil.example");
+    expect(externalHost("/\\evil.example/login", APP)).toBe("evil.example");
+    expect(externalHost("\\\\evil.example/login", APP)).toBe("evil.example");
+  });
+
+  it("https:host is read as the browser reads it against the app's origin", () => {
+    // Same scheme as the page: a path of the app, so not external.
+    expect(externalHost("https:host", APP)).toBeNull();
+    // Another scheme than the page: the host it names.
+    expect(externalHost("https:host", "http://localhost:3101")).toBe("host");
+  });
+
+  it("a relative link and a link to the app itself stay in the app", () => {
+    expect(externalHost("foo", APP)).toBeNull();
+    expect(externalHost("/email?email=x", APP)).toBeNull();
+    expect(externalHost(`${APP}/projects`, APP)).toBeNull();
+  });
+
+  it("isInAppPath refuses each of those forms, so none takes the in-app branch", () => {
+    for (const href of ["//evil.example/login", "/\\evil.example/login",
+      "\\\\evil.example/login", "https:host", "foo"]) {
+      expect(isInAppPath(href)).toBe(false);
+    }
+    expect(isInAppPath("/email?email=x")).toBe(true);
+  });
+
+  it("the chat draws //host with its external mark", () => {
+    const html = md("[Open in inbox](//evil.example/login)");
+    expect(html).toContain('data-external-link="evil.example"');
+    expect(html).toContain(">evil.example</span>");
   });
 });
 

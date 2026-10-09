@@ -30,15 +30,34 @@ export function announcedHref(event: Event): string | null {
   return typeof detail === "string" ? detail : null;
 }
 
-/** The host of an `http(s)` link to another site, else `null`. */
-export function externalHost(href: string | undefined): string | null {
+/** The origin a link is read against on the server, where no page exists. */
+const SERVER_ORIGIN = "https://in-app.invalid";
+
+/**
+ * The host of a link that leaves the app, else `null`.
+ *
+ * The href is resolved against the app's own origin, as the browser will
+ * resolve it on the click. So a scheme-less form leaves the app too:
+ * `//evil.example`, `/\evil.example` and `\\evil.example` all reach
+ * `evil.example`. The first build parsed with `new URL(href)` alone, which
+ * throws on each of them, so they drew as plain links and went off-site
+ * (review round 2, P2). A link that resolves to the app's origin, such as
+ * `foo`, is not external. Only `http(s)` counts.
+ *
+ * `origin` is the app's origin. It defaults to the page's own, and on the
+ * server to a fixed origin no link can name.
+ */
+export function externalHost(href: string | undefined, origin?: string): string | null {
   if (!href) return null;
+  const base = origin
+    ?? (typeof window !== "undefined" ? window.location.origin : SERVER_ORIGIN);
   let url: URL;
   try {
-    url = new URL(href);
+    url = new URL(href, base);
   } catch {
     return null;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.origin === new URL(base).origin) return null;
   return url.hostname || null;
 }

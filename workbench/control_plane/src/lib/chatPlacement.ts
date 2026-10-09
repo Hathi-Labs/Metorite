@@ -386,17 +386,21 @@ export function genUiTitle(spec: unknown): string {
 export const CACHED_SEGMENTS_MAX_CHARS = 32_000;
 
 /**
- * The segments a cached copy of a turn keeps: only when a card of the turn
- * carries a stamp, because only `genUiFlow` needs them, and only under
+ * The segments a cached copy of a turn keeps: only when a generative-UI card
+ * of the turn carries a stamp, because only `genUiFlow` needs them, and only under
  * {@link CACHED_SEGMENTS_MAX_CHARS}. Else `undefined`, and the turn draws in
  * the old layout from its `content` (review round 1, P1-a).
  */
-export function segmentsForCache<E extends { segmentCutoff?: number }>(
+export function segmentsForCache<E extends { name?: string; segmentCutoff?: number }>(
   segments: readonly { id: string; text: string }[] | undefined,
   customEvents: readonly E[] | undefined,
 ): { id: string; text: string }[] | undefined {
   if (!segments?.length) return undefined;
-  if (!(customEvents ?? []).some((e) => typeof e.segmentCutoff === "number")) return undefined;
+  // Every CUSTOM event carries a stamp since round 1, so the stamp alone is
+  // no test. Only a generative-UI card places itself by it (round 2, P3).
+  const placed = (customEvents ?? []).some(
+    (e) => e.name === "generative_ui" && typeof e.segmentCutoff === "number");
+  if (!placed) return undefined;
   const chars = segments.reduce((n, s) => n + s.text.length, 0);
   return chars <= CACHED_SEGMENTS_MAX_CHARS ? [...segments] : undefined;
 }

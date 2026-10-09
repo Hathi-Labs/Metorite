@@ -278,6 +278,10 @@ describe("a card keeps its place in the order the turn streamed (2026-10-09)", (
     expect(segmentsForCache(segs("a", "b"), stamped)).toEqual(segs("a", "b"));
     const unstamped: { name: string; value: unknown; segmentCutoff?: number }[] = [{ name: "generative_ui", value: {} }];
     expect(segmentsForCache(segs("a"), unstamped)).toBeUndefined();
+    // Every CUSTOM event carries a stamp. Only a card places itself by it
+    // (review round 2, P3).
+    const notACard = [{ name: "artifact_created", value: {}, segmentCutoff: 1 }];
+    expect(segmentsForCache(segs("a"), notACard)).toBeUndefined();
     expect(segmentsForCache(undefined, stamped)).toBeUndefined();
     expect(segmentsForCache([{ id: "x", text: "y".repeat(CACHED_SEGMENTS_MAX_CHARS + 1) }], stamped)).toBeUndefined();
     const src = readFileSync(join(ROOT, "workbench/control_plane/src/components/AgentChat.tsx"), "utf-8");
