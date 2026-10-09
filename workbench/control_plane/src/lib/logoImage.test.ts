@@ -98,7 +98,7 @@ describe("the editor's bounds are the gateway's", () => {
 
 describe("the output size", () => {
   it("never rounds an exact 8:1 box past 8:1 (measured: 540x67)", () => {
-    for (const w of [1054.546, 800.5, 2047.3, 333.333]) {
+    for (const w of [532.7435166309629, 539.6609395169087, 523.2044897200665, 1077.5665158116649]) {
       const s = outputSize({ x: 0, y: 0, w, h: w / 8 });
       expect(s.width / s.height).toBeLessThanOrEqual(8);
     }
