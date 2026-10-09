@@ -33,7 +33,14 @@ import {
   precheckLogoFile,
 } from "@/lib/orgBranding";
 import SettingsHeader from "@/components/SettingsHeader";
-import LogoEditor, { type LogoSave, modeVars } from "./LogoEditor";
+import type { DarkStyle } from "@/lib/logoImage";
+import LogoEditor, { type LogoSave, type OwnDark, modeVars } from "./LogoEditor";
+
+/** Decode a stored logo, so the editor can open what is saved today. */
+async function decodeStored(dataUri: string, name: string): Promise<Source> {
+  const blob = await (await fetch(dataUri)).blob();
+  return decodeFile(new File([blob], name, { type: blob.type }));
+}
 
 export default function BrandingTab() {
   const { access } = useAccess();
@@ -48,6 +55,8 @@ export default function BrandingTab() {
   // (measured 2026-10-09, a long wordmark after a square logo).
   const [editKey, setEditKey] = useState(0);
   const [editError, setEditError] = useState("");
+  // Set when the editor reopens the saved logo ("Change dark mode").
+  const [editInitial, setEditInitial] = useState<{ style: DarkStyle; own: OwnDark | null } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -85,6 +94,7 @@ export default function BrandingTab() {
       setEditError("");
       const source = await decodeFile(file);
       setEditKey((k) => k + 1);
+      setEditInitial(null);
       setEditing(source);
     } catch (e) {
       setError(e instanceof Error ? e.message : "That file could not be opened.");
@@ -113,6 +123,31 @@ export default function BrandingTab() {
       setEditError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * Reopen the saved logo, to add or change its dark-mode version without
+   * finding the original file again. The saved dark image comes too.
+   */
+  const onChangeDark = async () => {
+    const current = branding?.logo;
+    if (!current) return;
+    setError("");
+    try {
+      const source = await decodeStored(current.dataUri, "your current logo");
+      const style: DarkStyle = branding?.darkStyle ?? "same";
+      const own =
+        style === "own" && branding?.logoDark
+          ? { source: await decodeStored(branding.logoDark.dataUri, "your dark version"), name: "your dark version" }
+          : null;
+      setPickedName("your current logo");
+      setEditError("");
+      setEditKey((k) => k + 1);
+      setEditInitial({ style, own });
+      setEditing(source);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The saved logo could not be opened.");
     }
   };
 
@@ -208,6 +243,17 @@ export default function BrandingTab() {
                 <Button
                   variant="secondary"
                   size="sm"
+                  icon="Moon"
+                  disabled={busy !== null}
+                  onClick={() => void onChangeDark()}
+                >
+                  Change dark mode
+                </Button>
+              ) : null}
+              {logo ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
                   disabled={busy !== null}
                   onClick={() => void onRemove()}
                 >
@@ -258,6 +304,8 @@ export default function BrandingTab() {
             error={editError}
             onCancel={() => setEditing(null)}
             onSave={(save) => void onSave(save)}
+            initialStyle={editInitial?.style ?? null}
+            initialOwn={editInitial?.own ?? null}
           />
         ) : null}
       </div>

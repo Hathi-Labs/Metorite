@@ -205,8 +205,12 @@ export function inkStats(p: Pixels): InkStats {
   return { lowShare: ink === 0 ? 0 : low / ink, lowSaturation: low === 0 ? 0 : lowSat / low };
 }
 
-/** How the logo should look in dark mode. Stored with the logo (`darkStyle`). */
-export type DarkStyle = "same" | "white" | "plate";
+/**
+ * How the logo should look in dark mode. Stored with the logo (`darkStyle`).
+ * `own` is the organisation's own dark-background version. The advice below
+ * never picks it, because only the admin knows that such a file exists.
+ */
+export type DarkStyle = "same" | "white" | "plate" | "own";
 
 /**
  * What dark mode needs, from the logo's own ink. A logo that reads on the

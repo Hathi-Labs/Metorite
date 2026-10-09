@@ -2110,8 +2110,12 @@ class OrgLogo(BaseModel):
 #: How the logo looks in dark mode (owner request, 2026-10-09). `same` shows
 #: the logo as it is. `white` shows `logoDark`, a white version the uploader's
 #: browser drew. `plate` shows the logo on a small light card, for a dark,
-#: colourful logo that recolouring would spoil.
-DarkStyle = Literal["same", "white", "plate"]
+#: colourful logo that recolouring would spoil. `own` shows `logoDark`, a
+#: dark-background version the organisation already has and uploaded itself.
+#: The main logo, for a light background, is always required.
+DarkStyle = Literal["same", "white", "plate", "own"]
+#: The styles that show a second image, `logoDark`.
+_DARK_IMAGE_STYLES = ("white", "own")
 
 
 class BrandingResponse(BaseModel):
@@ -2119,7 +2123,7 @@ class BrandingResponse(BaseModel):
     #: It is a distinct state from "the gateway is unreachable", which the BFF
     #: reports separately, because the two want different UI.
     logo: OrgLogo | None = None
-    #: The dark-mode version, present only with `darkStyle == "white"`.
+    #: The dark-mode version, present only with `darkStyle` "white" or "own".
     logoDark: OrgLogo | None = None
     darkStyle: DarkStyle = "same"
     updatedBy: str = ""
@@ -2134,8 +2138,8 @@ class BrandingUpload(BaseModel):
     this area starts with trusting one.
 
     `logoDarkBase64` is the optional dark-mode image. It passes every check
-    the main one does. It is required with `darkStyle == "white"` and refused
-    with any other style, so the stored pair can never disagree.
+    the main one does. It is required with `darkStyle` "white" or "own" and
+    refused with any other style, so the stored pair can never disagree.
     """
 
     logoBase64: str
@@ -2161,14 +2165,14 @@ def _coerce_branding(raw: Any) -> BrandingResponse:
     logo = _logo(blob.get("logo"))
     logo_dark = _logo(blob.get("logoDark"))
     style = blob.get("darkStyle")
-    if style not in ("same", "white", "plate"):
+    if style not in ("same", "white", "plate", "own"):
         style = "same"
-    # A "white" style whose image failed to parse degrades to the logo as is.
-    if style == "white" and logo_dark is None:
+    # A style whose image failed to parse degrades to the logo as is.
+    if style in _DARK_IMAGE_STYLES and logo_dark is None:
         style = "same"
     return BrandingResponse(
         logo=logo,
-        logoDark=logo_dark if (logo and style == "white") else None,
+        logoDark=logo_dark if (logo and style in _DARK_IMAGE_STYLES) else None,
         darkStyle=style if logo else "same",
         updatedBy=str(blob.get("updatedBy") or ""),
         updatedAt=str(blob.get("updatedAt") or ""),
@@ -2207,10 +2211,11 @@ def put_branding(
 
     from acb_common import save_org_setting  # noqa: PLC0415
 
-    if body.darkStyle == "white" and not body.logoDarkBase64:
-        raise HTTPException(status_code=400, detail="A white dark-mode logo needs its image.")
-    if body.darkStyle != "white" and body.logoDarkBase64:
-        raise HTTPException(status_code=400, detail="A dark-mode image goes with the white style only.")
+    needs_image = body.darkStyle in _DARK_IMAGE_STYLES
+    if needs_image and not body.logoDarkBase64:
+        raise HTTPException(status_code=400, detail="This dark-mode choice needs its image.")
+    if not needs_image and body.logoDarkBase64:
+        raise HTTPException(status_code=400, detail="A dark-mode image goes with the white or own style only.")
 
     logo = _accept_logo(body.logoBase64)
     logo_dark = _accept_logo(body.logoDarkBase64) if body.logoDarkBase64 else None

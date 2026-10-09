@@ -121,6 +121,13 @@ three styles, and the admin can change it:
 | As it is | Under 15% of the ink is too dark | The logo |
 | White version | The dark ink is black or grey | `logoDark`: every dark, neutral pixel turned white, colours kept |
 | On a light card | The dark ink is itself a colour (navy, maroon) | The logo, on a small white card |
+| My dark version | Never: only the admin knows the file exists | `logoDark`: the organization's own dark-background logo, trimmed, its solid background removed |
+
+The logo for a light background is always required. The dark version is
+optional (owner direction, 2026-10-09). "Change dark mode" on the Branding
+tab reopens the saved logo, so an admin can add a dark version later. The
+style `own` passes the same server checks as `white`, and both need their
+image.
 
 ⚠️ The advice is NOT an average of the whole logo. A bright orange mark lifted
 the average while navy text beside it vanished (measured 2026-10-09).

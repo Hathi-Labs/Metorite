@@ -12,6 +12,12 @@
  *
  * The decisions are `logoImage.ts`'s, tested without a browser. This file is
  * the controls and the previews.
+ *
+ * ⚠️ The logo for a LIGHT background is the one the admin always gives. The
+ * dark-mode version is optional: the editor can make one (white version, light
+ * card), or the admin uploads the version they already have for a dark
+ * background ("My dark version", owner request 2026-10-09). That second file
+ * is trimmed to the logo by itself and gets no crop of its own.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -19,7 +25,7 @@ import { BrandMark } from "@/components/OrgBrandLockup";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Modal from "@/components/ui/Modal";
-import { type Rendered, type Source, renderLogo } from "@/lib/logoCanvas";
+import { LOGO_PICK_ACCEPT, type Rendered, type Source, decodeFile, renderLogo } from "@/lib/logoCanvas";
 import {
   type Background,
   type Box,
@@ -29,7 +35,7 @@ import {
   detectBackground,
   inkStats,
 } from "@/lib/logoImage";
-import type { OrgBranding, OrgLogo } from "@/lib/orgBranding";
+import { type OrgBranding, type OrgLogo, precheckLogoFile } from "@/lib/orgBranding";
 import { THEME } from "@/lib/theme/themes";
 
 export interface LogoSave {
@@ -46,7 +52,14 @@ const STYLES: { id: DarkStyle; label: string; note: string }[] = [
   { id: "same", label: "As it is", note: "The logo reads on the dark sidebar." },
   { id: "white", label: "White version", note: "Black or grey parts turn white. Colours stay." },
   { id: "plate", label: "On a light card", note: "Keeps a dark, colourful logo's colours." },
+  { id: "own", label: "My dark version", note: "Upload the logo you use on dark backgrounds." },
 ];
+
+/** The admin's own dark-background file, decoded. */
+export interface OwnDark {
+  source: Source;
+  name: string;
+}
 
 const asLogo = (r: Rendered): OrgLogo => ({
   dataUri: r.dataUri,
@@ -74,6 +87,8 @@ export default function LogoEditor({
   error,
   onCancel,
   onSave,
+  initialStyle = null,
+  initialOwn = null,
 }: {
   source: Source;
   fileName: string;
@@ -81,6 +96,9 @@ export default function LogoEditor({
   error: string;
   onCancel: () => void;
   onSave: (save: LogoSave) => void;
+  /** The stored choice, when the editor reopens the current logo. */
+  initialStyle?: DarkStyle | null;
+  initialOwn?: OwnDark | null;
 }) {
   const bg: Background = useMemo(() => detectBackground(source.pixels), [source]);
   const fit: Box = useMemo(() => contentBounds(source.pixels, bg), [source, bg]);
@@ -94,8 +112,51 @@ export default function LogoEditor({
     if (!main) return "same";
     return adviseDarkStyle(inkStats(main.pixels));
   }, [main]);
-  const [style, setStyle] = useState<DarkStyle | null>(null);
+  const [style, setStyle] = useState<DarkStyle | null>(initialStyle);
   const chosen = style ?? advice;
+
+  // ── The admin's own dark-background version ──────────────────────────────
+  const [own, setOwn] = useState<OwnDark | null>(initialOwn);
+  const [ownError, setOwnError] = useState("");
+  const ownInput = useRef<HTMLInputElement>(null);
+  const ownBg: Background | null = useMemo(() => (own ? detectBackground(own.source.pixels) : null), [own]);
+  // A dark version usually sits on black. Clear it by default, as the light one.
+  const [ownRemoveBg, setOwnRemoveBg] = useState(true);
+  const ownSolid = ownBg?.kind === "solid" ? ownBg.rgb : null;
+  const [ownRendered, setOwnRendered] = useState<Rendered | null>(null);
+  useEffect(() => {
+    if (!own || !ownBg) return;
+    const id = requestAnimationFrame(() => {
+      const fit = contentBounds(own.source.pixels, ownBg);
+      setOwnRendered(renderLogo(own.source, fit, { removeBackground: ownRemoveBg ? ownSolid : null }));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [own, ownBg, ownRemoveBg, ownSolid]);
+
+  const pickOwn = async (file: File | undefined) => {
+    if (ownInput.current) ownInput.current.value = "";
+    if (!file) return;
+    const complaint = precheckLogoFile(file);
+    if (complaint) {
+      setOwnError(complaint);
+      return;
+    }
+    try {
+      const decoded = await decodeFile(file);
+      setOwnError("");
+      setOwnRemoveBg(true);
+      setOwn({ source: decoded, name: file.name });
+      setStyle("own");
+    } catch (e) {
+      setOwnError(e instanceof Error ? e.message : "That file could not be opened.");
+    }
+  };
+  /** "My dark version" with no file yet opens the picker, and selects on a pick. */
+  const choose = (id: DarkStyle) => {
+    if (id === "own" && !own) ownInput.current?.click();
+    else setStyle(id);
+  };
+  const darkImage: Rendered | null = chosen === "white" ? white : chosen === "own" && own ? ownRendered : null;
 
   // Redraw on every change, one frame later, so a drag stays smooth.
   useEffect(() => {
@@ -110,7 +171,7 @@ export default function LogoEditor({
   const preview: OrgBranding | null = main
     ? {
         logo: asLogo(main),
-        logoDark: chosen === "white" && white ? asLogo(white) : null,
+        logoDark: darkImage ? asLogo(darkImage) : null,
         darkStyle: chosen,
         updatedBy: "",
         updatedAt: "",
@@ -218,7 +279,15 @@ export default function LogoEditor({
           <h3 id="logo-dark-mode" className="text-sm font-semibold text-foreground">
             In dark mode
           </h3>
-          <div role="radiogroup" aria-labelledby="logo-dark-mode" className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <input
+            ref={ownInput}
+            type="file"
+            accept={LOGO_PICK_ACCEPT}
+            className="hidden"
+            data-testid="logo-own-dark-input"
+            onChange={(e) => void pickOwn(e.target.files?.[0])}
+          />
+          <div role="radiogroup" aria-labelledby="logo-dark-mode" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {STYLES.map((s) => (
               <Button
                 key={s.id}
@@ -228,7 +297,7 @@ export default function LogoEditor({
                 role="radio"
                 aria-checked={chosen === s.id}
                 selected={chosen === s.id}
-                onClick={() => setStyle(s.id)}
+                onClick={() => choose(s.id)}
                 className="gap-0.5 px-3 py-2 text-left"
               >
                 <span className="text-sm font-medium text-foreground">
@@ -239,6 +308,21 @@ export default function LogoEditor({
               </Button>
             ))}
           </div>
+          {chosen === "own" && own ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span className="max-w-[16rem] truncate">From {own.name}, trimmed to the logo.</span>
+              <Button variant="secondary" size="sm" icon="Upload" onClick={() => ownInput.current?.click()}>
+                Choose another file
+              </Button>
+              {ownSolid ? (
+                <label className="flex items-center gap-2 text-sm text-foreground">
+                  <Checkbox checked={ownRemoveBg} onChange={(e) => setOwnRemoveBg(e.target.checked)} />
+                  Remove the background behind it
+                </label>
+              ) : null}
+            </div>
+          ) : null}
+          {ownError ? <p className="text-xs text-destructive">{ownError}</p> : null}
         </section>
 
         {/* The sidebar's top-left, in both modes, from the shell's own mark. */}
@@ -268,12 +352,12 @@ export default function LogoEditor({
           <Button
             size="sm"
             icon="Check"
-            disabled={!main || saving}
+            disabled={!main || saving || ((chosen === "white" || chosen === "own") && !darkImage)}
             onClick={() =>
               main &&
               onSave({
                 logoBase64: main.base64,
-                logoDarkBase64: chosen === "white" && white ? white.base64 : null,
+                logoDarkBase64: darkImage ? darkImage.base64 : null,
                 darkStyle: chosen,
               })
             }
