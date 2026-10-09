@@ -150,7 +150,9 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
         anchor={anchor}
         open={open}
         align={fit.align}
-        maxHeight={360}
+        // Tall enough for "Status and stage" with all five stages, which
+        // a 360 px cap cut at Cancelled (the I-10b walk). It still scrolls.
+        maxHeight={480}
         className="text-xs"
         panelProps={{ id: panelId, role: "note", "aria-label": label }}
       >
