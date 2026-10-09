@@ -532,9 +532,10 @@ def _statuses(
         if existing:
             # The status exists: it keeps its own stage and spelling.
             target_name, category = held[_fold(target_name)]
-        elif len(target_name) > MAX_STATUS and not continues:
-            # Only a NEW status has the limit. A run that continues keeps the
-            # names of the earlier tree, as before I-10.
+        elif len(target_name) > MAX_STATUS and (named or not continues):
+            # Only a NEW status has the limit, and a name the admin CHOSES is
+            # new on any run. A run that continues keeps the earlier tree's
+            # source names with no choice, as before I-10.
             errors.append(f"A new status name holds 1 to {MAX_STATUS} characters: {name}.")
         final[name] = (target_name, category)
         rows.append(

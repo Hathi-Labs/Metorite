@@ -375,6 +375,20 @@ def test_a_long_name_is_refused_only_for_a_NEW_status() -> None:
     assert any("64 characters" in e for e in refused["errors"])
 
 
+def test_a_continuing_run_refuses_a_long_NEW_chosen_name_but_keeps_a_source_name() -> None:
+    """The fix-round review: a run that continues let a NEW chosen name of 65
+    to 500 characters through. A chosen name is new on any run. A long SOURCE
+    name with no choice stays, because the earlier tree may hold it."""
+    long_source = "s" * 70
+    b = _small(_row("a", status="waiting"), _row("b", status=long_source))
+    chosen = ImportMapping(statuses={"waiting": StatusChoice(category="todo", name="y" * 65)})
+    refused = build_plan(b, chosen, {}, target_statuses=SEED, continues=True)
+    assert not refused["ready"]
+    assert any("64 characters" in e and "waiting" in e for e in refused["errors"])
+    kept = build_plan(b, ImportMapping(), {}, target_statuses=SEED, continues=True)
+    assert kept["ready"], kept["errors"]
+
+
 # ── §6.9 work that exists ───────────────────────────────────────────────────
 
 
