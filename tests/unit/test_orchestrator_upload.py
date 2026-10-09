@@ -16,8 +16,9 @@ The route and the run must agree on ONE folder: the route writes to
 R8: the real upload route and a real ``chat_session`` row, as the NOBYPASSRLS
 app role (``graph_as_app``).
 
-Mutation this file catches (R7): put ``"orchestrator"`` back in the step 2
-exclusion, and the upload answers 404.
+Mutations this file catches (R7): put ``"orchestrator"`` back in the step 2
+exclusion, and the upload answers 404. Drop the alias map
+(``_chat_agent_name``), and a legacy "metorite" or "default" chat answers 404.
 
 Run::
 
@@ -134,10 +135,27 @@ def test_the_upload_never_writes_into_the_clone(graph_as_app, clone) -> None:  #
     assert sorted(p.relative_to(clone).as_posix() for p in clone.rglob("*")) == before
 
 
+@pytest.mark.parametrize("alias", ["metorite", "default", "Metorite"])
+@_DB_GATE
+def test_a_legacy_main_chat_alias_uploads_to_the_orchestrator(
+    graph_as_app, clone, alias: str,  # noqa: F811
+) -> None:
+    """The chat proxy runs "metorite" and "default" as the orchestrator
+    (``isDefaultAgent``), so the route resolves the orchestrator's dir."""
+    org = graph_as_app.org_a
+    sid = _seed_session(graph_as_app, org, _ALICE, None, agent=alias)
+    up = _client(_user(_ALICE, org)).post(
+        f"/agent/workspace/{sid}/upload",
+        files={"files": ("brief.docx", _docx("Legacy alias brief"))},
+    )
+    assert up.status_code == 200, up.text
+    assert "Legacy alias brief" in _run_read(clone, org, sid, "brief.docx")
+
+
 @_DB_GATE
 def test_a_name_with_no_clone_still_has_no_workspace(graph_as_app, clone) -> None:  # noqa: F811
     org = graph_as_app.org_a
-    sid = _seed_session(graph_as_app, org, _ALICE, None, agent="default")
+    sid = _seed_session(graph_as_app, org, _ALICE, None, agent="no-such-agent")
     up = _client(_user(_ALICE, org)).post(
         f"/agent/workspace/{sid}/upload",
         files={"files": ("brief.docx", _docx("x"))},

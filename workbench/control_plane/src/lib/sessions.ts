@@ -942,6 +942,11 @@ export async function postMessagesWithRetry(
 interface SaveLine {
   /** The body the server last stored. The same body is not sent again. */
   saved?: string;
+  /**
+   * The body the server last refused with a 4xx, for example a 403 to a room
+   * member who may not send. The same body is not sent again either.
+   */
+  refused?: string;
   /** True while a save, or its retries, is on the way. */
   busy: boolean;
   /** The newest body that came while busy or paused. Older ones are dropped. */
@@ -965,7 +970,8 @@ export function resetSaveLines(): void {
  * answered 500, the browser sent about 700 POSTs in one minute. The line
  * stops that:
  *
- * - a body equal to the one the server stored is not sent;
+ * - a body equal to the one the server stored, or to the one it refused
+ *   with a 4xx, is not sent;
  * - one request is on the way at a time, and a body that comes meanwhile
  *   replaces any body that waits, so a burst sends at most one more;
  * - when every retry fails, the line pauses for `SAVE_PAUSE_MS`, and then
@@ -984,7 +990,7 @@ export async function queueSave(
     line = { busy: false, pausedUntil: 0 };
     _saveLines.set(sessionId, line);
   }
-  if (body === line.saved) return;
+  if (body === line.saved || body === line.refused) return;
   if (line.busy) {
     line.next = body;
     return;
@@ -1000,17 +1006,19 @@ export async function queueSave(
         current = line.next;
         line.next = undefined;
       }
-      if (current === line.saved) break;
+      if (current === line.saved || current === line.refused) break;
       const status = await postMessagesWithRetry(sessionId, current, delaysMs);
       if (status !== null && status < 300) {
         line.saved = current;
       } else if (status === null || status >= 500) {
         line.pausedUntil = Date.now() + pauseMs;
+      } else {
+        // A 4xx is an answer: do not pause, and do not resend this body.
+        line.refused = current;
       }
-      // A 4xx is an answer: do not pause, and do not resend this body.
       current = line.next;
       line.next = undefined;
-      if (current !== undefined && current === line.saved) current = undefined;
+      if (current === line.saved || current === line.refused) current = undefined;
     }
   } finally {
     line.busy = false;

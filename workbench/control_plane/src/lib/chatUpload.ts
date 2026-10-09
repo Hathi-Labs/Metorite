@@ -3,10 +3,10 @@
  *
  * `FileUploadButton` and `AgentChat` read this file. It holds:
  *
- * - `CHAT_UPLOAD_ACCEPT`: the kinds the picker offers. Each is a kind that
- *   `read_attachment` reads (`acb_skills.attachment_text.SUPPORTED_SUFFIXES`)
- *   or an image type that the gateway takes (`routes/workspace.py`
- *   `_ALLOWED_EXTENSIONS`).
+ * - `CHAT_UPLOAD_ACCEPT`: the kinds the gateway's upload route takes
+ *   (`routes/workspace.py` `_ALLOWED_EXTENSIONS`). The client refuses only
+ *   what the gateway refuses. A kind that `read_attachment` cannot read
+ *   still uploads, and the tool then says which kinds it reads.
  * - `CHAT_UPLOAD_MAX_BYTES`: the gateway's cap of one file, so a big file is
  *   refused here before it crosses the network.
  * - `uploadErrorMessage`: the sentence a member reads when the gateway
@@ -14,23 +14,19 @@
  * - `uploadNote`: the message that tells the agent what was attached. It
  *   names `read_attachment`, the one tool that reads a chat upload.
  *
- * Fence: `src/lib/chatUpload.test.ts`, which also reads the two Python lists.
+ * Fence: `src/lib/chatUpload.test.ts`, which compares this list with the
+ * gateway's.
  */
 
-/** The kinds that `read_attachment` reads. Keep in step with the Python set. */
-export const READABLE_UPLOAD_KINDS: readonly string[] = [
-  ".docx", ".xlsx", ".pdf", ".html", ".htm", ".txt", ".md", ".csv",
-];
-
-/** The image types that the gateway's upload route takes. */
-export const IMAGE_UPLOAD_KINDS: readonly string[] = [
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-];
-
-/** The kinds the chat's file picker offers, in one list. */
+/** The kinds the gateway's upload route takes, in its order. */
 export const CHAT_UPLOAD_ACCEPT: readonly string[] = [
-  ...READABLE_UPLOAD_KINDS,
-  ...IMAGE_UPLOAD_KINDS,
+  ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
+  ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
+  ".py", ".sh", ".ps1", ".toml", ".ini", ".cfg",
+  ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+  ".mp3", ".wav", ".mp4", ".webm",
+  ".zip", ".tar", ".gz", ".bz2", ".7z",
+  ".log", ".sql", ".db", ".sqlite",
 ];
 
 /** The `accept` attribute of the chat's file input. */
@@ -57,7 +53,7 @@ export function refuseUpload(files: ReadonlyArray<{ name: string; size: number }
     }
     if (!CHAT_UPLOAD_ACCEPT.includes(kindOf(f.name))) {
       return (
-        `${f.name} is a kind the assistant cannot read. ` +
+        `${f.name} is a kind that a chat does not take. ` +
         `Attach one of: ${CHAT_UPLOAD_ACCEPT.join(" ")}.`
       );
     }

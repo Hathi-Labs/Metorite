@@ -14,9 +14,7 @@ import {
   CHAT_UPLOAD_ACCEPT,
   CHAT_UPLOAD_ACCEPT_ATTR,
   CHAT_UPLOAD_MAX_BYTES,
-  IMAGE_UPLOAD_KINDS,
   postUpload,
-  READABLE_UPLOAD_KINDS,
   refuseUpload,
   uploadErrorMessage,
   uploadNote,
@@ -24,34 +22,39 @@ import {
 
 const REPO = join(process.cwd(), "..", "..");
 
-function pySet(file: string, name: string): Set<string> {
+function pyKinds(file: string, from: string, to: string): Set<string> {
   const src = readFileSync(join(REPO, file), "utf-8");
-  const at = src.indexOf(name);
-  expect(at, `${name} in ${file}`).toBeGreaterThan(-1);
-  const block = src.slice(at, src.indexOf("\n\n", at));
-  return new Set(Array.from(block.matchAll(/"(\.[a-z0-9]+)"/g), (m) => m[1]));
+  const at = src.indexOf(from);
+  expect(at, `${from} in ${file}`).toBeGreaterThan(-1);
+  const end = src.indexOf(to, at);
+  expect(end, `${to} after ${from}`).toBeGreaterThan(at);
+  return new Set(Array.from(src.slice(at, end).matchAll(/"(\.[a-z0-9]+)"/g), (m) => m[1]));
 }
 
+const GATEWAY = () => pyKinds(
+  "apps/services/gateway/gateway/routes/workspace.py", "_ALLOWED_EXTENSIONS = {", "}",
+);
+
 describe("the one list of kinds", () => {
-  it("offers every kind read_attachment reads, and only those as documents", () => {
+  it("is the gateway's own list: the client refuses only what the gateway refuses", () => {
+    const gateway = GATEWAY();
+    expect(gateway.size).toBeGreaterThan(30);
+    expect(new Set(CHAT_UPLOAD_ACCEPT)).toEqual(gateway);
+    expect(CHAT_UPLOAD_ACCEPT).toHaveLength(gateway.size);
+  });
+
+  it("lets the gateway take every kind read_attachment reads", () => {
     // SUPPORTED_SUFFIXES is built from three sets in attachment_text.py.
-    const src = readFileSync(
-      join(REPO, "packages/acb_skills/acb_skills/attachment_text.py"), "utf-8",
+    const readable = pyKinds(
+      "packages/acb_skills/acb_skills/attachment_text.py",
+      "_TEXT_SUFFIXES = ", "SUPPORTED_SENTENCE = ",
     );
-    const start = src.indexOf("_TEXT_SUFFIXES = ");
-    const end = src.indexOf("SUPPORTED_SENTENCE = ");
-    const py = new Set(Array.from(src.slice(start, end).matchAll(/"(\.[a-z0-9]+)"/g), (m) => m[1]));
-    expect(py.size).toBeGreaterThan(5);
-    expect(new Set(READABLE_UPLOAD_KINDS)).toEqual(py);
+    expect(readable.size).toBeGreaterThan(5);
+    const gateway = GATEWAY();
+    for (const kind of readable) expect(gateway.has(kind), kind).toBe(true);
   });
 
-  it("offers only kinds the gateway's upload route takes", () => {
-    const allowed = pySet("apps/services/gateway/gateway/routes/workspace.py", "_ALLOWED_EXTENSIONS = {");
-    for (const kind of CHAT_UPLOAD_ACCEPT) expect(allowed.has(kind), kind).toBe(true);
-  });
-
-  it("is one list, and the input's accept attribute is that list", () => {
-    expect(CHAT_UPLOAD_ACCEPT).toEqual([...READABLE_UPLOAD_KINDS, ...IMAGE_UPLOAD_KINDS]);
+  it("is the input's accept attribute", () => {
     expect(CHAT_UPLOAD_ACCEPT_ATTR.split(",")).toEqual([...CHAT_UPLOAD_ACCEPT]);
   });
 
@@ -76,9 +79,15 @@ describe("refuseUpload", () => {
     expect(why).toContain("25 MB");
   });
 
-  it("refuses a kind the picker does not offer (a drop skips accept)", () => {
-    const why = refuseUpload([{ name: "deck.pptx", size: 10 }]);
-    expect(why).toContain("deck.pptx");
+  it("lets a kind go that the gateway takes and read_attachment cannot read", () => {
+    for (const name of ["deck.pptx", "data.json", "tool.py", "bundle.zip", "c.yaml"]) {
+      expect(refuseUpload([{ name, size: 10 }]), name).toBeNull();
+    }
+  });
+
+  it("refuses a kind the gateway refuses (a drop skips accept)", () => {
+    const why = refuseUpload([{ name: "setup.exe", size: 10 }]);
+    expect(why).toContain("setup.exe");
     expect(why).toContain(".docx");
   });
 });
@@ -121,7 +130,7 @@ describe("uploadNote", () => {
   });
 
   it("lists no kinds, so a new kind needs no edit here", () => {
-    for (const kind of READABLE_UPLOAD_KINDS.filter((k) => k !== ".docx")) {
+    for (const kind of [".pdf", ".xlsx", ".txt", ".csv", ".html"]) {
       expect(note).not.toContain(kind);
     }
   });
@@ -153,5 +162,19 @@ describe("postUpload", () => {
       expect((await postUpload("s1", new FormData(), 0, once.impl)).status).toBe(status);
       expect(once.urls).toHaveLength(1);
     }
+  });
+});
+
+describe("the default agent's aliases", () => {
+  it("are the same on the gateway's upload route as in the chat proxy", async () => {
+    const { DEFAULT_AGENT_NAMES } = await import("./chatMemorySave");
+    const src = readFileSync(
+      join(REPO, "apps/services/gateway/gateway/routes/workspace.py"), "utf-8",
+    );
+    const at = src.indexOf("_DEFAULT_CHAT_AGENT_ALIASES: frozenset[str] = frozenset({");
+    expect(at).toBeGreaterThan(-1);
+    const block = src.slice(at, src.indexOf("})", at));
+    const py = new Set(Array.from(block.matchAll(/"([^"]*)"/g), (m) => m[1]));
+    expect(py).toEqual(new Set(DEFAULT_AGENT_NAMES));
   });
 });

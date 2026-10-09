@@ -204,9 +204,14 @@ describe("the save line", () => {
   });
 
   it("does not resend a body the server refused with a 4xx", async () => {
+    // A room member who may not send gets 403 (chat.py), and AgentChat saves
+    // on every change of a live run: about twelve times a second.
     const calls = answers(403);
-    await queueSave("s1", "[1]", NO_WAIT, 0);
+    for (let i = 0; i < 12; i += 1) await queueSave("s1", "[1]", NO_WAIT, 0);
     expect(calls).toEqual(["[1]"]);
+    // A new body is a new question, and it is sent.
+    await queueSave("s1", "[2]", NO_WAIT, 0);
+    expect(calls).toEqual(["[1]", "[2]"]);
   });
 
   it("keeps each session's line apart", async () => {

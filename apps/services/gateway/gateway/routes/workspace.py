@@ -404,6 +404,21 @@ def _refuse_shared_clone_write(workspace: Path) -> None:
         )
 
 
+#: The names of a chat session that mean the default agent. The chat proxy
+#: (`app/api/agent/chat/route.ts`) runs each of them as the orchestrator, from
+#: `DEFAULT_AGENT_NAMES` in `workbench/control_plane/src/lib/chatMemorySave.ts`.
+#: This set mirrors that one. Fence: `src/lib/chatUpload.test.ts` compares them.
+_DEFAULT_CHAT_AGENT_ALIASES: frozenset[str] = frozenset({
+    "orchestrator", "default", "metorite", "",
+})
+
+
+def _chat_agent_name(name: str | None) -> str:
+    """The agent that runs a chat session named *name*, as the proxy maps it."""
+    clean = str(name or "").strip()
+    return "orchestrator" if clean.lower() in _DEFAULT_CHAT_AGENT_ALIASES else clean
+
+
 def _get_workspace_path(
     session_id: str, user_email: str | None, organization_id: str | None,
 ) -> Path | None:
@@ -468,12 +483,11 @@ def _get_workspace_path(
         # runs work in its tenant dir (`executor._resolve_run_workspace`), so
         # its sessions resolve that dir here too. This line returned None for
         # it from June 2026, when the main chat had no agent clone, so every
-        # upload into a new main chat answered 404. A name with no clone (for
-        # example "default") still gives None, through `_agent_clone_dir`.
-        # Fence: tests/unit/test_chat_upload_every_agent.py.
-        agent_name: str = row.agent_name or ""
-        if not agent_name:
-            return None
+        # upload into a new main chat answered 404. The chat proxy runs each
+        # alias of the default agent as the orchestrator, so a legacy session
+        # named "metorite" or "default" resolves the same dir.
+        # Fence: tests/unit/test_orchestrator_upload.py.
+        agent_name: str = _chat_agent_name(row.agent_name)
 
         # H-201 part 3: a personal agent gives the viewer's own folder, and a
         # shared agent the viewer's tenant dir. Neither is ever the clone.
@@ -2006,7 +2020,9 @@ from fastapi import UploadFile
 
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
 #: Every kind that ``read_attachment`` reads must be here, ``.htm`` too
-#: (2026-10-09). Fence: ``workbench/control_plane/src/lib/chatUpload.test.ts``.
+#: (2026-10-09). The chat's file picker mirrors this list exactly
+#: (``CHAT_UPLOAD_ACCEPT``). Fence:
+#: ``workbench/control_plane/src/lib/chatUpload.test.ts``.
 _ALLOWED_EXTENSIONS = {
     ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
     ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
