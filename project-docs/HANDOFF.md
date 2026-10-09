@@ -124,6 +124,27 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
+- **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
+  No hit means this is open.
+- **Why.** EM-T16 PR-A runs the Reply Zero classify once in each sync cycle.
+  The Graph webhook calls `process_new_mail` directly, and that call also
+  classifies. So a webhook classify can run at the same time as the classify
+  of the scheduler. Both read the same rows, and both can ask about the same
+  thread. PR-A did not change that path.
+- **Do.**
+  1. Measure how often a webhook classify and a scheduler classify of one
+     mailbox overlap. Use the `decide` log lines and their `message_id`.
+  2. If they overlap, let one classify of a mailbox run at a time. Reuse the
+     lock of the mailbox (`hold_mailbox`) or its idea. Do not add a second
+     lock beside it.
+  3. Fence it in `tests/unit/test_email_triage_once.py`.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.17 PR-A, "The risks
+  that PR-A accepts" · D-EM-62
+- **Added:** 2026-10-09 · branch `email-em-t16-pra` (EM-T16 PR-A). It was
+  H-283. #789 took H-283 and H-284 on `main` first, so this entry moved to
+  H-285 at the merge.
+
 ### H-282 · Remove the retired email model fields, then their columns · [AGENT]
 - **Check:** run `rg -n "draft_model|compose_model|chat_model" apps/services/gateway/gateway/routes/email/automation/assistant.py`,
   then `rg -n "^    (draft|compose|chat|rule)_model" infra/postgres/schema.generated.sql`.
