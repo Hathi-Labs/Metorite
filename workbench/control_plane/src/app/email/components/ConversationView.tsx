@@ -1,8 +1,8 @@
 "use client";
 
 import Button from "@/components/ui/Button";
-import AppIcon, { themedIcon } from "@/components/Icon";
-import { useEffect, useRef, useState } from "react";
+import AppIcon from "@/components/Icon";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Email } from "../lib/types";
 import { fullDateLabel, initials, buildOptimisticSent } from "../lib/utils";
 import { getEmail, fetchFullBody, detectReplyCommitment } from "../lib/api";
@@ -46,14 +46,18 @@ const INPUT =
 export function ConversationView({
   messages,
   openedId,
-  onReply,
+  renderActions,
+  lightVersions,
   onSent,
 }: {
   messages: Email[];
   openedId: string;
-  /** Reply / Reply All / Forward a specific message in the thread. Opens the
-   *  composer (in EmailDetail) threaded onto that message. */
-  onReply?: (message: Email, mode: "reply" | "reply-all" | "forward") => void;
+  /** The action row of one card (`MessageActions`): Reply, Reply all,
+   *  Forward and "More actions". The reading pane owns every handler, so
+   *  each card acts on its own message. */
+  renderActions?: (message: Email) => ReactNode;
+  /** The messages whose light version the member asked for. */
+  lightVersions?: ReadonlySet<string>;
   /** Called after an in-thread draft is sent so the parent can surface the
    *  reply immediately and pull the real synced copy. */
   onSent?: (sent?: Email) => void;
@@ -240,31 +244,15 @@ export function ConversationView({
                       accountId={m.accountId}
                     />
                   </div>
-                  {onReply && (
-                    <div className="flex items-center gap-0.5 flex-shrink-0 -mt-0.5">
-                      <CardAction
-                        icon={themedIcon("Reply")}
-                        label="Reply"
-                        onClick={() => onReply(view, "reply")}
-                      />
-                      <CardAction
-                        icon={themedIcon("ReplyAll")}
-                        label="Reply all"
-                        onClick={() => onReply(view, "reply-all")}
-                      />
-                      <CardAction
-                        icon={themedIcon("Forward")}
-                        label="Forward"
-                        onClick={() => onReply(view, "forward")}
-                      />
-                    </div>
-                  )}
+                  {/* A direct child: the row measures this line for its width. */}
+                  {renderActions?.(view)}
                 </div>
                 {view.bodyHtml || view.bodyText ? (
                   <MessageContent
                     html={view.bodyHtml}
                     text={view.bodyText}
                     remoteId={remoteHtmlId(view)}
+                    lightVersion={lightVersions?.has(view.id) ?? false}
                   />
                 ) : (
                   <div className="text-xs text-muted-foreground italic py-2">
@@ -297,26 +285,6 @@ export function ConversationView({
         />
       )}
     </div>
-  );
-}
-
-/** Small per-message action button (Reply / Reply All / Forward) on a card. */
-function CardAction({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: React.ElementType;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <Button variant="ghost" size="icon-sm" radius="keep" layout="" type="button" title={label} aria-label={label} onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }} className="rounded">
-      <Icon size={13} />
-    </Button>
   );
 }
 

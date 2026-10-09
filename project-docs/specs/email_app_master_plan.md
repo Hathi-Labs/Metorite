@@ -28,6 +28,7 @@
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
+> 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -15312,3 +15313,114 @@ migration, and no flag.
   nothing, until the member clicks "I checked Sent, send again". "Open Sent" stays
   beside it. The e2e test "after an unsure answer, Send waits until the member checked
   Sent" and a source fence in `forward.test.ts` hold the rule.
+
+## 16. The reading pane: one action row, and the body in dark mode (2026-10-10)
+
+**Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** UI
+only. No migration, no flag and no gateway change.
+
+The owner asked for two changes on 2026-10-10. This section records them, and a fix of
+"Loading message…".
+
+### 16.1 The same action row on every message
+
+The owner said: "When an email is part of a thread, reply, reply-all, and similar buttons
+are always visible. In a single email, those options are missing."
+
+1. **One row.** `MessageActions.tsx` draws the row on the single email and on each open
+   card of a thread. It holds Reply, Reply all, Forward, a sun in dark mode, and "More
+   actions". Each control is a `Button` with an `aria-label` and a tooltip.
+2. **The menu.** "More actions" opens an `AnchoredPanel` with `align="end"`. Its groups
+   are the owner's list: Add to My Tasks. Archive, Delete, Move to…, Label…. Mark as
+   unread or read, Flag, Star. Print, Download (.eml). View activity. Block sender,
+   Report spam / phishing.
+3. **Each item acts on THAT message.** The reading pane owns every handler, and the row
+   gets the message and the handlers. `actOn` calls the store's `updateEmail` and sets
+   the same change on the open thread. `deleteOne` calls `deleteEmail`. `blockSender`,
+   `downloadEml` and the activity panel now take the message.
+   - Add to My Tasks of a thread card failed before this change. The store looked for
+     the message in the list, and a thread message is often not a row of it. So
+     `captureEmailToTasks(id, accountId)` now takes the mailbox of the message.
+   - Print stays `window.print()`, so it prints the open conversation. The browser
+     prints the page, and the gateway has no print of one message.
+4. **Add to My Tasks moved into the menu.** The owner named it as a menu item, and the
+   header keeps four controls. The top toolbar still has the one-click capture for the
+   open mail.
+5. **Keyboard.** The menu opens with focus on its first item. Up, Down, Home and End move.
+   Escape closes it and gives focus back to the button. Tab closes it.
+6. **Narrow cards.** The row measures its card. Under 600 px the labels go. Under 360 px
+   Reply all, Forward and the sun move into the menu (`actionRowTier`).
+7. **The top toolbar is as it was.**
+
+### 16.2 The body in dark mode
+
+The owner said: "Fix the issue where the email body shows a white background in dark
+mode." The body draws in a sandboxed iframe, on a white sheet that `MessageContent.tsx`
+sets. `lib/bodyLook.ts` now picks a look for the frame, in the owner's order.
+
+1. **`native`.** The sanitized mail has its own `prefers-color-scheme: dark` query. A
+   `color-scheme` that names dark also counts, on a mail with no colours of its own.
+   `forceDarkMedia` turns the sender's dark queries on, and the frame is not inverted.
+   - A child frame takes its colour scheme from the operating system, not from the app.
+     We measured this in Chromium on 2026-10-10. So the pane rewrites the media condition
+     after the sanitizer. Fixed words replace it, and no tag can form.
+2. **`tokens`.** Simple HTML has no colour and no background of its own. It takes the
+   card, ink, link and border tokens. A plain-text mail already used them.
+3. **`invert`.** Styled HTML gets `invert(1) hue-rotate(180deg)` on the root. Each `img`,
+   `picture`, `video`, `canvas`, `svg image` and background picture gets the filter again.
+   A picture in a re-inverted box gets no second filter.
+   - A layer multiplies the page by a base colour before the filter. The base comes from
+     the card token, so each white box of the mail lands on the card colour.
+   - While the pane blocks the images, a remote picture gets no re-invert. Its alt text then
+     stays light.
+4. **`original`.** Light mode, and the light version, draw the sheet exactly as before.
+5. **The light version.** The sun in the row turns it on for one message. The ids live in
+   `localStorage` (`metorite.email.lightVersion`, 200 at most). Each read and write is in
+   a try block. A plain-text mail draws its light version on a `.light` card.
+6. **Print.** Each rule of a dark look is inside `@media screen`, so a print draws the
+   original. Download (.eml) writes the text of the mail, so no look reaches it.
+7. **Security.** The sandbox and the sanitizer are as they were. The look CSS holds fixed
+   text and colours made from numbers. No text of the mail reaches it.
+
+### 16.3 "Loading message…" that never ended
+
+The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading message…".
+
+- **What it waits for.** The line waits for `GET /email/messages/{id}`, the detail fetch
+  in `EmailDetail.tsx`. It does not wait for `GET /email/messages/{id}/html`. That fetch
+  shows "Getting the formatted message from the mail provider…" above the text.
+- **The cause.** The flag was one boolean. Mail A starts a fetch and sets it true. The
+  member opens mail B, which has its body, before A's fetch ends. The cleanup of A
+  cancels A's `finally`, and B's effect returns early with no reset. So B showed the line
+  until another fetch ended. A mail with a body should show it for a moment at most.
+- **The fix.** The pane keeps the id of the loading mail, and each fetch clears its own
+  id. The line shows only while the open mail has no body. A mail that waits only for
+  its file list draws its body at once.
+
+### 16.4 Fences
+
+- `src/app/email/lib/bodyLook.test.ts`: the classifier on a mail with a dark query, a
+  plain mail and a newsletter. It also holds the re-invert rule, the base colour, the
+  print rule, the native rewrite and the light-version list.
+- `src/app/email/lib/messageActions.test.ts`: the tiers, the menu groups and the keys.
+  It also holds the wiring of each handler to its message, the capture of a thread
+  message and the loading fix.
+- `e2e/email-message-actions.spec.ts`: the row on both views, the menu by keyboard, a
+  thread item on its own message and the narrow row. It also holds each look in a real
+  frame, the light version after a reload, light mode, Show images and the loading race.
+- Advisory: the screenshots of the rig `e2e/visual/email-message-actions.visual.ts`
+  (not committed) are the only check of how the looks appear.
+
+### 16.5 Recorded risks and findings
+
+- **A vivid colour in a re-inverted picture shifts a little.** The browser clamps each
+  filter step, and a hue-rotate of a vivid colour leaves the range. The layer also lifts
+  the deepest shadow of a picture to the card colour. The light version is the way out.
+- **A style block in the head never reaches the frame.** `sanitizeEmailHtml` drops the
+  head, and DOMPurify drops a leading style block too. So a dark design that lives in the
+  head is lost, and that mail gets `invert` or `tokens`. A fix needs a sanitizer change
+  (`FORCE_BODY`, or a kept head style), which this slice did not make.
+- **The frame clips a wide newsletter at the right edge.** A table with a fixed width wider
+  than the pane overflows the frame in light mode too. This slice did not change it.
+- **The invert also turns a background picture that a class sets.** The re-invert reads the inline
+  `style` and the `background` attribute only.

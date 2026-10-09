@@ -40,6 +40,8 @@ import { ContactTrigger, RecipientList } from "./ContactCard";
 import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
+import { MessageActions } from "./MessageActions";
+import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
@@ -91,7 +93,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const [read, setRead] = useState(email?.isRead ?? true);
   const [flagged, setFlagged] = useState(email?.isFlagged ?? false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [showTimeline, setShowTimeline] = useState(false);
+  // The message whose activity is open. Each card of a thread can open its own.
+  const [timelineFor, setTimelineFor] = useState<Email | null>(null);
+  // The messages the member asked to see as sent, on their light sheet.
+  const lightVersions = useLightVersions();
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [showLabelMenu, setShowLabelMenu] = useState(false);
   const [replyMode, setReplyMode] = useState<"reply" | "reply-all" | "forward" | null>(
@@ -186,7 +191,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // list row often carries an empty body (Outlook syncs headers only), so we
   // always fetch the authoritative copy from the gateway when an email opens.
   const [detail, setDetail] = useState<Email | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  // The message whose detail is loading. An id, not a flag: a flag that the
+  // last mail set stayed true when a mail with a body opened before that
+  // fetch ended, and that mail showed "Loading message…" for good.
+  const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
   // The full conversation (all messages sharing this thread_id), if any.
   const [thread, setThread] = useState<Email[] | null>(null);
   // Just-sent replies shown optimistically until the provider sync mirrors the
@@ -234,11 +242,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setTimeout(() => void softRefresh(), 5000);
   };
 
-  // Create an archive rule for this sender, then archive the open message.
-  const blockSender = async () => {
-    if (!email) return;
-    const sender = email.from.email;
-    const accountId = mailboxId;
+  // Create an archive rule for the sender of `target` (the open message by
+  // default), then archive that message.
+  const blockSender = async (target: Email | null = email) => {
+    if (!target) return;
+    const sender = target.from.email;
+    // The mailbox of that message. A thread lives in one mailbox (§11.6).
+    const accountId = target.accountId || mailboxId;
     if (!sender || !accountId) return;
     try {
       await createRule({
@@ -255,29 +265,48 @@ export function EmailDetail({ email }: EmailDetailProps) {
     } catch {
       /* best-effort — still archive below */
     }
-    updateEmail(email.id, { folder: "archive" });
+    actOn(target, { folder: "archive" });
   };
 
-  // Download the open message as a .eml file.
-  const downloadEml = () => {
-    if (!email) return;
-    const body = detail?.bodyText || email.bodyText || fullBodyText || "";
+  // Download `target` (the open message by default) as a .eml file.
+  const downloadEml = (target: Email | null = email) => {
+    if (!target) return;
+    const body =
+      target.id === detail?.id
+        ? detail.bodyText || target.bodyText || fullBodyText || ""
+        : target.bodyText || "";
     const eml =
-      `From: ${email.from.name} <${email.from.email}>\n` +
-      `To: ${email.to.map((t) => t.email).join(", ")}\n` +
-      `Subject: ${email.subject}\n` +
-      `Date: ${email.receivedAt}\n\n` +
+      `From: ${target.from.name} <${target.from.email}>\n` +
+      `To: ${target.to.map((t) => t.email).join(", ")}\n` +
+      `Subject: ${target.subject}\n` +
+      `Date: ${target.receivedAt}\n\n` +
       body;
     const url = URL.createObjectURL(
       new Blob([eml], { type: "message/rfc822" })
     );
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${(email.subject || "email")
+    a.download = `${(target.subject || "email")
       .replace(/[^a-z0-9]+/gi, "_")
       .slice(0, 40)}.eml`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  /** The store's `updateEmail` for one message, and the same change in the
+   *  open thread, so the card shows it before the next refetch. */
+  const actOn = (
+    target: Email,
+    updates: Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder">>,
+  ) => {
+    void updateEmail(target.id, updates);
+    setThread((cur) => cur && cur.map((m) => (m.id === target.id ? { ...m, ...updates } : m)));
+  };
+
+  /** The store's `deleteEmail` for one message. A thread hides it at once. */
+  const deleteOne = (target: Email) => {
+    void deleteEmail(target.id);
+    setThread((cur) => cur && cur.map((m) => (m.id === target.id ? { ...m, folder: "trash" } : m)));
   };
 
   // Background refresh of the OPEN conversation (~20s) so an assistant-created
@@ -335,7 +364,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
       setDetail(email);
       return;
     }
-    setLoadingDetail(true);
+    const loadingId = email.id;
+    setLoadingDetailId(loadingId);
     getEmail(email.id)
       .then((full) => {
         if (!cancelled) {
@@ -347,7 +377,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
         if (!cancelled) setDetail(email); // fall back to list row
       })
       .finally(() => {
-        if (!cancelled) setLoadingDetail(false);
+        // Each fetch clears its own id, also after a switch to another mail.
+        setLoadingDetailId((cur) => (cur === loadingId ? null : cur));
       });
     return () => {
       cancelled = true;
@@ -558,6 +589,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // `detail` resets only after the first render of a new mail, so it can still
   // hold the last mail. Read it only when it is this mail (EM-T10 item 5, C2).
   const view: Email = detail?.id === email.id ? detail : email;
+  // "Loading message…" shows only while THIS mail has no body to draw. A mail
+  // that has its body and waits for its file list draws the body at once.
+  const loadingDetail = loadingDetailId === email.id && !view.bodyHtml && !view.bodyText;
 
   // The message the composer replies to. Defaults to the open message; a
   // conversation card can target any message in the thread (Outlook parity).
@@ -1066,7 +1100,24 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   // Keep the command bridge pointed at the live handlers (runs each render).
-  cmdRef.current = { reply: startReply, block: blockSender, download: downloadEml };
+  cmdRef.current = { reply: startReply, block: () => void blockSender(), download: () => downloadEml() };
+
+  /** The action row of one message: the single email, or one card of a
+   *  thread. Every handler gets that message (owner, 2026-10-10). */
+  const messageActions = (m: Email) => (
+    <MessageActions
+      message={m}
+      onReply={(mode) => startReply(mode, m)}
+      onUpdate={(updates) => actOn(m, updates)}
+      onDelete={() => deleteOne(m)}
+      onTasks={() => captureEmailToTasks(m.id, m.accountId)}
+      onBlock={() => void blockSender(m)}
+      onDownload={() => downloadEml(m)}
+      onActivity={() => setTimelineFor(m)}
+      lightVersion={lightVersions.has(m.id)}
+      onToggleLight={() => toggleLightVersion(m.id)}
+    />
+  );
   // Point the auto-draft ref at the current-render closure so the nonce effect
   // reads fresh reply state (recipients/mode startReply just set).
   runAiDraftRef.current = runAiDraft;
@@ -1228,7 +1279,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 {[
                   {
                     label: "View activity",
-                    run: () => setShowTimeline(true),
+                    run: () => setTimelineFor(email),
                   },
                   {
                     label: "Mark as spam",
@@ -1320,7 +1371,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
           <ConversationView
             messages={thread}
             openedId={email.id}
-            onReply={(m, mode) => startReply(mode, m)}
+            renderActions={messageActions}
+            lightVersions={lightVersions}
             onSent={refreshThreadAfterSend}
           />
         ) : isDraftEmail(email) ? (
@@ -1370,17 +1422,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
               {fullDateLabel(email.receivedAt)}
             </div>
           </div>
-          {/* Card-level capture: turn this email (with its thread + who's on it)
-              into a routed task in My Tasks — always visible with the message. */}
-          <button
-            type="button"
-            onClick={() => captureEmailToTasks(email.id)}
-            title="Add to My Tasks — the assistant reads the thread and files a routed task (follow-up / delegated / next action) with a due date if implied."
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
-          >
-            <AppIcon name="ListChecks" size={14} />
-            <span className="hidden sm:inline">Add to My Tasks</span>
-          </button>
+          {/* The same action row as each card of a thread. "Add to My Tasks"
+              is its first menu item (owner, 2026-10-10). */}
+          {messageActions(email)}
         </div>
 
         {/* Body */}
@@ -1417,6 +1461,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             html={view.bodyHtml}
             text={view.bodyText}
             remoteId={remoteHtmlId(view)}
+            lightVersion={lightVersions.has(view.id)}
           />
         )}
 
@@ -1764,11 +1809,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
         )}
       </div>
 
-      {showTimeline && email && (
+      {timelineFor && (
         <MessageTimelineModal
-          messageId={email.id}
-          subject={email.subject}
-          onClose={() => setShowTimeline(false)}
+          messageId={timelineFor.id}
+          subject={timelineFor.subject}
+          onClose={() => setTimelineFor(null)}
         />
       )}
     </div>

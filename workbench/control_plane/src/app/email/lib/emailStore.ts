@@ -464,9 +464,14 @@ interface EmailState {
    *  The popup component owns the preview/enhance async state; the store only
    *  tracks which message it's for. */
   taskCapturePopupEmailId: string | null;
+  /** The mailbox of that email, when the caller named it. A message of a
+   *  thread is often not a row of the list, so the list cannot say. */
+  taskCapturePopupAccountId: string | null;
   /** Open the clarify-before-capture popup for an email ("Add to Tasks" now
-   *  opens a review popup instead of capturing instantly). */
-  captureEmailToTasks: (emailId: string) => void;
+   *  opens a review popup instead of capturing instantly). `accountId` names
+   *  the mailbox of a message that the caller holds and the list may not:
+   *  a card of a thread (owner, 2026-10-10). */
+  captureEmailToTasks: (emailId: string, accountId?: string) => void;
   closeTaskCapturePopup: () => void;
   /** Show the "Captured to Tasks" toast (called by the popup on confirm). */
   notifyTaskCaptured: (notice: NonNullable<EmailState["taskCaptureNotice"]>) => void;
@@ -1627,10 +1632,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   taskCaptureNotice: null,
   taskCapturePopupEmailId: null,
+  taskCapturePopupAccountId: null,
 
-  captureEmailToTasks: (emailId) => {
+  captureEmailToTasks: (emailId, accountId) => {
     const email = get().emails.find((e) => e.id === emailId);
-    if (!email) {
+    if (!email && !accountId) {
       // e.g. a brand-new draft not yet saved to the message list — nothing to
       // capture from, so show a hint instead of opening an empty popup.
       set({
@@ -1642,10 +1648,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       setTimeout(() => get().clearTaskCaptureNotice(), 6000);
       return;
     }
-    set({ taskCapturePopupEmailId: emailId });
+    set({
+      taskCapturePopupEmailId: emailId,
+      taskCapturePopupAccountId: email?.accountId ?? accountId ?? null,
+    });
   },
 
-  closeTaskCapturePopup: () => set({ taskCapturePopupEmailId: null }),
+  closeTaskCapturePopup: () =>
+    set({ taskCapturePopupEmailId: null, taskCapturePopupAccountId: null }),
 
   notifyTaskCaptured: (notice) => {
     set({ taskCaptureNotice: notice });

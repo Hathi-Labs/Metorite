@@ -1,13 +1,15 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { splitQuotedHtml, splitQuotedText } from "../lib/quoting";
 import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtml";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { messageHtmlKey } from "../lib/api";
 import { HTML_HOLD_MS, openMessageHtml } from "../lib/htmlPrefetch";
+import { bodyLookCss, bodyPalette, chooseBodyLook, forceDarkMedia, frameColorScheme } from "../lib/bodyLook";
+import { useMode } from "@/lib/theme/surfaces";
 
 interface MessageContentProps {
   /** Raw HTML body from the provider (preferred when present). */
@@ -21,6 +23,24 @@ interface MessageContentProps {
    * arrives. Null or absent: no request, and the body draws as before.
    */
   remoteId?: string | null;
+  /**
+   * The member asked for this message as sent, on its light sheet, while the
+   * app is dark (`lib/lightVersion.ts`). It changes nothing in light mode.
+   */
+  lightVersion?: boolean;
+}
+
+/**
+ * The light version of the message whose body draws below. A context, not a
+ * prop, so every frame of one body (the main part and the quoted part) and
+ * the text fallback read the same choice.
+ */
+const LightVersionContext = createContext(false);
+
+/** The live value of an app token, for the colours of a dark look. */
+function readToken(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || null;
 }
 
 /** Matches a remote (http/https) URL inside src/srcset/poster/background or CSS url(). */
@@ -130,6 +150,10 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   const [height, setHeight] = useState(quoted ? 160 : 400);
   const [mounted, setMounted] = useState(false);
   const [showImages, setShowImages] = useState(false);
+  // How the body draws in dark mode (`lib/bodyLook.ts`). Light mode and the
+  // light version draw the original sheet.
+  const lightVersion = useContext(LightVersionContext);
+  const dark = useMode() === "dark";
 
   // DOMPurify needs the DOM — defer sanitization to the client to avoid SSR
   // crashes and hydration mismatches on the iframe srcDoc.
@@ -145,12 +169,24 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     setShowImages(false);
   }
 
-  const sanitized = useMemo(() => {
+  const purified = useMemo(() => {
     if (!mounted) return null;
     // When showing images, rewrite them through our proxy (same-origin), so the
     // CSP only ever needs to allow 'self' — remote hosts never load directly.
     return sanitizeEmailHtml(html, showImages);
   }, [mounted, html, showImages]);
+  // The look reads the SANITIZED markup, which is what the frame draws. The
+  // sanitizer drops a style block of the head, and a dark media query there
+  // never reaches the frame, so it cannot make the look `native`.
+  const look = chooseBodyLook({ dark, lightVersion, html: purified?.clean ?? "" });
+  // The native look turns the sender's own dark media queries on. A child
+  // frame reads its colour scheme from the OS, not from the app, so its
+  // queries cannot see the app's dark mode. Fixed words replace the media
+  // condition after the sanitizer ran, so no tag can form.
+  const sanitized = useMemo(
+    () => (purified && look === "native" ? { ...purified, clean: forceDarkMedia(purified.clean) } : purified),
+    [purified, look],
+  );
 
   const srcDoc = useMemo(() => {
     if (!sanitized) return "";
@@ -176,6 +212,10 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     // white background, so this stays readable in BOTH app themes (no more
     // white-on-white in light mode or dark-on-dark when mail sets its own
     // black text). This mirrors how Gmail/Outlook render message bodies.
+    // A dark look adds its own sheet after this one, inside `@media screen`,
+    // so a print still draws the original. It holds no text of the email.
+    const lookCss = bodyLookCss(look, bodyPalette(readToken), { remoteBlocked: !showImages });
+    const lookStyle = lookCss ? "<style>" + lookCss + "</style>" : "";
     return `<!doctype html><html><head>
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta charset="utf-8">
@@ -193,8 +233,8 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   a { color: #2563eb; }
   blockquote { border-left: 3px solid #d1d5db; margin: 0; padding-left: 12px; color: #6b7280; }
   pre { white-space: pre-wrap; }
-</style></head><body>${sanitized.clean}</body></html>`;
-  }, [sanitized, showImages, quoted]);
+</style>${lookStyle}</head><body>${sanitized.clean}</body></html>`;
+  }, [sanitized, showImages, quoted, look]);
 
   useEffect(() => {
     if (!srcDoc) return;
@@ -259,8 +299,11 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
           // allow-same-origin (without allow-scripts) lets us measure content
           // height for auto-sizing; scripts still never run.
           sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-          className="w-full border border-border rounded-md bg-white"
-          style={{ height, minHeight: quoted ? 80 : 200 }}
+          data-body-look={look}
+          className={`w-full border border-border rounded-md ${look === "original" ? "bg-white" : "bg-card"}`}
+          // A child frame reads `prefers-color-scheme` from this element, so
+          // the sender's own dark CSS applies only to the `native` look.
+          style={{ height, minHeight: quoted ? 80 : 200, colorScheme: frameColorScheme(look) }}
         />
       ) : (
         <div style={{ minHeight: quoted ? 80 : 200 }} />
@@ -308,6 +351,21 @@ function HtmlMessage({ html }: { html: string }) {
 
 /** A plain-text body with Outlook-style collapsing of the quoted trailing chain. */
 function TextMessage({ text }: { text: string }) {
+  // A plain-text body already draws in the app's tokens. Its light version
+  // draws on a light sheet: the `.light` class sets the light tokens for
+  // this box only.
+  const lightVersion = useContext(LightVersionContext);
+  const dark = useMode() === "dark";
+  return lightVersion && dark ? (
+    <div className="light max-w-2xl rounded-md border border-border bg-card px-3.5 py-3 text-card-foreground">
+      <TextBody text={text} />
+    </div>
+  ) : (
+    <TextBody text={text} />
+  );
+}
+
+function TextBody({ text }: { text: string }) {
   const [showQuoted, setShowQuoted] = useState(false);
   const split = useMemo(() => splitQuotedText(text), [text]);
 
@@ -395,7 +453,15 @@ function RemoteHtmlStatus() {
  * path as a stored body: `HtmlMessage`, `HtmlFrame`, `sanitizeEmailHtml` and
  * the sandboxed iframe. There is no second render path.
  */
-export function MessageContent({ html, text, remoteId = null }: MessageContentProps) {
+export function MessageContent({ html, text, remoteId = null, lightVersion = false }: MessageContentProps) {
+  return (
+    <LightVersionContext.Provider value={lightVersion}>
+      <MessageBody html={html} text={text} remoteId={remoteId} />
+    </LightVersionContext.Provider>
+  );
+}
+
+function MessageBody({ html, text, remoteId = null }: Omit<MessageContentProps, "lightVersion">) {
   const hasHtml = !!html && html.trim().length > 0;
   const remote = useRemoteHtml(hasHtml ? null : remoteId);
   if (hasHtml) return <HtmlMessage html={html as string} />;
