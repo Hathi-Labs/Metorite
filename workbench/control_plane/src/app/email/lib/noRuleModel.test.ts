@@ -5,8 +5,9 @@
  *
  * The rules run on the `decide` tier, and no member can change it. So no
  * Email source names `rule_model`: not the settings card, not the settings
- * type, and not the label of the agent's settings tool card. The other model
- * pickers (draft, compose and chat) stay.
+ * type, and not the label of the agent's settings tool card. D-EM-61
+ * (2026-10-09) removed the other three model pickers too, and
+ * `noTierChoice.test.ts` fences them.
  *
  * A source scan, because the subject is the absence of a control. The
  * backend half is `tests/unit/test_email_assistant_settings.py`.
@@ -44,13 +45,4 @@ describe("the rules model is not a member choice (D-EM-7)", () => {
     expect(hits).toEqual([]);
   });
 
-  it("the other model pickers stay", () => {
-    const tab = readFileSync(
-      join(SRC, "app", "email", "components", "automation", "ai-settings", "SettingsTab.tsx"),
-      "utf-8",
-    );
-    for (const key of ["draft_model", "compose_model", "chat_model"]) {
-      expect(tab).toContain(`key: "${key}" as const`);
-    }
-  });
 });

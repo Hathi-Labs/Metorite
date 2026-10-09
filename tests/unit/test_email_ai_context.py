@@ -838,7 +838,6 @@ async def test_new_mail_in_compose_assist_names_the_sending_mailbox(monkeypatch)
         ("_tenant_session", bind_db(AsyncMock())),
         ("_assert_account_owner", AsyncMock()),
         ("_load_assistant_about", AsyncMock(return_value=("", ""))),
-        ("_account_models", AsyncMock(return_value={"compose": "tier-fast"})),
         ("resolve_self", AsyncMock(return_value=SelfIdentity(
             address=BOX, label="Sales", self_addresses=frozenset({BOX})))),
         ("_llm_compose_assist", compose),
@@ -867,7 +866,6 @@ async def test_the_draft_reply_copy_stores_the_mailbox_as_from(monkeypatch) -> N
             "body": "Please send it.", "thread_id": "t1",
             "self": BOX, "self_label": "Sales"})),
         ("_load_assistant_about", AsyncMock(return_value=("", ""))),
-        ("_account_models", AsyncMock(return_value={"compose": "tier-fast"})),
         ("_agent_draft_reply", AsyncMock(return_value="Hello Ravi")),
         ("_store_ai_draft", AsyncMock()),
         ("provider_session", _session),

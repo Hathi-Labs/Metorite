@@ -18,6 +18,9 @@ R7 fences named here:
   two of her own. The context holds no count, no category and no address of
   that mailbox, the agent payload does not carry its id, and the chat model is
   not read from its settings.
+* ``email-chat-no-stored-tier`` (D-EM-61): member A names her own mailbox,
+  which stores a chat model. The route still sends the chat tier that our
+  code chooses, ``tier-powerful``.
 * ``email-task-close-owned-only``: member B closes a task whose origin is a
   mailbox of member A. The thread status of that mailbox does not change, and
   no label reconciliation runs. Member A closing the same task marks it DONE.
@@ -43,7 +46,6 @@ from acb_auth.roles import UserContext, UserRole
 from acb_common import db as common_db
 from acb_common.db import bind_tenant, release_tenant
 from fastapi import BackgroundTasks
-from gateway.routes.email.automation import assistant as assistant_mod
 from gateway.routes.email.automation import chat as chat_mod
 from gateway.routes.tasks import email_link
 from sqlalchemy import text
@@ -214,23 +216,11 @@ class TestTheChatContextReadsOnlyAnOwnedMailbox:
         finally:
             _purge(p.admin_engine, [acc_a])
 
-    async def test_ai_chat_sends_no_foreign_id_and_reads_no_foreign_model(
-        self, promoted, app_engine, monkeypatch,  # noqa: F811
-    ):
-        """Item 2: the route reads ``_account_models`` with the RESOLVED id."""
-        _assert_non_priv(app_engine)
-        p = promoted
-        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        member_b = f"b-{uuid.uuid4().hex[:8]}@em-t2c.test"
-        acc_a, mailbox_a, _ = _seed_mailbox_of_a(
-            p.admin_engine, org=p.org_b, owner=member_a)
-
-        seen: dict = {"model_ids": []}
-        real_models = assistant_mod._account_models
-
-        async def _spy_models(db, account_id):
-            seen["model_ids"].append(account_id)
-            return await real_models(db, account_id)
+    @staticmethod
+    async def _chat(p, monkeypatch, member: str, account_id: str) -> dict:
+        """Run ``ai_chat`` as ``member`` on the real database. The agent
+        stream is a spy, so the result is what the route hands the executor."""
+        seen: dict = {}
 
         def _fake_stream(agent, payload, **kw):
             seen["payload"] = payload
@@ -243,27 +233,58 @@ class TestTheChatContextReadsOnlyAnOwnedMailbox:
 
         import orchestrator.executor as executor_mod
 
-        monkeypatch.setattr(assistant_mod, "_account_models", _spy_models)
         monkeypatch.setattr(executor_mod, "run_agent_stream", _fake_stream)
-        user = UserContext(email=member_b, role=UserRole.EMPLOYEE,
+        monkeypatch.delenv("AI_TIER_ROUTING", raising=False)
+        user = UserContext(email=member, role=UserRole.EMPLOYEE,
                            organization_id=p.org_b)
         req = chat_mod.AIChatRequest(
             messages=[{"role": "user", "content": "what is in my inbox?"}],
-            account_id=acc_a)
+            account_id=account_id)
         app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                await chat_mod.ai_chat(req, user, BackgroundTasks())
+        return seen
+
+    async def test_ai_chat_sends_no_foreign_id_and_reads_no_foreign_model(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Item 2: the payload carries the RESOLVED id only, and the model is
+        not the one stored for the mailbox of member A."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
+        member_b = f"b-{uuid.uuid4().hex[:8]}@em-t2c.test"
+        acc_a, mailbox_a, _ = _seed_mailbox_of_a(
+            p.admin_engine, org=p.org_b, owner=member_a)
         try:
-            async with tenant_engine_scope(app_dsn):
-                with _bound(p.org_b):
-                    await chat_mod.ai_chat(req, user, BackgroundTasks())
+            seen = await self._chat(p, monkeypatch, member_b, acc_a)
             payload = seen["payload"]
             assert payload["account_id"] != acc_a, (
                 "the agent payload carries the id of another member's mailbox"
             )
             _assert_nothing_of_a(payload["memory_context"], mailbox_a=mailbox_a)
-            assert acc_a not in seen["model_ids"], (
-                "ai_chat read the settings of a mailbox the member does not own"
-            )
             assert seen["model"] != SECRET_MODEL
+            assert seen["model"] == "tier-powerful"
+        finally:
+            _purge(p.admin_engine, [acc_a])
+
+    async def test_the_owner_gets_the_fixed_tier_not_her_stored_one(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """D-EM-61: a stored ``chat_model`` no longer changes the tier, even
+        for the member who owns the mailbox. The positive control of the
+        test above: here the route does resolve to the mailbox."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        member_a = f"a-{uuid.uuid4().hex[:8]}@em-t2c.test"
+        acc_a, _mailbox_a, _ = _seed_mailbox_of_a(
+            p.admin_engine, org=p.org_b, owner=member_a)
+        try:
+            seen = await self._chat(p, monkeypatch, member_a, acc_a)
+            assert seen["payload"]["account_id"] == acc_a
+            assert seen["model"] == "tier-powerful", (
+                "the chat ran on the chat model stored for the mailbox")
         finally:
             _purge(p.admin_engine, [acc_a])
 

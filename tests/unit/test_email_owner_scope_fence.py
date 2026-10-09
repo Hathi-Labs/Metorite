@@ -66,7 +66,7 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
     "ai_chat": (
         "Delegates to _build_chat_context, which keeps account_id only when "
         "email_accounts WHERE user_id = :uid lists it, else the one mailbox "
-        "of the member, else None. _account_models reads that resolved id. "
+        "of the member, else None. No settings read follows (D-EM-61). "
         "R8: test_email_chat_context_owner.py."
     ),
     "quick_action": (

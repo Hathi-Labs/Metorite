@@ -862,7 +862,7 @@ describe("selects and file pickers go through the primitives", () => {
     "app/email/components/automation/DigestSettingsDialog.tsx": 2,
     "app/email/components/automation/ai-settings/HistoryTab.tsx": 1,
     "app/email/components/automation/ai-settings/RulesTab.tsx": 3,
-    "app/email/components/automation/ai-settings/SettingsTab.tsx": 3,
+    "app/email/components/automation/ai-settings/SettingsTab.tsx": 2, // D-EM-61 took the model select
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
     "app/notes/components/MeetingPrep.tsx": 1,
     "app/notes/components/NotesSettingsModal.tsx": 1,

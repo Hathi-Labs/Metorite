@@ -35,12 +35,14 @@ def test_settings_default_model_tiers() -> None:
     # fresh account auto-runs once it has rules (an explicit OFF stops it).
     assert s.auto_run is True
     assert s.cold_email_blocker == "OFF"
-    # The task-specific models, each defaulting to its recommended tier. Chat
-    # defaults to tier-powerful (strong tool-caller) so chat actions are reliable.
-    # No rules model (D-EM-7, EM-T5b-2): the rules run on `decide`.
+    # No member chooses a model or a tier. No rules model (D-EM-7, EM-T5b-2):
+    # the rules run on `decide`. The other three fields stay for one release,
+    # default to None, and the route ignores them (D-EM-61). EMAIL_TASK_TIERS
+    # holds the tiers (test_email_no_tier_choice.py).
     assert "rule_model" not in AssistantSettingsModel.model_fields
-    assert s.draft_model == "tier-powerful"
-    assert s.chat_model == "tier-powerful"
+    assert s.draft_model is None
+    assert s.compose_model is None
+    assert s.chat_model is None
     assert s.digest_frequency == "OFF"
     assert s.about is None
     assert s.signature is None
@@ -53,7 +55,8 @@ def test_settings_roundtrip_preserves_overrides() -> None:
         signature="— Vijay",
         auto_run=True,
         cold_email_blocker="ARCHIVE",
-        # An old client may still send it. It is ignored (D-EM-7).
+        # An old client may still send these. The route ignores them
+        # (D-EM-7 for the rules model, D-EM-61 for the other two).
         rule_model="tier-balanced",
         draft_model="tier-fast",
         chat_model="tier-powerful",
@@ -117,12 +120,12 @@ def test_inbox_zero_parity_fields_roundtrip() -> None:
 _ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_the_account_models_hold_no_rules_model() -> None:
-    """No member chooses the rules model. `_account_models` neither offers a
-    `rule` key nor reads the stored `rule_model` column."""
-    assert "rule" not in assistant_mod._DEFAULT_TASK_MODELS
-    assert "rule_model" not in inspect.getsource(assistant_mod._account_models).split(
-        '"""')[-1]
+def test_the_task_tiers_hold_no_rules_model() -> None:
+    """No member chooses the rules model, and the tier table offers no `rule`
+    key: the rules run on `decide` (D-EM-7). `_account_models` is gone with
+    D-EM-61, so nothing reads a stored model column."""
+    assert "rule" not in assistant_mod.EMAIL_TASK_TIERS
+    assert not hasattr(assistant_mod, "_account_models")
 
 
 def test_the_get_and_put_neither_read_nor_write_the_rules_model() -> None:
@@ -136,8 +139,8 @@ def test_the_email_agent_tool_takes_no_rules_model() -> None:
               if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)
               and n.name == "update_assistant_settings")
     params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
-    assert {"draft_model", "chat_model"} <= params
-    assert "rule_model" not in params
+    # D-EM-61 took the other two as well (test_email_no_tier_choice.py).
+    assert not {"rule_model", "draft_model", "chat_model"} & params
     assert "rule_model" not in ast.get_source_segment(src, fn)
 
 
@@ -153,13 +156,13 @@ def test_the_engine_reads_no_account_models() -> None:
             fn.__name__)
 
 
-# ── R8: the stored rule_model stays, and nothing reads it ──────────────────
+# ── R8: the stored model columns stay, and nothing reads or writes them ────
 
 
 @_DB_GATE
 class TestTheStoredRulesModelUnderForceRls:
 
-    async def test_a_put_keeps_the_stored_value_and_the_get_leaves_it_out(
+    async def test_a_put_keeps_the_stored_values_and_the_get_leaves_them_out(
         self, promoted, app_engine,  # noqa: F811
     ):
         _assert_non_priv(app_engine)
@@ -179,19 +182,26 @@ class TestTheStoredRulesModelUnderForceRls:
         token = bind_tenant(p.org_b)
         try:
             async with tenant_engine_scope(app_dsn):
+                # An old client sends every retired field (D-EM-7, D-EM-61).
                 put = await assistant_mod.put_assistant_settings(
                     AssistantSettingsModel(account_id=acc, draft_model="tier-fast",
+                                           compose_model="tier-powerful",
+                                           chat_model="tier-fast",
                                            rule_model="tier-powerful"),
                     user=user)
                 got = await assistant_mod.get_assistant_settings(
                     account_id=acc, user=user)
         finally:
             release_tenant(token)
-        assert "rule_model" not in put and "rule_model" not in got
-        assert got["draft_model"] == "tier-fast"
+        for name in ("rule_model", "draft_model", "compose_model", "chat_model"):
+            assert name not in put and name not in got, name
         with p.admin_engine.connect() as c:
             stored = c.execute(text(
-                "SELECT rule_model FROM email_assistant_settings "
-                "WHERE account_id = CAST(:a AS uuid)"), {"a": acc}).scalar_one()
-        assert stored == "tier-balanced", "the PUT wrote the rules model column"
+                "SELECT rule_model, draft_model, compose_model, chat_model "
+                "FROM email_assistant_settings "
+                "WHERE account_id = CAST(:a AS uuid)"), {"a": acc}).one()
+        # The seeded values, and the column defaults for the two unseeded.
+        assert tuple(stored) == (
+            "tier-balanced", "tier-powerful", "tier-fast", "tier-balanced"), (
+            "the PUT wrote a model column")
 

@@ -885,7 +885,6 @@ async def test_compose_assist_takes_no_permit_and_counts_nothing(monkeypatch, me
     monkeypatch.setattr(dr, "_tenant_session", _session_of())
     monkeypatch.setattr(dr, "_assert_account_owner", AsyncMock())
     monkeypatch.setattr(dr, "_load_assistant_about", AsyncMock(return_value=("", "")))
-    monkeypatch.setattr(dr, "_account_models", AsyncMock(return_value={"compose": "tier-fast"}))
     monkeypatch.setattr(
         dr,
         "resolve_self",
@@ -908,7 +907,6 @@ async def test_draft_reply_takes_no_permit_and_counts_nothing(monkeypatch, membe
     monkeypatch.setattr(dr, "_assert_account_owner", AsyncMock())
     monkeypatch.setattr(dr, "_build_reply_context", AsyncMock(return_value=email))
     monkeypatch.setattr(dr, "_load_assistant_about", AsyncMock(return_value=("", "")))
-    monkeypatch.setattr(dr, "_account_models", AsyncMock(return_value={"compose": "tier-fast"}))
     monkeypatch.setattr(dr, "_store_ai_draft", AsyncMock())
     monkeypatch.setattr(memory_tools, "remember", AsyncMock(return_value="no relevant"))
     monkeypatch.setattr(acb_memory, "add_memories_background", AsyncMock())

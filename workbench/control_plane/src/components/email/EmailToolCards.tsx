@@ -833,8 +833,6 @@ const SETTING_LABELS: Record<string, string> = {
   digest_send_to_email: "Email the digest",
   multi_rule_execution: "Multi-rule execution",
   sensitive_data_protection: "Sensitive-data protection",
-  draft_model: "Draft model",
-  chat_model: "Chat model",
 };
 
 function fmtVal(v: unknown): string {

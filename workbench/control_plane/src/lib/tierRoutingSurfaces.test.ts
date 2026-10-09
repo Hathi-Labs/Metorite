@@ -5,8 +5,13 @@
  *
  * For an agent that the platform routes, the email chat, the Tasks rail and
  * the Projects rail stop passing `model` and `lockModel`, and stop reading the
- * `chat_model` setting. The two settings controls hide the chat row. The
+ * `chat_model` setting. The Tasks settings control hides the chat row. The
  * column stays (R6). With the UI flag off, every surface is as on main.
+ *
+ * The email surfaces read no `chat_model` at all since D-EM-61 (owner,
+ * 2026-10-09). An uncovered email chat runs on `EMAIL_CHAT_TIER`, and the
+ * email settings draw no model row. `app/email/lib/noTierChoice.test.ts`
+ * fences that.
  *
  * Vitest here runs in node and cannot mount a component. So the rules are pure
  * functions, tested here, and a source scan proves each surface calls them.
@@ -94,15 +99,14 @@ describe("visibleModelRows", () => {
 // ── Each surface calls the rules (source scan) ───────────────────────────────
 
 const SURFACES: Record<string, { agent: string; props: RegExp; reads?: RegExp }> = {
+  // D-EM-61: the two email surfaces pass the fixed tier and read no setting.
   "app/chat/page.tsx": {
     agent: 'useTierRouted("email-assistant")',
-    props: /governedModelProps\(emailTier\.covered, emailChatModel\)/,
-    reads: /if \(emailReadsModel\) setEmailChatModel\(s\.chat_model/,
+    props: /governedModelProps\(emailTier\.covered, EMAIL_CHAT_TIER\)/,
   },
   "app/email/components/EmailAssistantChat.tsx": {
     agent: "useTierRouted(AGENT)",
-    props: /\{\.\.\.governedModelProps\(tier\.covered, chatModel\)\}/,
-    reads: /if \(readsModel\) setChatModel\(s\.chat_model/,
+    props: /\{\.\.\.governedModelProps\(tier\.covered, EMAIL_CHAT_TIER\)\}/,
   },
   "app/tasks/components/AssistantRail.tsx": {
     agent: "useTierRouted(AGENT)",
@@ -129,10 +133,9 @@ describe("each surface calls the rules", () => {
     });
   }
 
-  it("the two settings controls hide the chat row of a covered agent", () => {
-    const email = read("app/email/components/automation/ai-settings/SettingsTab.tsx");
-    expect(email).toContain('useTierRouted("email-assistant")');
-    expect(email).toMatch(/\], "chat_model", tier\.covered\)\.map\(\(cfg\)/);
+  it("the Tasks settings control hides the chat row of a covered agent", () => {
+    // The email settings have no model row to hide (D-EM-61). Their fence is
+    // app/email/lib/noTierChoice.test.ts.
     const tasks = read("app/tasks/components/TaskSettingsModal.tsx");
     // Review P2 of S4b: the Tasks row has two chat readers, so it leaves
     // only when the platform routes both of them.

@@ -547,7 +547,7 @@ or API client to create a pattern by hand.
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
 | **D-EM-5** | ~~**Outlook is the only provider in the connect flow.** Google shows "coming soon".~~ **Amended by the owner, 2026-10-04: Gmail and Google Workspace mailboxes join Outlook in the connect flow.** Metorite owns ONE Google OAuth app, and the setup stays one click: Connect, consent, done. §12 owns the plan (D-EM-31 to D-EM-35, slices EM-G1 to EM-G10). IMAP stays hidden until its connect path works. |
 | **D-EM-6** | **Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.** Owner, 2026-10-02: "Turn the default autodraft emails to off." This reverses migration 82 for a new mailbox. A stored choice does not change. EM-T7 builds it (§10.4.9). |
-| **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
+| **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. **Amended by D-EM-61 (owner, 2026-10-09):** no member chooses the tier of that text work either. Our code chooses it (§10.4.16). |
 | **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
 | **D-EM-9** | **The owner approves residency for email triage** (owner, 2026-10-02). Tenant mail content may go to TypeSafe and to AI/ML API for the D-EM-7 decisions. This answers H-166 item 3 for email, and for no other app. `DECIDE_ENABLED` stays an owner act (`work_plan.md` §6.1 WS-31 (i)). |
 | **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** §14.4.5 holds the window of each mailbox, at most 24 months. |
@@ -618,6 +618,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
+| **EM-T15** | 🟢 AGENT-SAFE | 🔨 **BUILT, NOT MERGED (2026-10-09, branch `email-no-tier-settings`).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -5982,6 +5983,76 @@ One more mutation removed the `sni_hostname` extension. The real TLS test failed
 | W13 | `request()` has no `deadline()` | the request budget fence | red, 1 failed |
 | W14 | `_http_unsubscribe` has no `deadline()` | the unsubscribe budget fence | red, 1 failed |
 | W15 | The refusal does not cut the host | the long host fence | red, 1 failed |
+
+#### 10.4.16 EM-T15 — no member chooses the tier of an email AI task
+
+> **Owner decision, 2026-10-09 (D-EM-61).** "In the email settings, we were
+> earlier letting the user decide what model to use for different aspects of
+> the email processing, which now should not be the case. It is hard-coded
+> depending on our best process for email. You can remove the settings for the
+> email AI tiers for doing different things."
+
+**D-EM-61.** No member chooses the model or the tier of an email AI task. Our
+code chooses each tier. This amends D-EM-7, which took the rules model only.
+
+**Status.** 🔨 BUILT, NOT MERGED (2026-10-09, branch `email-no-tier-settings`).
+No migration and no flag. The slice is AGENT-SAFE.
+
+**What leaves.** Three rows of AI settings → Advanced, and each API field behind
+it:
+
+| Row | Field | Tier now |
+|---|---|---|
+| Draft writing model | `draft_model` | `tier-powerful` |
+| Manual draft model | `compose_model` | `tier-fast` |
+| Email chat model | `chat_model` | `tier-powerful`, or the tier policy when `AI_TIER_ROUTING` covers email-assistant (D90) |
+
+The email agent's `update_assistant_settings` tool loses `draft_model` and
+`chat_model`. So the agent cannot set a tier. Its schema drops from 1,302 to
+1,190 tokens (o200k, the MAF schema of the tool).
+
+**The tier of each email AI call.** `EMAIL_TASK_TIERS` in
+`automation/assistant.py` holds the first three rows. The other rows were
+never a member choice, and they do not change.
+
+| Call | Where | Tier |
+|---|---|---|
+| A rule draft (REPLY, DRAFT_EMAIL) | `actions._apply_rule_actions` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
+| A follow-up nudge | `followups._maybe_send_follow_up_reminders` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
+| "Draft with AI", reply | `drafting.draft_reply_smart` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
+| "Draft with AI", composer | `drafting._compose_assist_run` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
+| The email chat | `chat.ai_chat`, `EmailAssistantChat.tsx`, `chat/page.tsx` | `tier-powerful`, or no model for a covered agent |
+| The rule match, thread status, cold check and sender pin | `decide_features` | `tier-decide` (D-EM-7) |
+| The old rule call outside `on` | `engine` | `tier-fast` |
+| A template fill, the cold check outside `on`, the drafter's consult plan, the digest brief | `actions`, `senders`, `drafting`, `digest` | `tier-fast`, at the call site |
+| The pattern check, the voice profile scan | `learning`, `voice_profile` | `tier-balanced`, at the call site |
+| Rules from text, the writing style, the reply memories, the voice profile | `rules`, `assistant`, `drafting`, `voice_profile` | `tier-powerful`, at the call site |
+| The thread status outside `on` | `replyzero` | `tier-balanced`, and its retry on `tier-fast` (#753) |
+
+**Backward compatibility (R6).** The deploy keeps old code working with the
+new schema.
+
+- The three columns stay. Nothing reads them, and nothing writes them.
+- `AssistantSettingsModel` still declares the three request fields for one
+  release. The PUT ignores each value.
+- The PUT logs `email.assistant_settings.model_field_ignored` once for each
+  field in each process. That line shows a client that still sends a field.
+- The model ignores an unknown field (pydantic `extra="ignore"`). So the later
+  removal causes no 422. It only removes the log line.
+- The GET and PUT answers leave the three fields out, as D-EM-7 did for
+  `rule_model`.
+- A later PR removes the request fields, and then the columns. HANDOFF
+  carries that step.
+
+**Fences (R7).**
+
+| Fence | File |
+|---|---|
+| No email source names a model field, and the tab reads no tier list | `src/app/email/lib/noTierChoice.test.ts` |
+| A stored tier does not change the tier of a call | `tests/unit/test_email_no_tier_choice.py` |
+| The agent tool takes no tier argument | `tests/unit/test_email_no_tier_choice.py` |
+| A PUT writes no model column, and the GET answers none (R8) | `tests/unit/test_email_assistant_settings.py` |
+| A stored `chat_model` does not change the chat tier (R8) | `tests/unit/test_email_chat_context_owner.py` |
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

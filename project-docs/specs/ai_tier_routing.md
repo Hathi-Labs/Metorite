@@ -24,6 +24,12 @@ selector of `/chat` leave. The executor reads the effort from the member's
 words. The boxes in §5 and §7.2 carry the amendment. Branch `ws45-no-pickers`
 builds it, and it ships dark behind the two flags that exist.
 
+**Amended by D-EM-61 (owner, 2026-10-09), §7.1 and §8.** No member chooses
+the tier of an email AI task, with the flag on or off. The email settings lose
+all three model rows, and no email surface reads `chat_model`. An uncovered
+email chat runs on `tier-powerful`, which the code chooses. A covered one
+still sends no model. `email_app_master_plan.md` §10.4.16 (EM-T15) owns it.
+
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
 
@@ -890,6 +896,9 @@ bound what an injection can do.
   (`src/app/email/components/automation/ai-settings/SettingsTab.tsx`) and of
   the Tasks settings (`src/app/tasks/components/TaskSettingsModal.tsx`). S4
   removes both controls.
+- **D-EM-61 (2026-10-09)** removes every model row of the email settings, the
+  draft and compose rows too, with the flag on or off. The Tasks rows do not
+  change.
 
 ### 7.2 What stays, and what is new
 
@@ -953,7 +962,7 @@ contract.
 | `AgentRunRequest.model` | The executor ignores it for a covered agent, and logs `ai_route.model_ignored` with the value | The chat stops sending it | Remove it from `route.ts` after one release with zero `ai_route.model_ignored` lines from the chat. The gateway field stays for API callers until H-44 decides |
 | `payload.think_mode` | Unchanged | Unchanged | Never. It stays |
 | `localStorage` `cc-model-<agent>`, `cc-model-usage` | Unchanged | The chat stops reading them, and deletes them once on mount | Nothing left |
-| `email_assistant_settings.chat_model` | Unchanged | The email chat stops reading it for a covered agent | The column stays. A drop is a later decision (R6) |
+| `email_assistant_settings.chat_model` | Unchanged | The email chat stops reading it for a covered agent. D-EM-61 (2026-10-09): no case reads it | The column stays. A drop is a later decision (R6). HANDOFF carries it with the other two email model columns |
 | `user_settings.chat_model` (Tasks) | Unchanged | The Tasks chat stops reading it for a covered agent | Same |
 | `PROJECTS_AGENT_MODEL` and the other agent env vars | They become the Balanced rung of the policy | Unchanged | Unchanged. They are D-AI-4's default |
 | `copilot_chat_model` setting | The executor ignores it for a covered agent | Unchanged | H-44 decides |
