@@ -132,23 +132,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §3.3a · D93
 - **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
-### H-279 · A WhatsApp question about one whole chat costs more on `narrow_and_read` · [AGENT]
-- **Check:** `rg -n "KNOWN_COSTS_MORE: .*Q2" evals/whatsapp_narrowing/run.py`.
-  A hit means this is open.
-- **Why.** In the scripted WhatsApp eval, Q2 asks for every message of one
-  group in three weeks. It costs 1.45 times today's path. NARROW finds 27
-  messages, more than the READ cap of 25, so PICK must run. The READ windows
-  of one chat also overlap, so READ gives some lines twice. With no PICK at
-  all, and a READ cap of 30, Q2 costs 1.447 times today. The eval names Q2 in
-  `KNOWN_COSTS_MORE`, so the rule of H-276 accepts it up to 1.45 and no more.
-- **Do.** Choose one of these, measure it on the eval, and remove Q2 from
-  `KNOWN_COSTS_MORE`:
-  1. READ merges the overlapping windows of one chat into one block.
-  2. The instructions tell the model to read one whole chat with
-     `read_whatsapp_chat`, and not with `narrow_and_read`.
-- **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
-- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
-
 ### H-281 · Old auto-synced tool wrappers in the agent clones still give a script the whole env · [AGENT] · security
 - **Check:** on the box, run
   `ssh metorite 'grep -l "\*\*_os.environ" /home/acb/.acb/agents/repos/*/agents.py | wc -l'`.
