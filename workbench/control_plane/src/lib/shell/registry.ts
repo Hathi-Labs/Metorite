@@ -145,6 +145,25 @@ export const JOBS: readonly ShellJob[] = [
     href: "/settings/appearance",
     icon: "Palette",
   },
+  // Two link jobs: neither app has a form to open, so the job opens the app
+  // where the work waits (owner decision, 2026-10-09). ⚠️ Not "chat" or
+  // "message": New chat and Write an email own those words.
+  {
+    id: "whatsapp-reply",
+    label: "Reply on WhatsApp",
+    words: ["whatsapp", "wa", "reply", "customer", "customers"],
+    app: "/whatsapp",
+    href: "/whatsapp",
+    icon: "MessageCircle",
+  },
+  {
+    id: "review-approvals",
+    label: "Review pending approvals",
+    words: ["approve", "approval", "approvals", "pending", "review", "outgoing"],
+    app: "/approvals",
+    href: "/approvals",
+    icon: "ShieldCheck",
+  },
 ];
 
 export type ItemGroup = "do" | "go";

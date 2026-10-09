@@ -6,7 +6,7 @@ import ProviderAlert from "./ProviderAlert";
 
 export const metadata = {
   title: "Metorite Operator Console",
-  description: "Staff-only, cross-org customer management (CP-8).",
+  description: "Staff-only customer management for Metorite.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

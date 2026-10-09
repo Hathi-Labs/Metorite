@@ -5,8 +5,11 @@
 
 - Slice 0 (the backend): merged in PR #779.
 - Slices 1 and 2: merged in PR #782.
-- Slice 4: BUILT.
-- Slices 3, 5 and 6: spec only.
+- Slice 3a (a price on a manual grant): merged in PR #786.
+- Slice 3: merged in PR #789.
+- Slice 4: merged in PR #788.
+- Slice 5: BUILT. Slice 6 (the visual pass) ran on every slice before its PR.
+- Open gaps: HANDOFF H-283 and H-284.
 
 **Owner request, 2026-10-09.** The owner wants to see, for each customer, what
 their AI costs us and what we charge them. The owner also wants no ambiguity

@@ -126,7 +126,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 20 with decide)
+# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 21 with decide and read_attachment)
 # ---------------------------------------------------------------------------
 # Post-diet measurement 2026-08-01 (chars/4 run-context tokenizer), rounded up
 # with ~10% headroom so ordinary wording edits don't fail CI. The floor summed
@@ -156,6 +156,10 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "load_artifact_kit": 430,
     "load_design_system": 390,
     "manage_todo_list": 610,
+    # 2026-10-09 (#780): every agent reads a chat attachment, so the tool
+    # joined the floor. Measured 277. The floor then measured 6534, under
+    # the total ceiling.
+    "read_attachment": 300,
     "recall_notes": 215,
     "run_diagnostics": 240,
     "run_script": 270,

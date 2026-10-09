@@ -121,6 +121,10 @@ JOBS: tuple[Job, ...] = (
         None, "/people/me"),
     Job("appearance", "Change how Metorite looks", "change the theme, dark or light mode, density or accent",
         None, "/settings/appearance"),
+    Job("whatsapp-reply", "Reply on WhatsApp", "answer the customers who wrote to the business on WhatsApp",
+        "whatsapp", "/whatsapp"),
+    Job("review-approvals", "Review pending approvals", "check and approve what the AI wants to send before it goes out",
+        "approvals", "/approvals"),
 )
 
 #: The option that means "not a job": the assistant takes it.

@@ -33,6 +33,7 @@ const EXTRA_KEYWORDS: Record<string, string> = {
   "/pricing": "rates margins credit price charge",
   "/operators": "staff roles admin",
   "/activity": "audit log trail",
+  "/setup": "go live checklist steps setup onboarding",
 };
 
 /** Labels for covered tab URLs, which have no nav entry of their own. */

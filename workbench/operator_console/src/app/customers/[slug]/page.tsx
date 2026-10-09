@@ -19,13 +19,14 @@ import {
   trialHint,
   statusHelp,
   plansNotice,
-  lifecycleHint,
   readMembers,
   readKeys,
   readLedger,
   ledgerAdds,
   readCreditLots,
   LOT_SOURCE_LABEL,
+  LEDGER_REASON_WORDS,
+  subscriptionWords,
   type CreditLot,
   type MemberRow,
   type KeyRow,
@@ -35,7 +36,8 @@ import {
   type Catalog,
   type CatalogPlan,
 } from "@/lib/format";
-import { customerMoney, priceFrom, type Price } from "@/lib/money";
+import { customerMoney, formatCr, formatInr, priceFrom, type Price } from "@/lib/money";
+import { lifecycleSteps, nextStep, tabFrom, TABS, type TabKey } from "@/lib/lifecycle";
 import {
   readBreakdown,
   type OrgUsageRow,
@@ -43,7 +45,7 @@ import {
   type UsageBreakdown,
   type UsageDay,
 } from "@/lib/usage";
-import Actions from "./Actions";
+import { AccessActions, BillingActions, PeopleActions } from "./Actions";
 import CustomerBreakdown from "./CustomerBreakdown";
 import CustomerUsage from "./CustomerUsage";
 import Header from "../../Header";
@@ -319,14 +321,19 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
 
 export default async function CustomerDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ tab?: string | string[] }>;
 }) {
   const gate = await staffSession();
   if (!gate.configured) redirect("/");
   if (!gate.ok) redirect("/login");
 
   const { slug } = await params;
+  // WS-50 slice 3: one tab at a time. A link, so a tab can be bookmarked and
+  // sent to a colleague, and the page stays a server component.
+  const tab = tabFrom((await searchParams).tab);
   const {
     org, plans, plansError, members, membersError, lots, keys, keysError,
     usageRow, usageDays, usageError, price, priceReported, drawsSince,
@@ -364,9 +371,6 @@ export default async function CustomerDetailPage({
       ? Math.min(100, Math.round((totals.assigned / totals.purchased) * 100))
       : 0;
   const hint = trialHint(org.trial_ends_at, now);
-  // The trial banner's advice is WRONG once the subscription is already active
-  // — "use Activate subscription" is the step they just did. See lifecycleHint.
-  const lifeHint = lifecycleHint(org.status, org.subscription_status);
   // WS-50: every money figure for this customer, computed once.
   const money = usageRow
     ? customerMoney({
@@ -380,6 +384,11 @@ export default async function CustomerDetailPage({
       })
     : null;
 
+  const steps = lifecycleSteps(org.status);
+  const next = nextStep(org.status, org.subscription_status);
+  const tabHref = (t: TabKey) =>
+    t === "overview" ? `/customers/${encodeURIComponent(org.slug)}` : `/customers/${encodeURIComponent(org.slug)}?tab=${t}`;
+
   return (
     <main className="wrap">
       <Header />
@@ -388,16 +397,13 @@ export default async function CustomerDetailPage({
       </p>
       <div className="pagehead">
         <div className="orghero">
-          <span
-            className={`${categoricalBox(org.name)} lg`}
-            aria-hidden="true"
-          >
+          <span className={`${categoricalBox(org.name)} lg`} aria-hidden="true">
             {providerGlyph(org.name)}
           </span>
           <div>
             <h1>{org.name}</h1>
             <div className="herochips">
-              <span className={`pill ${org.status}`}>
+              <span className={`pill ${org.status}`} title={statusHelp(org.status) || undefined}>
                 {org.status.replace("_", " ")}
               </span>
               <span className="chip mono">{org.slug}</span>
@@ -406,265 +412,258 @@ export default async function CustomerDetailPage({
         </div>
       </div>
 
-      {org.status === "suspended" && (
-        <div className="banner danger">
-          <strong>Suspended.</strong> Sign-in still works so they can pay —
-          AI and seat changes are locked. Use “Resume access” below to
-          restore them.
-        </div>
-      )}
-      {org.status === "trial" && (
-        <div className="banner info">
-          <strong>On free trial</strong>
-          {hint ? ` — ${hint}` : ""}.{" "}
-          {lifeHint ?? (
-            <>
-              When the customer has paid, use{" "}
-              <strong>Activate subscription</strong> below to put them on their
-              paid plan.
-            </>
-          )}
-        </div>
-      )}
-      {statusHelp(org.status) &&
-        org.status !== "suspended" &&
-        org.status !== "trial" && (
-          <p className="muted">{statusHelp(org.status)}</p>
-        )}
-
-      <div className="stats">
-        <div className="stat">
-          <div className="lbl">Subscription</div>
-          <div className="num small-num">
-            {org.subscription_status ?? "none"}
-          </div>
-          <div className="muted small">
-            {org.provider ? `via ${org.provider} · ` : ""}
-            {formatPaise(org.mrr_paise)}/month
-          </div>
-        </div>
-        <div className="stat">
-          <div className="lbl">Seats</div>
-          <div className="num small-num">
-            {totals ? `${totals.assigned} of ${totals.purchased}` : "—"}
-          </div>
-          <div className="bar" aria-hidden="true">
-            <i style={{ width: `${seatPct}%` }} />
-          </div>
-          {totals?.oversubscribed && (
-            <div className="warn-t small">More assigned than purchased</div>
-          )}
-        </div>
-        <div className="stat">
-          <div className="lbl">AI credits</div>
-          <div className="num small-num">{org.credit_balance}</div>
-          {/* 🔴 The balance is one number and cannot say what it cost or
-              where it came from. The panel below breaks it down. */}
-          {lots !== undefined && lots.length > 0 && (
-            <div className="muted small">
-              {lots.length} {lots.length === 1 ? "lot" : "lots"}
-            </div>
-          )}
-        </div>
-        <div className="stat">
-          <div className="lbl">Dates</div>
-          <div className="muted small">
-            Trial ends: {formatDate(org.trial_ends_at)}
-            <br />
-            Period ends: {formatDate(org.current_period_end)}
-          </div>
-        </div>
-      </div>
-
-      {/* 🔴 WS-50: money FIRST. The owner opens a customer to learn what we
-          charge them and what they cost us, so that answer sits directly
-          under the headline figures, above the lots and the ledger. */}
-      <CustomerUsage
-        row={usageRow}
-        days={usageDays}
-        windowDays={USAGE_WINDOW_DAYS}
-        error={usageError}
-        money={money}
-        price={price}
-        priceReported={priceReported}
-      />
-
-      <CustomerBreakdown
-        data={breakdown}
-        error={breakdownError}
-        money={money}
-        price={price}
-      />
-
-      {/* ── Where the credits came from (migration 028, §6) ──────────── */}
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Credit lots</h2>
-          {/* 🔴 **This used to promise a lapse date, and we never acted on
-              one.** The panel showed an "Expires" column, and claimed a lot
-              with the nearest lapse date burns before the others. Meanwhile
-              `open_lots` had no expiry predicate and nothing ever set one, so
-              the date was decoration on a rule that did not run (H-135). Owner decision, 2026-09-21:
-              CREDITS DO NOT EXPIRE. The column and the sentence are gone, and
-              `add_credit` no longer takes an expiry, so none can be set.
-
-              ⚠️ What survives is the half that is TRUE and still protects the
-              customer: free credits burn before paid ones. */}
-          <p>
-            What this balance is <strong>made of</strong> — what each lot cost
-            and where it came from. Free credits burn first, so a customer
-            never loses credits they bought. Credits do not expire.
+      {/* WS-50 slice 3: where this customer is in its life, and the ONE next
+          act, with a link to the tab that holds it. */}
+      <section className="panel lifecycle">
+        <ol className="lifebar" aria-label="Account life">
+          {steps.map((st) => (
+            <li key={st.key} className={`lifestep ${st.state}`} aria-current={st.state === "current" ? "step" : undefined}>
+              <span className="lifedot" aria-hidden="true" />
+              {st.label}
+            </li>
+          ))}
+        </ol>
+        {next && (
+          <p className="lifenext">
+            <strong>Next:</strong> {next.text}
+            {org.status === "trial" && hint ? ` Trial: ${hint}.` : ""}{" "}
+            {next.tab !== tab && <a href={tabHref(next.tab)}>Go there →</a>}
           </p>
-        </div>
-        {lots === undefined ? (
-          /* ⚠️ NOT an empty table. A Console predating migration 028 sends no
-             `credit_lots` key at all, and drawing zero rows over a missing
-             feature would read as "this customer has none". */
-          <p className="field-hint warn">
-            This Console does not report credit lots yet. The balance above is
-            still correct — nothing here can say what it cost or where it
-            came from until the Console ships migration 028.
-          </p>
-        ) : lots.length === 0 ? (
-          <p className="field-hint">
-            No lots with credits left. Every lot this customer held has been
-            spent, or none was ever recorded — credits granted before migration
-            027 carry no lot, and their history starts from the ledger below.
-          </p>
-        ) : (
-          <div className="tablewrap">
-            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
-            table widens the document and the whole page scrolls
-            sideways, which moves the nav and every other panel with
-            it. Measured at 390px on 2026-09-20. */}
-            <table className="grid">
-              <thead>
-                <tr>
-                  <th>Source</th>
-                  <th>Remaining</th>
-                  <th>Of</th>
-                  <th>Paid</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lots.map((lot) => (
-                  <tr key={lot.id}>
-                    <td>{LOT_SOURCE_LABEL[lot.source] ?? lot.source}</td>
-                    <td className="mono">{lot.remaining}</td>
-                    <td className="mono muted">{lot.credits}</td>
-                    {/* ⚠️ NULL and "0" are DIFFERENT facts and must not draw the
-                        same. Nobody paid, versus somebody paid nothing. */}
-                    <td className={lot.pricePaidInr === null ? "muted" : "mono"}>
-                      {lot.pricePaidInr === null
-                        ? "free"
-                        : `₹${Number(lot.pricePaidInr).toLocaleString("en-IN")}`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         )}
       </section>
 
-      {org.seats.length > 1 && (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Seats by plan</h2>
-          <div className="tablewrap">
-            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
-            table widens the document and the whole page scrolls
-            sideways, which moves the nav and every other panel with
-            it. Measured at 390px on 2026-09-20. */}
-            <table>
-              <thead>
-                <tr>
-                  <th>Plan</th>
-                  <th>Purchased</th>
-                  <th>Assigned</th>
-                  <th>Available</th>
-                </tr>
-              </thead>
-              <tbody>
-                {org.seats.map((s) => (
-                  <tr key={s.plan_slug}>
-                    <td>{s.plan_slug}</td>
-                    <td>{s.purchased}</td>
-                    <td>
-                      {s.assigned}
-                      {s.oversubscribed ? " ⚠" : ""}
-                    </td>
-                    <td>{s.available}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <nav className="tabs customertabs" aria-label="Customer sections">
+        {TABS.map((t) => (
+          <a key={t.key} href={tabHref(t.key)} aria-current={t.key === tab ? "page" : undefined}>
+            {t.label}
+          </a>
+        ))}
+      </nav>
+
+      {tab === "overview" && (
+        <>
+          <div className="stats">
+            <div className="stat">
+              <div className="lbl">Subscription</div>
+              <div className="num small-num">{subscriptionWords(org.subscription_status)}</div>
+              <div className="muted small">
+                {formatPaise(org.mrr_paise)} a month{org.provider ? ` · paid via ${org.provider}` : ""}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="lbl">Seats used</div>
+              <div className="num small-num">
+                {totals ? `${totals.assigned} of ${totals.purchased}` : "—"}
+              </div>
+              <div className="bar" aria-hidden="true">
+                <i style={{ width: `${seatPct}%` }} />
+              </div>
+              {totals?.oversubscribed && (
+                <div className="warn-t small">More people seated than seats bought</div>
+              )}
+            </div>
+            {/* Only when the money strip below cannot show the balance: one
+                figure, one place. */}
+            {!money && (
+              <div className="stat">
+                <div className="lbl">Credits left</div>
+                <div className="num small-num">{formatCr(Number(org.credit_balance) || 0)}</div>
+                <div className="muted small">
+                  <a href={tabHref("billing")}>Where they came from →</a>
+                </div>
+              </div>
+            )}
+            <div className="stat">
+              <div className="lbl">Dates</div>
+              <div className="muted small">
+                Trial ends: {formatDate(org.trial_ends_at)}
+                <br />
+                Paid period ends: {formatDate(org.current_period_end)}
+              </div>
+            </div>
           </div>
-        </div>
+
+          {/* 🔴 WS-50: money FIRST. The owner opens a customer to learn what we
+              charge them and what they cost us. */}
+          <CustomerUsage
+            row={usageRow}
+            days={usageDays}
+            windowDays={USAGE_WINDOW_DAYS}
+            error={usageError}
+            money={money}
+            price={price}
+            priceReported={priceReported}
+          />
+
+          <CustomerBreakdown data={breakdown} error={breakdownError} money={money} price={price} />
+        </>
       )}
 
-      {plansError && (
-        <div className="banner danger">
-          <strong>Plans unavailable.</strong> {plansError} Seats, AI credits and
-          access still work below.
-        </div>
+      {tab === "billing" && (
+        <>
+          {plansError && (
+            <div className="banner danger">
+              <strong>Plans unavailable.</strong> {plansError} Credits still work.
+            </div>
+          )}
+          <BillingActions
+            slug={org.slug}
+            status={org.status}
+            subscriptionStatus={org.subscription_status}
+            plans={plans}
+            price={price}
+          />
+
+          {/* ── Where the credits came from (migration 028, §6) ─────────── */}
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Credits on hand</h2>
+              {/* Credits do not expire (owner decision, 2026-09-21, H-135).
+                  Free credits burn before paid ones. */}
+              <p>
+                What the balance of {formatCr(Number(org.credit_balance) || 0)} credits is
+                made of, in the order it is spent. Free credits burn first, so a
+                customer never loses credits they bought. Credits do not expire.
+              </p>
+            </div>
+            {lots === undefined ? (
+              <p className="field-hint warn">
+                This Console build does not report where the credits came from yet.
+                The balance is still correct.
+              </p>
+            ) : lots.length === 0 ? (
+              <p className="field-hint">
+                No credits left from any recorded grant. Credits granted before lots
+                were recorded have no row here. The history below starts from the
+                ledger.
+              </p>
+            ) : (
+              <div className="tablewrap">
+                <table className="grid">
+                  <thead>
+                    <tr>
+                      <th>Where they came from</th>
+                      <th>Left</th>
+                      <th>Of</th>
+                      <th>They paid</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lots.map((lot) => (
+                      <tr key={lot.id}>
+                        <td>{LOT_SOURCE_LABEL[lot.source] ?? lot.source}</td>
+                        <td className="mono">{formatCr(Number(lot.remaining) || 0)}</td>
+                        <td className="mono muted">{formatCr(Number(lot.credits) || 0)}</td>
+                        {/* NULL and "0" are DIFFERENT facts: nobody paid, versus
+                            somebody paid nothing. */}
+                        <td className={lot.pricePaidInr === null ? "muted" : "mono"}>
+                          {lot.pricePaidInr === null
+                            ? lot.source === "purchase"
+                              ? "not recorded"
+                              : "free"
+                            : formatInr(Number(lot.pricePaidInr))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <div className="panel">
+            <h2 style={{ marginTop: 0 }}>Credit history</h2>
+            <p className="muted">
+              Every addition and every charge, newest first. Check a bank transfer
+              here before you add credits: a reference already on this list was
+              already credited, and the form refuses it.
+            </p>
+            {ledgerError ? (
+              <p className="muted small">{ledgerError}</p>
+            ) : ledger.length === 0 ? (
+              <p className="muted small">No entries yet. The first grant starts the history.</p>
+            ) : (
+              <div className="tablewrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>Credits</th>
+                      <th>What happened</th>
+                      <th>Reference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.map((row, i) => (
+                      <tr key={`${row.created_at}-${i}`}>
+                        <td className="muted small">{formatDate(row.created_at)}</td>
+                        <td className={`mono ${ledgerAdds(row) ? "ok-t" : ""}`}>
+                          {ledgerAdds(row) ? "+" : ""}
+                          {formatCr(Number(row.delta) || 0)}
+                        </td>
+                        <td>{LEDGER_REASON_WORDS[row.reason] ?? row.reason}</td>
+                        <td className="mono small">{row.ref ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Credit ledger</h2>
-        <p className="muted">
-          Every addition and draw, newest first. Verify a bank transfer HERE
-          before granting - a reference already on this list is already
-          credited, and the grant form will refuse it.
-        </p>
-        {ledgerError ? (
-          <p className="muted small">{ledgerError}</p>
-        ) : ledger.length === 0 ? (
-          <p className="muted small">
-            No entries yet. The first grant starts the history.
-          </p>
-        ) : (
-          <div className="tablewrap">
-            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
-            table widens the document and the whole page scrolls
-            sideways, which moves the nav and every other panel with
-            it. Measured at 390px on 2026-09-20. */}
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Change</th>
-                  <th>Reason</th>
-                  <th>Reference</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ledger.map((row, i) => (
-                  <tr key={`${row.created_at}-${i}`}>
-                    <td className="muted small">{formatDate(row.created_at)}</td>
-                    <td className={ledgerAdds(row) ? "ok-t" : ""}>
-                      {ledgerAdds(row) ? `+${row.delta}` : row.delta}
-                    </td>
-                    <td>{row.reason}</td>
-                    <td className="mono small">{row.ref ?? "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {tab === "people" && (
+        <>
+          {plansError && (
+            <div className="banner danger">
+              <strong>Plans unavailable.</strong> {plansError} The seat pickers below
+              cannot list plans until it loads.
+            </div>
+          )}
+          {org.seats.length > 1 && (
+            <div className="panel">
+              <h2 style={{ marginTop: 0 }}>Seats by plan</h2>
+              <div className="tablewrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Plan</th>
+                      <th>Bought</th>
+                      <th>Seated</th>
+                      <th>Free</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {org.seats.map((s) => (
+                      <tr key={s.plan_slug}>
+                        <td>{s.plan_slug}</td>
+                        <td>{s.purchased}</td>
+                        <td>
+                          {s.assigned}
+                          {s.oversubscribed ? " ⚠" : ""}
+                        </td>
+                        <td>{s.available}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          <PeopleActions
+            slug={org.slug}
+            plans={plans}
+            members={members}
+            membersError={membersError}
+            seats={org.seats}
+          />
+        </>
+      )}
 
-      <Actions
-        slug={org.slug}
-        seats={org.seats}
-        status={org.status}
-        subscriptionStatus={org.subscription_status}
-        plans={plans}
-        members={members}
-        membersError={membersError}
-        keys={keys}
-        keysError={keysError}
-      />
+      {tab === "access" && (
+        <AccessActions slug={org.slug} status={org.status} keys={keys} keysError={keysError} />
+      )}
     </main>
   );
 }
