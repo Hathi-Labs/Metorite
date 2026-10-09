@@ -631,7 +631,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
-| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). 🔨 **PR-A BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-pra`), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** 🔨 **PR-B BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-prb`), dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
+| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). ✅ **PR-A MERGED (#793), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** 🔨 **PR-B BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-prb`), dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -6075,8 +6075,8 @@ new schema.
 > to do next."
 
 **Status.** 📝 SPECIFIED 2026-10-09. No migration. Each new `decide`
-feature starts `off`. ✅ PR-0 MERGED (#783, 2026-10-09). 🔨 PR-A BUILT, NOT
-MERGED (2026-10-09, branch `email-em-t16-pra`). It is dark behind
+feature starts `off`. ✅ PR-0 MERGED (#783, 2026-10-09). ✅ PR-A MERGED
+(#793, 2026-10-09). It is dark behind
 `EMAIL_TRIAGE_ONCE_PER_CYCLE`, and a value of `true` on a box is gate
 `enforcement-flip`. 🔨 PR-B BUILT, NOT MERGED (2026-10-09, branch
 `email-em-t16-prb`). It is dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`, and a
@@ -6288,8 +6288,8 @@ can count the saving (H-42: count calls, not credits).
 **The scope (B4).**
 
 - The two job sites only.
-- The runner writes ONE synthetic History line. The backfill writes NO line,
-  because it writes no History today.
+- A skip writes no History line of its own, in the runner and in the
+  backfill (B6, as amended on 2026-10-10).
 - The request paths and "Process past emails" are non-goals, and they do not
   change by one byte. These are the composed `classify_matches`
   (`engine.py:1479`), `run_rules_on_message` (`runner.py:1105`) and the rule
@@ -6302,17 +6302,21 @@ can count the saving (H-42: count calls, not credits).
 PR-B does not ride the flag of PR-A. A value of `true` on a box is gate
 `enforcement-flip`.
 
-**The History line (B6).** The line has status SKIPPED, a NULL `rule_id` and
-a NULL `rule_name`. Its reason is "Thread status: <STATUS> decided this
-thread. No rule match was asked."
+**The History (B6, coordinator amendment of 2026-10-10).** The skip writes
+no History line. The APPLIED line of the status rule stands, and the
+`email.rule_match_skipped` log counts the saving.
 
-- It is one line in the one-rule mode and in the multi-rule mode.
-- The runner writes it also when the match would have suppressed nothing.
-- It has its own branch. The hard-coded reason of a suppressed line in
-  `_apply_and_log_match` does not change.
-
-It costs no model call. So History still answers "why was this not filed as
-a Receipt?". This is the recommendation of the audit, and this spec takes it.
+- **Why the amendment.** The audit chose one synthetic SKIPPED line. The
+  review found that `HistoryTab.tsx` shows each SKIPPED row as "No match
+  found", with a red pill, an inverted FixButton and a place in the "No
+  match" filter.
+- So each decided conversation message got a wrong row beside its correct
+  APPLIED line. The extra rows also halved the messages that the `LIMIT` of
+  `rules_history` shows.
+- Before PR-B, a conversation whose match found only the conversation rule
+  had ONE APPLIED line. That is the correct History, and PR-B keeps it.
+- The hard-coded reason of a suppressed line in `_apply_and_log_match` does
+  not change.
 
 **The behaviour that PR-B accepts (B7).**
 
@@ -6324,17 +6328,23 @@ a Receipt?". This is the recommendation of the audit, and this spec takes it.
   keeps the per-message matches, and on a skip those are none. So the skip
   runs no per-message action. On a skip, the runner never calls
   `_maybe_block_cold`.
-- **D3.** In `on`, History shows one synthetic line in place of N
-  suppressed lines.
+  - **A note, with nothing built for it (review P3).** Today a DB error is
+    the one raise of `_restore_conversation_messages`. If it ever gains a
+    raise of another kind, the skip path projects FYI from `matches=[]`.
+- **D3.** In `on`, History shows only the APPLIED line of the status rule.
+  The N suppressed lines of today do not appear, and no line takes their
+  place (B6 as amended).
 
 **PR-B as built (2026-10-09, branch `email-em-t16-prb`).**
 
 - `replyzero.skip_rule_match` holds the skip test and the flag test. It
   takes no `db`, and it logs `email.rule_match_skipped` with the account id,
   the status and the job.
-- The runner passes `log_no_match=False` to `_apply_matches` on a skip. Then
-  `runner._log_status_decided` writes the synthetic line in Block W.
+- The runner passes `log_no_match=False` to `_apply_matches` on a skip. So
+  it writes no "No rule matched" line and runs no cold blocker.
 - The backfill sets `asked = []` and writes no line.
+- Review round 1 (2026-10-10) removed the synthetic line and
+  `runner._log_status_decided` (B6 as amended).
 
 **Mutations of PR-B.** Each one ran red, and the file came back to the same
 SHA-256 after each one.
@@ -6345,7 +6355,10 @@ SHA-256 after each one.
 - The skip loses the flag test. Twelve flag-off cases fail.
 - The composed `classify_matches` skips too.
   `test_the_composed_path_asks_the_rule_match_with_the_skip_flag` fails.
-- The backfill writes the synthetic line. Two backfill cases fail.
+- The runner writes a SKIPPED line again on a skip. Seven cases fail,
+  and the R8 case of the runner is one of them.
+- The backfill writes a SKIPPED line on a skip. Three cases fail, and the
+  R8 case of the backfill is one of them.
 
 ##### PR-C — keep the "no" verdicts
 
@@ -6443,7 +6456,7 @@ draft.
 |---|---|---|
 | A1 | One scheduler cycle with new mail calls `_maybe_classify_threads` once for each account. A cycle with no new mail also calls it once. The manual-sync route and the webhook still classify. | A scheduler call-count test |
 | A2 | In `on`, the selection does not take an undecided status ask again for 30 minutes. A new message on the thread makes the selection take it at once. | R8, like `test_email_ai_cost.py::TestNoReAskStorm` |
-| A3 | In `on` of `email.thread_status`, with `EMAIL_STATUS_SKIPS_RULE_MATCH` on, each job makes zero `ask_rule_match` calls for a thread of a known conversation when its status verdict reaches the bar and it has an enabled target rule. The runner shows one synthetic SKIPPED line in History, with no model call. With the flag off, the path does not change by one byte in each mode: the same calls, the same order and the same History lines. Outside `on`, the same is true with the flag on. | A call-count test in `test_email_decide_on.py`, and F6 there: the composed path asks `["status", "rule_match"]` with the flag on. In `test_email_automation_tenancy.py`: F1 zero asks in both jobs, F2 the same result with the flag off and on, F3 the cases that never skip, F4 the PR-B3 fences unchanged with flag-on variants, F5 one synthetic line in the runner and none in the backfill, F7 a rule-match outage does not block a decided row, F8 (R8) the runner in org B only |
+| A3 | In `on` of `email.thread_status`, with `EMAIL_STATUS_SKIPS_RULE_MATCH` on, each job makes zero `ask_rule_match` calls for a thread of a known conversation when its status verdict reaches the bar and it has an enabled target rule. The skip writes no History line: the APPLIED line of the status rule stands (coordinator amendment, 2026-10-10, because `HistoryTab.tsx` shows a SKIPPED row as "No match found"). With the flag off, the path does not change by one byte in each mode: the same calls, the same order and the same History lines. Outside `on`, the same is true with the flag on. | A call-count test in `test_email_decide_on.py`, and F6 there: the composed path asks `["status", "rule_match"]` with the flag on. In `test_email_automation_tenancy.py`: F1 zero asks in both jobs, F2 the same result with the flag off and on, F3 the cases that never skip, F4 the PR-B3 fences unchanged with flag-on variants, F5 no SKIPPED row in either job, and only the APPLIED line of the target in the runner, F7 a rule-match outage does not block a decided row, F8 (R8) the runner in org B only |
 | A4 | A decided "not cold" and a decided pin "no" make one ask for each key in the TTL. No "not cold" row reaches `email_cold_senders`. An undecided or failed check stores nothing. A no-reply sender skips the cold check, and a `List-Unsubscribe` header does not. `test_crm_auto_lead.py` stays green. | R8 tests for each rule |
 | A5 | `email.draft_gate`: `off` makes the same calls as today. `shadow` always drafts and logs the gate answer. In `on`, a "no" skips the consult plan, the consults, the Mem0 recall and the draft, and a "yes" drafts as today. No answer fails open. The gate never runs outside the scope of PR-D. | A call-count test for each mode and each excluded caller |
 | A6 | `DEFAULT_MODES` is `off` for each new feature. `test_email_decide_shadow.py` updates its feature set (`:235`). | `test_email_decide_shadow.py` |
