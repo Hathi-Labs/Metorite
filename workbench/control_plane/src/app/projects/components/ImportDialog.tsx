@@ -42,6 +42,7 @@ import { type ProjectRow, projectsApi } from "../lib/api";
 import { importApi } from "../lib/importApi";
 import ImportHistory, { DiscardImportButton, type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import ImportTree from "./ImportTree";
+import { StatusStageTip } from "./StageHelp";
 import {
   becomesOptions,
   type ColumnChoice,
@@ -50,6 +51,7 @@ import {
   grantOptions,
   NEW_STATUS,
   newStatusName,
+  orderedStatusRows,
   type PlanStatus,
   resolveStatuses,
   stageClashes,
@@ -84,10 +86,11 @@ import {
 const UNASSIGNED = "__unassigned__";
 const NEW_SPACE = "__new_space__";
 const stageLabel = (stage: string) => CATEGORY_LABEL[stage] ?? stage;
+// I-10b build rule 5: each stage shows its meaning on a second line.
 const STAGE_OPTIONS: SelectOption[] = EDITABLE_CATEGORIES.map((s) => ({
   value: s,
   label: CATEGORY_LABEL[s],
-  hint: CATEGORY_HINT[s],
+  description: CATEGORY_HINT[s],
 }));
 
 interface Props {
@@ -634,19 +637,50 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
             {/* I-10 (§7.7): show the result, and hide the work. The section
                 opens on a summary, and "Review mapping" opens the rows. */}
             <div className="flex flex-col gap-2">
-              <h3 className="text-xs font-semibold">Statuses</h3>
+              <div className="flex items-center gap-1">
+                <h3 className="text-xs font-semibold">Statuses</h3>
+                {/* I-10b: what a status is, what a stage is, and the five stages. */}
+                <StatusStageTip />
+              </div>
               <p className="text-xs text-foreground">{summary.line}</p>
-              <ul className="flex flex-wrap gap-1" aria-label="The statuses after the import">
-                {summary.chips.map((chip) => (
-                  <li
-                    key={chip.name}
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusAccent({ category: chip.stage }).chip}`}
-                  >
-                    {chip.name}
-                    {chip.isNew && <span className="font-normal opacity-80">· new</span>}
+              {/* I-10b: a small board, grouped by stage in the order and with the
+                  dots of the Settings screen, so the admin approves what Settings
+                  shows later. An empty stage shows a dash. */}
+              <ul
+                className="grid grid-cols-2 gap-2 sm:grid-cols-5"
+                aria-label="The statuses after the import, by stage"
+              >
+                {summary.stages.map(({ stage, chips }) => (
+                  <li key={stage} className="flex min-w-0 flex-col gap-1">
+                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${statusAccent({ category: stage }).dot}`} />
+                      {stageLabel(stage)}
+                    </span>
+                    {chips.length ? (
+                      <ul className="flex flex-col items-start gap-1" aria-label={`In ${stageLabel(stage)}`}>
+                        {chips.map((chip) => (
+                          <li
+                            key={chip.name}
+                            className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusAccent({ category: chip.stage }).chip}`}
+                          >
+                            <span className="truncate">{chip.name}</span>
+                            {chip.isNew && <span className="shrink-0 font-normal opacity-80">· new</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <span className="px-2 text-[11px] text-muted-foreground" aria-label="No status">
+                        —
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
+              {summary.check && (
+                <p role="status" className="text-[11px] text-warning">
+                  {summary.check}
+                </p>
+              )}
               {summary.merges.length > 0 && (
                 <ul className="space-y-0.5 text-[11px] text-muted-foreground">
                   {summary.merges.map((line) => (
@@ -667,9 +701,17 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                   Each ClickUp status becomes one status. Choose one in this space, one this import adds, or a new one.
                   Two statuses with one target merge. A task in a Done or Cancelled stage is closed.
                 </p>
+                {/* I-10b: the rows read as one sentence, with two labelled
+                    columns. On a phone each control carries its own label. */}
+                <div className="hidden items-center gap-2 px-2 pb-1 text-[11px] font-medium text-muted-foreground sm:flex">
+                  <span className="min-w-0 flex-1">ClickUp status</span>
+                  <span className="w-[12rem]">Metorite status</span>
+                  <span className="w-[9rem]">Stage</span>
+                </div>
                 <ul className="divide-y divide-border rounded-md border border-border">
-                  {plan.statuses.map((status, i) => {
-                    const row = resolved[i];
+                  {/* Paired by `source`, never by index: the rows that need a
+                      check go first (I-10b build rule 7). */}
+                  {orderedStatusRows(plan.statuses, resolved).map(({ status, row }) => {
                     return (
                       <li key={status.name} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
                         <div className="min-w-0 flex-1">
@@ -678,6 +720,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                             {status.tasks} tasks in {status.lists} {status.lists === 1 ? "list" : "lists"}
                             {merges[status.name]?.length ? ` · merges with ${merges[status.name].join(", ")}` : ""}
                           </p>
+                          {row.guessed && (
+                            <p className="text-[11px] font-medium text-warning">Guessed — check the stage</p>
+                          )}
                           {clashes.has(status.name) ? (
                             <p className="text-[11px] text-destructive">
                               Merged statuses need one stage. Choose the same stage for each.
@@ -690,16 +735,19 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                             )
                           )}
                         </div>
-                        <SelectButton
-                          label={`What ${status.name} becomes`}
-                          prefix="Becomes"
-                          value={targetValue(row.target)}
-                          options={becomes}
-                          onChange={(next) => chooseTarget(status, next)}
-                          // Fixed widths, so the controls line up row by row.
-                          widthClass="w-[12rem]"
-                          filterAbove={8}
-                        />
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[11px] text-muted-foreground sm:hidden">Metorite status</span>
+                          <SelectButton
+                            label={`What ${status.name} becomes`}
+                            prefix="Becomes"
+                            value={targetValue(row.target)}
+                            options={becomes}
+                            onChange={(next) => chooseTarget(status, next)}
+                            // Fixed widths, so the controls line up row by row.
+                            widthClass="w-[12rem]"
+                            filterAbove={8}
+                          />
+                        </div>
                         {creating[status.name] && (
                           <Input
                             inputSize="sm"
@@ -711,23 +759,29 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                             onChange={(e) => setStatusNames((n) => ({ ...n, [status.name]: e.target.value }))}
                           />
                         )}
-                        {row.existing ? (
-                          // The status exists: its stage is fixed, and shown as text.
-                          <span className="w-[7rem] px-2 text-[11px] text-muted-foreground">
-                            {stageLabel(row.stage)}
-                          </span>
-                        ) : (
-                          // The stage never changes by itself: a name typed on
-                          // the way to another could move closed tasks to open
-                          // without a word (the I-8 review).
-                          <SelectButton
-                            label={`Stage for ${status.name}`}
-                            value={row.stage}
-                            options={STAGE_OPTIONS}
-                            onChange={(next) => setStages((st) => ({ ...st, [status.name]: next as Stage }))}
-                            widthClass="w-[7rem]"
-                          />
-                        )}
+                        <div className="flex w-[9rem] flex-col gap-0.5">
+                          <span className="text-[11px] text-muted-foreground sm:hidden">Stage</span>
+                          {row.existing ? (
+                            // The status exists: its stage is fixed, and shown as text.
+                            <span className="px-2 text-[11px] text-muted-foreground">
+                              <span className="block text-foreground">{stageLabel(row.stage)}</span>
+                              <span className="block">set by this status</span>
+                            </span>
+                          ) : (
+                            // A NEW status ALWAYS shows its stage picker, so nobody
+                            // makes a status without choosing its stage (I-10b). The
+                            // stage never changes by itself: a name typed on the way
+                            // to another could move closed tasks to open without a
+                            // word (the I-8 review).
+                            <SelectButton
+                              label={`Stage for ${status.name}`}
+                              value={row.stage}
+                              options={STAGE_OPTIONS}
+                              onChange={(next) => setStages((st) => ({ ...st, [status.name]: next as Stage }))}
+                              widthClass="w-[9rem]"
+                            />
+                          )}
+                        </div>
                       </li>
                     );
                   })}

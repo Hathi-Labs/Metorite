@@ -162,6 +162,12 @@ export interface SelectOption {
   /** Drawn after the label, muted — a count, a hint, an address. */
   hint?: string;
   /**
+   * WS-41 I-10b. A muted second line UNDER the label, for an option whose
+   * meaning matters at the moment of choice, such as what a stage means.
+   * It wraps, so the panel stays inside a 390 px screen.
+   */
+  description?: string;
+  /**
    * WS-27bn R5b. Words the filter matches and the list never draws, such as
    * the address of a person whose row shows only the name.
    */
@@ -419,7 +425,16 @@ function OptionRow({
         option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
       }
     >
-      <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      {option.description ? (
+        <span className="min-w-0 flex-1 pr-px">
+          <span className="block truncate">{option.label}</span>
+          <span className="block max-w-[16rem] whitespace-normal text-[11px] text-muted-foreground">
+            {option.description}
+          </span>
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      )}
       {option.hint ? (
         <span className="shrink-0 text-[11px] text-muted-foreground">
           {option.hint}

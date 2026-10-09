@@ -93,6 +93,11 @@ export interface PlanStatus {
   proposed_name?: string;
   /** I-10: `becomes` is a status of the target set, so its stage is fixed. */
   existing?: boolean;
+  /**
+   * I-10b: no lane, synonym, stage rule or earlier record gave the stage, so
+   * the plan only guessed it. Absent before I-10b, which means false.
+   */
+  guessed?: boolean;
 }
 
 /** One status of the set an import writes into (I-10, §6.3). */
@@ -494,6 +499,11 @@ export interface ResolvedStatus {
   stage: Stage;
   /** The target set holds this status, so its stage is fixed. */
   existing: boolean;
+  /**
+   * I-10b: the stage is the plan's guess, and the admin has not picked one.
+   * The mark clears when the admin picks a stage for the row.
+   */
+  guessed: boolean;
 }
 
 const fold = (name: string) => cleanName(name).toLowerCase();
@@ -520,9 +530,43 @@ export function resolveStatuses(
     // no import task lands in that lane (§6.3, the I-10 review P1-b).
     if (pen.has(fold(target)) && !held.has(fold(target))) target = `${target.slice(0, 64 - IMPORTED.length)}${IMPORTED}`;
     const hit = held.get(fold(target));
-    if (hit) return { source: s.name, target: hit.name, stage: hit.category, existing: true };
-    return { source: s.name, target, stage: stages[s.name] ?? s.category, existing: false };
+    if (hit) return { source: s.name, target: hit.name, stage: hit.category, existing: true, guessed: false };
+    const picked = stages[s.name];
+    return {
+      source: s.name,
+      target,
+      stage: picked ?? s.category,
+      existing: false,
+      guessed: Boolean(s.guessed) && picked === undefined,
+    };
   });
+}
+
+/** One Map row: the plan's row and what it resolves to, paired by name. */
+export interface StatusRowPair {
+  status: PlanStatus;
+  row: ResolvedStatus;
+}
+
+/**
+ * The Map rows in the order they show (I-10b build rule 7): a row whose
+ * stage needs a check goes first, and the rest keep the plan's order. Each
+ * plan row pairs with its resolved row by `source`, NEVER by index, so the
+ * sort cannot give a row another row's target.
+ */
+export function orderedStatusRows(
+  statuses: readonly PlanStatus[],
+  resolved: readonly ResolvedStatus[],
+): StatusRowPair[] {
+  const bySource = new Map(resolved.map((r) => [r.source, r]));
+  const pairs = statuses.flatMap((status) => {
+    const row = bySource.get(status.name);
+    return row ? [{ status, row }] : [];
+  });
+  return pairs
+    .map((pair, i) => ({ pair, i }))
+    .sort((a, b) => Number(b.pair.row.guessed) - Number(a.pair.row.guessed) || a.i - b.i)
+    .map(({ pair }) => pair);
 }
 
 /**
@@ -580,6 +624,14 @@ export interface StatusSummary {
   chips: SummaryChip[];
   /** One line per merge: "Closed, done and completed become Done." */
   merges: string[];
+  /**
+   * I-10b: the summary is a small board. All five stages, in the order of
+   * the Settings screen, each with the chips it gets. An empty stage has none.
+   */
+  stages: { stage: Stage; chips: SummaryChip[] }[];
+  /** I-10b: how many rows hold a guessed stage, and the line that says so. */
+  guesses: number;
+  check: string | null;
 }
 
 /**
@@ -615,7 +667,20 @@ export function statusSummary(
       const text = `${joinWords(g.sources)} become ${g.chip.name}.`;
       return text.charAt(0).toUpperCase() + text.slice(1);
     });
-  return { line, chips: ordered.map(([, g]) => g.chip), merges };
+  const chips = ordered.map(([, g]) => g.chip);
+  const guesses = resolved.filter((r) => r.guessed).length;
+  const check = guesses
+    ? `${guesses} ${guesses === 1 ? "status needs" : "statuses need"} a check: the stage is a guess. ` +
+      "Open Review mapping to choose it."
+    : null;
+  return {
+    line,
+    chips,
+    merges,
+    stages: STAGE_ORDER.map((stage) => ({ stage, chips: chips.filter((c) => c.stage === stage) })),
+    guesses,
+    check,
+  };
 }
 
 /** "a", "a and b", "a, b and c". */
