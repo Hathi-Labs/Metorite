@@ -144,17 +144,19 @@ def _persist_row(row: dict[str, Any], organization_id: str | None) -> None:
     ``agent_run`` is FORCE RLS in production, so the write binds the run's
     tenant (WS-27bm S15, ``projects_ai_chat.md`` §21). With no tenant,
     ``tenant_session`` raises ``TenantUnbound`` and no row is written.
+
+    The row passes through ``acb_common.pg_text.storable`` first (incident
+    2026-10-09). An errored run keeps its folded message in ``trace``, and a
+    tool result in it can hold a NUL that ``jsonb`` refuses.
     """
     import json
     from datetime import datetime
 
-    from acb_common.pg_text import pg_safe
+    from acb_common.pg_text import storable
     from acb_graph import tenant_session
     from sqlalchemy import text
 
-    # No NUL and no lone surrogate reaches a text or jsonb column. A tool
-    # result that held raw file bytes failed this write on 2026-10-09.
-    row = pg_safe(row)
+    row = storable(row)
 
     ended_at = None
     if row.get("ended_ms"):

@@ -1,54 +1,84 @@
-"""Text that Postgres stores: no NUL, no lone surrogate.
+"""Make a value that Postgres can store in a ``text`` or ``jsonb`` column.
 
-Postgres refuses two kinds of character that a Python ``str`` can hold:
+🔴 **Postgres refuses two kinds of character that Python strings can hold.**
 
-* **NUL** (``\\x00``). A ``text`` column refuses it, and a ``jsonb`` column
-  refuses the ``\\u0000`` escape that ``json.dumps`` writes for it
-  (``UntranslatableCharacter``).
-* **A lone surrogate** (``\\ud800`` to ``\\udfff``). It does not encode to
-  UTF-8, so the driver fails before the row reaches the server, and ``jsonb``
-  refuses its escape too.
+1. **U+0000 (NUL).** A ``text`` value cannot hold it, and a ``jsonb`` value
+   refuses the escape ``\\u0000`` with ``UntranslatableCharacter``.
+2. **A lone surrogate (U+D800 to U+DFFF).** psycopg cannot encode it as
+   UTF-8, and ``jsonb`` refuses an unpaired ``\\udXXX`` escape.
 
-On 2026-10-09 a chat agent read a ``.docx`` as raw zip bytes. The bytes held
-NUL, and they reached a tool result. The ``chat_message`` upsert then failed
-14 times, and ``run_trace`` and ``chat_fold`` failed too, so the turn was
-lost. This module is the ONE place that cleans such text before a write.
+Either one fails the whole statement. On 2026-10-09 a tool result held the
+raw bytes of a ZIP file (``PK\\x03\\x04\\x14\\x00``), and
+``POST /chat/sessions/{id}/messages`` answered 500 for 42 seconds. The reply
+of that run was never saved.
 
-:func:`pg_safe` cleans a value. :func:`pg_json` cleans a value and dumps it
-for a ``CAST(... AS JSONB)`` parameter. Both remove the two kinds and keep
-every other character. A valid emoji is one code point in a Python ``str``,
-not a surrogate pair, so it stays.
+:func:`storable` is the ONE answer. A writer of model output, tool output or
+client text calls it on the Python value BEFORE ``json.dumps`` and before the
+bind. Do not write a second copy of the rule in a caller.
 
-Callers: ``gateway.routes.chat._upsert_messages`` (the chat route and the
-chat fold both write through it) and ``gateway.run_trace._persist_row``.
-Fence: ``tests/unit/test_pg_text.py`` (R8, a real database).
+**Each such character becomes U+FFFD (REPLACEMENT CHARACTER).** It is not
+removed, for three reasons. The reader sees that the text changed at that
+place. Every offset in the text stays valid, because the length does not
+change. And it is the character that Python's own decoder writes for a byte it
+cannot read, and that ``orchestrator/sandbox/data_engine.py`` already writes
+for a NUL in a CSV file.
+
+Callers: ``gateway/routes/chat.py`` (``_upsert_messages``, the session upsert
+and the session patch), ``gateway/run_trace.py`` (``_persist_row``) and
+``orchestrator/native_session_store.py`` (``_session_body``).
+Fence: ``tests/unit/test_chat_nul_persist.py`` (hermetic and R8).
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
-__all__ = ["pg_json", "pg_safe"]
+from acb_common._log import get_logger
 
-_REFUSED = re.compile("[\x00\ud800-\udfff]")
+__all__ = ["REPLACEMENT", "storable"]
+
+_log = get_logger("acb_common.pg_text")
+
+#: The character that takes the place of each character Postgres refuses.
+REPLACEMENT = "\ufffd"
+
+#: NUL, and every surrogate code point. A Python ``str`` holds an astral
+#: character as ONE code point, so a surrogate in a ``str`` is always unpaired.
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
 
 
-def pg_safe(value: Any) -> Any:
-    """*value* with every NUL and lone surrogate removed from its strings.
+def storable(value: Any) -> Any:
+    """*value*, with each NUL and each lone surrogate replaced by U+FFFD.
 
-    It walks dicts (keys and values), lists and tuples, and returns new
-    containers. A value of another type comes back unchanged.
+    It walks a ``dict`` (keys and values), a ``list`` and a ``tuple`` to any
+    depth, and it returns a new container. A ``str`` with nothing to replace
+    comes back as the same object. Any other value comes back unchanged.
+
+    **A key collision keeps the FIRST value** (fix round 1). Two keys can
+    become one key: "a" + NUL and "a" + U+FFFD both become "a" + U+FFFD. The
+    key that comes first in the order of the dict keeps its value. Each later
+    key with the same result is dropped, and one ``pg_text.key_collision``
+    warning gives the count of dropped keys. The warning never names a key or
+    a value, because both are member data.
     """
     if isinstance(value, str):
-        return _REFUSED.sub("", value) if _REFUSED.search(value) else value
+        if _UNSTORABLE.search(value) is None:
+            return value
+        return _UNSTORABLE.sub(REPLACEMENT, value)
     if isinstance(value, dict):
-        return {pg_safe(k): pg_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [pg_safe(v) for v in value]
+        out: dict[Any, Any] = {}
+        dropped = 0
+        for k, v in value.items():
+            key = storable(k)
+            if key in out:
+                dropped += 1
+                continue
+            out[key] = storable(v)
+        if dropped:
+            _log.warning("pg_text.key_collision", dropped_keys=dropped)
+        return out
+    if isinstance(value, list):
+        return [storable(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(storable(v) for v in value)
     return value
-
-
-def pg_json(value: Any) -> str:
-    """``json.dumps`` of :func:`pg_safe` of *value*, for a JSONB parameter."""
-    return json.dumps(pg_safe(value))

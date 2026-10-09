@@ -33,7 +33,14 @@ import {
   precheckLogoFile,
 } from "@/lib/orgBranding";
 import SettingsHeader from "@/components/SettingsHeader";
-import LogoEditor, { type LogoSave, modeVars } from "./LogoEditor";
+import type { DarkStyle } from "@/lib/logoImage";
+import LogoEditor, { type LogoSave, type OwnDark, modeVars } from "./LogoEditor";
+
+/** Decode a stored logo, so the editor can open what is saved today. */
+async function decodeStored(dataUri: string, name: string): Promise<Source> {
+  const blob = await (await fetch(dataUri)).blob();
+  return decodeFile(new File([blob], name, { type: blob.type }));
+}
 
 export default function BrandingTab() {
   const { access } = useAccess();
@@ -48,6 +55,12 @@ export default function BrandingTab() {
   // (measured 2026-10-09, a long wordmark after a square logo).
   const [editKey, setEditKey] = useState(0);
   const [editError, setEditError] = useState("");
+  // Set when the editor reopens the saved logo ("Change dark mode").
+  const [editInitial, setEditInitial] = useState<{
+    style: DarkStyle;
+    own: OwnDark | null;
+    savedMain: string;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -85,6 +98,7 @@ export default function BrandingTab() {
       setEditError("");
       const source = await decodeFile(file);
       setEditKey((k) => k + 1);
+      setEditInitial(null);
       setEditing(source);
     } catch (e) {
       setError(e instanceof Error ? e.message : "That file could not be opened.");
@@ -113,6 +127,43 @@ export default function BrandingTab() {
       setEditError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * Reopen the saved logo, to add or change its dark-mode version without
+   * finding the original file again. The saved dark image comes too.
+   */
+  const onChangeDark = async () => {
+    const current = branding?.logo;
+    if (!current) return;
+    setError("");
+    try {
+      const source = await decodeStored(current.dataUri, "your current logo");
+      let style: DarkStyle = branding?.darkStyle ?? "same";
+      let own: OwnDark | null = null;
+      if (style === "own" && branding?.logoDark) {
+        // A saved dark version that will not open drops to "As it is", and
+        // the editor still opens, rather than nothing at all.
+        try {
+          const dataUri = branding.logoDark.dataUri;
+          own = {
+            source: await decodeStored(dataUri, "your dark version"),
+            name: "your dark version",
+            storedBase64: dataUri.slice(dataUri.indexOf(",") + 1),
+          };
+        } catch {
+          style = "same";
+        }
+      }
+      setPickedName("your current logo");
+      setEditError("");
+      setEditKey((k) => k + 1);
+      // The saved bytes go back unchanged (`savePayload`).
+      setEditInitial({ style, own, savedMain: current.dataUri.slice(current.dataUri.indexOf(",") + 1) });
+      setEditing(source);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The saved logo could not be opened.");
     }
   };
 
@@ -208,6 +259,17 @@ export default function BrandingTab() {
                 <Button
                   variant="secondary"
                   size="sm"
+                  icon="Moon"
+                  disabled={busy !== null}
+                  onClick={() => void onChangeDark()}
+                >
+                  Change dark mode
+                </Button>
+              ) : null}
+              {logo ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
                   disabled={busy !== null}
                   onClick={() => void onRemove()}
                 >
@@ -258,6 +320,9 @@ export default function BrandingTab() {
             error={editError}
             onCancel={() => setEditing(null)}
             onSave={(save) => void onSave(save)}
+            initialStyle={editInitial?.style ?? null}
+            initialOwn={editInitial?.own ?? null}
+            savedMain={editInitial?.savedMain ?? null}
           />
         ) : null}
       </div>

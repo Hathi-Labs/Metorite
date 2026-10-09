@@ -57,6 +57,13 @@ describe("PUT /api/settings/branding", () => {
     expect(Object.keys(sent ?? {}).sort()).toEqual(["darkStyle", "logoBase64", "logoDarkBase64"]);
   });
 
+  it("forwards the admin's own dark version (own style)", async () => {
+    const { PUT } = await import("./route");
+    const res = await PUT(put({ logoBase64: "AAAA", logoDarkBase64: "CCCC", darkStyle: "own" }));
+    expect(res.status).toBe(200);
+    expect(sent).toEqual({ logoBase64: "AAAA", logoDarkBase64: "CCCC", darkStyle: "own" });
+  });
+
   it("refuses a style it does not know, before the gateway", async () => {
     const { PUT } = await import("./route");
     const res = await PUT(put({ logoBase64: "AAAA", darkStyle: "neon" }));

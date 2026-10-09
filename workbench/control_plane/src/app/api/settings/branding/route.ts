@@ -38,7 +38,7 @@ const GATEWAY_PATH = "/settings/branding";
 const MAX_IMAGE_CHARS = 256 * 1024;
 /** The body: two images (the logo and its dark-mode version) and a style. */
 const MAX_BODY_BYTES = 2 * MAX_IMAGE_CHARS + 4 * 1024;
-const DARK_STYLES = new Set(["same", "white", "plate"]);
+const DARK_STYLES = new Set(["same", "white", "plate", "own"]);
 
 /** Empty branding — what the shell renders our own mark from. */
 const NO_BRANDING = { logo: null, updatedBy: "", updatedAt: "" };

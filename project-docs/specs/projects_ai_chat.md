@@ -33,7 +33,8 @@ built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
 2026-10-04, in review: the uploads and the S8 documents of the chat are
 private to their thread. §24.9 (a card keeps its place in the stream, and
 a recommended option says so) was built 2026-10-09 on a branch, not
-merged.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+merged. §21.18 (a NUL in a tool result fails no save) was built
+2026-10-09.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -3318,7 +3319,7 @@ The `-rs` output must show no R8 skip.
 ## 21. Chat is saved on production (S15)
 
 **Status: BUILT 2026-09-29, with fix round 1 (§21.11, §21.12). H-201 part 1
-BUILT 2026-09-30 (§21.13).** This slice repairs a live defect in production.
+BUILT 2026-09-30 (§21.13). §21.18 BUILT 2026-10-09.** This slice repairs a live defect in production.
 A read-only diagnosis of production on 2026-09-29 is the audit
 (GO-NARROWED). `chat_message` had never held a row in production, so every
 member's chat history lived only in one browser.
@@ -4490,6 +4491,112 @@ uv run pytest tests/unit/test_delegated_artifact_card.py \
 ```
 
 The `-rs` output must show no skip.
+
+### 21.18 A NUL in a tool result fails no save (incident 2026-10-09)
+
+**Status: BUILT 2026-10-09.** A live defect, GO-NARROWED. No migration and
+no new table.
+
+**What happened.** On 2026-10-09 a member of a beta organization ran
+task-manager in a Tasks chat. The built-in `view` tool of the Copilot CLI
+read an Excel file as text. Its result held the raw bytes of the ZIP
+container, `PK\x03\x04\x14\x00`. Postgres refuses U+0000 in `text` and the
+escape `\u0000` in `jsonb`. So `POST /chat/sessions/{id}/messages` answered
+500 for 42 seconds, the fold failed too, and the reply was not saved.
+
+**Rules.**
+
+1. **One rule for a value that Postgres cannot store.**
+   `acb_common.pg_text.storable` changes each NUL and each lone surrogate to
+   U+FFFD. A writer calls it on the Python value, before `json.dumps` and
+   before the bind. Do not write a second copy of the rule.
+2. **The chat writers call it.** `_upsert_messages` calls it for the route,
+   the fold and the mint. `_upsert_session`, `_patch_session`,
+   `run_trace._persist_row` and `native_session_store._session_body` call it
+   too. The ids of a message do not change, because the client finds its rows
+   by them.
+3. **U+FFFD, not a deletion.** The reader sees where the text changed. Each
+   offset in the text stays correct, because the length does not change.
+   Python's decoder and `sandbox/data_engine.py` use the same character.
+4. **The model does not read a binary file as text.**
+   `permission_policy._decide_read` reads the first 8 KB of a file in the
+   workspace. A NUL or a known magic number refuses the read with the reason
+   `read_binary_file`. The model reads the name, the kind and the size of the
+   file. For a `.docx`, `.xlsx` or `.pdf` file, the text also names
+   `read_attachment`.
+5. **The binary refusal holds in `enforce` and in `audit`.** It is not a
+   permission refusal. An approval only gives the model the same bytes again.
+   The containment check runs first, so the check never opens a path outside
+   the workspace.
+6. **The check always approves an image name** (fix rounds 1 and 2). The
+   `view` tool of the CLI asks the native `imageHelpersIsBinaryImageFile`.
+   That function answers by the suffix alone, in any case, for `png`, `jpg`,
+   `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tif`, `tiff`, `heic` and `avif`.
+   The tool then sends the file to the model as an image, and its text result
+   holds no NUL. So the check keys on the same suffixes and does not open the
+   file. A screenshot that a member attaches stays visible. The check still
+   refuses PNG bytes under a name with no image suffix, because the CLI reads
+   that file as text.
+   ⚠️ **The list follows CLI 1.0.66.** Production fetches the CLI runtime of
+   its SDK pin, 1.0.11 today (`scripts/vps_apply.sh`, the H-181 fetch). A CLI
+   upgrade must check the list again against `imageHelpersIsBinaryImageFile`.
+   `test_the_image_suffixes_are_exactly_the_cli_set` pins it.
+7. **A file with a UTF-16 or UTF-32 byte order mark is text** (fix round 1).
+   Its NULs are part of the text. Rule 1 guards the save of a NUL that comes
+   through. UTF-16 text with no mark stays refused (fix round 2). Its sentence
+   says that the file looks like UTF-16 text with no byte order mark, and it
+   tells the agent to ask the member for a UTF-8 copy.
+8. **A key collision keeps the first value** (fix round 1). Two dict keys can
+   become one key after the change. `storable` keeps the value of the first
+   key in the order of the dict and drops the later ones. It logs one
+   `pg_text.key_collision` warning with the count, and never a key or a
+   value.
+
+**What this change does not do.**
+
+- **`/v1/chat/completions`.** The log shows one failure of this route in the
+  incident. Neither hop writes message text. The gateway logs usage numbers,
+  and the Router writes `usage_event` and ledger rows of numbers and ids. So
+  this change has nothing to repair there. The cause of that one failure is
+  not known without its log line on the box.
+- **The browser retry.** It has a limit. The 3-second rate came from the
+  checkpoints of the stream route `app/api/agent/chat/route.ts`, one POST
+  every 3 seconds while the stream runs. `gatewayFetch` retries a write only
+  on `ECONNREFUSED`, and `postMessagesWithRetry` retries once. The member
+  sees no error when a save fails, and that is a separate finding.
+- **Other writers of model output.** `workflow_runs`, the email rule runner,
+  the notes summaries and Mem0 do not call `storable`. They are not on the
+  chat path, and Workflows is a preview app. Each one is a candidate for a
+  later change.
+- **The MAF file tools.** `TenantFileStore.read` decodes strict UTF-8, so a
+  ZIP gives an error text and no bytes. A UTF-8 file that holds a NUL still
+  reads, and rule 1 guards its save.
+
+**Acceptance.**
+
+1. A tool result that holds a NUL saves through the real route and the real
+   fold, on the phase-4 catalog as the app role. The GET returns U+FFFD and
+   no NUL.
+2. An errored run with that result writes its `agent_run` row.
+3. A read of a binary file in the workspace returns the sentence and not the
+   bytes, in `enforce` and in `audit`.
+4. A text file, a missing file and a path outside the workspace keep the
+   decision that they had before.
+5. The check approves a read of `screen.PNG`, `photo.webp` and a `.png` name
+   that holds ZIP bytes. It approves a UTF-16 or UTF-32 file with a byte
+   order mark.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_chat_nul_persist.py -q -rs
+```
+
+The `-rs` output must show no skip. On the code before this change, 17 of
+the 23 cases failed. The R8 fold case logged the exact error of the incident.
+Fix round 1 added 14 cases. On the code of the first round, 12 of them failed,
+and the other 2 are cases that must stay refused. The file now has 37 cases.
 
 ## 22. Chat attachments, read on the platform (H-229)
 

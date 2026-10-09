@@ -100,6 +100,22 @@ clone cache.
    package cannot import it. `decide()` reads the SDK 1.0 shapes: a write's
    target is `file_name`, and a `read` request is a read, contained in the
    workspace. Fence: tests/unit/test_shared_agent_shell_tools.py.
+   `decide()` refuses a read of a BINARY file in the workspace with the
+   reason `read_binary_file` (incident 2026-10-09). `binary_file_note` reads the
+   first 8 KB through `safe_open`, after the containment check. A NUL or a
+   known magic number makes the file binary. The model reads the name, the
+   kind and the size, and `read_attachment` for a .docx, .xlsx or .pdf file.
+   The refusal holds in `enforce` and in `audit`, because an approval only
+   gives the model the bytes again. Fence: tests/unit/test_chat_nul_persist.py.
+   ⚠️ It never refuses a name with an image suffix (`_CLI_IMAGE_SUFFIXES`:
+   png, jpg, jpeg, gif, webp, bmp, ico, tif, tiff, heic, avif, in any case),
+   and it does not open that file. The CLI's `view` asks the native
+   `imageHelpersIsBinaryImageFile`, which answers by the suffix alone, and
+   then sends the file to the model as an image. A refusal would hide a
+   screenshot (fix rounds 1 and 2). The list follows CLI 1.0.66, so a CLI
+   upgrade must check it again. A file that starts with a UTF-16 or UTF-32
+   byte order mark is text. UTF-16 text with no mark stays refused, and the
+   sentence asks the member for a UTF-8 copy.
 5d. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
    Every host reader and writer of a dir that a sandbox container mounts opens
    its paths here: `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux

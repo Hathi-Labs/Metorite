@@ -261,7 +261,7 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
         "balance — only after prices are set, or funded customers get all " +
         "of the gate and none of the billing. Owner acts. Verify by the " +
         "deploy log line, not by this page.",
-      href: "/usage",
+      href: "/money",
       linkText: "Watch usage",
     },
   ];

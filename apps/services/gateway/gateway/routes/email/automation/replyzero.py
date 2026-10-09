@@ -1247,11 +1247,17 @@ class StatusFirst:
     empty when there is none (then no status is asked). ``conversation`` is
     :func:`_thread_is_conversation`. ``verdict`` is the decided
     ``(status, reaches_bar)``, or None when the status was not asked.
+
+    WS-17 EM-T4a-2 PR-B3: ``seen`` is the read of the status for a job, from
+    :func:`read_status_first`. The job asks it with no block open, through
+    :func:`ask_status_first`. Then ``verdict`` stays None, and the job
+    carries the answer in a :class:`JobStatus`.
     """
 
     rules: dict[str, dict[str, Any]]
     conversation: bool = False
     verdict: tuple[str, bool] | None = None
+    seen: StatusRead | None = None
 
 
 async def status_before_match(
@@ -1301,10 +1307,72 @@ async def status_before_match(
         return StatusFirst(rules={})
 
 
+async def read_status_first(
+    db: Any, account_id: str, message_row: Any,
+) -> StatusFirst | None:
+    """The READ half of :func:`status_before_match` for a job (WS-17
+    EM-T4a-2 PR-B3). It takes ``db``, opens no block and asks no model. A job
+    calls it in Block R.
+
+    It reads the plan of fix round 3 in its order: the enabled conversation
+    rules, then the conversation test. For a conversation it also reads the
+    status with :func:`read_job_status`, with the move keys of the rules.
+    Returns None outside ``on`` of ``email.thread_status``, and reads
+    nothing then. A failed read of the plan logs and gives an empty plan, as
+    :func:`status_before_match` does.
+    """
+    if decide_features.mode_for("email.thread_status") != "on":
+        return None
+    thread_id = getattr(message_row, "thread_id", None)
+    if not thread_id:
+        return StatusFirst(rules={})
+    try:
+        rules = await _enabled_conversation_rules(db, account_id)
+        if not rules:
+            return StatusFirst(rules={})
+        conversation = await _thread_is_conversation(db, account_id, thread_id)
+        move_keys = _move_keys(rules)
+    except Exception as exc:  # a failed read never stops the rule match
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return StatusFirst(rules={})
+    seen = (await read_job_status(db, account_id, message_row,
+                                  move_keys=move_keys)
+            if conversation else None)
+    return StatusFirst(rules=rules, conversation=conversation, seen=seen)
+
+
+async def ask_status_first(first: StatusFirst | None) -> JobStatus:
+    """The ASK half of :func:`status_before_match` for a job (PR-B3). It
+    takes NO ``db``. The job calls it after Block R and BEFORE the rule-match
+    ask, so the status-first order of fix round 3 stays.
+
+    With no plan, no rule or no conversation, it asks nothing. Otherwise it
+    runs :func:`ask_job_status`. "Undecided" raises ``DecisionUnavailable``
+    here, so the job skips the row before the rule match is paid (D-EM-8).
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    if first is None or not first.rules or not first.conversation:
+        return NOT_ASKED
+    status = await ask_job_status(first.seen)
+    if status.state == UNDECIDED.state:
+        raise DecisionUnavailable("decide gave no thread status")
+    return status
+
+
+def status_move_keys(read: Any) -> frozenset[str]:
+    """The move keys of the status ask of a job (PR-B3): those of the ``on``
+    plan in ``read.first``, and none outside ``on``."""
+    first = read.first
+    return _move_keys(first.rules) if first is not None else frozenset()
+
+
 async def _resolve_on(
     db: Any, account_id: str, message_row: Any,
     matches: list[dict[str, Any]], *, provider: Any,
-    first: StatusFirst | None,
+    first: StatusFirst | None, status: JobStatus | None = None,
 ) -> list[dict[str, Any]]:
     """The resolver in ``on`` of ``email.thread_status`` (fix round 3).
 
@@ -1320,6 +1388,11 @@ async def _resolve_on(
 
     ``DecisionUnavailable`` passes through, so the runner skips the row
     (D-EM-8). Any other failure keeps the per-message matches.
+
+    WS-17 EM-T4a-2 PR-B3: a job passes ``status``, the :class:`JobStatus`
+    that it asked with no block open. Then this asks no model. "Undecided"
+    raises ``DecisionUnavailable``, and "not asked" or "no status" keep the
+    matches. With ``status`` None it asks, as before, for the request paths.
     """
     # Lazy: the engine imports this module.
     from gateway.routes.email.automation.engine import DecisionUnavailable
@@ -1328,10 +1401,19 @@ async def _resolve_on(
     if not thread_id:
         return matches
     try:
-        plan = first or await status_before_match(db, account_id, message_row)
+        plan = first
+        if plan is None and status is None:  # a job never asks in Block W
+            plan = await status_before_match(db, account_id, message_row)
         if plan is None or not plan.rules:
             return matches
-        verdict = plan.verdict
+        if status is not None:
+            if status.state == UNDECIDED.state:
+                raise DecisionUnavailable("decide gave no thread status")
+            verdict = status.verdict
+            if verdict is None:
+                return matches
+        else:
+            verdict = plan.verdict
         if verdict is None:
             if plan.conversation or not any(
                     _match_conversation_key(m) for m in matches):
@@ -1404,14 +1486,16 @@ async def resolve_conversation_status_matches(
     WS-17 EM-T4a-2 PR-B2: a job passes ``status``, the :class:`JobStatus`
     that it asked with no block open. Then the resolver asks no model and
     reads no conversation test (:func:`_resolve_asked`). With ``status``
-    None it asks, as before, for the request paths of EM-T4a-4."""
+    None it asks, as before, for the request paths of EM-T4a-4. PR-B3: in
+    ``on``, :func:`_resolve_on` takes ``status`` in the same way."""
     # Lazy: the engine imports this module.
     from gateway.routes.email.automation.engine import DecisionUnavailable
 
     matches = matches or []
     if decide_features.mode_for("email.thread_status") == "on":
         return await _resolve_on(
-            db, account_id, message_row, matches, provider=provider, first=first)
+            db, account_id, message_row, matches, provider=provider, first=first,
+            status=status)
     thread_id = getattr(message_row, "thread_id", None)
     if not thread_id:
         return matches
@@ -1902,7 +1986,10 @@ async def recompute_thread_status(
 # block open. After the rule-match ask, `status_ask_needed` says whether the
 # job asks. Then Block S calls `read_job_status` and ends with `SELECT 1`,
 # `ask_job_status` asks with no block open, and Block W gives the
-# `JobStatus` to the resolver. `on` does not change here (PR-B3).
+# `JobStatus` to the resolver. PR-B3 does the same in `on`. Block R reads the
+# status-first plan (`read_status_first`), and `ask_status_first` asks it
+# before the rule match. Block S reads the status that only a conversation
+# match asks.
 
 
 @dataclass(frozen=True)
@@ -1929,17 +2016,24 @@ def status_ask_needed(
 ) -> bool:
     """Does the job ask the thread status of this row (PR-B2 item 2)?
 
-    ``read`` is the ``engine.ClassifyRead`` of Block R. Yes when the
-    resolver runs, the mode is not ``on``, the row has a thread, and a match
-    has a conversation key or the thread is a conversation. This is the
-    test of :func:`resolve_conversation_status_matches` before it asks.
+    ``read`` is the ``engine.ClassifyRead`` of Block R. Outside ``on``, yes
+    when the resolver runs, the row has a thread, and a match has a
+    conversation key or the thread is a conversation. This is the test of
+    :func:`resolve_conversation_status_matches` before it asks.
+
+    PR-B3: in ``on``, yes when the plan of Block R has a conversation rule,
+    the thread is not a conversation (so :func:`ask_status_first` asked
+    nothing), and a match has a conversation key. This is the test of
+    :func:`_resolve_on` before it asks after the match.
     """
-    return bool(
-        read.resolve
-        and decide_features.mode_for("email.thread_status") != "on"
-        and getattr(message_row, "thread_id", None)
-        and (read.conversation
-             or any(_match_conversation_key(m) for m in matches)))
+    if not (read.resolve and getattr(message_row, "thread_id", None)):
+        return False
+    conversation_match = any(_match_conversation_key(m) for m in matches)
+    if decide_features.mode_for("email.thread_status") == "on":
+        first = read.first
+        return bool(first is not None and first.rules
+                    and not first.conversation and conversation_match)
+    return bool(read.conversation or conversation_match)
 
 
 async def read_job_status(
@@ -2339,6 +2433,8 @@ async def _maybe_classify_threads(account_id: str) -> None:
     thread gets Block R, the rule-match ask with no block open, and Block W
     (EM-T4a-2 PR-B1, §10.4.6). When the job asks the thread status, Block S
     reads it between the two, and the ask runs with no block open (PR-B2).
+    In ``on``, the status-first ask also runs with no block open, after
+    Block R and before the rule-match ask (PR-B3).
     A last block persists rotated credentials.
     """
     try:
@@ -2477,13 +2573,16 @@ async def _maybe_classify_threads(account_id: str) -> None:
                         db, account_id, r, email, multi_rule=False, resolve=True)
                     # Fail closed: this raises when a reader swallowed a failed statement.
                     await db.execute(text("SELECT 1"))
+                # PR-B3: in `on`, the status-first ask runs with NO block
+                # open, before the rule match. "Undecided" raises here.
+                status = await ask_status_first(plan.first)
                 asked = await ask_rule_match(plan.match)
                 # Block S (EM-T4a-2 PR-B2): only when the job asks the
                 # status. The ask runs with NO block open after it.
-                status = NOT_ASKED
                 if status_ask_needed(plan, r, asked):
                     async with _tenant_session() as db:
-                        seen = await read_job_status(db, account_id, r)
+                        seen = await read_job_status(
+                            db, account_id, r, move_keys=status_move_keys(plan))
                         # Fail closed, as at the end of Block R.
                         await db.execute(text("SELECT 1"))
                     status = await ask_job_status(seen)
