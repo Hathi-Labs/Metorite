@@ -780,3 +780,33 @@ def test_the_gateway_starts_the_beat_and_stops_it_first():
     after_yield = src[src.index("    yield\n"):]
     stop = after_yield.index("await stop_instance_heartbeat()")
     assert stop < after_yield.index("stop_background_sync"), "stop the beat first"
+
+
+def test_a_slow_sweep_never_delays_a_beat(liveness, monkeypatch):
+    """The sweep folds replies into the database. If it ran inside the beat
+    loop, a slow database would let the key lapse, and a sibling would read
+    this live process as dead."""
+    beats: list[int] = []
+
+    async def _beat():
+        beats.append(1)
+
+    async def _hang():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(run_liveness, "beat", _beat)
+    monkeypatch.setattr(run_liveness, "sweep_dead_instances", _hang)
+    monkeypatch.setattr(run_liveness, "INSTANCE_HEARTBEAT_EVERY", 0.01)
+    monkeypatch.setattr(run_liveness, "_SWEEP_ON", True)
+    monkeypatch.setattr(run_liveness, "_SWEEP_TASK", None)
+
+    async def _go():
+        task = asyncio.get_running_loop().create_task(run_liveness._heartbeat_loop())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        sweep = run_liveness._SWEEP_TASK
+        if sweep is not None:
+            sweep.cancel()
+
+    _run(_go())
+    assert len(beats) >= 5, "a hung sweep held the beat"

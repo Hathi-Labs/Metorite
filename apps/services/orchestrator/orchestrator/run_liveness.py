@@ -309,13 +309,33 @@ async def sweep_dead_instances() -> list[dict[str, Any]]:
 # The beat loop
 # ---------------------------------------------------------------------------
 
+_SWEEP_TASK: asyncio.Task[None] | None = None
+
+
+async def _sweep_quietly() -> None:
+    try:
+        await sweep_dead_instances()
+    except Exception:  # noqa: BLE001
+        _log.warning("run_liveness.sweep_crashed")
+
+
 async def _heartbeat_loop() -> None:
+    global _SWEEP_TASK
     n = 0
     while True:
         try:
             await beat()
-            if _SWEEP_ON and n % SWEEP_EVERY_BEATS == 0:
-                await sweep_dead_instances()
+            # ⚠️ The sweep runs in its OWN task. It folds replies into the
+            # database, and a slow database must never delay a beat past the
+            # TTL: a sibling would then read this live process as dead, and
+            # start a second run on each of its threads. One sweep at a time.
+            if (
+                _SWEEP_ON and n % SWEEP_EVERY_BEATS == 0
+                and (_SWEEP_TASK is None or _SWEEP_TASK.done())
+            ):
+                _SWEEP_TASK = asyncio.get_running_loop().create_task(
+                    _sweep_quietly(), name="cc-instance-sweep",
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -359,8 +379,11 @@ async def stop_instance_heartbeat() -> None:
     The next process then sees this one's runs as dead at once, rather than
     after the key's TTL. The runs end with this process either way.
     """
-    global _HEARTBEAT_TASK, _SWEEP_ON
+    global _HEARTBEAT_TASK, _SWEEP_ON, _SWEEP_TASK
     _SWEEP_ON = False
+    sweep, _SWEEP_TASK = _SWEEP_TASK, None
+    if sweep is not None and not sweep.done():
+        sweep.cancel()
     task, _HEARTBEAT_TASK = _HEARTBEAT_TASK, None
     if task is not None and not task.done():
         task.cancel()
