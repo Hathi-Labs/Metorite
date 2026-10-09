@@ -22,6 +22,7 @@ const pane = (href: string, label: string, note = ""): NavPane => ({
   note,
   icon: "Box",
   launch: "live",
+  team: "personal",
 });
 
 const HELD = [
@@ -174,5 +175,28 @@ describe("recent items, per member", () => {
   it("survives junk in storage", () => {
     store.set("cc-shell-recent::a@x.test", "{not json");
     expect(readRecent("a@x.test")).toEqual([]);
+  });
+});
+
+describe("the purpose line is behind the shell nav flag (NS-2)", () => {
+  // The bar is ON in production. A new line here reaches every organization
+  // at once, so it ships dark like the rest of NS-2.
+  const approvals = PANES.find((p) => p.href === "/approvals")!;
+
+  it("with the flag off, prints the note and matches on the note, as before", () => {
+    const go = buildItems([approvals], false).find((i) => i.key === "go:/approvals")!;
+    expect(go.hint).toBe(approvals.note);
+    expect(go.words).not.toContain("send");
+  });
+
+  it("with the flag on, prints the purpose and matches on its words too", () => {
+    const go = buildItems([approvals], true).find((i) => i.key === "go:/approvals")!;
+    expect(go.hint).toBe(approvals.blurb);
+    expect(go.words).toContain("send");
+  });
+
+  it("reads the flag by default, and the flag is off in a test", () => {
+    const go = buildItems([approvals]).find((i) => i.key === "go:/approvals")!;
+    expect(go.hint).toBe(approvals.note);
   });
 });

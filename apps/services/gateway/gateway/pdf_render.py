@@ -51,6 +51,8 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import quote
 
+from acb_common.child_env import child_env
+
 #: The largest source a caller may convert, in bytes. A report is a few KB and a
 #: written document rarely passes 100 KB. The cap bounds the layout work a
 #: single request can ask for.
@@ -660,13 +662,6 @@ _EXIT_REFUSED = 2
 #: ``to_thread`` by 38 s).
 SLOT_WAIT_S = 2.0
 
-#: The only variables the child inherits. The gateway's environment holds
-#: database URLs, provider keys and the internal bearer, and a child that
-#: parses untrusted HTML must not hold them (fix round 3, hardening).
-CHILD_ENV_KEYS = (
-    "PATH", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
-    "LANG", "LC_ALL", "PYTHONPATH", "VIRTUAL_ENV",
-)
 
 # One semaphore per event loop. An asyncio primitive binds to the first loop
 # that waits on it, and the tests run many loops.
@@ -690,10 +685,15 @@ def _worker_argv(kind: str) -> list[str]:
 
 
 def _child_env() -> dict[str, str]:
-    env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
-    # The child writes bytes to stdout. No encoding setting is needed, and
-    # none is inherited.
-    return env
+    """The child's env: only ``acb_common.child_env``'s allowlist (WS-49 BH-1).
+
+    The gateway's environment holds database URLs, provider keys and the
+    internal bearer, and a child that parses untrusted HTML must not hold
+    them (fix round 3, hardening). The allowlist keeps ``PYTHONPATH`` and
+    ``VIRTUAL_ENV``, which ``python -m gateway.pdf_render`` needs. The child
+    writes bytes to stdout, so no encoding setting is needed.
+    """
+    return child_env()
 
 
 def _outcome(returncode: int | None, stdout: bytes, stderr: bytes) -> bytes:

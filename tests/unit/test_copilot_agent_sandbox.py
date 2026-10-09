@@ -90,5 +90,9 @@ async def test_no_sandbox_url_falls_back_to_existing_token_path(monkeypatch):
     await agent.start()
 
     assert len(_FakeCopilotClient.instances) == 1
-    assert _FakeCopilotClient.instances[0].options == {"github_token": "fake-token"}
+    opts = _FakeCopilotClient.instances[0].options
+    assert set(opts) == {"github_token", "env"}
+    assert opts["github_token"] == "fake-token"
+    # WS-49 BH-1: the CLI gets the allowlist, never the token by name.
+    assert "COPILOT_GITHUB_TOKEN" not in opts["env"]
     assert base_start_calls == [agent]

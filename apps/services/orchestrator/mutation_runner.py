@@ -34,6 +34,26 @@ _TEST_SUMMARY_RE = re.compile(r"TEST_SUMMARY:\s*(.+)$", re.IGNORECASE)
 # Also detect PR URLs (legacy — some agents may still create PRs)
 _GITHUB_PR_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+")
 
+#: WS-49 BH-1, a BH-D1 exception. This file runs in the mutation container,
+#: whose image holds only ``github-copilot-sdk``, so it cannot import
+#: ``acb_common.child_env``. It keeps its own LITERAL allowlist of the base
+#: names. The container env holds ``GATEWAY_API_KEY`` and
+#: ``COPILOT_GITHUB_TOKEN``, and the CLI shell and ``git`` need neither. The
+#: SDK gets the token as ``github_token``. Fence:
+#: ``tests/unit/test_child_env_seam.py`` (``LOCAL_ALLOWLISTS``).
+CHILD_ENV_NAMES = (
+    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+    "XDG_STATE_HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy",
+    "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+)
+
+
+def child_env() -> dict[str, str]:
+    """The env of every child of this runner: ``CHILD_ENV_NAMES`` that are set."""
+    return {name: os.environ[name] for name in CHILD_ENV_NAMES if name in os.environ}
+
 
 def router_headers(raw: str) -> dict[str, str]:
     """The ``X-CC-*`` headers the orchestrator handed in, and nothing else.
@@ -102,8 +122,9 @@ async def main() -> None:
             # (H-181), so each call names the member the Router bills.
             provider["headers"] = headers
         session_config_kwargs["provider"] = provider
-    else:
-        client_options["github_token"] = github_token
+    # WS-49 BH-1: the CLI env holds no token name now, so pass the token
+    # whenever it is set. The SDK hands it over as COPILOT_SDK_AUTH_TOKEN.
+    client_options["github_token"] = github_token or None
 
     messages: list[str] = []
     pr_url: str | None = None
@@ -111,7 +132,7 @@ async def main() -> None:
     test_summary: str = ""
     done = asyncio.Event()
 
-    client = CopilotClient(**client_options)
+    client = CopilotClient(**client_options, env=child_env())
     await client.start()
     try:
         session = await client.create_session(**session_config_kwargs)
@@ -171,6 +192,7 @@ async def main() -> None:
             r = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_dir, capture_output=True, text=True, timeout=10,
+                env=child_env(),
             )
             if r.returncode == 0:
                 commit_sha = r.stdout.strip()

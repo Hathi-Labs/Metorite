@@ -235,6 +235,39 @@ clone cache.
    fails closed. `confirmation_channel_open()` reads the same two channels.
    A tool reads it only after a denial, to tell a refusal from a run with
    no live chat. It never decides an action (WS-17 EM-T13a).
+5k. agent_site.py -- the ONE builder of an agent install (WS-49 BH-7, spec
+   `box_hardening.md` §5 BH-7). `loader._install_agent_deps` and
+   `dep_tools.install_dependency` install into
+   `/var/lib/acb-gateway/agent-site` with `uv pip install --target`. They
+   never install into the shared venv. Each install passes `-c` with a freeze
+   of the venv (`--exclude-editable`), at
+   `/var/cache/acb-gateway/constraints.txt`.
+
+   `--target` does not see the venv. So `classify()` sorts each declared
+   line before any uv call. The venv provides a line when its site dirs hold
+   the name at a version that the specifier allows. An editable workspace
+   member counts. A line with a false marker is not installed either.
+
+   A venv package at another version is a conflict: the loader does not
+   install it, and the dep status is red. The marker holds the conflict, so a
+   warm load runs no uv and still reports red. A line with an extra goes to
+   uv, so the packages of the extra install.
+
+   When the venv provides all of them, no uv runs.
+   `prune_venv_duplicates()` removes each copy of a venv package from
+   agent-site, by its `RECORD`. It runs after each install and once for each
+   new venv state. When the loader drops a line, it writes the rest to a file
+   of its own, with each `-r` or `-c` path made absolute.
+
+   The gateway APPENDS agent-site to `sys.path`, so a venv package wins. A
+   child gets `PYTHONPATH` from `acb_common.child_env.AGENT_PATH_VALUES`.
+   Never use `site.addsitedir` on agent-site. Never write a `.pth` file or a
+   `sitecustomize` there. `scrub()` removes one that a package brings.
+
+   The deps hash holds the deps to install, the target and the constraints
+   digest. When the unit's dirs are absent, both callers refuse. Neither
+   falls back to the venv. Fence: tests/unit/test_agent_deps_target.py
+   (BH-F6).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
