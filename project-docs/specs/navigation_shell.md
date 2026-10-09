@@ -239,13 +239,22 @@ The colour-mode toggle stays beside the foot's button. With the switcher flag
 off, the foot still shows. It reads the session then, and it lists no other
 accounts.
 
-**On a phone, the menu's header is the account menu** (owner, 2026-10-09). It
-shows the brand mark, the organization that is open, and under it the address
-that is signed in. A tap unfolds the other accounts, each one tap away with
-its own remove control, then the rows above, then "Add account" and sign-out.
-The phone has no account tab in the bottom bar and no second account row at
-the menu's foot. `DrawerAccountHeader` in `AccountSwitcher.tsx` is the one
-component, and `e2e/account-switcher.spec.ts` fences it.
+**On a phone, the menu puts each act where its frequency says** (owner review,
+2026-10-09: the menu was "very crowded").
+
+- **The header says who and where, and switches.** It shows the brand mark,
+  the organization that is open, and under it the address that is signed in.
+  A tap unfolds the other accounts, each one tap away with its own remove
+  control, and "Add another account". Nothing else.
+- **The apps come next,** because opening an app is the frequent act.
+- **The foot holds the rare acts,** under "Account and settings": My Profile,
+  My access, Appearance, Organisation for an admin, Dark mode, Desktop view and
+  sign-out.
+- The sheet is solid. A translucent sheet let the page's words read through.
+
+The phone has no account tab in the bottom bar. `DrawerAccountHeader` and
+`DrawerAccountFoot` in `AccountSwitcher.tsx` are the two parts, and
+`e2e/account-switcher.spec.ts` fences both.
 
 **My Access moved first, on 2026-10-05.** The owner moved it into the People
 app, as the ungated "My access" tab at `/people/access`, beside My profile. When
