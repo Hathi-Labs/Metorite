@@ -36,7 +36,10 @@ import {
   settleAnswer,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
-import { sendRespondInput } from "@/lib/respondInput";
+import { sendRespondInputResult } from "@/lib/respondInput";
+import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
+import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
+import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import TodoPanel from "@/components/TodoPanel";
@@ -484,7 +487,10 @@ export default function AgentChat({
       ),
     [sessionId],
   );
-  const { messages, isLoading, error, sendMessage, stopGeneration, setMessages, recovering, runStatus } = useAgentChat({
+  const {
+    messages, isLoading, error, sendMessage, stopGeneration, setMessages, recovering, runStatus,
+    outage, retryHeld,
+  } = useAgentChat({
     agentName: currentAgentName,
     threadId: sessionId,
     // `null` sends no `model` field for a covered agent (WS-45 S3).
@@ -978,6 +984,11 @@ export default function AgentChat({
     messagesRef.current = messages;
   }, [messages]);
 
+  // The latest sendMessage, for callbacks that must not re-create on each
+  // render (the card answer path above).
+  const sendMessageRef = useRef(sendMessage);
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+
   // Live ref to the current sessionId so async callbacks (e.g. /compact) can
   // bail if the user switched sessions while the request was in flight.
   const sessionIdRef = useRef(sessionId);
@@ -1014,21 +1025,37 @@ export default function AgentChat({
   // error (a dead conversation). A 4xx does NOT restore it. A 409 says no
   // question waits on that id, and a restored card got a 409 on every click
   // (2026-10-06). `settle` hears "ok" or "drop" (`lib/respondInput.ts`).
+  //
+  // A 409 `run_restarted` (incident 2026-10-09): the run that asked died
+  // with an app update. The gateway hands back the question and the answer
+  // as ONE message, and this sends it, with a notice that says why. The
+  // caller then hears "resent" and sends nothing of its own.
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean },
       restoreCard: () => void,
-      settle?: (outcome: "ok" | "drop") => void,
+      settle?: (outcome: "ok" | "drop" | "resent") => void,
     ) => {
       const forSession = sessionIdRef.current;
-      void sendRespondInput({ ...payload, thread_id: forSession }).then((outcome) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession }).then(({ outcome, resend }) => {
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
-        if (outcome === "retry") restoreCard();
-        else settle?.(outcome);
+        if (outcome === "retry") { restoreCard(); return; }
+        if (resend) {
+          setMessages((prev) => [...prev, {
+            id: `restarted-${payload.request_id}`,
+            role: "system",
+            content: `__ERROR__${JSON.stringify({ code: "run_restarted", ref: null, raw: "" })}`,
+            timestamp: Date.now(),
+          }]);
+          void sendMessageRef.current(resend);
+          settle?.("resent");
+          return;
+        }
+        settle?.(outcome);
       });
     },
-    [],
+    [setMessages],
   );
 
 
@@ -1421,6 +1448,23 @@ export default function AgentChat({
     submitText(plan.resend);
   }, [submitText, setMessages]);
 
+  // While the chat shows its own "Metorite is updating" notice, the shell's
+  // toast stands down, so the member reads it once (review of #797).
+  useEffect(() => {
+    if (!outage) return;
+    const id = `chat:${sessionId}`;
+    coverOutage(id);
+    return () => uncoverOutage(id);
+  }, [outage, sessionId]);
+
+  // The last answer an app update cut, if the member has not moved on.
+  const interruptedId = useMemo(() => interruptedTurn(messages), [messages]);
+  // Continue: a fresh run picks up where the cut one stopped. The gateway
+  // writes the note the model reads, from the saved partial reply.
+  const handleContinue = useCallback(() => {
+    void sendMessage(CONTINUE_TEXT, { resume: true });
+  }, [sendMessage]);
+
   /** Ask the agent to help configure a specific integration. */
   const handleAskAgentConfigure = (svc: IntegrationStatus) => {
     setBannerDismissed(true);
@@ -1503,7 +1547,9 @@ export default function AgentChat({
     postRespondInput(
       { request_id: card.requestId, answer, was_freeform: false },
       () => dispatchConfirmation(settleAnswer(card, "retry")),
-      (outcome) => dispatchConfirmation(settleAnswer(card, outcome)),
+      // "resent": the run died with an update and the answer went out as a
+      // message. The card leaves, as on any answer no run can take.
+      (outcome) => dispatchConfirmation(settleAnswer(card, outcome === "resent" ? "drop" : outcome)),
     );
   };
   const hasConfirmations = confirmations.cards.length > 0;
@@ -1848,7 +1894,9 @@ export default function AgentChat({
               list tail so the card is never lost. */}
           {hitlAnchorId === null && renderHitlCards()}
 
-          {!isLoading && messages.length > 0 && (() => {
+          {/* No follow-up pills under a cut answer or during an update: the
+              notice below is the next step, and it sits right under the answer. */}
+          {!isLoading && !outage && !interruptedId && messages.length > 0 && (() => {
             const last = messages[messages.length - 1];
             if (last?.role === "assistant" && last.content.trim() && !last.streaming) {
               return (
@@ -1865,6 +1913,20 @@ export default function AgentChat({
           {/* Turn errors render once, inline in the thread, via the __ERROR__
               system message (see MessageBubble). The old bottom banner here was
               a duplicate and lingered after recovery, so it was removed. */}
+
+          {/* An app update (incident 2026-10-09, lib/chatRecovery.ts). ONE
+              status at a time, in the error card's own idiom: "Metorite is
+              updating" while a send is held, else "interrupted" with
+              Continue on the last answer that an update cut. */}
+          {outage ? (
+            <div className="chat-fade-in" data-chat-notice="updating">
+              <ErrorCardView error={{ code: "updating", ref: null, raw: "" }} onRetry={retryHeld} />
+            </div>
+          ) : interruptedId && !isRunActive ? (
+            <div className="chat-fade-in" data-chat-notice="interrupted">
+              <ErrorCardView error={{ code: "interrupted", ref: null, raw: "" }} onRetry={handleContinue} />
+            </div>
+          ) : null}
         </div>
         <div ref={bottomRef} />
       </div>

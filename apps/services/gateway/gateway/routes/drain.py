@@ -18,6 +18,14 @@ What it counts:
   only a Redis listener, but the run itself lives in this process. A run that
   waits on a person (a question or an approval card) is NOT counted. It can
   wait an hour, and a restart ends it either way.
+
+  Its ask is not lost (incident 2026-10-09). The card's question is already
+  in the run's Redis stream, which outlives the process. The next process
+  closes the run (``orchestrator.run_liveness``) and saves its reply with an
+  "interrupted" marker. An answer that arrives after the stop comes back from
+  ``POST /agent/respond-input`` as ``run_restarted``, with the question beside
+  it, and the chat sends it as a new message. That is smaller and safer than
+  holding every deploy for the full bound while a card is open.
 - the Projects agent runs (``routes.projects.agent_dispatch``). Each one writes
   an "interrupted by a restart" row when the stop cancels it.
 - the work a request does AFTER its response, such as the Starlette
