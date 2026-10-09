@@ -16,7 +16,10 @@ routes are in `gateway/routes/whatsapp_channel/`, and the section is
 **WAC-2 as built (2026-10-09).** `receive_webhook` sends the group of
 `WHATSAPP_ASSISTANT_PHONE_NUMBER_ID` to `whatsapp_channel/inbound.py`, and
 the group never reaches the WS-20 path. The bot replies with
-`WHATSAPP_ASSISTANT_ACCESS_TOKEN`, after the 200. `flags.py` reads both.
+`WHATSAPP_ASSISTANT_ACCESS_TOKEN`, after the 200. `flags.py` reads both. A
+redelivery record keeps the reply of each link message by `wamid`, so a
+repeat gets the same reply and counts no second failure. It is in the process
+and single-process, and the durable `wamid` record of WAC-3 replaces it.
 
 The migration `whatsapp_member_link_lookups` adds the two SECURITY DEFINER reads
 of §5.3: `whatsapp_member_links_for_phone` and

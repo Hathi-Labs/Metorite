@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -128,6 +128,54 @@ def record_failure(wa_id: str) -> None:
                     if not b or now - b[-1] > FAILED_WINDOW_S]:
             del _FAILED[key]
     _failures(wa_id, now).append(now)
+
+
+# ── The redelivery record ───────────────────────────────────────────────────
+#
+# Meta can deliver one message twice, and a 500 for another group of the same
+# batch makes Meta send the whole batch again. This record maps each link
+# message already handled, by (sender, wamid), to the reply it got. A repeat
+# gets the same reply again: no second lookup, and no second count against
+# the per-sender limit. A repeat of a SUCCESSFUL link message gets the success
+# reply even when the sender is limited now (§5.4: a redelivery never gets
+# the failure reply).
+#
+# ⚠️ In-process and SINGLE-PROCESS, like the limiter above, and bounded: at
+# most `_HANDLED_CAP` entries for `_HANDLED_TTL_S` each. WAC-3's durable
+# record of each message by wamid replaces it.
+
+_HANDLED_CAP = 2_000
+_HANDLED_TTL_S = 30 * 60
+
+_HANDLED: OrderedDict[tuple[str, str], tuple[float, Reply]] = OrderedDict()
+
+
+def handled_reply(wa_id: str, wamid: str | None) -> Reply | None:
+    """The reply that this message got before, or None when it is new."""
+    if not wamid:
+        return None
+    key = (wa_id, wamid)
+    hit = _HANDLED.get(key)
+    if hit is None:
+        return None
+    if time.monotonic() - hit[0] > _HANDLED_TTL_S:
+        del _HANDLED[key]
+        return None
+    return hit[1]
+
+
+def remember_reply(wa_id: str, wamid: str | None, reply: Reply) -> None:
+    """Keep the final reply of one link message, for a redelivery."""
+    if not wamid:
+        return
+    now = time.monotonic()
+    _HANDLED[(wa_id, wamid)] = (now, reply)
+    _HANDLED.move_to_end((wa_id, wamid))
+    while _HANDLED:
+        oldest_key, (at, _reply) = next(iter(_HANDLED.items()))
+        if len(_HANDLED) <= _HANDLED_CAP and now - at <= _HANDLED_TTL_S:
+            break
+        del _HANDLED[oldest_key]
 
 
 # ── The reply ───────────────────────────────────────────────────────────────
@@ -229,6 +277,11 @@ UPDATE whatsapp_member_links
    AND status = 'active'
 """
 
+#: The row as it stands now, after the locked re-check found it not pending.
+_ROW_STATE_SQL = """
+SELECT status, wa_id FROM whatsapp_member_links WHERE id = CAST(:id AS uuid)
+"""
+
 _ACTIVATE_SQL = """
 UPDATE whatsapp_member_links
    SET status = 'active', wa_id = :wa, linked_at = now(), is_current = :cur
@@ -264,6 +317,13 @@ async def _activate(db: Any, row: Any, wa_id: str) -> str:
         text(_LOCK_PENDING_SQL), {"id": row["id"]},
     )).mappings().all()
     if not held:
+        # A concurrent copy of the same message from the same phone may have
+        # linked the row first. That is a redelivery, not a failed code.
+        now_row = (await db.execute(
+            text(_ROW_STATE_SQL), {"id": row["id"]},
+        )).mappings().first()
+        if now_row is not None and now_row["status"] == "active"                 and now_row["wa_id"] == wa_id:
+            return "again"
         return "failed"
 
     member = str(row["member_email"]).strip().lower()
@@ -300,8 +360,23 @@ async def _success_text(db: Any, org: str, email: str) -> str:
     return _REPLY_LINKED.format(org=org_name[:100], member=member[:100])
 
 
-async def redeem(wa_id: str, rest: str) -> Reply:
-    """Redeem the link code that *wa_id* sent. Returns the one reply."""
+async def redeem(wa_id: str, rest: str, wamid: str | None = None) -> Reply:
+    """Redeem the link code that *wa_id* sent. Returns the one reply.
+
+    A message handled before gets its earlier reply again, BEFORE the limiter
+    and with no lookup (the redelivery record above).
+    """
+    prior = handled_reply(wa_id, wamid)
+    if prior is not None:
+        _log.info("whatsapp_channel.link.redelivered", phone_hint=wa_id[-4:],
+                  kind=prior.kind)
+        return prior
+    reply = await _redeem_once(wa_id, rest)
+    remember_reply(wa_id, wamid, reply)
+    return reply
+
+
+async def _redeem_once(wa_id: str, rest: str) -> Reply:
     hint = wa_id[-4:]
     if is_limited(wa_id):
         _log.info("whatsapp_channel.link.rate_limited", phone_hint=hint)
@@ -360,7 +435,7 @@ async def _handle_message(msg: Any) -> Reply | None:
 
     rest = link_code_attempt(msg.body_text) if mtype == "text" else None
     if rest is not None:
-        return await redeem(wa_id, rest)
+        return await redeem(wa_id, rest, str(msg.wa_message_id or "") or None)
 
     if not await _active_links_for_phone(wa_id):
         return Reply(wa_id, REPLY_UNKNOWN, "unknown")

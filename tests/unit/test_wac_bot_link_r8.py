@@ -123,6 +123,9 @@ def sent(granted, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
 
     monkeypatch.setattr(acb_audit, "record", lambda _event: None)
     monkeypatch.setattr(inbound, "_FAILED", {})
+    from collections import OrderedDict
+
+    monkeypatch.setattr(inbound, "_HANDLED", OrderedDict())
     out: list[tuple[str, str]] = []
 
     class _Provider:
@@ -464,6 +467,34 @@ async def test_a_stale_read_of_a_used_code_writes_nothing(granted, sent) -> None
     assert outcome == "failed"
     row = _row(p.admin_engine, link_id)
     assert (row.status, row.wa_id) == ("active", first)
+
+
+async def test_a_concurrent_copy_from_the_same_phone_replies_success(
+    granted, sent, monkeypatch,
+) -> None:
+    """Two copies of one link message, read at once: both see the row
+    pending. The first links it. The second holds the stale read, finds no
+    pending row under the lock, and must answer success, not failure."""
+    from gateway.routes.whatsapp_channel import inbound
+
+    p, email, phone, code = granted, _member(), _phone(), _code()
+    link_id = _pending(p.admin_engine, org=p.org_a, email=email, code=code)
+    stale = [{"id": link_id, "organization_id": p.org_a, "member_email": email,
+              "status": "pending", "code_expires_at": None}]
+    await _link_message(p, phone, code)
+    first = _row(p.admin_engine, link_id)
+    assert first.status == "active"
+
+    async def _stale_read(hashed: str, wa_id: str) -> list[dict[str, Any]]:
+        return stale
+
+    monkeypatch.setattr(inbound, "_code_rows", _stale_read)
+    await _link_message(p, phone, code)  # A new wamid: no record to replay.
+
+    assert _row(p.admin_engine, link_id) == first
+    assert len(sent) == 2 and sent[0] == sent[1]
+    assert sent[1][1].startswith("Linked to h3rls-a as ")
+    assert inbound._FAILED == {}, "the copy counted as a failed code"
 
 
 async def test_an_expired_code_links_nothing(granted, sent) -> None:

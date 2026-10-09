@@ -164,12 +164,18 @@ async def receive_webhook(request: Request):
     replies: list[Any] = []
     failed = 0
     for phone_number_id, sub_payload in groups.items():
-        try:
-            if bot_number_id is not None and phone_number_id == bot_number_id:
+        if bot_number_id is not None and phone_number_id == bot_number_id:
+            try:
                 replies.extend(
                     await _bot_group(sub_payload, signed=bool(app_secret))
                 )
-                continue
+            except Exception as exc:
+                failed += 1
+                # The class only: a constraint DETAIL can hold a phone number.
+                _log.warning("whatsapp.webhook.bot_group_failed",
+                             error_type=type(exc).__name__)
+            continue
+        try:
             await _ingest_number(phone_number_id, sub_payload)
         except Exception as exc:
             failed += 1

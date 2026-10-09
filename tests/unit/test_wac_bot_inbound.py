@@ -26,6 +26,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -78,6 +80,8 @@ class _World:
         self.code_rows: list[dict[str, Any]] = []
         self.phone_links: list[dict[str, Any]] = []
         self.pending_held = True
+        #: What the row state read answers after a failed locked re-check.
+        self.row_state: dict[str, Any] | None = None
         self.code_reads: list[tuple[str, str]] = []
         self.phone_reads: list[str] = []
         self.sessions = 0
@@ -110,6 +114,8 @@ class _World:
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None):
         sql = " ".join(str(stmt).split())
         self.calls.append((sql, dict(params or {})))
+        if sql.startswith("SELECT status, wa_id FROM whatsapp_member_links"):
+            return _Result([self.row_state] if self.row_state else [])
         if "FOR UPDATE" in sql:
             return _Result([{"id": ROW_ID}] if self.pending_held else [])
         if "whatsapp_member_links_for_phone" in sql:
@@ -151,6 +157,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(inbound, "_active_links_for_phone", w.links_for)
     monkeypatch.setattr(inbound, "tenant_session", w.session())
     monkeypatch.setattr(inbound, "_FAILED", {})
+    monkeypatch.setattr(inbound, "_HANDLED", OrderedDict())
 
     from whatsapp_ingestion.providers import factory
 
@@ -168,8 +175,9 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
 
 
 def _message(body: str, *, pnid: str = BOT, sender: str = PHONE,
-             mtype: str = "text") -> dict[str, Any]:
-    msg: dict[str, Any] = {"from": sender, "id": f"wamid.{abs(hash(body))}",
+             mtype: str = "text", wamid: str | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"from": sender,
+                           "id": wamid or f"wamid.{uuid.uuid4().hex}",
                            "timestamp": "1790000000", "type": mtype}
     if mtype == "text":
         msg["text"] = {"body": body}
@@ -192,13 +200,20 @@ def _status(pnid: str = BOT) -> dict[str, Any]:
     }}
 
 
-def _post(*changes: dict[str, Any], sign: bool = True) -> Any:
-    raw = json.dumps({"object": "whatsapp_business_account", "entry": [
+def _body(*changes: dict[str, Any]) -> bytes:
+    return json.dumps({"object": "whatsapp_business_account", "entry": [
         {"id": "WABA", "changes": list(changes)}]}).encode("utf-8")
+
+
+def _signature(raw: bytes) -> str:
+    return "sha256=" + hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
+
+
+def _post(*changes: dict[str, Any], sign: bool = True) -> Any:
+    raw = _body(*changes)
     headers = {"Content-Type": "application/json"}
     if sign:
-        headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(
-            SECRET.encode(), raw, hashlib.sha256).hexdigest()
+        headers["X-Hub-Signature-256"] = _signature(raw)
     app = FastAPI()
     app.post("/whatsapp/webhook")(webhook.receive_webhook)
     return TestClient(app).post("/whatsapp/webhook", content=raw, headers=headers)
@@ -352,6 +367,70 @@ def test_an_org_that_is_not_on_the_list_links_nothing(world: _World,
     assert world.sent == [(PHONE, FAILED_TEXT)]
 
 
+def test_a_concurrent_copy_from_the_same_phone_gets_the_success_reply(
+    world: _World,
+) -> None:
+    """Both copies read the row pending. The first links it. The second finds
+    no pending row under the lock, and the row is active for this phone."""
+    world.code_rows = [_pending()]
+    world.pending_held = False
+    world.row_state = {"status": "active", "wa_id": PHONE}
+    _post(_message(f"Link me: {CODE}"))
+    assert world.writes() == []
+    assert world.sent[0][1].startswith("Linked to Fracktal Works as Alice Rao.")
+    assert inbound._FAILED == {}, "a redelivery counted as a failed code"
+
+
+def test_a_used_code_from_another_phone_is_still_a_failure(world: _World) -> None:
+    world.code_rows = [_pending()]
+    world.pending_held = False
+    world.row_state = {"status": "active", "wa_id": "919990000009"}
+    _post(_message(f"Link me: {CODE}"))
+    assert world.sent == [(PHONE, FAILED_TEXT)]
+
+
+# ── wac-redelivery-record ───────────────────────────────────────────────────
+
+def test_a_redelivered_failed_code_counts_once(world: _World) -> None:
+    """A 500 for another group makes Meta send the whole batch again."""
+    for _ in range(6):
+        _post(_message(f"Link me: {CODE}", wamid="wamid.same"))
+    assert len(world.code_reads) == 1
+    assert world.sent == [(PHONE, FAILED_TEXT)] * 6
+    assert not inbound.is_limited(PHONE), "one message counted six times"
+
+
+def test_a_limited_sender_still_gets_the_success_reply_on_a_redelivery(
+    world: _World,
+) -> None:
+    world.code_rows = [_pending()]
+    _post(_message(f"Link me: {CODE}", wamid="wamid.good"))
+    assert world.sent[-1][1].startswith("Linked to ")
+    world.code_rows = []
+    for _ in range(5):
+        _post(_message(f"Link me: {CODE}"))
+    assert inbound.is_limited(PHONE)
+    reads = len(world.code_reads)
+
+    _post(_message(f"Link me: {CODE}", wamid="wamid.good"))
+    assert world.sent[-1][1].startswith("Linked to Fracktal Works as Alice Rao.")
+
+    _post(_message(f"Link me: {CODE}"))  # A NEW message: limited.
+    assert world.sent[-1] == (PHONE, FAILED_TEXT)
+    assert len(world.code_reads) == reads, "a redelivery or a limited code read"
+
+
+def test_the_redelivery_record_is_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(inbound, "_HANDLED", OrderedDict())
+    monkeypatch.setattr(inbound, "_HANDLED_CAP", 3)
+    reply = inbound.Reply(PHONE, FAILED_TEXT, "failed")
+    for i in range(5):
+        inbound.remember_reply(PHONE, f"w{i}", reply)
+    assert list(inbound._HANDLED) == [(PHONE, "w2"), (PHONE, "w3"), (PHONE, "w4")]
+    assert inbound.handled_reply(PHONE, "w0") is None
+    assert inbound.handled_reply("919990000009", "w4") is None
+
+
 # ── wac-sender-limit ────────────────────────────────────────────────────────
 
 def test_the_sixth_failed_code_in_15_minutes_gets_no_lookup(world: _World) -> None:
@@ -475,7 +554,57 @@ def test_a_failed_ws20_group_answers_500_and_sends_no_bot_reply(
     assert world.sent == []
 
 
+def test_a_failed_bot_group_logs_the_error_class_and_no_message(
+    world: _World, monkeypatch,
+) -> None:
+    from structlog.testing import capture_logs
+
+    async def _boom(hashed: str, wa_id: str) -> list[dict[str, Any]]:
+        raise RuntimeError(f"DETAIL: Key (wa_id)=({PHONE}) already exists.")
+
+    monkeypatch.setattr(inbound, "_code_rows", _boom)
+    with capture_logs() as logs:
+        res = _post(_message(f"Link me: {CODE}"))
+    assert res.status_code == 500
+    (line,) = [e for e in logs if e["event"] == "whatsapp.webhook.bot_group_failed"]
+    assert line["error_type"] == "RuntimeError" and "error" not in line
+    assert PHONE not in repr(logs)
+    assert world.sent == []
+
+
 # ── The send ────────────────────────────────────────────────────────────────
+
+async def test_the_replies_go_out_only_in_the_background_task_after_the_200(
+    world: _World,
+) -> None:
+    from starlette.requests import Request
+
+    raw = _body(_message("What is due today?"))
+    delivered = False
+
+    async def _receive() -> dict[str, Any]:
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    request = Request({
+        "type": "http", "method": "POST", "path": "/whatsapp/webhook",
+        "query_string": b"", "headers": [
+            (b"content-type", b"application/json"),
+            (b"x-hub-signature-256", _signature(raw).encode()),
+        ]}, _receive)
+
+    response = await webhook.receive_webhook(request)
+
+    assert response.status_code == 200
+    assert world.sent == [], "a reply went out before the 200"
+    assert response.background is not None
+    await response.background()
+    assert world.sent == [(PHONE, UNKNOWN_TEXT)]
+
+
 
 async def test_a_failed_send_logs_no_exception_text(monkeypatch) -> None:
     import httpx
