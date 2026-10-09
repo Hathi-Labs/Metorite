@@ -554,9 +554,10 @@ export async function readProviderHealth(
 
 export async function readProviderSpend(
   deps: Deps,
+  rangeQ?: string,
 ): Promise<Sourced<ProviderSpend[]>> {
   const r = await attempt(
-    () => providerSpend(deps),
+    () => providerSpend(deps, rangeQ),
     (p) =>
       ((p as { providers?: WireSpend[] }).providers ?? []).map((s) => ({
         provider: s.provider,

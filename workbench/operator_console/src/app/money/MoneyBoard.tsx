@@ -37,6 +37,7 @@ const SORTS: { key: FleetSort; label: string }[] = [
 ];
 
 export default function MoneyBoard({
+  periodLabel,
   fleet,
   purgedRows,
   usageRows,
@@ -46,6 +47,8 @@ export default function MoneyBoard({
   silentSlugs,
   unbilled,
 }: {
+  /** The period's words: "last 30 days", "1 Aug – 31 Aug 2026". */
+  periodLabel: string;
   /** The live customers. Every total comes from these rows only. */
   fleet: Fleet;
   /** Deleted customers, shown on request and never in a total. */
@@ -130,7 +133,7 @@ export default function MoneyBoard({
 
       <section className="panel">
         <div className="panel-head">
-          <h2>The whole business — last {fleet.windowDays} days</h2>
+          <h2>The whole business — {periodLabel}</h2>
           <p>
             What every customer paid us, what their AI cost us, and what is
             left. All in rupees. Select ⓘ beside a figure to see how it is
@@ -209,7 +212,7 @@ export default function MoneyBoard({
         <div className="panel-head">
           <h2>By customer</h2>
           <p>
-            Each customer&apos;s money for the same {fleet.windowDays} days. Open a
+            Each customer&apos;s money for the same period ({periodLabel}). Open a
             customer for the split by app and by person.
           </p>
         </div>
