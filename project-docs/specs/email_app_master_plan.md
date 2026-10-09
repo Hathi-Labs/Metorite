@@ -6026,17 +6026,19 @@ never a member choice, and they do not change.
 | The old rule call outside `on` | `engine` | `tier-fast` |
 | A template fill, the cold check outside `on`, the drafter's consult plan, the digest brief | `actions`, `senders`, `drafting`, `digest` | `tier-fast`, at the call site |
 | The pattern check, the voice profile scan | `learning`, `voice_profile` | `tier-balanced`, at the call site |
-| Rules from text, the writing style, the reply memories, the voice profile, the status escalation | `rules`, `assistant`, `drafting`, `voice_profile`, `replyzero` | `tier-powerful`, at the call site |
-| The thread status outside `on` | `replyzero` | `tier-balanced` |
+| Rules from text, the writing style, the reply memories, the voice profile | `rules`, `assistant`, `drafting`, `voice_profile` | `tier-powerful`, at the call site |
+| The thread status outside `on` | `replyzero` | `tier-balanced`, and its retry on `tier-fast` (#753) |
 
 **Backward compatibility (R6).** The deploy keeps old code working with the
 new schema.
 
 - The three columns stay. Nothing reads them, and nothing writes them.
-- `AssistantSettingsModel` still accepts the three request fields, so an old
-  client gets no 422. The PUT ignores each value.
+- `AssistantSettingsModel` still declares the three request fields for one
+  release. The PUT ignores each value.
 - The PUT logs `email.assistant_settings.model_field_ignored` once for each
-  field in each process.
+  field in each process. That line shows a client that still sends a field.
+- The model ignores an unknown field (pydantic `extra="ignore"`). So the later
+  removal causes no 422. It only removes the log line.
 - The GET and PUT answers leave the three fields out, as D-EM-7 did for
   `rule_model`.
 - A later PR removes the request fields, and then the columns. HANDOFF

@@ -166,10 +166,12 @@ EMAIL_TASK_TIERS: Mapping[str, str] = MappingProxyType({
     "chat": "tier-powerful",
 })
 
-# The request fields that once chose a tier (D-EM-61). A PUT still accepts
-# them for one release, so an old client does not get a 422. The route ignores
+# The request fields that once chose a tier (D-EM-61). The model declares them
+# for one release only so the PUT can SEE a client that still sends one. The
+# model ignores an unknown field (pydantic's default `extra="ignore"`), so
+# removing them causes no 422. It only removes the signal. The route ignores
 # each value and logs one line for each field, once in each process. The
-# contract step removes them (HANDOFF).
+# contract step removes them (HANDOFF H-282).
 RETIRED_MODEL_FIELDS = ("draft_model", "compose_model", "chat_model")
 _retired_fields_logged: set[str] = set()
 
@@ -196,8 +198,8 @@ class AssistantSettingsModel(BaseModel):
     cold_email_blocker: str = "OFF"  # OFF | LABEL | ARCHIVE
     # No member chooses a model or a tier (D-EM-7 for the rules, D-EM-61 for
     # the rest). EMAIL_TASK_TIERS holds the tier of each task. These three
-    # fields stay for one release so an old client does not get a 422. The
-    # PUT ignores them and logs once (_log_retired_model_fields). The GET and
+    # fields stay for one release so the PUT can log a client that still
+    # sends one. The PUT ignores them (_log_retired_model_fields). The GET and
     # PUT answers leave them out. The columns stay (R6), and nothing reads or
     # writes them, as with `rule_model`.
     draft_model: str | None = None

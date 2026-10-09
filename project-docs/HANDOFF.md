@@ -101,7 +101,9 @@ line — never reclaim a number by deleting the other entry.
   A hit in either means this is open.
 - **Why.** D-EM-61 (2026-10-09) took the email tier choice from the member.
   EM-T15 kept the three request fields and the columns for one release (R6).
-  So an old client gets no 422. The PUT ignores each value and logs once.
+  The PUT ignores each value and logs once, so the log shows a client that
+  still sends one. Pydantic ignores an unknown field, so the removal causes
+  no 422.
 - **Do.**
   1. Wait one release after EM-T15 deploys.
   2. On the box, count `email.assistant_settings.model_field_ignored` in the
