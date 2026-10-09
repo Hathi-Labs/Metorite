@@ -391,14 +391,14 @@ export const SECTIONS: Section[] = [
     key: "listen",
     title: "Speech to text",
     note:
-      "The Router has no transcription endpoint yet (H-46), so a key installed " +
+      "The Router has no transcription endpoint yet, so a key installed " +
       "here is stored and not yet called. Install it when the endpoint lands.",
   },
   {
     key: "voice",
     title: "Text to speech",
     note:
-      "The Router has no speech endpoint yet (H-46). Same as above — the key " +
+      "The Router has no speech endpoint yet. Same as above — the key " +
       "is safe here, and nothing calls it.",
   },
   {

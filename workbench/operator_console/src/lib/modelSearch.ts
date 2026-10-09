@@ -41,7 +41,7 @@ export const STATUS_LABEL: Record<ModelStatus, string> = {
   costed: "costed",
   undeclared: "not connected",
   nokey: "no key installed",
-  costblind: "costs blind",
+  costblind: "no vendor price",
 };
 
 export type Filters = {

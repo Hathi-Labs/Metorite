@@ -184,6 +184,11 @@ clone cache.
    It builds on `thread_slug`, the one slug of `outputs/<thread slug>/` too.
    The gateway upload route and this tool both call it. Do not add a second
    reader of an attachment. Fence: tests/unit/test_read_attachment.py.
+   Since 2026-10-09 `read_attachment` is a core floor tool and in
+   `_FLOOR_KEEP`, because every chat can attach a file. No scope, toggle or
+   `floor_opt_out` takes it away. `addendum.ATTACHMENT_FAILURE_RULE` tells
+   the agent what to do when the tool cannot read a file. Fence:
+   tests/unit/test_chat_upload_every_agent.py.
    `attachment_tools.parse_bounded` is the ONE bounded parse of the process
    (WS-17 EM-T11). `read_attachment` and the gateway's email text route
    (`GET /email/attachments/{id}/text`) both call it. The agent runtime runs

@@ -574,9 +574,6 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
         "cc:control, cc:ctrl-ack — 31 key call sites, the largest conversion",
     "apps/services/gateway/gateway/room_stream.py":
         "FOLLOW-UP: cc:room:{tid} stream + cc:presence:{tid} hash",
-    "apps/services/gateway/gateway/routes/chat.py":
-        "FOLLOW-UP: inline client at :700 and the cc:active:* SCAN at :707 — the "
-        "scan is a cross-tenant enumeration the moment a second tenant exists",
     "apps/services/ingestion/ingestion/queue.py":
         "FOLLOW-UP: ingestion:{clickup,zoho,gmail,dlq} streams (sync client)",
     "apps/services/ingestion/ingestion/consumer.py":
@@ -668,9 +665,10 @@ def test_allowlist_entries_say_why() -> None:
 # The import ratchet above catches a module that opens its own connection. It
 # does NOT catch a module that builds an untenanted key and hands it to someone
 # else's client — which is exactly what ``steer.py`` does today (``cc:steer``
-# keys, ``stream_relay``'s client) and what ``chat.py`` does with its
-# ``cc:active:*`` SCAN. Those are the same leak with an extra hop, so they get
-# their own ratchet and their own follow-up entries.
+# keys, ``stream_relay``'s client), and what ``chat.py`` did with its
+# ``cc:active:*`` SCAN until that leak was closed (``liveruns`` index,
+# test_active_sessions_tenant.py). Those are the same leak with an extra hop,
+# so they get their own ratchet and their own follow-up entries.
 
 _ALLOWED_CC_LITERALS: dict[str, str] = {
     "packages/acb_common/acb_common/activity.py":
@@ -682,9 +680,6 @@ _ALLOWED_CC_LITERALS: dict[str, str] = {
         "import ratchet cannot see it",
     "apps/services/gateway/gateway/room_stream.py":
         "FOLLOW-UP: ROOM_STREAM_PREFIX / PRESENCE_PREFIX (:39-40)",
-    "apps/services/gateway/gateway/routes/chat.py":
-        "FOLLOW-UP: the cc:active:* SCAN match and removeprefix (:707-711) — a "
-        "cross-tenant session enumeration once a second tenant exists",
 }
 
 
