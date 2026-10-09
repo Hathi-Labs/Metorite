@@ -27,7 +27,7 @@ import Icon from "@/components/Icon";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import { useMode } from "@/lib/theme/surfaces";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { foldersInScope, isRealFolder, useEmailStore } from "../lib/emailStore";
+import { foldersInScope, isRealFolder, useEmailStore, withPatch } from "../lib/emailStore";
 import {
   actionRowTier, lightToggle, lightToggleInRow, menuStep, messageMenuGroups,
   type MenuItemId,
@@ -53,6 +53,9 @@ export interface MessageActionsProps {
   onToggleLight: () => void;
 }
 
+/** Each stop of the menu's keyboard model: an item, a label toggle, the label box. */
+const MENU_STOPS = '[role="menuitem"], [role="menuitemcheckbox"], [data-menu-stop]';
+
 const ITEM =
   "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/85 " +
   "outline-none hover:bg-secondary hover:text-foreground focus-visible:bg-secondary " +
@@ -62,10 +65,12 @@ export function MessageActions({
   message, onReply, onUpdate, onDelete, onTasks, onBlock, onDownload, onActivity,
   lightVersion, onToggleLight,
 }: MessageActionsProps) {
-  const { folders, viewAll, emails } = useEmailStore();
+  const { folders, viewAll, emails, messagePatches } = useEmailStore();
   const dark = useMode() === "dark";
-  // The list copy is the live one: a label or a flag set here shows at once.
-  const live = emails.find((e) => e.id === message.id) ?? message;
+  // The live message: the list row when there is one, with the last change
+  // of this pane on top. An older card of a thread is often not a row, and
+  // its hydrated copy does not see a change (review fix round 1, P2-a).
+  const live = withPatch(emails.find((e) => e.id === message.id) ?? message, messagePatches);
 
   // ── The tier: measured on the card header, the parent of the row ──
   const rowRef = useRef<HTMLDivElement>(null);
@@ -119,16 +124,25 @@ export function MessageActions({
       close(true);
       return;
     }
-    if (event.key === "Tab") {
-      close(false);
-      return;
-    }
-    // Only between items: an arrow in the label box moves its caret.
-    if (target.getAttribute("role") !== "menuitem") return;
     const list = Array.from(
-      (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="menuitem"]'),
+      (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>(MENU_STOPS),
     );
     const from = list.indexOf(target);
+    if (event.key === "Tab") {
+      // The label view holds a text box, so Tab moves between its stops.
+      // Everywhere else Tab leaves the menu.
+      if (view !== "label" || from < 0) {
+        close(false);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      list[menuStep(list.length, from, event.shiftKey ? "ArrowUp" : "ArrowDown")]?.focus();
+      return;
+    }
+    if (from < 0) return;
+    // In the text box, Home and End move the caret. Up and Down leave it.
+    if (target.tagName === "INPUT" && (event.key === "Home" || event.key === "End")) return;
     const to = menuStep(list.length, from, event.key);
     if (to !== from) {
       event.preventDefault();
@@ -291,7 +305,7 @@ export function MessageActions({
                   <span className="min-w-0 flex-1 truncate pl-5">{f.label}</span>
                 </button>
               ))}
-          {view === "label" && <LabelMenu email={live} embedded />}
+          {view === "label" && <LabelMenu email={live} embedded menu />}
         </div>
       </AnchoredPanel>
     </div>

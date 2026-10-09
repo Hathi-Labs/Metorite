@@ -10,14 +10,27 @@
 //     the same row, and each handler gets THAT message.
 //   * `email-capture-thread-message`: Add to My Tasks opens for a message of a
 //     thread that is not a row of the list, in that message's mailbox.
-//   * `email-loading-per-message`: "Loading message…" belongs to one mail,
-//     and only while that mail has no body.
+//   * `email-loading-per-message`: "Loading message…" belongs to one fetch of
+//     one mail, and only while that mail has no body.
+//   * `email-patch-per-message`: a read, flag, star or label change of a
+//     message that is not a row of the list reaches its card, and a thread
+//     move does not change the count of the list (review fix round 1).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const api = vi.hoisted(() => ({
+  updateEmail: vi.fn(),
+  updateEmailLabels: vi.fn(),
+}));
+vi.mock("./api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./api")>();
+  return { ...real, ...api };
+});
 
 import { isKnownIcon } from "@/lib/icons";
-import { useEmailStore } from "./emailStore";
+import { useEmailStore, withPatch } from "./emailStore";
+import type { Email } from "./types";
 import {
   ICONS_MIN_PX, LABELS_MIN_PX, actionRowTier, lightToggleInRow, menuStep, messageMenuGroups,
   type MenuState,
@@ -94,10 +107,16 @@ describe("email-row-keys", () => {
     expect(menuStep(0, 0, "ArrowDown")).toBe(-1);
   });
 
-  it("closes on Escape with focus back on the button, and closes on Tab", () => {
+  it("closes on Escape with focus back on the button, and Tab leaves all but the label view", () => {
     const src = codeOnly(read("components/MessageActions.tsx"));
     expect(src).toMatch(/event\.key === "Escape"\) \{[\s\S]{0,120}close\(true\);/);
-    expect(src).toMatch(/event\.key === "Tab"\) \{\s*close\(false\);/);
+    expect(src).toMatch(/event\.key === "Tab"\) \{\s*if \(view !== "label" \|\| from < 0\) \{\s*close\(false\);/);
+    // The label view's toggles and its text box are stops of the same keys.
+    expect(src).toContain(`const MENU_STOPS = '[role="menuitem"], [role="menuitemcheckbox"], [data-menu-stop]';`);
+    const labels = codeOnly(read("components/LabelMenu.tsx"));
+    expect(labels).toContain('role={menu ? "menuitemcheckbox" : undefined}');
+    expect(labels).toContain("aria-checked={menu ? on : undefined}");
+    expect(labels).toContain('data-menu-stop={menu ? "" : undefined}');
     expect(src).toContain('panelProps={{ role: "menu", "aria-label": "More actions", onKeyDown: onMenuKey }}');
     expect(src).toContain('aria-haspopup="menu"');
     expect(src).toContain("aria-expanded={open}");
@@ -175,10 +194,61 @@ describe("email-loading-per-message", () => {
     // The bug: a boolean that the last mail set to true stayed true when a
     // mail with a body opened before that fetch ended.
     expect(detail).not.toMatch(/setLoadingDetail\(/);
-    expect(detail).toContain("setLoadingDetailId(loadingId);");
-    expect(detail).toContain("setLoadingDetailId((cur) => (cur === loadingId ? null : cur));");
+    // A number for each fetch: after A, B, A the end of the first fetch of A
+    // cannot clear the second one.
+    expect(detail).toContain("const loading = { id: email.id, seq: detailSeqRef.current };");
+    expect(detail).toContain("setLoadingDetailFor((cur) => (cur?.seq === loading.seq ? null : cur));");
     expect(detail).toContain(
-      "const loadingDetail = loadingDetailId === email.id && !view.bodyHtml && !view.bodyText;",
+      "const loadingDetail = loadingDetailFor?.id === email.id && !view.bodyHtml && !view.bodyText;",
+    );
+  });
+});
+
+describe("email-patch-per-message", () => {
+  const older = {
+    id: "older-1", accountId: "box-a", isRead: true, isFlagged: false, isStarred: false,
+    folder: "inbox", categories: ["Clients"],
+  } as unknown as Email;
+
+  beforeEach(() => {
+    api.updateEmail.mockReset().mockImplementation(async (id: string) => ({ id }));
+    api.updateEmailLabels.mockReset().mockImplementation(async (id: string) => ({ id }));
+    useEmailStore.setState({ emails: [], emailsTotal: 7, messagePatches: {}, selectedFolder: "inbox" });
+  });
+
+  it("toggles read both ways on a message that is not a row of the list", async () => {
+    const s = () => useEmailStore.getState();
+    await s().updateEmail(older.id, { isRead: false });
+    expect(withPatch(older, s().messagePatches).isRead).toBe(false);
+    await s().updateEmail(older.id, { isRead: true });
+    expect(withPatch(older, s().messagePatches).isRead).toBe(true);
+    expect(api.updateEmail.mock.calls).toEqual([[older.id, { isRead: false }], [older.id, { isRead: true }]]);
+  });
+
+  it("does not change the count of the list for a move of a thread message", async () => {
+    await useEmailStore.getState().updateEmail(older.id, { folder: "archive" });
+    expect(useEmailStore.getState().emailsTotal).toBe(7);
+  });
+
+  it("adds a label to the labels the caller holds, and shows it at once", async () => {
+    await useEmailStore.getState().applyLabel(older.id, "Urgent", true, older.categories);
+    expect(withPatch(older, useEmailStore.getState().messagePatches).categories).toEqual(["Clients", "Urgent"]);
+    await useEmailStore.getState().applyLabel(older.id, "Clients", false, older.categories);
+    expect(withPatch(older, useEmailStore.getState().messagePatches).categories).toEqual(["Urgent"]);
+  });
+
+  it("puts the patch back when the write fails", async () => {
+    api.updateEmail.mockRejectedValueOnce(new Error("Gateway error 502"));
+    await useEmailStore.getState().updateEmail(older.id, { isFlagged: true });
+    expect(useEmailStore.getState().messagePatches[older.id]).toBeUndefined();
+  });
+
+  it("each card and each menu reads the patch", () => {
+    expect(codeOnly(read("components/ConversationView.tsx"))).toContain(
+      "const view = withPatch(hydrated[m.id] ?? m, messagePatches);",
+    );
+    expect(codeOnly(read("components/MessageActions.tsx"))).toContain(
+      "const live = withPatch(emails.find((e) => e.id === message.id) ?? message, messagePatches);",
     );
   });
 });

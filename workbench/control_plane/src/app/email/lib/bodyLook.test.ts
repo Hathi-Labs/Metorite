@@ -4,8 +4,11 @@
 //   * `email-dark-classifier`: an email with its own dark CSS gets `native`,
 //     simple HTML gets `tokens`, and a newsletter with backgrounds gets
 //     `invert`. Light mode and the light version get `original`.
-//   * `email-dark-reinvert`: the invert look re-inverts each picture, and a
-//     picture inside a re-inverted box is not inverted twice.
+//   * `email-dark-reinvert`: the invert look re-inverts each img, picture,
+//     video, canvas and svg image, and never a box with a background picture
+//     (coordinator decision, 2026-10-10: readability wins).
+//   * `email-dark-linear`: a crafted mail of 2 MB classifies in under 100 ms,
+//     and so does each pattern just under the size limit.
 //   * `email-dark-base`: the inverted base lands on the card token, not black.
 //   * `email-dark-print`: every rule of a dark look is screen-only, so a print
 //     draws the original sheet.
@@ -18,7 +21,7 @@ import { describe, expect, it } from "vitest";
 import { parseColor, type Rgb } from "@/lib/theme/contrast";
 import { THEME } from "@/lib/theme/themes";
 import {
-  BLOCKED_REMOTE_CSS, INVERT_FILTER, REINVERT_CSS, bodyLookCss, bodyPalette, chooseBodyLook, classifyEmailHtml,
+  BLOCKED_REMOTE_CSS, CLASSIFY_LIMIT, INVERT_FILTER, OVERLAY_SPREAD_PX, REINVERT_CSS, bodyLookCss, bodyPalette, chooseBodyLook, classifyEmailHtml,
   cssColour, forceDarkMedia, frameColorScheme, invertBase, invertColour,
 } from "./bodyLook";
 import { MAX_IDS, parseIds, toggleId } from "./lightVersion";
@@ -51,13 +54,14 @@ const NEWSLETTER = `
 describe("email-dark-classifier", () => {
   it("picks the email's own dark design first", () => {
     expect(classifyEmailHtml(DARK_AWARE)).toBe("native");
-    // A meta tag, either attribute order, and the CSS property count too,
-    // on a mail with no colours of its own.
-    expect(classifyEmailHtml('<meta name="color-scheme" content="light dark"><p>x</p>')).toBe("native");
-    expect(classifyEmailHtml('<meta content="light dark" name="supported-color-schemes"><p>x</p>')).toBe("native");
+    // The CSS property counts too, on a mail with no colours of its own.
     expect(classifyEmailHtml("<style>:root { color-scheme: light dark; }</style><p>x</p>")).toBe("native");
+    expect(classifyEmailHtml("<style>:root { supported-color-schemes: light dark; }</style><p>x</p>")).toBe("native");
     // A scheme with no media query does not make dark text on a white box safe.
-    expect(classifyEmailHtml('<meta name="color-scheme" content="light dark"><p style="color:#000;background:#fff">x</p>')).toBe("invert");
+    expect(classifyEmailHtml('<style>:root{color-scheme:light dark}</style><p style="color:#000;background:#fff">x</p>')).toBe("invert");
+    // A meta tag does not count: the sanitizer removes `meta`, and the
+    // classifier reads the sanitized markup.
+    expect(classifyEmailHtml('<meta name="color-scheme" content="light dark"><p>x</p>')).toBe("tokens");
   });
 
   it("gives simple HTML the app's tokens", () => {
@@ -115,22 +119,34 @@ describe("email-dark-native", () => {
     const src = readFileSync(join(__dirname, "../components/MessageContent.tsx"), "utf-8").replace(/\r\n/g, "\n");
     expect(src).toContain('purified && look === "native" ? { ...purified, clean: forceDarkMedia(purified.clean) } : purified');
     // The look reads what the frame draws: the sanitized markup.
-    expect(src).toContain('const look = chooseBodyLook({ dark, lightVersion, html: purified?.clean ?? "" });');
+    // Memoized on the markup, so a re-render does not scan the mail again.
+    expect(src).toMatch(
+      /const look = useMemo\(\s*\(\) => chooseBodyLook\(\{ dark, lightVersion, html: purified\?\.clean \?\? "" \}\),\s*\[dark, lightVersion, purified\],\s*\);/,
+    );
   });
 });
 
 describe("email-dark-reinvert", () => {
   const css = bodyLookCss("invert", bodyPalette());
 
-  it("inverts the document and re-inverts each picture", () => {
+  it("inverts the document and re-inverts each picture element", () => {
     expect(css).toContain(`html { filter: ${INVERT_FILTER};`);
     for (const line of REINVERT_CSS.split("\n")) expect(css).toContain(line);
     const rule = REINVERT_CSS.split("\n")[0];
-    for (const sel of ["img", "picture", "video", "svg image", "[background]", "[background-image]",
-      '[style*="background-image" i]', '[style*="url(" i]']) {
-      expect(rule, sel).toContain(sel);
+    expect(rule).toBe(`img, picture, video, canvas, svg image { filter: ${INVERT_FILTER}; }`);
+  });
+
+  it("never re-inverts a box with a background picture, so its text stays readable", () => {
+    // `<div style="background-image:url(x)"><p>Your invoice is attached</p></div>`
+    // and `<table background="x">` must stay inverted with the page. Every
+    // selector of the rule names an element type and nothing else, so no
+    // div, table or td can match it.
+    const selectors = REINVERT_CSS.split("\n")[0].split("{")[0].split(",").map((x) => x.trim());
+    for (const sel of selectors) {
+      expect(sel, sel).toMatch(/^[a-z]+(?: [a-z]+)?$/);
+      for (const box of ["div", "table", "td", "p"]) expect(sel.split(" ")).not.toContain(box);
     }
-    expect(rule).toContain(`{ filter: ${INVERT_FILTER}; }`);
+    expect(css).not.toMatch(/\[background|\[style\*=|url\(/);
   });
 
   it("leaves a blocked remote picture alone, so its alt text stays light", () => {
@@ -139,8 +155,8 @@ describe("email-dark-reinvert", () => {
     expect(BLOCKED_REMOTE_CSS).toBe('img[src^="http" i] { filter: none; }');
   });
 
-  it("does not invert a picture twice inside a re-inverted box", () => {
-    expect(REINVERT_CSS.split("\n")[1]).toMatch(/^:is\(.*\bpicture\) :is\(img, picture, video, canvas, svg image\) \{ filter: none; \}$/);
+  it("does not invert a picture twice inside a <picture>", () => {
+    expect(REINVERT_CSS.split("\n")[1]).toBe("picture :is(img, picture, video, canvas, svg image) { filter: none; }");
   });
 
   const drift = (c: { r: number; g: number; b: number }) => {
@@ -175,7 +191,8 @@ describe("email-dark-base", () => {
     // A layer multiplies the page by the base, so white (and each white box
     // of the email) becomes the base before the filter, and then the card.
     expect(bodyLookCss("invert", bodyPalette())).toContain(
-      `html::after { content: ""; position: absolute; inset: 0; background: ${cssColour(base)}; mix-blend-mode: multiply;`,
+      `html::after { content: ""; position: absolute; inset: 0; background: ${cssColour(base)}; ` +
+        `box-shadow: 0 0 0 ${OVERLAY_SPREAD_PX}px ${cssColour(base)}; mix-blend-mode: multiply;`,
     );
     const white = { r: 1, g: 1, b: 1 };
     const multiplied = { r: white.r * base.r, g: white.g * base.g, b: white.b * base.b };
@@ -220,7 +237,9 @@ describe("email-dark-no-content", () => {
     // The CSS function never sees the HTML: its signature has no slot for it.
     expect(bodyLookCss.length).toBe(2);
     const src = readFileSync(join(__dirname, "../components/MessageContent.tsx"), "utf-8").replace(/\r\n/g, "\n");
-    expect(src).toContain("const lookCss = bodyLookCss(look, bodyPalette(readToken), { remoteBlocked: !showImages });");
+    expect(src).toContain("const lookCss = bodyLookCss(look, palette, { remoteBlocked: !showImages });");
+    // The palette is a dependency of the frame's document.
+    expect(src).toContain("}, [sanitized, showImages, quoted, look, palette]);");
     expect(src).toContain("</style>${lookStyle}</head><body>${sanitized.clean}</body></html>");
     // The sandbox and the sanitizer stay as they were.
     expect(src).toContain('sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"');
@@ -254,6 +273,41 @@ describe("email-light-version", () => {
       expect(tryAt, call).toBeGreaterThan(-1);
       expect(src.slice(tryAt, at).includes("}"), call).toBe(false);
       expect(src.indexOf("} catch", at) - at, call).toBeLessThan(160);
+    }
+  });
+});
+
+describe("email-dark-linear", () => {
+  const time = (fn: () => unknown) => {
+    const start = performance.now();
+    fn();
+    return performance.now() - start;
+  };
+  const fill = (unit: string, bytes: number) => unit.repeat(Math.ceil(bytes / unit.length)).slice(0, bytes);
+  const MB2 = 2 * 1024 * 1024;
+  const UNDER = CLASSIFY_LIMIT - 1024;
+
+  it("classifies 2 MB of crafted CSS in under 100 ms", () => {
+    for (const unit of ["color-scheme: x ", "@media x "]) {
+      const html = fill(unit, MB2);
+      let rule = "";
+      expect(time(() => (rule = classifyEmailHtml(html))), unit).toBeLessThan(100);
+      // Over the limit the style scan is skipped, and the mail is inverted.
+      expect(rule).toBe("invert");
+    }
+  });
+
+  it("scans each pattern in linear time just under the limit", () => {
+    for (const unit of ["color-scheme: x ", "@media x ", "<a x ", "color   ", "background:", "<style x "]) {
+      const html = fill(unit, UNDER);
+      expect(time(() => classifyEmailHtml(html)), unit).toBeLessThan(100);
+    }
+  });
+
+  it("rewrites 2 MB of crafted media queries in under 100 ms", () => {
+    for (const unit of ["@media x ", "<style media=x ", "@media (prefers-color-scheme: dark) "]) {
+      const html = fill(unit, MB2);
+      expect(time(() => forceDarkMedia(html)), unit).toBeLessThan(100);
     }
   });
 });

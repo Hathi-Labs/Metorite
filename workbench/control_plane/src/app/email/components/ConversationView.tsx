@@ -8,7 +8,7 @@ import { fullDateLabel, initials, buildOptimisticSent } from "../lib/utils";
 import { getEmail, fetchFullBody, detectReplyCommitment } from "../lib/api";
 import { useDraftSession } from "../lib/useDraftSession";
 import { splitQuotedText } from "../lib/quoting";
-import { useEmailStore } from "../lib/emailStore";
+import { useEmailStore, withPatch } from "../lib/emailStore";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
 import { MessageContent } from "./MessageContent";
@@ -62,6 +62,8 @@ export function ConversationView({
    *  reply immediately and pull the real synced copy. */
   onSent?: (sent?: Email) => void;
 }) {
+  // The last change of this pane to each message (read, flag, star, labels).
+  const messagePatches = useEmailStore((s) => s.messagePatches);
   // Locally-discarded drafts hide instantly (the provider delete is async).
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   // Hide messages deleted upstream (trash) so the conversation reflects the
@@ -171,7 +173,9 @@ export function ConversationView({
           );
         }
         const isOpen = expanded.has(m.id);
-        const view = hydrated[m.id] ?? m;
+        // The hydrated copy, with the last change of this pane on top, so a
+        // card's menu and its unread dot follow a change (fix round 1, P2-a).
+        const view = withPatch(hydrated[m.id] ?? m, messagePatches);
         return (
           <div
             key={m.id}

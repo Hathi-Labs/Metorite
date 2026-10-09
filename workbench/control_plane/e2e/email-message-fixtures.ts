@@ -50,13 +50,27 @@ const PLAIN_HTML =
   `<a href="https://example.test/quote">Open the quote</a><br><br>Ravi</div>` +
   `<blockquote>Can you send the revised quote?</blockquote>`;
 
-/** A newsletter: a grey frame, a white column, a photo, a logo and a button. */
+/**
+ * A newsletter: a grey frame, a white column, a photo, a logo and a button.
+ * It also holds three boxes with a background picture (review fix round 1,
+ * P1-b): dark text on a remote picture that never loads, white text that the
+ * sender hid on it, a table with a `background` attribute, and text on a
+ * data-URI photo that does load.
+ * The probes are classes: the sanitizer drops every `data-` attribute.
+ */
 const NEWSLETTER_HTML =
   `<table width="100%" bgcolor="#f2f3f5" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:16px">` +
   `<table width="560" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px">` +
   `<tr><td style="padding:16px 20px"><img src="https://cdn.example.test/logo.png" alt="Fracktal Works" width="120" height="32" ` +
   `style="display:block"> </td></tr>` +
   `<tr><td><img src="${PHOTO}" alt="Autumn sale" width="560" style="display:block"></td></tr>` +
+  `<tr><td style="background-image:url(https://cdn.example.test/paper.jpg);padding:14px 20px;font-family:Arial">` +
+  `<p class="probe-invoice" style="color:#1f2937;margin:0;font-size:15px">Your invoice is attached</p>` +
+  `<p class="probe-hidden" style="color:#ffffff;margin:6px 0 0;font-size:15px">Hidden white text</p></td></tr>` +
+  `<tr><td><table class="probe-table-bg" background="https://cdn.example.test/tile.png" width="100%"><tr>` +
+  `<td class="probe-table-text" style="padding:8px 20px;color:#1f2937;font-family:Arial">A table with a background picture</td></tr></table></td></tr>` +
+  `<tr><td style="background-image:url('${PHOTO}');background-size:cover;height:110px;padding:16px 20px">` +
+  `<p style="color:#ffffff;font:700 20px Arial;margin:0">Text on a background photo</p></td></tr>` +
   `<tr><td style="padding:20px;color:#333333;font-family:Arial;font-size:15px;line-height:1.5">` +
   `<h2 style="color:#111111;margin:0 0 8px">This week in 3D printing</h2>` +
   `New filament profiles are live, and the Julia Pro has a firmware update. ` +
@@ -117,8 +131,11 @@ export const MAILS: Record<string, Raw> = {
   [IDS.text]: mail(IDS.text, "Plain text note", {
     body_text: "Hi,\n\nThis is a plain text mail. It has no HTML at all.\n\nThanks,\nRavi",
   }),
+  // The thread row says it has a file and lists none, so the card hydrates
+  // it through the detail fetch: the "hydrated" copy of review round 1, P2-a.
   [IDS.threadOld]: mail(IDS.threadOld, "Re: Extruder trial", {
     thread_id: "t-thread",
+    has_attachments: true,
     body_text: "The first message of the thread. Can we run the trial on Friday?",
     snippet: "Can we run the trial on Friday?",
     received_at: "2026-10-08T09:00:00Z",
@@ -181,13 +198,26 @@ export async function installEmailMocks(
       await new Promise((done) => setTimeout(done, opts.slowMs));
       return json(r, { ...row, body_text: "The slow body arrived." });
     }
+    if (id === IDS.threadOld) {
+      return json(r, { ...row, attachments: [{ id: "f-1", filename: "trial-plan.pdf", mime_type: "application/pdf", size_bytes: 52_000 }] });
+    }
     return row ? json(r, row) : json(r, { detail: "Message not found" }, 404);
   });
   await page.route(/.*\/api\/email\/messages\/[^/]+\/html.*/, (r) =>
     json(r, { message_id: "", body_html: null, source: "none" }),
   );
-  // The proxied remote logo, after "Show images".
-  await page.route(/.*\/api\/email\/image-proxy.*/, (r) =>
+  // The proxied remote pictures, after "Show images": a paper tile for the
+  // table's background, and the logo for anything else.
+  await page.route(/.*\/api\/email\/image-proxy.*tile.*/, (r) =>
+    r.fulfill({
+      status: 200,
+      contentType: "image/svg+xml",
+      body:
+        `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="#f6efe2"/>` +
+        `<circle cx="6" cy="6" r="2" fill="#e3d6bd"/></svg>`,
+    }),
+  );
+  await page.route(/.*\/api\/email\/image-proxy(?!.*tile).*/, (r) =>
     r.fulfill({
       status: 200,
       contentType: "image/svg+xml",

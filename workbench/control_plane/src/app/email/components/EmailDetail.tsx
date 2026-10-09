@@ -194,7 +194,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The message whose detail is loading. An id, not a flag: a flag that the
   // last mail set stayed true when a mail with a body opened before that
   // fetch ended, and that mail showed "Loading message…" for good.
-  const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
+  // Each fetch has its own number too, so after A, B, A the end of the first
+  // fetch of A cannot clear the second one (review fix round 1).
+  const [loadingDetailFor, setLoadingDetailFor] = useState<{ id: string; seq: number } | null>(null);
+  const detailSeqRef = useRef(0);
   // The full conversation (all messages sharing this thread_id), if any.
   const [thread, setThread] = useState<Email[] | null>(null);
   // Just-sent replies shown optimistically until the provider sync mirrors the
@@ -364,8 +367,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
       setDetail(email);
       return;
     }
-    const loadingId = email.id;
-    setLoadingDetailId(loadingId);
+    detailSeqRef.current += 1;
+    const loading = { id: email.id, seq: detailSeqRef.current };
+    setLoadingDetailFor(loading);
     getEmail(email.id)
       .then((full) => {
         if (!cancelled) {
@@ -378,7 +382,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       })
       .finally(() => {
         // Each fetch clears its own id, also after a switch to another mail.
-        setLoadingDetailId((cur) => (cur === loadingId ? null : cur));
+        setLoadingDetailFor((cur) => (cur?.seq === loading.seq ? null : cur));
       });
     return () => {
       cancelled = true;
@@ -591,7 +595,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const view: Email = detail?.id === email.id ? detail : email;
   // "Loading message…" shows only while THIS mail has no body to draw. A mail
   // that has its body and waits for its file list draws the body at once.
-  const loadingDetail = loadingDetailId === email.id && !view.bodyHtml && !view.bodyText;
+  const loadingDetail = loadingDetailFor?.id === email.id && !view.bodyHtml && !view.bodyText;
 
   // The message the composer replies to. Defaults to the open message; a
   // conversation card can target any message in the thread (Outlook parity).

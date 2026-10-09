@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { ACCOUNT, IDS, installEmailMocks } from "./email-message-fixtures";
 
@@ -194,5 +194,165 @@ test.describe("Loading message…", () => {
     await page.locator(`[data-email-row="${IDS.text}"]`).click();
     await expect(page.getByText("This is a plain text mail.").first()).toBeVisible({ timeout: 3000 });
     await expect(page.getByText("Loading message…")).toHaveCount(0);
+  });
+});
+
+/**
+ * The contrast of a captured element: the lightest and the darkest pixel.
+ * The browser decodes the capture, so the spec needs no image library.
+ */
+async function pixelContrast(page: Page, el: Locator): Promise<number> {
+  const png = (await el.screenshot()).toString("base64");
+  return page.evaluate(async (data) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, c.width, c.height).data;
+    const lum = (r: number, g: number, b: number) => {
+      const ch = (v: number) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+    };
+    let lo = 1;
+    let hi = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const l = lum(px[i], px[i + 1], px[i + 2]);
+      lo = Math.min(lo, l);
+      hi = Math.max(hi, l);
+    }
+    return (hi + 0.05) / (lo + 0.05);
+  }, png);
+}
+
+test.describe("Fix round 1", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  // P1-b. Mutation caught: with a re-invert on a box with a background
+  // picture, the dark text of that box drew dark on the dark card, because
+  // the remote picture never loads.
+  test("text in a box with a background picture stays readable in dark mode", async ({ page }) => {
+    await installEmailMocks(page, [IDS.newsletter]);
+    await open(page, IDS.newsletter);
+    await expect(frame(page)).toHaveAttribute("data-body-look", "invert");
+    const filters = await frame(page).evaluate((f: HTMLIFrameElement) => {
+      const doc = f.contentDocument!;
+      const of = (sel: string) => getComputedStyle(doc.querySelector(sel)!).filter;
+      const invoice = doc.querySelector('[class="probe-invoice"]')!;
+      return {
+        box: getComputedStyle(invoice.parentElement!).filter,
+        table: of('[class="probe-table-bg"]'),
+        tableText: of('[class="probe-table-text"]'),
+      };
+    });
+    expect(filters).toEqual({ box: "none", table: "none", tableText: "none" });
+    const body = page.frameLocator('iframe[title="Email content"]').first();
+    expect(await pixelContrast(page, body.locator('[class="probe-invoice"]'))).toBeGreaterThan(4.5);
+    expect(await pixelContrast(page, body.locator('[class="probe-table-text"]'))).toBeGreaterThan(4.5);
+    // The reverse case: the sender hid white text on the picture. It stays
+    // hidden, because it inverts with its surroundings.
+    expect(await pixelContrast(page, body.locator('[class="probe-hidden"]'))).toBeLessThan(1.5);
+  });
+
+  // Found by the screenshots of fix round 1: a wide newsletter overflows the
+  // frame, and a sideways scroll showed a black strip where the multiply
+  // layer did not reach. The layer's shadow spread now covers the overflow.
+  test("a sideways scroll of a wide newsletter shows no black strip", async ({ page }) => {
+    await installEmailMocks(page, [IDS.newsletter]);
+    await open(page, IDS.newsletter);
+    const iframe = frame(page);
+    await expect(iframe).toHaveAttribute("data-body-look", "invert");
+    const scrolled = await iframe.evaluate((f: HTMLIFrameElement) => {
+      f.contentWindow!.scrollTo(80, 0);
+      return f.contentWindow!.scrollX;
+    });
+    expect(scrolled).toBeGreaterThan(0);
+    const png = (await iframe.screenshot()).toString("base64");
+    const edge = await page.evaluate(async (data) => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${data}`;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.width;
+      c.height = img.height;
+      const ctx = c.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      // The column of pixels near the right edge, top to bottom.
+      const col = ctx.getImageData(img.width - 12, 0, 1, img.height).data;
+      let black = 0;
+      for (let i = 0; i < col.length; i += 4) {
+        if (Math.max(col[i], col[i + 1], col[i + 2]) <= 5) black += 1;
+      }
+      return black / img.height;
+    }, png);
+    // Nothing in the inverted page is pure black but a strip the layer
+    // missed. The card colour has a channel above 20.
+    expect(edge).toBeLessThan(0.02);
+  });
+
+  // P2-a. Mutation caught: the menu of a hydrated older card read its stale
+  // copy, so it offered "Mark as unread" again after the first click.
+  test("the menu of a hydrated older card follows read both ways, and a label shows its check", async ({ page }) => {
+    const rec = await installEmailMocks(page, [IDS.threadNew]);
+    await open(page, IDS.threadNew);
+    await page.getByText("Can we run the trial on Friday?").first().click();
+    const older = row(page, IDS.threadOld);
+    // The card hydrated: its file from the detail fetch shows.
+    await expect(page.getByText("trial-plan.pdf")).toBeVisible();
+    const menu = page.getByRole("menu");
+    const more = older.getByRole("button", { name: "More actions" });
+
+    await more.click();
+    await menu.getByRole("menuitem", { name: "Mark as unread" }).click();
+    await expect.poll(() => rec.patches.length).toBe(1);
+    await more.click();
+    await menu.getByRole("menuitem", { name: "Mark as read" }).click();
+    await expect.poll(() => rec.patches.length).toBe(2);
+    await more.click();
+    await expect(menu.getByRole("menuitem", { name: "Mark as unread" })).toBeVisible();
+    expect(rec.patches.map((p) => p.body)).toEqual([{ is_read: false }, { is_read: true }]);
+
+    await menu.getByRole("menuitem", { name: "Label…" }).click();
+    const label = menu.getByRole("menuitemcheckbox").first();
+    await expect(label).toHaveAttribute("aria-checked", "false");
+    await label.click();
+    await expect(label).toHaveAttribute("aria-checked", "true");
+    await expect.poll(() => rec.patches.length).toBe(3);
+    expect(rec.patches[2].id).toBe(IDS.threadOld);
+  });
+
+  // P2-b. Mutation caught: the label toggles were plain buttons, so the
+  // arrows of the menu skipped them and no key could reach one.
+  test("the Label view works with the keyboard only", async ({ page }) => {
+    const rec = await installEmailMocks(page, [IDS.text]);
+    await open(page, IDS.text);
+    const more = row(page, IDS.text).getByRole("button", { name: "More actions" });
+    await more.focus();
+    await page.keyboard.press("Enter");
+    const menu = page.getByRole("menu", { name: "More actions" });
+    for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitem", { name: "Label…" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(menu.getByRole("menuitem", { name: "Label" })).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    const first = menu.getByRole("menuitemcheckbox").first();
+    await expect(first).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(first).toHaveAttribute("aria-checked", "true");
+    await expect.poll(() => rec.patches.length).toBe(1);
+    expect(rec.patches[0].body).toHaveProperty("add_labels");
+    // Shift+Tab from the first stop reaches the text box at the end.
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Shift+Tab");
+    await expect(menu.getByRole("textbox", { name: "Create label" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(more).toBeFocused();
   });
 });

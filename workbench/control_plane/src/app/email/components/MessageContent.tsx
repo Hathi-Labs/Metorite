@@ -178,7 +178,15 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   // The look reads the SANITIZED markup, which is what the frame draws. The
   // sanitizer drops a style block of the head, and a dark media query there
   // never reaches the frame, so it cannot make the look `native`.
-  const look = chooseBodyLook({ dark, lightVersion, html: purified?.clean ?? "" });
+  // Memoized on the markup, so a re-render does not scan the mail again.
+  const look = useMemo(
+    () => chooseBodyLook({ dark, lightVersion, html: purified?.clean ?? "" }),
+    [dark, lightVersion, purified],
+  );
+  // The token colours of a dark look, read once per mode from the live page.
+  // `dark` is a real input: a change of mode changes the live tokens.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const palette =useMemo(() => (mounted ? bodyPalette(readToken) : bodyPalette()), [mounted, dark]);
   // The native look turns the sender's own dark media queries on. A child
   // frame reads its colour scheme from the OS, not from the app, so its
   // queries cannot see the app's dark mode. Fixed words replace the media
@@ -214,7 +222,7 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     // black text). This mirrors how Gmail/Outlook render message bodies.
     // A dark look adds its own sheet after this one, inside `@media screen`,
     // so a print still draws the original. It holds no text of the email.
-    const lookCss = bodyLookCss(look, bodyPalette(readToken), { remoteBlocked: !showImages });
+    const lookCss = bodyLookCss(look, palette, { remoteBlocked: !showImages });
     const lookStyle = lookCss ? "<style>" + lookCss + "</style>" : "";
     return `<!doctype html><html><head>
 <meta http-equiv="Content-Security-Policy" content="${csp}">
@@ -234,7 +242,7 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
   blockquote { border-left: 3px solid #d1d5db; margin: 0; padding-left: 12px; color: #6b7280; }
   pre { white-space: pre-wrap; }
 </style>${lookStyle}</head><body>${sanitized.clean}</body></html>`;
-  }, [sanitized, showImages, quoted, look]);
+  }, [sanitized, showImages, quoted, look, palette]);
 
   useEffect(() => {
     if (!srcDoc) return;

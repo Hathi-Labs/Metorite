@@ -237,6 +237,27 @@ function buildFolders(emails: Email[]): EmailFolder[] {
   );
 }
 
+/** One message's last change in this pane: read, flag, star, folder, labels. */
+export type MessagePatch = Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder" | "categories">>;
+
+/** `email` with its patch on top. A card of a thread reads its state here. */
+export function withPatch<T extends Email>(email: T, patches: Record<string, MessagePatch>): T {
+  const patch = patches[email.id];
+  return patch ? { ...email, ...patch } : email;
+}
+
+/** The patches with one entry put back as it was before a failed write. */
+function restorePatch(
+  patches: Record<string, MessagePatch>,
+  id: string,
+  prev: MessagePatch | undefined,
+): Record<string, MessagePatch> {
+  const next = { ...patches };
+  if (prev) next[id] = prev;
+  else delete next[id];
+  return next;
+}
+
 interface EmailState {
   // Data
   accounts: EmailAccount[];
@@ -482,7 +503,17 @@ interface EmailState {
   /** Set the colour of a label in ONE mailbox: `accountId`, else the
    *  selected one. A label belongs to its mailbox (EM-T8d review). */
   setLabelColor: (name: string, color: string, accountId?: string | null) => Promise<void>;
-  applyLabel: (id: string, name: string, add: boolean) => Promise<void>;
+  /** `current` gives the labels of a message that is not a row of the list,
+   *  such as an older card of a thread. The list cannot say. */
+  applyLabel: (id: string, name: string, add: boolean, current?: string[]) => Promise<void>;
+  /**
+   * The last read, flag, star, folder and label change of each message, by id
+   * (review fix round 1, P2-a). `updateEmail` and `applyLabel` write it for
+   * EVERY message, also one that is not a row of the list. A thread card
+   * reads it through `withPatch`, so its menu shows the change at once.
+   * Memory only, for this page.
+   */
+  messagePatches: Record<string, MessagePatch>;
   /** Add/remove one category across many messages at once. */
   applyLabelBulk: (ids: string[], name: string, add: boolean) => Promise<void>;
   /** Remove ALL categories from the given messages. */
@@ -1668,22 +1699,29 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   clearTaskCaptureNotice: () => set({ taskCaptureNotice: null }),
 
+  messagePatches: {},
+
   updateEmail: async (id, updates) => {
     // Optimistic update. When an email is moved to a *different* folder than the
     // one we're viewing (archive / move-to / etc.), drop it from the list so it
     // visibly leaves the current folder — except in the virtual "starred" view.
     const prevEmails = get().emails;
+    // A message of a thread is often not a row of the list. Its move does
+    // not change the count of the list (review fix round 1).
+    const inList = prevEmails.some((e) => e.id === id);
     const movedAway =
       updates.folder !== undefined &&
       updates.folder !== get().selectedFolder &&
       get().selectedFolder !== "starred";
+    const prevPatch = get().messagePatches[id];
     set({
       emails: movedAway
         ? prevEmails.filter((e) => e.id !== id)
         : prevEmails.map((e) => (e.id === id ? { ...e, ...updates } : e)),
-      emailsTotal: movedAway
+      emailsTotal: movedAway && inList
         ? Math.max(0, get().emailsTotal - 1)
         : get().emailsTotal,
+      messagePatches: { ...get().messagePatches, [id]: { ...prevPatch, ...updates } },
     });
     // Demo: keep the optimistic change; there's no backend to persist to.
     if (DEMO) return;
@@ -1698,7 +1736,12 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       }
     } catch (err: any) {
       // Revert on failure
-      set({ emails: prevEmails, error: err.message || "Failed to update email" });
+      set({
+        emails: prevEmails,
+        emailsTotal: movedAway && inList ? get().emailsTotal + 1 : get().emailsTotal,
+        messagePatches: restorePatch(get().messagePatches, id, prevPatch),
+        error: err.message || "Failed to update email",
+      });
     }
   },
 
@@ -1752,18 +1795,21 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
-  applyLabel: async (id, name, add) => {
+  applyLabel: async (id, name, add, current) => {
     const prevEmails = get().emails;
+    const prevPatch = get().messagePatches[id];
+    const toggle = (cats: string[]) =>
+      add ? (cats.includes(name) ? cats : [...cats, name]) : cats.filter((c) => c !== name);
+    // The labels of now: the patch, the list row, or what the caller holds.
+    const base =
+      prevPatch?.categories ?? prevEmails.find((e) => e.id === id)?.categories ?? current ?? [];
     // Optimistically update the message's category chips.
     set({
       emails: prevEmails.map((e) => {
         if (e.id !== id) return e;
-        const cats = e.categories || [];
-        const next = add
-          ? cats.includes(name) ? cats : [...cats, name]
-          : cats.filter((c) => c !== name);
-        return { ...e, categories: next };
+        return { ...e, categories: toggle(e.categories || []) };
       }),
+      messagePatches: { ...get().messagePatches, [id]: { ...prevPatch, categories: toggle(base) } },
     });
     // Track a brand-new label so it's offered for other messages immediately.
     if (add && !get().availableLabels.includes(name)) {
@@ -1781,7 +1827,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         emails: get().emails.map((e) => (e.id === id ? { ...e, ...updated } : e)),
       });
     } catch (err: any) {
-      set({ emails: prevEmails, error: err.message || "Failed to update label" });
+      set({
+        emails: prevEmails,
+        messagePatches: restorePatch(get().messagePatches, id, prevPatch),
+        error: err.message || "Failed to update label",
+      });
     }
   },
 
