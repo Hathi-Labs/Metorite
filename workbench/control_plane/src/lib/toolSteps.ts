@@ -133,6 +133,11 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   emit_generative_ui: { kind: "other", verb: V.draw, object: "a card" },
   request_network_access: { kind: "other", verb: V.ask, object: "for network access" },
   web_search: { kind: "search", verb: V.search, object: "the web" },
+  // Two platform tools whose one argument is a `task`, and which are not an
+  // agent of the registry. Named here, so the specialist rung below never
+  // reads them as "Asked Code task" (review round 1).
+  code_task: { kind: "other", verb: V.ran, object: "a coding task" },
+  spawn_copilot_agent: { kind: "delegate", verb: V.ask, object: "a Copilot agent" },
   // ── Projects (skill-projects): the reads ─────────────────────────────────
   projects_tree: { kind: "read", verb: V.read, object: "the project tree" },
   project_summary: { kind: "read", verb: V.read, object: "a project summary" },

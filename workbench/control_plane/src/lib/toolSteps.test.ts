@@ -388,6 +388,37 @@ describe("a hand-off names its agent in words, and shows its task", () => {
     expect(describeToolStep({ name: "frobnicate", status: "done", args: { task: "#12" } }).kind).toBe("other");
   });
 
+  it("does not take the platform tools with a task argument for agents (review round 1)", () => {
+    const code = describeToolStep({ name: "code_task", status: "done", args: { task: "Write a script that parses the CSV" } });
+    expect(code).toMatchObject({ kind: "other", label: "Ran a coding task" });
+    expect(code.agent).toBeUndefined();
+    const spawn = describeToolStep({ name: "spawn_copilot_agent", status: "done", args: { task: "Fix the build" } });
+    expect(spawn.label).toBe("Asked a Copilot agent");
+    expect(spawn.agent).toBeUndefined();
+  });
+
+  it("draws no empty detail box for a running hand-off (review round 1)", () => {
+    const html = renderToStaticMarkup(createElement(ToolStepRow, {
+      event: { ...OWNER_STEP, status: "running", result: undefined, endedAt: undefined },
+      open: true,
+    }));
+    expect(html).not.toMatch(/bg-card\/40[^"]*"><\/div>/);
+    expect(html).toContain(OWNER_TASK);
+  });
+
+  it("never cuts a sub-agent step's result silently (review round 1)", () => {
+    const said = "PO 4471 from Acme, due on 30 October, for the Welmont School lab: 12 benches, 4 fume hoods";
+    const html = renderToStaticMarkup(createElement(ToolStepRow, {
+      event: {
+        id: "d", name: "call_agent", status: "done", args: { agent_name: "email-assistant", message: "Find it" },
+        subAgentName: "email-assistant",
+        subAgentTools: [{ id: "s", name: "read_email", status: "done", result: said }],
+      },
+      open: true,
+    }));
+    expect(html).toContain(said);
+  });
+
   it("draws the owner's step: the agent chip, the whole task once, a toggle, no raw names", () => {
     for (const open of [false, true]) {
       const html = renderToStaticMarkup(createElement(ToolStepRow, { event: OWNER_STEP, open }));

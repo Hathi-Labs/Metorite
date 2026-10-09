@@ -398,6 +398,9 @@ function ArgsDetail({ event, step, dur }: { event: ToolEvent; step: ToolStep; du
   // label), and each value in full. The keys that the row already shows are
   // left out.
   const fields = argFields(event.args, (k) => fieldSpec(k).label, step.shownKeys);
+  // Nothing to show: no empty box. A hand-off that runs has its task in the
+  // row, and no duration or result yet (review round 1).
+  if (fields.length === 0 && dur === undefined && !out) return null;
   return (
     <div className="rounded-md border-l-2 border-border bg-card/40 px-2.5 py-1.5 min-w-0">
       {dur !== undefined && (
@@ -475,8 +478,13 @@ function SubAgentSteps({ event }: { event: ToolEvent }) {
                   <span className="text-[10px] text-destructive shrink-0">failed</span>
                 )}
                 {st.result && step.status !== "running" && (
-                  <span className="text-[10px] text-muted-foreground font-mono truncate min-w-0">
-                    {String(st.result).slice(0, 60)}
+                  // One line, and an ellipsis where it stops: `truncate`,
+                  // never a silent cut. The tooltip holds the rest.
+                  <span
+                    title={capOutput(String(st.result)).text}
+                    className="text-[10px] text-muted-foreground font-mono truncate min-w-0"
+                  >
+                    {capOutput(String(st.result), 400).text}
                   </span>
                 )}
               </li>
