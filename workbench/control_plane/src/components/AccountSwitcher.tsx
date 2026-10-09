@@ -93,12 +93,8 @@ function initial(name: string | null | undefined, email: string): string {
 }
 
 /** A round initial, in the account's own stable hue, as Gmail does. */
-function Avatar({ email, name, size = "md" }: { email: string; name?: string | null; size?: "xs" | "sm" | "md" | "lg" }) {
-  const box =
-    size === "lg" ? "h-10 w-10 text-base"
-    : size === "sm" ? "h-7 w-7 text-xs"
-    : size === "xs" ? "h-5 w-5 text-[10px]"
-    : "h-8 w-8 text-sm";
+function Avatar({ email, name, size = "md" }: { email: string; name?: string | null; size?: "sm" | "md" | "lg" }) {
+  const box = size === "lg" ? "h-10 w-10 text-base" : size === "sm" ? "h-7 w-7 text-xs" : "h-8 w-8 text-sm";
   return (
     <span
       aria-hidden
@@ -133,7 +129,6 @@ function AccountMenu({
   accounts,
   onChanged,
   showActive = true,
-  showOthers = true,
   you,
   onNavigate,
 }: {
@@ -141,8 +136,6 @@ function AccountMenu({
   onChanged: () => void;
   /** False in the phone drawer, whose row above already shows it. */
   showActive?: boolean;
-  /** False in the phone drawer, whose organization block at the top lists them. */
-  showOthers?: boolean;
   /**
    * The shell nav's account rows (NS-2): My Profile, My access, Appearance,
    * and Organisation for an admin. Absent, the menu is the switcher alone.
@@ -192,7 +185,7 @@ function AccountMenu({
         </nav>
       )}
 
-      {showOthers && accounts.others.length > 0 && (
+      {accounts.others.length > 0 && (
         <div className={`${showActive || you?.length ? "border-t border-border" : ""} py-1`} role="list" aria-label="Other accounts">
           {accounts.others.map((o) => (
             <div key={o.slot} role="listitem" className="group flex items-center gap-1 px-1">
@@ -386,98 +379,6 @@ export function SidebarAccountFooter({
 }
 
 /**
- * The phone drawer's foot: the active account as a row, and the menu unfolded
- * under it. While the switcher is off, `fallback`: the Sign out row it had.
- */
-export function DrawerAccountSection({
-  fallback,
-  you,
-  onNavigate,
-  othersAtTop = false,
-  actionsOnly = false,
-}: {
-  fallback: React.ReactNode;
-  /**
-   * The account sheet: the actions alone. Its organization block above it
-   * already shows the account, so a row naming it again is noise.
-   */
-  actionsOnly?: boolean;
-  /** The shell nav's account rows (NS-2). With them, the section always shows. */
-  you?: readonly AccountLink[];
-  onNavigate?: () => void;
-  /**
-   * The organization block at the top of the drawer lists the other accounts
-   * (`DrawerOrgSwitch`), so this foot keeps only the actions.
-   */
-  othersAtTop?: boolean;
-}) {
-  // ⚠️ Its own hook, never props. The drawer captures its content once, when
-  // it opens (`useMobileDrawer().open(node)`), so props from the shell would
-  // stay as they were at that moment.
-  const { accounts: switcher, reload } = useAccounts();
-  const { data: session } = useSession();
-  const accounts = withSessionFallback(switcher, you ? session : null);
-  const [open, setOpen] = useState(false);
-  const active = accounts.active;
-  if ((!accounts.enabled && !you) || !active || !session?.user) return <>{fallback}</>;
-  const count = accounts.others.length;
-
-  if (actionsOnly) {
-    return (
-      <div className="rounded-lg border border-border">
-        <AccountMenu
-          accounts={accounts}
-          onChanged={() => void reload(true)}
-          showActive={false}
-          showOthers={!othersAtTop}
-          you={you}
-          onNavigate={onNavigate}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border border-border">
-      <button
-        onClick={() => {
-          if (!open) void reload(true);
-          setOpen((o) => !o);
-        }}
-        aria-expanded={open}
-        aria-controls="drawer-accounts"
-        className="flex w-full items-center gap-3 px-3 py-2.5 text-left"
-      >
-        <Avatar email={active.email} name={active.name} />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium text-foreground">{active.name ?? active.email}</span>
-          <span className="block truncate text-xs text-muted-foreground">
-            {count > 0 && !othersAtTop ? `${active.email} · ${count} more` : active.email}
-          </span>
-        </span>
-        <Icon
-          name="ChevronDown"
-          size={16}
-          className={`shrink-0 text-muted-foreground tech-transition ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-      {open && (
-        <div id="drawer-accounts" className="border-t border-border">
-          <AccountMenu
-            accounts={accounts}
-            onChanged={() => void reload(true)}
-            showActive={false}
-            showOthers={!othersAtTop}
-            you={you}
-            onNavigate={onNavigate}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
  * The phone menu's organization block, at its TOP (owner request, 2026-10-09).
  *
  * Before, switching organization on a phone took four steps: open the menu,
@@ -487,9 +388,23 @@ export function DrawerAccountSection({
  * its label. Every other account is one tap below it. So a switch is two taps:
  * Menu, then the organization.
  *
- * With the switcher off, it still names the organization and the account.
+ * ⚠️ It is the ONE place for accounts on a phone (owner, later the same day).
+ * A second account row at the menu's foot read as the switcher, and an
+ * account tab in the bottom bar crowded the app's own tabs. Both went. So
+ * this block also holds "Add another account" and sign-out.
+ *
+ * With the switcher off, it still names the organization and the account,
+ * and it offers sign-out.
  */
-export function DrawerOrgSwitch() {
+export function DrawerOrgSwitch({
+  you,
+  onNavigate,
+}: {
+  /** The shell nav's account rows (NS-2): My Profile, My access, Appearance. */
+  you?: readonly AccountLink[];
+  /** Called when a row opens a page, so the menu can close. */
+  onNavigate?: () => void;
+} = {}) {
   // Its own hooks, never props: the drawer captures its content once.
   const { accounts, reload } = useAccounts(true);
   const { access } = useAccess();
@@ -568,51 +483,35 @@ export function DrawerOrgSwitch() {
         </div>
       )}
       {error && <p className="px-1 pt-2 text-xs text-destructive">{error}</p>}
+
+      {you && you.length > 0 && (
+        <nav aria-label="Your account" className="mt-2 flex flex-col">
+          {you.map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              onClick={onNavigate}
+              className="flex items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground hover:bg-secondary tech-transition"
+            >
+              <Icon name={l.icon} size={15} className="shrink-0 text-muted-foreground" />
+              {l.label}
+            </Link>
+          ))}
+        </nav>
+      )}
+
+      {/* The two account actions, side by side, so the block stays short. */}
+      <div className={`mt-2 grid gap-2 ${accounts.enabled ? "grid-cols-2" : "grid-cols-1"}`}>
+        {accounts.enabled && (
+          <Button variant="secondary" size="sm" icon="UserPlus" onClick={() => void addAccount()}>
+            Add account
+          </Button>
+        )}
+        <Button variant="secondary" size="sm" icon="LogOut" onClick={() => void signOutAll()}>
+          {others.length > 0 ? "Sign out of all" : "Sign out"}
+        </Button>
+      </div>
       {switching && <SwitchingCover email={switching} />}
     </section>
-  );
-}
-
-/**
- * The account tab, at the right end of the phone's bottom bar (owner request,
- * 2026-10-09: "a separate button for the account switcher, so that there's no
- * confusion"). It is on every screen, so the member always sees who they are:
- * the account's avatar, in that account's own hue, and the organization's
- * name under it. A "+N" says how many other accounts are one tap away. It
- * opens the account sheet (`onOpen`).
- */
-export function AccountTab({ onOpen, open }: { onOpen: () => void; open: boolean }) {
-  const { accounts } = useAccounts();
-  const { access } = useAccess();
-  const { data: session } = useSession();
-  // From ONE answer, as in the organization block: the address and its
-  // organization both come from `/api/auth/me`, which the shell polls.
-  const orgName = access.organization?.display_name || access.organization?.slug || null;
-  const email = access.email || session?.user?.email || null;
-  const name = session?.user?.name ?? accounts.active?.name ?? null;
-  if (!email) return null;
-  const count = accounts.enabled ? accounts.others.filter((o) => o.email !== email).length : 0;
-  const label = `Account: ${email}${orgName ? `, in ${orgName}` : ""}${count ? `, ${count} more` : ""}`;
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label={label}
-      aria-expanded={open}
-      data-testid="account-tab"
-      className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-        open ? "text-primary" : "text-muted-foreground hover:text-foreground"
-      }`}
-    >
-      <span className="relative">
-        <Avatar email={email} name={name} size="xs" />
-        {count > 0 && (
-          <span className="absolute -bottom-1 -right-2 rounded-full border border-background bg-muted px-0.5 text-[8px] font-semibold leading-tight text-muted-foreground">
-            +{count}
-          </span>
-        )}
-      </span>
-      <span className="max-w-full truncate text-[10px] font-medium leading-none">{orgName ?? "Account"}</span>
-    </button>
   );
 }
