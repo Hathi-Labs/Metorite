@@ -156,6 +156,13 @@ def test_the_post_stores_the_hash_and_never_the_code(channel: _FakeDb) -> None:
     assert body["code_ttl_minutes"] == 15
 
 
+def test_the_answer_with_the_code_is_never_cached(channel: _FakeDb) -> None:
+    # Review finding 2026-10-09: the answer carries the plain code.
+    res = _client().post("/me/whatsapp-link/code")
+    assert res.status_code == 201, res.text
+    assert res.headers.get("cache-control") == "no-store"
+
+
 def test_the_issue_is_audited_without_the_code(channel: _FakeDb) -> None:
     code = _client().post("/me/whatsapp-link/code").json()["code"]
 
@@ -274,6 +281,7 @@ def test_the_get_reads_only_the_session_member_in_the_bound_org(
     channel: _FakeDb,
 ) -> None:
     channel.links = [{
+        "id": "11111111-1111-4111-8111-111111111111",
         "organization_id": ORG_A, "organization_name": "Fracktal",
         "status": "active", "linked_at": datetime(2026, 10, 9, tzinfo=UTC),
         "is_current": True, "code_expires_at": None, "wa_id": "919990000001",
@@ -284,6 +292,7 @@ def test_the_get_reads_only_the_session_member_in_the_bound_org(
     body = res.json()
     assert body["enabled"] is True and body["display_number"] == NUMBER
     assert body["links"] == [{
+        "id": "11111111-1111-4111-8111-111111111111",
         "organization_id": ORG_A, "organization_name": "Fracktal",
         "status": "active", "linked_at": "2026-10-09T00:00:00+00:00",
         "is_current": True, "expires_at": None, "phone_hint": "0001",

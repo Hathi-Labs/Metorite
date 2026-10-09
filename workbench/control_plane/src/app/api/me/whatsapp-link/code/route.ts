@@ -19,7 +19,11 @@ export const dynamic = "force-dynamic";
 
 export async function POST(): Promise<Response> {
   try {
-    return await proxyToGateway("/me/whatsapp-link/code", { method: "POST" });
+    const res = await proxyToGateway("/me/whatsapp-link/code", { method: "POST" });
+    // The answer carries the plain code. proxyToGateway copies only the
+    // content type, so set no-store here as well as in the gateway.
+    res.headers.set("Cache-Control", "no-store");
+    return res;
   } catch {
     return NextResponse.json({ detail: "Gateway unreachable." }, { status: 502 });
   }

@@ -50,7 +50,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from gateway.db import current_tenant, tenant_session
 from gateway.routes.whatsapp_channel import flags
 from pydantic import BaseModel
@@ -98,7 +98,8 @@ RETURNING id::text AS id, code_expires_at
 #: are history, so the page does not show them. RLS binds the org, and the
 #: explicit predicate serves the index.
 _MY_LINKS_SQL = """
-SELECT l.organization_id::text AS organization_id,
+SELECT l.id::text              AS id,
+       l.organization_id::text AS organization_id,
        o.display_name          AS organization_name,
        l.status, l.linked_at, l.is_current, l.code_expires_at, l.wa_id
   FROM whatsapp_member_links l
@@ -138,8 +139,13 @@ def _open_org() -> str:
 
 
 class LinkView(BaseModel):
-    """One of the caller's own links. The phone shows as its last 4 digits."""
+    """One of the caller's own links. The phone shows as its last 4 digits.
 
+    ``id`` is the row id. The page keys its rows on it, because one member
+    can hold two active links in one org once WAC-2 links phones.
+    """
+
+    id: str
     organization_id: str
     organization_name: str | None
     status: str
@@ -175,6 +181,7 @@ def _iso(value: datetime | None) -> str | None:
 def _link_view(row: Any) -> LinkView:
     wa_id = row["wa_id"]
     return LinkView(
+        id=row["id"],
         organization_id=row["organization_id"],
         organization_name=row["organization_name"],
         status=row["status"],
@@ -227,6 +234,7 @@ async def get_whatsapp_link(
 
 @router.post("/code", status_code=201)
 async def issue_whatsapp_link_code(
+    response: Response,
     user: UserContext = Depends(get_current_user),
 ) -> IssuedCode:
     """Issue a single-use link code, and revoke the member's earlier one."""
@@ -255,6 +263,8 @@ async def issue_whatsapp_link_code(
               link_id=row["id"], revoked=count)
     _audit(email=email, org=org, link_id=row["id"], revoked=count)
 
+    # The answer carries the plain code, so no cache may keep it.
+    response.headers["Cache-Control"] = "no-store"
     return IssuedCode(
         code=code,
         expires_at=_iso(row["code_expires_at"]) or "",

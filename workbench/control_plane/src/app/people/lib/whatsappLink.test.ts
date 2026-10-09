@@ -92,6 +92,7 @@ describe("the ready section", () => {
       body: state({
         links: [
           {
+            id: "link-1",
             organization_id: ORG,
             organization_name: "Fracktal",
             status: "active",
@@ -101,6 +102,7 @@ describe("the ready section", () => {
             phone_hint: "0001",
           },
           {
+            id: "link-2",
             organization_id: ORG,
             organization_name: "Fracktal",
             status: "revoked",
@@ -128,6 +130,7 @@ describe("the ready section", () => {
       body: state({
         links: [
           {
+            id: "link-3",
             organization_id: ORG,
             organization_name: "Fracktal",
             status: "pending",
@@ -142,6 +145,33 @@ describe("the ready section", () => {
     if (view.kind !== "ready") throw new Error("expected ready");
     expect(view.links[0].tone).toBe("warning");
     expect(view.links[0].label).toBe("Waiting for your message");
+  });
+});
+
+describe("one key per link row", () => {
+  // Review finding 2026-10-09: once WAC-2 links phones, one member can hold
+  // two active links in one org. A key built from the org would collide.
+  it("keys two active links in one org apart", () => {
+    const active = {
+      organization_id: ORG,
+      organization_name: "Fracktal",
+      status: "active" as const,
+      linked_at: "2026-10-09T10:00:00+00:00",
+      is_current: false,
+      expires_at: null,
+      phone_hint: "0001",
+    };
+    const view = sectionView({
+      status: 200,
+      body: state({
+        links: [
+          { ...active, id: "link-a" },
+          { ...active, id: "link-b", phone_hint: "0002" },
+        ],
+      }),
+    });
+    if (view.kind !== "ready") throw new Error("expected ready");
+    expect(view.links.map((l) => l.key)).toEqual(["link-a", "link-b"]);
   });
 });
 

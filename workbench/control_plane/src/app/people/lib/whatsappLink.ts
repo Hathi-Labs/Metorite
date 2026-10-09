@@ -24,6 +24,8 @@ import { toDataURL } from "qrcode";
 export type LinkStatus = "pending" | "active" | "revoked";
 
 export interface WhatsAppLink {
+  /** The row id, and the React key: one org can hold two active links. */
+  id: string;
   organization_id: string;
   organization_name: string | null;
   status: LinkStatus;
@@ -84,14 +86,14 @@ function linkRow(link: WhatsAppLink): LinkRow {
   if (link.status === "active") {
     const phone = link.phone_hint ? `phone ending ${link.phone_hint}` : "your phone";
     return {
-      key: `${link.organization_id}:active`,
+      key: link.id,
       label: link.is_current ? "Linked · current" : "Linked",
       tone: "success",
       detail: `${phone}, for ${org}`,
     };
   }
   return {
-    key: `${link.organization_id}:pending`,
+    key: link.id,
     label: "Waiting for your message",
     tone: "warning",
     detail: link.expires_at
