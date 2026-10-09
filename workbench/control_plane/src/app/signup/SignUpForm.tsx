@@ -4,6 +4,7 @@ import { signIn, signOut, useSession } from "next-auth/react";
 import { useState } from "react";
 
 import type { ConfiguredProvider } from "@/authPosture";
+import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
 import { RESERVED_LABELS, SLUG_RE, suggestSlug } from "@/lib/subdomain";
@@ -183,6 +184,9 @@ export default function SignUpForm({
   // founder is charged for nothing they did not ask for.
   const [teamSize, setTeamSize] = useState("1");
   const [error, setError] = useState<string | null>(null);
+  // The refusal that means "this address already has an organization". The
+  // box then carries the way out itself (owner request, 2026-10-09).
+  const [wrongAddress, setWrongAddress] = useState(false);
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [pending, setPending] = useState(false);
   const [providerPending, setProviderPending] = useState<string | null>(null);
@@ -210,6 +214,7 @@ export default function SignUpForm({
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setWrongAddress(false);
     setPending(true);
     try {
       // POSTs to the NEXT hop, never the gateway directly: the gateway's
@@ -259,6 +264,7 @@ export default function SignUpForm({
       // their session email server-side, so naming it discloses nothing.
       if (data.code === "AlreadyMember") {
         setError(alreadyMemberMessage(session?.user?.email ?? null, data.org_name ?? null));
+        setWrongAddress(true);
         return;
       }
       setError(
@@ -277,22 +283,6 @@ export default function SignUpForm({
     <div className="flex min-h-screen items-center justify-center bg-background p-10">
       <div className="w-full max-w-md">
         <Stepper email={session?.user?.email ?? null} />
-        {/* 🔴 The only way off a wrong address was to find a sign-out
-            somewhere else. Measured 2026-09-26: the owner was signed in with
-            the address that already owns Hathi Labs LLP, meant to create a
-            second organization with another one, and had no control here to
-            change it. Sign out and land back on this page. */}
-        {session?.user?.email && (
-          <div className="-mt-4 mb-4 text-center">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => signOut({ callbackUrl: "/signup" })}
-            >
-              Use a different email
-            </Button>
-          </div>
-        )}
         <div className="rounded-lg border border-border bg-card p-8">
         <h1 className="text-center text-xl font-semibold">
           Create a new organization
@@ -300,6 +290,43 @@ export default function SignUpForm({
         <p className="mt-2 text-center text-sm text-muted-foreground">
           A brand-new workspace on Metorite, with you as its owner.
         </p>
+        {/* 🔴 WHICH ADDRESS OWNS IT, inside the card, before the form.
+            Measured 2026-09-26: the owner was signed in with the address that
+            already owns Hathi Labs LLP, meant to create a second organization
+            with another one, and had no control here to change it. The fix of
+            that day was a small ghost link ABOVE the card, between the stepper
+            and the form, and people still missed it (owner, 2026-10-09). The
+            eye goes to the card and the form, so the address and the way to
+            change it are now there, as a question the member answers before
+            they type a company name. Sign out and land back on this page. */}
+        {session?.user?.email && (
+          // Stacked, not side by side: on a phone a row squeezed the address
+          // to "v.." (measured 2026-10-09). The button takes the full width,
+          // so nobody reads past it.
+          <div
+            data-testid="signup-address"
+            className="mt-5 flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/5 px-4 py-3"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <Icon name="UserRound" size={18} className="shrink-0 text-primary" />
+              <div className="min-w-0">
+                <div className="text-xs text-muted-foreground">Owner of the new organization</div>
+                <div className="truncate text-sm font-medium text-foreground">{session.user.email}</div>
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="RefreshCw"
+              onClick={() => signOut({ callbackUrl: "/signup" })}
+              className="w-full justify-center"
+            >
+              {/* The label in full ink: the variant's own muted text read as
+                  disabled next to the address (measured 2026-10-09). */}
+              <span className="font-medium text-foreground">Not you? Use a different email</span>
+            </Button>
+          </div>
+        )}
         {/* D51 / WS-35 — the fork made explicit at the door. This page CREATES
             an organization; a person whose company already uses Metorite must
             not end up here thinking it is how you join one. */}
@@ -312,6 +339,21 @@ export default function SignUpForm({
         {error && (
           <div className="mt-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             {error}
+            {/* The mistake and its way out in one place: the member who used
+                the address of an organization they already have changes it
+                here, with no hunt for the control above. */}
+            {wrongAddress && (
+              <div className="mt-3">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon="RefreshCw"
+                  onClick={() => signOut({ callbackUrl: "/signup" })}
+                >
+                  <span className="font-medium text-foreground">Use a different email</span>
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
