@@ -124,6 +124,13 @@ export type NavPane = {
    * opens from the account menu and never shows in All apps.
    */
   setting?: true;
+  /**
+   * The agent this app's assistant runs (`navigation_shell.md` §5.1, the
+   * `agent` field). The run badge (WS-51 S1, `lib/runActivity.ts`) counts a
+   * live run of this agent on this pane. The first pane that names an agent
+   * owns it, and an agent no pane names counts on Chat.
+   */
+  agent?: string;
 };
 
 /**
@@ -183,6 +190,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Your tasks, and your view of the company's",
         feature: "tasks",
         launch: "live",
+        agent: "task-manager",
       },
       // Calendar — D54 (2026-08-24, board WS-39 S2). Lifted out of `/tasks`,
       // where it had been a view mode rather than a destination.
@@ -256,6 +264,7 @@ export const NAV_SECTIONS: NavSection[] = [
         // WS-17 EM-T3b). A member connects Microsoft 365 from inside the app,
         // with no setup step. `launch_surface.md` §2 moved in the same change.
         launch: "live",
+        agent: "email-assistant",
       },
       {
         href: "/whatsapp",
@@ -322,6 +331,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Departments, projects and team tasks",
         feature: "projects",
         launch: "live",
+        agent: "projects-assistant",
       },
       {
         href: "/crm",
@@ -404,6 +414,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "User-created applications",
         feature: "build.apps",
         launch: "preview",
+        agent: "app-builder",
       },
       {
         href: "/build/agents",

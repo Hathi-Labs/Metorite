@@ -2,13 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
 import { autoFoldEnabled, floatingOpen, isWorkEvent, shouldFold } from "@/lib/sidebarFold";
 import Icon from "@/components/Icon";
+import NavBadge, { type NavBadgeTone } from "@/components/NavBadge";
+import { useRunActivity } from "@/hooks/useActiveSessions";
+import { runningLabel } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -79,6 +82,14 @@ export default function Sidebar() {
    * is what stops that shape coming back.
    */
   const canPoll = shouldPollWorkspace(access, accessLoading);
+  // The run badge (WS-51 S1): live assistant runs, counted on their app. A
+  // run on a pane this rail does not show counts on Chat.
+  const railHrefs = useMemo(
+    () => new Set(railSections.flatMap((s) => s.items.map((p) => p.href))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
+  );
+  const { byApp: runCounts } = useRunActivity(railHrefs, canPoll);
 
   // Per-section fold state, persisted so the layout survives reloads. Stored
   // as a map of FOLDED ids — unknown/new sections therefore default to open.
@@ -294,6 +305,7 @@ export default function Sidebar() {
               onToggle={() => toggleSection(section.id)}
               onNavigate={armFold}
               agentUpdateCount={agentUpdateCount}
+              runCounts={runCounts}
               pinnedApps={pinnedApps}
               shellNav={shellNav}
             />
@@ -434,6 +446,7 @@ function NavSectionBlock({
   onToggle,
   onNavigate,
   agentUpdateCount = 0,
+  runCounts = {},
   pinnedApps = [],
   shellNav = false,
 }: {
@@ -445,10 +458,13 @@ function NavSectionBlock({
   /** Arms the fold (`lib/sidebarFold.ts`). Every link in the rail calls it. */
   onNavigate: (e: MouseEvent) => void;
   agentUpdateCount?: number;
+  /** Live assistant runs per pane href (WS-51 S1). */
+  runCounts?: Record<string, number>;
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
 }) {
+  const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts);
   if (collapsed) {
     return (
       <div>
@@ -460,7 +476,7 @@ function NavSectionBlock({
               pathname={pathname}
               collapsed
               onNavigate={onNavigate}
-              badge={p.href === "/agents" && agentUpdateCount > 0 ? agentUpdateCount : undefined}
+              {...badgeFor(p.href)}
               shellNav={shellNav}
             />
           ))}
@@ -507,7 +523,7 @@ function NavSectionBlock({
               pane={p}
               pathname={pathname}
               onNavigate={onNavigate}
-              badge={p.href === "/agents" && agentUpdateCount > 0 ? agentUpdateCount : undefined}
+              {...badgeFor(p.href)}
               pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
               shellNav={shellNav}
             />
@@ -518,16 +534,41 @@ function NavSectionBlock({
   );
 }
 
+/**
+ * The one badge a pane wears. /agents keeps its "updates" count, in the
+ * `warning` tone. Every other pane shows its live runs, in `success`
+ * (WS-51 S1). Exported for `navBadge.test.ts`.
+ */
+export function paneBadge(
+  href: string,
+  agentUpdateCount: number,
+  runCounts: Record<string, number>,
+): { badge?: number; badgeTone?: NavBadgeTone; badgeLabel?: string } {
+  if (href === "/agents") {
+    return agentUpdateCount > 0
+      ? {
+          badge: agentUpdateCount,
+          badgeTone: "warning",
+          badgeLabel: `${agentUpdateCount} agent ${agentUpdateCount === 1 ? "update" : "updates"}`,
+        }
+      : {};
+  }
+  const runs = runCounts[href] ?? 0;
+  return runs > 0 ? { badge: runs, badgeTone: "success", badgeLabel: runningLabel(runs) } : {};
+}
+
 // ---------------------------------------------------------------------------
 // Individual nav link
 // ---------------------------------------------------------------------------
 
-function NavLink({
+export function NavLink({
   pane,
   pathname,
   collapsed = false,
   onNavigate,
   badge,
+  badgeTone = "warning",
+  badgeLabel,
   pinnedApps,
   shellNav = false,
 }: {
@@ -536,6 +577,10 @@ function NavLink({
   collapsed?: boolean;
   onNavigate: (e: MouseEvent) => void;
   badge?: number;
+  /** The badge's meaning: `warning` waits for the member, `success` runs. */
+  badgeTone?: NavBadgeTone;
+  /** The badge's spoken name. Defaults to the bare count. */
+  badgeLabel?: string;
   pinnedApps?: PinnedApp[];
   shellNav?: boolean;
 }) {
@@ -563,11 +608,14 @@ function NavLink({
         }`}
       >
         <Icon name={pane.icon} size={18} strokeWidth={active ? 2.5 : 2} />
-        {badge !== undefined && badge > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-warning text-[8px] font-bold text-warning-foreground">
-            {badge > 9 ? "9+" : badge}
-          </span>
-        )}
+        {/* The icon has no text, so the link's name starts with the pane's. */}
+        {badge !== undefined && badge > 0 && <span className="sr-only">{pane.label}</span>}
+        <NavBadge
+          count={badge ?? 0}
+          tone={badgeTone}
+          label={badgeLabel ?? String(badge ?? 0)}
+          placement="corner"
+        />
       </Link>
     );
   }
@@ -588,11 +636,7 @@ function NavLink({
         <div className="flex items-center gap-2.5">
           <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} />
           <span className="font-medium text-[13px]">{pane.label}</span>
-          {badge !== undefined && badge > 0 && (
-            <span className="ml-auto rounded-full bg-warning px-1.5 py-0.5 text-[10px] font-bold text-warning-foreground">
-              {badge}
-            </span>
-          )}
+          <NavBadge count={badge ?? 0} tone={badgeTone} label={badgeLabel ?? String(badge ?? 0)} />
         </div>
         {!shellNav && (
           <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>

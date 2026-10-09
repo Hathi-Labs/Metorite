@@ -427,10 +427,8 @@ describe("no raw Tailwind palette colours", () => {
   const PALETTE_DEBT: Record<string, number> = {
     "app/agents/page.tsx": 6,
     "app/artifacts/page.tsx": 13,
-    "app/chat/page.tsx": 5,
     // ComposePanel left, and EmailDetail went from 3 to 2, in WS-17 EM-G3c-2:
     // the error of a send is `text-destructive`.
-    "app/email/components/EmailAssistantChat.tsx": 1,
     "app/email/components/EmailDetail.tsx": 2,
     "app/email/components/EmailList.tsx": 3,
     "app/email/components/MessageTimelineModal.tsx": 1,
@@ -450,7 +448,6 @@ describe("no raw Tailwind palette colours", () => {
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
     "app/observability/page.tsx": 26,
-    "app/tasks/components/AssistantRail.tsx": 1,
     // 24 since 2026-09-24: `CELL_TONE` went, and the level is the shared
     // PriorityChip. 16 since H-193 took the amber out of the Weight toggle and
     // the schedule suggestion. What is left is the other toggles and delegate.
@@ -466,7 +463,7 @@ describe("no raw Tailwind palette colours", () => {
     "app/workflows/lib/types.ts": 50,
     "components/AddAgentWizard.tsx": 15,
     // 13 since WS-17 EM-T8f-3: the mark of the mailbox picker is text-primary.
-    "components/AgentChat.tsx": 13,
+    "components/AgentChat.tsx": 12,
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,

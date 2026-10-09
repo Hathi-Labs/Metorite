@@ -446,7 +446,7 @@ function SessionList({
               <span className="text-[10px] transition-transform duration-150 shrink-0" style={{ transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
                 ▼
               </span>
-              <span className={`shrink-0 rounded-full ${groupRunning ? "ring-2 ring-emerald-400/60" : ""}`}>
+              <span className={`shrink-0 rounded-full ${groupRunning ? "ring-2 ring-success/60" : ""}`}>
                 <AgentAvatar
                   libraryId={agentAvatars[agentName] ?? agentName}
                   size={18}
@@ -458,8 +458,8 @@ function SessionList({
               </span>
               {/* Active run count badge */}
               {groupRunning && (
-                <span className="flex items-center gap-1 text-[10px] text-emerald-400 shrink-0" title="Agent is running">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="flex items-center gap-1 text-[10px] text-success shrink-0" title="Agent is running">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse" />
                   {agentSessions.filter((s) => activeRunIds.has(s.id)).length}
                 </span>
               )}
@@ -490,7 +490,7 @@ function SessionList({
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
                           {activeRunIds.has(s.id) && (
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" title="Agent is generating a response" />
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse shrink-0" title="Agent is generating a response" />
                           )}
                           <span className={`truncate flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}>
                             {s.title ?? s.name}
@@ -1146,7 +1146,7 @@ function ChatPageInner() {
             )}
             {sessions.some((s) => activeRunIds.has(s.id)) && (
               <span
-                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"
+                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-success motion-safe:animate-pulse"
                 title="An agent is running"
               />
             )}
