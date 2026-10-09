@@ -594,6 +594,9 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   already ran the classify. Every other cycle runs the hook, so a quiet mailbox still drains.
   The manual sync and the webhook do not change. R7:
   `tests/unit/test_email_triage_once.py`.
+- **The flag of EM-T16 PR-B lives here too.** `post_sync.status_skips_rule_match` is the one reader
+  of `EMAIL_STATUS_SKIPS_RULE_MATCH`. The gateway owns the skip, and
+  `apps/services/gateway/AGENTS.md` holds the rule.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from

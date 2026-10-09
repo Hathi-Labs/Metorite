@@ -11,7 +11,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
-from email_ingestion.post_sync import triage_once_per_cycle
+from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
@@ -1363,6 +1363,36 @@ async def ask_status_first(first: StatusFirst | None) -> JobStatus:
     return status
 
 
+def skip_rule_match(
+    first: StatusFirst | None, status: JobStatus, *, account_id: str, job: str,
+) -> bool:
+    """Does the job skip the rule-match ask of this row (WS-17 EM-T16 PR-B)?
+
+    Yes when :func:`_resolve_on` is sure to return :func:`_determined_matches`
+    with this ``status``: the thread is a known conversation of the ``on``
+    plan, the :class:`JobStatus` of :func:`ask_status_first` reaches the bar,
+    and the mailbox has an enabled rule for it. Then the rule match only
+    pays for suppressed History lines. It takes NO ``db``.
+
+    Only with ``email_status_skips_rule_match`` (``post_sync``). A
+    ``dry_run`` (``first`` None) and a new thread (``NOT_ASKED``) never
+    skip. A skip logs ``email.rule_match_skipped`` with ids only, so the
+    saving can be counted (H-42). Spec: ``email_app_master_plan.md``
+    §10.4.17 PR-B.
+    """
+    if not (first is not None and first.rules and first.conversation):
+        return False
+    verdict = status.verdict
+    if not (status.state == "verdict" and verdict is not None and verdict[1]
+            and first.rules.get(verdict[0])):
+        return False
+    if not status_skips_rule_match():
+        return False
+    _log.info("email.rule_match_skipped", account_id=account_id,
+              status=verdict[0], job=job)
+    return True
+
+
 def status_move_keys(read: Any) -> frozenset[str]:
     """The move keys of the status ask of a job (PR-B3): those of the ``on``
     plan in ``read.first``, and none outside ``on``."""
@@ -2692,7 +2722,11 @@ async def _maybe_classify_threads(account_id: str) -> None:
                 except DecisionUnavailable:
                     status = UNDECIDED  # EM-T16 PR-A: the back-off below
                     raise
-                asked = await ask_rule_match(plan.match)
+                # EM-T16 PR-B: when the status decides the thread, the
+                # rule match is not asked. The backfill writes no History.
+                asked = [] if skip_rule_match(
+                    plan.first, status, account_id=account_id,
+                    job="backfill") else await ask_rule_match(plan.match)
                 # Block S (EM-T4a-2 PR-B2): only when the job asks the
                 # status. The ask runs with NO block open after it.
                 if status_ask_needed(plan, r, asked):
