@@ -112,7 +112,9 @@ def test_todos_and_custom_events_persist():
     assert folded is not None
     assert folded["agent_state"] == {"todos": todos}
     assert folded["custom_events"] == [
-        {"name": "artifact_created", "value": {"path": "outputs/r.pdf"}},
+        # segmentCutoff: the count of text segments before the event (0 here),
+        # so the bubble draws text and cards in stream order (WS-17 §24.9).
+        {"name": "artifact_created", "value": {"path": "outputs/r.pdf"}, "segmentCutoff": 0},
     ]
 
 
