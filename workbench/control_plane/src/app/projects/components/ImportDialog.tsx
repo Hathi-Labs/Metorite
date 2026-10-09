@@ -47,6 +47,7 @@ import {
   grantOptions,
   stageClashes,
   unmatchedPeopleNote,
+  memberOptions,
   statusMerges,
   importTreeRows,
   treeTotals,
@@ -157,9 +158,11 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   }, [open, step, run]);
 
 
-  // The organization's members, for the people step.
+  // The organization's members, for the people step. Only for a run planned
+  // before the plan carried them: the assignee search returns 8 at most.
+  const planHasMembers = Boolean(run?.plan?.members);
   useEffect(() => {
-    if (!open || step !== "map") return;
+    if (!open || step !== "map" || planHasMembers) return;
     let live = true;
     projectsApi
       .suggestAssignees("")
@@ -172,7 +175,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     return () => {
       live = false;
     };
-  }, [open, step]);
+  }, [open, step, planHasMembers]);
 
   // The organization's groups, for "who can see it". An admin who cannot
   // read groups still gets "everyone", which is the default.
@@ -550,10 +553,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
               <ul className="divide-y divide-border rounded-md border border-border">
                 {plan.people.map((person) => {
                   const value = (person.ref in people ? people[person.ref] : person.member) ?? UNASSIGNED;
-                  const options: SelectOption[] = [{ value: UNASSIGNED, label: "Leave unassigned" }, ...members];
-                  if (person.member && !options.some((o) => o.value === person.member)) {
-                    options.push({ value: person.member, label: person.member });
-                  }
+                  const options = memberOptions(plan, members, person, UNASSIGNED);
                   return (
                     <li key={person.ref} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
                       <div className="min-w-0 flex-1">
@@ -568,6 +568,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                         options={options}
                         onChange={(next) => setPeople((p) => ({ ...p, [person.ref]: next === UNASSIGNED ? null : next }))}
                         widthClass="max-w-[16rem]"
+                        filterAbove={8}
                       />
                     </li>
                   );

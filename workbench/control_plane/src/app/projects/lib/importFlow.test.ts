@@ -23,6 +23,7 @@ import {
   isStalled,
   isTerminal,
   keepOnReopen,
+  memberOptions,
   pollDelay,
   STALL_MS,
   mappingFrom,
@@ -406,5 +407,36 @@ describe("an admin can find the import (I-7, then WS-42)", () => {
   it("is offered in settings only, and never under the empty tree", () => {
     expect(page).not.toMatch(/onImport/);
     expect(page).toMatch(/mayImport=\{mayImport\}/);
+  });
+});
+
+describe("the people step's choices", () => {
+  const UN = "__unassigned__";
+  const members = Array.from({ length: 20 }, (_, i) => ({ email: `m${i}@acme.test`, name: `Member ${i}` }));
+
+  it("offers every member the plan carries, not the 8 the assignee search returns", () => {
+    const opts = memberOptions({ members }, [], { member: null }, UN);
+    expect(opts[0]).toEqual({ value: UN, label: "Leave unassigned" });
+    expect(opts).toHaveLength(21);
+    expect(opts[1]).toEqual({ value: "m0@acme.test", label: "Member 0", hint: "m0@acme.test" });
+  });
+
+  it("falls back to the fetched list for a run planned before the plan carried members", () => {
+    const fallback = [{ value: "a@acme.test", label: "Ann" }];
+    expect(memberOptions({}, fallback, { member: null }, UN).map((o) => o.value)).toEqual([UN, "a@acme.test"]);
+  });
+
+  it("is what the dialog draws, with a search box (source fence)", () => {
+    // Reverting the dialog to its own inline list would keep every test above green.
+    const dialog = readFileSync(join(__dirname, "..", "components", "ImportDialog.tsx"), "utf-8");
+    expect(dialog).toContain("memberOptions(plan, members, person, UNASSIGNED)");
+    expect(dialog).toMatch(/label=\{`Member for \$\{person\.display_name\}`\}[\s\S]{0,400}filterAbove=\{8\}/);
+    // The capped search is only a fallback for an older plan.
+    expect(dialog).toContain('if (!open || step !== "map" || planHasMembers) return;');
+  });
+
+  it("keeps a chosen member who is not in the list, so the control can name its value", () => {
+    const opts = memberOptions({ members }, [], { member: "gone@acme.test" }, UN);
+    expect(opts.at(-1)).toEqual({ value: "gone@acme.test", label: "gone@acme.test" });
   });
 });
