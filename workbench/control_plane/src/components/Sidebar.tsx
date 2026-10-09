@@ -11,7 +11,7 @@ import { autoFoldEnabled, floatingOpen, isWorkEvent, shouldFold } from "@/lib/si
 import Icon from "@/components/Icon";
 import NavBadge, { type NavBadgeTone } from "@/components/NavBadge";
 import { useRunActivity } from "@/hooks/useActiveSessions";
-import { runningLabel } from "@/lib/runActivity";
+import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -83,13 +83,14 @@ export default function Sidebar() {
    */
   const canPoll = shouldPollWorkspace(access, accessLoading);
   // The run badge (WS-51 S1): live assistant runs, counted on their app. A
-  // run on a pane this rail does not show counts on Chat.
+  // run on a pane this rail does not show counts on Chat. A run that waits on
+  // the member's answer (S2) turns the badge amber.
   const railHrefs = useMemo(
     () => new Set(railSections.flatMap((s) => s.items.map((p) => p.href))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
   );
-  const { byApp: runCounts } = useRunActivity(railHrefs, canPoll);
+  const { byApp: runCounts, needsByApp: needsCounts } = useRunActivity(railHrefs, canPoll);
 
   // Per-section fold state, persisted so the layout survives reloads. Stored
   // as a map of FOLDED ids — unknown/new sections therefore default to open.
@@ -306,6 +307,7 @@ export default function Sidebar() {
               onNavigate={armFold}
               agentUpdateCount={agentUpdateCount}
               runCounts={runCounts}
+              needsCounts={needsCounts}
               pinnedApps={pinnedApps}
               shellNav={shellNav}
             />
@@ -447,6 +449,7 @@ function NavSectionBlock({
   onNavigate,
   agentUpdateCount = 0,
   runCounts = {},
+  needsCounts = {},
   pinnedApps = [],
   shellNav = false,
 }: {
@@ -460,11 +463,13 @@ function NavSectionBlock({
   agentUpdateCount?: number;
   /** Live assistant runs per pane href (WS-51 S1). */
   runCounts?: Record<string, number>;
+  /** The runs per pane href that wait on the member's answer (WS-51 S2). */
+  needsCounts?: Record<string, number>;
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
 }) {
-  const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts);
+  const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts);
   if (collapsed) {
     return (
       <div>
@@ -537,12 +542,15 @@ function NavSectionBlock({
 /**
  * The one badge a pane wears. /agents keeps its "updates" count, in the
  * `warning` tone. Every other pane shows its live runs, in `success`
- * (WS-51 S1). Exported for `navBadge.test.ts`.
+ * (WS-51 S1), unless a run there waits on the member's answer: then the
+ * badge counts those runs in `warning` (S2, `runBadge`). Exported for
+ * `navBadge.test.ts`.
  */
 export function paneBadge(
   href: string,
   agentUpdateCount: number,
   runCounts: Record<string, number>,
+  needsCounts: Record<string, number> = {},
 ): { badge?: number; badgeTone?: NavBadgeTone; badgeLabel?: string } {
   if (href === "/agents") {
     return agentUpdateCount > 0
@@ -553,8 +561,8 @@ export function paneBadge(
         }
       : {};
   }
-  const runs = runCounts[href] ?? 0;
-  return runs > 0 ? { badge: runs, badgeTone: "success", badgeLabel: runningLabel(runs) } : {};
+  const b = runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0);
+  return b ? { badge: b.count, badgeTone: b.tone, badgeLabel: b.label } : {};
 }
 
 // ---------------------------------------------------------------------------

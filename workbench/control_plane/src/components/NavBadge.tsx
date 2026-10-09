@@ -5,12 +5,15 @@
  * Two tones, two meanings:
  *   - `success`: assistants running on this app (WS-51 S1). It pulses, and
  *     only when the member allows motion (`motion-safe:`).
- *   - `warning`: something waits for the member. Today that is the agent
- *     updates on /agents. `chat_run_continuity.md` S3 reserves it for "needs
- *     your answer", so a running count never takes it.
+ *   - `warning`: something waits for the member. On a run badge that is an
+ *     assistant that needs the member's answer (WS-51 S2): it wins over the
+ *     green count on the same pane (`runBadge` in `lib/runActivity.ts`), and
+ *     it does not pulse. /agents keeps its updates count in it too. A plain
+ *     running count never takes it.
  *
  * The count is not colour alone: `label` is its spoken name ("2 assistants
- * running"), on `role="img"` so a screen reader reads it inside the link.
+ * running", "1 assistant needs your answer"), on `role="img"` so a screen
+ * reader reads it inside the link.
  *
  * Fence (R7): `navBadge.test.ts`.
  */

@@ -32,7 +32,7 @@ import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import NavBadge from "@/components/NavBadge";
-import { runningLabel } from "@/lib/runActivity";
+import { runBadge } from "@/lib/runActivity";
 import { bindIdentity } from "@/lib/dataCache";
 import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
@@ -389,7 +389,12 @@ function MobileBottomNavInner({
     () => new Set(drawerKey.split(/[|,]/).filter(Boolean)),
     [drawerKey],
   );
-  const { total: activeCount, byApp: runCounts } = useRunActivity(drawerHrefs);
+  const {
+    total: activeCount, byApp: runCounts, needsTotal, needsByApp: needsCounts,
+  } = useRunActivity(drawerHrefs);
+  // One rule for every run badge (WS-51 S2): a run that waits on the member
+  // turns it amber, over the green running count (`lib/runActivity.ts`).
+  const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0);
 
   const menuContent = (
     <>
@@ -474,11 +479,10 @@ function MobileBottomNavInner({
                       <AppIcon name={p.icon} size={15} strokeWidth={active ? 2.5 : 2} />
                     </span>
                     <span className="text-sm font-medium">{p.label}</span>
-                    <NavBadge
-                      count={runCounts[p.href] ?? 0}
-                      tone="success"
-                      label={runningLabel(runCounts[p.href] ?? 0)}
-                    />
+                    {(() => {
+                      const b = drawerBadge(p.href);
+                      return b ? <NavBadge count={b.count} tone={b.tone} label={b.label} /> : null;
+                    })()}
                   </Link>
                 );
               })}
@@ -520,7 +524,7 @@ function MobileBottomNavInner({
   );
 
   const isChatPage = pathname?.startsWith("/chat") ?? false;
-  const runningName = runningLabel(activeCount);
+  const tabBadge = runBadge(activeCount, needsTotal);
   const isEmailPage = pathname?.startsWith("/email") ?? false;
   const isTasksPage = pathname?.startsWith("/tasks") ?? false;
   // Notes actions live on the library page; the meeting/session sub-pages have
@@ -579,8 +583,8 @@ function MobileBottomNavInner({
         >
           <span className="relative">
             <AppIcon name="Menu" size={20} />
-            {!isChatPage && (
-              <NavBadge count={activeCount} tone="success" label={runningName} placement="tab" />
+            {!isChatPage && tabBadge && (
+              <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
             )}
           </span>
           <span className="text-[10px] font-medium leading-none">Menu</span>
@@ -606,7 +610,9 @@ function MobileBottomNavInner({
             <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("chats")} className="relative flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
               <span className="relative">
                 <AppIcon name="MessageCircle" size={20} />
-                <NavBadge count={activeCount} tone="success" label={runningName} placement="tab" />
+                {tabBadge && (
+                  <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
+                )}
               </span>
               <span className="text-[10px] font-medium leading-none">Chats</span>
             </Button>

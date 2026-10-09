@@ -39,6 +39,7 @@ export type RunErrorCode =
   | "updating"
   | "interrupted"
   | "run_restarted"
+  | "answer_in_other_account"
   | "unknown";
 
 export interface RunErrorWords {
@@ -133,12 +134,28 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: false,
     tone: "notice",
   },
+  // WS-51 S2: the card belongs to another signed-in account. Nothing was
+  // sent. `{account}` is the account's address, from the notice's `raw`.
+  answer_in_other_account: {
+    title: "This question is for another account",
+    body: "Your answer was not sent. Switch to {account} to answer it.",
+    retry: false,
+    tone: "notice",
+  },
   unknown: {
     title: "Something went wrong",
     body: "Metorite could not finish this answer. Press Retry. If it happens again, tell your admin.",
     retry: true,
   },
 };
+
+/**
+ * The body of a notice, with `{account}` filled in from its `raw` text
+ * (WS-51 S2). A body with no placeholder is returned as it is.
+ */
+export function noticeBody(words: RunErrorWords, raw: string): string {
+  return words.body.replace("{account}", raw.trim() || "the account that asked");
+}
 
 /** What the error card draws. Stored in the thread as `__ERROR__<json>`. */
 export interface RunErrorView {

@@ -37,6 +37,9 @@ import {
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
 import { sendRespondInputResult } from "@/lib/respondInput";
+import { cardsToRestore, fetchPendingAsks } from "@/lib/pendingAsks";
+import { identity as boundIdentity } from "@/lib/dataCache";
+import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
 import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
@@ -896,8 +899,10 @@ export default function AgentChat({
   // locked (`lib/askAnswers.ts`, review round 1 P2-c).
   const [askAnswers, setAskAnswers] = useState<ReadonlyMap<string, string>>(() => new Map());
 
-  // Subscribe to agent events for HITL detection
-  useAgentEvents({
+  // Subscribe to agent events for HITL detection. The subscriber is kept in a
+  // ref too, so a card the server hands back (WS-51 S2, below) takes the SAME
+  // path as a card from the stream.
+  const hitlSubscriber: Parameters<typeof useAgentEvents>[0] = {
     onCustomEvent: ({ name, value, threadId }) => {
       // The subscriber registry is global — ignore events from any session
       // other than the one this chat is showing, so a background run on a
@@ -1003,8 +1008,12 @@ export default function AgentChat({
       // the user submits — clearing here makes it vanish mid-interaction.
       setElicitation((prev) => prev && prev.requestId ? null : prev);
       setUserInput((prev) => prev && prev.requestId ? null : prev);
+      // A run that PARKED on a card also ends here (WS-51 S2). Ask the server
+      // for the cards that still wait, so the parked card comes back.
+      setPendingAskTick((n) => n + 1);
     },
-  });
+  };
+  useAgentEvents(hitlSubscriber);
 
   // Keep a live ref to messages so the unmount handler can save the latest.
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -1023,6 +1032,30 @@ export default function AgentChat({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  const hitlRef = useRef(hitlSubscriber);
+  useEffect(() => { hitlRef.current = hitlSubscriber; });
+
+  // ── A durable "needs input" (WS-51 S2, `lib/pendingAsks.ts`) ─────────
+  // The cards of this chat that still wait on the server: a run that parked,
+  // a run a restart killed, or a reload. Fetched when the chat opens, when a
+  // run ends, and when the shared poller says this thread needs the member.
+  // A card that comes back answers through `postRespondInput`, and the
+  // gateway's 409 `run_restarted` turns the answer into a new run.
+  const [pendingAskTick, setPendingAskTick] = useState(0);
+  const threadNeedsInput = useThreadNeedsInput(sessionId);
+  useEffect(() => {
+    if (!sessionId) return;
+    let stale = false;
+    const forSession = sessionId;
+    void fetchPendingAsks(forSession).then((asks) => {
+      if (stale || sessionIdRef.current !== forSession) return;
+      for (const card of cardsToRestore(asks)) {
+        hitlRef.current.onCustomEvent?.({ name: card.name, value: card.value, threadId: forSession });
+      }
+    });
+    return () => { stale = true; };
+  }, [sessionId, threadNeedsInput, pendingAskTick]);
 
   // HITL cards are per-session component state — clear them on a session
   // switch so a question raised in session A never renders in (or gets its
@@ -1065,9 +1098,20 @@ export default function AgentChat({
       settle?: (outcome: "ok" | "drop" | "resent") => void,
     ) => {
       const forSession = sessionIdRef.current;
-      void sendRespondInputResult({ ...payload, thread_id: forSession }).then(({ outcome, resend }) => {
+      // The account this tab drew the card for. The route refuses the answer
+      // when the browser is signed in to another account now (WS-51 S2).
+      const drawnFor = boundIdentity();
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, otherAccount }) => {
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
+        if (otherAccount) {
+          setMessages((prev) => [...prev.filter((m) => m.id !== `other-account-${payload.request_id}`), {
+            id: `other-account-${payload.request_id}`,
+            role: "system",
+            content: `__ERROR__${JSON.stringify({ code: "answer_in_other_account", ref: null, raw: otherAccount })}`,
+            timestamp: Date.now(),
+          }]);
+        }
         if (outcome === "retry") { restoreCard(); return; }
         if (resend) {
           setMessages((prev) => [...prev, {

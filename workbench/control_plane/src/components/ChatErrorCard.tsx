@@ -2,7 +2,7 @@
 
 import React from "react";
 import Button from "@/components/ui/Button";
-import { RUN_ERROR_WORDS, type RunErrorView } from "@/lib/runErrors";
+import { RUN_ERROR_WORDS, noticeBody, type RunErrorView } from "@/lib/runErrors";
 
 /**
  * The error card a failed turn leaves in the thread.
@@ -60,7 +60,7 @@ export function ErrorCardView({
       <p className={`min-w-0 font-semibold wrap-anywhere ${notice ? "text-foreground" : "text-destructive"}`}>
         {words.title}
       </p>
-      <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{words.body}</p>
+      <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{noticeBody(words, error.raw)}</p>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
         {onRetry && words.retry && (
           <Button

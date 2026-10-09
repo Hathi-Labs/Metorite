@@ -16,6 +16,8 @@ import {
   badgeText,
   countRunsByApp,
   mergeRuns,
+  needsInputLabel,
+  runBadge,
   runningLabel,
 } from "./runActivity";
 
@@ -116,12 +118,51 @@ describe("the server's runs and this tab's runs", () => {
 
   it("the tab names a run the server calls 'unknown'", () => {
     const merged = mergeRuns([{ threadId: "t2", agentName: "unknown" }], [], agentOf);
-    expect(merged).toEqual([{ threadId: "t2", agentName: "email-assistant" }]);
+    expect(merged).toEqual([{ threadId: "t2", agentName: "email-assistant", state: "running" }]);
   });
 
   it("the server's name wins when it has one", () => {
     const merged = mergeRuns([{ threadId: "t3", agentName: "orchestrator" }], ["t3"], agentOf);
-    expect(merged).toEqual([{ threadId: "t3", agentName: "orchestrator" }]);
+    expect(merged).toEqual([{ threadId: "t3", agentName: "orchestrator", state: "running" }]);
+  });
+
+  // WS-51 S2. Mutation: drop `state` from mergeRuns, and this fails.
+  it("keeps the server's needs_input, and a tab-only run is running", () => {
+    const merged = mergeRuns(
+      [{ threadId: "t3", agentName: "task-manager", state: "needs_input" }],
+      ["t3", "t9"],
+      agentOf,
+    );
+    expect(merged.find((r) => r.threadId === "t3")?.state).toBe("needs_input");
+    expect(merged.find((r) => r.threadId === "t9")?.state).toBeUndefined();
+  });
+});
+
+describe("a run that needs the member (WS-51 S2)", () => {
+  const runs = [
+    { threadId: "a", agentName: "orchestrator", state: "needs_input" as const },
+    { threadId: "b", agentName: "orchestrator", state: "running" as const },
+    { threadId: "c", agentName: "task-manager", state: "needs_input" as const },
+    { threadId: "d", agentName: "email-assistant" },
+  ];
+
+  // Mutation: drop the `onlyNeedsInput` skip, and this fails.
+  it("counts only the runs that wait, on the same fold", () => {
+    expect(countRunsByApp(runs, null, NAV_SECTIONS, true)).toEqual({ "/chat": 1, "/tasks": 1 });
+    expect(countRunsByApp(runs, new Set(["/chat"]), NAV_SECTIONS, true)).toEqual({ "/chat": 2 });
+    expect(countRunsByApp(runs)).toEqual({ "/chat": 2, "/tasks": 1, "/email": 1 });
+  });
+
+  // Mutation: test `running` before `needsInput` in runBadge, and this fails.
+  it("amber wins over green on the same pane, and counts the runs that wait", () => {
+    expect(runBadge(3, 1)).toEqual({ count: 1, tone: "warning", label: "1 assistant needs your answer" });
+    expect(runBadge(3, 0)).toEqual({ count: 3, tone: "success", label: "3 assistants running" });
+    expect(runBadge(0, 0)).toBeNull();
+  });
+
+  it("speaks the count that waits", () => {
+    expect(needsInputLabel(1)).toBe("1 assistant needs your answer");
+    expect(needsInputLabel(2)).toBe("2 assistants need your answer");
   });
 });
 

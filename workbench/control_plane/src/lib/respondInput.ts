@@ -15,8 +15,15 @@
  *   asked died with an app update, and the gateway hands back the question
  *   and the answer as one message. The caller sends THAT, not the bare
  *   answer, so the next run knows what was asked (incident 2026-10-09).
+ *   A card whose run PARKED (WS-51 S2) comes back the same way.
+ * - A 409 `answer_in_other_account` (WS-51 S2) is a `retry` that carries
+ *   `otherAccount`: this tab drew the card for one account, and the browser
+ *   is now signed in to another. The route refused it before the gateway, so
+ *   nothing reached the other org. The caller keeps the card and says
+ *   "Switch to <account> to answer".
  *
- * Fence: `src/lib/confirmationQueue.test.ts` ("the answer POST").
+ * Fences: `src/lib/confirmationQueue.test.ts` ("the answer POST") and
+ * `src/lib/respondInput.test.ts` (the other account).
  */
 
 import { restartedCardMessage } from "@/lib/chatRecovery";
@@ -27,6 +34,9 @@ export type RespondOutcome = "ok" | "drop" | "retry";
 export interface RespondResult {
   outcome: RespondOutcome;
   resend: string | null;
+  /** The account that drew the card, when the browser is signed in to
+   *  another one now (WS-51 S2). The answer was not sent. */
+  otherAccount?: string | null;
 }
 
 export interface RespondInputBody {
@@ -36,6 +46,39 @@ export interface RespondInputBody {
   /** Lets the gateway route the answer to the worker that owns the parked
    *  run (P1-2 cross-worker control bus). */
   thread_id: string;
+  /** The account this tab drew the card for (WS-51 S2). The route refuses
+   *  the answer when the browser is signed in to another account now. */
+  as?: string | null;
+}
+
+/**
+ * The route's refusal for an answer from a tab whose account is no longer the
+ * signed-in one, or null to go on (WS-51 S2). `drawnFor` can only refuse,
+ * never grant: the gateway still checks the room under the session's tenant.
+ */
+export function otherAccountRefusal(
+  drawnFor: string | null | undefined,
+  signedInAs: string,
+): Response | null {
+  const want = (drawnFor ?? "").trim().toLowerCase();
+  if (!want || want === signedInAs.trim().toLowerCase()) return null;
+  return new Response(
+    JSON.stringify({ detail: { error: "answer_in_other_account", account: drawnFor } }),
+    { status: 409, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/** The account named by a 409 `answer_in_other_account`, or null. */
+export function otherAccountOf(body: string): string | null {
+  try {
+    const d = (JSON.parse(body) as { detail?: { error?: unknown; account?: unknown } })?.detail;
+    if (d && d.error === "answer_in_other_account" && typeof d.account === "string" && d.account) {
+      return d.account;
+    }
+  } catch {
+    /* not the route's JSON */
+  }
+  return null;
 }
 
 /** What a failed POST means. `status` is undefined for a network fault. */
@@ -68,6 +111,11 @@ export async function sendRespondInputResult(
   }
   if (res.ok) return { outcome: "ok", resend: null };
   const text = await res.text().catch(() => "");
+  const otherAccount = res.status === 409 ? otherAccountOf(text) : null;
+  if (otherAccount) {
+    // Not sent. The card stays, so the member can answer after the switch.
+    return { outcome: "retry", resend: null, otherAccount };
+  }
   const outcome = respondFailure(res.status);
   if (outcome === "drop") {
     const resend = res.status === 409 ? restartedCardMessage(text) : null;

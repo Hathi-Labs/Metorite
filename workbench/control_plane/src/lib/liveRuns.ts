@@ -20,12 +20,22 @@
 
 import { onClear } from "@/lib/dataCache";
 
+/**
+ * `needs_input`: the run waits on the member's answer to a card, or it parked
+ * and an answer starts a new run (WS-51 S2, `chat_run_continuity.md` §4 S2).
+ * A row with no state is `running`.
+ */
+export type RunState = "running" | "needs_input";
+
 export type LiveRun = {
   threadId: string;
   /** The agent's slug. "unknown" when the run started before its session row. */
   agentName: string;
   title?: string | null;
   startedAt?: string | null;
+  state?: RunState;
+  /** The kind of card that waits, when `state` is `needs_input`. */
+  askKind?: string | null;
 };
 
 export const VISIBLE_MS = 5_000;
@@ -62,7 +72,10 @@ function _schedule(ms: number): void {
 function _publish(runs: readonly LiveRun[]): void {
   // Same contents → same reference, so a subscriber that puts the list in a
   // dependency array does not loop (React #185, see useActiveSessions).
-  const key = runs.map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}`).sort().join("\n");
+  const key = runs
+    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}`)
+    .sort()
+    .join("\n");
   if (key === _key) return;
   _key = key;
   _runs = runs.length ? Object.freeze([...runs]) : EMPTY;
@@ -90,6 +103,8 @@ async function _poll(): Promise<void> {
               agentName: typeof d.agentName === "string" && d.agentName ? d.agentName : "unknown",
               title: d.title ?? null,
               startedAt: d.startedAt ?? null,
+              state: d.state === "needs_input" ? ("needs_input" as const) : ("running" as const),
+              askKind: typeof d.askKind === "string" ? d.askKind : null,
             })),
         );
       }
