@@ -196,7 +196,7 @@ app a free test number (§6.3).
 | Send seam | `whatsapp_ingestion/providers/base.py` (`BaseWhatsAppProvider` line 83, `send_text` line 94, `send_template` line 108) and `providers/cloud_api.py` | Free text and templates over the Cloud API |
 | 24-hour window rule | `gateway/routes/whatsapp/transport/send.py` (route at line 62) | The template-or-text decision |
 | Agent run | `gateway/routes/agent.py`: `POST /agent/run` (line 2732), `/agent/run/stream` (line 2007), `/agent/run/async` (line 2798) | A run as a named member, through `session_user` |
-| Service identity | `packages/acb_auth/acb_auth/deps.py` `get_current_user` (line 379) | `Bearer GATEWAY_INTERNAL_TOKEN` + `X-User-Email` gives a member context |
+| Service identity | `packages/acb_auth/acb_auth/deps.py` `get_current_user` (line 410) | `Bearer GATEWAY_INTERNAL_TOKEN` + `X-User-Email` gives a member context |
 | Projects, Tasks and Calendar tools | `apps/skills/skill-projects/skill_projects/` | Every tool calls the gateway as the member, through a per-run ContextVar |
 | Chat history | `chat_session`, `chat_message` (`infra/postgres/02_chat_history.sql`), with tenant RLS | One thread per member, visible in the web app |
 | Speech to text | `packages/acb_stt/` | Voice notes |
@@ -209,8 +209,9 @@ app a free test number (§6.3).
    (`infra/postgres/172_people_profile.sql` line 97) is private, self-written,
    unverified and not unique. It must not identify anybody. No other member
    table holds a phone.
-2. **The webhook knows only per-org numbers.** `_resolve_account_id` looks up
-   `phone_number_id` in `wa_accounts`. Every row there belongs to one org and
+2. **The webhook knows only per-org numbers.** `_resolve_account` (line 93) looks
+   up `phone_number_id` in `wa_accounts`, through the SECURITY DEFINER function of
+   migration 230. Every row there belongs to one org and
    one owning member (`infra/postgres/102_whatsapp.sql` line 24). The bot
    number belongs to Metorite, not to an org. An unknown number is logged as
    `whatsapp.webhook.unknown_number` and dropped today.
@@ -218,7 +219,7 @@ app a free test number (§6.3).
    (`whatsapp_ingestion/post_sync.py`) classify and triage. They never start a
    chat turn.
 4. 🔴 **The email route cannot carry a member of two orgs.**
-   `acb_auth/access.py` `resolve_identity` (line 1217) has two branches.
+   `acb_auth/access.py` `resolve_identity` (line 1247) has two branches.
    With the identity cutover on, it returns `(None, None)` for a person with
    more than one active membership, on purpose (P2a). With the cutover off, it
    reads one `app_user` row and binds the org of that row. In both cases,
@@ -241,6 +242,7 @@ the box:
 | Variable | Holds |
 |---|---|
 | `WHATSAPP_ASSISTANT_PHONE_NUMBER_ID` | Meta's id for the bot number. The webhook matches it FIRST |
+| `WHATSAPP_ASSISTANT_DISPLAY_NUMBER` | The bot's phone number, digits only with the country code and no "+" (for example `919800000000`). The `wa.me` link needs it, because the phone number id is not a phone number *(added 2026-10-09)* |
 | `WHATSAPP_ASSISTANT_WABA_ID` | The WhatsApp Business Account id, for templates |
 | `WHATSAPP_ASSISTANT_ACCESS_TOKEN` | The System User's permanent token |
 | `WHATSAPP_APP_SECRET` | Exists already. The webhook HMAC key |
@@ -256,7 +258,8 @@ row that routes every other org's traffic. (D-WAC-1, §10.)
 
 **Flow A, member-initiated (the default).**
 
-1. The member opens Settings in Metorite and selects **"Chat on WhatsApp"**.
+1. The member opens **My Profile** (`/people/me`) and selects **"Chat on
+   WhatsApp"**. The section adds no nav entry *(host page named 2026-10-09)*.
 2. Metorite issues a single-use code that expires in 15 minutes. It stores only
    a hash of the code, with the member and the org.
 3. Metorite shows a `https://wa.me/<bot number>?text=Link%20me%3A%20<code>`
@@ -287,6 +290,21 @@ org switcher (§5.11), and the last choice stays.
 active link to one member email. Then the bot refuses a link code from a
 different member email, and tells the sender why.
 
+**The routes (WAC-1).** A router of its own, never the `/whatsapp` router, because
+`require_feature_router("whatsapp")` gates that router for the inbox app. `GET
+/me/whatsapp-link` returns the channel state and the member's links. `POST
+/me/whatsapp-link/code` issues a code. Both need a signed-in member with
+`feature:chat`, because the run of WAC-3 is a Chat run. Both refuse when
+`WHATSAPP_ASSISTANT_ENABLED` is off or the bound org is not in
+`WHATSAPP_ASSISTANT_ORGS`. The org comes from the bound tenant, never from the
+request.
+
+**A new code replaces the old one.** Issuing a code revokes the member's earlier
+`pending` row in the same org, so one member has at most one live code per org.
+
+**The QR code renders in the browser** with the `qrcode` npm package, from the
+same `wa.me` link. The server sends no image.
+
 ### 5.3 The link table
 
 A new table, name chosen at build time (proposed `whatsapp_member_links`).
@@ -296,11 +314,19 @@ sends, digits only), `status` (`pending`, `active`, `revoked`), `code_hash`,
 
 - **R5.** The table is tenant-scoped, with RLS, and it passes
   `tests/unit/test_tenant_coverage.py`.
-- **The one cross-tenant read.** The webhook knows only `wa_id` when a message
-  arrives. It needs one narrow read, by `wa_id`, that returns
-  `(organization_id, member_email)` for an `active` row and nothing else. It
-  uses the same mechanism as `resolve_identity`'s RLS-exempt identity read. It
-  is not a new connection site (R5b).
+- **The cross-tenant reads** *(corrected 2026-10-09)*. The webhook knows no
+  org when a message arrives. The table has FORCE RLS (R5), so each read is a
+  SECURITY DEFINER function granted to `acb_app` only, in the shape of
+  migration 230. It is not a new connection site (R5b). WAC-2 adds two
+  functions:
+  - **by `wa_id`**, for a message: the active links of that phone
+  - **by `code_hash`**, for a redemption: the one `pending` row of that code,
+    because the sender of a code does not say which org issued it
+  *(Was: "the same mechanism as `resolve_identity`". That was wrong:
+  `resolve_identity` reads tables that are exempt from RLS.)*
+- **The code hash is SHA-256 of the code.** A code has 10 characters from a
+  32-character alphabet, which is 50 bits. It expires in 15 minutes and works
+  once, so a copy of the database cannot be used to redeem one later.
 - **Uniqueness** *(amended 2026-10-09)*. A partial unique index on
   `(wa_id, organization_id)` where `status = 'active'`, and a second partial
   unique index on `wa_id` where `is_current` is true. A column `is_current`
@@ -489,8 +515,8 @@ WAC-5. Put the test number's id and a temporary token in a local `.env` only.
 
 ### 6.4 What reaches the box
 
-Four values: the phone number id, the WABA id, the app secret and the access
-token (§5.1). The owner puts them in the box `.env`. They never go into chat, a
+Five values: the phone number id, the display number, the WABA id, the app
+secret and the access token (§5.1). The owner puts them in the box `.env`. They never go into chat, a
 commit or a log line.
 
 ---
@@ -525,10 +551,11 @@ WAC-8 comes before any production use. WAC-9 can follow WAC-8.
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8: without it the DB tests SKIP
-uv run pytest tests/unit/test_whatsapp_assistant_*.py -q
+uv run pytest tests/unit/test_wac_*.py -q   # not test_whatsapp_assistant_*, which is WS-20's
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_index_completeness.py tests/unit/test_handoff_queue.py -q
 uv run pytest tests/unit/test_whatsapp_webhook*.py -q                 # the WS-20 path stays green
 node .claude/hooks/ste-lint.mjs project-docs/specs/whatsapp_assistant_channel.md
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run   # the My Profile section
 ```
 
 The end-to-end check uses Meta's test number and the owner's phone. It is a
