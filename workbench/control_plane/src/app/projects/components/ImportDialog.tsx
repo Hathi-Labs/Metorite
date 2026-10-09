@@ -30,10 +30,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import CollapsibleSection from "@/components/ui/Collapsible";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import ProgressBar from "@/components/ui/ProgressBar";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
+import { statusAccent } from "@/lib/statusAccent";
 import { CATEGORY_HINT, CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/statusCategory";
 
 import { type ProjectRow, projectsApi } from "../lib/api";
@@ -41,11 +43,19 @@ import { importApi } from "../lib/importApi";
 import ImportHistory, { DiscardImportButton, type DiscardOutcome, DiscardNotice } from "./ImportHistory";
 import ImportTree from "./ImportTree";
 import {
+  becomesOptions,
   type ColumnChoice,
   type ContainerChoice,
   GRANT_ORG,
   grantOptions,
+  NEW_STATUS,
+  newStatusName,
+  type PlanStatus,
+  resolveStatuses,
   stageClashes,
+  stageShifts,
+  statusSummary,
+  targetValue,
   unmatchedPeopleNote,
   memberOptions,
   statusMerges,
@@ -73,6 +83,12 @@ import {
 
 const UNASSIGNED = "__unassigned__";
 const NEW_SPACE = "__new_space__";
+const stageLabel = (stage: string) => CATEGORY_LABEL[stage] ?? stage;
+const STAGE_OPTIONS: SelectOption[] = EDITABLE_CATEGORIES.map((s) => ({
+  value: s,
+  label: CATEGORY_LABEL[s],
+  hint: CATEGORY_HINT[s],
+}));
 
 interface Props {
   open: boolean;
@@ -106,6 +122,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const [groups, setGroups] = useState<{ slug: string; display_name?: string | null }[]>([]);
   const [containers, setContainers] = useState<Record<string, ContainerChoice>>({});
   const [statusNames, setStatusNames] = useState<Record<string, string>>({});
+  // I-10: the rows whose "Becomes" picker chose "New status…", so the row
+  // shows a name box, and whether the admin opened the rows at all.
+  const [creating, setCreating] = useState<Record<string, boolean>>({});
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [columns, setColumns] = useState<Record<string, ColumnChoice>>({});
   const picker = useRef<HTMLInputElement>(null);
   const reported = useRef(false);
@@ -145,6 +165,8 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     setGrant(GRANT_ORG);
     setContainers({});
     setStatusNames({});
+    setCreating({});
+    setReviewOpen(false);
     setColumns({});
     setConfirmedNewTree(false);
     reported.current = false;
@@ -386,8 +408,41 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const plan = run?.plan;
   const rows = useMemo(() => importTreeRows(plan?.tree ?? [], containers), [plan, containers]);
   const totals = treeTotals(rows);
-  const merges = useMemo(() => statusMerges(plan?.statuses ?? [], statusNames), [plan, statusNames]);
-  const clashes = useMemo(() => stageClashes(plan?.statuses ?? [], merges, stages), [plan, merges, stages]);
+  // I-10: what each ClickUp status becomes, with the admin's edits.
+  const targetSet = useMemo(() => plan?.target_statuses ?? [], [plan]);
+  const resolved = useMemo(
+    () => resolveStatuses(plan?.statuses ?? [], targetSet, statusNames, stages),
+    [plan, targetSet, statusNames, stages],
+  );
+  const merges = useMemo(() => statusMerges(resolved), [resolved]);
+  const clashes = useMemo(() => stageClashes(resolved, merges), [resolved, merges]);
+  const shifts = useMemo(() => stageShifts(plan?.statuses ?? [], merges), [plan, merges]);
+  const becomes = useMemo(() => becomesOptions(resolved, targetSet, stageLabel), [resolved, targetSet]);
+  // The space the summary names: the one new space, or the existing one.
+  const where =
+    targetId === NEW_SPACE
+      ? plan?.summary.spaces === 1
+        ? spaceName.trim() || plan.tree?.find((n) => n.kind === "space" && !n.skipped)?.becomes || null
+        : null
+      : (spaces.find((s) => s.id === targetId)?.name ?? null);
+  const summary = statusSummary(resolved, targetSet, where);
+
+  const chooseTarget = (status: PlanStatus, value: string) => {
+    if (value === NEW_STATUS) {
+      setCreating((c) => ({ ...c, [status.name]: true }));
+      setStatusNames((n) => ({ ...n, [status.name]: newStatusName(status.name) }));
+      setStages((st) => ({ ...st, [status.name]: st[status.name] ?? status.proposed }));
+      return;
+    }
+    const name = value.slice(targetValue("").length);
+    setCreating((c) => ({ ...c, [status.name]: false }));
+    setStatusNames((n) => ({ ...n, [status.name]: name }));
+    // A status another row adds: take its stage, so the merge never clashes.
+    const other = resolved.find(
+      (r) => !r.existing && r.source !== status.name && r.target.toLowerCase() === name.toLowerCase(),
+    );
+    if (other) setStages((st) => ({ ...st, [status.name]: other.stage }));
+  };
 
   return (
     <Modal
@@ -576,53 +631,105 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
               </ul>
             </div>
 
+            {/* I-10 (§7.7): show the result, and hide the work. The section
+                opens on a summary, and "Review mapping" opens the rows. */}
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold">Statuses</h3>
-              <p className="text-xs text-muted-foreground">
-                Choose the stage of each ClickUp status. A task in a Done or Cancelled stage is closed. Rename a
-                status here, and give two statuses the same name to merge them.
-              </p>
-              <ul className="divide-y divide-border rounded-md border border-border">
-                {plan.statuses.map((status) => (
-                  <li key={status.name} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium">{status.name}</p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {status.tasks} tasks in {status.lists} {status.lists === 1 ? "list" : "lists"}
-                        {merges[status.name]?.length ? ` · merges with ${merges[status.name].join(", ")}` : ""}
-                      </p>
-                      {clashes.has(status.name) && (
-                        <p className="text-[11px] text-destructive">
-                          Merged statuses need one stage. Choose the same stage for each.
-                        </p>
-                      )}
-                    </div>
-                    <Input
-                      inputSize="sm"
-                      aria-label={`Name in Metorite for ${status.name}`}
-                      placeholder={status.name}
-                      value={statusNames[status.name] ?? (status.becomes !== status.name ? status.becomes : "")}
-                      maxLength={64}
-                      className="max-w-[10rem]"
-                      // The stage never changes by itself: a name typed on the
-                      // way to another could move closed tasks to open without
-                      // a word (the I-8 review). A clash is shown instead.
-                      onChange={(e) => setStatusNames((n) => ({ ...n, [status.name]: e.target.value }))}
-                    />
-                    <SelectButton
-                      label={`Stage for ${status.name}`}
-                      value={stages[status.name] ?? status.category}
-                      options={EDITABLE_CATEGORIES.map((s) => ({
-                        value: s,
-                        label: CATEGORY_LABEL[s],
-                        hint: CATEGORY_HINT[s],
-                      }))}
-                      onChange={(next) => setStages((st) => ({ ...st, [status.name]: next as Stage }))}
-                      widthClass="max-w-[10rem]"
-                    />
+              <p className="text-xs text-foreground">{summary.line}</p>
+              <ul className="flex flex-wrap gap-1" aria-label="The statuses after the import">
+                {summary.chips.map((chip) => (
+                  <li
+                    key={chip.name}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusAccent({ category: chip.stage }).chip}`}
+                  >
+                    {chip.name}
+                    {chip.isNew && <span className="font-normal opacity-80">· new</span>}
                   </li>
                 ))}
               </ul>
+              {summary.merges.length > 0 && (
+                <ul className="space-y-0.5 text-[11px] text-muted-foreground">
+                  {summary.merges.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              )}
+              <CollapsibleSection
+                label="Review mapping"
+                icon="ListChecks"
+                count={plan.statuses.length}
+                // A clash blocks the import, so its row must be in view.
+                open={reviewOpen || clashes.size > 0}
+                onOpenChange={setReviewOpen}
+                ariaLabel="Review mapping of each ClickUp status"
+              >
+                <p className="pb-1.5 text-xs text-muted-foreground">
+                  Each ClickUp status becomes one status. Choose one in this space, one this import adds, or a new one.
+                  Two statuses with one target merge. A task in a Done or Cancelled stage is closed.
+                </p>
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {plan.statuses.map((status, i) => {
+                    const row = resolved[i];
+                    return (
+                      <li key={status.name} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-medium">{status.name}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {status.tasks} tasks in {status.lists} {status.lists === 1 ? "list" : "lists"}
+                            {merges[status.name]?.length ? ` · merges with ${merges[status.name].join(", ")}` : ""}
+                          </p>
+                          {clashes.has(status.name) ? (
+                            <p className="text-[11px] text-destructive">
+                              Merged statuses need one stage. Choose the same stage for each.
+                            </p>
+                          ) : (
+                            shifts.has(status.name) && (
+                              <p className="text-[11px] text-warning">
+                                Merges statuses of different stages. Its tasks take the {stageLabel(row.stage)} stage.
+                              </p>
+                            )
+                          )}
+                        </div>
+                        <SelectButton
+                          label={`What ${status.name} becomes`}
+                          prefix="Becomes"
+                          value={targetValue(row.target)}
+                          options={becomes}
+                          onChange={(next) => chooseTarget(status, next)}
+                          widthClass="max-w-[13rem]"
+                          filterAbove={8}
+                        />
+                        {creating[status.name] && (
+                          <Input
+                            inputSize="sm"
+                            aria-label={`New status name for ${status.name}`}
+                            placeholder={newStatusName(status.name)}
+                            value={statusNames[status.name] ?? ""}
+                            maxLength={64}
+                            className="max-w-[10rem]"
+                            onChange={(e) => setStatusNames((n) => ({ ...n, [status.name]: e.target.value }))}
+                          />
+                        )}
+                        {row.existing ? (
+                          // The status exists: its stage is fixed, and shown as text.
+                          <span className="w-[6rem] text-[11px] text-muted-foreground">{stageLabel(row.stage)}</span>
+                        ) : (
+                          // The stage never changes by itself: a name typed on
+                          // the way to another could move closed tasks to open
+                          // without a word (the I-8 review).
+                          <SelectButton
+                            label={`Stage for ${status.name}`}
+                            value={row.stage}
+                            options={STAGE_OPTIONS}
+                            onChange={(next) => setStages((st) => ({ ...st, [status.name]: next as Stage }))}
+                            widthClass="max-w-[8rem]"
+                          />
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </CollapsibleSection>
             </div>
           </section>
         )}

@@ -27,8 +27,18 @@ import {
   pollDelay,
   STALL_MS,
   mappingFrom,
+  becomesOptions,
+  GROUP_ADDED,
+  GROUP_IN_SPACE,
+  NEW_STATUS,
+  newStatusName,
+  type PlanStatus,
+  resolveStatuses,
   stageClashes,
+  stageShifts,
   statusMerges,
+  statusSummary,
+  type TargetStatus,
   unmatchedPeopleNote,
   importTreeRows,
   treeTotals,
@@ -129,10 +139,11 @@ const run = (over: Partial<ImportRun> = {}): ImportRun =>
   }) as ImportRun;
 
 describe("the mapping the admin's edits make", () => {
-  it("saves no row the admin left on the proposal, so a later import proposes again (I-9)", () => {
+  it("saves no person the admin left on the proposal, so a later import proposes again (I-9)", () => {
     const m = mappingFrom(run(), {}, {}, { kind: "new_space", name: null });
     expect(m.people).toEqual({});
-    expect(m.statuses["Closed"]).toEqual({ category: "done", name: null });
+    // I-10: every status row sends the status it becomes, by name.
+    expect(m.statuses["Closed"]).toEqual({ category: "done", name: "Closed" });
   });
   it("takes an edit, including a deliberate unassign", () => {
     const m = mappingFrom(run(), { "name:ann": null, "name:bo": "bo@x.test" }, { Closed: "cancelled" }, {
@@ -170,17 +181,22 @@ describe("I-8: the tree, status names, columns and sharing", () => {
   });
 
   it("two statuses given one name merge, without case", () => {
-    const merges = statusMerges(run().plan.statuses, { "to do": "closed" });
+    const statuses = run().plan.statuses;
+    const merges = statusMerges(resolveStatuses(statuses, [], { "to do": "closed" }, {}));
     expect(merges["to do"]).toEqual(["Closed"]);
     expect(merges["Closed"]).toEqual(["to do"]);
-    expect(statusMerges(run().plan.statuses, {})["Closed"]).toEqual([]);
+    expect(statusMerges(resolveStatuses(statuses, [], {}, {}))["Closed"]).toEqual([]);
   });
 
   it("marks a merge whose stages differ, and never changes a stage itself", () => {
     const statuses = run().plan.statuses;
-    const merges = statusMerges(statuses, { "to do": "Closed" });
-    expect([...stageClashes(statuses, merges, {})].sort()).toEqual(["Closed", "to do"]);
-    expect(stageClashes(statuses, merges, { "to do": "done" }).size).toBe(0);
+    const clashing = resolveStatuses(statuses, [], { "to do": "Closed" }, {});
+    expect([...stageClashes(clashing, statusMerges(clashing))].sort()).toEqual(["Closed", "to do"]);
+    const agreed = resolveStatuses(statuses, [], { "to do": "Closed" }, { "to do": "done" });
+    expect(stageClashes(agreed, statusMerges(agreed)).size).toBe(0);
+    // The I-8 mark stays: a merge of two proposed stages says so, even when
+    // nothing blocks it.
+    expect([...stageShifts(statuses, statusMerges(agreed))].sort()).toEqual(["Closed", "to do"]);
   });
 
   it("drops a container choice for a ref the file no longer holds", () => {
@@ -203,7 +219,8 @@ describe("I-8: the tree, status names, columns and sharing", () => {
     });
     expect(m.grant).toBe("group:eng");
     expect(m.statuses["Closed"]).toEqual({ category: "done", name: "Done" });
-    expect(m.statuses["to do"]).toEqual({ category: "todo", name: null });
+    // A blank name keeps the status the plan shows.
+    expect(m.statuses["to do"]).toEqual({ category: "todo", name: "to do" });
     expect(m.containers).toEqual({ l1: { name: null, skip: true }, f: { name: "Ops", skip: false } });
     expect(m.columns).toEqual({ Sprint: "description" });
   });
@@ -213,6 +230,111 @@ describe("I-8: the tree, status names, columns and sharing", () => {
       "org",
       "group:eng",
     ]);
+  });
+});
+
+describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
+  const SEED: TargetStatus[] = [
+    { name: "Backlog", category: "backlog" },
+    { name: "To do", category: "todo" },
+    { name: "In progress", category: "in_progress" },
+    { name: "Done", category: "done" },
+  ];
+  // The fixture's plan: ten ClickUp statuses, in the order the file shows them.
+  const row = (name: string, proposed: PlanStatus["proposed"], becomes: string, existing = true): PlanStatus => ({
+    name,
+    tasks: 1,
+    lists: 1,
+    proposed,
+    category: proposed,
+    becomes,
+    proposed_name: becomes,
+    existing,
+  });
+  const FRACKTAL: PlanStatus[] = [
+    row("backlog", "backlog", "Backlog"),
+    row("Closed", "done", "Done"),
+    row("done", "done", "Done"),
+    row("in process", "in_progress", "In progress"),
+    row("review", "in_progress", "Review", false),
+    row("to do", "todo", "To do"),
+    row("on hold", "backlog", "On hold", false),
+    row("todo", "todo", "To do"),
+    row("in progress", "in_progress", "In progress"),
+    row("completed", "done", "Done"),
+  ];
+  const stageLabel = (stage: string) => stage;
+
+  it("says how many statuses the import makes, and where", () => {
+    const resolved = resolveStatuses(FRACKTAL, SEED, {}, {});
+    const summary = statusSummary(resolved, SEED, "Fracktal");
+    expect(summary.line).toBe("Your 10 ClickUp statuses become 6 statuses in Fracktal.");
+    expect(statusSummary(resolved, SEED, null).line).toBe("Your 10 ClickUp statuses become 6 statuses.");
+    expect(statusSummary(resolved.slice(0, 1), SEED, null).line).toBe("Your 1 ClickUp status becomes 1 status.");
+  });
+
+  it("draws one chip per target, in stage order, and marks the new ones", () => {
+    const summary = statusSummary(resolveStatuses(FRACKTAL, SEED, {}, {}), SEED, null);
+    expect(summary.chips).toEqual([
+      { name: "Backlog", stage: "backlog", isNew: false },
+      { name: "On hold", stage: "backlog", isNew: true },
+      { name: "To do", stage: "todo", isNew: false },
+      { name: "In progress", stage: "in_progress", isNew: false },
+      { name: "Review", stage: "in_progress", isNew: true },
+      { name: "Done", stage: "done", isNew: false },
+    ]);
+  });
+
+  it("writes one line per merge", () => {
+    const summary = statusSummary(resolveStatuses(FRACKTAL, SEED, {}, {}), SEED, null);
+    expect(summary.merges).toEqual([
+      "To do and todo become To do.",
+      "In process and in progress become In progress.",
+      "Closed, done and completed become Done.",
+    ]);
+  });
+
+  it("a name the space holds IS that status, with its stage, whatever the case", () => {
+    const resolved = resolveStatuses(FRACKTAL, SEED, { review: "done" }, { review: "backlog" });
+    const review = resolved.find((r) => r.source === "review")!;
+    expect(review).toEqual({ source: "review", target: "Done", stage: "done", existing: true });
+    // A new status keeps the stage the admin gives it.
+    const held = resolveStatuses(FRACKTAL, SEED, { review: "QA" }, { review: "todo" });
+    expect(held.find((r) => r.source === "review")).toEqual({
+      source: "review",
+      target: "QA",
+      stage: "todo",
+      existing: false,
+    });
+  });
+
+  it("the picker offers three groups: the space, what this import adds, and a new status", () => {
+    const options = becomesOptions(resolveStatuses(FRACKTAL, SEED, {}, {}), SEED, stageLabel);
+    expect(options.filter((o) => o.group === GROUP_IN_SPACE).map((o) => o.label)).toEqual([
+      "Backlog",
+      "To do",
+      "In progress",
+      "Done",
+    ]);
+    expect(options.filter((o) => o.group === GROUP_ADDED).map((o) => o.label)).toEqual(["Review", "On hold"]);
+    expect(options.at(-1)).toEqual({ value: NEW_STATUS, label: "New status…" });
+    expect(options.find((o) => o.label === "On hold")?.hint).toBe("backlog");
+  });
+
+  it("a new status starts with the ClickUp name, with a capital", () => {
+    expect(newStatusName("  waiting   on vendor ")).toBe("Waiting on vendor");
+  });
+
+  it("the mapping sends each row's target and its stage", () => {
+    const planned = run();
+    planned.plan.statuses = FRACKTAL;
+    planned.plan.target_statuses = SEED;
+    const m = mappingFrom(planned, {}, { review: "cancelled" }, { kind: "new_space", name: null }, {
+      statusNames: { "on hold": "backlog" },
+    });
+    expect(m.statuses["Closed"]).toEqual({ category: "done", name: "Done" });
+    expect(m.statuses["on hold"]).toEqual({ category: "backlog", name: "Backlog" });
+    expect(m.statuses["review"]).toEqual({ category: "cancelled", name: "Review" });
   });
 });
 
@@ -298,9 +420,16 @@ describe("an export an earlier import already brought in", () => {
     expect(mustConfirmNewTree(p, false)).toBe(true);
     expect(mustConfirmNewTree(p, true)).toBe(false);
   });
-  it("reports statuses added to lists that were already there", () => {
-    expect(reportLines({ lanes_added: 2 })).toEqual(["Added 2 statuses to lists that were already in Metorite."]);
-    expect(reportLines({ lanes_added: 1 })).toEqual(["Added 1 status to lists that were already in Metorite."]);
+  it("reports statuses added to spaces and lists that were already there (I-10)", () => {
+    expect(reportLines({ lanes_added: 2 })).toEqual([
+      "Added 2 statuses to spaces and lists that were already in Metorite.",
+    ]);
+    expect(reportLines({ lanes_added: 1 })).toEqual([
+      "Added 1 status to spaces and lists that were already in Metorite.",
+    ]);
+    // D79 counts status sets, one per space or per list with its own set.
+    expect(reportLines({ done_status_added: 1 })).toEqual(["Added a Done status to 1 space or list."]);
+    expect(reportLines({ done_status_added: 2 })).toEqual(["Added a Done status to 2 spaces and lists."]);
     expect(reportLines({ tasks_written: 1 }, { containers: 1, tasks: 36 })).toContain(
       "Left out 36 tasks in the spaces and lists you unticked.",
     );

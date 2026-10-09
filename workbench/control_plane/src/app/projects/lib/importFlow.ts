@@ -84,9 +84,21 @@ export interface PlanStatus {
   name: string;
   tasks: number;
   lists: number;
+  /** The stage the rules propose for this source name. */
   proposed: Stage;
   category: Stage;
+  /** The Metorite status it lands in. */
   becomes: string;
+  /** I-10: the status the rules propose. Absent on a run planned before I-10. */
+  proposed_name?: string;
+  /** I-10: `becomes` is a status of the target set, so its stage is fixed. */
+  existing?: boolean;
+}
+
+/** One status of the set an import writes into (I-10, §6.3). */
+export interface TargetStatus {
+  name: string;
+  category: Stage;
 }
 
 export interface PlanWarning {
@@ -146,6 +158,11 @@ export interface ImportPlan {
    */
   members?: { email: string; name: string }[];
   statuses: PlanStatus[];
+  /**
+   * I-10: the set the statuses land in, in its own order — the seed of a new
+   * space, or the set of the existing space. Absent before I-10.
+   */
+  target_statuses?: TargetStatus[];
   closed_tasks: number;
   completed_at_estimated: number;
   done_status_added: number;
@@ -339,7 +356,7 @@ export function keepOnReopen(run: ImportRun | null, reportSeen: boolean): boolea
 /** The I-8 choices the wizard holds beside people and stages. */
 export interface WizardChoices {
   grant?: string;
-  /** Source status name → the name it takes in Metorite. */
+  /** Source status name → the Metorite status it becomes (I-10). */
   statusNames?: Record<string, string>;
   containers?: Record<string, ContainerChoice>;
   columns?: Record<string, ColumnChoice>;
@@ -353,13 +370,16 @@ export function mappingFrom(
   target: ImportMapping["target"],
   choices: WizardChoices = {},
 ): ImportMapping {
+  // I-10: every row sends the status it becomes, by name, so a later import
+  // that continues this tree keeps the same names (§6.3).
   const statuses: ImportMapping["statuses"] = {};
-  for (const status of run.plan.statuses) {
-    const category = stages[status.name] ?? status.category;
-    const typed = choices.statusNames?.[status.name];
-    const becomes = typed !== undefined ? cleanName(typed) || status.name : status.becomes;
-    statuses[status.name] = { category, name: becomes !== status.name ? becomes : null };
-  }
+  const resolved = resolveStatuses(
+    run.plan.statuses,
+    run.plan.target_statuses ?? [],
+    choices.statusNames ?? {},
+    stages,
+  );
+  for (const row of resolved) statuses[row.source] = { category: row.stage, name: row.target };
   // A row the admin left on the proposal is NOT saved, so a later import
   // proposes again. Saving "unassigned" for everyone with no member made the
   // next upload keep them unassigned even after they joined People (I-9).
@@ -454,39 +474,179 @@ export function treeTotals(rows: readonly TreeRow[]): { lists: number; skippedLi
   return { lists, skippedLists, tasks };
 }
 
-// ── statuses: rename and merge (I-8, §6.3) ───────────────────────────────────
+// ── statuses: a target for each, and the summary (I-10, §6.3, §7.7) ─────────
+
+/** Stage order inside one status set, as the gateway's `layout.STAGE_ORDER`. */
+export const STAGE_ORDER: readonly Stage[] = ["backlog", "todo", "in_progress", "done", "cancelled"];
+
+/** What one ClickUp status becomes, with the admin's edits applied. */
+export interface ResolvedStatus {
+  /** The ClickUp status name. */
+  source: string;
+  /** The Metorite status it lands in. */
+  target: string;
+  stage: Stage;
+  /** The target set holds this status, so its stage is fixed. */
+  existing: boolean;
+}
+
+const fold = (name: string) => cleanName(name).toLowerCase();
+
+/**
+ * Each row's target, as the gateway's `plan._statuses` decides it: the
+ * admin's chosen status, else the plan's. A name the target set holds,
+ * without case, IS that status, with its spelling and its stage.
+ */
+export function resolveStatuses(
+  statuses: readonly PlanStatus[],
+  targetSet: readonly TargetStatus[],
+  names: Record<string, string>,
+  stages: Record<string, Stage>,
+): ResolvedStatus[] {
+  const held = new Map(targetSet.map((t) => [fold(t.name), t]));
+  return statuses.map((s) => {
+    const target = cleanName(names[s.name] ?? "") || s.becomes || s.name;
+    const hit = held.get(fold(target));
+    if (hit) return { source: s.name, target: hit.name, stage: hit.category, existing: true };
+    return { source: s.name, target, stage: stages[s.name] ?? s.category, existing: false };
+  });
+}
 
 /**
  * Source status name → the OTHER source names that land in the same Metorite
  * status. Names compare without case, as the gateway merges them.
  */
-export function statusMerges(
-  statuses: readonly PlanStatus[],
-  names: Record<string, string>,
-): Record<string, string[]> {
-  const landing = (s: PlanStatus) => (cleanName(names[s.name] ?? "") || s.becomes || s.name).toLowerCase();
+export function statusMerges(resolved: readonly ResolvedStatus[]): Record<string, string[]> {
   const groups = new Map<string, string[]>();
-  for (const s of statuses) groups.set(landing(s), [...(groups.get(landing(s)) ?? []), s.name]);
+  for (const r of resolved) groups.set(fold(r.target), [...(groups.get(fold(r.target)) ?? []), r.source]);
   const out: Record<string, string[]> = {};
-  for (const s of statuses) out[s.name] = (groups.get(landing(s)) ?? []).filter((n) => n !== s.name);
+  for (const r of resolved) out[r.source] = (groups.get(fold(r.target)) ?? []).filter((n) => n !== r.source);
   return out;
 }
 
 /**
- * The statuses whose merge partners have another stage. The gateway refuses
- * such a plan, so the Map step marks each one where the admin can fix it.
+ * The statuses whose merge partners land with another stage. Only a NEW
+ * status can clash, because an existing one gives every row its own stage.
+ * The gateway refuses such a plan, so the row says how to fix it.
  */
-export function stageClashes(
-  statuses: readonly PlanStatus[],
-  merges: Record<string, string[]>,
-  stages: Record<string, Stage>,
-): Set<string> {
-  const stageOf = new Map(statuses.map((s) => [s.name, stages[s.name] ?? s.category]));
+export function stageClashes(resolved: readonly ResolvedStatus[], merges: Record<string, string[]>): Set<string> {
+  const stageOf = new Map(resolved.map((r) => [r.source, r.stage]));
   const out = new Set<string>();
-  for (const s of statuses) {
-    if ((merges[s.name] ?? []).some((other) => stageOf.get(other) !== stageOf.get(s.name))) out.add(s.name);
+  for (const r of resolved) {
+    if ((merges[r.source] ?? []).some((other) => stageOf.get(other) !== r.stage)) out.add(r.source);
   }
   return out;
+}
+
+/**
+ * The I-8 merge mark: the statuses that share a target with a status the
+ * rules put in ANOTHER stage. Nothing is wrong, but some tasks change stage,
+ * so the row says so.
+ */
+export function stageShifts(statuses: readonly PlanStatus[], merges: Record<string, string[]>): Set<string> {
+  const proposed = new Map(statuses.map((s) => [s.name, s.proposed]));
+  const out = new Set<string>();
+  for (const s of statuses) {
+    if ((merges[s.name] ?? []).some((other) => proposed.get(other) !== s.proposed)) out.add(s.name);
+  }
+  return out;
+}
+
+/** One chip of the summary: a status the import lands tasks in. */
+export interface SummaryChip {
+  name: string;
+  stage: Stage;
+  /** The import adds this status. */
+  isNew: boolean;
+}
+
+export interface StatusSummary {
+  /** "Your 10 ClickUp statuses become 6 statuses in Fracktal." */
+  line: string;
+  /** In stage order: the target set's order first, then first sight. */
+  chips: SummaryChip[];
+  /** One line per merge: "Closed, done and completed become Done." */
+  merges: string[];
+}
+
+/**
+ * The summary the Statuses section opens on (§7.7): show the result, and
+ * hide the work. `where` names the space, or is null when there are several.
+ */
+export function statusSummary(
+  resolved: readonly ResolvedStatus[],
+  targetSet: readonly TargetStatus[],
+  where: string | null,
+): StatusSummary {
+  const setIndex = new Map(targetSet.map((t, i) => [fold(t.name), i]));
+  const byTarget = new Map<string, { chip: SummaryChip; sources: string[]; seen: number }>();
+  resolved.forEach((r, i) => {
+    const key = fold(r.target);
+    const found = byTarget.get(key);
+    if (found) found.sources.push(r.source);
+    else byTarget.set(key, { chip: { name: r.target, stage: r.stage, isNew: !r.existing }, sources: [r.source], seen: i });
+  });
+  const rank = (key: string, seen: number) => setIndex.get(key) ?? targetSet.length + seen;
+  const ordered = [...byTarget.entries()].sort(
+    ([ka, a], [kb, b]) =>
+      STAGE_ORDER.indexOf(a.chip.stage) - STAGE_ORDER.indexOf(b.chip.stage) || rank(ka, a.seen) - rank(kb, b.seen),
+  );
+  const from = resolved.length;
+  const to = ordered.length;
+  const line =
+    `Your ${from} ClickUp ${from === 1 ? "status becomes" : "statuses become"} ` +
+    `${to} ${to === 1 ? "status" : "statuses"}${where ? ` in ${where}` : ""}.`;
+  const merges = ordered
+    .filter(([, g]) => g.sources.length > 1)
+    .map(([, g]) => {
+      const text = `${joinWords(g.sources)} become ${g.chip.name}.`;
+      return text.charAt(0).toUpperCase() + text.slice(1);
+    });
+  return { line, chips: ordered.map(([, g]) => g.chip), merges };
+}
+
+/** "a", "a and b", "a, b and c". */
+function joinWords(words: readonly string[]): string {
+  if (words.length < 2) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/** The "Becomes" picker's value for a target, and for "New status…". */
+export const NEW_STATUS = "__new_status__";
+export const targetValue = (name: string) => `t:${name}`;
+export const GROUP_IN_SPACE = "In this space";
+export const GROUP_ADDED = "Added by this import";
+
+/**
+ * The options of one row's "Becomes" picker (§7.7), in three groups: the
+ * statuses of the target set, the new statuses the rows make, and "New
+ * status…", which opens a name box and a stage picker in the row.
+ */
+export function becomesOptions(
+  resolved: readonly ResolvedStatus[],
+  targetSet: readonly TargetStatus[],
+  stageLabel: (stage: Stage) => string,
+): SelectOption[] {
+  const out: SelectOption[] = targetSet.map((t) => ({
+    value: targetValue(t.name),
+    label: t.name,
+    hint: stageLabel(t.category),
+    group: GROUP_IN_SPACE,
+  }));
+  const seen = new Set<string>();
+  for (const r of resolved) {
+    if (r.existing || seen.has(fold(r.target))) continue;
+    seen.add(fold(r.target));
+    out.push({ value: targetValue(r.target), label: r.target, hint: stageLabel(r.stage), group: GROUP_ADDED });
+  }
+  out.push({ value: NEW_STATUS, label: "New status…" });
+  return out;
+}
+
+/** The name a new status starts with: the ClickUp name, with a capital. */
+export function newStatusName(source: string): string {
+  const name = cleanName(source).slice(0, 64);
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 // ── who can see a new space (§5.3) ───────────────────────────────────────────
@@ -610,9 +770,16 @@ export function reportLines(
   if (report.comments_written) out.push(`Added ${plural(report.comments_written, "comment")}.`);
   if (report.completed_at_estimated)
     out.push(`Estimated the completion date of ${plural(report.completed_at_estimated, "closed task")}.`);
-  if (report.done_status_added) out.push(`Added a Done status to ${plural(report.done_status_added, "list")}.`);
+  // I-10: D79 counts the status SETS that gained a Done, one per space, or
+  // per list that an earlier import gave a set of its own.
+  if (report.done_status_added)
+    out.push(
+      `Added a Done status to ${plural(report.done_status_added, "space or list", "spaces and lists")}.`,
+    );
   if (report.lanes_added)
-    out.push(`Added ${plural(report.lanes_added, "status")} to lists that were already in Metorite.`);
+    out.push(
+      `Added ${plural(report.lanes_added, "status")} to spaces and lists that were already in Metorite.`,
+    );
   if (report.tasks_skipped)
     out.push(`Skipped ${plural(report.tasks_skipped, "task")} the earlier ClickUp connector wrote.`);
   if (report.tasks_moved) out.push(`${plural(report.tasks_moved, "task")} had moved, and kept status and people.`);
