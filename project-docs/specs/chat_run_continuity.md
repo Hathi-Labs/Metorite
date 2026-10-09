@@ -1,0 +1,305 @@
+# Chat run continuity — an assistant run outlives the tab, the account and the org
+
+**Status: ACTIVE.** Board row **WS-51**. Written 2026-10-10 from the owner's
+ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
+`e5644259b`.
+
+| Slice | State |
+|---|---|
+| S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
+| S2 — a durable "needs input" | Spec only |
+| S3 — the top-right activity control | Spec only |
+| S4 — the server saves the prompt at run start | Spec only |
+| S5 — unread replies, the toast, the tab title and the phone pill | Spec only |
+| S6 — the activity of the other signed-in accounts | Spec only |
+| D-1 to D-3 — the deferred decisions | **OWNER-GATE** |
+
+**This spec owns** how a member sees and resumes an assistant run that they
+are not watching. That covers the run list, the badges, the "needs input"
+state and its storage, and the activity control. `projects_ai_chat.md` §23
+keeps the chat cache namespaces. `navigation_shell.md` keeps the shell bar,
+the bell and the manifest. This spec adds one manifest field use (§4 S1) and
+no second shell part.
+
+---
+
+## 1. The owner's ask (2026-10-10)
+
+The owner's words, kept as written:
+
+- "the AI chat across all the assistants or the chat apps will continue to
+  work" …
+- … "even if the user logs off, switches to another account, and switches
+  back in"
+- multiple sessions, across the chat apps
+- "a robust mechanism … across AI chats, across organizations, across users"
+- a bubble on the nav with the count of running agent sessions
+- an alert at the top right when a session needs input
+- on the desktop and on mobile
+
+---
+
+## 2. Scope and non-goals
+
+**In scope.**
+
+1. One list of the member's live runs, read once for the whole app.
+2. A count on each app's nav entry, on the desktop sidebar and on the phone.
+3. A "needs input" state that survives a restart and an org switch.
+4. One top-right control that lists every run across apps and accounts.
+5. Signals outside an open chat: unread dots, a toast, the tab title.
+
+**Non-goals.**
+
+- A run worker that a deploy cannot stop. That is D-1, an owner decision.
+- Web push to a closed browser. That is D-2.
+- Caps on concurrent runs. That is D-3.
+- A new chat surface. Every slice reads the chats that exist.
+- Any change to who may see a run. `SESSION_VISIBLE_SQL` and the tenant
+  key `cc:<org>:liveruns` stay the only rules (#791).
+
+---
+
+## 3. The state on 2026-10-10
+
+### 3.1 Already shipped
+
+| PR | What it did |
+|---|---|
+| #780 | Chat uploads survive the run |
+| #791 | The per-org run registry `cc:<org>:liveruns`. `GET /chat/active-sessions` became tenant-safe, and each row carries `startedAt` |
+| #797, #805 | Dead-run recovery: the startup sweep, the "Metorite is updating" notice, held sends, and an interrupted reply with Continue. A late claimant stands down |
+| #795 | An edit supersedes the last message |
+
+### 3.2 Measured on `origin/main`
+
+**The run.** A run is detached from its HTTP request
+(`stream_relay.run_detached`, `apps/services/orchestrator/orchestrator/stream_relay.py:1072`).
+The run pins its identity and its org at start. An account or org switch
+reloads the page, and the run goes on. A browser can reattach within one hour,
+the TTL of the Redis stream (`STREAM_TTL_SECONDS`, same file, line 85).
+
+**A pending question.** `ask_questions`, `request_confirmation` and `ask_user`
+wait on an in-process Future (`executor._pending_user_input`,
+`apps/services/orchestrator/orchestrator/executor.py:738`), with a one-hour
+timeout. A restart loses it. `POST /agent/respond-input`
+(`apps/services/gateway/gateway/routes/agent.py:2725`) resolves the answer in
+the caller's CURRENT org. So an answer from another org fails.
+
+**The client.** `lib/chatStore.ts` is a module singleton keyed by thread id.
+Before S1, `hooks/useActiveSessions.ts` ran one 5 s poll of
+`/chat/active-sessions` in each of five surfaces. The HITL state lives in
+`AgentChat` component state (`confirmations`, `elicitation`, `userInput`).
+`lib/askPin.ts` holds `pendingAsk()`.
+
+**The nav.** Before S1, `Sidebar.tsx` `NavLink` had one `badge` slot, in a
+hard-coded `bg-warning`, and only `/agents` used it. The phone's Chats tab
+showed a count on `/chat` only. The drawer links had no badge.
+
+**The gaps.** Nothing tells a member "needs input" outside an open chat. No
+tab title, favicon or web push signals it. No list joins the chats of two
+accounts. The account switcher is the Gmail model (`lib/accountSwitch.ts`),
+and a switch reloads the page.
+
+---
+
+## 4. The slices
+
+Every slice is **AGENT-SAFE** to build, and each one ships dark where it
+changes behaviour. S2 adds a table, so R5, R6 and R8 bind it. S6 reads a
+second account's cookie, so it takes the full review loop.
+
+### S1 — one activity feed and the nav badges (BUILT 2026-10-10)
+
+**What.**
+
+1. **One poller.** `src/lib/liveRuns.ts` reads `/api/chat/active-sessions`
+   for the whole app. It polls every 5 s while the tab is visible, and every
+   30 s while it is hidden. It polls at once when the tab shows again, and it
+   stops when the last subscriber leaves. `useActiveSessions` keeps its API
+   for its five consumers and reads the shared list. It still unions the list
+   with the local `isLoading` flags.
+2. **One mapping.** A pane names its agent in the shell manifest
+   (`NavPane.agent`, `navigation_shell.md` §5.1). `src/lib/runActivity.ts`
+   reads it. My Tasks names `task-manager`, My Email names `email-assistant`,
+   Projects names `projects-assistant`, and App Workshop names `app-builder`.
+   Every other agent counts on Chat, the orchestrator too. A run whose pane
+   the member cannot see also counts on Chat, so no run is invisible. The
+   tab's own record of a session's agent names a run that the server still
+   calls `unknown`.
+3. **The desktop sidebar.** `NavLink` takes `badgeTone` and `badgeLabel`.
+   `src/components/NavBadge.tsx` draws the count, collapsed and expanded. A
+   running count is `success`. `/agents` keeps its update count in `warning`,
+   and S3 reserves `warning` for "needs you".
+4. **The phone.** Each drawer link shows its app's count. The bottom bar
+   shows the total on every page. On `/chat` the Chats tab carries it. On
+   every other page the Menu tab carries it, because the Chats tab exists on
+   `/chat` only.
+5. **Access.** The badge is `role="img"` with a spoken name, for example "2
+   assistants running". A collapsed link names its pane in `sr-only` text.
+   The pulse is `motion-safe:animate-pulse`.
+6. **The stale `isLoading`.** The reattach loop in `hooks/useAgentChat.ts`
+   was aborted on unmount, and its catch and finally wrote nothing once
+   cancelled. So `isLoading` stayed true with a dead controller, and the badge
+   counted a run that the tab no longer watched. `releaseLoading` in
+   `lib/chatStore.ts` now clears it on unmount, and on a steered (202) or
+   refused reconnect. It clears only the state of the loop that owns it. A
+   run that still runs stays counted, because the server's list reports it.
+7. **Tokens.** The run dots in `app/chat/page.tsx`, `components/AgentChat.tsx`
+   and the Tasks and Email rails use `bg-success`, not the raw palette.
+
+**Done when.**
+
+- One tab sends one request per tick, for any number of subscribers.
+- A hidden tab waits 30 s between requests.
+- Each of the five agents counts on its own pane, and every other agent
+  counts on Chat.
+- The sidebar, the drawer and the bottom bar draw the badge in `success`.
+- An unmounted reattach loop leaves `isLoading` false.
+
+**Fences (R7).**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/liveRuns.test.ts` | One fetch for N subscribers, a late subscriber starts no request, no second request in flight, the hidden interval, and a tree sweep that refuses a second poller |
+| `src/lib/runActivity.test.ts` | The agent-to-app map, the Chat fallback, the hidden-pane fold, and no two panes naming one agent |
+| `src/components/navBadge.test.ts` | The badge on the sidebar, collapsed and expanded, and on the phone nav on every page |
+| `src/lib/chatStore.test.ts` | `releaseLoading`, and its three call sites in the reattach loop |
+| `src/lib/theme/conformance.test.ts` | Three palette budgets left the baseline, and `AgentChat.tsx` fell to 12 |
+
+**Mutation record (2026-10-10).** Twelve mutants, twelve killed:
+
+- the single-poller guard and the in-flight guard
+- the hidden interval
+- the map, the fold and the "unknown" rule
+- the owner check of `releaseLoading`, and its unmount call
+- the badge tone, the motion rule and the Menu badge
+
+**Known limits.** A folded sidebar section hides its items, and with them
+their badges. The phone drawer shows the counts of the moment it opened.
+
+### S2 — a durable "needs input"
+
+**What.** A pending ask becomes a row, not only a Future.
+
+1. A new table, `chat_pending_ask`, holds one row per open question. A row
+   names the request id, the org, the thread, the run and the actor. It also
+   holds the kind, the question, the time it was asked, and the answer. It is
+   tenant-scoped under FORCE ROW LEVEL SECURITY (R5a). Take the migration
+   number at build time (R1).
+2. After about ten minutes with no answer, the run writes a checkpoint and
+   ends. The row stays open, in the state `parked`.
+3. An answer to a parked row starts a NEW run on the same thread. That run
+   reads the question and the answer as its first turn. This reuses the
+   `run_restarted` shape of #797 (`gateway/routes/drain.py`).
+4. `POST /agent/respond-input` finds the row by its request id. It takes the
+   org from the row, never from the request (R5e). Then it checks that the
+   caller is a member of that org, with a right to the thread.
+5. `GET /chat/active-sessions` adds `state`, `running` or `needs_input`. A
+   parked row is listed as `needs_input`, with no live run behind it.
+
+**Done when.** A question asked before a restart can be answered after it. An
+answer from another org resumes the run in the run's own org. A member of a
+second org cannot answer it. R8 binds: run the row-level security and the
+lookup against a real Postgres.
+
+**Fences.** A `tests/unit/test_pending_ask_*.py` suite under R8, and an
+entry in `tests/unit/test_tenant_coverage.py`.
+
+### S3 — the top-right activity control
+
+**What.** One control in the shell bar's right side, beside the bell. It shows
+an agent icon with the count of live runs. An amber dot, the `warning` tone,
+shows when a run needs input.
+
+The control opens one list across apps. Each row names the agent, the chat
+title and a status: "running 2 min · latest step", "needs your answer", or
+"new reply". A tap opens that chat in its app.
+
+**Done when.** The control reads the S1 store, with no second poll. It reads
+the S2 `state`. It draws on every page, desktop and phone.
+
+**Fence.** A render test of the three row states, and the S1 tree sweep.
+
+### S4 — the server saves the prompt at run start
+
+**What.** Today the browser saves the member's turn (`lib/sessions.ts`, a
+write-through cache). A tab that closes before the save drops the turn, and
+the run goes on without it. The gateway saves the turn when the run starts.
+The write is idempotent by message id, so the browser's save stays harmless.
+
+**Done when.** A tab closed one second after a send still shows the prompt on
+the next open. R8 binds the upsert.
+
+### S5 — signals outside an open chat
+
+**What.**
+
+- A dot on a chat that got a reply the member has not read.
+- A toast when a run ends while its chat is closed.
+- In a hidden tab, the title and the favicon carry the count, for example
+  "(1) Needs you · Metorite".
+- On the phone, an agent pill above the bottom nav that shows the live step.
+
+**Done when.** Each signal reads the S1 store and the S2 `state`. The toast
+uses the shell's one toast viewport.
+
+### S6 — the activity of the other signed-in accounts
+
+**What.** The S3 list adds the runs of the other accounts on this device. The
+BFF reads `active-sessions` with each signed-in slot's own cookie. A tap on
+another account's row switches account (`lib/accountSwitch.ts`), then opens
+the chat.
+
+**Done when.** A run in account B shows in account A's list, with B's name.
+No row of B reaches A's tenant cache. The full review loop runs, because this
+reads a second identity.
+
+---
+
+## 5. Deferred — owner decisions
+
+| Id | Decision | Recommendation | Gate |
+|---|---|---|---|
+| D-1 | A separate run-worker service, so a deploy never stops a run | Build after S2, which makes a stop cheap to resume | **OWNER-GATE** |
+| D-2 | Opt-in web push for "needs input" | After S5 | **OWNER-GATE** |
+| D-3 | Caps on concurrent runs | 5 per member and 20 per org | **OWNER-GATE** |
+
+An agent must refuse these by name until the owner decides.
+
+---
+
+## 6. File paths
+
+| Path | Role |
+|---|---|
+| `workbench/control_plane/src/lib/liveRuns.ts` | The one poller (S1) |
+| `workbench/control_plane/src/lib/runActivity.ts` | The agent-to-app map and the counts (S1) |
+| `workbench/control_plane/src/hooks/useActiveSessions.ts` | `useActiveSessions` and `useRunActivity` |
+| `workbench/control_plane/src/components/NavBadge.tsx` | The one nav count |
+| `workbench/control_plane/src/components/Sidebar.tsx` | `NavLink`, `paneBadge` |
+| `workbench/control_plane/src/components/AppShell.tsx` | The phone drawer and bottom bar |
+| `workbench/control_plane/src/lib/chatStore.ts` | `releaseLoading`, `setSessionAgent` |
+| `workbench/control_plane/src/hooks/useAgentChat.ts` | The reattach loop |
+| `workbench/control_plane/src/lib/nav.ts` | `NavPane.agent` |
+| `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`) |
+| `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2) |
+| `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2) |
+| `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs` |
+
+---
+
+## 7. Verification commands
+
+From `workbench/control_plane`:
+
+```bash
+npx vitest run src/lib/liveRuns.test.ts src/lib/runActivity.test.ts \
+  src/lib/chatStore.test.ts src/components/navBadge.test.ts
+npx vitest run src/lib/theme/
+npx tsc --noEmit
+npx vitest run
+```
+
+For S2 and S4, start the scratch database first (`engineering_practice.md`
+§1.1), then run the named `tests/unit/` files with `uv run pytest`.
