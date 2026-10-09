@@ -57,6 +57,7 @@ export const INFO_TIP_WIDTH = 320;
 /**
  * How the panel hangs, so it stays inside the viewport at 390 px. It hangs
  * from the side with more room, and it never grows wider than that room.
+ * `width` is the panel's OUTER width, border included.
  */
 export function infoTipFit(
   rect: { left: number; right: number },
@@ -150,10 +151,13 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
         open={open}
         align={fit.align}
         maxHeight={360}
-        className="p-3 text-xs"
+        className="text-xs"
         panelProps={{ id: panelId, role: "note", "aria-label": label }}
       >
-        <div style={{ width: fit.width }} className="space-y-1.5 text-foreground">
+        {/* The padding sits on this box, which is border-box, so `fit.width`
+            is the panel's real width less its 1 px border on each side. The
+            I-10b walk measured a panel 26 px past the edge at 390 px. */}
+        <div style={{ width: fit.width - 2 }} className="space-y-1.5 p-3 text-foreground">
           {title ? <p className="font-semibold">{title}</p> : null}
           {children}
         </div>
