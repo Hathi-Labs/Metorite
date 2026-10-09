@@ -210,9 +210,11 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # Speech, meetings and media providers of the deployment.
     "ASSEMBLYAI_", "DEEPGRAM_", "RECALL_", "PIXELLAB_", "LIVE_", "MEET_",
     "SHERPA_", "LOCAL_", "VIRTUAL_", "PULSE_", "CHROME_", "PLAYWRIGHT_",
-    # Deploy, release and test harness.
+    # Deploy, release and test harness. BH2_ is the gateway sandbox check of
+    # vps_apply.sh and the watchdog (WS-49 BH-2). A tenant that set
+    # BH2_ROLLBACK_SCRIPT would choose the script that the deploy runs.
     "DEPLOY_", "RELEASE_", "VPS_", "CADDY_", "SMOKE_", "GH_", "MB_", "OC_",
-    "WB_", "E2E_", "CHECKOUT_", "VERSION_",
+    "WB_", "E2E_", "CHECKOUT_", "VERSION_", "BH2_",
     # The process environment and the toolchain. ``BASH`` covers BASH_ENV,
     # BASHOPTS, BASH_XTRACEFD and every BASH_FUNC_ export.
     "LC_", "BASH", "PYTHON", "UV_", "PIP_", "LD_", "DYLD_", "NODE_",
