@@ -115,7 +115,7 @@ def _gate_first_claim(monkeypatch) -> asyncio.Event:
 # Race 1: the late claimant
 # ---------------------------------------------------------------------------
 
-def test_a_late_claimant_never_closes_the_new_run(liveness, no_persist, monkeypatch):
+def test_a_late_claimant_never_closes_the_new_run(liveness, no_persist, monkeypatch):  # noqa: F811
     """B sees the run dead and goes to claim. A recovers it first and starts
     the next run, whose start deletes the claim. B then gets the claim, and
     must stand down and steer into A's run, not close it."""
@@ -145,7 +145,7 @@ def test_a_late_claimant_never_closes_the_new_run(liveness, no_persist, monkeypa
 
 
 def test_the_sweep_never_closes_a_run_a_request_just_started(
-    liveness, no_persist, monkeypatch,
+    liveness, no_persist, monkeypatch,  # noqa: F811
 ):
     """The same race with the sweep as the late claimant."""
     from gateway import chat_recovery
