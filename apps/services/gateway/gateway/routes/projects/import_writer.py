@@ -231,6 +231,14 @@ STATUSES_OF_SQL = (
     "SELECT id, name, category, position FROM pm_task_statuses "
     " WHERE project_id = CAST(:project AS uuid) ORDER BY position, name"
 )
+#: The name each earlier lane carries NOW, so a run that continues follows a
+#: member's rename (the I-10 review, P2-b). The tenant is named here and by
+#: RLS. An intake lane is never a target.
+LANES_BY_ID_SQL = (
+    "SELECT s.id, s.name FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+    " WHERE p.organization_id = CAST(:org AS uuid) AND s.id = ANY(CAST(:ids AS uuid[])) "
+    "   AND s.category <> 'triage'"
+)
 TYPES_SQL = (
     "SELECT id, name, coalesce(is_epic, false) AS is_epic FROM pm_task_types "
     " WHERE project_id = CAST(:root AS uuid)"
@@ -340,6 +348,7 @@ async def apply_run(
         facts["continues"],
         facts["earlier_names"],
         facts["reserved_statuses"],
+        facts["renamed_statuses"],
     )
 
     if not progress.get("nodes"):
@@ -574,22 +583,47 @@ async def continues_earlier(
     return bool(nodes)
 
 
-async def earlier_status_names(
+async def continuation_facts(
     db: Any,
     organization_id: str,
     run_id: str,
     bundle: ImportBundle,
     mapping: ImportMapping,
     file_hashes: list[str],
-) -> dict[str, tuple[str, str]]:
-    """``source status name → (Metorite name, stage)``, as the runs this one
-    continues recorded it (I-10, §6.3). A run that continues keeps those
-    names. A run written before I-10 recorded none, and its names were the
-    source names, so the plan then keeps the source name."""
-    _nodes, _continued, _statuses, names = await _earlier_nodes(
+) -> tuple[dict[str, tuple[str, str]], list[str], bool, dict[str, str]]:
+    """What a run that continues needs to plan its statuses (I-10, §6.3):
+
+    1. ``source status name → (Metorite name, stage)``, as the runs it
+       continues recorded it. A run written before I-10 recorded none, and
+       its names were the source names, so the plan then keeps the source name.
+    2. The spaces it goes into again. The plan reads THEIR sets, never the
+       seed, so a lane they already hold is not "new" (the I-10 review, P2-b).
+    3. Whether it also makes a new space, which starts with the seed.
+    4. ``old name → name now`` for a lane a member renamed, read through the
+       ids the earlier runs recorded. A name follows only when no lane with
+       those ids still carries the old name, and every one carries the same
+       new name. Otherwise the writer follows each lane by its id."""
+    reusable, _continued, earlier_status, names = await _earlier_nodes(
         db, organization_id, run_id, bundle, mapping, file_hashes
     )
-    return names
+    space_refs = [c.ref for c in bundle.containers if c.kind == "space"]
+    spaces = [reusable[r][0] for r in space_refs if r in reusable and reusable[r][1] is None]
+    by_name = status_ids_by_name(earlier_status)
+    ids = sorted({i for found in by_name.values() for i in found})
+    now: dict[str, str] = {}
+    if ids:
+        now = {
+            str(r.id): str(r.name)
+            for r in (
+                await db.execute(text(LANES_BY_ID_SQL), {"org": organization_id, "ids": ids})
+            ).fetchall()
+        }
+    renamed: dict[str, str] = {}
+    for old, found in by_name.items():
+        current = {now[i] for i in found if i in now}
+        if len({n.lower() for n in current}) == 1 and old not in {n.lower() for n in current}:
+            renamed[old] = sorted(current)[0]
+    return names, spaces, len(spaces) < len(space_refs), renamed
 
 
 async def _earlier_nodes(
@@ -790,28 +824,48 @@ async def _reuse_statuses(
 
 
 async def target_statuses(
-    db: Any, mapping: ImportMapping, target_ok: bool = True
+    db: Any,
+    mapping: ImportMapping,
+    target_ok: bool = True,
+    continued_spaces: list[str] | None = None,
+    new_space_too: bool = True,
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """The status set a run writes into, as ``(name, stage)`` in its order
-    (I-10, §6.3), and the names that set RESERVES: its intake lanes. A new
-    space starts with the root seed of ``_seed_root``. An existing space uses
-    the set of its status owner. The plan reads both as facts, so a second
-    copy of the seed cannot drift from the one written."""
+    (I-10, §6.3), and the names that set RESERVES: its intake lanes. The plan
+    reads both as facts, so a second copy of the seed cannot drift.
+
+    * An existing space: the set of its status owner.
+    * A new space: the root seed of ``_seed_root``.
+    * A run that continues into spaces an earlier run made: THOSE spaces'
+      sets, merged case-blind in order (the I-10 review, P2-b). A member may
+      have renamed a seed lane there, or a lane the import added is already
+      there. The seed joins only when the run also makes a new space."""
     target = mapping.target
-    if target.kind != "existing":
-        seed = [(name, category) for name, _color, _pos, category, _default in _SEED_STATUSES]
+    seed = [(name, category) for name, _color, _pos, category, _default in _SEED_STATUSES]
+    if target.kind == "existing":
+        if not (target.project_id and target_ok):
+            return [], []
+        owners = [target.project_id]
+    elif continued_spaces:
+        owners = list(continued_spaces)
+    else:
         return seed, []
-    if not (target.project_id and target_ok):
-        return [], []
-    try:
-        owner = await status_owner_id(db, target.project_id)
-    except HTTPException:
-        return [], []
-    rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
-    # A triage lane is no stage a source status can land in (the I-10 review,
-    # P1-b). Its name is still taken, so the plan must keep away from it.
-    lanes = [(str(r.name), str(r.category)) for r in rows if str(r.category) in STAGE_ORDER]
-    reserved = [str(r.name) for r in rows if str(r.category) not in STAGE_ORDER]
+    lanes: list[tuple[str, str]] = []
+    reserved: list[str] = []
+    for node in owners:
+        try:
+            owner = await status_owner_id(db, node)
+        except HTTPException:
+            continue
+        for r in (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall():
+            # A triage lane is no stage a source status can land in (the I-10
+            # review, P1-b). Its name is still taken, so the plan keeps off it.
+            if str(r.category) not in STAGE_ORDER:
+                reserved.append(str(r.name))
+            elif str(r.name).lower() not in {n.lower() for n, _ in lanes}:
+                lanes.append((str(r.name), str(r.category)))
+    if target.kind != "existing" and new_space_too:
+        lanes += [(n, c) for n, c in seed if n.lower() not in {x.lower() for x, _ in lanes}]
     return lanes, reserved
 
 

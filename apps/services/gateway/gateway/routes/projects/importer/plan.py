@@ -272,6 +272,7 @@ def build_plan(
     continues: bool = False,
     earlier_names: dict[str, StatusTarget] | None = None,
     reserved_statuses: list[str] | None = None,
+    renamed_statuses: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The dry run.
 
@@ -287,8 +288,9 @@ def build_plan(
     status owner. ``continues`` says that the writer goes into an earlier
     import's tree (``import_writer.continues_earlier``), and
     ``earlier_names`` holds the status each source name became in that tree.
-    ``reserved_statuses`` names the target set's intake lanes. The route
-    reads all four, as it reads the directory.
+    ``reserved_statuses`` names the target set's intake lanes, and
+    ``renamed_statuses`` maps an earlier lane's old name to the name a member
+    gave it since. The route reads all of these, as it reads the directory.
     """
     existing_refs = existing_refs or set()
     legacy_refs = legacy_refs or set()
@@ -315,6 +317,7 @@ def build_plan(
         continues,
         earlier_names or {},
         reserved_statuses,
+        renamed_statuses,
     )
 
     closed = [t for t in bundle.tasks if t.status_name and final[t.status_name][1] in CLOSED]
@@ -456,6 +459,7 @@ def _statuses(
     continues: bool = False,
     earlier: dict[str, StatusTarget] | None = None,
     reserved: list[str] | None = None,
+    renamed: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, tuple[str, Category]]]:
     """§6.3 — one row per distinct source name, across every List. Returns the
     rows and ``source name → (Metorite name, category)``.
@@ -469,13 +473,19 @@ def _statuses(
 
     ``reserved`` names the intake lanes of the target set (the I-10 review,
     P1-b). No task of an import lands in one, and the name is taken, so a
-    target with that name becomes "<name> (imported)" instead."""
+    target with that name becomes "<name> (imported)" instead.
+
+    ``renamed`` holds ``old name → name now`` for a lane a member renamed
+    since the run this one continues (the I-10 review, P2-b). A run that
+    continues follows it, so the plan shows the lane the writer uses."""
     target = list(target or [])
     earlier = earlier or {}
     held = {_fold(n): (n, c) for n, c in target}
     pen = {_fold(n) for n in reserved or []}
+    moved = {_fold(old): new for old, new in (renamed or {}).items()} if continues else {}
 
     def off_the_pen(name: str) -> str:
+        name = moved.get(_fold(name), name)
         if _fold(name) in pen and _fold(name) not in held:
             return f"{name[: MAX_STATUS - len(IMPORTED)]}{IMPORTED}"
         return name
@@ -615,9 +625,17 @@ def resolve_statuses(
     continues: bool = False,
     earlier_names: dict[str, StatusTarget] | None = None,
     reserved_statuses: list[str] | None = None,
+    renamed_statuses: dict[str, str] | None = None,
 ) -> dict[str, tuple[str, Category]]:
     """Source status name → (Metorite status name, stage). It takes the same
     facts as :func:`build_plan`, so the writer lands what the plan showed."""
     return _statuses(
-        bundle, mapping, [], target_statuses, continues, earlier_names, reserved_statuses
+        bundle,
+        mapping,
+        [],
+        target_statuses,
+        continues,
+        earlier_names,
+        reserved_statuses,
+        renamed_statuses,
     )[1]

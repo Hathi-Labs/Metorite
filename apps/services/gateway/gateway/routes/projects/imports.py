@@ -695,7 +695,7 @@ async def _facts(
     status. The continuation needs the run's id and file hashes, which every
     route and the writer pass. Without them the plan reads as a new tree."""
     from gateway.routes.projects.import_writer import (
-        earlier_status_names,
+        continuation_facts,
         target_statuses,
     )
 
@@ -729,16 +729,21 @@ async def _facts(
         target_ok = await _may_import_into(db, vis, mapping.target.project_id)
     continues = False
     earlier: dict[str, tuple[str, str]] = {}
+    spaces: list[str] = []
+    new_space_too = True
+    renamed: dict[str, str] = {}
     if run_id is not None:
         # The writer asks with the CHOSEN bundle (I-8), so the plan does too.
         chosen = choose(bundle, mapping)
         hashes = list(file_hashes or [])
         continues = await _continues(db, organization_id, run_id, chosen, mapping, hashes)
         if continues:
-            earlier = await earlier_status_names(
+            earlier, spaces, new_space_too, renamed = await continuation_facts(
                 db, organization_id, run_id, chosen, mapping, hashes
             )
-    statuses, reserved = await target_statuses(db, mapping, target_ok)
+    # A run that continues reads the sets of the spaces it goes into again,
+    # never the seed alone (the I-10 review, P2-b).
+    statuses, reserved = await target_statuses(db, mapping, target_ok, spaces, new_space_too)
     return {
         "directory": directory,
         "existing_refs": existing,
@@ -750,6 +755,8 @@ async def _facts(
         # The intake lanes of the target set: no import target takes their
         # names (the I-10 review, P1-b).
         "reserved_statuses": reserved,
+        # A lane a member renamed since the earlier run, old name → name now.
+        "renamed_statuses": renamed,
     }
 
 
