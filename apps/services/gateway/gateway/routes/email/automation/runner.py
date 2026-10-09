@@ -1811,8 +1811,13 @@ async def _run_rules_job(
                 # PR-B3: in `on`, the status-first ask runs with NO block
                 # open, before the rule match. "Undecided" raises here.
                 status = await rz.ask_status_first(plan.first)
+                # EM-T16 PR-B: when the status decides the thread, the rule
+                # match is not asked. The APPLIED line of the status rule is
+                # its History, and the skip writes no line of its own.
+                skipped = rz.skip_rule_match(
+                    plan.first, status, account_id=account_id, job="runner")
                 # Multi-rule applies every match; otherwise the single best.
-                asked = await ask_rule_match(plan.match)
+                asked = [] if skipped else await ask_rule_match(plan.match)
                 # Block S (EM-T4a-2 PR-B2): only when the job asks the
                 # thread status. The ask runs with NO block open after it.
                 if rz.status_ask_needed(plan, r, asked):
@@ -1838,11 +1843,15 @@ async def _run_rules_job(
                         db, account_id, r, plan, asked, provider=provider,
                         status=status)
                     apply = (not dry_run) and provider is not None
+                    # A skip has no per-message match, so it logs no "No
+                    # rule matched" line and never runs the cold blocker
+                    # (D2, also when `_determined_matches` raised).
                     await _apply_matches(
                         db, provider, r, frm, email, matches,
                         apply=apply, dry_run=dry_run, about=about,
                         signature=signature, account_user=account_user,
                         account_id=account_id, cold_blocker=cold_blocker,
+                        log_no_match=not skipped,
                     )
                     # Reply Zero: project this thread's status from the matched
                     # rule (latest message per thread only). Read-only of the
