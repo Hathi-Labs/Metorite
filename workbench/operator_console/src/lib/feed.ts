@@ -292,8 +292,8 @@ export function freshness(
   const days = Math.floor((now.getTime() - synced.getTime()) / 86_400_000);
   const from =
     feed.source === "packaged:litellm"
-      ? "the offline litellm snapshot"
-      : "the live litellm feed";
+      ? "the saved copy of the vendor price list"
+      : "the live vendor price list";
   const when =
     days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
   if (days > 7) {

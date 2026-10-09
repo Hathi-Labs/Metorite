@@ -39,7 +39,7 @@ import json
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
-from acb_common import get_logger, get_settings
+from acb_common import get_logger
 from acb_common.pg_text import storable
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway.rooms import (
@@ -1164,95 +1164,106 @@ async def record_message_feedback(
 async def list_active_sessions(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
-    """Return sessions whose agents are currently executing.
+    """Return the caller's live sessions: in their org, and visible to them.
 
-    Scans Redis ``cc:active:*`` keys (set by the executor's stream relay)
-    and cross-references with the ``chat_session`` table to include
-    agent names and titles.  Falls back to an empty list when Redis is
-    unavailable — the frontend will rely on its local chatStore in that
-    case.
+    Used by the conversations sidebar to show a pulsing green dot next to
+    sessions that are still running in the background, even after a browser
+    refresh. Each row is ``threadId``, ``agentName``, ``title`` and
+    ``startedAt``.
 
-    Used by the conversations sidebar to show a pulsing green dot next
-    to sessions that are still running in the background, even after a
-    browser refresh.
+    🔴 **Security fix (cross-tenant leak of live thread ids).** This route used
+    to SCAN ``cc:active:*``, a key with no tenant, so it read every org's live
+    runs. The ``chat_session`` row of another org is invisible under FORCE
+    RLS, so the "no row yet" fallback below returned that org's thread ids to
+    every caller, and the Postgres-error branch returned all of them.
+
+    Now:
+
+    * The candidates come from ONE hash, ``cc:<org>:liveruns``, built through
+      the tenant-prefix wrapper for the caller's org
+      (``stream_relay.list_live_runs``). Nothing scans the keyspace.
+    * A candidate with a ``chat_session`` row is listed only when
+      ``SESSION_VISIBLE_SQL`` passes for the caller, under the caller's tenant.
+    * A candidate with no row yet (the run started before the browser's upsert
+      landed) is listed only when the caller started it.
+    * On a Postgres error only the caller's own runs are listed.
+
+    A run that started before this code has no index entry, so it is not
+    listed. The relay lives in this process, so a deploy restart ends it.
+
+    Fence (R7): ``tests/unit/test_active_sessions_tenant.py``.
     """
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org:
+        return []  # no tenant, so no run can be the caller's to see
+    me = (user.email or "").strip().lower()
     user_id = user.email or "default"
-    active_threads: list[str] = []
 
-    # ── Scan Redis for cc:active:* keys ────────────────────────────────
+    # ── The caller's org's live runs: one hash, no SCAN ────────────────
     try:
-        import redis.asyncio as aioredis  # noqa: PLC0415
-        settings = get_settings()
-        r = aioredis.from_url(settings.redis_url, decode_responses=True)
-        try:
-            cursor = 0
-            while True:
-                cursor, keys = await r.scan(
-                    cursor, match="cc:active:*", count=100
-                )
-                for k in keys:
-                    # Strip the "cc:active:" prefix to recover the thread_id.
-                    tid = k.removeprefix("cc:active:")
-                    if tid:
-                        active_threads.append(tid)
-                if cursor == 0:
-                    break
-        finally:
-            await r.aclose()
+        from orchestrator.stream_relay import list_live_runs  # noqa: PLC0415
+
+        live = await list_live_runs(org)
     except Exception:  # noqa: BLE001
         _log.warning("chat.active_sessions_redis_failed", exc_info=True)
         return []  # Redis unavailable — frontend falls back to local store
 
-    if not active_threads:
+    if not live:
         return []
+    by_tid = {run["threadId"]: run for run in live}
+    ids = list(by_tid)
 
-    # ── Cross-reference with Postgres for agent name + title ───────────
+    def _own_unknown(tid: str) -> dict:
+        return {
+            "threadId": tid,
+            "agentName": "unknown",
+            "title": None,
+            "startedAt": by_tid[tid].get("startedAt") or None,
+        }
+
+    def _is_mine(tid: str) -> bool:
+        return bool(me) and by_tid[tid].get("actor") == me
+
+    # ── Cross-reference with Postgres for visibility, name and title ───
     try:
         from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with tenant_session(user.organization_id) as s:
+        with tenant_session(org) as s:
             rows = s.execute(
                 text(
                     "SELECT s.id, s.agent_name, s.title "
                     "FROM chat_session s "
                     "WHERE s.id = ANY(:ids) AND " + SESSION_VISIBLE_SQL
                 ),
-                {"ids": active_threads, "uid": user_id},
+                {"ids": ids, "uid": user_id},
             ).fetchall()
-
-        result = [
-            {
-                "threadId": r.id,
-                "agentName": r.agent_name,
-                "title": r.title,
-            }
-            for r in rows
-        ]
-
-        # Threads that are active in Redis but have no session row yet (the
-        # agent started before the frontend's upsert landed) still belong in
-        # the list. Threads that DO have a row and were filtered out belong to
-        # someone else: including them leaked a live thread id to every user,
-        # which the old `not in found_ids` fallback did on every poll.
-        with tenant_session(user.organization_id) as s:
+            # Every row this tenant holds, visible to the caller or not. A row
+            # here that is not in `rows` is somebody else's, and stays hidden.
             known = {
                 row.id for row in s.execute(
                     text("SELECT id FROM chat_session WHERE id = ANY(:ids)"),
-                    {"ids": active_threads},
+                    {"ids": ids},
                 ).fetchall()
             }
-        for tid in active_threads:
-            if tid not in known:
-                result.append({
-                    "threadId": tid,
-                    "agentName": "unknown",
-                    "title": None,
-                })
-        return result
     except Exception:  # noqa: BLE001
-        # Postgres unavailable — return thread IDs without metadata.
-        return [
-            {"threadId": tid, "agentName": "unknown", "title": None}
-            for tid in active_threads
-        ]
+        # Postgres unavailable: list only the runs the caller started. Their
+        # ids are already the caller's. Nobody else's id leaves this route.
+        _log.warning("chat.active_sessions_db_failed", exc_info=True)
+        return [_own_unknown(tid) for tid in ids if _is_mine(tid)]
+
+    result = [
+        {
+            "threadId": r.id,
+            "agentName": r.agent_name,
+            "title": r.title,
+            "startedAt": by_tid.get(r.id, {}).get("startedAt") or None,
+        }
+        for r in rows
+    ]
+    # No session row yet: the run started before the browser's upsert landed.
+    # Only the person who started it may see it.
+    for tid in ids:
+        if tid not in known and _is_mine(tid):
+            result.append(_own_unknown(tid))
+    return result

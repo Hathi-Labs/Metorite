@@ -107,7 +107,8 @@ export default function CreditPrice({ price }: { price: Price | null }) {
               statements of one fact, three inches apart. The panel that holds
               the fix keeps the label; the headline keeps the reason. */}
           <span className={chipClass("warn")}>not set</span> A bank transfer
-          has no official credit conversion until this is saved (H-42).
+          has no official number of credits until this is saved, and no page
+          can show money in rupees.
         </p>
       )}
 

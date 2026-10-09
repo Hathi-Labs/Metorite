@@ -29,7 +29,7 @@ describe("the page list", () => {
 
   it("keeps the sidebar's own labels", () => {
     expect(PAGES.find((p) => p.href === "/pricing")?.label).toBe("Pricing");
-    expect(PAGES.find((p) => p.href === "/")?.label).toBe("Organizations");
+    expect(PAGES.find((p) => p.href === "/")?.label).toBe("Customers");
   });
 });
 
