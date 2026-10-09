@@ -233,7 +233,7 @@ def move_ask(
     with tenant_session(organization_id) as s:
         r = s.execute(
             text(
-                f"UPDATE chat_pending_ask SET state = :to, {stamp} "  # noqa: S608 — fixed fragments
+                f"UPDATE chat_pending_ask SET state = :to, {stamp} "
                 "WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
                 "  AND state = ANY(:from) AND expires_at > now() "
                 f"RETURNING {_COLUMNS}"
@@ -255,7 +255,7 @@ def read_ask(organization_id: str, request_id: str) -> dict[str, Any] | None:
     with tenant_session(organization_id) as s:
         r = s.execute(
             text(
-                f"SELECT {_COLUMNS} FROM chat_pending_ask "  # noqa: S608
+                f"SELECT {_COLUMNS} FROM chat_pending_ask "
                 "WHERE request_id = :rid AND state = ANY(:waiting) "
                 "  AND expires_at > now()"
             ),
@@ -287,7 +287,7 @@ def waiting_asks(
     with tenant_session(organization_id) as s:
         rows = s.execute(
             text(
-                f"SELECT {_COLUMNS} FROM chat_pending_ask "  # noqa: S608 — fixed fragments
+                f"SELECT {_COLUMNS} FROM chat_pending_ask "
                 f"WHERE {' AND '.join(where)} ORDER BY asked_at LIMIT 200"
             ),
             params,

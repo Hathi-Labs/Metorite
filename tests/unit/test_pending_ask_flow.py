@@ -28,6 +28,8 @@ Run::
 
     uv run pytest tests/unit/test_pending_ask_flow.py -q
 """
+# The fixtures imported by name below are redefined as test arguments (F811).
+# ruff: noqa: F811
 from __future__ import annotations
 
 import asyncio
