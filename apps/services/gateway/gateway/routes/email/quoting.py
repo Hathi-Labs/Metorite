@@ -111,3 +111,248 @@ def split_quoted_html(raw: str) -> tuple[str, str]:
             and "<img" not in head.lower():
         return raw, ""
     return head, raw[cut:]
+
+
+# ── The text the email agent reads (WS-17, 2026-10-09) ───────────────────────
+#
+# 🔴 **Why.** The email agent's ``read_email`` gave the model the first 4,000
+# characters of a body, with the quoted thread, the signature and the legal
+# footer in it. The model reads each quoted message again on each read, and a
+# chat turn sends the earlier tool results again. :func:`strip_for_reading`
+# keeps the new text only. ``read_email(full=True)`` still reads the whole body.
+#
+# ⚠️ **Conservative, as the splitters above.** Each step keeps the input when
+# its cut would leave nothing, and a signature cut needs a contact line, so a
+# short reply that ends "Thanks, Priya" keeps every word.
+
+#: The title of a legal footer, at the start of a paragraph.
+_DISCLAIMER_TITLE = re.compile(
+    r"^\s*[*_\[(]*\s*(?:"
+    r"(?:legal\s+)?disclaimer\b|confidentiality\b"
+    r"|confidential\s+(?:notice|note|statement)\b"
+    r"|privileged\s+(?:and|&)\s+confidential\b|important\s+notice\b"
+    r"|notice\s+of\s+confidentiality\b"
+    r"|please\s+consider\s+the\s+environment\b"
+    r")",
+    re.IGNORECASE,
+)
+#: The first words of a legal footer with no title. Such a paragraph must
+#: also be long (:data:`_DISCLAIMER_MIN_CHARS`), so a short "This message is
+#: confidential, so do not forward it." in a reply stays.
+_DISCLAIMER_SENTENCE = re.compile(
+    r"^\s*[*_\[(]*\s*(?:"
+    r"this\s+(?:e-?mail|message|communication|transmission)\b"
+    r"|the\s+(?:information|content)s?\s+(?:contained\s+)?in\s+this\s+"
+    r"(?:e-?mail|message|communication)"
+    r"|if\s+you\s+(?:are\s+not|have\s+received\s+this)"
+    r")",
+    re.IGNORECASE,
+)
+_DISCLAIMER_MIN_CHARS = 120
+#: A footer paragraph names one of these. "This email is to confirm our
+#: meeting" names none, so it stays.
+_DISCLAIMER_WORDS = re.compile(
+    r"confidential|privileged|intended\s+(?:solely|only|recipient)|unauthori[sz]ed"
+    r"|prohibited|disclos|virus|liabilit|legally|delete\s+(?:it|this)"
+    r"|before\s+printing|notify\s+the\s+sender",
+    re.IGNORECASE,
+)
+#: A footer that a mail client adds. Named clients only: "Sent via DHL on
+#: Monday" is a sentence, and it stays.
+_MOBILE_FOOTER = re.compile(
+    r"^\s*(?:sent\s+from\s+my\s+(?:iphone|ipad|android|samsung|galaxy|pixel"
+    r"|blackberry|huawei|mobile|smartphone|phone)\b.{0,30}"
+    r"|sent\s+from\s+(?:outlook|mail|yahoo\s+mail|gmail|proton\s*mail)"
+    r"(?:\s+for\s+\S+(?:\s+\S+)?)?"
+    r"|get\s+outlook\s+for\s+(?:ios|android))\s*$",
+    re.IGNORECASE,
+)
+#: The signature line of RFC 3676: two dashes and an optional space. A
+#: cut at it also needs a short block under it (:func:`strip_signature`).
+_SIG_DASHES = re.compile(r"^--\s?$")
+#: A closing line, alone on its line.
+_SIGN_OFF = re.compile(
+    r"^\s*(?:(?:best|kind|warm|warmest|many|with)\s+)?"
+    r"(?:regards|wishes|thanks|thank\s+you|cheers|best|sincerely|warmly|rgds|br"
+    r"|yours(?:\s+(?:truly|sincerely|faithfully))?)[\s,.!]*$",
+    re.IGNORECASE,
+)
+#: A line that only a signature holds: a phone number, a web address, a mail
+#: address, or a "|" between fields.
+_CONTACT_LINE = re.compile(
+    r"(?:\+?\d[\d\s().-]{6,}\d)|https?://|\bwww\.|[\w.+-]+@[\w-]+\.[\w.]+|\s\|\s",
+    re.IGNORECASE,
+)
+#: A signature block after a closing line holds at most this many lines.
+_SIG_MAX_LINES = 12
+
+
+def _keep(before: str, after: str) -> str:
+    """``after`` when it still holds text, else ``before``."""
+    return after if after.strip() else before
+
+
+#: A footer paragraph names at least this many DIFFERENT legal words
+#: (:data:`_DISCLAIMER_WORDS`). An offer letter that says "the terms are
+#: confidential" names one, so it stays (review round 1).
+_DISCLAIMER_MIN_WORDS = 2
+#: "Please consider the environment before printing" is a footer of its own.
+_ENVIRONMENT_LINE = re.compile(
+    r"^\s*[*_\[(]*\s*please\s+consider\s+the\s+environment\b", re.IGNORECASE)
+#: A title that stands alone on its line, above the legal text.
+_TITLE_ALONE_MAX_CHARS = 40
+
+
+def _paragraph_spans(lines: list[str]) -> list[tuple[int, str]]:
+    """``(first line, text)`` of each paragraph, in order."""
+    spans: list[tuple[int, str]] = []
+    start: int | None = None
+    for i, line in enumerate([*lines, ""]):
+        if line.strip() and start is None:
+            start = i
+        elif not line.strip() and start is not None:
+            spans.append((start, " ".join(x.strip() for x in lines[start:i])))
+            start = None
+    return spans
+
+
+def _is_footer(text: str) -> bool:
+    """True when one paragraph reads as a legal footer."""
+    if _ENVIRONMENT_LINE.match(text):
+        return True
+    if not (_DISCLAIMER_TITLE.match(text) or _DISCLAIMER_SENTENCE.match(text)):
+        return False
+    words = {m.group(0).lower()[:6] for m in _DISCLAIMER_WORDS.finditer(text)}
+    return len(text) >= _DISCLAIMER_MIN_CHARS and len(words) >= _DISCLAIMER_MIN_WORDS
+
+
+def strip_disclaimer(text: str) -> str:
+    """Cut the legal footer at the END of a body.
+
+    Only a trailing run of footer paragraphs goes (:func:`_is_footer`). So no
+    paragraph that is not a footer is ever cut, wherever it stands. A short
+    title on its own line ("DISCLAIMER:") goes with the footer under it. The
+    first paragraph is never a footer, so the cut always keeps the new text.
+
+    🔴 **Review round 1.** The first version cut from the first paragraph that
+    looked like a footer to the END of the body. "Dear Ravi, This email
+    confirms your offer ... The terms are confidential. Please sign ..."
+    came back as "Dear Ravi,". Those bodies are in ``UNCHANGED`` of
+    ``test_email_ai_cost.py``.
+    """
+    lines = (text or "").split("\n")
+    spans = _paragraph_spans(lines)
+    cut: int | None = None
+    for start, para in reversed(spans[1:]):
+        if _is_footer(para):
+            cut = start
+            continue
+        if cut is not None and len(para) <= _TITLE_ALONE_MAX_CHARS \
+                and _DISCLAIMER_TITLE.match(para):
+            cut = start
+            continue
+        break
+    if cut is None:
+        return text
+    return _keep(text, "\n".join(lines[:cut]).rstrip())
+
+
+#: A list item: "1. ...", "2) ...", "- ...", "* ...".
+_LIST_ITEM = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s")
+#: A postscript, which is content and not a signature.
+_POSTSCRIPT = re.compile(r"^\s*p\.?\s*p?\.?\s*s\b", re.IGNORECASE)
+#: The longest line that a signature block holds.
+_SIG_LINE_MAX_CHARS = 100
+#: The longest name line under a closing line.
+_NAME_MAX_CHARS = 40
+
+
+def _name_like(line: str) -> bool:
+    """A line that can be the name under a closing line: short, a few words,
+    and not a sentence, a list item or a heading of a list."""
+    s = line.strip()
+    return (0 < len(s) <= _NAME_MAX_CHARS and len(s.split()) <= 5
+            and not s.endswith((":", "?")) and ". " not in s
+            and not _LIST_ITEM.match(s) and not _POSTSCRIPT.match(s))
+
+
+def _signature_like(tail: list[str]) -> bool:
+    """A block that only a signature holds: at most :data:`_SIG_MAX_LINES`
+    short lines, at least one contact line, and no list item, postscript or
+    question among them."""
+    return (bool(tail) and len(tail) <= _SIG_MAX_LINES
+            and all(len(t.strip()) <= _SIG_LINE_MAX_CHARS for t in tail)
+            and not any(_LIST_ITEM.match(t) or _POSTSCRIPT.match(t)
+                        or t.strip().endswith("?") for t in tail)
+            and any(_CONTACT_LINE.search(t) for t in tail))
+
+
+def strip_signature(text: str) -> str:
+    """Cut the signature block at the end of a body.
+
+    Three shapes, each cut only below the first line:
+
+    - a mail client footer ("Sent from my iPhone") with at most two lines
+      under it;
+    - the RFC 3676 line ``-- `` with a short block under it
+      (:data:`_SIG_MAX_LINES` lines of at most :data:`_SIG_LINE_MAX_CHARS`);
+    - after a closing line ("Best regards,") and a name under it
+      (:func:`_name_like`), a block that only a signature holds
+      (:func:`_signature_like`). The closing line and the name stay, so the
+      reader still sees who wrote it.
+
+    🔴 **Review round 1.** A "P.S." with a phone number, a list of issues
+    under "Thanks", and a "--" row of a plain-text table were cut. Each is
+    in ``UNCHANGED`` of ``test_email_ai_cost.py``.
+    """
+    lines = (text or "").rstrip().split("\n")
+    content = [i for i, line in enumerate(lines) if line.strip()]
+    # A body with two "--" lines uses them as rows of a table, not as the
+    # one signature line.
+    one_dash_line = sum(1 for line in lines if _SIG_DASHES.match(line)) == 1
+    for i in content[1:]:
+        after = [lines[j] for j in content if j > i]
+        if _MOBILE_FOOTER.match(lines[i]) and len(after) <= 2:
+            return _keep(text, "\n".join(lines[:i]).rstrip())
+        if one_dash_line and _SIG_DASHES.match(lines[i]) and after \
+                and len(after) <= _SIG_MAX_LINES \
+                and all(len(t.strip()) <= _SIG_LINE_MAX_CHARS for t in after) \
+                and not any(_LIST_ITEM.match(t) or _POSTSCRIPT.match(t)
+                            for t in after):
+            return _keep(text, "\n".join(lines[:i]).rstrip())
+    for i in reversed(content[-_SIG_MAX_LINES - 2:]):
+        if i == content[0] or not _SIGN_OFF.match(lines[i]):
+            continue
+        name = next((j for j in content if j > i), None)
+        if name is None or not _name_like(lines[name]):
+            return text
+        tail = [lines[j] for j in content if j > name]
+        if _signature_like(tail):
+            return _keep(text, "\n".join(lines[:name + 1]).rstrip())
+        return text
+    return text
+
+
+#: The head of a forwarded message. Its body is content that the reader
+#: needs, and no other tool holds it (review round 1).
+_FORWARD_HEAD = re.compile(
+    r"^\s*(?:-{2,}\s*Forwarded message|Begin forwarded message:)", re.IGNORECASE)
+
+
+def strip_for_reading(text: str) -> str:
+    """The new text of a plain-text body, for a model to read.
+
+    The quoted thread goes first (:func:`split_quoted_text`), then the legal
+    footer, then the signature. Each step keeps its input when its cut leaves
+    nothing. The one seam for this: the email agent's default ``read_email``
+    reaches it through ``GET /email/messages/{id}?trim=true``.
+
+    A forward comes back WHOLE. A forwarded message comes from another
+    thread, so ``read_thread`` does not hold it, and the reader asked about
+    it.
+    """
+    main, quoted = split_quoted_text(text or "")
+    if quoted and _FORWARD_HEAD.match(quoted):
+        return text
+    main = strip_disclaimer(main)
+    return strip_signature(main)
