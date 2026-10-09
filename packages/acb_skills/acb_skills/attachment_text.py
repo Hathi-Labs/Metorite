@@ -1724,9 +1724,8 @@ def _read_deck(zf: zipfile.ZipFile, deadline: _Deadline, deck: _Deck) -> int:
     budget = _Budget(zf, MAX_PPTX_XML_BYTES, _POWERPOINT)
     parts = _slide_parts(zf, deadline, budget)
     total = len(parts)
-    if total > MAX_PPTX_SLIDES:
-        deck.cut = True
-        parts = parts[:MAX_PPTX_SLIDES]
+    over = total > MAX_PPTX_SLIDES
+    parts = parts[:MAX_PPTX_SLIDES]
     for number, part in enumerate(parts, 1):
         deck.body._emit(f"## Slide {number}")
         deck.part(zf, part, deadline, budget)
@@ -1746,6 +1745,7 @@ def _read_deck(zf: zipfile.ZipFile, deadline: _Deadline, deck: _Deck) -> int:
                 deck.body.chars -= len("### Notes") + 1
         if deck.full():
             break
+    deck.cut = deck.cut or over
     return total
 
 
