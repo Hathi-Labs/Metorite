@@ -56,7 +56,11 @@ export default function BrandingTab() {
   const [editKey, setEditKey] = useState(0);
   const [editError, setEditError] = useState("");
   // Set when the editor reopens the saved logo ("Change dark mode").
-  const [editInitial, setEditInitial] = useState<{ style: DarkStyle; own: OwnDark | null } | null>(null);
+  const [editInitial, setEditInitial] = useState<{
+    style: DarkStyle;
+    own: OwnDark | null;
+    savedMain: string;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -136,15 +140,27 @@ export default function BrandingTab() {
     setError("");
     try {
       const source = await decodeStored(current.dataUri, "your current logo");
-      const style: DarkStyle = branding?.darkStyle ?? "same";
-      const own =
-        style === "own" && branding?.logoDark
-          ? { source: await decodeStored(branding.logoDark.dataUri, "your dark version"), name: "your dark version" }
-          : null;
+      let style: DarkStyle = branding?.darkStyle ?? "same";
+      let own: OwnDark | null = null;
+      if (style === "own" && branding?.logoDark) {
+        // A saved dark version that will not open drops to "As it is", and
+        // the editor still opens, rather than nothing at all.
+        try {
+          const dataUri = branding.logoDark.dataUri;
+          own = {
+            source: await decodeStored(dataUri, "your dark version"),
+            name: "your dark version",
+            storedBase64: dataUri.slice(dataUri.indexOf(",") + 1),
+          };
+        } catch {
+          style = "same";
+        }
+      }
       setPickedName("your current logo");
       setEditError("");
       setEditKey((k) => k + 1);
-      setEditInitial({ style, own });
+      // The saved bytes go back unchanged (`savePayload`).
+      setEditInitial({ style, own, savedMain: current.dataUri.slice(current.dataUri.indexOf(",") + 1) });
       setEditing(source);
     } catch (e) {
       setError(e instanceof Error ? e.message : "The saved logo could not be opened.");
@@ -306,6 +322,7 @@ export default function BrandingTab() {
             onSave={(save) => void onSave(save)}
             initialStyle={editInitial?.style ?? null}
             initialOwn={editInitial?.own ?? null}
+            savedMain={editInitial?.savedMain ?? null}
           />
         ) : null}
       </div>

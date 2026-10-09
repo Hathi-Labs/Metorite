@@ -59,6 +59,37 @@ const STYLES: { id: DarkStyle; label: string; note: string }[] = [
 export interface OwnDark {
   source: Source;
   name: string;
+  /** The saved bytes, when the editor reopens a saved own version. */
+  storedBase64?: string;
+}
+
+/**
+ * What Save sends, or `null` while it cannot send yet.
+ *
+ * ⚠️ A reopened logo ("Change dark mode") sends its SAVED bytes. The editor
+ * must not run the trim or the background removal on it again: a logo saved
+ * with its background kept would lose it with no warning (review,
+ * 2026-10-09). A saved own version is sent as saved too, unless the admin
+ * changes it.
+ */
+export function savePayload(p: {
+  main: Rendered | null;
+  savedMain: string | null;
+  chosen: DarkStyle;
+  white: Rendered | null;
+  own: OwnDark | null;
+  ownRendered: Rendered | null;
+  ownRemoveBg: boolean;
+}): LogoSave | null {
+  const logoBase64 = p.savedMain ?? p.main?.base64 ?? null;
+  if (!logoBase64) return null;
+  let dark: string | null = null;
+  if (p.chosen === "white") dark = p.white?.base64 ?? null;
+  if (p.chosen === "own" && p.own) {
+    dark = p.own.storedBase64 && !p.ownRemoveBg ? p.own.storedBase64 : (p.ownRendered?.base64 ?? null);
+  }
+  if ((p.chosen === "white" || p.chosen === "own") && !dark) return null;
+  return { logoBase64, logoDarkBase64: dark, darkStyle: p.chosen };
 }
 
 const asLogo = (r: Rendered): OrgLogo => ({
@@ -89,6 +120,7 @@ export default function LogoEditor({
   onSave,
   initialStyle = null,
   initialOwn = null,
+  savedMain = null,
 }: {
   source: Source;
   fileName: string;
@@ -99,11 +131,16 @@ export default function LogoEditor({
   /** The stored choice, when the editor reopens the current logo. */
   initialStyle?: DarkStyle | null;
   initialOwn?: OwnDark | null;
+  /** The saved logo's bytes, when the editor reopens it. Sent back unchanged. */
+  savedMain?: string | null;
 }) {
+  const reopened = savedMain !== null;
   const bg: Background = useMemo(() => detectBackground(source.pixels), [source]);
   const fit: Box = useMemo(() => contentBounds(source.pixels, bg), [source, bg]);
-  const [box, setBox] = useState<Box>(fit);
-  const [removeBg, setRemoveBg] = useState(bg.kind === "solid");
+  const whole: Box = useMemo(() => ({ x: 0, y: 0, w: source.pixels.width, h: source.pixels.height }), [source]);
+  // A reopened logo is drawn as saved: the whole image, nothing removed.
+  const [box, setBox] = useState<Box>(reopened ? whole : fit);
+  const [removeBg, setRemoveBg] = useState(!reopened && bg.kind === "solid");
   const solidRgb = bg.kind === "solid" ? bg.rgb : null;
 
   const [main, setMain] = useState<Rendered | null>(null);
@@ -120,15 +157,18 @@ export default function LogoEditor({
   const [ownError, setOwnError] = useState("");
   const ownInput = useRef<HTMLInputElement>(null);
   const ownBg: Background | null = useMemo(() => (own ? detectBackground(own.source.pixels) : null), [own]);
-  // A dark version usually sits on black. Clear it by default, as the light one.
-  const [ownRemoveBg, setOwnRemoveBg] = useState(true);
+  // A dark version usually sits on black. Clear it by default, as the light
+  // one, but never on a saved version, which is drawn as it was saved.
+  const [ownRemoveBg, setOwnRemoveBg] = useState(!initialOwn?.storedBase64);
   const ownSolid = ownBg?.kind === "solid" ? ownBg.rgb : null;
   const [ownRendered, setOwnRendered] = useState<Rendered | null>(null);
   useEffect(() => {
     if (!own || !ownBg) return;
     const id = requestAnimationFrame(() => {
-      const fit = contentBounds(own.source.pixels, ownBg);
-      setOwnRendered(renderLogo(own.source, fit, { removeBackground: ownRemoveBg ? ownSolid : null }));
+      const area = own.storedBase64
+        ? { x: 0, y: 0, w: own.source.pixels.width, h: own.source.pixels.height }
+        : contentBounds(own.source.pixels, ownBg);
+      setOwnRendered(renderLogo(own.source, area, { removeBackground: ownRemoveBg ? ownSolid : null }));
     });
     return () => cancelAnimationFrame(id);
   }, [own, ownBg, ownRemoveBg, ownSolid]);
@@ -145,6 +185,7 @@ export default function LogoEditor({
       const decoded = await decodeFile(file);
       setOwnError("");
       setOwnRemoveBg(true);
+      // A new file: no saved bytes, so it is trimmed and drawn.
       setOwn({ source: decoded, name: file.name });
       setStyle("own");
     } catch (e) {
@@ -153,10 +194,12 @@ export default function LogoEditor({
   };
   /** "My dark version" with no file yet opens the picker, and selects on a pick. */
   const choose = (id: DarkStyle) => {
+    setOwnError("");
     if (id === "own" && !own) ownInput.current?.click();
     else setStyle(id);
   };
   const darkImage: Rendered | null = chosen === "white" ? white : chosen === "own" && own ? ownRendered : null;
+  const payload = savePayload({ main, savedMain, chosen, white, own, ownRendered, ownRemoveBg });
 
   // Redraw on every change, one frame later, so a drag stays smooth.
   useEffect(() => {
@@ -222,14 +265,23 @@ export default function LogoEditor({
       open
       onClose={onCancel}
       title="Your logo"
-      description={`From ${fileName}. Crop it, then check it in light and dark mode.`}
+      description={
+        reopened
+          ? "Choose how your saved logo shows in dark mode."
+          : `From ${fileName}. Crop it, then check it in light and dark mode.`
+      }
       icon="Image"
       size="2xl"
       placement="top"
     >
       <div className="flex max-h-[75vh] flex-col gap-4 overflow-y-auto p-4">
+        {reopened ? (
+          <p className="text-xs text-muted-foreground">
+            Your saved logo stays as it is. To change it, choose Replace logo.
+          </p>
+        ) : null}
         {/* The image, on a checkerboard so a clear background shows as clear. */}
-        <div className="flex flex-col items-center gap-2">
+        <div className={`flex flex-col items-center gap-2 ${reopened ? "hidden" : ""}`}>
           <div
             className="relative select-none overflow-hidden rounded-md border border-border bg-[conic-gradient(var(--muted)_25%,var(--background)_0_50%,var(--muted)_0_75%,var(--background)_0)] bg-[length:16px_16px]"
             style={{ width: W * scale, height: H * scale, touchAction: "none" }}
@@ -352,15 +404,8 @@ export default function LogoEditor({
           <Button
             size="sm"
             icon="Check"
-            disabled={!main || saving || ((chosen === "white" || chosen === "own") && !darkImage)}
-            onClick={() =>
-              main &&
-              onSave({
-                logoBase64: main.base64,
-                logoDarkBase64: darkImage ? darkImage.base64 : null,
-                darkStyle: chosen,
-              })
-            }
+            disabled={!payload || saving}
+            onClick={() => payload && onSave(payload)}
           >
             {saving ? "Saving…" : "Save logo"}
           </Button>

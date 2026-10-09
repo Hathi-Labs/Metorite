@@ -125,14 +125,15 @@ three styles, and the admin can change it:
 
 The logo for a light background is always required. The dark version is
 optional (owner direction, 2026-10-09). "Change dark mode" on the Branding
-tab reopens the saved logo, so an admin can add a dark version later. The
-style `own` passes the same server checks as `white`, and both need their
-image.
+tab reopens the saved logo, so an admin can add a dark version later. It
+sends the saved logo back unchanged, so the trim and the background removal
+never run on it twice (`savePayload`, fence `logoEditor.test.ts`). The style
+`own` passes the same server checks as `white`, and both need their image.
 
 ⚠️ The advice is NOT an average of the whole logo. A bright orange mark lifted
 the average while navy text beside it vanished (measured 2026-10-09).
 
-The branding row stores `logo`, `logoDark` (white style only) and
+The branding row stores `logo`, `logoDark` (white and own styles only) and
 `darkStyle`. The server refuses a pair that disagrees. `BrandMark` renders
 both images, and CSS shows one per colour mode (`.light` on the root), so a
 mode switch waits on no fetch. Fence:
