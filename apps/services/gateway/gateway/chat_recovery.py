@@ -193,12 +193,14 @@ async def recover_dead_run(
     that would race it waits instead of starting a second run.
     """
     from orchestrator.run_liveness import (
-        claim_recovery,
+        claim_dead_run,
         interrupt_run,
         release_recovery,
     )
 
-    token = await claim_recovery(thread_id)
+    # The claim re-checks that the run is still dead and still the same run,
+    # and renews itself while the fold runs (review of #797).
+    token = await claim_dead_run(thread_id)
     if token is None:
         _log.info("chat.dead_run_recovery_taken", thread_id=thread_id[:12], why=why)
         return None

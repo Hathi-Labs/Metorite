@@ -242,11 +242,112 @@ async def claim_recovery(thread_id: str) -> str | None:
 
 
 async def release_recovery(thread_id: str, token: str) -> None:
-    """Drop the claim, only if it is still this token's."""
+    """Drop the claim, only if it is still this token's. Stops its keeper."""
+    _stop_keeper(thread_id, token)
     with contextlib.suppress(Exception):
         r = await _client()
         if await r.get(recover_key(thread_id)) == token:
             await r.delete(recover_key(thread_id))
+
+
+# ── The claim lives as long as its holder works (review of #797, race 2) ────
+#
+# A fold writes to the database, and a slow database has no upper bound. A
+# fixed TTL sized to "the worst case" is therefore a guess, and a fold that
+# outlives it lets a second claimant through, so two runs start. So the
+# holder RENEWS the claim while it works: a small task pushes the TTL out
+# every third of it. The claim then lives exactly as long as its holder:
+# when the holder's process dies, the renewals stop, and the claim lapses
+# within one TTL. A holder that keeps the claim for the run it starts
+# (``hold=True``) renews until that run's ``claim_run`` deletes the key, or
+# until ``CLAIM_KEEP_MAX_SECONDS``.
+#
+# The renewal reads the token and then pushes the TTL, in two calls. A rival
+# that took the key in between gets its own claim extended once, which delays
+# nothing that matters.
+
+CLAIM_KEEP_MAX_SECONDS = 120.0
+_KEEPERS: dict[str, tuple[str, asyncio.Task[None]]] = {}
+
+
+async def _keep_claim(thread_id: str, token: str) -> None:
+    loop = asyncio.get_running_loop()
+    until = loop.time() + CLAIM_KEEP_MAX_SECONDS
+    every = max(RECOVER_TTL_SECONDS / 3, 0.05)
+    while loop.time() < until:
+        await asyncio.sleep(every)
+        try:
+            r = await _client()
+            if await r.get(recover_key(thread_id)) != token:
+                return  # released, or taken over by a new run
+            await r.expire(recover_key(thread_id), RECOVER_TTL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.warning("run_liveness.claim_renew_failed", thread_id=thread_id[:12])
+
+
+def _start_keeper(thread_id: str, token: str) -> None:
+    _stop_keeper(thread_id, None)
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _keep_claim(thread_id, token), name=f"cc-recover-keep-{thread_id[:16]}",
+        )
+    except RuntimeError:
+        return
+    _KEEPERS[thread_id] = (token, task)
+
+
+def _stop_keeper(thread_id: str, token: str | None) -> None:
+    held = _KEEPERS.get(thread_id)
+    if held is None or (token is not None and held[0] != token):
+        return
+    _KEEPERS.pop(thread_id, None)
+    held[1].cancel()
+
+
+async def _dead_run_snapshot(thread_id: str) -> tuple[str, str] | None:
+    """``(owner, runId)`` of the run on *thread_id* while it is dead, else None."""
+    if await run_liveness(thread_id) != "dead":
+        return None
+    try:
+        r = await _client()
+        owner = await r.get(run_owner_key(thread_id)) or ""
+        raw = await r.hget(instance_runs_key(owner), thread_id) if owner else None
+        run_id = str((json.loads(raw) if raw else {}).get("runId") or "")
+    except Exception:
+        return None
+    return owner, run_id
+
+
+async def claim_dead_run(thread_id: str, *, owner: str | None = None) -> str | None:
+    """Claim the recovery of a DEAD run, and prove it is still the same run.
+
+    Review of #797, race 1. "Is it dead?" and "take the claim" are two steps.
+    Between them a rival can finish its own recovery and start a new run, and
+    that run's ``claim_run`` deletes the claim. The late claimant then gets
+    the claim, and would close the live NEW run. ``expect_run_id`` would not
+    save it, because by then the record is the new run's.
+
+    So: look (owner, runId while dead), claim, and look again. Proceed only
+    when the run is still dead and the owner and runId have not moved.
+    Otherwise release the claim and answer None: the caller then takes the
+    steer path. *owner*, when given, must be the dead run's owner (the sweep
+    names the process it is sweeping). A winner's claim is kept alive by a
+    renewal task until it is released.
+    """
+    before = await _dead_run_snapshot(thread_id)
+    if before is None or (owner is not None and before[0] != owner):
+        return None
+    token = await claim_recovery(thread_id)
+    if token is None:
+        return None
+    if await _dead_run_snapshot(thread_id) != before:
+        await release_recovery(thread_id, token)
+        _log.info("run_liveness.recovery_moved_on", thread_id=thread_id[:12])
+        return None
+    _start_keeper(thread_id, token)
+    return token
 
 
 async def recovery_in_progress(thread_id: str) -> bool:
@@ -377,7 +478,8 @@ async def sweep_dead_instances() -> list[dict[str, Any]]:
                     continue  # it ended, or a new run took the thread
                 # One run at a time, under the thread's claim. A request that
                 # recovers this thread right now holds it, so skip the run.
-                token = await claim_recovery(tid)
+                # The claim re-checks that the run is still this dead one.
+                token = await claim_dead_run(tid, owner=iid)
                 if token is None:
                     continue
                 try:
