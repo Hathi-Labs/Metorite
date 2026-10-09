@@ -5,8 +5,9 @@
 //     simple HTML gets `tokens`, and a newsletter with backgrounds gets
 //     `invert`. Light mode and the light version get `original`.
 //   * `email-dark-reinvert`: the invert look re-inverts each img, picture,
-//     video, canvas and svg image, and never a box with a background picture
-//     (coordinator decision, 2026-10-10: readability wins).
+//     video, canvas and svg image. A box with a background picture is a light
+//     island: re-inverted, with a white backing that a sender's own colour
+//     beats (coordinator decision, 2026-10-10, round 2).
 //   * `email-dark-linear`: a crafted mail of 2 MB classifies in under 100 ms,
 //     and so does each pattern just under the size limit.
 //   * `email-dark-base`: the inverted base lands on the card token, not black.
@@ -21,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { parseColor, type Rgb } from "@/lib/theme/contrast";
 import { THEME } from "@/lib/theme/themes";
 import {
-  BLOCKED_REMOTE_CSS, CLASSIFY_LIMIT, INVERT_FILTER, OVERLAY_SPREAD_PX, REINVERT_CSS, bodyLookCss, bodyPalette, chooseBodyLook, classifyEmailHtml,
+  BLOCKED_REMOTE_CSS, CLASSIFY_LIMIT, INVERT_FILTER, ISLAND_Z, LAYER_Z, OVERLAY_SPREAD_PX, REINVERT_CSS, bodyLookCss, bodyPalette, chooseBodyLook, classifyEmailHtml,
   cssColour, forceDarkMedia, frameColorScheme, invertBase, invertColour,
 } from "./bodyLook";
 import { MAX_IDS, parseIds, toggleId } from "./lightVersion";
@@ -133,20 +134,28 @@ describe("email-dark-reinvert", () => {
     expect(css).toContain(`html { filter: ${INVERT_FILTER};`);
     for (const line of REINVERT_CSS.split("\n")) expect(css).toContain(line);
     const rule = REINVERT_CSS.split("\n")[0];
-    expect(rule).toBe(`img, picture, video, canvas, svg image { filter: ${INVERT_FILTER}; }`);
+    for (const sel of ["img", "picture", "video", "canvas", "svg image"]) expect(rule, sel).toContain(sel);
+    // Each island paints above the multiply layer, so it keeps the colours
+    // of light mode (verifier F5).
+    expect(rule).toContain(`{ filter: ${INVERT_FILTER}; position: relative; z-index: ${ISLAND_Z}; }`);
+    expect(ISLAND_Z).toBeGreaterThan(LAYER_Z);
+    expect(css).toContain(`mix-blend-mode: multiply; pointer-events: none; z-index: ${LAYER_Z}; }`);
   });
 
-  it("never re-inverts a box with a background picture, so its text stays readable", () => {
-    // `<div style="background-image:url(x)"><p>Your invoice is attached</p></div>`
-    // and `<table background="x">` must stay inverted with the page. Every
-    // selector of the rule names an element type and nothing else, so no
-    // div, table or td can match it.
-    const selectors = REINVERT_CSS.split("\n")[0].split("{")[0].split(",").map((x) => x.trim());
-    for (const sel of selectors) {
-      expect(sel, sel).toMatch(/^[a-z]+(?: [a-z]+)?$/);
-      for (const box of ["div", "table", "td", "p"]) expect(sel.split(" ")).not.toContain(box);
+  it("makes a box with a background picture a light island", () => {
+    // `<div style="background-image:url(x)"><p>Your invoice is attached</p></div>`,
+    // `<td style="background:url(x)">` and `<table background="x">`.
+    const [filter, backing] = REINVERT_CSS.split("\n");
+    for (const sel of ['[style*="background-image" i]', '[style*="background" i][style*="url(" i]', "[background]"]) {
+      expect(filter, sel).toContain(sel);
     }
-    expect(css).not.toMatch(/\[background|\[style\*=|url\(/);
+    // The white backing, with no !important: an inline background-color of
+    // the sender wins, and a bgcolor attribute is left alone.
+    expect(backing).toBe(
+      '[style*="background-image" i], [style*="background" i][style*="url(" i], ' +
+        `[background]:not([bgcolor]) { background-color: ${cssColour({ r: 1, g: 1, b: 1 })}; }`,
+    );
+    expect(REINVERT_CSS).not.toContain("!important");
   });
 
   it("leaves a blocked remote picture alone, so its alt text stays light", () => {
@@ -155,8 +164,11 @@ describe("email-dark-reinvert", () => {
     expect(BLOCKED_REMOTE_CSS).toBe('img[src^="http" i] { filter: none; }');
   });
 
-  it("does not invert a picture twice inside a <picture>", () => {
-    expect(REINVERT_CSS.split("\n")[1]).toBe("picture :is(img, picture, video, canvas, svg image) { filter: none; }");
+  it("does not invert a picture or a box twice inside a re-inverted box", () => {
+    const box = '[style*="background-image" i], [style*="background" i][style*="url(" i], [background]';
+    expect(REINVERT_CSS.split("\n")[2]).toBe(
+      `:is(${box}, picture) :is(img, picture, video, canvas, svg image, ${box}) { filter: none; }`,
+    );
   });
 
   const drift = (c: { r: number; g: number; b: number }) => {

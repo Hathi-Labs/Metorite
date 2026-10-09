@@ -17,9 +17,9 @@
  *    frame takes the app's card, ink, link and border tokens.
  * 3. `invert` — styled HTML with its own colours or backgrounds. The whole
  *    document gets `invert(1) hue-rotate(180deg)`, and each image, picture,
- *    video and canvas gets the same filter again, so it looks as sent. A CSS
- *    or attribute background picture stays inverted: text on it stays
- *    readable (coordinator decision, 2026-10-10). A layer multiplies the page by a base colour before the filter,
+ *    video and canvas gets the same filter again, so it looks as sent. A box
+ *    with a CSS or attribute background picture becomes a light island: it
+ *    gets the filter again and a white backing (coordinator, 2026-10-10). A layer multiplies the page by a base colour before the filter,
  *    so the email's white lands on the app's card colour, not on black.
  * 4. `original` — light mode, or the member asked for the light version. The
  *    frame draws exactly what it drew before this module existed.
@@ -267,21 +267,50 @@ export function cssColour({ r, g, b }: Rgb): string {
 /** Media that draws a picture. Each gets the filter again, so it looks as sent. */
 const MEDIA = "img, picture, video, canvas, svg image";
 
+/** A box whose background is a picture: an inline style or the attribute. */
+const PICTURE_BOX =
+  '[style*="background-image" i], [style*="background" i][style*="url(" i], [background]';
+
+/** The same boxes, less one that sets its own `bgcolor`: the backing skips it. */
+const BACKED_BOX =
+  '[style*="background-image" i], [style*="background" i][style*="url(" i], [background]:not([bgcolor])';
+
 /**
- * The re-invert rules of the invert look. A picture inside a `<picture>`
- * gets no filter of its own, because two re-inverts would invert it again.
+ * The re-invert rules of the invert look: a LIGHT ISLAND for each picture
+ * (coordinator decision, 2026-10-10, round 2).
  *
- * ⚠️ **No re-invert for a background picture** (coordinator decision,
- * 2026-10-10: readability wins over the colour of a photo). A box with a CSS
- * or attribute background picture holds text too. A re-invert of the box
- * turned that text back to its own dark colour, and when the picture did not
- * load (remote images are blocked by default) the text drew dark on the dark
- * card. So such a box stays inverted with the page, and a background photo
- * may look inverted. The light version shows it as sent.
+ * - Each picture element and each box with a background picture gets the
+ *   filter again, so it composites as in light mode.
+ * - A box with a background picture also gets a white backing. White text
+ *   over a photo stays white, and the photo keeps its true colours. Dark
+ *   text in a box whose picture did not load sits on white, and stays
+ *   readable. Without the backing it drew dark on the dark card (round 0).
+ * - The backing has no `!important`. A sender's own inline
+ *   `background-color` wins, and a `bgcolor` attribute is left alone.
+ * - A picture or a box inside a re-inverted box gets no filter of its own,
+ *   because two re-inverts would invert it again.
+ * - Each re-inverted picture and box paints ABOVE the multiply layer
+ *   (`ISLAND_Z` over `LAYER_Z`). The layer tints only the inverted page, so a
+ *   picture keeps the colours of light mode: a yellow sun stays yellow, not
+ *   peach (verifier F5).
+ *
+ * The cost: such a box looks light in dark mode, as image blocks do in Gmail.
  */
-export const REINVERT_CSS =
-  `${MEDIA} { filter: ${INVERT_FILTER}; }\n` +
-  `picture :is(${MEDIA}) { filter: none; }`;
+export function reinvertCss(): string {
+  const white = cssColour({ r: 1, g: 1, b: 1 });
+  return (
+    `${MEDIA}, ${PICTURE_BOX} { filter: ${INVERT_FILTER}; position: relative; z-index: ${ISLAND_Z}; }\n` +
+    `${BACKED_BOX} { background-color: ${white}; }\n` +
+    `:is(${PICTURE_BOX}, picture) :is(${MEDIA}, ${PICTURE_BOX}) { filter: none; }`
+  );
+}
+
+/** The paint order: the multiply layer, then each light island above it. */
+export const LAYER_Z = 2147483646;
+export const ISLAND_Z = 2147483647;
+
+/** The re-invert rules, as one string. */
+export const REINVERT_CSS = reinvertCss();
 
 /** How far the multiply layer reaches past the frame: a wide mail overflows it. */
 export const OVERLAY_SPREAD_PX = 4096;
@@ -327,8 +356,8 @@ export function bodyLookCss(
   // pixel by the base before the filter runs. White becomes the base, and
   // the filter turns the base into the card: the email's own white boxes
   // land on the card, not on black. Black text stays black, so it still
-  // turns white. A picture loses only its deepest shadow, which lifts to the
-  // card colour.
+  // turns white. A light island paints above the layer, so it keeps the
+  // colours of light mode.
   //
   // A wide newsletter overflows the frame, and the member can scroll it
   // sideways. The spread of the layer's shadow multiplies that overflow too,
@@ -340,7 +369,7 @@ export function bodyLookCss(
     `  html { filter: ${INVERT_FILTER}; background: ${sheet}; position: relative; min-height: 100%; }\n` +
     `  html::after { content: ""; position: absolute; inset: 0; background: ${base}; ` +
     `box-shadow: 0 0 0 ${OVERLAY_SPREAD_PX}px ${base}; ` +
-    "mix-blend-mode: multiply; pointer-events: none; z-index: 2147483647; }\n" +
+    `mix-blend-mode: multiply; pointer-events: none; z-index: ${LAYER_Z}; }\n` +
     `  ${REINVERT_CSS.replace(/\n/g, "\n  ")}\n` +
     // A blocked remote picture never loads, and its alt text draws in its
     // place. A re-invert would turn that text dark on the dark card.

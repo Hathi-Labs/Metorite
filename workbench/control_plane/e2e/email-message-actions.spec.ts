@@ -198,11 +198,31 @@ test.describe("Loading message…", () => {
 });
 
 /**
- * The contrast of a captured element: the lightest and the darkest pixel.
- * The browser decodes the capture, so the spec needs no image library.
+ * A capture of an element in the mail frame, cut to the frame. A wide row of
+ * a newsletter runs past the frame's edge, and the page beside the frame is
+ * not part of the mail.
+ */
+async function shotInFrame(page: Page, el: Locator): Promise<string> {
+  await el.scrollIntoViewIfNeeded();
+  const box = await el.boundingBox();
+  const fr = await frame(page).boundingBox();
+  if (!box || !fr) throw new Error("no box to capture");
+  const x = Math.max(box.x, fr.x + 2);
+  const y = Math.max(box.y, fr.y + 2);
+  const right = Math.min(box.x + box.width, fr.x + fr.width - 2);
+  const bottom = Math.min(box.y + box.height, fr.y + fr.height - 2);
+  const clip = { x, y, width: right - x, height: bottom - y };
+  return (await page.screenshot({ clip })).toString("base64");
+}
+
+/**
+ * The contrast of the text of a captured element against what lies under it.
+ * The median pixel is the backing, because text covers little of a line. The
+ * text is the pixel farthest from it. The browser decodes the capture, so
+ * the spec needs no image library.
  */
 async function pixelContrast(page: Page, el: Locator): Promise<number> {
-  const png = (await el.screenshot()).toString("base64");
+  const png = await shotInFrame(page, el);
   return page.evaluate(async (data) => {
     const img = new Image();
     img.src = `data:image/png;base64,${data}`;
@@ -220,24 +240,45 @@ async function pixelContrast(page: Page, el: Locator): Promise<number> {
       };
       return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
     };
-    let lo = 1;
-    let hi = 0;
-    for (let i = 0; i < px.length; i += 4) {
-      const l = lum(px[i], px[i + 1], px[i + 2]);
-      lo = Math.min(lo, l);
-      hi = Math.max(hi, l);
-    }
-    return (hi + 0.05) / (lo + 0.05);
+    const all: number[] = [];
+    for (let i = 0; i < px.length; i += 4) all.push(lum(px[i], px[i + 1], px[i + 2]));
+    all.sort((a, b) => a - b);
+    const med = all[Math.floor(all.length / 2)];
+    const lo = all[0];
+    const hi = all[all.length - 1];
+    const text = hi - med > med - lo ? hi : lo;
+    return (Math.max(text, med) + 0.05) / (Math.min(text, med) + 0.05);
+  }, png);
+}
+
+/** The mean colour of a captured element, 0 to 255 per channel. */
+async function meanColour(page: Page, el: Locator): Promise<number[]> {
+  const png = await shotInFrame(page, el);
+  return page.evaluate(async (data) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, c.width, c.height).data;
+    const sum = [0, 0, 0];
+    for (let i = 0; i < px.length; i += 4) for (let k = 0; k < 3; k++) sum[k] += px[i + k];
+    return sum.map((v) => v / (px.length / 4));
   }, png);
 }
 
 test.describe("Fix round 1", () => {
   test.describe.configure({ timeout: 120_000 });
 
-  // P1-b. Mutation caught: with a re-invert on a box with a background
-  // picture, the dark text of that box drew dark on the dark card, because
-  // the remote picture never loads.
-  test("text in a box with a background picture stays readable in dark mode", async ({ page }) => {
+  // P1-b, round 2: the light island. Mutations caught, each one red:
+  // - no white backing: the dark text of a box whose picture never loads drew
+  //   dark on the dark card (round 0);
+  // - no re-invert: the photo drew inverted, and white text on it turned dark
+  //   on a dark photo (round 1).
+  test("a box with a background picture is a light island in dark mode", async ({ page }) => {
     await installEmailMocks(page, [IDS.newsletter]);
     await open(page, IDS.newsletter);
     await expect(frame(page)).toHaveAttribute("data-body-look", "invert");
@@ -248,16 +289,104 @@ test.describe("Fix round 1", () => {
       return {
         box: getComputedStyle(invoice.parentElement!).filter,
         table: of('[class="probe-table-bg"]'),
+        photo: of('[class="probe-photo-box"]'),
+        // A box inside a re-inverted box gets no second filter.
         tableText: of('[class="probe-table-text"]'),
       };
     });
-    expect(filters).toEqual({ box: "none", table: "none", tableText: "none" });
+    expect(filters.box).toContain("invert(1)");
+    expect(filters.table).toContain("invert(1)");
+    expect(filters.photo).toContain("invert(1)");
+    expect(filters.tableText).toBe("none");
     const body = page.frameLocator('iframe[title="Email content"]').first();
     expect(await pixelContrast(page, body.locator('[class="probe-invoice"]'))).toBeGreaterThan(4.5);
     expect(await pixelContrast(page, body.locator('[class="probe-table-text"]'))).toBeGreaterThan(4.5);
-    // The reverse case: the sender hid white text on the picture. It stays
-    // hidden, because it inverts with its surroundings.
+    // White text over the photo, against the photo under it.
+    expect(await pixelContrast(page, body.locator('[class="probe-photo-text"]'))).toBeGreaterThan(4.5);
+    // The reverse case: the sender hid white text on white. It stays hidden.
     expect(await pixelContrast(page, body.locator('[class="probe-hidden"]'))).toBeLessThan(1.5);
+
+    // The photo keeps its true colours: its mean colour is near the one that
+    // light mode draws. An inverted photo is far from it.
+    const dark = await meanColour(page, body.locator('[class="probe-photo-box"]'));
+    const lightPage = await page.context().newPage();
+    await lightPage.addInitScript(() => localStorage.setItem("theme", "light"));
+    await installEmailMocks(lightPage, [IDS.newsletter]);
+    await open(lightPage, IDS.newsletter);
+    await expect(frame(lightPage)).toHaveAttribute("data-body-look", "original");
+    const lightBody = lightPage.frameLocator('iframe[title="Email content"]').first();
+    const light = await meanColour(lightPage, lightBody.locator('[class="probe-photo-box"]'));
+    for (let k = 0; k < 3; k++) expect(Math.abs(dark[k] - light[k]), `channel ${k}`).toBeLessThan(6);
+  });
+
+  // Verifier F1. Mutation caught: with the handlers pointed at the open email
+  // (`email ?? m`), Archive, Move, Delete, Label and Add to My Tasks of an
+  // older card all acted on the open email, and only Flag was checked.
+  test("every item of an older card's menu sends its request for that card", async ({ page }) => {
+    await installEmailMocks(page, [IDS.threadNew]);
+    const sent: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
+    page.on("request", (r) => {
+      const path = new URL(r.url()).pathname;
+      if (!path.startsWith("/api/") || r.method() === "GET") return;
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(r.postData() ?? "{}");
+      } catch {
+        /* not JSON */
+      }
+      sent.push({ method: r.method(), path, body });
+    });
+    await open(page, IDS.threadNew);
+    await page.getByText("Can we run the trial on Friday?").first().click();
+    const older = row(page, IDS.threadOld);
+    const menu = page.getByRole("menu");
+    const pick = async (name: string) => {
+      await older.getByRole("button", { name: "More actions" }).click();
+      await menu.getByRole("menuitem", { name, exact: true }).click();
+    };
+    const OLD = `/api/email/messages/${IDS.threadOld}`;
+    const last = () => sent[sent.length - 1];
+
+    await pick("Flag");
+    await expect.poll(() => sent.length).toBe(1);
+    expect(last()).toEqual({ method: "PATCH", path: OLD, body: { is_flagged: true } });
+
+    await pick("Label…");
+    await menu.getByRole("menuitemcheckbox").first().click();
+    await expect.poll(() => sent.length).toBe(2);
+    expect(last().method).toBe("PATCH");
+    expect(last().path).toBe(OLD);
+    expect(last().body).toHaveProperty("add_labels");
+    await page.keyboard.press("Escape");
+
+    await pick("Move to…");
+    await menu.getByRole("menuitem", { name: "Archive", exact: true }).click();
+    await expect.poll(() => sent.length).toBe(3);
+    expect(last()).toEqual({ method: "PATCH", path: OLD, body: { folder: "archive" } });
+
+    await pick("Archive");
+    await expect.poll(() => sent.length).toBe(4);
+    expect(last()).toEqual({ method: "PATCH", path: OLD, body: { folder: "archive" } });
+
+    // Add to My Tasks opens the capture for this card, in its own mailbox.
+    const preview = "/api/tasks/capture/from-email/preview";
+    const beforeTasks = sent.length;
+    await pick("Add to My Tasks");
+    await expect.poll(() => sent.slice(beforeTasks).some((r) => r.path === preview)).toBe(true);
+    expect(sent.slice(beforeTasks).find((r) => r.path === preview)).toEqual({
+      method: "POST",
+      path: preview,
+      body: { account_id: ACCOUNT.id, email_id: IDS.threadOld },
+    });
+    await page.keyboard.press("Escape");
+
+    const beforeDelete = sent.length;
+    await pick("Delete");
+    await expect.poll(() => sent.slice(beforeDelete).some((r) => r.method === "DELETE")).toBe(true);
+    expect(sent.slice(beforeDelete).find((r) => r.method === "DELETE")).toEqual({ method: "DELETE", path: OLD, body: {} });
+
+    // Not one request named the open email.
+    expect(sent.filter((r) => r.path.includes(IDS.threadNew) || r.body.email_id === IDS.threadNew)).toEqual([]);
   });
 
   // Found by the screenshots of fix round 1: a wide newsletter overflows the

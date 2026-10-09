@@ -1,8 +1,8 @@
 import type { Page, Route } from "@playwright/test";
 
 /**
- * The mails and the stubs of `email-message-actions.spec.ts`, shared with its
- * capture rig (`visual/email-message-actions.visual.ts`).
+ * The mails and the stubs of `email-message-actions.spec.ts`. A local capture
+ * rig built on `visual/harness.ts` can import them too, to look at each look.
  *
  * No gateway runs under the suite, so every `/api/email` call is stubbed.
  * The mails are built to hit each dark-mode rule of `lib/bodyLook.ts` once.
@@ -43,6 +43,22 @@ const PHOTO =
       `</svg>`,
   );
 
+/**
+ * A dark hero photo, as a data URI: white text on it reads in light mode, so
+ * it must read in dark mode too (the light island of round 2).
+ */
+const HERO =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="140" viewBox="0 0 560 140">` +
+      `<defs><linearGradient id="h" x1="0" y1="0" x2="1" y2="1">` +
+      `<stop offset="0" stop-color="#0b2545"/><stop offset="1" stop-color="#134074"/></linearGradient></defs>` +
+      `<rect width="560" height="140" fill="url(#h)"/>` +
+      `<path d="M0 140 L120 70 L210 120 L330 50 L460 115 L560 80 V140 Z" fill="#8a1c1c"/>` +
+      `<circle cx="480" cy="34" r="16" fill="#e9a23b"/>` +
+      `</svg>`,
+  );
+
 /** A simple note from a person: no colour and no background of its own. */
 const PLAIN_HTML =
   `<div dir="ltr">Hi Priya,<br><br>The revised quote for the extruder is below. ` +
@@ -69,8 +85,8 @@ const NEWSLETTER_HTML =
   `<p class="probe-hidden" style="color:#ffffff;margin:6px 0 0;font-size:15px">Hidden white text</p></td></tr>` +
   `<tr><td><table class="probe-table-bg" background="https://cdn.example.test/tile.png" width="100%"><tr>` +
   `<td class="probe-table-text" style="padding:8px 20px;color:#1f2937;font-family:Arial">A table with a background picture</td></tr></table></td></tr>` +
-  `<tr><td style="background-image:url('${PHOTO}');background-size:cover;height:110px;padding:16px 20px">` +
-  `<p style="color:#ffffff;font:700 20px Arial;margin:0">Text on a background photo</p></td></tr>` +
+  `<tr><td class="probe-photo-box" style="background-image:url('${HERO}');background-size:cover;height:110px;padding:16px 20px">` +
+  `<p class="probe-photo-text" style="color:#ffffff;font:700 20px Arial;margin:0">Text on a background photo</p></td></tr>` +
   `<tr><td style="padding:20px;color:#333333;font-family:Arial;font-size:15px;line-height:1.5">` +
   `<h2 style="color:#111111;margin:0 0 8px">This week in 3D printing</h2>` +
   `New filament profiles are live, and the Julia Pro has a firmware update. ` +

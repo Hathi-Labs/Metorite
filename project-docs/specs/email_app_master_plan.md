@@ -28,7 +28,7 @@
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
-> 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix round 1 is in.
+> 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 and 2 are in.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -15317,7 +15317,7 @@ migration, and no flag.
 ## 16. The reading pane: one action row, and the body in dark mode (2026-10-10)
 
 **Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
-fix round 1 is in.** UI only. No migration, no flag and no gateway change.
+fix rounds 1 and 2 are in.** UI only. No migration, no flag and no gateway change.
 
 The owner asked for two changes on 2026-10-10. This section records them, and a fix of
 "Loading message…".
@@ -15385,14 +15385,23 @@ sanitized markup, which is what the frame draws.
 3. **`invert`.** Styled HTML gets `invert(1) hue-rotate(180deg)` on the root. Each `img`,
    `picture`, `video`, `canvas` and `svg image` gets the filter again, so it looks as
    sent. A picture inside a `<picture>` gets no second filter.
-   - **No re-invert for a background picture** (coordinator decision, 2026-10-10:
-     readability wins over the colour of a photo). A box with a CSS or attribute
-     background picture also holds text. A re-invert of the box turned that text back to
-     its own dark colour. When the picture did not load, the text drew dark on the dark
-     card. So the box now inverts with the page, and its text stays readable.
+   - **A light island for a background picture** (coordinator decision, 2026-10-10,
+     round 2). A box with a background picture gets the filter again, and a white
+     backing. The rule covers a `background-image` style, a `background` style with
+     `url(`, and the `background` attribute.
+   - The island composites as in light mode. The photo keeps its true colours, and white
+     text over it stays white. Dark text in a box whose picture did not load sits on
+     white. Hidden white text on white stays hidden.
+   - The backing has no `!important`, so an inline `background-color` of the sender
+     wins. A box with a `bgcolor` attribute gets no backing.
+   - Such a box looks light in dark mode, as an image block does in Gmail.
+   - A picture or a box inside an island gets no second filter.
    - A layer multiplies the page by a base colour before the filter. The base comes from
      the card token, so each white box of the mail lands on the card colour. The spread
      of the layer's shadow also covers a wide mail that the member scrolls sideways.
+   - Each picture and each island paints above the layer (`position: relative` and a
+     higher `z-index`). So the layer tints only the inverted page, and a photo keeps the
+     mean colour of light mode.
    - While the pane blocks the images, a remote picture gets no re-invert. Its alt text then
      stays light.
 4. **`original`.** Light mode, and the light version, draw the sheet exactly as before.
@@ -15431,8 +15440,8 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
   print rule, the native rewrite and the light-version list.
   - `email-dark-linear`: 2 MB of `color-scheme: x ` and of `@media x ` each classify in
     under 100 ms. Each pattern just under the limit and each rewrite of 2 MB do too.
-  - `email-dark-reinvert`: no selector of the re-invert can match a `div`, a `table` or
-    a `td`.
+  - `email-dark-reinvert`: the light-island rules, the backing with no `!important`,
+    the `bgcolor` case, and the paint order above the layer.
 - `src/app/email/lib/messageActions.test.ts`: the tiers, the menu groups and the keys.
   It also holds the wiring of each handler to its message, the capture of a thread
   message and the loading fix.
@@ -15441,21 +15450,31 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 - `e2e/email-message-actions.spec.ts`: the row on both views, the menu by keyboard, a
   thread item on its own message and the narrow row. It also holds each look in a real
   frame, the light version after a reload, light mode, Show images and the loading race.
-  - Fix round 1 adds four tests. Text in a box with a background picture keeps its
-    contrast, measured on the pixels, and white text that the sender hid stays hidden.
-    A sideways scroll shows no black strip. A hydrated older card's menu follows read
-    both ways and a label check. The Label view works with the keyboard only.
-- Advisory: the screenshots of the rig `e2e/visual/email-message-actions.visual.ts`
-  (not committed) are the only check of how the looks appear.
+  - Fix rounds 1 and 2 add five tests. The light island test measures the pixels: dark
+    text and white text on a photo each read above 4.5, and hidden text stays below 1.5.
+    The photo's mean colour is within 6 of light mode. A sideways scroll shows no black
+    strip. A hydrated older card's menu follows read both ways and a label check. The
+    Label view works with the keyboard only.
+  - Every item of an older card's menu sends its request for that card. That covers
+    Flag, Label, Move, Archive, Add to My Tasks and Delete.
+  - Mutations caught, each one red: a handler pointed at the open email (update, delete
+    and tasks), no backing, no re-invert of an island, and no island `z-index`.
+- `emailsTotal` after a move of a thread message is a unit fence only
+  (`email-patch-per-message`). The list loads more by itself while its count is short,
+  so an e2e check of the count would not hold still.
+- Advisory: screenshots from a local capture rig on `e2e/visual/harness.ts` are the only
+  check of how the looks appear. The rig is not committed.
 
 ### 16.5 Recorded risks and findings
 
-- **A background photo of a styled mail looks inverted in dark mode.** This is the
-  coordinator's decision of 2026-10-10: text on the photo stays readable, and that wins.
-  The light version shows the photo as sent.
-- **A vivid colour in a re-inverted picture shifts a little.** The browser clamps each
-  filter step, and a hue-rotate of a vivid colour leaves the range. The layer also lifts
-  the deepest shadow of a picture to the card colour. The light version is the way out.
+- **A vivid colour in a re-inverted picture shifts.** The browser clamps each filter
+  step, and a hue-rotate of a vivid colour leaves the range. A yellow sun (`#f7c948`)
+  draws as peach, near `#ecbe89`. The multiply layer no longer adds to this, because
+  each picture paints above it. A fix needs a root filter with no hue-rotate, which the
+  owner's rule names. The light version is the way out.
+- **An island with a `background:` shorthand inline gets no backing.** The shorthand
+  sets `background-color` inline, and an inline style beats the backing rule. If its
+  picture does not load, dark text in it can draw on a dark box.
 - **A style block in the head never reaches the frame.** `sanitizeEmailHtml` drops the
   head, and DOMPurify drops a leading style block too. So a dark design that lives in the
   head is lost, and that mail gets `invert` or `tokens`. A fix needs a sanitizer change
