@@ -1004,7 +1004,9 @@ belong to slice A, the gateway feed.
   from the gateway. When the gateway is down, it answers 502. An empty feed
   would say "Nothing needs you", and that is a claim, not a silence.
 - **The acts.** A one-click act runs through the client of the app that owns
-  it (`src/lib/shell/needs.ts`). My Day adds no write route.
+  it (`src/lib/shell/needs.ts`). My Day adds no write route. A completion
+  offers Undo, by the D79 rule. A notification marked read has no Undo,
+  because the Projects bell has no route that marks a notification unread.
 - **The sidebar.** With the flag on, the first item reads "My Day".
 
 ### NS-4a · Tier 1, record search — AGENT-SAFE · BUILT 2026-10-08, dark

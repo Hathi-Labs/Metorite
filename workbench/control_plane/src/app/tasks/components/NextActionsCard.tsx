@@ -53,6 +53,18 @@ export default function NextActionsCard({
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
 
+  // A new list forgets each removed task it no longer holds, so a task that
+  // is reopened later shows again (the rule of `useNeedsYou`).
+  const [seen, setSeen] = useState(next.data);
+  if (next.data !== seen) {
+    setSeen(next.data);
+    if (next.data && removed.size > 0) {
+      const held = new Set(next.data.map((t) => t.id));
+      const kept = new Set([...removed].filter((id) => held.has(id)));
+      if (kept.size !== removed.size) setRemoved(kept);
+    }
+  }
+
   const mark = useCallback((id: string, gone: boolean) => {
     setRemoved((prev) => {
       const s = new Set(prev);

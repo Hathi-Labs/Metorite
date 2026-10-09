@@ -56,8 +56,15 @@ const things = (n: number) => (n === 1 ? "1 thing" : `${n} things`);
 /**
  * The one summary sentence. `today` is `null` when the member has no
  * calendar (no My Tasks), so the sentence does not claim an empty one.
+ *
+ * `partial` is true when a source did not answer. Then "nothing" is only
+ * true of the apps that did, and the sentence says so.
+ *
+ * ⚠️ When nothing needs the member, the sentence does not repeat the card's
+ * own line ("Nothing needs you right now."). Two identical lines 100px apart
+ * read as a fault.
  */
-export function summaryLine(needs: number, today: number | null): string {
+export function summaryLine(needs: number, today: number | null, partial = false): string {
   const cal =
     today === null || today === 0
       ? null
@@ -68,10 +75,15 @@ export function summaryLine(needs: number, today: number | null): string {
     const head = `${things(needs)} ${needs === 1 ? "needs" : "need"} you`;
     return cal ? `${head}, and ${cal}.` : `${head}.`;
   }
-  if (cal) {
-    return `Nothing needs you right now. ${things(today!)} ${today === 1 ? "is" : "are"} on your calendar today.`;
-  }
-  return "Nothing needs you right now.";
+  const nothing = partial ? "Nothing needs you in the apps that answered" : "Nothing needs you";
+  if (cal) return `${nothing}. ${things(today!)} ${today === 1 ? "is" : "are"} on your calendar today.`;
+  if (today === 0) return `${nothing}, and your calendar is clear.`;
+  return partial ? `${nothing}.` : `${nothing} right now.`;
+}
+
+/** The Needs you card's empty line. A failed source makes it say less. */
+export function emptyNeedsLine(partial: boolean): string {
+  return partial ? "Nothing needs you in the apps that answered." : "Nothing needs you right now.";
 }
 
 // ── Needs you ───────────────────────────────────────────────────────────────

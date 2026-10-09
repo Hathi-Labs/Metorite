@@ -47,13 +47,16 @@ function timeRange(task: MyTask): string {
 
 export default function TodayCard({
   today,
+  now,
   className = "",
 }: {
   today: CachedResource<MyTask[]>;
+  /** The page's clock, by the minute. A render reads no clock itself. */
+  now: Date | null;
   className?: string;
 }) {
   const plan = { href: "/calendar", label: "Plan my day" };
-  const nowMs = Date.now();
+  const nowMs = now?.getTime() ?? 0;
   let body: React.ReactNode;
   if (today.data === undefined) {
     body = today.loading ? (
@@ -74,14 +77,15 @@ export default function TodayCard({
           const over = task.scheduledEnd ? new Date(task.scheduledEnd).getTime() < nowMs : false;
           return (
             <li key={task.id}>
+              {/* The time sits over the title, not beside it. Today is a
+                  narrow rail from `xl`, and a column of times there left the
+                  titles three words long. */}
               <Link
                 href="/calendar"
-                className="flex min-h-11 items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-secondary/60 tech-transition"
+                className="flex min-h-11 flex-col justify-center rounded-lg px-2 py-1.5 hover:bg-secondary/60 tech-transition"
               >
-                <span className="w-36 shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{timeRange(task)}</span>
-                <span
-                  className={`min-w-0 flex-1 truncate text-sm ${over ? "text-muted-foreground" : "text-foreground"}`}
-                >
+                <span className="text-xs tabular-nums text-muted-foreground">{timeRange(task)}</span>
+                <span className={`truncate text-sm ${over ? "text-muted-foreground" : "text-foreground"}`}>
                   {task.title}
                 </span>
               </Link>

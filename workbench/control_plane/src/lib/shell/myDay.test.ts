@@ -16,6 +16,7 @@ import {
   appIcon,
   cardsFor,
   dateLine,
+  emptyNeedsLine,
   failedLines,
   firstName,
   greeting,
@@ -74,10 +75,18 @@ describe("the header", () => {
     expect(summaryLine(1, 1)).toBe("1 thing needs you, and 1 is on your calendar today.");
     expect(summaryLine(2, 0)).toBe("2 things need you.");
     expect(summaryLine(2, null)).toBe("2 things need you.");
-    expect(summaryLine(0, 0)).toBe("Nothing needs you right now.");
+    expect(summaryLine(0, 0)).toBe("Nothing needs you, and your calendar is clear.");
     expect(summaryLine(0, null)).toBe("Nothing needs you right now.");
-    expect(summaryLine(0, 2)).toBe("Nothing needs you right now. 2 things are on your calendar today.");
-    expect(summaryLine(0, 1)).toBe("Nothing needs you right now. 1 thing is on your calendar today.");
+    expect(summaryLine(0, 2)).toBe("Nothing needs you. 2 things are on your calendar today.");
+    expect(summaryLine(0, 1)).toBe("Nothing needs you. 1 thing is on your calendar today.");
+  });
+
+  it("claims nothing about an app that did not answer", () => {
+    expect(summaryLine(0, 0, true)).toBe("Nothing needs you in the apps that answered, and your calendar is clear.");
+    expect(summaryLine(0, null, true)).toBe("Nothing needs you in the apps that answered.");
+    expect(summaryLine(2, 1, true)).toBe("2 things need you, and 1 is on your calendar today.");
+    expect(emptyNeedsLine(false)).toBe("Nothing needs you right now.");
+    expect(emptyNeedsLine(true)).toBe("Nothing needs you in the apps that answered.");
   });
 });
 

@@ -31,7 +31,7 @@ import { visibleSections } from "@/lib/nav";
 
 import AppLauncher from "./AppLauncher";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
-import { cardsFor, dateLine, greetingLine, summaryLine } from "./myDay";
+import { cardsFor, dateLine, failedLines, greetingLine, summaryLine } from "./myDay";
 
 /**
  * The clock, by the minute, on the client only. The server renders no time,
@@ -74,7 +74,7 @@ export default function MyDay() {
       ? "pending"
       : needsFailed || none
         ? null
-        : summaryLine(needs.count ?? 0, todayCount);
+        : summaryLine(needs.count ?? 0, todayCount, failedLines(needs.sources).length > 0);
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-testid="my-day">
@@ -120,9 +120,9 @@ export default function MyDay() {
         // One column in the order of the question. From `xl`, Today is a
         // right rail that spans both rows, and the other two stack left.
         <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
-          {cards.needs ? <NeedsYouCard needs={needs} className="xl:col-span-2" /> : null}
+          {cards.needs ? <NeedsYouCard needs={needs} now={now} className="xl:col-span-2" /> : null}
           {cards.today ? (
-            <TodayCard today={today} className="xl:col-start-3 xl:row-span-2 xl:row-start-1" />
+            <TodayCard today={today} now={now} className="xl:col-start-3 xl:row-span-2 xl:row-start-1" />
           ) : null}
           {cards.next ? (
             <NextActionsCard

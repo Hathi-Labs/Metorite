@@ -29,7 +29,7 @@ import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard } from "./HomeCard";
-import { actError, appIcon, failedLines, rowTime, shownNeeds } from "./myDay";
+import { actError, appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
 import {
   type CompletionUndo,
   type NeedsFeed,
@@ -64,6 +64,20 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
   const toast = useToast();
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+
+  // A new answer from the server forgets each removed row it no longer
+  // holds. Without this, a task that comes back later (reopened in Projects)
+  // would stay hidden here until a reload. Adjusted during render, React's
+  // own pattern for state that follows a prop.
+  const [seen, setSeen] = useState(feed.data);
+  if (feed.data !== seen) {
+    setSeen(feed.data);
+    if (feed.data && removed.size > 0) {
+      const held = new Set(feed.data.items.map((i) => i.id));
+      const kept = new Set([...removed].filter((id) => held.has(id)));
+      if (kept.size !== removed.size) setRemoved(kept);
+    }
+  }
 
   const remove = useCallback((id: string, gone: boolean) => {
     setRemoved((prev) => {
@@ -134,9 +148,17 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
   };
 }
 
-export default function NeedsYouCard({ needs, className = "" }: { needs: NeedsYou; className?: string }) {
+export default function NeedsYouCard({
+  needs,
+  now,
+  className = "",
+}: {
+  needs: NeedsYou;
+  /** The page's clock, by the minute. A render reads no clock itself. */
+  now: Date | null;
+  className?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const now = Date.now();
 
   let body: React.ReactNode;
   if (needs.items === undefined) {
@@ -151,7 +173,9 @@ export default function NeedsYouCard({ needs, className = "" }: { needs: NeedsYo
         <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
           <Icon name="Check" size={14} className={accentForHue("green").text} />
         </span>
-        <span className="text-sm text-muted-foreground">Nothing needs you right now.</span>
+        <span className="text-sm text-muted-foreground">
+          {emptyNeedsLine(failedLines(needs.sources).length > 0)}
+        </span>
       </div>
     );
   } else {
@@ -173,7 +197,7 @@ export default function NeedsYouCard({ needs, className = "" }: { needs: NeedsYo
                 <NeedsRow
                   key={item.id}
                   item={item}
-                  nowMs={now}
+                  nowMs={now?.getTime() ?? null}
                   error={needs.errors[item.id]}
                   onAct={() => needs.act(item)}
                 />
@@ -232,11 +256,12 @@ function NeedsRow({
   onAct,
 }: {
   item: NeedsItem;
-  nowMs: number;
+  /** `null` before the client clock exists: the row then prints no time. */
+  nowMs: number | null;
   error?: string;
   onAct: () => void;
 }) {
-  const time = rowTime(item, nowMs);
+  const time = nowMs === null ? "" : rowTime(item, nowMs);
   return (
     <li>
       <div className="flex min-h-11 items-center gap-2 rounded-lg pr-1 hover:bg-secondary/60 tech-transition">
@@ -255,13 +280,15 @@ function NeedsRow({
             ) : null}
           </span>
         </Link>
+        {/* On a phone the act is its icon alone, so the title keeps the row's
+            width. The name stays whole for a screen reader at every size. */}
         {item.act === "done" ? (
-          <Button variant="ghost" size="sm" icon="Check" onClick={onAct} aria-label={`Mark ${item.title} done`}>
-            Done
+          <Button variant="ghost" size="sm" icon="Check" onClick={onAct} aria-label={`Mark ${item.title} done`} className="min-h-9 min-w-9">
+            <span className="hidden sm:inline">Done</span>
           </Button>
         ) : item.act === "read" ? (
-          <Button variant="ghost" size="sm" onClick={onAct} aria-label={`Mark ${item.title} read`}>
-            Mark read
+          <Button variant="ghost" size="sm" icon="CheckCheck" onClick={onAct} aria-label={`Mark ${item.title} read`} className="min-h-9 min-w-9">
+            <span className="hidden sm:inline">Mark read</span>
           </Button>
         ) : null}
       </div>
