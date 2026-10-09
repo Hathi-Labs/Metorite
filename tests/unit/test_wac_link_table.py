@@ -205,6 +205,26 @@ def test_a_second_run_of_the_migration_changes_nothing(promoted) -> None:  # noq
     assert _catalog(promoted.admin_engine) == before
 
 
+def test_the_migration_itself_installs_force_rls(promoted) -> None:  # noqa: F811
+    """This catalog also ran the generated phase 4, which scopes the table
+    too. A box replays only the numbered file, so strip the scoping and prove
+    that the migration alone puts it back."""
+    before = _catalog(promoted.admin_engine)
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(f"DROP POLICY whatsapp_member_links_tenant_isolation "
+                       f"ON {_TABLE}"))
+        c.execute(text(f"ALTER TABLE {_TABLE} NO FORCE ROW LEVEL SECURITY"))
+        c.execute(text(f"ALTER TABLE {_TABLE} DISABLE ROW LEVEL SECURITY"))
+    assert _catalog(promoted.admin_engine)["rls"] == (False, False)
+
+    with promoted.admin_engine.connect() as c:
+        with c.connection.dbapi_connection.cursor() as cur:
+            cur.execute(_migration().read_text(encoding="utf-8"))
+        c.connection.dbapi_connection.commit()
+
+    assert _catalog(promoted.admin_engine) == before
+
+
 # ── wac-code-issue-writes-one-row ───────────────────────────────────────────
 
 async def test_a_post_writes_one_pending_row_under_the_bound_org(
