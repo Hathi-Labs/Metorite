@@ -51,16 +51,24 @@ function files(dir: string): string[] {
   });
 }
 
+/** Lines left after comments are gone. Wrapped JSX text carries no quote,
+ *  so every remaining line is checked, not only the ones with a string. */
+function visibleHits(dir: string): string[] {
+  return files(dir).flatMap((f) =>
+    strip(readFileSync(f, "utf-8"))
+      .split("\n")
+      .filter((l) => CODES.test(l))
+      .map((l) => `${f}: ${l.trim()}`),
+  );
+}
+
 describe("no ticket, decision or migration number reaches the screen", () => {
-  it("in any page or component string (comments are allowed)", () => {
-    const app = join(__dirname, "..", "app");
-    const hits = files(app).flatMap((f) =>
-      strip(readFileSync(f, "utf-8"))
-        .split("\n")
-        .filter((l) => /["`>]/.test(l) && CODES.test(l))
-        .map((l) => `${f}: ${l.trim()}`),
-    );
-    expect(hits).toEqual([]);
+  it("in any page or component (comments are allowed)", () => {
+    expect(visibleHits(join(__dirname, "..", "app"))).toEqual([]);
+  });
+
+  it("in any lib string a page renders (comments are allowed)", () => {
+    expect(visibleHits(__dirname)).toEqual([]);
   });
 
   it("in the setup checklist's sentences", () => {

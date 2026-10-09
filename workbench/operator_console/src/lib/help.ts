@@ -56,7 +56,7 @@ export const HELP_TOOLBAR = {
     "images.",
   attention:
     "Models that cannot serve, or cannot be costed: no vendor key " +
-    "installed, no price recorded, or not declared to Metorite at all.",
+    "installed, no price recorded, or not declared to the Router at all.",
   clear: "Drop every filter and the search, and show the whole catalog again.",
   showMore:
     "Draw the rest of the matching models. They are held back because every " +
@@ -79,7 +79,7 @@ export const HELP_TIERS = {
   section:
     "Open or close this group. The count is how many tiers are in it.",
   job:
-    "The one job this tier serves. Metorite refuses a model that was not " +
+    "The one job this tier serves. The Router refuses a model that was not " +
     "declared for it, so audio can never reach a chat model.",
   moveUp:
     "Try this model earlier. The step at position 1 serves every call; the " +
@@ -94,7 +94,7 @@ export const HELP_TIERS = {
     "the job stops for every customer on the tier.",
   noBackup:
     "One model only. When it is down or rate limited this job stops for " +
-    "every customer on this tier, and there is nowhere for Metorite to go.",
+    "every customer on this tier, and there is nowhere for the Router to go.",
   noPrice:
     "No rate card for this tier and job, so calls through it bill nothing. " +
     "Price it on the Pricing page.",
@@ -102,7 +102,7 @@ export const HELP_TIERS = {
   // greyed-out Save carrying no reason at all. A disabled control with no
   // title reads as broken, not as refusing.
   saveOrder:
-    "Write this order to Metorite. Step 1 serves every call, and the rest " +
+    "Write this order to the Router. Step 1 serves every call, and the rest " +
     "run only when the step above them fails.",
   addStep:
     "Put the chosen model at the end of the chain. Nothing reaches the " +
@@ -127,23 +127,23 @@ export const HELP_TIERS = {
  *  of it. Most models should come from "available from your vendors" instead. */
 export const HELP_DECLARE = {
   open:
-    "Add a model the vendor feed does not carry. Anything the vendor price list can reach " +
+    "Add a model the vendor feed does not carry. Any model the vendor's API serves " +
     "works, written up or not — but if the feed knows it, adding it above " +
     "needs no typing at all.",
   modelId:
-    "The id Metorite will call, exactly as the vendor spells it — usually " +
+    "The id the Router will call, exactly as the vendor spells it — usually " +
     "vendor/model. Getting this wrong means every call to it fails.",
   task:
-    "Which job this model does. Metorite refuses to route a model to a job " +
+    "Which job this model does. The Router refuses to route a model to a job " +
     "it was not declared for, so audio can never reach a chat model.",
   verb:
-    "Which provider call Metorite makes for it. This must match the job — " +
+    "Which provider call the Router makes for it. This must match the job — " +
     "a chat model answers a completion, not a transcription.",
   streams:
     "The model can send its answer back a piece at a time. Chat and speech " +
     "do; a transcription arrives whole.",
   submit:
-    "Declares the model to Metorite. It records no price, so the model " +
+    "Declares the model to the Router. It records no price, so the model " +
     "arrives with no vendor price until you add one.",
 } as const;
 
@@ -181,7 +181,7 @@ export const HELP_STATUS: Record<ModelStatus, string> = {
     "We hold no live platform key for this vendor, so EVERY call to this " +
     "model fails. A price would not fix it — install the key on Providers.",
   undeclared:
-    "Metorite has no capability row for this model, so it will refuse to " +
+    "The Router has no capability row for this model, so it will refuse to " +
     "route to it. Nothing can call it until it is declared.",
 };
 
@@ -193,8 +193,8 @@ export const HELP_AVAILABLE = {
   vendor:
     "Open to see what this vendor offers that nobody has declared yet. The " +
     "count is what is on offer, not what we use.",
-  colModel: "The id Metorite calls, spelled exactly as the vendor spells it.",
-  colJob: "What this model is for. Metorite serves chat, transcribe, image and speech.",
+  colModel: "The id the Router calls, spelled exactly as the vendor spells it.",
+  colJob: "What this model is for. The Router serves chat, transcribe, image and speech.",
   colContext:
     "The largest prompt this model accepts, counted in tokens. The vendor's " +
     "own figure — a dash means it has not published one.",
@@ -202,13 +202,13 @@ export const HELP_AVAILABLE = {
     "What the vendor would charge US, in whatever unit it sells by — per " +
     "million tokens, per minute of audio, per character, or per image.",
   add:
-    "Declares the model to Metorite AND saves the vendor's facts, in one " +
+    "Declares the model to the Router AND saves the vendor's facts, in one " +
     "act. No form, and nothing to type.",
   addUnpriced:
     "Declares the model, but the feed carries no price for it — so it will " +
     "arrive with no vendor price and its margin will read as unknown.",
   notServable:
-    "The vendor price list offers this model in a mode Metorite has no endpoint for " +
+    "The vendor price list offers this model in a mode the Router has no endpoint for " +
     "yet, so declaring it would create something nothing can call.",
   pick:
     "Tick the models you want, across as many vendors as you like, then add " +
@@ -255,7 +255,7 @@ export const HELP_DETAILS = {
   fillFromFeed:
     "Uses the vendor's own window, limits and prices on this model, and " +
     "saves them in one click. Nothing to type.",
-  label: "A friendlier name for the lists on this page. Metorite always uses the id.",
+  label: "A friendlier name for the lists on this page. The Router always uses the id.",
   description:
     "What this model is good at, in your words. The search box matches it, " +
     "so “cheap” or “long documents” makes it findable.",

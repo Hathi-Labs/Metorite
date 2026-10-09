@@ -256,10 +256,11 @@ export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
       state: "info",
       detail:
         "Two settings on the customer's box, in this order. First " +
-        "ROUTER_SERVING_ENABLED, which sends their AI calls through " +
-        "Metorite so each one is metered. Then CUSTOMER_CONSOLE_SPEND_GATE, " +
-        "which stops AI at a zero balance. Set the second only after the " +
-        "prices are set, or customers are stopped and never charged. " +
+        "ROUTER_SERVING_ENABLED, which sends their AI calls through the " +
+        "Router so each one is metered. Then CUSTOMER_CONSOLE_SPEND_GATE, " +
+        "which stops AI for a customer whose balance reaches zero. Price " +
+        "every tier first: an unpriced tier charges nothing, so a funded " +
+        "customer is served free and only a customer at zero is stopped. " +
         "Check the box's log after you change them: this page cannot see " +
         "the box.",
       href: "/money",

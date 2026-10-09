@@ -1,7 +1,8 @@
 "use client";
 
-import { actionWords, describeDetail } from "@/lib/activityWords";
 import { useCallback, useEffect, useState } from "react";
+
+import { actionWords, describeDetail } from "@/lib/activityWords";
 
 import { formatDateTime } from "@/lib/format";
 import { chipClass } from "@/lib/tone";
@@ -78,8 +79,8 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
           };
           setError(
             res.status === 500
-              ? "The Console answered 500. On a newly deployed box this is " +
-                "usually the activity log is not set up on this Console yet."
+              ? "The Console answered 500. On a newly deployed box, the " +
+                "activity log is usually not set up on this Console yet."
               // The BFF gate speaks in `error`, the Console in `detail` —
               // read both, or a signed-out 401 loses its one useful sentence.
               : body.detail ?? body.error ?? `The Console answered ${res.status}.`,

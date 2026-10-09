@@ -66,7 +66,7 @@ export default function FeedStrip({ feed }: { feed: VendorFeed }) {
         </a>
       )}
       <span className="muted small">
-        Prices and limits come from litellm&apos;s maintained price map — the
+        Prices and limits come from the vendors&apos; published price list — the
         same ids the Router calls. Fetching changes no price a customer pays.
       </span>
       {err && <p className="result err">{err}</p>}

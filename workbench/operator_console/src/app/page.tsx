@@ -41,8 +41,7 @@ export default async function CustomersPage() {
         <h1>Operator Console</h1>
         <div className="banner">
           The staff gate is not configured. Set{" "}
-          <code>OPERATOR_CONSOLE_STAFF_SECRET</code> (interim) — the staff Entra
-          directory is the owner follow-up (D35.3).
+          <code>OPERATOR_CONSOLE_STAFF_SECRET</code> on the server, then reload.
         </div>
       </main>
     );
