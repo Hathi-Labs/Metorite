@@ -302,6 +302,8 @@ def waiting_asks(
 #: The insert of each card's row, by request id. The task returns the org it
 #: wrote under, or None when it wrote nothing.
 _INSERTS: dict[str, asyncio.Task[str | None]] = {}
+#: The thread of each row in ``_INSERTS``, so a run's end can close them.
+_THREAD_OF: dict[str, str] = {}
 #: The requests this process parked, oldest first. Their Future is
 #: cancelled, and the card must stay open for a late answer. The parking
 #: site reads it AFTER the wait has ended (``ask_tools._block_on``), so an
@@ -391,12 +393,15 @@ def note_event(thread_id: str, event: Any) -> None:
         loop = asyncio.get_running_loop()
     except Exception:
         return
+    _THREAD_OF[ask.request_id] = thread_id
     _INSERTS[ask.request_id] = loop.create_task(
         _record(thread_id, ask), name=f"cc-ask-{ask.request_id[:12]}",
     )
 
 
 async def _insert_org(request_id: str, *, pop: bool) -> str | None:
+    if pop:
+        _THREAD_OF.pop(request_id, None)
     task = _INSERTS.pop(request_id, None) if pop else _INSERTS.get(request_id)
     if task is None:
         return None
@@ -423,6 +428,19 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         )
     except Exception:
         _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+
+
+async def end_of_run(thread_id: str) -> None:
+    """Close the rows a run on *thread_id* left open, when the run ends.
+
+    ``stream_relay.run_detached`` calls this in its ``finally``. A card that
+    no wait ever settled (a parking site that gave up its Future, a bridge
+    that two paths raced) must not read as "needs you" once the run is over.
+    A parked row stays parked. A process that dies runs no ``finally``, so
+    its open rows stay open, and that is the point: the restart case.
+    """
+    for request_id in [r for r, t in list(_THREAD_OF.items()) if t == thread_id]:
+        await settle(request_id, answer=None)
 
 
 async def park(request_id: str, thread_id: str) -> bool:
@@ -462,4 +480,5 @@ async def park(request_id: str, thread_id: str) -> bool:
 
 def _reset_for_tests() -> None:
     _INSERTS.clear()
+    _THREAD_OF.clear()
     _PARKED.clear()

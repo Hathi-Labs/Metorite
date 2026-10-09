@@ -202,6 +202,33 @@ def test_a_card_nobody_waits_on_writes_nothing(flag_on, ask_db, fake_redis):
     assert ask_db.rows == {}
 
 
+def test_a_card_no_wait_settled_closes_when_the_run_ends(flag_on, ask_db, liveness):
+    """A parking site that gave up its Future must not leave "needs you" behind
+    a run that ended. The real ``run_detached`` closes the row in its finally."""
+    tid, rid = "t-stray", uuid.uuid4().hex
+    liveness.store[f"cc:runactor:{tid}"] = _ALICE
+
+    async def _gen():
+        _bind(_ORG_A)
+        fut = asyncio.get_running_loop().create_future()
+        executor._pending_user_input.park(rid, fut, tid)
+        await executor._push_sse_to_stream(tid, _line(_card(rid)))
+        await _settled()
+        yield _line({"type": "RUN_FINISHED"})
+
+    async def go() -> None:
+        async for _evt in stream_relay.run_detached(
+            tid, _gen(), actor=_ALICE, organization_id=_ORG_A,
+        ):
+            pass
+        task = stream_relay._DETACHED_TASKS.get(tid)
+        if task is not None:
+            await task
+
+    asyncio.run(go())
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "closed"
+
+
 def test_with_the_flag_off_nothing_is_written_and_nothing_parks(ask_db, fake_redis, monkeypatch):
     from acb_common import get_settings
 
