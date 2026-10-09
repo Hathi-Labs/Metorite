@@ -281,11 +281,12 @@ async def test_no_full_body_reaches_the_engine(monkeypatch) -> None:
     await W.create_task(project_id=PID, title="Book venue for offsite",
                         description=BODY_CANARY, status="in progres")
     sent = json.dumps([*door.bodies, *wire.bodies])
-    assert door.requests, "the run asked no question"
+    states = [json.loads(b["state"]) for b in door.bodies]
+    # Both questions went out: the status name, and the twin check.
+    assert [sorted(s) for s in states] == [["kind", "name"], ["new", "open"]]
     assert "BODY-CANARY" not in sent
-    for body in door.bodies:
-        state = json.loads(body["state"])
-        assert set(state) <= {"name", "kind", "new", "open"}
+    assert states[1]["new"] == {"n1": "Book venue for offsite"}
+    assert states[1]["open"] == {"o1": {"title": OPEN_TASK["title"], "number": "#12"}}
 
 
 async def test_create_tasks_flags_a_row_and_keeps_it_ticked(monkeypatch) -> None:
