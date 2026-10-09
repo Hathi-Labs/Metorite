@@ -12,6 +12,13 @@
 branch `ws48-n4-whatsapp`). `NARROWING_AGENTS` ships empty, and
 `SYSTEM_ONE_ON_DECIDE` ships OFF. The N2, N3 and N4 build notes are under §9.
 
+**Amended by the owner (2026-10-09), Q4.** A `no_egress` run may send a
+typed question with short summaries to `tier-decide`. The decide vendor is
+already a sub-processor, for email rule matching. `DECIDE_IN_NO_EGRESS` is the
+one switch that undoes it, and it ships ON. §3.3 item 7, §4, §8, §9 N3 item 5,
+§9 N5 item 3 and §12 Q4 carry the amendment. `ai_tier_routing.md` §6.6 holds
+the full box.
+
 Verified against code on 2026-10-07 at `main` `82d09830b`. Every file path
 and line in this spec was read at that commit. Re-verify each anchor at
 dispatch, because the code is the fact.
@@ -262,6 +269,12 @@ filters only. PICK still gets the member's question as `query`.)*
    Q2). The whole pick step has one bound of 30 s.
 7. In a `no_egress` run, the tool sends every batch to System 1 on
    `tier-fast`. It sends no decide request (§4, Q4).
+   *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on, a
+   `no_egress` run may send a batch to the decide door too. The batch goes
+   only when its state fits the short bound of 1500 characters
+   (`decide_tools.short_context`). A longer batch goes to System 1. A batch
+   of 16 summaries is longer, so most batches of such a run stay on
+   `tier-fast`. With the switch off, the rule above holds.)*
 
 ### 3.3a The cost check of PICK — PICK pays for itself, or it is skipped
 
@@ -466,6 +479,10 @@ class SourceAdapter(Protocol):
   door. The decide vendor is a separate sub-processor (D75.8). So a decide
   request would add a destination to a covered run. WS48-F1 holds the rule,
   and Q4 asks the owner about it.
+  *(Amended by the owner, 2026-10-09. The owner answered Q4: the decide
+  door is an accepted destination for a typed question with short
+  summaries. So the tool keeps `open_world=False`, and a `no_egress` run asks
+  the door while `DECIDE_IN_NO_EGRESS` is on.)*
 - Each adapter lives beside its agent and uses that agent's own gateway
   helper. An adapter never opens a database session.
 
@@ -653,12 +670,12 @@ reads the credits from `usage_event`.
 
 | Id | Rule | Test |
 |---|---|---|
-| WS48-F1 | `keep()` drops only a confident `no`. An `unsure`, a low `no` and a missing answer keep the item. In a `no_egress` run, the PICK step sends no decide request | `tests/unit/test_narrowing_pick.py` (new) |
+| WS48-F1 | `keep()` drops only a confident `no`. An `unsure`, a low `no` and a missing answer keep the item. In a `no_egress` run with `DECIDE_IN_NO_EGRESS` off, the PICK step sends no decide request. With the switch on, it does (owner, 2026-10-09) | `tests/unit/test_narrowing_pick.py` (new) |
 | WS48-F2 | Each failure of the decide facade falls back to System 1 for that batch only, and logs `narrowing.pick_fallback`. A `DecideRequestInvalid` also logs at `error` | `tests/unit/test_narrowing_pick.py` |
 | WS48-F3 | One decide request holds at most 16 questions, and its state holds no full body. The test parses the request on the wire | `tests/unit/test_narrowing_pick.py` |
 | WS48-F4 | Only `narrowing.py` defines `narrow_and_read`. Each agent that holds the tool builds it with `make_narrow_tool`, and its instructions hold the count line rule | `tests/unit/test_narrowing_one_seam.py` (new), an AST scan of `apps/` and `packages/` |
 | WS48-F5 | An adapter opens no database session and imports no `sqlalchemy` | `tests/unit/test_narrowing_one_seam.py` |
-| WS48-F6 | A typed System-1 question goes to `tier-decide`. A failure falls back to `tier-fast` and logs. A `no_egress` run and the turn-kind question stay on `tier-fast` | `tests/unit/test_system_one_tool.py` (extended by N3) |
+| WS48-F6 | A typed System-1 question goes to `tier-decide`. A failure falls back to `tier-fast` and logs. The turn-kind question stays on `tier-fast`. A `no_egress` run sends only a short typed item to `tier-decide`, and none with `DECIDE_IN_NO_EGRESS` off (owner, 2026-10-09) | `tests/unit/test_decide_in_no_egress.py`, and `tests/unit/test_system_one_tool.py` (extended by N3) |
 | WS48-F7 | PICK runs only when it pays (§3.3a). A skip needs 25 candidates or fewer and no overflow, reads every candidate, and its count line says "with no PICK step". The rates are the eval card | `tests/unit/test_narrowing_pick_cost.py` (H-276) |
 | WS48-F8 | The narrowing path never costs more than today's path, on each gated question and on all of them together. No question has an exception since H-279 | `tests/unit/test_email_narrowing_eval.py` and `tests/unit/test_whatsapp_narrowing_eval.py` (H-276, H-279) |
 | WS48-F9 | A whole chat is ONE read with no PICK, and only filters that choose whole chats make one. A cut span says how many older matches it did not read, and how to read them. Windows of one chat that overlap merge, and no block cuts a line | `tests/unit/test_whatsapp_whole_chat.py` (H-279) |
@@ -827,6 +844,9 @@ OWNER-GATE. It moves credit spend for a live org (CLAUDE.md §3a rule 3).
 5. **In a run where `no_egress_for_this_run()` is true, every item stays on
    `tier-fast`.** The egress class of `ai_tier_routing.md` §6.6 does not
    change (open question Q4).
+   *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on,
+   such a run sends a short typed item to `tier-decide`, and a long one
+   stays on `tier-fast`. `ai_tier_routing.md` §6.6 gives the bound.)*
 6. The turn-kind question of `tier_policy.turn_kind` stays on `tier-fast`.
 7. The line that the calling model reads keeps the shape of
    `ai_tier_routing.md` §6.4. A decide answer has no reason, so the line
@@ -1067,6 +1087,8 @@ tool in each agent, and `tests/unit/test_crm_narrow_source.py` and
    `test_projects_ui_actions.py`.
 3. In a covered (`no_egress`) projects-assistant run, the PICK step stays
    on `tier-fast` (Q4), and WS48-F6 proves it.
+   *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on,
+   the PICK step of that run asks the decide door. WS48-F1 proves it.)*
 
 **Verification:**
 
@@ -1152,6 +1174,6 @@ it.
 | Q1 | How does a member see what was dropped? A chat command, a "Show dropped" control under the answer, or only when they ask? | Only when they ask. The model calls `dropped_of` (§6.3). No UI control |
 | Q2 | How many PICK requests may run at the same time? The Router has no rate limiter of its own. Only the vendor's 429 limits it (`provider_balance.py:104-107`) | 4 at one time, and the 30 s bound of the step |
 | Q3 | Does NARROW need semantic recall, so that a message with no shared word is found? It needs a change to `/email/search` and an R8 test | No. N2 measures the gap on the fixture mailbox, and the PR reports it |
-| Q4 | In a `no_egress` run, may a typed question go to `tier-decide`? Its vendor is a separate sub-processor, so the egress class of `ai_tier_routing.md` §6.6 would change | No. A `no_egress` run stays on `tier-fast` |
+| Q4 | In a `no_egress` run, may a typed question go to `tier-decide`? Its vendor is a separate sub-processor, so the egress class of `ai_tier_routing.md` §6.6 would change | No. A `no_egress` run stays on `tier-fast`. **Answered by the owner, 2026-10-09: yes**, for a typed question with short summaries, behind `DECIDE_IN_NO_EGRESS` (ON). Free-form work stays on our chat tiers |
 | Q5 | Are the caps right: 200 candidates, 25 items read in full, 6000 characters for each body? | Yes, until N2's eval says otherwise |
 | Q6 | Is 0.70 the right drop threshold for a decide answer? It is a probability from Jev, and not a System-1 confidence | Yes, until N2's eval says otherwise |

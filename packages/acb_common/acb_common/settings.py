@@ -375,6 +375,21 @@ class Settings(BaseSettings):
     # credit spend (spec §11). Fence: tests/unit/test_system_one_tool.py.
     system_one_on_decide: bool = False
 
+    # ── A `no_egress` run may ask `tier-decide` (owner, 2026-10-09) ─────────
+    #
+    # ON (the default, by the owner's decision): a `no_egress` run may send a
+    # TYPED question with short fields to `tier-decide`. That is the System-1
+    # `decide` (while `SYSTEM_ONE_ON_DECIDE` is on) and the PICK step of
+    # `narrow_and_read`. The decide vendor is already a sub-processor, for
+    # email rule matching. A free-form request, the turn-kind question and a
+    # long context stay on our chat tiers. OFF: a `no_egress` run sends no
+    # decide request, as before 2026-10-09. This is the ONE switch that undoes
+    # the amendment. The one reader is
+    # `acb_skills.decide_tools.decide_in_no_egress`, and a broken read reads
+    # as OFF. Spec: data_narrowing_pipeline.md Q4, ai_tier_routing.md §6.6.
+    # Fence: tests/unit/test_decide_in_no_egress.py.
+    decide_in_no_egress: bool = True
+
     # ── The cap and the budget of the email model calls (WS-17 EM-T4b) ─────
     #
     # They bind the model calls of the email automation only, the calls

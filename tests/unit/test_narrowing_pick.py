@@ -33,8 +33,12 @@ Mutations this file catches (R7), each one run red before the change:
   batch -> ``TestFallback``;
 * a ``DecideRequestInvalid`` logs under ``error`` -> ``test_a_caller_bug_logs_at_error``;
 * both engines fail and the items drop -> ``test_both_engines_fail_keeps_the_batch``;
-* a ``no_egress`` run, or a frame with no run, asks the decide door ->
-  ``TestNoEgress``;
+* a ``no_egress`` run, or a frame with no run, asks the decide door while
+  ``DECIDE_IN_NO_EGRESS`` is off -> ``TestNoEgress``. With the switch on
+  (the owner's default, 2026-10-09), such a run asks the door ->
+  ``TestNoEgress::test_with_the_switch_on_a_no_egress_run_asks_the_door``;
+* a ``no_egress`` batch past the short bound reaches the door (review P1,
+  2026-10-09) -> ``TestNoEgress::test_a_no_egress_batch_past_the_bound_goes_to_system_one``;
 * the candidate cap, the read cap or the body clip goes -> ``TestCaps``;
 * a count of the count line is wrong -> ``TestCounts``;
 * the dropped list leaks to another org, member or thread, or outlives 15
@@ -523,10 +527,53 @@ async def test_both_engines_fail_keeps_the_batch(door: Door, s1: SystemOne) -> N
 
 
 class TestNoEgress:
+    """Q4, amended by the owner on 2026-10-09. The switch off keeps the rule
+    of before. Each test that asserts it turns the switch off first."""
+
+    @pytest.fixture(autouse=True)
+    def _switch_off(self, monkeypatch) -> None:
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "false")
+        get_settings.cache_clear()
+
+    async def test_with_the_switch_on_a_no_egress_run_asks_the_door(
+        self, door: Door, s1: SystemOne, monkeypatch,
+    ) -> None:
+        """The owner's default: the door gets the query and the summaries,
+        and never a full body."""
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "true")
+        get_settings.cache_clear()
+        _bind(no_egress=True)
+        await _tool(Adapter(5))(QUERY)
+        assert len(door.bodies) == 1, "the switch on must reach the door"
+        assert s1.sizes == []
+        for body in door.bodies:
+            assert BODY_CANARY not in json.dumps(body)
+            assert set(body["state"]) == {"query", "items"}
+
+    async def test_a_no_egress_batch_past_the_bound_goes_to_system_one(
+        self, door: Door, s1: SystemOne, monkeypatch,
+    ) -> None:
+        """Review P1: ONE short bound holds every path of a ``no_egress`` run.
+        A batch of 16 summaries is not short, so System 1 asks it, and the
+        door never gets a state past the bound."""
+        from acb_skills import decide_tools
+
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "true")
+        get_settings.cache_clear()
+        _bind(no_egress=True)
+        with structlog.testing.capture_logs() as logs:
+            await _tool(Adapter(20))(QUERY)
+        assert 16 in s1.sizes, "the long batch reached the door"
+        for body in door.bodies:
+            state = json.dumps(body["state"], ensure_ascii=False)
+            assert len(state) <= decide_tools.NO_EGRESS_CONTEXT_MAX
+        reasons = [e.get("reason") for e in logs if e["event"] == "narrowing.pick_fallback"]
+        assert decide_tools.NOT_SHORT in reasons
+
     async def test_a_no_egress_run_sends_no_decide_request(
         self, door: Door, s1: SystemOne,
     ) -> None:
-        """Done-when 5."""
+        """Done-when 5, with the switch off."""
         _bind(no_egress=True)
         out = await _tool(Adapter(40))(QUERY)
         assert door.bodies == [], "a no_egress run reached the decide vendor"
