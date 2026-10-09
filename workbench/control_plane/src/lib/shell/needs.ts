@@ -20,7 +20,7 @@
  * Fence: `needs.test.ts`.
  */
 import { PROJECTS_CACHE, notificationsApi } from "@/app/projects/lib/api";
-import { type CompletionStart, completeFromHome } from "@/app/tasks/lib/completeFromHome";
+import { type CompletionStore, type DoneRow, markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
 import { cacheKey } from "@/lib/dataCache";
 
 export type NeedsApp = "tasks" | "projects" | "email";
@@ -97,15 +97,28 @@ export async function fetchNeeds(limit = NEEDS_LIMIT): Promise<NeedsFeed> {
 }
 
 /**
- * Run a row's one-click act through its owning app.
+ * Run a row's one-click act through its owning app, and move the row.
  *
- * A done goes through the My Tasks store, which may ASK first (a parent with
- * open subtasks). A read has no Undo: the Projects bell has no "mark unread"
- * route, and the shell adds none.
+ * A done is the My Tasks store's gesture (`markDoneFromHome`). It may ASK
+ * first (a parent with open subtasks). The row then stays while the question
+ * is up, and leaves only if the answer completes the task. A read has no
+ * Undo: the Projects bell has no "mark unread" route, and the shell adds
+ * none.
  */
-export async function runAct(item: NeedsItem): Promise<CompletionStart | "read" | null> {
+export async function runAct(
+  item: NeedsItem,
+  row: DoneRow,
+  /** The My Tasks store. A test hands in a fake. */
+  store?: CompletionStore,
+): Promise<"done" | "kept" | "failed" | null> {
   if (!item.act || !item.act_ref) return null;
-  if (item.act === "done") return completeFromHome(item.act_ref);
-  await notificationsApi.markRead([item.act_ref]);
-  return "read";
+  if (item.act === "done") return markDoneFromHome(item.act_ref, row, store);
+  row.hide();
+  try {
+    await notificationsApi.markRead([item.act_ref]);
+    return "done";
+  } catch {
+    row.fail("Could not mark it read. Try again.");
+    return "failed";
+  }
 }

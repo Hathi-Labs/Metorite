@@ -12,7 +12,6 @@ import {
   APP_NAMES,
   KIND_LABELS,
   NEEDS_SHOWN,
-  actError,
   appIcon,
   blockState,
   cardsFor,
@@ -158,11 +157,6 @@ describe("Needs you", () => {
     expect(appIcon("tasks")).toBe("CheckSquare");
     expect(appIcon("projects")).toBe("FolderKanban");
     expect(appIcon("email")).toBe("Mail");
-  });
-
-  it("words an act's failure by its act", () => {
-    expect(actError("done")).toMatch(/done/);
-    expect(actError("read")).toMatch(/read/);
   });
 });
 

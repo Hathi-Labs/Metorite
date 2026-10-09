@@ -1008,8 +1008,20 @@ belong to slice A, the gateway feed.
   My Tasks store's own gesture, `quickDispose`, through
   `app/tasks/lib/completeFromHome.ts`. So a parent with open subtasks asks
   the D-PM-38 question first, and Undo is the store's toast (D79). The first
-  done on a visit loads the store once. A notification marked read has no
-  Undo, because the Projects bell has no route that marks it unread.
+  done on a visit loads the store once. Before each later done, the store
+  reads that one task again (`refreshItem`). A task that the store never saw
+  makes it load again. While the question is up, the row stays on the card.
+  It leaves only when the answer completes the task. The watch for a failed
+  write starts when the store writes, so it also sees a late answer. A
+  notification marked read has no Undo, because the Projects bell has no
+  route that marks it unread.
+- **The cache.** A write that lands while a read of the same key is in
+  flight makes that read's answer stale (`lib/dataCache.ts`). The read does
+  not store it, and it reads again. Before this, an Undo during the re-read
+  after a Done showed the state from before the Undo.
+- **Not yet in the manifest.** My Day imports its three cards directly. They
+  are not declared through the `cards` field of §5.1 yet. The manifest slice,
+  with NS-7, moves them there.
 - **Who gets a card.** A card asks for what the server asks for. Today and
   Next actions read `/projects/my/*`, and the Projects router demands
   `feature:projects`. So both cards need `tasks` and `projects`. Needs you

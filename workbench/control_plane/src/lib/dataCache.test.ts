@@ -175,6 +175,83 @@ describe("invalidate", () => {
   });
 });
 
+describe("🔴 a write that lands while a re-read is in flight (NS-3 review)", () => {
+  /**
+   * The order that broke My Day's Undo. Done drops the key, and the watcher
+   * starts a re-read. The Undo lands while that re-read is in flight. The key
+   * is not in the store, so the Undo's `invalidate` wakes nobody. Before the
+   * fix, the re-read then stored the pre-Undo answer as fresh, and the row
+   * the member had brought back stayed gone.
+   */
+  it("does not store the answer that predates the write, and reads again", async () => {
+    const key = cacheKey("projects/shell/needs", { limit: 30 });
+    put(key, "with-row");
+    invalidate("projects/"); // Done
+    expect(peek(key)).toBeUndefined();
+
+    let release: (v: string) => void = () => {};
+    let calls = 0;
+    const fetcher = vi.fn(() => {
+      calls += 1;
+      return calls === 1
+        ? new Promise<string>((res) => { release = res; })
+        : Promise.resolve("row-back");
+    });
+    const pending = read(key, fetcher); // the watcher's re-read
+    invalidate("projects/"); // Undo, while it is in flight
+    release("row-gone"); // the answer from before the Undo
+
+    await expect(pending).resolves.toBe("row-back");
+    expect(peek(key)?.data).toBe("row-back");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("wakes the watcher with the fresh answer, never the stale one", async () => {
+    const key = cacheKey("projects/my/inbox");
+    const seen: unknown[] = [];
+    const off = subscribe(key, () => seen.push(peek(key)?.data));
+    let release: (v: string) => void = () => {};
+    let calls = 0;
+    const pending = read(key, () => {
+      calls += 1;
+      return calls === 1 ? new Promise<string>((res) => { release = res; }) : Promise.resolve("new");
+    });
+    invalidate("projects/");
+    release("old");
+    await pending;
+    off();
+    expect(seen).toEqual(["new"]);
+  });
+
+  it("stores nothing from before a clearAll (a change of member)", async () => {
+    const key = cacheKey("projects/tree");
+    let release: (v: string) => void = () => {};
+    let calls = 0;
+    const pending = read(key, () => {
+      calls += 1;
+      return calls === 1 ? new Promise<string>((res) => { release = res; }) : Promise.resolve("member-b");
+    });
+    clearAll();
+    release("member-a");
+    await expect(pending).resolves.toBe("member-b");
+    expect(peek(key)?.data).toBe("member-b");
+  });
+
+  it("stops asking after a few writes in a row, and stores nothing stale", async () => {
+    const key = cacheKey("projects/busy");
+    let calls = 0;
+    const pending = read(key, async () => {
+      calls += 1;
+      await Promise.resolve();
+      invalidate("projects/busy"); // a write lands during every read
+      return `answer-${calls}`;
+    });
+    await expect(pending).resolves.toMatch(/^answer-/);
+    expect(calls).toBe(4);
+    expect(peek(key)).toBeUndefined();
+  });
+});
+
 describe("subscribe", () => {
   it("wakes on put and stops after unsubscribe", () => {
     const cb = vi.fn();

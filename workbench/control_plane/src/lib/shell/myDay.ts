@@ -142,11 +142,6 @@ export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()
   return item.kind === "overdue" || item.kind === "due_today" ? `Due ${rel}` : rel;
 }
 
-/** The short error a row shows when its act did not go through. */
-export function actError(act: NeedsItem["act"]): string {
-  return act === "read" ? "Could not mark it read. Try again." : "Could not mark it done. Try again.";
-}
-
 /** The member-facing name of each source app. */
 export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
   tasks: "My Tasks",

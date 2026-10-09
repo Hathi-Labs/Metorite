@@ -65,6 +65,23 @@ const store = new Map<CacheKey, CacheEntry<unknown>>();
 /** In-flight reads, so N callers asking at once make ONE request. */
 const inflight = new Map<CacheKey, Promise<unknown>>();
 const watchers = new Map<CacheKey, Set<() => void>>();
+/**
+ * A write counter per key, bumped by `invalidate` and `clearAll` while a read
+ * of that key is IN FLIGHT. A read compares it before and after its fetch.
+ * If it moved, a write landed during the read, the answer predates it, and
+ * the read neither stores it nor hands it back as current (see `read`).
+ *
+ * Never deleted, on purpose: a counter that went back to zero could make an
+ * old read's number match again. One small integer per key ever invalidated
+ * in flight is the whole cost.
+ */
+const generation = new Map<CacheKey, number>();
+const genOf = (key: CacheKey): number => generation.get(key) ?? 0;
+const bump = (key: CacheKey): void => {
+  generation.set(key, genOf(key) + 1);
+};
+/** Re-reads one read makes when writes keep landing during it. */
+const MAX_REREADS = 3;
 
 /** Injectable for the tests. Production reads the wall clock. */
 let clock: () => number = () => Date.now();
@@ -175,15 +192,45 @@ export async function read<T>(
   const running = inflight.get(key) as Promise<T> | undefined;
   if (running) return running;
 
-  const task = (async () => {
+  /**
+   * 🔴 **A WRITE THAT LANDS WHILE THIS READ IS IN FLIGHT MAKES ITS ANSWER
+   * STALE** (NS-3 review, 2026-10-10). The order that broke: a write drops
+   * the key, and its watcher starts a re-read. A second write (an Undo)
+   * lands while that re-read is in flight. The key is not in the store, so
+   * the second `invalidate` wakes nobody. The re-read then answers with the
+   * state from BEFORE the second write, `put` stores it as fresh, and the
+   * screen shows the change the member just undid.
+   *
+   * So the read notes the key's write counter before it fetches. If the
+   * counter moved, it does not store that answer. A newer read already in
+   * flight answers instead, or one that already stored, or this read asks
+   * again.
+   */
+  // The body reads its own promise, which exists only once it has started.
+  const self: { task?: Promise<T> } = {};
+  const task: Promise<T> = (self.task = (async () => {
     try {
-      const data = await fetcher();
-      put(key, data);
-      return data;
+      for (let attempt = 0; ; attempt += 1) {
+        const gen = genOf(key);
+        const data = await fetcher();
+        if (genOf(key) === gen) {
+          put(key, data);
+          return data;
+        }
+        const newer = inflight.get(key) as Promise<T> | undefined;
+        if (newer && newer !== self.task) return newer;
+        // `invalidate` deletes the entry, so an entry here now was stored
+        // AFTER the write: a newer read already answered.
+        const since = store.get(key) as CacheEntry<T> | undefined;
+        if (since) return since.data;
+        // Writes that never stop landing: answer, but store nothing stale.
+        if (attempt >= MAX_REREADS) return data;
+        inflight.set(key, self.task!);
+      }
     } finally {
-      inflight.delete(key);
+      if (inflight.get(key) === self.task) inflight.delete(key);
     }
-  })();
+  })());
   inflight.set(key, task);
   return task;
 }
@@ -209,8 +256,13 @@ export function invalidate(match: string | ((key: CacheKey) => boolean)): number
   for (const key of dropped) store.delete(key);
   // In-flight reads for a dropped key answer with data that predates the
   // write. Forget them too, so the next read starts a new request rather than
-  // joining one already carrying a stale answer.
-  for (const key of [...inflight.keys()]) if (hit(key)) inflight.delete(key);
+  // joining one already carrying a stale answer. And mark them stale, so the
+  // forgotten read does not STORE its answer when it lands (see `read`).
+  for (const key of [...inflight.keys()]) {
+    if (!hit(key)) continue;
+    bump(key);
+    inflight.delete(key);
+  }
   for (const key of dropped) notify(key);
   return dropped.length;
 }
@@ -225,6 +277,9 @@ export function invalidate(match: string | ((key: CacheKey) => boolean)): number
  */
 export function clearAll(): void {
   store.clear();
+  // A read in flight belongs to the member who asked. Marked stale, it stores
+  // nothing for the next one when it lands.
+  for (const key of inflight.keys()) bump(key);
   inflight.clear();
   // Memory BESIDE the cache that belongs to the member (the email HTML
   // prefetch state, WS-17 EM-S2) empties first, so a watcher that re-reads

@@ -6,14 +6,17 @@
  *   1. The act calls `quickDispose(id, "DONE")`, the entry point My Tasks,
  *      the Calendar and Focus Mode use. It never writes by itself.
  *   2. A store that is not live is hydrated first, once for many clicks.
- *   3. A hydrate that fails, or a store that lacks the task, throws, so the
- *      card can put its row back. A demo store must never take the act.
- *   4. A parent with open subtasks: the store raises the question, and the
- *      act says "asked".
- *   5. A write failure that the store reports reaches the card, once.
+ *   3. A hydrate that fails throws, so the card can put its row back. A demo
+ *      store must never take the act.
+ *   4. The store's row may be older than My Day's. A held task is read again
+ *      through `refreshItem` first, so a parent that gained open subtasks
+ *      ASKS. A task the store never saw makes it hydrate again.
+ *   5. After the store asks, the row stays. It leaves only if the answer
+ *      completes the task. A question that closes with no done keeps it.
+ *   6. A write failure reaches the card once, also after a late answer.
  *
- * And the source half: the two cards that complete a task call this file,
- * and neither one writes a completion of its own.
+ * And the source half: the two cards complete through this file, and
+ * neither one writes a completion of its own.
  */
 import { readFileSync } from "node:fs";
 
@@ -22,21 +25,45 @@ import { describe, expect, it, vi } from "vitest";
 // The real store pulls the whole lens client. The fake below stands in.
 vi.mock("./taskStore", () => ({ useTaskStore: {} }));
 
-import { type CompletionStore, completeFromHome, onNextSyncFailure } from "./completeFromHome";
+import {
+  type CompletionStore,
+  type DoneRow,
+  completeFromHome,
+  markDoneFromHome,
+  onNextSyncFailure,
+  whenAnswered,
+} from "./completeFromHome";
+
+interface Row {
+  id: string;
+  subtaskCount?: number;
+  subtaskDone?: number;
+  disposition?: string;
+}
 
 interface FakeState {
   backend: "live" | "demo";
-  items: { id: string; subtaskCount?: number; subtaskDone?: number }[];
+  items: Row[];
   subtaskPrompt: { ids: string[] } | null;
   syncFailure: { message: string; at: number } | null;
   hydrate: () => Promise<void>;
-  quickDispose: (id: string, disposition: string) => void;
+  refreshItem: (id: string) => Promise<void>;
+  quickDispose: (id: string, disposition: string, opts?: { includeSubtasks?: boolean }) => void;
+  answerSubtaskPrompt: (includeSubtasks: boolean) => void;
+  cancelSubtaskPrompt: () => void;
 }
 
-function fakeStore(init: Partial<FakeState> & { hydrateTo?: Partial<FakeState> }) {
+function fakeStore(
+  init: Partial<FakeState> & { hydrateTo?: Partial<FakeState>; server?: Record<string, Row> },
+) {
   const listeners = new Set<(s: FakeState) => void>();
   const disposed: Array<[string, string]> = [];
+  const refreshed: string[] = [];
   let hydrations = 0;
+  const emit = (patch: Partial<FakeState>) => {
+    Object.assign(state, patch);
+    for (const fn of [...listeners]) fn(state);
+  };
   const state: FakeState = {
     backend: "demo",
     items: [],
@@ -45,16 +72,32 @@ function fakeStore(init: Partial<FakeState> & { hydrateTo?: Partial<FakeState> }
     hydrate: async () => {
       hydrations += 1;
       await Promise.resolve();
-      Object.assign(state, init.hydrateTo ?? {});
+      emit(init.hydrateTo ?? {});
     },
-    quickDispose: (id, disposition) => {
-      disposed.push([id, disposition]);
+    refreshItem: async (id) => {
+      refreshed.push(id);
+      await Promise.resolve();
+      const row = init.server?.[id];
+      if (row) emit({ items: state.items.map((i) => (i.id === id ? row : i)) });
+    },
+    // The real store's D-PM-38 rule: a parent with open steps asks first,
+    // unless the answer is already given.
+    quickDispose: (id, disposition, opts) => {
       const row = state.items.find((i) => i.id === id);
-      // The real store's D-PM-38 rule: a parent with open steps asks.
-      if (row && (row.subtaskCount ?? 0) > (row.subtaskDone ?? 0)) {
-        state.subtaskPrompt = { ids: [id] };
+      if (opts?.includeSubtasks === undefined && row && (row.subtaskCount ?? 0) > (row.subtaskDone ?? 0)) {
+        emit({ subtaskPrompt: { ids: [id] } });
+        return;
       }
+      disposed.push([id, disposition]);
+      emit({ items: state.items.map((i) => (i.id === id ? { ...i, disposition: "DONE" } : i)) });
     },
+    // As the real store: clear the question, THEN run the gesture.
+    answerSubtaskPrompt: (includeSubtasks) => {
+      const ids = state.subtaskPrompt?.ids ?? [];
+      emit({ subtaskPrompt: null });
+      state.quickDispose(ids[0], "DONE", { includeSubtasks });
+    },
+    cancelSubtaskPrompt: () => emit({ subtaskPrompt: null }),
     ...init,
   };
   const store = {
@@ -64,12 +107,34 @@ function fakeStore(init: Partial<FakeState> & { hydrateTo?: Partial<FakeState> }
       return () => listeners.delete(fn);
     },
   } as unknown as CompletionStore;
-  const emit = (patch: Partial<FakeState>) => {
-    Object.assign(state, patch);
-    for (const fn of listeners) fn(state);
-  };
-  return { store, disposed, emit, hydrations: () => hydrations, listeners };
+  return { store, state, disposed, refreshed, emit, hydrations: () => hydrations, listeners };
 }
+
+/** A row that records what the card would draw. */
+function recorder() {
+  const log: string[] = [];
+  let hidden = false;
+  let error: string | null = null;
+  const row: DoneRow = {
+    hide: () => {
+      hidden = true;
+      error = null;
+      log.push("hide");
+    },
+    show: () => {
+      hidden = false;
+      log.push("show");
+    },
+    fail: (m) => {
+      hidden = false;
+      error = m;
+      log.push("fail");
+    },
+  };
+  return { row, log, hidden: () => hidden, error: () => error };
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("completeFromHome", () => {
   it("calls the store's own Mark done, quickDispose(id, DONE)", async () => {
@@ -83,10 +148,9 @@ describe("completeFromHome", () => {
     const f = fakeStore({ hydrateTo: { backend: "live", items: [{ id: "a" }, { id: "b" }] } });
     await Promise.all([completeFromHome("a", f.store), completeFromHome("b", f.store)]);
     expect(f.hydrations()).toBe(1);
-    expect(f.disposed).toEqual([
-      ["a", "DONE"],
-      ["b", "DONE"],
-    ]);
+    expect(f.disposed.map(([id]) => id).sort()).toEqual(["a", "b"]);
+    // Just loaded: no second read of the row.
+    expect(f.refreshed).toEqual([]);
   });
 
   it("refuses a demo store: a hydrate that failed must not swallow the act", async () => {
@@ -95,16 +159,104 @@ describe("completeFromHome", () => {
     expect(f.disposed).toEqual([]);
   });
 
-  it("refuses a task the store does not hold", async () => {
-    const f = fakeStore({ backend: "live", items: [] });
-    await expect(completeFromHome("t9", f.store)).rejects.toThrow(/Open it in My Tasks/);
+  it("reads a held task again first, so a parent that gained open subtasks ASKS", async () => {
+    // The store loaded "p" with no subtasks. Since then it gained three.
+    const f = fakeStore({
+      backend: "live",
+      items: [{ id: "p" }],
+      server: { p: { id: "p", subtaskCount: 3, subtaskDone: 0 } },
+    });
+    expect(await completeFromHome("p", f.store)).toBe("asked");
+    expect(f.refreshed).toEqual(["p"]);
     expect(f.disposed).toEqual([]);
   });
 
-  it("says 'asked' when the store raises the subtask question (D-PM-38)", async () => {
-    const f = fakeStore({ backend: "live", items: [{ id: "p", subtaskCount: 3, subtaskDone: 1 }] });
-    expect(await completeFromHome("p", f.store)).toBe("asked");
+  it("hydrates again for a task that reached My Day after the store loaded", async () => {
+    const f = fakeStore({ backend: "live", items: [], hydrateTo: { items: [{ id: "new" }] } });
+    expect(await completeFromHome("new", f.store)).toBe("completing");
+    expect(f.hydrations()).toBe(1);
+    expect(f.disposed).toEqual([["new", "DONE"]]);
+  });
+
+  it("refuses a task the store does not hold even after a fresh load", async () => {
+    const f = fakeStore({ backend: "live", items: [] });
+    await expect(completeFromHome("t9", f.store)).rejects.toThrow(/Open it in My Tasks/);
+    expect(f.hydrations()).toBe(1);
+    expect(f.disposed).toEqual([]);
+  });
+});
+
+describe("whenAnswered", () => {
+  it("is true when the answer completes the task", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "p", subtaskCount: 2 }] });
+    await completeFromHome("p", f.store);
+    const answered = whenAnswered("p", f.store);
+    f.state.answerSubtaskPrompt(false);
+    await expect(answered).resolves.toBe(true);
+  });
+
+  it("is false when the question closes with no done", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "p", subtaskCount: 2 }] });
+    await completeFromHome("p", f.store);
+    const answered = whenAnswered("p", f.store);
+    f.state.cancelSubtaskPrompt();
+    await expect(answered).resolves.toBe(false);
+  });
+});
+
+describe("markDoneFromHome, the optimistic row", () => {
+  it("a plain task: the row leaves and stays gone", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "t1" }] });
+    const r = recorder();
+    await expect(markDoneFromHome("t1", r.row, f.store)).resolves.toBe("done");
+    expect(r.log).toEqual(["hide"]);
+    expect(r.hidden()).toBe(true);
+  });
+
+  it("CANCEL: the store asks, the question closes with no done, and the row stays", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "p", subtaskCount: 3 }] });
+    const r = recorder();
+    const out = markDoneFromHome("p", r.row, f.store);
+    await tick();
+    // While the question is up, the row is back on the card.
+    expect(r.hidden()).toBe(false);
+    f.state.cancelSubtaskPrompt();
+    await expect(out).resolves.toBe("kept");
+    expect(r.log).toEqual(["hide", "show"]);
+    expect(r.hidden()).toBe(false);
+    expect(r.error()).toBeNull();
+    expect(f.disposed).toEqual([]);
+  });
+
+  it("ANSWERED: the row leaves only when the answer completes the task", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "p", subtaskCount: 3 }] });
+    const r = recorder();
+    const out = markDoneFromHome("p", r.row, f.store);
+    await tick();
+    f.state.answerSubtaskPrompt(true);
+    await expect(out).resolves.toBe("done");
+    expect(r.log).toEqual(["hide", "show", "hide"]);
     expect(f.disposed).toEqual([["p", "DONE"]]);
+  });
+
+  it("a failure the store reports AFTER a late answer still brings the row back", async () => {
+    const f = fakeStore({ backend: "live", items: [{ id: "p", subtaskCount: 3 }] });
+    const r = recorder();
+    const out = markDoneFromHome("p", r.row, f.store);
+    await tick();
+    f.state.answerSubtaskPrompt(false);
+    await out;
+    f.emit({ syncFailure: { message: "Couldn't file the item.", at: 2 } });
+    expect(r.hidden()).toBe(false);
+    expect(r.error()).toMatch(/Could not mark it done/);
+  });
+
+  it("a store that cannot load brings the row back with its reason", async () => {
+    const f = fakeStore({ hydrateTo: { backend: "demo" } });
+    const r = recorder();
+    await expect(markDoneFromHome("t1", r.row, f.store)).resolves.toBe("failed");
+    expect(r.log).toEqual(["hide", "fail"]);
+    expect(r.error()).toMatch(/could not load/);
   });
 });
 
@@ -137,15 +289,15 @@ describe("the cards complete through this file, and only through it", () => {
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/(?<![:"'/])\/\/[^\n]*/g, "");
 
-  it("Next actions calls completeFromHome, and no lens write", () => {
+  it("Next actions calls markDoneFromHome, and no lens write", () => {
     const src = code("../components/NextActionsCard.tsx");
-    expect(src).toMatch(/completeFromHome\(task\.id\)/);
+    expect(src).toMatch(/markDoneFromHome\(task\.id, rowMover\(/);
     expect(src).not.toMatch(/lensCompleteItem|lensPatchItem|lensSetStatusId|\/complete[`"?]/);
   });
 
-  it("Needs you's done act calls completeFromHome", () => {
-    const src = code("../../../lib/shell/needs.ts");
-    expect(src).toMatch(/completeFromHome\(item\.act_ref\)/);
+  it("Needs you's done act calls markDoneFromHome", () => {
+    expect(code("../../../lib/shell/needs.ts")).toMatch(/markDoneFromHome\(item\.act_ref, row, store\)/);
+    expect(code("../../../lib/shell/NeedsYouCard.tsx")).toMatch(/runAct\(item, rowMover\(/);
   });
 
   it("My Day mounts the store's UndoToast, and AppShell hosts the subtask question", () => {

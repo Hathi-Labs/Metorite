@@ -10,6 +10,8 @@
  */
 import Link from "next/link";
 
+import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
+
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 
@@ -39,11 +41,13 @@ export function HomeCard({
     <section
       aria-labelledby={headingId}
       data-testid={testId}
+      data-home-card=""
       className={`min-w-0 rounded-xl border border-border bg-card ${className}`}
     >
       <header className="flex items-center gap-2 px-4 pt-3.5 pb-2">
         <Icon name={icon} size={15} className="shrink-0 text-muted-foreground" />
-        <h2 id={headingId} className="text-sm font-semibold text-foreground">
+        {/* `tabIndex={-1}`: focus lands here when the card's last row leaves. */}
+        <h2 id={headingId} tabIndex={-1} className="text-sm font-semibold text-foreground outline-none">
           {title}
         </h2>
         {source ? <span className="truncate text-xs text-muted-foreground">{source}</span> : null}
@@ -91,4 +95,56 @@ export function FooterLink({ href, icon, children }: { href: string; icon?: stri
       {children}
     </Link>
   );
+}
+
+/**
+ * Where focus goes when a row leaves: the NEXT row's act, or the card's
+ * heading when the row was the last. Pure, so the rule is a test.
+ */
+export function focusTarget<T>(acts: readonly T[], from: T, heading: T | null): T | null {
+  const at = acts.indexOf(from);
+  if (at === -1) return null;
+  return acts[at + 1] ?? heading;
+}
+
+/**
+ * Move focus off an act whose row is leaving. Mark each row's act control
+ * with `data-row-act`. Nothing moves unless that control holds focus, so a
+ * row that leaves for another reason never steals it.
+ */
+export function moveFocusAfterLeave(from: HTMLElement | null): void {
+  if (!from || typeof document === "undefined" || document.activeElement !== from) return;
+  const card = from.closest("[data-home-card]");
+  if (!card) return;
+  const acts = [...card.querySelectorAll<HTMLElement>("[data-row-act]")];
+  const target = focusTarget(acts, from, card.querySelector<HTMLElement>("h2"));
+  // After React has taken the row out.
+  requestAnimationFrame(() => target?.focus());
+}
+
+/**
+ * The row half of an act, for any Home card: hide the row (and move focus
+ * off it), show it again, or show it with an error. `remove` and `setError`
+ * are the card's own state setters.
+ */
+export function rowMover(
+  id: string,
+  remove: (id: string, gone: boolean) => void,
+  setError: (id: string, message: string | null) => void,
+  from: HTMLElement | null = null,
+): DoneRow {
+  return {
+    hide() {
+      moveFocusAfterLeave(from);
+      setError(id, null);
+      remove(id, true);
+    },
+    show() {
+      remove(id, false);
+    },
+    fail(message) {
+      remove(id, false);
+      setError(id, message);
+    },
+  };
 }

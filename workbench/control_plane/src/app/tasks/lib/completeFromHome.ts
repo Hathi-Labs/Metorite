@@ -25,34 +25,113 @@ export type CompletionStore = Pick<typeof useTaskStore, "getState" | "subscribe"
 
 let hydrating: Promise<void> | null = null;
 
+/** One hydration for any number of quick clicks. */
+function hydrateOnce(store: CompletionStore): Promise<void> {
+  hydrating ??= store
+    .getState()
+    .hydrate()
+    .finally(() => {
+      hydrating = null;
+    });
+  return hydrating;
+}
+
 /** What the gesture did: it asked the subtask question, or it completes. */
 export type CompletionStart = "asked" | "completing";
 
 /**
  * Complete `id` through the store. Throws when the store cannot load, or
  * when it does not hold the task, so the caller can put its row back.
+ *
+ * ⚠️ The store is loaded once, and My Day's rows are newer than it can be.
+ * So before the gesture, the store reads that ONE task again through its own
+ * `refreshItem`. A parent that gained open subtasks since the load then asks
+ * (D-PM-38). A task the store has never seen makes it load again, through
+ * `hydrate`. Neither is a new fetch path.
  */
 export async function completeFromHome(
   id: string,
   store: CompletionStore = useTaskStore,
 ): Promise<CompletionStart> {
+  let fresh = false;
   if (store.getState().backend !== "live") {
-    // One hydration for any number of quick clicks.
-    hydrating ??= store
-      .getState()
-      .hydrate()
-      .finally(() => {
-        hydrating = null;
-      });
-    await hydrating;
+    await hydrateOnce(store);
+    fresh = true;
   }
-  const s = store.getState();
   // ⚠️ A hydrate that failed leaves the DEMO store, with mock rows. A done
   // there writes nothing, so it must fail loudly here.
-  if (s.backend !== "live") throw new Error("My Tasks could not load. Try again.");
-  if (!s.items.some((i) => i.id === id)) throw new Error("Open it in My Tasks to finish it.");
-  s.quickDispose(id, "DONE");
+  if (store.getState().backend !== "live") throw new Error("My Tasks could not load. Try again.");
+  const held = () => store.getState().items.some((i) => i.id === id);
+  if (!held() && !fresh) {
+    // A task that reached My Day after the store loaded.
+    await hydrateOnce(store);
+    fresh = true;
+    if (store.getState().backend !== "live") throw new Error("My Tasks could not load. Try again.");
+  }
+  if (!held()) throw new Error("Open it in My Tasks to finish it.");
+  // The row the store holds may be older than the one My Day drew.
+  if (!fresh) await store.getState().refreshItem(id);
+  store.getState().quickDispose(id, "DONE");
   return store.getState().subtaskPrompt?.ids.includes(id) ? "asked" : "completing";
+}
+
+/**
+ * After the store ASKED, resolve `true` if the answer completed the task and
+ * `false` if the question closed with no done (cancelled, or replaced).
+ *
+ * `answerSubtaskPrompt` clears the question and THEN runs `quickDispose`, in
+ * the same task. So the check waits one microtask after the question clears.
+ */
+export function whenAnswered(id: string, store: CompletionStore = useTaskStore): Promise<boolean> {
+  return new Promise((resolve) => {
+    const off = store.subscribe((state) => {
+      if (state.subtaskPrompt?.ids.includes(id)) return;
+      off();
+      void Promise.resolve().then(() =>
+        resolve(store.getState().items.find((i) => i.id === id)?.disposition === "DONE"),
+      );
+    });
+  });
+}
+
+/** What a card does to its row while a done runs. */
+export interface DoneRow {
+  /** Take the row off the card. */
+  hide(): void;
+  /** Put the row back. */
+  show(): void;
+  /** Put the row back with a short error. */
+  fail(message: string): void;
+}
+
+/**
+ * The whole optimistic done, for any card. The row leaves at once. If the
+ * store ASKS (a parent with open subtasks), the row comes back while the
+ * question is up, and leaves again only if the answer completes the task.
+ * The failure watch starts when the store actually writes, so an answer
+ * given late is covered too.
+ */
+export async function markDoneFromHome(
+  id: string,
+  row: DoneRow,
+  store: CompletionStore = useTaskStore,
+  failure = "Could not mark it done. Try again.",
+): Promise<"done" | "kept" | "failed"> {
+  row.hide();
+  let start: CompletionStart;
+  try {
+    start = await completeFromHome(id, store);
+  } catch (err) {
+    row.fail(err instanceof Error && err.message ? err.message : failure);
+    return "failed";
+  }
+  if (start === "asked") {
+    row.show();
+    if (!(await whenAnswered(id, store))) return "kept";
+    row.hide();
+  }
+  onNextSyncFailure(() => row.fail(failure), store);
+  return "done";
 }
 
 /**

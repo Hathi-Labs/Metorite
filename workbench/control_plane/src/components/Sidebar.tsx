@@ -94,6 +94,11 @@ export default function Sidebar() {
   // build-time, and the dev override must not flip mid-session.
   const [shellNav] = useState(() => shellNavOn());
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
+  // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
+  // `localStorage` override the server and the browser can disagree, and
+  // React warns once. Production reads the build-time flag on both sides,
+  // so it never disagrees. `app/page.tsx` needs `useSyncExternalStore`
+  // because it swaps the whole page; a label here does not.
   const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
   const railSections = shellNav ? shellSidebar(sections) : sections;

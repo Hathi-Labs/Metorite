@@ -25,12 +25,11 @@ import { useCallback, useMemo, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { onNextSyncFailure } from "@/app/tasks/lib/completeFromHome";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { CardError, HomeCard } from "./HomeCard";
-import { actError, appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
+import { CardError, HomeCard, rowMover } from "./HomeCard";
+import { appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
 import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
 
 const DANGER = accentForHue("red");
@@ -45,7 +44,7 @@ export interface NeedsYou {
   error: string | null;
   refresh: () => void;
   errors: Readonly<Record<string, string>>;
-  act: (item: NeedsItem) => void;
+  act: (item: NeedsItem, from: HTMLElement | null) => void;
 }
 
 /**
@@ -80,28 +79,23 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
     });
   }, []);
 
+  const setError = useCallback((id: string, message: string | null) => {
+    setErrors((prev) => {
+      const next = { ...prev };
+      if (message) next[id] = message;
+      else delete next[id];
+      return next;
+    });
+  }, []);
+
+  // A done is the My Tasks store's own gesture: it may ask the subtask
+  // question first, its Undo is the store's toast (`UndoToast`, mounted by
+  // My Day), and its failure arrives as `syncFailure` (`markDoneFromHome`).
   const act = useCallback(
-    (item: NeedsItem) => {
-      remove(item.id, true);
-      setErrors((prev) => {
-        const next = { ...prev };
-        delete next[item.id];
-        return next;
-      });
-      const fail = (message: string) => {
-        remove(item.id, false);
-        setErrors((prev) => ({ ...prev, [item.id]: message }));
-      };
-      // A done is the My Tasks store's own gesture. It may ask the subtask
-      // question first, its Undo is the store's toast (`UndoToast`, mounted
-      // by My Day), and its failure arrives as `syncFailure`.
-      const stop = item.act === "done" ? onNextSyncFailure(() => fail(actError("done"))) : () => {};
-      runAct(item).catch((err: unknown) => {
-        stop();
-        fail(item.act === "done" && err instanceof Error && err.message ? err.message : actError(item.act));
-      });
+    (item: NeedsItem, from: HTMLElement | null) => {
+      void runAct(item, rowMover(item.id, remove, setError, from));
     },
-    [remove],
+    [remove, setError],
   );
 
   const items = useMemo(
@@ -172,7 +166,7 @@ export default function NeedsYouCard({
                   item={item}
                   nowMs={now?.getTime() ?? null}
                   error={needs.errors[item.id]}
-                  onAct={() => needs.act(item)}
+                  onAct={(from) => needs.act(item, from)}
                 />
               ))}
             </ul>
@@ -236,7 +230,7 @@ function NeedsRow({
   /** `null` before the client clock exists: the row then prints no time. */
   nowMs: number | null;
   error?: string;
-  onAct: () => void;
+  onAct: (from: HTMLElement) => void;
 }) {
   const time = nowMs === null ? "" : rowTime(item, nowMs);
   return (
@@ -260,11 +254,11 @@ function NeedsRow({
         {/* On a phone the act is its icon alone, so the title keeps the row's
             width. The name stays whole for a screen reader at every size. */}
         {item.act === "done" ? (
-          <Button variant="ghost" size="sm" icon="Check" onClick={onAct} aria-label={`Mark ${item.title} done`} className="min-h-9 min-w-9">
+          <Button variant="ghost" size="sm" icon="Check" data-row-act="" onClick={(e) => onAct(e.currentTarget)} aria-label={`Mark ${item.title} done`} className="min-h-9 min-w-9">
             <span className="hidden sm:inline">Done</span>
           </Button>
         ) : item.act === "read" ? (
-          <Button variant="ghost" size="sm" icon="CheckCheck" onClick={onAct} aria-label={`Mark ${item.title} read`} className="min-h-9 min-w-9">
+          <Button variant="ghost" size="sm" icon="CheckCheck" data-row-act="" onClick={(e) => onAct(e.currentTarget)} aria-label={`Mark ${item.title} read`} className="min-h-9 min-w-9">
             <span className="hidden sm:inline">Mark read</span>
           </Button>
         ) : null}

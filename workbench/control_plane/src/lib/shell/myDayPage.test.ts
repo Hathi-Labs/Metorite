@@ -106,6 +106,24 @@ describe("/ with the My Day flag", () => {
     expect(html).not.toContain('data-testid="needs-you"');
   });
 
+  it("renders the SERVER branch from the build-time flag only, never the dev override", async () => {
+    // The hydration rule. A browser's `cc-my-day` override must not reach
+    // the server render, or the page hydrates a different tree. A probe that
+    // swaps `myDayOn` in as the server snapshot reads the override here.
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "");
+    vi.stubGlobal("localStorage", { getItem: (k: string) => (k === "cc-my-day" ? "1" : null) });
+    try {
+      const html = await renderHome();
+      expect(html).toContain("Welcome back");
+      expect(html).not.toContain('data-testid="my-day"');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const { readFileSync } = await import("node:fs");
+    const page = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
+    expect(page).toMatch(/useSyncExternalStore\(noSubscribe, myDayOn, myDayOnServer\)/);
+  });
+
   it("never reads the notification list, the bell's read (seams.test.ts)", async () => {
     const { readFileSync } = await import("node:fs");
     for (const file of ["./MyDayPage.tsx", "./NeedsYouCard.tsx", "./needs.ts"]) {

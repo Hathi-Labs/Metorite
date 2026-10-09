@@ -9,7 +9,7 @@
  * `lib/shell/myDay.ts`).
  *
  * Each row has one quiet complete control, and its title opens the task. The
- * completion is My Tasks' own gesture (`completeFromHome`): a parent with
+ * completion is My Tasks' own gesture (`markDoneFromHome`): a parent with
  * open subtasks asks first (D-PM-38), and Undo is the store's toast (D79).
  * Lists, fields and capture stay in My Tasks (§4.3), so the footer links
  * there.
@@ -23,9 +23,9 @@ import { lensFetchNext } from "@/app/tasks/lib/lens";
 import type { MyTask } from "@/app/tasks/lib/types";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { CardError, FooterLink, HomeCard } from "@/lib/shell/HomeCard";
+import { CardError, FooterLink, HomeCard, rowMover } from "@/lib/shell/HomeCard";
 import { NEXT_SHOWN, nextActions } from "@/lib/shell/myDay";
-import { completeFromHome, onNextSyncFailure } from "@/app/tasks/lib/completeFromHome";
+import { markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
 import type { NeedsItem } from "@/lib/shell/needs";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -74,27 +74,23 @@ export default function NextActionsCard({
     });
   }, []);
 
+  const setError = useCallback((id: string, message: string | null) => {
+    setErrors((prev) => {
+      const e = { ...prev };
+      if (message) e[id] = message;
+      else delete e[id];
+      return e;
+    });
+  }, []);
+
+  // My Tasks' own gesture (`markDoneFromHome`): it asks first for a parent
+  // with open subtasks (D-PM-38), the row stays while it asks, and Undo is
+  // the store's toast (D79).
   const complete = useCallback(
-    (task: MyTask) => {
-      mark(task.id, true);
-      setErrors((prev) => {
-        const e = { ...prev };
-        delete e[task.id];
-        return e;
-      });
-      const fail = (message: string) => {
-        mark(task.id, false);
-        setErrors((prev) => ({ ...prev, [task.id]: message }));
-      };
-      // My Tasks' own gesture: it asks first for a parent with open
-      // subtasks (D-PM-38), and its Undo is the store's toast (D79).
-      const stop = onNextSyncFailure(() => fail("Could not mark it done. Try again."));
-      completeFromHome(task.id).catch((err: unknown) => {
-        stop();
-        fail(err instanceof Error && err.message ? err.message : "Could not mark it done. Try again.");
-      });
+    (task: MyTask, from: HTMLElement | null) => {
+      void markDoneFromHome(task.id, rowMover(task.id, mark, setError, from));
     },
-    [mark],
+    [mark, setError],
   );
 
   let body: React.ReactNode;
@@ -125,7 +121,8 @@ export default function NextActionsCard({
                   icon="Circle"
                   aria-label={`Complete ${task.title}`}
                   title="Mark done"
-                  onClick={() => complete(task)}
+                  data-row-act=""
+                  onClick={(e) => complete(task, e.currentTarget)}
                   className="h-9 w-9 shrink-0"
                 />
                 <Link href={taskDeepLink(task)} className="flex min-w-0 flex-1 flex-col py-1.5">
