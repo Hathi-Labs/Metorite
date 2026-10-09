@@ -426,6 +426,15 @@ describe("the people step's choices", () => {
     expect(memberOptions({}, fallback, { member: null }, UN).map((o) => o.value)).toEqual([UN, "a@acme.test"]);
   });
 
+  it("is what the dialog draws, with a search box (source fence)", () => {
+    // Reverting the dialog to its own inline list would keep every test above green.
+    const dialog = readFileSync(join(__dirname, "..", "components", "ImportDialog.tsx"), "utf-8");
+    expect(dialog).toContain("memberOptions(plan, members, person, UNASSIGNED)");
+    expect(dialog).toMatch(/label=\{`Member for \$\{person\.display_name\}`\}[\s\S]{0,400}filterAbove=\{8\}/);
+    // The capped search is only a fallback for an older plan.
+    expect(dialog).toContain('if (!open || step !== "map" || planHasMembers) return;');
+  });
+
   it("keeps a chosen member who is not in the list, so the control can name its value", () => {
     const opts = memberOptions({ members }, [], { member: "gone@acme.test" }, UN);
     expect(opts.at(-1)).toEqual({ value: "gone@acme.test", label: "gone@acme.test" });
