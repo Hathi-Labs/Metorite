@@ -8,7 +8,11 @@
 - Slice 3a (a price on a manual grant): merged in PR #786.
 - Slice 3: merged in PR #789.
 - Slice 4: merged in PR #788.
-- Slice 5: BUILT. Slice 6 (the visual pass) ran on every slice before its PR.
+- Slice 5: merged in PR #794. Slice 6 (the visual pass) ran on every slice
+  before its PR.
+- Slice 5b (a margin per price, the cached price on every card, AI margin on
+  Money): BUILT. The owner set every price at a 60 percent margin on
+  2026-10-09 (D94 follow-up, recorded in the PR).
 - Open gaps: HANDOFF H-283 and H-284.
 
 **Owner request, 2026-10-09.** The owner wants to see, for each customer, what
