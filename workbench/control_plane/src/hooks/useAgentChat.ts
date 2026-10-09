@@ -316,14 +316,13 @@ export function useAgentChat({
         // the current turn travels separately as `message`, and leaving it in the
         // history sent the user's prompt to the model twice on the copilot and
         // executor paths (only litellm deduped server-side).
-        // Everything before this turn. Held turns that wait behind it are
-        // not history yet.
-        const prior = getSessionState(threadId).messages.filter(
-          (m) => m.id !== userMsg.id && m.id !== assistantId && !m.pendingDelivery,
-        );
-        // A held turn's answer comes after it, so nothing after it is history.
-        const cut = held ? prior.findIndex((m) => m.timestamp > userMsg.timestamp) : -1;
-        if (cut >= 0) prior.splice(cut);
+        // A held send (an app update, lib/chatRecovery.ts) keeps its bubble
+        // in place, so the pair is not the last two messages. Its history is
+        // everything before the bubble, minus other held turns.
+        const all = getSessionState(threadId).messages;
+        const prior = held
+          ? all.slice(0, Math.max(all.findIndex((m) => m.id === userMsg.id), 0)).filter((m) => !m.pendingDelivery)
+          : getSessionState(threadId).messages.slice(0, -2);
         const active = activeContextSlice(prior);
         const history = active
           .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
