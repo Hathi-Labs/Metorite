@@ -170,8 +170,11 @@ describe("the pane sends the forward through the route", () => {
   const pane = readFileSync(join(__dirname, "../components/EmailDetail.tsx"), { encoding: "utf-8" });
 
   it("a forward goes to POST /email/forward, with the kept files", () => {
-    expect(pane).toMatch(/if \(isForward\) \{\s*await sendForward\(/);
-    expect(pane).toContain("await forwardEmail(forwardRequest({");
+    // The forward is the first branch of the one send, after its one drain.
+    expect(pane).toMatch(/if \(isForward\) \{\s*await forwardEmail\(forwardRequest\(\{/);
+    expect(pane).toContain("if (isForward && forwardBlocked(files)) return;");
+    // A sent forward never reaches the optimistic reply of the thread.
+    expect(pane).toMatch(/if \(isForward\) \{\s*finishForward\(session, stale\);\s*return;\s*\}/);
     expect(pane).toContain("setForwardFiles(mode === \"forward\" ? forwardFilesOf(src.attachments) : []);");
   });
 });

@@ -130,7 +130,9 @@ test.describe("The reading-pane Forward", () => {
     await expect(notice).toContainText("Outlook forwards all the files of an email, or none of them.");
     await page.getByRole("combobox", { name: "To recipients" }).fill("geo@fracktal.test");
     await page.getByRole("button", { name: "Send", exact: true }).click();
-    await expect(page.getByRole("alert").filter({ hasText: "Outlook forwards all the files" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "Nothing was sent." })).toBeVisible();
+    // One button for each choice: the notice holds them, the error line none.
+    await expect(page.locator("[data-forward-offer]")).toHaveCount(0);
     expect(forwarded).toHaveLength(0);
 
     // "Keep every file" puts the file back, and the notice goes.
@@ -160,8 +162,8 @@ test.describe("The reading-pane Forward", () => {
     await page.getByRole("combobox", { name: "To recipients" }).fill("geo@fracktal.test");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     const alert = page.getByRole("alert").filter({ hasText: "30.0 MB" });
-    await expect(alert).toContainText("30.0 MB");
-    await alert.getByRole("button", { name: "Forward without files" }).click();
+    await expect(alert).toBeVisible();
+    await page.locator("[data-forward-offer]").getByRole("button", { name: "Forward without files" }).click();
     await expect.poll(() => forwarded.length).toBe(2);
     expect(forwarded[1]).toMatchObject({ include_attachments: false });
     expect(forwarded[1]).not.toHaveProperty("attachment_ids");

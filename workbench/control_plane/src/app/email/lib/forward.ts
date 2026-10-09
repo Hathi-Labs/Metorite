@@ -92,6 +92,11 @@ export function forwardRequest(input: ForwardInput): ForwardBody {
 export const OUTLOOK_ALL_OR_NONE =
   "Outlook forwards all the files of an email, or none of them.";
 
+/** The send that the pane stopped, because some files of an Outlook mail
+ *  were taken out. The notice of the chips holds the two choices. */
+export const OUTLOOK_SUBSET_UNSENT =
+  "Nothing was sent. Choose Keep every file or Forward without files above.";
+
 /**
  * True when the forward goes out of an Outlook mailbox with some files kept
  * and some taken out. The route answers that with a 422, so the pane asks

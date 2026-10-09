@@ -18,7 +18,7 @@ import {
   type SendAttachment, type ArtifactAttachmentRef,
 } from "../lib/api";
 import {
-  OUTLOOK_ALL_OR_NONE, forwardFailure, forwardFilesOf, forwardRequest, outlookSubset,
+  OUTLOOK_SUBSET_UNSENT, forwardFailure, forwardFilesOf, forwardRequest, outlookSubset,
   type ForwardFile,
 } from "../lib/forward";
 import { ForwardFileChips } from "./ForwardFileChips";
@@ -128,6 +128,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The files of the email in a forward, each kept by default. The forward
   // sends through POST /email/forward, which carries them (follow-up 4 of #766).
   const [forwardFiles, setForwardFiles] = useState<ForwardFile[]>([]);
+  // The files of now, for a send in the same click that changed them.
+  const forwardFilesRef = useRef<ForwardFile[]>([]);
+  forwardFilesRef.current = forwardFiles;
   // A refused forward that a forward without files can fix (413, Outlook, IMAP).
   const [offerNoFiles, setOfferNoFiles] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
@@ -746,56 +749,30 @@ export function EmailDetail({ email }: EmailDetailProps) {
     if (draft) setAiInstruction("");
   };
 
-  /** Send the forward through POST /email/forward, with the files the member
-   *  kept (follow-up 4 of #766). The route builds the subject, the forwarded
-   *  header and the original, and it carries the files. The pane sends the
-   *  note only. The draft that the autosave kept goes after the send. */
-  const sendForward = async (
-    to: string[], cc: string[], bcc: string[], target: Email, files: readonly ForwardFile[],
-  ) => {
-    // The route sends from the mailbox that holds the email, and refuses any
-    // other one with a 404. So a changed From stops here, with its reason.
+  /** Why a forward cannot go yet, or null. The route sends from the mailbox
+   *  that holds the email and refuses any other one, and Outlook forwards
+   *  every file or none (follow-up 4 of #766). Each check sets its words. */
+  const forwardBlocked = (files: readonly ForwardFile[]): boolean => {
     if (!mailboxId || fromId !== mailboxId) {
       const box = accounts.find((a) => a.id === mailboxId);
       setSendErr(
         `A forward goes out from the mailbox that holds the email. Pick ${box ? mailboxLabel(box) : "that mailbox"} in From.`,
       );
-      return;
+      return true;
     }
     if (outlookSubset(mailboxAccount?.provider, files)) {
-      setSendErr(`${OUTLOOK_ALL_OR_NONE} Nothing was sent.`);
-      setOfferNoFiles(true);
-      return;
+      // The notice above the error says why, and holds the two choices. A
+      // second "Forward without files" here would be a second button for
+      // one choice (the screenshots of follow-up 5 of #766).
+      setSendErr(OUTLOOK_SUBSET_UNSENT);
+      return true;
     }
-    const session = replySessionRef.current;
-    const stale = staleDraftsRef.current;
-    sendingRef.current = true;
-    setSending(true);
-    setOfferNoFiles(false);
-    try {
-      // A queued autosave goes, and a save that runs settles first, so its
-      // draft id is known and the draft can go after the send.
-      await autosave.drain(session);
-      await forwardEmail(forwardRequest({
-        messageId: target.id,
-        accountId: mailboxId,
-        to,
-        cc,
-        bcc,
-        note: replyBody,
-        files,
-      }));
-    } catch (e) {
-      const failure = forwardFailure(e);
-      setSendErr(failure.text);
-      setOfferNoFiles(failure.offerNoFiles && files.some((f) => f.checked));
-      return;
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
-    }
-    // The forward is a new mail in Sent. The copy that the autosave kept in
-    // Drafts goes, as a discard takes it.
+    return false;
+  };
+
+  /** After a sent forward: the forward is a new mail in Sent, so the copy
+   *  that the autosave kept in Drafts goes, as a discard takes it. */
+  const finishForward = (session: number, stale: string[]) => {
     resetReplySession();
     const ids = draftsToDiscard(
       session,
@@ -809,8 +786,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
   /** Send the reply/forward. If it was auto-saved as a draft we send that draft
    *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message.
-   *  A forward goes through `sendForward`, with the files of the email. */
-  const handleInlineSend = async (filesOverride?: readonly ForwardFile[]) => {
+   *  A forward sends POST /email/forward, with the files the member kept
+   *  (follow-up 4 of #766). The route builds the subject, the forwarded
+   *  header and the original, so the pane sends the note only. */
+  const handleInlineSend = async () => {
     // A send runs already: the click or the Ctrl+Enter does nothing (f10).
     if (sendingRef.current) return;
     if (!email) return;
@@ -834,14 +813,17 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
-    if (isForward) {
-      await sendForward(toArr, ccArr, bccArr, target, filesOverride ?? forwardFiles);
-      return;
-    }
+    // The ref, not the state: "Forward without files" sends in the same
+    // click that takes the files out.
+    const files = forwardFilesRef.current;
+    if (isForward && forwardBlocked(files)) return;
+    const session = replySessionRef.current;
+    const stale = staleDraftsRef.current;
     // The send starts here, after the early returns and before the drain, so
     // the Send button shows it while the drain waits (EM-T10 item 7).
     sendingRef.current = true;
     setSending(true);
+    setOfferNoFiles(false);
     try {
       // The send carries the last edit, so each queued autosave goes. A save
       // that runs settles first: a first save gives its draft id, and no older
@@ -857,7 +839,17 @@ export function EmailDetail({ email }: EmailDetailProps) {
       // A change of From with an old draft takes the draft path too: it awaits
       // the real send, so the old draft goes only after the send (§11.6
       // case 8). The direct path returns before the send runs.
-      if (draftIdRef.current || hasAtt || staleDraftsRef.current.length > 0) {
+      if (isForward) {
+        await forwardEmail(forwardRequest({
+          messageId: target.id,
+          accountId: fromId,
+          to: toArr,
+          cc: ccArr,
+          bcc: bccArr,
+          note: replyBody,
+          files,
+        }));
+      } else if (draftIdRef.current || hasAtt || staleDraftsRef.current.length > 0) {
         const saved = await saveDraft({
           accountId: fromId,
           draftId: draftIdRef.current ?? undefined,
@@ -887,12 +879,23 @@ export function EmailDetail({ email }: EmailDetailProps) {
         });
       }
     } catch (e) {
+      if (isForward) {
+        // Each answer of the route has its own words (`lib/forward.ts`).
+        const failure = forwardFailure(e);
+        setSendErr(failure.text);
+        setOfferNoFiles(failure.offerNoFiles && files.some((f) => f.checked));
+        return;
+      }
       // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
       setSendErr(sendFailureText(e));
       return;
     } finally {
       sendingRef.current = false;
       setSending(false);
+    }
+    if (isForward) {
+      finishForward(session, stale);
+      return;
     }
     // Show the reply in the conversation at once, then pull the real synced copy.
     // A reply from another mailbox starts a conversation THERE, so it does not
@@ -966,10 +969,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  member already pressed Send, and the files were the refusal. */
   const forwardWithoutFiles = (send: boolean) => {
     const none = forwardFiles.map((f) => ({ ...f, checked: false }));
+    forwardFilesRef.current = none;
     setForwardFiles(none);
     setOfferNoFiles(false);
     setSendErr(null);
-    if (send) void handleInlineSend(none);
+    if (send) void handleInlineSend();
   };
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
@@ -1634,14 +1638,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 10, 13 and 14). It takes its own line: the footer holds six
                 controls, and its status text truncates at 1440 px. */}
             {(sendErr || saveFailure) && (
-              <div role="alert" className="px-4 py-1.5 flex flex-wrap items-center gap-2">
-                <p className="min-w-0 flex-1 text-[10px] text-destructive">{sendErr ?? saveFailure}</p>
-                {/* A forward that its files stopped (413, Outlook, IMAP). */}
-                {replyMode === "forward" && offerNoFiles && sendErr && (
-                  <Button variant="secondary" size="sm" onClick={() => forwardWithoutFiles(true)} disabled={sending}>
-                    Forward without files
-                  </Button>
-                )}
+              <p role="alert" className="px-4 py-1.5 text-[10px] text-destructive">
+                {sendErr ?? saveFailure}
+              </p>
+            )}
+            {/* A forward that its files stopped (413, Outlook, IMAP). */}
+            {replyMode === "forward" && offerNoFiles && sendErr && (
+              <div className="px-4 pb-1.5" data-forward-offer="">
+                <Button variant="secondary" size="sm" onClick={() => forwardWithoutFiles(true)} disabled={sending}>
+                  Forward without files
+                </Button>
               </div>
             )}
             {/* Footer — on phones the labels compress to icons so the full
