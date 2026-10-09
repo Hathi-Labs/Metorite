@@ -108,9 +108,10 @@ take_deploy_lock() {
       exit 4
     fi
   fi
-  printf '%s %s %s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "bh2_rollback:$(id -un)" \
-    > "$DEPLOY_LOCK.holder.$$" 2>/dev/null \
-    && mv -f "$DEPLOY_LOCK.holder.$$" "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  if printf '%s %s %s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "bh2_rollback:$(id -un)" \
+       > "$DEPLOY_LOCK.holder.$$" 2>/dev/null; then
+    mv -f "$DEPLOY_LOCK.holder.$$" "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  fi
   if [ "$(id -u)" = "0" ] && [ -e "$DEPLOY_LOCK.holder" ]; then
     chown "$(stat -c '%U:%G' "$APP_DIR")" "$DEPLOY_LOCK.holder" 2>/dev/null || true
   fi
