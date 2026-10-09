@@ -6096,7 +6096,7 @@ drift.
 ##### PR-A — one classify in each sync cycle, and a back-off in `on`
 
 **Today.** A sync cycle with new mail calls `_maybe_classify_threads`
-(`replyzero.py:2307`) two times for each account:
+(`replyzero.py:2401`) two times for each account:
 
 1. `scheduler.py:1726` runs the `on_new_mail` hook. That hook is
    `process_new_mail`, and it calls the classify at `scheduler_hooks.py:183`.
@@ -6115,8 +6115,8 @@ drift.
   directly. Their classify does not change.
 
 **The trade-off.** Each call also works the backlog. It asks about up to 25
-inbound threads (`_BACKFILL_INBOUND_CAP`, `replyzero.py:2218`) and up to 40
-sent threads (`_REPLY_DETERMINE_CAP`, `:2216`). Today a cycle with new mail can
+inbound threads (`_BACKFILL_INBOUND_CAP`, `replyzero.py:2312`) and up to 40
+sent threads (`_REPLY_DETERMINE_CAP`, `:2310`). Today a cycle with new mail can
 work two batches. After PR-A, it works one batch.
 
 **How the drain keeps its rate.**
@@ -6142,14 +6142,65 @@ thread and asks again.
   not match, and the selection takes the thread at once.
 - The mark holds no verdict, and it expires. A Redis failure reads as no
   mark, and the backfill asks about the thread as today.
-- Outside `on`, `_PROVISIONAL_RECHECK_HOURS` (`replyzero.py:2230`) does this
+- Outside `on`, `_PROVISIONAL_RECHECK_HOURS` (`replyzero.py:2324`) does this
   job. PR-A does not change it.
 - The rule runner selects an undecided row again in the next cycle. PR-A does
   not change that path.
 
+**The decisions of PR-A (coordinator, 2026-10-09).** The audit of
+2026-10-09 returned GO-NARROWED. These decisions close the gaps that it found.
+The line numbers are those of PR-B3 (`64e9f9bb0`).
+
+1. **The asks that write the mark.** Only the Reply Zero backfill writes it.
+   - (a) `ask_status_first` raises `DecisionUnavailable` (`replyzero.py:1361`).
+   - (b) `_resolve_on` rejects an UNDECIDED Block S status (`:1411`).
+   - (c) The sent-thread path of the backfill. `_mark_thread_replied` (`:2172`)
+     returns the undecided state, and the backfill writes the mark. The send
+     and draft routes that call it write no mark.
+   - (d) An undecided RULE match writes no mark. `LLMBudgetExhausted` writes
+     none.
+2. **The Redis key.** The namespace is `email-status-backoff`. The key is
+   `tenant_redis.key("email-status-backoff", account_id, thread_id,
+   last_message_id)`.
+   - Write it with ONE `setex(..., 1800, "1")`. Never write `set` and then
+     `expire`.
+   - Read the marks in ONE batch. PR-A adds `TenantRedis.mget` to
+     `packages/acb_common/acb_common/tenant_redis.py`. That extends the shared
+     seam. `tests/unit/test_tenant_redis.py` fences its tenant keys and the
+     R5(c) ratchet.
+   - A Redis failure reads as "no mark".
+3. **What "ran `on_new_mail`" means.** The gateway registered the hook, and
+   the hook did not raise. A cycle with a hook that raised, or with no hook,
+   still runs `classify_threads`. `tests/unit/test_email_triage_once.py`
+   fences A1, with a case for a hook that raises. `test_email_ai_cost.py`
+   fences A2.
+4. **The tenant (R5).** The organization comes from
+   `acb_common.db.current_tenant()`, as in `digest.py`. With no tenant bound,
+   the backfill writes no mark and reads no mark.
+5. **A flag, so PR-A ships dark (CLAUDE.md §4).** One setting,
+   `EMAIL_TRIAGE_ONCE_PER_CYCLE` (`email_triage_once_per_cycle: bool = False`
+   in `acb_common/settings.py`), holds A1 and A2. With the flag off, the
+   behaviour is the same as before PR-A. The prefix `EMAIL_` of `env_guard`
+   already covers the name. `test_integrations_env_hardening.py` checks it.
+   A value of `true` on a box is gate `enforcement-flip`.
+
+**The risks that PR-A accepts.**
+
+- **Starvation.** The backfill reads the marks after the SQL `LIMIT 200`.
+  During a `decide` outage, about 175 marked rows can fill the window. Then
+  the drain can stop for up to 30 minutes. That costs no money, so PR-A
+  accepts it.
+- **The webhook overlap.** A `process_new_mail` that the webhook starts can
+  classify at the same time as the classify of the scheduler. PR-A does not
+  change that. `HANDOFF.md` H-283 holds the follow-up.
+- **The reclassify count.** In `on`, `_count_reply_zero_backlog` also counts
+  marked threads. So `TestNoReAskStorm::test_the_count_agrees_with_the_selection`
+  cannot hold in `on`. The test stays true outside `on`. In `on`, the drain of
+  a reclassify stops at the first pass with no progress, as it does today.
+
 ##### PR-B — no rule match when the conversation status decides
 
-**Today.** In `on`, `status_before_match` (`replyzero.py:1257`) asks the
+**Today.** In `on`, `status_before_match` (`replyzero.py:1263`) asks the
 thread status first for a known conversation (`_thread_is_conversation`,
 `:990`). The runner then calls `ask_rule_match` (`engine.py:1383`) all the
 same. When the status reaches the bar and the mailbox has an enabled rule for it,
@@ -6183,7 +6234,7 @@ the next mail from the same sender asks again.
 - Keep a decided sender-pin "no" for each account, sender and rule id, for
   7 days.
 - Write each one with `acb_common.tenant_redis` `setex`, as the brief cache
-  does at `digest.py:542-566` (#753). Use no table and no migration.
+  does at `digest.py:536-570` (#753). Use no table and no migration.
 - A kept "no" skips the ask, and gives the same result as a fresh "no".
 - A Redis failure reads as a miss, and the check asks as today.
 - An undecided or failed check stores nothing (D-EM-8).
@@ -6300,10 +6351,16 @@ database ran, and then the run proves nothing.
 ```
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_ai_cost.py tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_on.py tests/unit/test_email_llm_cap.py tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_single_classification.py tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_cold_gate_case.py tests/unit/test_crm_auto_lead.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_draft_fallback.py tests/unit/test_email_draft_context.py tests/unit/test_email_no_tier_choice.py tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_rules_engine.py tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_insights_screen.py -q -rs
+uv run pytest tests/unit/test_email_layering.py tests/unit/test_email_reclassify_resumable.py tests/unit/test_tenant_redis.py tests/unit/test_email_automation_tenancy.py -q -rs
+uv run ruff check <each changed file>
 ```
 
+The ruff run on the changed files must find no more than the base finds.
+
 **Anchors, at origin/main `5405a0b7f` (2026-10-09).** The paths are under
-`apps/services/gateway/gateway/` unless the row names another root.
+`apps/services/gateway/gateway/` unless the row names another root. The
+`replyzero.py` rows and `digest.py` are at PR-B3 (`64e9f9bb0`), corrected on
+2026-10-09.
 
 | Anchor | What it holds |
 |---|---|
@@ -6311,14 +6368,16 @@ uv run pytest tests/unit/test_email_ai_cost.py tests/unit/test_email_decide_shad
 | `apps/services/email_ingestion/email_ingestion/scheduler.py:1740` | The `classify_threads` hook of the cycle |
 | `routes/email/scheduler_hooks.py:183` | The classify in `process_new_mail` |
 | `routes/email/scheduler_hooks.py:300` | The classify in the `classify_threads` hook |
-| `routes/email/automation/replyzero.py:2307` | `_maybe_classify_threads` |
-| `routes/email/automation/replyzero.py:2216-2218` | The caps of 40 sent and 25 inbound threads |
-| `routes/email/automation/replyzero.py:2230` | `_PROVISIONAL_RECHECK_HOURS` |
+| `routes/email/automation/replyzero.py:2401` | `_maybe_classify_threads` |
+| `routes/email/automation/replyzero.py:2310`, `:2312` | The caps of 40 sent and 25 inbound threads |
+| `routes/email/automation/replyzero.py:2324` | `_PROVISIONAL_RECHECK_HOURS` |
 | `routes/email/automation/replyzero.py:1225-1239` | `_determined_matches`, and the suppressed lines at `:1236-1237` |
-| `routes/email/automation/replyzero.py:1257` | `status_before_match` |
+| `routes/email/automation/replyzero.py:1263` | `status_before_match` |
+| `routes/email/automation/replyzero.py:1310` | `read_status_first` |
+| `routes/email/automation/replyzero.py:1345` | `ask_status_first` |
 | `routes/email/automation/engine.py:1383` | `ask_rule_match` |
 | `routes/email/automation/engine.py:1520`, `:1585` | The runner reads the status first |
-| `routes/email/digest.py:542-566` | The `tenant_redis` `setex` idiom (#753) |
+| `routes/email/digest.py:536-570` | The `tenant_redis` `setex` idiom (#753) |
 | `routes/email/automation/senders.py:1475-1480` | `_maybe_block_cold` reads `email_cold_senders` |
 | `routes/crm/auto_lead.py:670-675` | The auto-lead reads `email_cold_senders` |
 | `routes/email/automation/senders.py:1538` | `GET /cold-senders` |
