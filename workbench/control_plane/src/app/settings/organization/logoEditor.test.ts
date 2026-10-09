@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { moveBox } from "./LogoEditor";
+import { moveBox, savePayload, type OwnDark } from "./LogoEditor";
+import type { Rendered } from "@/lib/logoCanvas";
 
 const start = { x: 10, y: 10, w: 100, h: 40 };
 
@@ -27,5 +28,41 @@ describe("the crop box", () => {
     expect([b.w, b.h]).toEqual([8, 8]);
     const c = moveBox(start, "nw", 1000, 1000, 400, 200);
     expect([c.w, c.h]).toEqual([8, 8]);
+  });
+});
+
+const drawn = (base64: string) => ({ base64 }) as Rendered;
+const ownFile = (storedBase64?: string) => ({ name: "dark.png", storedBase64 }) as OwnDark;
+const base = { main: drawn("MAIN"), savedMain: null, white: drawn("WHITE"), own: null, ownRendered: null, ownRemoveBg: true };
+
+describe("what Save sends", () => {
+  it("sends the drawn logo and, for the white style, its white version", () => {
+    expect(savePayload({ ...base, chosen: "white" })).toEqual({ logoBase64: "MAIN", logoDarkBase64: "WHITE", darkStyle: "white" });
+    expect(savePayload({ ...base, chosen: "plate" })).toEqual({ logoBase64: "MAIN", logoDarkBase64: null, darkStyle: "plate" });
+  });
+
+  it("sends the admin's own dark version with the own style", () => {
+    const p = savePayload({ ...base, chosen: "own", own: ownFile(), ownRendered: drawn("OWN") });
+    expect(p).toEqual({ logoBase64: "MAIN", logoDarkBase64: "OWN", darkStyle: "own" });
+  });
+
+  it("cannot save the own style before its file is drawn", () => {
+    expect(savePayload({ ...base, chosen: "own" })).toBeNull();
+    expect(savePayload({ ...base, chosen: "own", own: ownFile() })).toBeNull();
+  });
+
+  // ⚠️ Review, 2026-10-09: "Change dark mode" re-trimmed the saved logo and
+  // removed its background, so a logo saved with its background lost it.
+  it("sends a reopened logo's SAVED bytes, not a redrawn copy", () => {
+    const p = savePayload({ ...base, savedMain: "SAVED", chosen: "plate" });
+    expect(p?.logoBase64).toBe("SAVED");
+  });
+
+  it("sends a saved own version as saved, unless its background is removed now", () => {
+    const own = ownFile("SAVEDDARK");
+    const kept = savePayload({ ...base, savedMain: "SAVED", chosen: "own", own, ownRendered: drawn("REDRAWN"), ownRemoveBg: false });
+    expect(kept?.logoDarkBase64).toBe("SAVEDDARK");
+    const changed = savePayload({ ...base, savedMain: "SAVED", chosen: "own", own, ownRendered: drawn("REDRAWN"), ownRemoveBg: true });
+    expect(changed?.logoDarkBase64).toBe("REDRAWN");
   });
 });

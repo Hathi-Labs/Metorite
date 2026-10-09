@@ -929,6 +929,32 @@ class Settings(BaseSettings):
     # 111 has run. Reuses email_embedding_model/dim (one embedder for the app).
     whatsapp_semantic_search_enabled: bool = False
 
+    # ── The WhatsApp assistant channel (WS-47 WAC-1, 2026-10-09) ────────────
+    #
+    # A member chats with Metorite from their own WhatsApp, through ONE bot
+    # number that belongs to the platform (D-WAC-1). These three are platform
+    # configuration on the box, never tenant data. Spec:
+    # project-docs/specs/whatsapp_assistant_channel.md §5.1.
+    #
+    # `whatsapp_assistant_enabled` is the kill switch, default OFF.
+    # `whatsapp_assistant_orgs` lists the organization ids that may link a
+    # phone, with a comma between ids. An empty list allows no organization,
+    # and there is no `*`. `whatsapp_assistant_display_number` is the bot's
+    # phone number, digits only with the country code and no "+", for the
+    # `wa.me` link. A value that is not 8 to 15 digits reads as unset.
+    #
+    # The one reader of all three is
+    # `gateway.routes.whatsapp_channel.flags`. It takes the organization from
+    # `current_tenant()`, never from request input. `env_guard` refuses each
+    # `WHATSAPP_*` name on each Integrations write, so only the env file of
+    # the box sets them. Restart the gateway after a change.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_wac_link_code.py.
+    whatsapp_assistant_enabled: bool = False
+    whatsapp_assistant_orgs: str = ""
+    whatsapp_assistant_display_number: str = ""
+
     # ── Token accessors ────────────────────────────────────────────────────
 
     @property

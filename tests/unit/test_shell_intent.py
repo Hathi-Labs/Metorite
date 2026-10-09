@@ -290,12 +290,14 @@ class TestOneJobList:
             out[m.group(1)] = (m.group(3), m.group(4), m.group(2))
         return out
 
-    def _nav_features(self) -> dict[str, str | None]:
+    def _nav_gates(self) -> dict[str, tuple[str | None, bool]]:
+        """Each pane's two gates in `nav.ts`: its feature, and `adminOnly`."""
         src = NAV_TS.read_text(encoding="utf-8")
-        out: dict[str, str | None] = {}
+        out: dict[str, tuple[str | None, bool]] = {}
         for m in re.finditer(r'href: "([^"]+)",(.*?)launch:', src, re.S):
             f = re.search(r'feature: "([^"]+)"', m.group(2))
-            out[m.group(1)] = f.group(1) if f else None
+            admin = re.search(r"adminOnly: true", m.group(2)) is not None
+            out[m.group(1)] = (f.group(1) if f else None, admin)
         return out
 
     def test_the_server_and_the_bar_hold_the_same_jobs(self):
@@ -309,11 +311,51 @@ class TestOneJobList:
             assert labels[job_id] == label, f"{job_id}: the bar says {label!r}, the coordinator {labels[job_id]!r}"
 
     def test_each_job_is_gated_on_its_apps_own_feature(self):
-        ts, nav = self._ts_jobs(), self._nav_features()
+        ts, nav = self._ts_jobs(), self._nav_gates()
         for job in intent.JOBS:
             app = ts[job.id][0]
             assert app in nav, f"{job.id}: app {app} is not a nav pane"
-            assert job.feature == nav[app], f"{job.id}: {job.feature} vs the pane's {nav[app]}"
+            feature, admin_only = nav[app]
+            assert job.feature == feature, f"{job.id}: {job.feature} vs the pane's {feature}"
+            # An `adminOnly` pane has no feature, so the feature gate alone
+            # offered its job to EVERY member (§6.4 rule 1).
+            assert job.admin == admin_only, f"{job.id}: admin {job.admin} vs the pane's adminOnly {admin_only}"
+
+    def test_the_parser_sees_the_admin_pane(self):
+        # The fence above is empty if the regex never reads `adminOnly`.
+        assert self._nav_gates()["/settings/organization"] == (None, True)
+
+    def test_the_admin_gate_is_the_one_auth_me_reports(self):
+        me = (ROOT / "apps/services/gateway/gateway/routes/admin/me.py").read_text(encoding="utf-8")
+        assert f'"is_admin": access.has("{intent.ADMIN_PERMISSION}")' in me
+
+
+def admin_member(*features: str) -> UserContext:
+    granted = {f"feature:{f}" for f in features} | {intent.ADMIN_PERMISSION}
+    return UserContext(
+        email="admin@customer.example",
+        role=UserRole.EMPLOYEE,
+        access=EffectiveAccess(role_granted=frozenset(granted)),
+        organization_id="org-1",
+    )
+
+
+class TestAnAdminJobReachesOnlyAnAdmin:
+    def test_a_member_who_is_not_an_admin_does_not_hold_invite(self, world):
+        # Every feature a job names, and still no admin permission.
+        everything = [j.feature for j in intent.JOBS if j.feature]
+        assert "invite" not in {j.id for j in intent.held_jobs(member(*everything))}
+        ask("invite priya to the company", member(*everything))
+        assert "invite" not in offered(world)
+
+    def test_an_admin_holds_invite(self, world):
+        assert "invite" in {j.id for j in intent.held_jobs(admin_member())}
+        ask("invite priya to the company", admin_member())
+        assert "invite" in offered(world)
+
+    def test_the_model_naming_invite_for_a_member_is_a_handoff(self, world):
+        world.choice = "invite"
+        assert ask("invite priya to the company", member("tasks"))["kind"] == "handoff"
 
 
 class TestTheRouteIsMounted:

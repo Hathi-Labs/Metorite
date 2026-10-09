@@ -45,6 +45,7 @@ import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
 // D63 / H-49 slice 2. The WORDING is the policy, so it lives in a pure module
@@ -426,6 +427,17 @@ export default function OrganizationAdmin() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* NS-2: the command bar's "Invite a member" opens the invite dialog on
+          the Members tab, once the roles it offers have loaded. Only an admin
+          reaches this far, and the gateway authorizes the invite itself. */}
+      <ShellJob
+        id="invite"
+        ready={access.is_admin && !loading}
+        onOpen={() => {
+          setTab("members");
+          setInviting(true);
+        }}
+      />
       <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
         <SettingsHeader
           title="Organisation"

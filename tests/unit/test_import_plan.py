@@ -22,6 +22,7 @@ from gateway.routes.projects.importer.plan import (
     StatusChoice,
     Target,
     build_plan,
+    imported_name,
     propose_category,
     propose_target,
 )
@@ -373,6 +374,49 @@ def test_a_long_name_is_refused_only_for_a_NEW_status() -> None:
     refused = build_plan(b, fresh, {}, target_statuses=target)
     assert not refused["ready"]
     assert any("64 characters" in e for e in refused["errors"])
+
+
+def test_a_continuing_run_refuses_a_long_NEW_chosen_name_but_keeps_a_source_name() -> None:
+    """The fix-round review: a run that continues let a NEW chosen name of 65
+    to 500 characters through. A chosen name is new on any run. A long SOURCE
+    name with no choice stays, because the earlier tree may hold it."""
+    long_source = "s" * 70
+    b = _small(_row("a", status="waiting"), _row("b", status=long_source))
+    chosen = ImportMapping(statuses={"waiting": StatusChoice(category="todo", name="y" * 65)})
+    refused = build_plan(b, chosen, {}, target_statuses=SEED, continues=True)
+    assert not refused["ready"]
+    assert any("64 characters" in e and "waiting" in e for e in refused["errors"])
+    kept = build_plan(b, ImportMapping(), {}, target_statuses=SEED, continues=True)
+    assert kept["ready"], kept["errors"]
+
+
+def test_a_continuing_run_keeps_a_long_name_the_wizard_sends_on_every_row() -> None:
+    """The PR #784 review. The wizard names EVERY row, so "no choice" is
+    never true in production. A long name that is the source name, or a name
+    an earlier run recorded, is not new on a run that continues."""
+    long_source = "s" * 70
+    long_recorded = "r" * 70
+    b = _small(_row("a", status=long_source), _row("b", status="other"))
+    wizard = ImportMapping(
+        statuses={
+            long_source: StatusChoice(category="todo", name=long_source),
+            "other": StatusChoice(category="todo", name=long_recorded),
+        }
+    )
+    earlier = {"other": (long_recorded, "todo")}
+    ok = build_plan(b, wizard, {}, target_statuses=SEED, continues=True, earlier_names=earlier)
+    assert ok["ready"], ok["errors"]
+    # The same names on a NEW tree are new statuses, so the limit applies.
+    new_tree = build_plan(b, wizard, {}, target_statuses=SEED)
+    assert sum("64 characters" in e for e in new_tree["errors"]) == 2
+
+
+def test_the_imported_name_steps_on_while_a_pen_holds_it() -> None:
+    """The PR #784 review: a member may recategorise "Triage (imported)" into
+    an intake lane, so the next name is "Triage (imported 2)"."""
+    assert imported_name("Triage") == "Triage (imported)"
+    assert imported_name("Triage", taken={"triage (imported)"}) == "Triage (imported 2)"
+    assert len(imported_name("x" * 80, taken={"x" * 53 + " (imported)"})) <= 64
 
 
 # ── §6.9 work that exists ───────────────────────────────────────────────────

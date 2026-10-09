@@ -49,6 +49,35 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-283 · Prove the first `credit_draw` row on production · [AGENT]
+- **Check:** on the box, query the Console database:
+  `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
+  means the write path runs in production, and this entry is done.
+- **Why.** Migration 036 (WS-50, PR #779) applied on 2026-10-09 at 14:46 UTC,
+  and the table exists. No billed AI call happened before the session ended,
+  so no row proves the write path yet. The R8 suite proves it on a scratch
+  database only.
+- **Do this:** after the first billed call, run the Check. If `usage_event`
+  has billed rows after 2026-10-09 14:46 UTC and `credit_draw` has none, the
+  write path is broken: read `store.record_draws` and the charge path.
+- **Authority:** `CLAUDE.md` §3 rule 8 (verify by evidence)
+- **Added:** 2026-10-09 · WS-50
+
+### H-284 · Two revenue figures the Money page cannot show yet · [AGENT]
+- **Check:** `rg -n "price_paid_inr" apps/services/customer_console/customer_console/main.py`
+  inside `ManualActivationRequest`. No hit means gap 1 is open.
+  `rg -n "def all_lots|credits_paid_total" apps/services/customer_console`
+  with no hit means gap 2 is open.
+- **Gap 1.** Start paid plan (`/billing/subscriptions/activate`) can include
+  credits, and it writes a `manual` purchase lot with no price. PR #786 fixed
+  the same gap on `/credits/grant` only. The Money page values those credits
+  at the current price and labels them an estimate.
+- **Gap 2.** "Cash received" (D94 rule 3) needs every lot, spent or not.
+  `/billing/summary` returns only open lots (`store.open_lots`), so the
+  Billing tab cannot total what a customer has paid us.
+- **Authority:** `specs/operator_console_money.md` §3, D94
+- **Added:** 2026-10-09 · WS-50
+
 ### H-150 · The right-click menu on a task cannot be opened on a phone · [AGENT]
 
 - **What happens.** At 390px the board draws its cards, and a right-click
@@ -670,7 +699,7 @@ line — never reclaim a number by deleting the other entry.
   5. Set the webhook to `https://api.metorite.com/whatsapp/webhook`, and
      subscribe to `messages`.
   6. Add a payment method, submit the templates of §5.8, and publish the app.
-  7. Put the four values of §5.1 in the box `.env`. Never paste them in chat.
+  7. Put the five values of §5.1 in the box `.env`. Never paste them in chat.
 - **The same Meta app also serves the WhatsApp inbox (WS-20 §12).** For that, add the Embedded Signup configuration, the four webhook fields and the Tech Provider App Review of `specs/whatsapp_message_manager.md` §12.5. Do both in one pass.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §6 · `specs/whatsapp_message_manager.md` §12.5 · board rows WS-47 and WS-20.
 - **Added:** 2026-10-06 · the WS-47 spec session.
@@ -1515,8 +1544,9 @@ line — never reclaim a number by deleting the other entry.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
 - **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
 - **Done, by orchestrator report on 2026-10-02:** `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` are on the box since 16:31 UTC. The first live `decide.decided` line came at 16:50:47 UTC.
-- **First, PR-B3 of EM-T4a-2 must merge.** Until then the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6).
-- **Next, after EM-T5b-2 in full merges and after PR-B3:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
+- **Measured on the box, 2026-10-09:** `DECIDE_ENABLED=true`, `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on` and `DECIDE_FEATURE_ORGS=*`. So `email.thread_status` is already `on`, and it is no longer next.
+- ⚠️ **Drift (D-EM-62).** The thread status went `on` before PR-B3 of EM-T4a-2 merged. Until PR-B3 merges, the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6). EM-T16 PR-0 is PR-B3, and its merge closes the drift (§10.4.17).
+- **Next, after EM-T16 PR-C merges:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. D-EM-62 approves this step. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
@@ -1527,8 +1557,8 @@ line — never reclaim a number by deleting the other entry.
   7. Say whether the shadow window may start before EM-T4b, the shared cap. The 2026-10-02 note of this entry tied each mode to that cap. With one live mailbox, the runner asks about one email at a time.
 - ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37 writes one (H-36). A reseller call passes through both.
 - **Then:** the agents run the shadow window of `email_app_master_plan.md` §10.4.8.
-- **Authority:** D-EM-7 to D-EM-9 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
-- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit
+- **Authority:** D-EM-7 to D-EM-9 · D-EM-62 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
+- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit · **corrected 2026-10-09** by the EM-T16 spec
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The

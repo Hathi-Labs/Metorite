@@ -263,7 +263,7 @@ export function lifecycleActions(status: string): { label: string; target: strin
   if (status === "deleted") return [];
   if (status === "trial" || status === "past_due") {
     return [
-      { label: "Activate account", target: "active" },
+      { label: status === "trial" ? "End the trial" : "Mark account active", target: "active" },
       { label: "Suspend access", target: "suspended" },
       { label: "Cancel account (export window)", target: "cancelled" },
     ];
@@ -280,6 +280,40 @@ export function lifecycleActions(status: string): { label: string; target: strin
 // is the other-language twin and the real fence (it 409s a tombstone
 // server-side). Fenced in `format.test.ts`.
 export const TOMBSTONE_RE = /-purged-[0-9a-f]{6}$/;
+
+/** WS-50: what each credit-ledger reason means, in plain words. */
+export const LEDGER_REASON_WORDS: Record<string, string> = {
+  usage: "Spent on AI",
+  hold: "Held for a running AI call",
+  release: "Hold returned",
+  grant: "Free credits added",
+  manual: "Paid credits added (bank transfer)",
+  purchase: "Bought in the app",
+  adjustment: "Correction",
+  discount_redemption: "Promotion code",
+};
+
+/** WS-50: a subscription status in plain words. */
+export function subscriptionWords(status: string | null): string {
+  switch (status) {
+    case null:
+    case undefined:
+      return "No paid plan";
+    case "active":
+      return "Paid, active";
+    case "trialing":
+      return "Trial";
+    case "past_due":
+      return "Payment overdue";
+    case "canceled":
+    case "cancelled":
+      return "Cancelled";
+    case "unpaid":
+      return "Unpaid";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
 
 /**
  * Split the Console's org list into the CUSTOMER ROSTER and the purge
@@ -313,8 +347,8 @@ export function lifecycleHint(
 ): string | null {
   if (orgStatus === "trial" && subscriptionStatus === "active") {
     return (
-      "Their subscription is already active — the account itself is still " +
-      "marked trial. Use “Activate account” under Access below to finish it."
+      "Their paid plan is active, but the account itself is still marked " +
+      "trial. Use “End the trial” on the Access & keys tab to finish it."
     );
   }
   return null;
@@ -506,11 +540,11 @@ export function readCreditLots(body: unknown): CreditLot[] | undefined {
 
 /** Plain words for a lot's source. An operator should not read a slug. */
 export const LOT_SOURCE_LABEL: Record<string, string> = {
-  purchase: "Bought",
-  trial: "Trial",
-  promo: "Promotion",
-  refund: "Refunded",
-  grant: "Granted",
+  purchase: "Bought (paid)",
+  trial: "Free trial",
+  promo: "Promotion (free)",
+  refund: "Refund (free)",
+  grant: "Free grant",
 };
 
 // ── Money, rendered ──────────────────────────────────────────────────────

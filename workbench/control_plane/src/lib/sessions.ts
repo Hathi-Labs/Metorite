@@ -886,27 +886,35 @@ export function saveMessages(sessionId: string, messages: PersistedMessage[]): v
       ? { author_kind: "agent", author_email: m.authorEmail ?? null }
       : {}),
   }));
-  void postMessagesWithRetry(sessionId, JSON.stringify(payload));
+  void queueSave(sessionId, JSON.stringify(payload));
 }
 
-/** How long a failed save waits before its one retry (WS-27bm S15). */
-export const SAVE_RETRY_DELAY_MS = 1_000;
+/**
+ * The waits before each retry of a failed save: three retries, each wait
+ * twice the last (WS-27bm S15, and the storm of 2026-10-09).
+ */
+export const SAVE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 
 /**
- * POST one batch of messages, and retry ONCE on a 5xx (WS-27bm S15 fix round 1,
- * projects_ai_chat.md §21.12).
+ * How long a session sends no save after its retries all failed. The save
+ * that waits is sent once when the pause ends.
+ */
+export const SAVE_PAUSE_MS = 60_000;
+
+/**
+ * POST one batch of messages, and retry a 5xx a bounded number of times
+ * (WS-27bm S15 fix round 1, projects_ai_chat.md §21.12).
  *
  * The session upsert and the first save leave the browser at the same time. If
  * the save reaches the gateway first, the chat_message foreign key refuses it
- * and the answer is a 5xx. Every later save resends the whole list, but a
- * member who closes the tab first loses the first prompt. One retry after
- * SAVE_RETRY_DELAY_MS lets the session row land first. A 4xx is an answer, so
- * it is not retried. The call never throws.
+ * and the answer is a 5xx. A retry lets the session row land first. A 4xx is an
+ * answer, so it is not retried. Each wait is in `delaysMs`, so the retries are
+ * bounded and the waits grow. The call never throws.
  */
 export async function postMessagesWithRetry(
   sessionId: string,
   body: string,
-  delayMs: number = SAVE_RETRY_DELAY_MS,
+  delaysMs: readonly number[] = SAVE_RETRY_DELAYS_MS,
 ): Promise<number | null> {
   const send = () =>
     fetch(`/api/chat/sessions/${sessionId}/messages`, {
@@ -914,17 +922,106 @@ export async function postMessagesWithRetry(
       headers: { "Content-Type": "application/json" },
       body,
     });
-  try {
-    const first = await send();
-    if (first.status < 500) return first.status;
-  } catch {
-    // A network failure is retried the same way as a 5xx.
+  let last: number | null = null;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt - 1]));
+    }
+    try {
+      last = (await send()).status;
+      if (last < 500) return last;
+    } catch {
+      // A network failure is retried the same way as a 5xx.
+      last = null;
+    }
   }
-  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return last;
+}
+
+/** One session's save line: one request at a time, and the latest body next. */
+interface SaveLine {
+  /** The body the server last stored. The same body is not sent again. */
+  saved?: string;
+  /**
+   * The body the server last refused with a 4xx, for example a 403 to a room
+   * member who may not send. The same body is not sent again either.
+   */
+  refused?: string;
+  /** True while a save, or its retries, is on the way. */
+  busy: boolean;
+  /** The newest body that came while busy or paused. Older ones are dropped. */
+  next?: string;
+  /** No save leaves before this time (epoch ms). */
+  pausedUntil: number;
+}
+
+const _saveLines = new Map<string, SaveLine>();
+
+/** Forget every save line. For tests. */
+export function resetSaveLines(): void {
+  _saveLines.clear();
+}
+
+/**
+ * Send *body* for *sessionId* through its save line (the storm of 2026-10-09).
+ *
+ * `AgentChat` calls `saveMessages` on EVERY change of its message list, and a
+ * streaming turn changes it about twelve times a second. When each save
+ * answered 500, the browser sent about 700 POSTs in one minute. The line
+ * stops that:
+ *
+ * - a body equal to the one the server stored, or to the one it refused
+ *   with a 4xx, is not sent;
+ * - one request is on the way at a time, and a body that comes meanwhile
+ *   replaces any body that waits, so a burst sends at most one more;
+ * - when every retry fails, the line pauses for `SAVE_PAUSE_MS`, and then
+ *   sends only the newest body. The local cache keeps every turn meanwhile.
+ *
+ * Fence: `src/lib/sessions.test.ts` ("the save line").
+ */
+export async function queueSave(
+  sessionId: string,
+  body: string,
+  delaysMs: readonly number[] = SAVE_RETRY_DELAYS_MS,
+  pauseMs: number = SAVE_PAUSE_MS,
+): Promise<void> {
+  let line = _saveLines.get(sessionId);
+  if (!line) {
+    line = { busy: false, pausedUntil: 0 };
+    _saveLines.set(sessionId, line);
+  }
+  if (body === line.saved || body === line.refused) return;
+  if (line.busy) {
+    line.next = body;
+    return;
+  }
+  line.busy = true;
+  let current: string | undefined = body;
   try {
-    return (await send()).status;
-  } catch {
-    return null;
+    while (current !== undefined) {
+      const wait = line.pausedUntil - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      // A newer body that came during the pause replaces this one.
+      if (line.next !== undefined) {
+        current = line.next;
+        line.next = undefined;
+      }
+      if (current === line.saved || current === line.refused) break;
+      const status = await postMessagesWithRetry(sessionId, current, delaysMs);
+      if (status !== null && status < 300) {
+        line.saved = current;
+      } else if (status === null || status >= 500) {
+        line.pausedUntil = Date.now() + pauseMs;
+      } else {
+        // A 4xx is an answer: do not pause, and do not resend this body.
+        line.refused = current;
+      }
+      current = line.next;
+      line.next = undefined;
+      if (current === line.saved || current === line.refused) current = undefined;
+    }
+  } finally {
+    line.busy = false;
   }
 }
 

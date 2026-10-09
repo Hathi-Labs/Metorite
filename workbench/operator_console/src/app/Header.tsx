@@ -57,7 +57,8 @@ export const NAV: NavGroup[] = [
     title: "Customers",
     items: [
       { href: "/", label: "Organizations", icon: I("M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75") },
-      { href: "/usage", label: "AI usage", icon: I("M3 3v18h18M7 15l4-5 3 3 5-7") },
+      // WS-50: what each customer paid us and cost us. Replaced "AI usage".
+      { href: "/money", label: "Money", icon: I("M3 3v18h18M7 15l4-5 3 3 5-7") },
     ],
   },
   {

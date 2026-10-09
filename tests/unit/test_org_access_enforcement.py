@@ -163,6 +163,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # capacity and open work.
     "gateway.routes.people": set(),
     "gateway.routes.chat": set(),
+    # WS-47 WAC-1 — Chat on WhatsApp (`/me/whatsapp-link`). Gated on
+    # `feature:chat`, because the run of WAC-3 is a Chat run. No exemptions:
+    # both routes serve the signed-in member, and the webhook stays on the
+    # `/whatsapp` router.
+    "gateway.routes.whatsapp_channel": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
     "gateway.routes.workflows": {

@@ -468,7 +468,6 @@ describe("no raw Tailwind palette colours", () => {
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
-    "components/FileUploadButton.tsx": 8,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
     "components/TodoPanel.tsx": 1,

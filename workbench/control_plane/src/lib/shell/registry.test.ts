@@ -84,6 +84,21 @@ describe("contextPane", () => {
   });
 });
 
+describe("an admin who names the roster opens it, not the invite form", () => {
+  const org = PANES.find((p) => p.href === "/settings/organization")!;
+  const items = buildItems([org], true);
+  const top = (query: string) => rank({ items, query, context: null, recent: [] })[0]?.key;
+
+  it("opens Organisation for the roster's own words", () => {
+    expect(top("members")).toBe("go:/settings/organization");
+    expect(top("seats")).toBe("go:/settings/organization");
+  });
+  it("offers the invite form for an invite", () => {
+    expect(top("invite")).toBe("do:invite");
+    expect(top("invite a member")).toBe("do:invite");
+  });
+});
+
 describe("score and rank", () => {
   const items = buildItems(HELD);
   const top = (query: string, context: string | null = null, recent: string[] = []) =>

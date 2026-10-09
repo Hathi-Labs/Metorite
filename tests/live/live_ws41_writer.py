@@ -75,6 +75,8 @@ ADMIN2 = f"admin2.{TAG}@acme.test"
 ADMIN3 = f"admin3.{TAG}@acme.test"
 ADMIN4 = f"admin4.{TAG}@acme.test"
 ADMIN5 = f"admin5.{TAG}@acme.test"
+ADMIN6 = f"admin6.{TAG}@acme.test"
+ADMIN7 = f"admin7.{TAG}@acme.test"
 #: I-10 — what the ten ClickUp statuses of the fixture become (§6.3).
 SIX = {"Backlog", "To do", "In progress", "Review", "On hold", "Done"}
 
@@ -206,18 +208,24 @@ async def main() -> None:
     org3 = await seed("c", [ADMIN3])
     org4 = await seed("d", [ADMIN4])
     org5 = await seed("e", [ADMIN5])
+    org6 = await seed("f", [ADMIN6])
+    org7 = await seed("g", [ADMIN7])
     try:
         await first_org(org, bundle, raw, person1)
         await second_org(org2, bundle, raw)
         await third_org(org3, raw)
         await fourth_org(org4, raw)
         await fifth_org(org5, bundle, raw)
+        await sixth_org(org6, bundle, raw)
+        await seventh_org(org7, bundle, raw)
     finally:
         await drop(org)
         await drop(org2)
         await drop(org3)
         await drop(org4)
         await drop(org5)
+        await drop(org6)
+        await drop(org7)
 
 
 async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
@@ -1297,6 +1305,332 @@ async def fifth_org(org: str, bundle: object, raw: bytes) -> None:
         and back == 0,
         f"plan={review['becomes']},{review['existing']} names={sorted(names)} "
         f"lanes_added={report.get('lanes_added')} review lanes={back}",
+    )
+
+
+async def sixth_org(org: str, bundle: object, raw: bytes) -> None:
+    """The fix-round follow-up: two intake lanes the plan cannot see.
+
+    * P2: a List a member gave a set of its own holds the intake lane
+      "Triage". The plan reads only the spaces' sets.
+    * F-1: one space holds the intake lane "Triage", and another space holds
+      a normal "Triage". The plan merges the sets case-blind, so it keeps
+      the name.
+
+    A continuing export gives one task in each place the status "Triage".
+    The run must complete, put no task in an intake lane, and add no lane
+    twice."""
+    import csv
+    import io
+
+    by_ref = {c.ref: c for c in bundle.containers}
+
+    def space_of(ref: str) -> str:
+        while by_ref[ref].parent_ref:
+            ref = by_ref[ref].parent_ref
+        return ref
+
+    roots = [t for t in bundle.tasks if t.parent_ref is None]
+    spaces = [
+        c.ref
+        for c in bundle.containers
+        if c.kind == "space" and any(space_of(t.container_ref) == c.ref for t in roots)
+    ]
+    s_pen, s_lane, s_own = spaces[:3]
+    t_pen = next(t for t in roots if space_of(t.container_ref) == s_pen)
+    t_lane = next(t for t in roots if space_of(t.container_ref) == s_lane)
+    t_own = next(t for t in roots if space_of(t.container_ref) == s_own)
+    own_list = t_own.container_ref
+
+    first, lease = await new_run(org, ADMIN6, bundle, raw, ImportMapping())
+    await import_writer.apply_run(org, first, lease)
+    progress = as_dict(
+        await one(org, "SELECT progress FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=first)
+    )
+    pen_space = progress["node_ids"][s_pen]
+    lane_space = progress["node_ids"][s_lane]
+    own_space = progress["node_ids"][s_own]
+    own_node = progress["nodes"][own_list]
+    add_lane = (
+        "INSERT INTO pm_task_statuses (project_id, name, position, category) "
+        "VALUES (CAST(:p AS uuid), :n, :pos, :c)"
+    )
+    async with tenant_session(org) as db:
+        await db.execute(text(add_lane), {"p": pen_space, "n": "Triage", "pos": 5, "c": "triage"})
+        await db.execute(text(add_lane), {"p": lane_space, "n": "Triage", "pos": 15, "c": "todo"})
+        # What `admin` does when a member gives the List a set of its own:
+        # copy the space's lanes, move the List's tasks onto them by name,
+        # and own the set. The intake lane then goes into THAT set.
+        await db.execute(
+            text(
+                "INSERT INTO pm_task_statuses (project_id, name, color, position, category) "
+                "SELECT CAST(:me AS uuid), name, color, position, category "
+                "  FROM pm_task_statuses WHERE project_id = CAST(:src AS uuid)"
+            ),
+            {"me": own_node, "src": own_space},
+        )
+        await db.execute(
+            text(
+                "UPDATE pm_tasks t SET status_id = me.id, origin = jsonb_set(t.origin, "
+                "       '{import_values,status_id}', to_jsonb(me.id::text)) "
+                "  FROM pm_task_statuses s, pm_task_statuses me "
+                " WHERE t.project_id = CAST(:me AS uuid) AND s.id = t.status_id "
+                "   AND me.project_id = CAST(:me AS uuid) AND me.name = s.name"
+            ),
+            {"me": own_node},
+        )
+        await db.execute(
+            text("UPDATE pm_projects SET owns_statuses = true WHERE id = CAST(:p AS uuid)"),
+            {"p": own_node},
+        )
+        await db.execute(text(add_lane), {"p": own_node, "n": "Triage", "pos": 5, "c": "triage"})
+
+    table = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+    col = {name: i for i, name in enumerate(table[0])}
+    for row in table[1:]:
+        if row[col["Task ID"]] in {t_pen.ref, t_lane.ref, t_own.ref}:
+            row[col["Status"]] = "Triage"
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows(table)
+    edited = out.getvalue().encode("utf-8")
+    edited_bundle = clickup.parse([(FIXTURE.name, edited)])
+
+    async def where(ref: str) -> tuple[str, str, str]:
+        found = (
+            await rows(
+                org,
+                "SELECT s.name, s.project_id::text AS owner, s.category FROM pm_tasks t "
+                "  JOIN pm_task_statuses s ON s.id = t.status_id "
+                " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :r",
+                r=ref,
+            )
+        )[0]
+        return str(found.name), str(found.owner), str(found.category)
+
+    pen_sql = (
+        "SELECT count(*) FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        "  JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) AND s.category = 'triage'"
+    )
+    imported_sql = (
+        "SELECT s.project_id::text AS owner, count(*) AS n FROM pm_task_statuses s "
+        "  JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) AND lower(s.name) = 'triage (imported)' "
+        " GROUP BY 1"
+    )
+    later, lease = await new_run(org, ADMIN6, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, later, lease)
+    state = await one(
+        org, "SELECT state FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=later
+    )
+    report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=later)
+    )
+    in_pens = await one(org, pen_sql)
+    made = {r.owner: r.n for r in await rows(org, imported_sql)}
+    own_at = await where(t_own.ref)
+    check(
+        "10.1 a List with its own intake lane: the run completes into 'Triage (imported)'",
+        state == "done"
+        and own_at[:2] == ("Triage (imported)", own_node)
+        and made.get(own_node) == 1
+        and in_pens == 0,
+        f"state={state} error={report.get('error')} t_own={own_at} made={made} in_pens={in_pens}",
+    )
+    pen_at = await where(t_pen.ref)
+    lane_at = await where(t_lane.ref)
+    check(
+        "10.2 one space's intake 'Triage' beside another's normal 'Triage': each task lands right",
+        state == "done"
+        and pen_at[:2] == ("Triage (imported)", pen_space)
+        and lane_at[:2] == ("Triage", lane_space)
+        and lane_at[2] == "todo"
+        and made.get(pen_space) == 1
+        and lane_space not in made
+        and in_pens == 0,
+        f"t_pen={pen_at} t_lane={lane_at} made={made} in_pens={in_pens}",
+    )
+    lanes_sql = (
+        "SELECT count(*) FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid)"
+    )
+    before = await one(org, lanes_sql)
+    again, lease = await new_run(org, ADMIN6, edited_bundle, edited, ImportMapping())
+    await import_writer.apply_run(org, again, lease)
+    report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=again)
+    )
+    check(
+        "10.3 the same export again adds no lane and still puts no task in an intake lane",
+        await one(org, lanes_sql) == before
+        and report.get("lanes_added") == 0
+        and report.get("tasks_updated") == 0
+        and await one(org, pen_sql) == 0,
+        f"lanes {before}->{await one(org, lanes_sql)} lanes_added={report.get('lanes_added')} "
+        f"updated={report.get('tasks_updated')} error={report.get('error')}",
+    )
+
+
+async def seventh_org(org: str, bundle: object, raw: bytes) -> None:
+    """The PR #784 review.
+
+    * P1: run N places List X's "Triage" beside the intake lane of X's OWN
+      set. Run N+1 adds a task with "Triage" in List Y, which uses the
+      space's set and has no intake lane. Y's task must land in a plain
+      "Triage", with no "Triage (imported)" in the space's set.
+    * P2: a member then recategorises X's "Triage (imported)" into an
+      intake lane. The next run must not collide on its name."""
+    import csv
+    import io
+
+    by_ref = {c.ref: c for c in bundle.containers}
+
+    def space_of(ref: str) -> str:
+        while by_ref[ref].parent_ref:
+            ref = by_ref[ref].parent_ref
+        return ref
+
+    roots = [t for t in bundle.tasks if t.parent_ref is None]
+    per_list: dict[str, list[object]] = {}
+    for task in roots:
+        per_list.setdefault(task.container_ref, []).append(task)
+    x_list = next(
+        ref
+        for ref, tasks in per_list.items()
+        if len(tasks) >= 2
+        and any(other != ref and space_of(other) == space_of(ref) for other in per_list)
+    )
+    y_list = next(ref for ref in per_list if ref != x_list and space_of(ref) == space_of(x_list))
+    tx, tx2 = per_list[x_list][:2]
+    ty = per_list[y_list][0]
+
+    def export(refs: set[str]) -> tuple[bytes, object]:
+        table = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+        col = {name: i for i, name in enumerate(table[0])}
+        for row in table[1:]:
+            if row[col["Task ID"]] in refs:
+                row[col["Status"]] = "Triage"
+        out = io.StringIO()
+        csv.writer(out, lineterminator="\n").writerows(table)
+        data = out.getvalue().encode("utf-8")
+        return data, clickup.parse([(FIXTURE.name, data)])
+
+    async def run(data: bytes, parsed: object) -> tuple[str, dict]:
+        run_id, lease = await new_run(org, ADMIN7, parsed, data, ImportMapping())
+        await import_writer.apply_run(org, run_id, lease)
+        state = await one(
+            org, "SELECT state FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=run_id
+        )
+        report = as_dict(
+            await one(
+                org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=run_id
+            )
+        )
+        return str(state), report
+
+    async def where(ref: str) -> tuple[str, str]:
+        found = (
+            await rows(
+                org,
+                "SELECT s.name, s.project_id::text AS owner FROM pm_tasks t "
+                "  JOIN pm_task_statuses s ON s.id = t.status_id "
+                " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :r",
+                r=ref,
+            )
+        )[0]
+        return str(found.name), str(found.owner)
+
+    first, lease = await new_run(org, ADMIN7, bundle, raw, ImportMapping())
+    await import_writer.apply_run(org, first, lease)
+    progress = as_dict(
+        await one(org, "SELECT progress FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=first)
+    )
+    space = progress["node_ids"][space_of(x_list)]
+    x_node = progress["nodes"][x_list]
+    async with tenant_session(org) as db:
+        # What `admin` does when a member gives List X a set of its own, and
+        # the intake lane that capture then puts into that set.
+        await db.execute(
+            text(
+                "INSERT INTO pm_task_statuses (project_id, name, color, position, category) "
+                "SELECT CAST(:me AS uuid), name, color, position, category "
+                "  FROM pm_task_statuses WHERE project_id = CAST(:src AS uuid)"
+            ),
+            {"me": x_node, "src": space},
+        )
+        await db.execute(
+            text(
+                "UPDATE pm_tasks t SET status_id = me.id, origin = jsonb_set(t.origin, "
+                "       '{import_values,status_id}', to_jsonb(me.id::text)) "
+                "  FROM pm_task_statuses s, pm_task_statuses me "
+                " WHERE t.project_id = CAST(:me AS uuid) AND s.id = t.status_id "
+                "   AND me.project_id = CAST(:me AS uuid) AND me.name = s.name"
+            ),
+            {"me": x_node},
+        )
+        await db.execute(
+            text("UPDATE pm_projects SET owns_statuses = true WHERE id = CAST(:p AS uuid)"),
+            {"p": x_node},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO pm_task_statuses (project_id, name, position, category) "
+                "VALUES (CAST(:p AS uuid), 'Triage', 5, 'triage')"
+            ),
+            {"p": x_node},
+        )
+
+    state_n, _report_n = await run(*export({tx.ref}))
+    state_m, report_m = await run(*export({tx.ref, ty.ref}))
+    in_space = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:s AS uuid) "
+        "   AND lower(name) = 'triage (imported)'",
+        s=space,
+    )
+    pens = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        "  JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) AND s.category = 'triage'",
+    )
+    y_at = await where(ty.ref)
+    x_at = await where(tx.ref)
+    check(
+        "11.1 an alias in one List's own set is no rename: List Y gets a plain 'Triage'",
+        state_n == "done"
+        and state_m == "done"
+        and y_at == ("Triage", space)
+        and in_space == 0
+        and x_at == ("Triage (imported)", x_node)
+        and report_m.get("lanes_added") == 1
+        and pens == 0,
+        f"states={state_n},{state_m} y={y_at} x={x_at} imported_in_space={in_space} "
+        f"lanes_added={report_m.get('lanes_added')} pens={pens}",
+    )
+
+    async with tenant_session(org) as db:
+        await db.execute(
+            text(
+                "UPDATE pm_task_statuses SET category = 'triage' "
+                " WHERE project_id = CAST(:p AS uuid) AND name = 'Triage (imported)'"
+            ),
+            {"p": x_node},
+        )
+    state_k, report_k = await run(*export({tx.ref, tx2.ref, ty.ref}))
+    stepped = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid) "
+        "   AND name = 'Triage (imported 2)'",
+        p=x_node,
+    )
+    check(
+        "11.2 a recategorised 'Triage (imported)' is a pen too: the name steps on",
+        state_k == "done"
+        and stepped == 1
+        and await where(tx2.ref) == ("Triage (imported 2)", x_node),
+        f"state={state_k} error={report_k.get('error')} stepped={stepped} "
+        f"tx2={await where(tx2.ref)}",
     )
 
 

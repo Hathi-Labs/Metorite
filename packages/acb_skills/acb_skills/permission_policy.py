@@ -24,6 +24,10 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
     non-egress tool, in a run that a covered     (:func:`guard_shared_agent_shell`,
     run delegated to (H-236)                     ``acb_skills.egress``)
   * file writes outside the agent workspace    → DENY (out of bounds)
+  * a read of a BINARY file in the workspace   → DENY in enforce AND audit,
+                                                 with a sentence that names
+                                                 ``read_attachment`` (incident
+                                                 2026-10-09, :func:`binary_file_note`)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
   * unknown / unclassifiable                   → APPROVE + WARN (fail-open-loud;
@@ -253,6 +257,11 @@ def _decide_read(path: str) -> tuple[bool, str, str]:
     context, it is refused, so the CLI cannot read the gateway's ``.env`` or
     another tenant's dir. A read with no path names nothing, and it is
     approved as an observation.
+
+    A read of a BINARY file inside the workspace is refused with the reason
+    :data:`BINARY_READ_REASON`, and the detail is the sentence that the model
+    reads (:func:`binary_file_note`). Containment runs first, so the check
+    never opens a path outside the workspace.
     """
     if not path:
         return True, "read_only", "observation only"
@@ -261,7 +270,167 @@ def _decide_read(path: str) -> tuple[bool, str, str]:
         return False, "read_without_workspace", path[:200]
     if not _is_within(path, root):
         return False, "read_out_of_workspace", path[:200]
+    note = binary_file_note(path, root)
+    if note:
+        return False, BINARY_READ_REASON, note
     return True, "read_in_workspace", path[:200]
+
+
+# ── A binary file is not text (incident 2026-10-09) ──────────────────────────
+# The Copilot CLI's built-in ``view`` tool reads any file as text. On an Excel
+# file it returned the raw bytes of the ZIP container, ``PK\x03\x04\x14\x00``.
+# That tool result failed every save of the chat with a 500, because Postgres
+# refuses a NUL. The CLI is a vendor binary, so the read request that reaches
+# ``decide()`` is the one place this repo can stop it. The persistence seam
+# (``acb_common.pg_text.storable``) still guards the save on its own.
+# Fence: tests/unit/test_chat_nul_persist.py.
+
+#: The reason code of a refused read of a binary file.
+BINARY_READ_REASON = "read_binary_file"
+
+#: How much of a file the check reads.
+_SNIFF_BYTES = 8192
+
+#: The start of each binary format that a text read can meet, and the kind
+#: that the sentence names when the file name has no suffix.
+_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"PK\x03\x04", "zip"),
+    (b"PK\x05\x06", "zip"),
+    (b"%PDF-", "pdf"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole"),
+    (b"\x1f\x8b", "gzip"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"Rar!\x1a\x07", "rar"),
+)
+
+#: The kinds that ``acb_skills.attachment_tools.read_attachment`` reads.
+_ATTACHMENT_KINDS = frozenset({"docx", "xlsx", "pdf"})
+
+#: The suffixes that the Copilot CLI's ``view`` tool sends to the model as an
+#: IMAGE, not as text. ``view`` asks the native
+#: ``imageHelpersIsBinaryImageFile`` (``function Lk`` in CLI 1.0.66
+#: ``app.js``), which answers by the suffix alone, in any case. Its text
+#: result is "Viewed image file successfully.", with no NUL. So a read of such
+#: a name is always approved, whatever the bytes are, or a screenshot that a
+#: member attaches cannot be seen (fix rounds 1 and 2).
+#:
+#: ⚠️ This list follows CLI 1.0.66. Production fetches the CLI runtime of its
+#: SDK pin (``scripts/vps_apply.sh``, the H-181 fetch). A CLI upgrade must
+#: check this list again against ``imageHelpersIsBinaryImageFile``.
+_CLI_IMAGE_SUFFIXES = frozenset({
+    "png", "jpg", "jpeg", "gif", "webp",
+    "bmp", "ico", "tif", "tiff", "heic", "avif",
+})
+
+#: The byte order marks of UTF-32 and UTF-16 text. Such a file holds NULs and
+#: is still text. ``acb_common.pg_text.storable`` guards the save of a NUL
+#: that comes through.
+_TEXT_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe", b"\xfe\xff")
+
+
+def _bomless_utf16(head: bytes) -> bool:
+    """True when *head* looks like UTF-16 text with no byte order mark.
+
+    In UTF-16 text that is mostly Latin, every second byte is zero. LE puts
+    the zero byte after the letter, and BE puts it before. Nine in ten byte
+    pairs must show the pattern, and the other byte must not be zero.
+    """
+    pairs = len(head) // 2
+    if pairs < 2:
+        return False
+    for zero_at in (1, 0):
+        hits = sum(
+            1 for i in range(pairs)
+            if head[2 * i + zero_at] == 0 and head[2 * i + 1 - zero_at] != 0
+        )
+        if hits * 10 >= pairs * 9:
+            return True
+    return False
+
+
+def _size_text(size: int) -> str:
+    if size < 1024:
+        return f"{size} bytes"
+    if size < 1024 * 1024:
+        return f"{round(size / 1024)} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def binary_file_note(path: str, root: str) -> str | None:
+    """A sentence for the model when *path* is a binary file, else ``None``.
+
+    A file is binary when its first 8 KB hold a NUL, or when it starts with a
+    known magic number (ZIP, which holds .xlsx and .docx, PDF, PNG and more).
+    The sentence names the file, its kind and its size, and it points a
+    .docx, .xlsx or .pdf file at ``read_attachment``.
+
+    Two kinds of file are never binary here. A name with an image suffix of
+    :data:`_CLI_IMAGE_SUFFIXES` is an image to the CLI, so the file is not
+    opened at all. A file that starts with a UTF-16 or UTF-32 byte order mark
+    is text. UTF-16 text with no mark stays refused, with a sentence that
+    asks for a UTF-8 copy (:func:`_bomless_utf16`).
+
+    It opens the file through :mod:`acb_skills.safe_open` (a link at any depth
+    fails), so call it only after the containment check. Any failure, a
+    missing file and a folder return ``None``, and the read goes on as before.
+    """
+    from pathlib import Path, PurePosixPath
+
+    from acb_skills import safe_open
+
+    try:
+        base = os.path.normpath(os.path.abspath(root))
+        target = os.path.normpath(os.path.join(base, path))
+        rel = os.path.relpath(target, base).replace(os.sep, "/")
+        if rel == "." or rel.startswith("../") or rel == "..":
+            return None
+        if PurePosixPath(rel).suffix.lower().lstrip(".") in _CLI_IMAGE_SUFFIXES:
+            return None
+        fh = safe_open.open_read(Path(base), rel)
+        if fh is None:
+            return None
+        with fh:
+            size = os.fstat(fh.fileno()).st_size
+            head = fh.read(_SNIFF_BYTES)
+    except (safe_open.UnsafePath, OSError, ValueError):
+        return None
+    if head.startswith(_TEXT_BOMS):
+        return None
+    magic = next((kind for sig, kind in _MAGIC if head.startswith(sig)), None)
+    if magic is None and b"\x00" not in head:
+        return None
+    name = PurePosixPath(rel).name
+    kind = PurePosixPath(rel).suffix.lower().lstrip(".") or magic or "binary"
+    if magic is None and _bomless_utf16(head):
+        # Still refused: a text read gives a NUL after each letter. But the
+        # agent gets a way on (fix round 2).
+        return (
+            f"{name} ({kind}, {_size_text(size)}) looks like UTF-16 text with "
+            "no byte order mark, so a text read returns it with a NUL in each "
+            "letter. It was not read. Ask the member to save it again as UTF-8."
+        )
+    note = (
+        f"{name} is a binary file ({kind}, {_size_text(size)}), so a text "
+        "read returns only raw bytes. It was not read."
+    )
+    if kind in _ATTACHMENT_KINDS:
+        note += (
+            " If the member attached it in this chat, use read_attachment to "
+            "read its text."
+        )
+    else:
+        note += " Do not read it as text."
+    return note
+
+
+def _binary_read_result(note: str) -> Any:
+    """The SDK refusal for a read of a binary file. No person approves it."""
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(feedback="Blocked by Metorite: " + note)
 
 
 # ── Per-tool call-context builders (BO-7 cheap win 1/3) ──────────────────────
@@ -545,15 +714,20 @@ def risk_aware_permission_handler(request: Any, invocation: dict[str, str]) -> A
         _log.warning("permission.decide_failed", error=str(exc))
         return _approved_result()
 
+    # A binary read is not a permission refusal, so audit mode does not waive
+    # it. An approval would only hand the model the raw bytes again.
+    redirect = (not approved) and code == BINARY_READ_REASON
     denied_would = (not approved) and mode == "enforce"
     _log.info(
         "permission.decision",
         mode=mode,
-        approved=(approved or mode == "audit"),
+        approved=(approved or mode == "audit") and not redirect,
         would_deny=not approved,
         reason=code,
         detail=detail,
     )
+    if redirect:
+        return _binary_read_result(detail)
     if denied_would:
         return _denied_result(f"{code}: {detail}")
     return _approved_result()

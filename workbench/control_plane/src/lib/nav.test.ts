@@ -12,8 +12,12 @@
  * assertions fails and names what changed.
  */
 
+import { existsSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { JOBS } from "@/lib/shell/registry";
 import {
   CHROMELESS_ROUTES,
   isChromeless,
@@ -107,7 +111,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the ten panes launch_surface.md §2 names", () => {
+  it("ships exactly the eleven panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
@@ -277,5 +281,53 @@ describe("every live pane carries its manifest (D89)", () => {
     ]);
     // A setting is never a sidebar door: it has no place to show then.
     expect(PANES.filter((p) => p.setting && p.door !== "account")).toEqual([]);
+  });
+});
+
+// ── Done-when 2 of NS-2: a job opens a real page (`navigation_shell.md`) ───
+
+const APP_DIR = path.join(__dirname, "..", "app");
+
+/**
+ * Whether `src/app` holds a `page.tsx` for this path. A route group, such as
+ * `(auth)`, adds no segment. A dynamic folder, such as `[id]`, takes any one
+ * segment, and a catch-all folder takes the rest.
+ */
+function routeHasPage(pathname: string): boolean {
+  const walk = (dir: string, segs: readonly string[]): boolean => {
+    if (segs.length === 0 && existsSync(path.join(dir, "page.tsx"))) return true;
+    for (const name of readdirSync(dir)) {
+      const child = path.join(dir, name);
+      if (!statSync(child).isDirectory() || name === "api") continue;
+      if (/^\(.+\)$/.test(name) && walk(child, segs)) return true;
+      if (segs.length === 0) continue;
+      if (/^\[\[?\.\.\..+\]\]?$/.test(name) && existsSync(path.join(child, "page.tsx"))) return true;
+      if ((name === segs[0] || /^\[[^.[\]]+\]$/.test(name)) && walk(child, segs.slice(1))) return true;
+    }
+    return false;
+  };
+  return walk(APP_DIR, pathname.split("/").filter(Boolean));
+}
+
+describe("every job opens a page that exists (NS-2 done-when 2)", () => {
+  it("the check refuses a path with no page, so the fence below is not empty", () => {
+    expect(routeHasPage("/nope")).toBe(false);
+    expect(routeHasPage("/settings/nope")).toBe(false);
+    expect(routeHasPage("/tasks")).toBe(true);
+    // A dynamic segment: `settings/members/[email]`.
+    expect(routeHasPage("/settings/members/someone@x.test")).toBe(true);
+  });
+
+  it.each(JOBS.map((j) => [j.id, j.href] as const))("%s opens %s", (_id, href) => {
+    const pathname = new URL(href, "http://metorite.test").pathname;
+    expect(routeHasPage(pathname), `${href} has no src/app page`).toBe(true);
+  });
+});
+
+describe("every live app has a job (NS-2 done-when 1)", () => {
+  // A live app with no job is invisible in the command bar's Do group, so a
+  // member who types what they want to do there finds only "Open …".
+  it.each(LIVE_PANES.map((p) => [p.label, p.href] as const))("%s (%s) has one job or more", (_label, href) => {
+    expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
   });
 });

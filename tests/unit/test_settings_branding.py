@@ -365,6 +365,34 @@ def test_the_dark_image_meets_every_check_the_logo_does(saved: dict) -> None:
     assert "value" not in saved
 
 
+def test_an_own_dark_logo_is_stored_and_checked_like_the_logo(saved: dict) -> None:
+    # Owner request, 2026-10-09: an organisation that has its own version for
+    # a dark background uploads it, beside the required light one.
+    body = st.BrandingUpload(logoBase64=_b64(png(600, 160)), logoDarkBase64=_b64(png(600, 160)), darkStyle="own")
+    out = st.put_branding(body, user=_User())  # type: ignore[arg-type]
+    assert out.darkStyle == "own" and out.logoDark is not None
+    assert saved["value"]["darkStyle"] == "own"
+
+
+def test_the_own_style_needs_its_image(saved: dict) -> None:
+    with pytest.raises(HTTPException) as e:
+        st.put_branding(st.BrandingUpload(logoBase64=_b64(png(600, 160)), darkStyle="own"), user=_User())  # type: ignore[arg-type]
+    assert e.value.status_code == 400
+    assert "value" not in saved
+
+
+def test_an_own_dark_logo_is_refused_without_the_light_one() -> None:
+    # The light logo is mandatory: the upload body cannot omit it.
+    with pytest.raises(ValueError):
+        st.BrandingUpload(logoDarkBase64=_b64(png(600, 160)), darkStyle="own")  # type: ignore[call-arg]
+
+
+def test_an_own_style_whose_image_is_broken_degrades_to_the_logo() -> None:
+    logo = {"dataUri": "data:image/png;base64,AA==", "mime": "image/png", "width": 2, "height": 1, "byteSize": 1}
+    out = st._coerce_branding({"logo": logo, "logoDark": {"broken": True}, "darkStyle": "own"})
+    assert (out.darkStyle, out.logoDark) == ("same", None)
+
+
 def test_the_plate_style_is_stored_with_no_second_image(saved: dict) -> None:
     out = st.put_branding(st.BrandingUpload(logoBase64=_b64(png(600, 160)), darkStyle="plate"), user=_User())  # type: ignore[arg-type]
     assert (out.darkStyle, out.logoDark) == ("plate", None)
