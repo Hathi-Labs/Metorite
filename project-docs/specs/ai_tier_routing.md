@@ -752,8 +752,8 @@ decide(question, context, kind="choice", options="", items="")
   `question`, a `kind` and `options`. When `items` is set, the tool ignores
   `question`, `kind` and `options`, and it asks every item in ONE request.
 
-The System-1 agent answers in this fixed shape, through `response_format`
-with a JSON schema:
+The System-1 agent answers in this fixed shape, in JSON mode (see the
+amendment below):
 
 ```text
 {"answers": [{"id": str, "choice": str, "confidence": number 0..1, "reason": str}]}
@@ -762,6 +762,17 @@ with a JSON schema:
 - `choice` must be one of the item's options. For `yes_no` the options are
   `yes` and `no`.
 - `reason` holds at most 120 characters.
+
+> **Amended 2026-10-09 (production fault).** The request uses JSON mode,
+> `{"type": "json_object"}`, and not a JSON schema. With the schema, the
+> Router answered 400 to every System-1 request from 2026-10-05 to
+> 2026-10-08, so no turn-kind question got an answer. Every other JSON caller
+> of the platform sends `json_object`. The instructions of `system-one` now
+> carry the shape above. `system_one.parse_answers` checks it, and a reply
+> that is not the shape gives `UNAVAILABLE`, never a guess. Each failure logs
+> `system_one.failed` with a reason code, for example `reason=http_400`.
+> Fence: `test_the_request_asks_for_json_mode_and_names_no_schema` in
+> `tests/unit/test_system_one_tool.py`.
 
 ### 6.4 What the calling model reads
 
@@ -996,7 +1007,8 @@ needs restoring.
 | The policy table lives in one place | `test_tier_policy.py`. Each kind maps to a tier in the slate, and each `TOOL_HINTS` name exists in a tool registry | pytest |
 | A tool hint raises the NEXT request only | `test_tier_policy.py`, through a real `OpenAIChatCompletionClient` on an `httpx.MockTransport`, as in `test_native_maf_wire.py` | pytest |
 | Max sends every main request to `tier-powerful`, and a decision stays on `tier-fast` | `test_tier_policy.py` | pytest |
-| The System-1 request names `tier-fast`, holds no tools and carries a JSON schema | `tests/unit/test_system_one_tool.py` (new), on the wire | pytest |
+| The System-1 request names `tier-fast`, holds no tools and asks for JSON mode, with no JSON schema (amended 2026-10-09) | `tests/unit/test_system_one_tool.py`, on the wire | pytest |
+| A System-1 failure logs its reason code, and the Router's refusal line names the status, the vendor, the error class and a closed word list, with no content (2026-10-09) | `test_system_one_tool.py` `TestTheFailureReasonIsLogged`, and `tests/unit/test_router_refusal_log.py` | pytest |
 | A batch is one request | `test_system_one_tool.py` | pytest |
 | A choice outside the options reads as `unsure` | `test_system_one_tool.py` | pytest |
 | The reason is capped, cleaned and framed as data | `test_system_one_tool.py` | pytest |
@@ -1030,7 +1042,8 @@ Each ticket is one PR. Each one ships dark.
 
 1. With `AI_TIER_ROUTING=projects-assistant`, a projects-assistant run holds
    `decide`. One call sends one request. Its `model` is `tier-fast`, it holds
-   no `tools`, and its `response_format` has the type `json_schema`.
+   no `tools`, and its `response_format` has the type `json_object`
+   (amended 2026-10-09, §6.3).
 2. That run holds the System-1 `decide` with `DECIDE_ENABLED` off.
 3. Another agent on the same box holds the Jev `decide` only when
    `DECIDE_ENABLED` is on, as today.

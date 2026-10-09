@@ -367,7 +367,7 @@ class TestTurnKind:
         body = wire.bodies[0]
         assert body["model"] == "tier-fast"
         assert "tools" not in body
-        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"] == {"type": "json_object"}
         assert wire.requests[0].headers["X-CC-Source"] == "system_one"
         assert wire.requests[0].headers["X-CC-Agent"] == PA
         payload = json.loads(body["messages"][-1]["content"])

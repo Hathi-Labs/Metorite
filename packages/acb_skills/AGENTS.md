@@ -73,8 +73,10 @@ clone cache.
    tests/unit/test_delegation_no_egress.py.
 5b-1. system_one.py -- the `system-one` MAF agent. It holds no tools, and it is
    not in `_AGENT_REGISTRY`. `ask()` sends a batch of up to 20 questions in
-   ONE request on `tier-fast`, with a strict JSON-schema `response_format`,
-   through `acb_llm.attribution.attributed_openai` to the gateway's `/v1`.
+   ONE request on `tier-fast`, in JSON mode (`{"type": "json_object"}`).
+   Never send a JSON schema: the Router answered 400 to it for three days.
+   The shape is in INSTRUCTIONS, and `parse_answers` checks it. Each failure
+   logs `system_one.failed` with a reason code. The request goes through `acb_llm.attribution.attributed_openai` to the gateway's `/v1`.
    It sends nothing when `acb_llm.routed.routing_is_on()` is false, so it
    never reaches a vendor directly. The 3 s limit is the client's request
    timeout, with no retry. It logs no context, question or option. A caller

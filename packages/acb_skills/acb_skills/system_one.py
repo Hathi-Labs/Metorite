@@ -4,8 +4,20 @@ Spec: ``project-docs/specs/ai_tier_routing.md`` §6.
 
 ``system-one`` is a MAF ``Agent`` with no tools, fixed instructions and a
 client on OUR Router's ``tier-fast``. :func:`ask` sends it a batch of typed
-questions in ONE model request, with a JSON-schema ``response_format``, and
-checks each answer against the options of its own question.
+questions in ONE model request, in JSON mode (``response_format`` of the type
+``json_object``), and checks each answer against the options of its own
+question.
+
+🔴 **JSON mode, NOT a JSON schema (2026-10-09).** The first build sent
+``{"type": "json_schema", "strict": true}``. The Router answered 400 to every
+System-1 request: 18 refusals in three days, and no turn-kind answer at all.
+That format is the one part of the request that no other caller sends. Every
+other JSON caller of the platform sends ``json_object``, and the vendor
+behind ``tier-fast`` serves it. So the instructions carry the shape, and
+:func:`parse_answers` holds it on our side. A reply that is
+not the shape is ``unavailable``, never a guess. Each failure logs
+``system_one.failed`` with a reason code, so a fault of this kind cannot
+hide again.
 
 It is not in ``_AGENT_REGISTRY``, so no member can chat with it and the
 orchestrator cannot delegate to it. The ``decide`` tool
@@ -75,38 +87,22 @@ INSTRUCTIONS = (
     "- `reason`: one short clause, at most 120 characters, with no link "
     "and no code.\n"
     "If the context does not tell you, give your best choice with a low "
-    "confidence."
+    "confidence.\n"
+    "Reply with ONE JSON object and nothing else: no prose and no code "
+    "fence. It has exactly one key, `answers`, a list with one object per "
+    "item. Each object has exactly the four keys `id`, `choice`, "
+    "`confidence` and `reason`, for example:\n"
+    '{"answers": [{"id": "q1", "choice": "yes", "confidence": 0.9, '
+    '"reason": "the task names a date"}]}'
 )
 
-#: The fixed shape of every answer (§6.3), as a strict JSON schema.
-RESPONSE_FORMAT: dict[str, Any] = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "system_one_answers",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "answers": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "choice": {"type": "string"},
-                            "confidence": {"type": "number"},
-                            "reason": {"type": "string"},
-                        },
-                        "required": ["id", "choice", "confidence", "reason"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["answers"],
-            "additionalProperties": False,
-        },
-    },
-}
+#: The ``response_format`` of every request (§6.3): JSON mode.
+#:
+#: ⚠️ **Do not put a ``json_schema`` back here.** With it, the Router answered
+#: 400 to every System-1 request. A 400 is terminal, so no failover step ran. The shape lives in
+#: :data:`INSTRUCTIONS` and :func:`parse_answers` checks it.
+#: ``test_the_request_asks_for_json_mode_and_names_no_schema`` pins this.
+RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
 #: A reason that holds one of these is dropped (§6.7 rule 3). It errs toward
 #: dropping, because a dropped reason costs nothing: the choice still stands.
@@ -130,6 +126,28 @@ class SystemOneUnavailable(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def failure_reason(exc: BaseException) -> str:
+    """A reason CODE for a failed request: ``http_<status>``, ``timeout`` or a type name.
+
+    The client library and MAF can each wrap the HTTP error. The walk is the
+    ONE walker of the platform, ``acb_llm.run_errors``, so the two cannot
+    disagree about which link holds the status. It reads no message, because
+    a message can quote the request.
+    """
+    try:
+        from acb_llm.run_errors import _chain, _status_of
+    except ImportError:  # the reason must never become a second failure
+        return type(exc).__name__
+    links = _chain(exc)
+    for link in links:
+        status = _status_of(link)
+        if status is not None:
+            return f"http_{status}"
+    if any(isinstance(e, TimeoutError) or "Timeout" in type(e).__name__ for e in links):
+        return "timeout"
+    return type(exc).__name__
 
 
 @dataclass(frozen=True)
@@ -305,7 +323,20 @@ async def ask(
     *timeout_s* (:data:`TIMEOUT_S` for the ``decide`` tool), or when the
     reply is not the fixed shape. Nothing falls back to a direct vendor call
     (D57.7).
+
+    🔴 **Every failure logs ``system_one.failed`` with its reason code**, for
+    example ``reason=http_400``. Before 2026-10-09 the turn-kind caller
+    swallowed the reason, and every System-1 request failed for days with no
+    line that said why. The line holds the code and the item count only.
     """
+    try:
+        return await _ask(context, items, timeout_s)
+    except SystemOneUnavailable as exc:
+        _log.warning("system_one.failed", reason=exc.reason, items=len(items or []))
+        raise
+
+
+async def _ask(context: str, items: list[Item], timeout_s: float) -> list[Answer]:
     if not items or len(items) > MAX_ITEMS:
         raise SystemOneUnavailable("bad_items")
     try:
@@ -324,7 +355,6 @@ async def ask(
     try:
         agent, async_client = _build_agent(timeout_s)
     except Exception as exc:
-        _log.warning("system_one.build_failed", error_type=type(exc).__name__)
         raise SystemOneUnavailable("build_failed") from exc
     try:
         response = await agent.run(
@@ -333,7 +363,7 @@ async def ask(
             client_kwargs={"extra_headers": headers},
         )
     except Exception as exc:  # a Router refusal, a timeout, a MAF fault
-        raise SystemOneUnavailable(type(exc).__name__) from exc
+        raise SystemOneUnavailable(failure_reason(exc)) from exc
     finally:
         with contextlib.suppress(Exception):  # a close fault is not the call's
             await async_client.close()

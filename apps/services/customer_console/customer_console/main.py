@@ -7119,6 +7119,25 @@ def _record_completion(
         _log.exception("router.metering_failed")
 
 
+def _log_refusal(event: str, failed: router_mod.UpstreamFailed) -> None:
+    """ONE refusal log line: the status, the vendor, the error class and hints.
+
+    🔴 **The fields go IN the message text, and in ``extra`` too.** This
+    logger has a plain formatter, so ``extra`` alone never reached the journal.
+    On 2026-10-08 the journal showed a bare ``router.provider_error`` 18 times,
+    and nobody could read why. ``router_mod.describe_failure`` builds the
+    fields from a status, a type name and a closed word list, so the line
+    holds no text of the vendor's message.
+    """
+    fields = router_mod.describe_failure(failed)
+    _log.warning(
+        "%s upstream_status=%s vendor=%s error_class=%s hints=%s",
+        event, fields["upstream_status"], fields["vendor"],
+        fields["error_class"], fields["hints"],
+        extra=fields,
+    )
+
+
 def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     """Map an upstream failure onto something a caller can branch on.
 
@@ -7141,7 +7160,7 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
-    _log.warning("router.provider_error", extra={"upstream_status": status})
+    _log_refusal("router.provider_error", failed)
     if isinstance(status, int) and 400 <= status < 600:
         return HTTPException(
             status_code=(502 if status >= 500 or status in (401, 402, 403) else status),
@@ -7456,7 +7475,7 @@ def _open_stream_or_release(
     try:
         return _open_stream_chain(attempts, kwargs_for, on_failover, *watch)
     except router_mod.UpstreamFailed as failed:
-        _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
+        _log_refusal("router.stream_open_failed", failed)
         _release_call_hold(org_id, request_id)
         return None
     except BaseException:
