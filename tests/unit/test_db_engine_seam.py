@@ -703,6 +703,20 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "entries above it does NOT go blind under FORCE RLS: it reads only "
         "through the SECURITY DEFINER `wa_account_for_phone_number_id`, "
         "granted to `acb_app` alone, and the route binds the org it returns",
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py",
+     "_active_links_for_phone"):
+        "WS-47 WAC-2: is the sender of a bot-number message linked, and in "
+        "which orgs. A message carries no org, so the read cannot run bound. "
+        "It reads only through the SECURITY DEFINER "
+        "`whatsapp_member_links_for_phone`, granted to `acb_app` alone, and "
+        "it writes nothing",
+    ("apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py",
+     "_code_rows"):
+        "WS-47 WAC-2: which org issued the link code that a phone sent. The "
+        "org is the answer, so the read cannot run bound. It reads only "
+        "through the SECURITY DEFINER `whatsapp_member_link_for_code`, "
+        "granted to `acb_app` alone, and the redemption then writes inside "
+        "`tenant_session` with the org it returns",
 }
 
 

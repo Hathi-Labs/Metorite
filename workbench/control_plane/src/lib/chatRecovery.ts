@@ -30,6 +30,7 @@
  */
 import { getSessionState, setSessionState } from "@/lib/chatStore";
 import type { ChatMessage, SessionStreamState } from "@/lib/chatStore";
+import type { EditOutcome } from "@/lib/chatEdit";
 
 /** The marker a run a restart ended carries, on the stream and on the row. */
 export const RUN_INTERRUPTED_EVENT = "run_interrupted";
@@ -209,6 +210,29 @@ export interface SendOptions {
   resume?: boolean;
   /** Send the held bubble with this id, in place, rather than a new one. */
   heldId?: string;
+  /** An EDIT of the last user message, with this id (`lib/chatEdit.ts`). It
+   *  replaces that turn only once the server accepts it. */
+  supersedes?: string;
+  /** Hears the server's answer to an edit, once, also after a hold. */
+  onEditOutcome?: (o: EditOutcome) => void;
+  /** Set by `flushHeld`: a held send that meets a running turn waits again. */
+  fromHold?: boolean;
+}
+
+/** What a held edit keeps: its target and its answer. It keeps no bubble,
+ *  because the old turn stays visible until the server accepts the edit. */
+export interface HeldEdit {
+  supersedes: string;
+  onEditOutcome?: (o: EditOutcome) => void;
+}
+
+/** The held edits, by thread and by text. Module-level, like the senders,
+ *  because a callback cannot live in the session state. */
+const heldEdits = new Map<string, Map<string, HeldEdit>>();
+
+/** Tests only: the held edit for this text, if any. */
+export function heldEditFor(threadId: string, text: string): HeldEdit | undefined {
+  return heldEdits.get(threadId)?.get(text.trim());
 }
 
 export type Sender = (text: string, opts?: SendOptions) => Promise<void>;
@@ -241,9 +265,14 @@ export function registerSender(threadId: string, send: Sender): void {
 export function holdForUpdate(
   threadId: string,
   text: string,
-  opts: { userMsgId?: string | null; front?: boolean; resume?: boolean } = {},
+  opts: { userMsgId?: string | null; front?: boolean; resume?: boolean; edit?: HeldEdit } = {},
 ): void {
   const t = text.trim();
+  if (opts.edit) {
+    const byText = heldEdits.get(threadId) ?? new Map<string, HeldEdit>();
+    byText.set(t, opts.edit);
+    heldEdits.set(threadId, byText);
+  }
   setSessionState(threadId, (prev) => {
     const pending = prev.pendingSends.includes(t)
       ? prev.pendingSends
@@ -288,6 +317,9 @@ export async function flushHeld(threadId: string): Promise<void> {
     }
     const heldId = heldBubbleId(st.messages, next);
     const resume = st.pendingResume.includes(next);
+    // A held edit goes out as an edit: same target, same answer.
+    const edit = heldEdits.get(threadId)?.get(next);
+    heldEdits.get(threadId)?.delete(next);
     setSessionState(threadId, (prev) => ({
       ...prev, outage: false, pendingSends: rest,
       pendingResume: prev.pendingResume.filter((x) => x !== next),
@@ -295,6 +327,7 @@ export async function flushHeld(threadId: string): Promise<void> {
     const opts: SendOptions = {
       ...(heldId ? { heldId } : {}),
       ...(resume ? { resume: true } : {}),
+      ...(edit ? { supersedes: edit.supersedes, onEditOutcome: edit.onEditOutcome, fromHold: true } : {}),
     };
     await send(next, Object.keys(opts).length ? opts : undefined);
     if (getSessionState(threadId).outage) return;
