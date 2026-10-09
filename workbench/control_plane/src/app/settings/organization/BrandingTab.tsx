@@ -13,8 +13,9 @@
  * company sees is exactly the kind of write that has an admin gate on it.
  *
  * The gateway is the authority on whether an upload is acceptable
- * (`gateway/routes/settings.py`); the pre-check here only spares an admin a
- * round-trip for a file that obviously will not do.
+ * (`gateway/routes/settings.py`). Since 2026-10-09 an admin rarely meets its
+ * rules: a picked file opens in the logo editor (`LogoEditor.tsx`), which
+ * crops it and draws the small PNG the shell needs, with a dark-mode version.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,8 +24,8 @@ import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
 import Button from "@/components/ui/Button";
 import { BrandMark, invalidateOrgBranding } from "@/components/OrgBrandLockup";
+import { LOGO_PICK_ACCEPT, type Source, decodeFile } from "@/lib/logoCanvas";
 import {
-  LOGO_ACCEPT,
   LOGO_RULES,
   POWERED_BY,
   type OrgBranding,
@@ -32,6 +33,7 @@ import {
   precheckLogoFile,
 } from "@/lib/orgBranding";
 import SettingsHeader from "@/components/SettingsHeader";
+import LogoEditor, { type LogoSave, modeVars } from "./LogoEditor";
 
 export default function BrandingTab() {
   const { access } = useAccess();
@@ -40,6 +42,12 @@ export default function BrandingTab() {
   const [busy, setBusy] = useState<"upload" | "remove" | null>(null);
   const [error, setError] = useState("");
   const [pickedName, setPickedName] = useState("");
+  const [editing, setEditing] = useState<Source | null>(null);
+  // A fresh editor for every picked file. Reused, it kept the previous
+  // image's crop box, which can lie outside the new image and draw nothing
+  // (measured 2026-10-09, a long wordmark after a square logo).
+  const [editKey, setEditKey] = useState(0);
+  const [editError, setEditError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -59,20 +67,7 @@ export default function BrandingTab() {
     void load();
   }, [load]);
 
-  /** Read the file as base64 without the `data:…;base64,` prefix. */
-  const encode = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error("That file could not be read."));
-      reader.onload = () => {
-        const result = String(reader.result ?? "");
-        // The server strips a prefix too, but sending only the payload keeps
-        // the caller-declared MIME type out of the request entirely.
-        resolve(result.slice(result.indexOf(",") + 1));
-      };
-      reader.readAsDataURL(file);
-    });
-
+  /** Open the picked file in the editor. Nothing is sent until it saves. */
   const onPick = async (file: File | undefined) => {
     // Always clear the input's value: picking the same file twice in a row
     // fires no change event otherwise, so a failed upload could not be retried.
@@ -85,14 +80,26 @@ export default function BrandingTab() {
       setError(complaint);
       return;
     }
-
-    setBusy("upload");
     setError("");
+    try {
+      setEditError("");
+      const source = await decodeFile(file);
+      setEditKey((k) => k + 1);
+      setEditing(source);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That file could not be opened.");
+    }
+  };
+
+  /** Send what the editor drew. The server still checks every bound. */
+  const onSave = async (save: LogoSave) => {
+    setBusy("upload");
+    setEditError("");
     try {
       const r = await fetch("/api/settings/branding", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ logoBase64: await encode(file) }),
+        body: JSON.stringify(save),
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.detail ?? `Upload failed (${r.status})`);
@@ -100,8 +107,10 @@ export default function BrandingTab() {
       // Push the new mark into the shell so it changes now, rather than at the
       // next full page load — the whole point of this page is seeing it work.
       invalidateOrgBranding(body as OrgBranding);
+      setEditing(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed.");
+      // Shown inside the editor, so the crop and the choices are not lost.
+      setEditError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setBusy(null);
     }
@@ -151,31 +160,28 @@ export default function BrandingTab() {
         <section className="max-w-2xl rounded-xl border border-border p-4 sm:p-5">
           <h2 className="text-sm font-semibold text-foreground">Logo</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Shown in the top-left corner of the app for every member of your
-            organization, above “{POWERED_BY}”.
+            Every member of your organization sees it, above “{POWERED_BY}”:
+            at the top of the sidebar on a computer, and at the top of the menu
+            on a phone.
           </p>
 
-          {/* The preview sits on the sidebar's own background, because that is
-              where it will actually live — a logo checked against the page
-              background is how a dark wordmark ships onto a dark rail. */}
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            {/* Width-matched to the sidebar's own lockup slot (w-64 rail, less
-                px-4 padding and the collapse control), so the preview clips
-                where the real thing clips. A preview in a roomier box is how a
-                wordmark that truncates in the rail looks fine here. */}
-            <div className="flex h-20 w-[184px] items-center rounded-lg border border-sidebar-border bg-sidebar px-4">
-              {loading ? (
-                <span className="text-xs text-muted-foreground">Loading…</span>
-              ) : (
-                // The shell's own component, not a copy of it. The copy that
-                // used to be here rendered the logo and the attribution side by
-                // side — which is not what the sidebar does.
-                <BrandMark
-                  branding={branding}
-                  fallbackCaption="No logo uploaded"
-                />
-              )}
-            </div>
+          {/* Both colour modes, side by side, each on the sidebar's own
+              background, because that is where the logo lives. Width-matched
+              to the sidebar's lockup slot, so the preview clips where the
+              real thing clips. The shell's own component draws both. */}
+          <div className="mt-4 flex flex-wrap items-start gap-4">
+            {(["light", "dark"] as const).map((mode) => (
+              <div key={mode} className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">{mode === "light" ? "Light mode" : "Dark mode"}</span>
+                <div className="flex h-20 w-[184px] items-center rounded-lg border px-4" style={modeVars(mode)}>
+                  {loading ? (
+                    <span className="text-xs text-muted-foreground">Loading…</span>
+                  ) : (
+                    <BrandMark branding={branding} fallbackCaption="No logo uploaded" mode={mode} />
+                  )}
+                </div>
+              </div>
+            ))}
 
             <div className="flex flex-col gap-2">
               {/* AGENTS.md rule 3: the native input is hidden and driven by a
@@ -185,7 +191,7 @@ export default function BrandingTab() {
               <input
                 ref={inputRef}
                 type="file"
-                accept={LOGO_ACCEPT}
+                accept={LOGO_PICK_ACCEPT}
                 className="hidden"
                 onChange={(e) => void onPick(e.target.files?.[0])}
               />
@@ -196,11 +202,7 @@ export default function BrandingTab() {
                 onClick={() => inputRef.current?.click()}
               >
                 <Icon name="Upload" size={14} />
-                {busy === "upload"
-                  ? "Uploading…"
-                  : logo
-                    ? "Replace logo"
-                    : "Upload logo"}
+                {logo ? "Replace logo" : "Upload logo"}
               </Button>
               {logo ? (
                 <Button
@@ -247,6 +249,17 @@ export default function BrandingTab() {
             </p>
           ) : null}
         </section>
+        {editing ? (
+          <LogoEditor
+            key={editKey}
+            source={editing}
+            fileName={pickedName}
+            saving={busy === "upload"}
+            error={editError}
+            onCancel={() => setEditing(null)}
+            onSave={(save) => void onSave(save)}
+          />
+        ) : null}
       </div>
     </div>
   );
