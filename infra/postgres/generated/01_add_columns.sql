@@ -6,7 +6,7 @@
 --
 -- Nullable ADD COLUMN. No table scan, no lock of consequence. Safe to apply on a live system.
 --
--- Tables in this phase: 139
+-- Tables in this phase: 140
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -556,6 +556,10 @@ ALTER TABLE wa_sync_log
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE wa_templates
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE whatsapp_member_links
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
