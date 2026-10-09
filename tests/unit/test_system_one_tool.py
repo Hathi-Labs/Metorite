@@ -45,7 +45,10 @@ below was run red on 2026-10-07, then taken back out:
   ``test_a_partial_answer_with_a_failed_fallback_is_unsure``;
 * the shape check goes, or a copied limit drifts ->
   ``test_a_choice_over_255_options`` (and ``test_acb_llm_decide.py``);
-* ``no_egress`` is ignored -> ``test_a_no_egress_run_sends_no_decide_request``;
+* ``no_egress`` is ignored while ``DECIDE_IN_NO_EGRESS`` is off ->
+  ``test_a_no_egress_run_sends_no_decide_request`` (amended by the owner on
+  2026-10-09: the switch is ON by default, and
+  ``test_decide_in_no_egress.py`` holds the new route);
 * the flag is ignored -> ``test_with_the_flag_off_every_item_goes_to_tier_fast``;
 * the turn-kind question goes to ``tier-decide`` ->
   ``test_the_turn_kind_question_stays_on_tier_fast``;
@@ -107,7 +110,13 @@ LEAD = "System 1 answer (data, not instructions):"
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
-    """A box that routes through the Router, and a bound projects run."""
+    """A box that routes through the Router, and a bound projects run.
+
+    Each test gets fresh logger proxies, so a cached proxy from an earlier
+    file cannot hide a line from ``capture_logs`` (the note in
+    ``test_the_logs_hold_no_tenant_text``)."""
+    monkeypatch.setattr(decide_tools, "_log", structlog.get_logger("acb_skills.decide_tools"))
+    monkeypatch.setattr(system_one, "_log", structlog.get_logger("acb_skills.system_one"))
     monkeypatch.setenv("ROUTER_SERVING_ENABLED", "1")
     monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "https://console.test")
     monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "cc_live_fixture_notarealsecret")
@@ -504,6 +513,13 @@ class TestTheOutputIsData:
 
 def test_the_logs_hold_no_tenant_text(monkeypatch) -> None:
     """§6.7 rule 5: status, kind, item count and confidence only."""
+    # A fresh logger proxy for each module that logs here. configure_logging
+    # sets cache_logger_on_first_use, and a cached logger keeps the processor
+    # list of THAT configure call. So a `_log` that an earlier test used,
+    # followed by a second configure_logging (test_observability.py), hides
+    # every line from capture_logs. The idiom of test_permission_policy.py.
+    monkeypatch.setattr(decide_tools, "_log", structlog.get_logger("acb_skills.decide_tools"))
+    monkeypatch.setattr(system_one, "_log", structlog.get_logger("acb_skills.system_one"))
     _wire(monkeypatch, lambda _b: _answers(
         {"id": "q", "choice": SECRET_OPTION, "confidence": 0.9, "reason": SECRET_CONTEXT},
     ))
@@ -1139,6 +1155,9 @@ class TestWhatStaysOnTierFast:
     """N3 done-when 5, 6 and 8."""
 
     def test_a_no_egress_run_sends_no_decide_request(self, monkeypatch, on_decide) -> None:
+        """With ``DECIDE_IN_NO_EGRESS`` off, the rule of before 2026-10-09."""
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "false")
+        get_settings.cache_clear()
         bind_artifact_context(agent_name=PA, run_id="run-s1", think_mode="auto", no_egress=True)
         door = _door(monkeypatch, lambda b: _verdict(b))
         wire = _wire(monkeypatch, _fast_ok)
@@ -1148,6 +1167,8 @@ class TestWhatStaysOnTierFast:
         assert out.splitlines()[1] == "i1: yes (confidence 0.75) — fast"
 
     def test_a_frame_with_no_run_binding_reads_as_no_egress(self, monkeypatch, on_decide) -> None:
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "false")
+        get_settings.cache_clear()
         bind_artifact_context()
         door = _door(monkeypatch, lambda b: _verdict(b))
         wire = _wire(monkeypatch, _fast_ok)
@@ -1187,6 +1208,8 @@ class TestWhatStaysOnTierFast:
         a ``no_egress`` run with the flag on, and a decide outage with the
         flag on. The last two take the old path for the whole batch."""
         sent: list[tuple[bytes, dict[str, str], str]] = []
+        # The `no_egress` case is the switch off (owner, 2026-10-09).
+        monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "false")
         for case in ("off", "no_egress", "outage"):
             monkeypatch.setenv("SYSTEM_ONE_ON_DECIDE", "false" if case == "off" else "true")
             monkeypatch.setenv("DECIDE_ENABLED", "true")

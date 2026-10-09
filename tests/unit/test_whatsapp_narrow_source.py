@@ -871,7 +871,13 @@ def test_the_scope_names_the_tool() -> None:
 async def test_a_no_egress_run_sends_no_decide_request(
     monkeypatch: pytest.MonkeyPatch, door: Door,
 ) -> None:
-    """Q4: a covered run asks System 1 only, never the decide door."""
+    """Q4: a covered run asks System 1 only, never the decide door.
+
+    Amended by the owner on 2026-10-09: this is the rule with
+    ``DECIDE_IN_NO_EGRESS`` off. The switch ships ON, and
+    ``test_narrowing_pick.py`` ``TestNoEgress`` holds both sides."""
+    monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "false")
+    get_settings.cache_clear()
     _force_pick(monkeypatch)
     asked: list[int] = []
 

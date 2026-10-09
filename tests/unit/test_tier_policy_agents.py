@@ -148,9 +148,11 @@ class TestEveryNativeAgent:
         # The System-1 `decide` the agent holds stays on tier-fast.
         assert [b["model"] for b in wire.bodies] == ["tier-fast", "tier-fast"]
 
-    def test_4_a_hinted_tool_raises_the_next_request_only(self, name, monkeypatch) -> None:
+    def test_4_a_hinted_tool_keeps_the_turn_tier(self, name, monkeypatch) -> None:
         """The hint middleware is on this agent's run. ``decide`` is the one
-        tool every covered agent holds, so the test names it as a hint."""
+        tool every covered agent holds, so the test names it as a hint.
+        Amended by the owner on 2026-10-09 (one model per turn): the hint is
+        logged as ``ai_route.hint_ignored``, and no request moves."""
         _flags(monkeypatch, name)
         _wire(monkeypatch, _turn_reply("chat"))
         monkeypatch.setattr(tier_policy, "TOOL_HINTS", {"decide": "analysis"})
@@ -158,10 +160,19 @@ class TestEveryNativeAgent:
             tool_turn("decide", _DECIDE_ARGS, call_id="call_a"),
             text_turn("done"),
         ])
+        logs: list[dict[str, Any]] = []
+
+        class _Tap:
+            def __getattr__(self, _level: str) -> Callable[..., None]:
+                return lambda event, **kw: logs.append({"event": event, **kw})
+
+        monkeypatch.setattr(tier_policy, "_log", _Tap())
         events, _ = drive_native(name, NATIVE[name], monkeypatch, model, message="hi")
         _ok(events)
-        assert [b["model"] for b in model.bodies] == ["tier-balanced", "tier-powerful"]
-        assert [r["reason"] for r in _routes(events)] == ["default", "tool_hint"]
+        assert [b["model"] for b in model.bodies] == ["tier-balanced", "tier-balanced"]
+        assert [r["reason"] for r in _routes(events)] == ["default", "default"]
+        ignored = [r for r in logs if r["event"] == "ai_route.hint_ignored"]
+        assert [(r["tool"], r["agent"]) for r in ignored] == [("decide", name)]
 
     def test_5_max_sends_every_main_request_to_powerful_and_decide_stays_fast(
         self, name, monkeypatch,

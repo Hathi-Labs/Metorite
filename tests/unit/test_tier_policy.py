@@ -28,8 +28,14 @@ Mutations this file catches (R7), each run red before the change:
 * a hint names no real tool -> ``test_every_hint_names_a_real_tool``;
 * a ``chat`` turn moves off the default, or a turn moves below it ->
   ``TestChoose``;
-* a hint raises more than the NEXT request -> ``TestChoose`` and
-  ``test_a_hinted_tool_raises_the_next_request_only``;
+* a hint moves a request mid-turn again (owner, 2026-10-09: one model per
+  turn) -> ``TestChoose::test_no_hint_moves_the_turn``,
+  ``test_the_run_policy_keeps_one_tier_for_the_turn`` and
+  ``test_a_hinted_tool_keeps_the_turn_tier_and_is_logged``;
+* the hint stops being logged -> ``test_a_hint_is_logged_as_ignored`` and
+  ``test_a_hinted_tool_keeps_the_turn_tier_and_is_logged``;
+* Thinking moves the tier of a ``chat`` turn ->
+  ``test_thinking_moves_no_tier``;
 * Max stops sending every main request to ``tier-powerful``, or moves a
   System-1 call -> ``test_max_sends_every_main_request_to_powerful_and_decide_stays_fast``;
 * the turn-kind question goes out for a short message, waits past 1.5 s, or
@@ -221,53 +227,66 @@ class TestChoose:
     def test_the_policy_never_moves_below_the_default(self) -> None:
         c = tier_policy.choose(default="tier-powerful", kind="code", effort="auto")
         assert (c.tier, c.reason) == ("tier-powerful", "default")
-        c = tier_policy.choose(default="tier-powerful", kind="chat", effort="thinking",
-                               hint="code")
+        c = tier_policy.choose(default="tier-powerful", kind="chat", effort="thinking")
         assert c.tier == "tier-powerful"
 
     def test_an_unknown_kind_reads_as_chat(self) -> None:
         c = tier_policy.choose(default="tier-balanced", kind="poetry", effort="auto")
         assert (c.tier, c.kind) == ("tier-balanced", "chat")
 
-    def test_a_hint_raises_this_request(self) -> None:
-        c = tier_policy.choose(default="tier-balanced", kind="chat", effort="auto",
-                               hint="analysis")
-        assert (c.tier, c.reason) == ("tier-powerful", "tool_hint")
+    def test_no_hint_moves_the_turn(self) -> None:
+        """Owner, 2026-10-09: ``choose`` takes no hint. The turn's tier is
+        the kind's tier, and ``tool_hint`` is no longer a reason."""
+        import inspect
+
+        assert "hint" not in inspect.signature(tier_policy.choose).parameters
+        assert "tool_hint" not in tier_policy.REASONS
 
     def test_max_sends_every_main_request_to_powerful(self) -> None:
         for kind in tier_policy.TURN_KINDS:
             c = tier_policy.choose(default="tier-fast", kind=kind, effort="max")
             assert (c.tier, c.reason) == ("tier-powerful", "effort")
 
-    def test_thinking_goes_one_rung_up_after_a_hint_in_a_chat_turn(self, monkeypatch) -> None:
-        """§5: under Thinking, a ``chat`` turn with a tool hint of any kind
-        goes one rung up. Every hint kind maps to the top rung today, so a
-        lower rung for ``plan`` is set here to make the rule visible."""
-        monkeypatch.setitem(tier_policy.KIND_TIERS, "plan", "tier-balanced")
-        auto = tier_policy.choose(default="tier-balanced", kind="chat", effort="auto",
-                                  hint="plan")
-        assert (auto.tier, auto.reason) == ("tier-balanced", "default")
-        think = tier_policy.choose(default="tier-balanced", kind="chat",
-                                   effort="thinking", hint="plan")
-        assert (think.tier, think.reason) == ("tier-powerful", "effort")
-        # No hint: Thinking keeps the policy.
-        plain = tier_policy.choose(default="tier-balanced", kind="chat", effort="thinking")
-        assert plain.tier == "tier-balanced"
+    def test_thinking_moves_no_tier(self) -> None:
+        """Owner, 2026-10-09. D90 gave Thinking one rung up after a hinted
+        tool. Hints no longer move a request, so Thinking keeps the kind's
+        tier for the whole turn. It still sets the reasoning effort."""
+        for kind in tier_policy.TURN_KINDS:
+            auto = tier_policy.choose(default="tier-balanced", kind=kind, effort="auto")
+            think = tier_policy.choose(default="tier-balanced", kind=kind, effort="thinking")
+            assert (think.tier, think.reason) == (auto.tier, auto.reason), kind
 
-    def test_the_run_policy_reads_a_hint_once(self) -> None:
+    def test_the_run_policy_keeps_one_tier_for_the_turn(self) -> None:
+        """Owner, 2026-10-09: one model per turn. A hinted tool does not
+        raise the next request."""
         policy = tier_policy.RunTierPolicy(
             agent=PA, run_id="r", default="tier-balanced", kind="chat", effort="auto",
         )
         assert policy.next_choice().tier == "tier-balanced"
         policy.note_tool("find_conflicts")
-        assert policy.next_choice().tier == "tier-powerful"
         assert policy.next_choice().tier == "tier-balanced"
-        policy.note_tool("vocabulary")
+        policy.note_tool("run_command")
         assert policy.next_choice().tier == "tier-balanced"
+        planned = tier_policy.RunTierPolicy(
+            agent=PA, run_id="r", default="tier-balanced", kind="plan", effort="auto",
+        )
+        assert [planned.next_choice().tier for _ in range(3)] == ["tier-powerful"] * 3
 
-    def test_the_strongest_hint_wins(self) -> None:
-        assert tier_policy.hint_kind(["vocabulary", "run_command"]) == "code"
-        assert tier_policy.hint_kind(["vocabulary"]) is None
+    def test_a_hint_is_logged_as_ignored(self, monkeypatch) -> None:
+        """``ai_route.hint_ignored`` names the tool, the hint's kind, the
+        turn's tier and the tier D90 would have chosen. No other tool logs."""
+        logs = _tap(monkeypatch)
+        policy = tier_policy.RunTierPolicy(
+            agent=PA, run_id="r-hint", default="tier-balanced", kind="chat", effort="auto",
+        )
+        policy.note_tool("vocabulary")
+        policy.note_tool("find_conflicts")
+        lines = [r for r in logs if r.get("event") == "ai_route.hint_ignored"]
+        assert len(lines) == 1
+        line = lines[0]
+        assert (line["tool"], line["hint"], line["tier"], line["would_tier"]) == (
+            "find_conflicts", "analysis", "tier-balanced", "tier-powerful")
+        assert (line["agent"], line["run_id"], line["kind"]) == (PA, "r-hint", "chat")
 
 
 # ── 2. The System-1 wire ─────────────────────────────────────────────────────
@@ -528,8 +547,10 @@ class TestARealProjectsRun:
         chosen = [r for r in logs if r.get("event") == "ai_route.chosen"]
         assert len(chosen) == len(model.bodies)
 
-    def test_a_hinted_tool_raises_the_next_request_only(self, monkeypatch) -> None:
-        """Done-when 4. ``find_conflicts`` is hinted, ``vocabulary`` is not."""
+    def test_a_hinted_tool_keeps_the_turn_tier_and_is_logged(self, monkeypatch) -> None:
+        """Done-when 4, amended by the owner on 2026-10-09 (one model per
+        turn). ``find_conflicts`` is hinted, ``vocabulary`` is not. Every
+        main request keeps the turn's tier, and the hint is logged once."""
         _flags(monkeypatch, PA)
         _wire(monkeypatch, _turn_reply("chat"))
         model = ScriptedModel([
@@ -537,12 +558,14 @@ class TestARealProjectsRun:
             tool_turn("vocabulary", "{}", call_id="call_b"),
             text_turn("done"),
         ])
+        logs = _tap(monkeypatch)
         events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message="hi")
         _ok(events)
-        assert [b["model"] for b in model.bodies] == [
-            "tier-balanced", "tier-powerful", "tier-balanced"]
-        assert [r["reason"] for r in _routes(events)] == [
-            "default", "tool_hint", "default"]
+        assert [b["model"] for b in model.bodies] == ["tier-balanced"] * 3
+        assert [r["reason"] for r in _routes(events)] == ["default"] * 3
+        ignored = [r for r in logs if r.get("event") == "ai_route.hint_ignored"]
+        assert [(r["tool"], r["would_tier"]) for r in ignored] == [
+            ("find_conflicts", "tier-powerful")]
 
     def test_max_sends_every_main_request_to_powerful_and_decide_stays_fast(
         self, monkeypatch,
@@ -718,13 +741,18 @@ def test_a_copilot_agent_gets_the_turn_tier_for_the_whole_run(monkeypatch, tmp_p
 
 def test_an_off_ladder_default_is_never_left() -> None:
     """§4.2 rule 2. An admin's ``tier-code`` (or a ``provider/model``) default
-    cannot be compared with a rung, so no kind, hint or effort moves it."""
+    cannot be compared with a rung, so no kind, hint or effort moves it. A
+    hinted tool logs and moves nothing (owner, 2026-10-09)."""
     for default in ("tier-code", "deepseek/deepseek-v4-pro"):
         for kind in tier_policy.TURN_KINDS:
             for effort in tier_policy.EFFORTS:
-                c = tier_policy.choose(default=default, kind=kind, effort=effort,
-                                       hint="code")
+                c = tier_policy.choose(default=default, kind=kind, effort=effort)
                 assert c.tier == default, (default, kind, effort, c)
+                policy = tier_policy.RunTierPolicy(
+                    agent=PA, run_id="r", default=default, kind=kind, effort=effort,
+                )
+                policy.note_tool("run_command")
+                assert policy.next_choice().tier == default, (default, kind, effort)
 
 
 @pytest.mark.usefixtures("_routed", "_a_tenant")
