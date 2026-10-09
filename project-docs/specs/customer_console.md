@@ -1015,13 +1015,23 @@ and an app, and it bound no agent.
    never invents an app.
 
 **A chat agent cannot claim an automation name.** An agent name may hold a dot
-(`agent_paths.AGENT_NAME_RE`). So the readers report a bound name of the shape
-`<app>.<feature>` as `agent:<name>`, unless the automation seam bound it.
+(`agent_paths.AGENT_NAME_RE`), and so may a MAF manifest slug. So a chat agent
+name of the shape `<app>.<feature>` reports as `agent:<name>`, unless the
+automation seam bound it. `acb_common.chat_agent_label` is the one rule.
 
-**The seams.** One rule serves both readers, `acb_common.attributed_agent`.
+**The seams.** `chat_agent_label` serves every place that names a chat agent.
 
-- `acb_llm.routed.run_attribution` feeds the in-process Router and `decide`.
-- `acb_llm.attribution.attribution_headers` feeds the HTTP agents.
+- `acb_common.attributed_agent` uses it, and both readers use
+  `attributed_agent`. `acb_llm.routed.run_attribution` feeds the in-process
+  Router and `decide`. `acb_llm.attribution.attribution_headers` feeds the
+  HTTP agents.
+- `acb_llm.attribution.attributed_openai` applies it to the FIXED
+  `X-CC-Agent` header of each MAF client, because `_stamp` never overwrites
+  that header. `orchestrator/agents.py::_make_openai_client`, the four app
+  agents, `apis-config` and `code_session` all build their client there.
+  The Copilot session takes its headers from `attribution_headers`.
+- `acb_skills.system_one` and `acb_skills.decide_tools` apply it to the
+  calling agent of the run binding.
 - `acb_common.automation_agent_scope` binds a name for one block and restores
   the earlier name on exit. `job_member_scope(agent=)`,
   `llm_cap.automation_scope`, `acompletion_with_fallback(feature=)`,
@@ -1040,8 +1050,22 @@ keep their names. The background jobs bind `email.automation`,
 **What it does not fix.** Three paths write no usage row at all, so no name
 can reach the dashboard. `HANDOFF.md` H-287 holds them.
 
+**Known limits (review P3, 2026-10-10). Not built.**
+
+1. **The vouch is an exact string match.** A member agent named
+   `workflows.automation` that runs inside a workflow job matches the name
+   that the job bound. So the readers do not prefix it. `attributed_openai`
+   prefixes a fixed MAF header in every case.
+2. **The scan matches a callee by its bare name.** An aliased import, or a
+   `functools.partial`, of `_llm_json` or `acompletion_with_fallback` escapes
+   it.
+3. **"automation" is approximate for an interactive call.** The backstop
+   names an interactive call in Notes, Tasks, Shell or a custom app
+   `<app>.automation`, although a member started it. The name says which app
+   spent the credits. It does not say that no person was present.
+
 **Fences.** `tests/unit/test_usage_attribution.py` holds the backstop, the
-scope, the chat-agent rules and the scan. The scan fails when an email model
+scope, the chat-agent rules, the fixed MAF header and the scan. The scan fails when an email model
 call names no known feature and has no allowlist reason.
 `tests/unit/test_background_ai_member.py` holds the real seam, through
 `as_mailbox_owner` and `automation_scope` to the Router and `decide`.
