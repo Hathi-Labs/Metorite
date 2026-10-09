@@ -52,6 +52,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     insert_assignees,
     insert_row,
+    load_default_status,
     record_activity,
     reserve_task_numbers,
     resolve_visibility_for,
@@ -223,13 +224,11 @@ LIVE_NODES_SQL = (
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:ids AS uuid[])) "
     "   AND archived_at IS NULL"
 )
-#: The default status first (I-10, §6.3): a task with no status lands in the
-#: first status of the set, and that must be the set's default, Backlog in
-#: the seed.
+#: In position order, as ``core.load_default_status`` reads a set. That
+#: helper, never ``is_default``, decides where a task with no status lands.
 STATUSES_OF_SQL = (
     "SELECT id, name, category, position FROM pm_task_statuses "
-    " WHERE project_id = CAST(:project AS uuid) "
-    " ORDER BY coalesce(is_default, false) DESC, position"
+    " WHERE project_id = CAST(:project AS uuid) ORDER BY position, name"
 )
 TYPES_SQL = (
     "SELECT id, name, coalesce(is_epic, false) AS is_epic FROM pm_task_types "
@@ -758,6 +757,12 @@ async def _reuse_statuses(
         await add("Done" if "done" not in {n for n, _, _ in have} else "Done (imported)", "done")
         if done_sets is not None:
             done_sets.add(owner)
+    # A task with no status takes `have[0]` (`_status_for`). That is the lane
+    # `load_default_status` names, read AFTER the inserts, because a new lane
+    # can take the first position. The helper skips a triage lane, and it is
+    # the one rule: `is_default` is retired for statuses (2026-09-06).
+    first = str((await load_default_status(db, owner)).id)
+    have.sort(key=lambda entry: entry[1] != first)
     return have
 
 
