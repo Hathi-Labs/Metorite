@@ -173,9 +173,15 @@ export function ConversationView({
           );
         }
         const isOpen = expanded.has(m.id);
-        // The hydrated copy, with the last change of this pane on top, so a
-        // card's menu and its unread dot follow a change (fix round 1, P2-a).
-        const view = withPatch(hydrated[m.id] ?? m, messagePatches);
+        // The hydrated copy holds the body and the files. Its read, flag,
+        // star, folder and labels come from the thread row, which the pane
+        // keeps current, and a write in flight shows on top (fix rounds 1
+        // and 3).
+        const full = hydrated[m.id];
+        const base = full
+          ? { ...full, isRead: m.isRead, isStarred: m.isStarred, isFlagged: m.isFlagged, folder: m.folder, categories: m.categories }
+          : m;
+        const view = withPatch(base, messagePatches);
         return (
           <div
             key={m.id}

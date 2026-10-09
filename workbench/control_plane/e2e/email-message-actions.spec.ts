@@ -305,6 +305,10 @@ test.describe("Fix round 1", () => {
     expect(await pixelContrast(page, body.locator('[class="probe-photo-text"]'))).toBeGreaterThan(4.5);
     // The reverse case: the sender hid white text on white. It stays hidden.
     expect(await pixelContrast(page, body.locator('[class="probe-hidden"]'))).toBeLessThan(1.5);
+    // Fix round 3, P2-b: a td with its own dark bgcolor keeps it, so its white
+    // text reads while the picture is blocked, and black text on black hides.
+    expect(await pixelContrast(page, body.locator('[class="probe-bgcolor-text"]'))).toBeGreaterThan(4.5);
+    expect(await pixelContrast(page, body.locator('[class="probe-bgcolor-hidden"]'))).toBeLessThan(1.5);
 
     // The photo keeps its true colours: its mean colour is near the one that
     // light mode draws. An inverted photo is far from it.
@@ -317,6 +321,61 @@ test.describe("Fix round 1", () => {
     const lightBody = lightPage.frameLocator('iframe[title="Email content"]').first();
     const light = await meanColour(lightPage, lightBody.locator('[class="probe-photo-box"]'));
     for (let k = 0; k < 3; k++) expect(Math.abs(dark[k] - light[k]), `channel ${k}`).toBeLessThan(6);
+  });
+
+  // Fix round 3, P2-a. Mutation caught: the palette read the card from the
+  // live page. On a switch to dark the class of <html> was still `light`,
+  // the card read white, the base of white is black, and the mail drew as a
+  // blank white sheet.
+  test("a switch of the app to dark draws the mail dark, and again after more switches", async ({ page }) => {
+    await page.addInitScript(() => {
+      if (!sessionStorage.getItem("seeded")) {
+        localStorage.setItem("theme", "light");
+        sessionStorage.setItem("seeded", "1");
+      }
+    });
+    await installEmailMocks(page, [IDS.newsletter, IDS.plain]);
+    // A signed-in member: the sidebar foot then holds the in-app mode toggle.
+    await page.route("**/api/auth/session", (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ user: { email: "me@example.com", name: "Me" }, expires: "2099-01-01T00:00:00.000Z" }),
+      }),
+    );
+    await open(page, IDS.newsletter);
+    await expect(frame(page)).toHaveAttribute("data-body-look", "original");
+    const toggle = () => page.locator('button[aria-label^="Switch to"]:visible').first();
+    await expect(toggle()).toBeVisible({ timeout: 30_000 });
+    const body = page.frameLocator('iframe[title="Email content"]').first();
+
+    const checkInvert = async () => {
+      await expect(frame(page)).toHaveAttribute("data-body-look", "invert");
+      // The base of the layer is the light base of the dark card, never black.
+      const base = await frame(page).evaluate((f: HTMLIFrameElement) =>
+        getComputedStyle(f.contentDocument!.documentElement, "::after").backgroundColor);
+      const [r, g, b] = (base.match(/\d+/g) ?? []).map(Number);
+      expect(Math.min(r, g, b), base).toBeGreaterThan(200);
+      expect(await pixelContrast(page, body.locator('[class="probe-heading"]'))).toBeGreaterThan(4.5);
+      // Not a blank white sheet: the mean of the heading line is dark.
+      const mean = await meanColour(page, body.locator('[class="probe-heading"]'));
+      expect(Math.max(...mean)).toBeLessThan(120);
+    };
+
+    await toggle().click();
+    await checkInvert();
+    await toggle().click();
+    await expect(frame(page)).toHaveAttribute("data-body-look", "original");
+    await toggle().click();
+    await checkInvert();
+
+    // A second mail, opened in dark mode after the switches: simple HTML on the card.
+    await open(page, IDS.plain);
+    await expect(frame(page)).toHaveAttribute("data-body-look", "tokens");
+    const bg = await frame(page).evaluate((f: HTMLIFrameElement) =>
+      getComputedStyle(f.contentDocument!.body).backgroundColor);
+    const [r, g, b] = (bg.match(/\d+/g) ?? []).map(Number);
+    expect(Math.max(r, g, b), bg).toBeLessThan(60);
   });
 
   // Verifier F1. Mutation caught: with the handlers pointed at the open email
@@ -412,16 +471,20 @@ test.describe("Fix round 1", () => {
       c.height = img.height;
       const ctx = c.getContext("2d")!;
       ctx.drawImage(img, 0, 0);
-      // The column of pixels near the right edge, top to bottom.
-      const col = ctx.getImageData(img.width - 12, 0, 1, img.height).data;
-      let black = 0;
-      for (let i = 0; i < col.length; i += 4) {
-        if (Math.max(col[i], col[i + 1], col[i + 2]) <= 5) black += 1;
-      }
-      return black / img.height;
+      // The share of pure-black pixels in one column, top to bottom.
+      const blackShare = (x: number) => {
+        const col = ctx.getImageData(x, 0, 1, img.height).data;
+        let black = 0;
+        for (let i = 0; i < col.length; i += 4) {
+          if (Math.max(col[i], col[i + 1], col[i + 2]) <= 5) black += 1;
+        }
+        return black / img.height;
+      };
+      // The edge against the middle: a row that the sender made black is
+      // black across the frame, and a strip the layer missed is black at
+      // the edge only.
+      return blackShare(img.width - 12) - blackShare(Math.floor(img.width / 2));
     }, png);
-    // Nothing in the inverted page is pure black but a strip the layer
-    // missed. The card colour has a channel above 20.
     expect(edge).toBeLessThan(0.02);
   });
 

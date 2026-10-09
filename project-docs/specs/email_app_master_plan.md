@@ -28,7 +28,7 @@
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
-> 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 and 2 are in.
+> 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -15317,7 +15317,7 @@ migration, and no flag.
 ## 16. The reading pane: one action row, and the body in dark mode (2026-10-10)
 
 **Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
-fix rounds 1 and 2 are in.** UI only. No migration, no flag and no gateway change.
+fix rounds 1 to 3 are in.** UI only. No migration, no flag and no gateway change.
 
 The owner asked for two changes on 2026-10-10. This section records them, and a fix of
 "Loading message…".
@@ -15348,11 +15348,16 @@ are always visible. In a single email, those options are missing."
    - Print stays `window.print()`, so it prints the open conversation. The browser
      prints the page, and the gateway has no print of one message.
 4. **The state of each message.** `updateEmail` and `applyLabel` write `messagePatches` in
-   the store for every message. That includes a message that is not a row of the list.
-   Each card and each menu reads it through `withPatch`. After "Mark as unread", the menu
-   of an older, hydrated card shows "Mark as read". A label shows its check at once. A
-   failed write puts the patch back. A move of a thread message does not change the count of
-   the list.
+   the store while their write is in flight. Each card and each menu reads it through
+   `withPatch`, so the change shows at once.
+   - The patch is short-lived (round 3). A write that succeeds drops its patch, and a
+     write that fails restores the one before. A list that holds the row drops it too,
+     so a refetched state shows through. `clearCategories` drops the patch of each
+     message that it clears.
+   - After the write, the list row holds the state. For a message that is not a row,
+     the pane's thread copy holds it: `actOn` and `labelOn` change it, and a card takes
+     its read, flag, star, folder and labels from that copy.
+   - A move of a thread message does not change the count of the list.
 5. **Add to My Tasks moved into the menu.** The owner named it as a menu item, and the
    header keeps four controls. The top toolbar still has the one-click capture for the
    open mail.
@@ -15360,8 +15365,10 @@ are always visible. In a single email, those options are missing."
    Escape closes it and gives focus back to the button. Tab closes it, except in the
    Label view.
    - In the Label view each label is a `menuitemcheckbox` with `aria-checked`. Space or
-     Enter toggles it. The "Create label" box is a stop of the same keys. Tab and
-     Shift+Tab move between the stops, and Up and Down leave the box.
+     Enter toggles it. Each colour swatch, the "Create label" box and its "+" are stops of
+     the same keys. A disabled "+" is skipped. Tab and Shift+Tab move between the stops,
+     and Up and Down leave the box.
+   - The menu ignores a key while an input method composes a word (`isComposing`).
 7. **Narrow cards.** The row measures its card. Under 600 px the labels go. Under 360 px
    Reply all, Forward and the sun move into the menu (`actionRowTier`).
 8. **The top toolbar is as it was.**
@@ -15393,7 +15400,9 @@ sanitized markup, which is what the frame draws.
      text over it stays white. Dark text in a box whose picture did not load sits on
      white. Hidden white text on white stays hidden.
    - The backing has no `!important`, so an inline `background-color` of the sender
-     wins. A box with a `bgcolor` attribute gets no backing.
+     wins. Each of the three rules skips a box with its own `bgcolor` (round 3). So a
+     `<td bgcolor="#1a1a1a">` with a blocked picture keeps its dark colour, and its white
+     text stays readable.
    - Such a box looks light in dark mode, as an image block does in Gmail.
    - A picture or a box inside an island gets no second filter.
    - A layer multiplies the page by a base colour before the filter. The base comes from
@@ -15402,6 +15411,16 @@ sanitized markup, which is what the frame draws.
    - Each picture and each island paints above the layer (`position: relative` and a
      higher `z-index`). So the layer tints only the inverted page, and a photo keeps the
      mean colour of light mode.
+   - **The colours come from THEME, not from the live page** (round 3). The card, the
+     ink, the muted ink and the border are the dark values of `lib/theme/themes.ts`,
+     which `themes.test.ts` keeps in step with `globals.css`. Only the link reads the
+     live accent, `--primary`.
+   - On a switch to dark, next-themes sets its state first and swaps the class of
+     `<html>` later. A live read of the card then got the light white, the base of
+     white is black, and the mail drew as a blank white sheet.
+   - While `<html>` still has `.light`, the pane skips the live read. A
+     `MutationObserver` on the class and style of `<html>` reads the accent again
+     after the swap.
    - While the pane blocks the images, a remote picture gets no re-invert. Its alt text then
      stays light.
 4. **`original`.** Light mode, and the light version, draw the sheet exactly as before.
@@ -15441,12 +15460,16 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
   - `email-dark-linear`: 2 MB of `color-scheme: x ` and of `@media x ` each classify in
     under 100 ms. Each pattern just under the limit and each rewrite of 2 MB do too.
   - `email-dark-reinvert`: the light-island rules, the backing with no `!important`,
-    the `bgcolor` case, and the paint order above the layer.
+    the `bgcolor` case on each rule, and the paint order above the layer.
+  - `email-dark-base`: the palette never takes the card, the ink or the border from the
+    live page, and a white live card still gives a light base.
 - `src/app/email/lib/messageActions.test.ts`: the tiers, the menu groups and the keys.
   It also holds the wiring of each handler to its message, the capture of a thread
   message and the loading fix.
-  - `email-patch-per-message`: read toggles both ways, a label adds and removes, a failed
-    write puts the patch back, and a thread move keeps the count of the list.
+  - `email-patch-per-message`: a write shows while it runs and drops its patch when it
+    ends. A refetched row shows through a patch. A label adds while its write runs, a
+    failed write puts the patch back, `clearCategories` clears a patch, and a thread
+    move keeps the count of the list.
 - `e2e/email-message-actions.spec.ts`: the row on both views, the menu by keyboard, a
   thread item on its own message and the narrow row. It also holds each look in a real
   frame, the light version after a reload, light mode, Show images and the loading race.
@@ -15457,8 +15480,15 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
     Label view works with the keyboard only.
   - Every item of an older card's menu sends its request for that card. That covers
     Flag, Label, Move, Archive, Add to My Tasks and Delete.
+  - Round 3 adds a test that switches the app from light to dark with the in-app toggle.
+    The mail draws inverted on a light base, and its heading reads on the pixels. The
+    test switches twice more and opens a second mail. The light island test now also
+    holds a `td bgcolor` with a blocked picture: white text reads, and black text on
+    black stays hidden.
   - Mutations caught, each one red: a handler pointed at the open email (update, delete
-    and tasks), no backing, no re-invert of an island, and no island `z-index`.
+    and tasks), no backing, no re-invert of an island, no island `z-index`, a backing
+    over `bgcolor`, a live read of the card, a patch kept after its write, and no drop
+    of a patch on a refetch.
 - `emailsTotal` after a move of a thread message is a unit fence only
   (`email-patch-per-message`). The list loads more by itself while its count is short,
   so an e2e check of the count would not hold still.
@@ -15475,6 +15505,13 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 - **An island with a `background:` shorthand inline gets no backing.** The shorthand
   sets `background-color` inline, and an inline style beats the backing rule. If its
   picture does not load, dark text in it can draw on a dark box.
+- **A `bgcolor` on an ancestor table does not stop the backing.** CSS cannot test an
+  attribute of an ancestor of the box. So a box with a background picture inside a
+  dark `<table bgcolor>` gets the white backing. White text in it can then draw on white
+  while its picture is blocked.
+- **Text that the sender positions over a picture hides under it in dark mode.** Each
+  picture paints above the multiply layer, at a high `z-index`. Text placed over the
+  picture with `position` and no higher `z-index` then draws under the picture.
 - **A style block in the head never reaches the frame.** `sanitizeEmailHtml` drops the
   head, and DOMPurify drops a leading style block too. So a dark design that lives in the
   head is lost, and that mail gets `invert` or `tokens`. A fix needs a sanitizer change

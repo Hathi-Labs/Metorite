@@ -306,6 +306,19 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setThread((cur) => cur && cur.map((m) => (m.id === target.id ? { ...m, ...updates } : m)));
   };
 
+  /** A label change of one message, on the open thread too. The store keeps
+   *  a patch only while its write is in flight (fix round 3, P3). */
+  const labelOn = (target: Email, name: string, add: boolean) => {
+    setThread((cur) =>
+      cur &&
+      cur.map((m) => {
+        if (m.id !== target.id) return m;
+        const cats = m.categories ?? [];
+        return { ...m, categories: add ? (cats.includes(name) ? cats : [...cats, name]) : cats.filter((c) => c !== name) };
+      }),
+    );
+  };
+
   /** The store's `deleteEmail` for one message. A thread hides it at once. */
   const deleteOne = (target: Email) => {
     void deleteEmail(target.id);
@@ -1118,6 +1131,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       onBlock={() => void blockSender(m)}
       onDownload={() => downloadEml(m)}
       onActivity={() => setTimelineFor(m)}
+      onLabel={(name, add) => labelOn(m, name, add)}
       lightVersion={lightVersions.has(m.id)}
       onToggleLight={() => toggleLightVersion(m.id)}
     />

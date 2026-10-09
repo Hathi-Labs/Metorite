@@ -85,10 +85,16 @@ const NEWSLETTER_HTML =
   `<p class="probe-hidden" style="color:#ffffff;margin:6px 0 0;font-size:15px">Hidden white text</p></td></tr>` +
   `<tr><td><table class="probe-table-bg" background="https://cdn.example.test/tile.png" width="100%"><tr>` +
   `<td class="probe-table-text" style="padding:8px 20px;color:#1f2937;font-family:Arial">A table with a background picture</td></tr></table></td></tr>` +
+  // A dark bgcolor under a remote picture that stays blocked: the white
+  // backing must not cover it (fix round 3, P2-b). And the reverse case.
+  `<tr><td bgcolor="#1a1a1a" style="background-image:url(https://cdn.example.test/night.jpg);padding:14px 20px">` +
+  `<font class="probe-bgcolor-text" color="#ffffff" face="Arial">White text on a dark bgcolor</font></td></tr>` +
+  `<tr><td bgcolor="#000000" style="background-image:url(https://cdn.example.test/night2.jpg);padding:14px 20px">` +
+  `<font class="probe-bgcolor-hidden" color="#000000" face="Arial">Hidden black text</font></td></tr>` +
   `<tr><td class="probe-photo-box" style="background-image:url('${HERO}');background-size:cover;height:110px;padding:16px 20px">` +
   `<p class="probe-photo-text" style="color:#ffffff;font:700 20px Arial;margin:0">Text on a background photo</p></td></tr>` +
   `<tr><td style="padding:20px;color:#333333;font-family:Arial;font-size:15px;line-height:1.5">` +
-  `<h2 style="color:#111111;margin:0 0 8px">This week in 3D printing</h2>` +
+  `<h2 class="probe-heading" style="color:#111111;margin:0 0 8px">This week in 3D printing</h2>` +
   `New filament profiles are live, and the Julia Pro has a firmware update. ` +
   `<a href="https://example.test/notes" style="color:#1a73e8">Read the release notes</a>.</td></tr>` +
   `<tr><td style="padding:0 20px 24px"><a href="https://example.test/shop" ` +

@@ -12,7 +12,8 @@
 //     thread that is not a row of the list, in that message's mailbox.
 //   * `email-loading-per-message`: "Loading message…" belongs to one fetch of
 //     one mail, and only while that mail has no body.
-//   * `email-patch-per-message`: a read, flag, star or label change of a
+//   * `email-patch-per-message`: a write in flight shows on its card, its patch
+//     drops when it ends or when the list refetches the row (round 3, P3), a
 //     message that is not a row of the list reaches its card, and a thread
 //     move does not change the count of the list (review fix round 1).
 import { readFileSync } from "node:fs";
@@ -203,12 +204,12 @@ describe("email-loading-per-message", () => {
     );
   });
 });
-
 describe("email-patch-per-message", () => {
   const older = {
     id: "older-1", accountId: "box-a", isRead: true, isFlagged: false, isStarred: false,
     folder: "inbox", categories: ["Clients"],
   } as unknown as Email;
+  const s = () => useEmailStore.getState();
 
   beforeEach(() => {
     api.updateEmail.mockReset().mockImplementation(async (id: string) => ({ id }));
@@ -216,39 +217,69 @@ describe("email-patch-per-message", () => {
     useEmailStore.setState({ emails: [], emailsTotal: 7, messagePatches: {}, selectedFolder: "inbox" });
   });
 
-  it("toggles read both ways on a message that is not a row of the list", async () => {
-    const s = () => useEmailStore.getState();
-    await s().updateEmail(older.id, { isRead: false });
+  it("shows a write while it is in flight, and drops the patch when it ends", async () => {
+    let finish: (v: unknown) => void = () => {};
+    api.updateEmail.mockImplementationOnce(() => new Promise((done) => (finish = done)));
+    const write = s().updateEmail(older.id, { isRead: false });
     expect(withPatch(older, s().messagePatches).isRead).toBe(false);
-    await s().updateEmail(older.id, { isRead: true });
-    expect(withPatch(older, s().messagePatches).isRead).toBe(true);
-    expect(api.updateEmail.mock.calls).toEqual([[older.id, { isRead: false }], [older.id, { isRead: true }]]);
+    finish({ id: older.id });
+    await write;
+    expect(s().messagePatches[older.id]).toBeUndefined();
+    expect(api.updateEmail.mock.calls).toEqual([[older.id, { isRead: false }]]);
+  });
+
+  // Fix round 3, P3. Mutation caught: a patch that lived for the page hid a
+  // newer state of the server.
+  it("lets a refetched row show through", async () => {
+    let finish: (v: unknown) => void = () => {};
+    api.updateEmail.mockImplementationOnce(() => new Promise((done) => (finish = done)));
+    const write = s().updateEmail(older.id, { isFlagged: true });
+    expect(s().messagePatches[older.id]).toEqual({ isFlagged: true });
+    // The list refetches and now holds the row, with another state.
+    const refetched = { ...older, isFlagged: false, isRead: false };
+    useEmailStore.setState({ emails: [refetched] });
+    expect(withPatch(refetched, s().messagePatches)).toEqual(refetched);
+    finish({ id: older.id });
+    await write;
+    expect(s().messagePatches).toEqual({});
   });
 
   it("does not change the count of the list for a move of a thread message", async () => {
-    await useEmailStore.getState().updateEmail(older.id, { folder: "archive" });
-    expect(useEmailStore.getState().emailsTotal).toBe(7);
+    await s().updateEmail(older.id, { folder: "archive" });
+    expect(s().emailsTotal).toBe(7);
   });
 
-  it("adds a label to the labels the caller holds, and shows it at once", async () => {
-    await useEmailStore.getState().applyLabel(older.id, "Urgent", true, older.categories);
-    expect(withPatch(older, useEmailStore.getState().messagePatches).categories).toEqual(["Clients", "Urgent"]);
-    await useEmailStore.getState().applyLabel(older.id, "Clients", false, older.categories);
-    expect(withPatch(older, useEmailStore.getState().messagePatches).categories).toEqual(["Urgent"]);
+  it("adds a label to the labels the caller holds, while the write runs", async () => {
+    let finish: (v: unknown) => void = () => {};
+    api.updateEmailLabels.mockImplementationOnce(() => new Promise((done) => (finish = done)));
+    const write = s().applyLabel(older.id, "Urgent", true, older.categories);
+    expect(withPatch(older, s().messagePatches).categories).toEqual(["Clients", "Urgent"]);
+    finish({ id: older.id });
+    await write;
+    expect(s().messagePatches[older.id]).toBeUndefined();
   });
 
   it("puts the patch back when the write fails", async () => {
     api.updateEmail.mockRejectedValueOnce(new Error("Gateway error 502"));
-    await useEmailStore.getState().updateEmail(older.id, { isFlagged: true });
-    expect(useEmailStore.getState().messagePatches[older.id]).toBeUndefined();
+    await s().updateEmail(older.id, { isFlagged: true });
+    expect(s().messagePatches[older.id]).toBeUndefined();
   });
 
-  it("each card and each menu reads the patch", () => {
-    expect(codeOnly(read("components/ConversationView.tsx"))).toContain(
-      "const view = withPatch(hydrated[m.id] ?? m, messagePatches);",
+  it("clears a patch of the labels when every label is cleared", async () => {
+    useEmailStore.setState({ emails: [older], messagePatches: { [older.id]: { categories: ["Clients", "X"] } } });
+    await s().clearCategories([older.id]);
+    expect(s().messagePatches[older.id]).toBeUndefined();
+  });
+
+  it("each card and each menu reads the patch, and a card reads its state from the thread row", () => {
+    const conversation = codeOnly(read("components/ConversationView.tsx"));
+    expect(conversation).toContain("const view = withPatch(base, messagePatches);");
+    expect(conversation).toContain(
+      "? { ...full, isRead: m.isRead, isStarred: m.isStarred, isFlagged: m.isFlagged, folder: m.folder, categories: m.categories }",
     );
     expect(codeOnly(read("components/MessageActions.tsx"))).toContain(
       "const live = withPatch(emails.find((e) => e.id === message.id) ?? message, messagePatches);",
     );
+    expect(codeOnly(read("components/EmailDetail.tsx"))).toContain("onLabel={(name, add) => labelOn(m, name, add)}");
   });
 });

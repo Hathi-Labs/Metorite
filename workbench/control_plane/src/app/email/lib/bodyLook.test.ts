@@ -151,8 +151,9 @@ describe("email-dark-reinvert", () => {
     }
     // The white backing, with no !important: an inline background-color of
     // the sender wins, and a bgcolor attribute is left alone.
+    // Each alternative skips a box with its own `bgcolor` (fix round 3, P2-b).
     expect(backing).toBe(
-      '[style*="background-image" i], [style*="background" i][style*="url(" i], ' +
+      '[style*="background-image" i]:not([bgcolor]), [style*="background" i][style*="url(" i]:not([bgcolor]), ' +
         `[background]:not([bgcolor]) { background-color: ${cssColour({ r: 1, g: 1, b: 1 })}; }`,
     );
     expect(REINVERT_CSS).not.toContain("!important");
@@ -213,10 +214,26 @@ describe("email-dark-base", () => {
     expect(near(invertColour({ r: 0, g: 0, b: 0 }), white)).toBeLessThan(1 / 255);
   });
 
-  it("reads the live tokens, and falls back to THEME on a value it cannot parse", () => {
+  it("reads only the live accent, and falls back to THEME on a value it cannot parse", () => {
     const live = bodyPalette((name) => (name === "--primary" ? "hsl(280 70% 55%)" : "garbage"));
     expect(live.link).toEqual(parseColor("hsl(280 70% 55%)"));
     expect(live.card).toEqual(card);
+    expect(bodyPalette(() => "garbage").link).toEqual(parseColor(THEME.colors.dark.primary));
+  });
+
+  // Fix round 3, P2-a. Mutation caught: a live read of the card got the LIGHT
+  // white during a switch to dark, the base of white is black, and the page
+  // drew as a blank white sheet.
+  it("never takes the card, the ink or the border from the live page", () => {
+    const white = "hsl(0 0% 100%)";
+    const p = bodyPalette(() => white);
+    expect(p.card).toEqual(card);
+    expect(p.ink).toEqual(parseColor(THEME.colors.dark.cardForeground));
+    expect(p.border).toEqual(parseColor(THEME.colors.dark.border));
+    expect(p.muted).toEqual(parseColor(THEME.colors.dark.mutedForeground));
+    // The base of the invert stays light, so the page lands on the card.
+    const base = invertBase(p.card);
+    expect(Math.min(base.r, base.g, base.b)).toBeGreaterThan(0.8);
   });
 
   it("gives simple HTML the card, the ink and the link tokens", () => {

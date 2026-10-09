@@ -230,29 +230,37 @@ export interface BodyPalette {
   border: Rgb;
 }
 
-/** Each palette slot: the CSS custom property, then the fallback in THEME. */
-const SLOTS: Record<keyof BodyPalette, [string, keyof typeof THEME.colors.dark]> = {
-  card: ["--card", "card"],
-  ink: ["--card-foreground", "cardForeground"],
-  link: ["--primary", "primary"],
-  muted: ["--muted-foreground", "mutedForeground"],
-  border: ["--border", "border"],
+/** Each palette slot: its colour in the dark mode of THEME. */
+const SLOTS: Record<keyof BodyPalette, keyof typeof THEME.colors.dark> = {
+  card: "card",
+  ink: "cardForeground",
+  link: "primary",
+  muted: "mutedForeground",
+  border: "border",
 };
 
+/** The one live token: the member may change the accent, and links follow it. */
+export const LIVE_ACCENT = "--primary";
+
 /**
- * The dark palette. `read` gives the live value of a custom property, so a
- * changed accent reaches the links. A value that does not parse falls back to
- * the dark mode of `THEME`, the mirror of `globals.css`.
+ * The dark palette. Every slot comes from the dark mode of `THEME`, the
+ * mirror of `globals.css` that `themes.test.ts` keeps in step. Only the link
+ * reads the live accent through `read`, and a value that does not parse
+ * falls back to THEME.
+ *
+ * ⚠️ Never read the card, the ink or the border live (fix round 3, P2-a).
+ * On a switch to dark, next-themes sets its state before it swaps the class
+ * of `<html>`. A live read then got the LIGHT card, white. The base of white
+ * is black, and the page drew as a blank white sheet.
  */
 export function bodyPalette(read: (name: string) => string | null = () => null): BodyPalette {
   const out = {} as BodyPalette;
   for (const key of Object.keys(SLOTS) as (keyof BodyPalette)[]) {
-    const [prop, fallback] = SLOTS[key];
-    const live = read(prop);
-    out[key] =
-      (live ? parseColor(live) : null) ??
-      (parseColor(String(THEME.colors.dark[fallback])) as Rgb);
+    out[key] = parseColor(String(THEME.colors.dark[SLOTS[key]])) as Rgb;
   }
+  const accent = read(LIVE_ACCENT);
+  const live = accent ? parseColor(accent) : null;
+  if (live) out.link = live;
   return out;
 }
 
@@ -271,9 +279,13 @@ const MEDIA = "img, picture, video, canvas, svg image";
 const PICTURE_BOX =
   '[style*="background-image" i], [style*="background" i][style*="url(" i], [background]';
 
-/** The same boxes, less one that sets its own `bgcolor`: the backing skips it. */
+/**
+ * The same boxes, less one that sets its own `bgcolor`: the backing skips it
+ * (fix round 3, P2-b). A `<td bgcolor="#1a1a1a" style="background-image:…">`
+ * with white text keeps its dark colour while the picture is blocked.
+ */
 const BACKED_BOX =
-  '[style*="background-image" i], [style*="background" i][style*="url(" i], [background]:not([bgcolor])';
+  '[style*="background-image" i]:not([bgcolor]), [style*="background" i][style*="url(" i]:not([bgcolor]), [background]:not([bgcolor])';
 
 /**
  * The re-invert rules of the invert look: a LIGHT ISLAND for each picture

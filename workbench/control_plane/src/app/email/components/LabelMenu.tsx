@@ -17,6 +17,7 @@ export function LabelMenu({
   email,
   embedded = false,
   menu = false,
+  onApplied,
 }: {
   email: Email;
   /** When rendered inside another popover/flyout (e.g. the right-click submenu),
@@ -26,6 +27,8 @@ export function LabelMenu({
   /** Inside a `role="menu"` panel (`MessageActions`): each label is a
    *  `menuitemcheckbox`, and the create box is a stop of the menu's keys. */
   menu?: boolean;
+  /** Called after each toggle, so a caller can show the change on its own copy. */
+  onApplied?: (name: string, add: boolean) => void;
 }) {
   const { availableLabels, labelColors, applyLabel, setLabelColor, viewAll, selectedAccountId } =
     useEmailStore();
@@ -43,6 +46,7 @@ export function LabelMenu({
     const name = newLabel.trim();
     if (!name) return;
     applyLabel(email.id, name, true, email.categories);
+    onApplied?.(name, true);
     if (newColor && canColor) setLabelColor(name, newColor, email.accountId);
     setNewLabel("");
     setNewColor(null);
@@ -82,7 +86,10 @@ export function LabelMenu({
                     type="button"
                     // The labels of the message go with the change: a message
                     // of a thread is often not a row of the list.
-                    onClick={() => applyLabel(email.id, name, !on, email.categories)}
+                    onClick={() => {
+                      applyLabel(email.id, name, !on, email.categories);
+                      onApplied?.(name, !on);
+                    }}
                     role={menu ? "menuitemcheckbox" : undefined}
                     aria-checked={menu ? on : undefined}
                     tabIndex={menu ? -1 : undefined}
@@ -104,6 +111,7 @@ export function LabelMenu({
                       name={name}
                       title={open ? "Close colours" : "Set colour"}
                       onClick={() => setOpenColorFor(open ? null : name)}
+                      menuStop={menu}
                     />
                   )}
                 </div>
@@ -128,7 +136,10 @@ export function LabelMenu({
           <button
             type="button"
             title="Pick a colour for the new label"
+            aria-label="Pick a colour for the new label"
             onClick={() => setPickNew((v) => !v)}
+            data-menu-stop={menu ? "" : undefined}
+            tabIndex={menu ? -1 : undefined}
             style={{ backgroundColor: newPreviewHex }}
             className="w-3.5 h-3.5 rounded-full border border-black/20 ring-1 ring-inset ring-white/20 flex-shrink-0 hover:scale-110 transition-transform"
           />
@@ -147,10 +158,14 @@ export function LabelMenu({
             className="flex-1 rounded bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none px-1 py-1 focus-visible:ring-1 focus-visible:ring-ring"
           />
           <button
+            type="button"
             onClick={create}
             disabled={!newLabel.trim()}
             title="Create label"
-            className="text-primary hover:opacity-80 disabled:opacity-40"
+            aria-label="Create the label"
+            data-menu-stop={menu ? "" : undefined}
+            tabIndex={menu ? -1 : undefined}
+            className="rounded text-primary outline-none hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
           >
             <Icon name="Plus" size={13} />
           </button>

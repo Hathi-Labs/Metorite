@@ -51,6 +51,8 @@ export interface MessageActionsProps {
   onActivity: () => void;
   lightVersion: boolean;
   onToggleLight: () => void;
+  /** A label of this message changed: the pane shows it on its thread copy. */
+  onLabel?: (name: string, add: boolean) => void;
 }
 
 /** Each stop of the menu's keyboard model: an item, a label toggle, the label box. */
@@ -63,7 +65,7 @@ const ITEM =
 
 export function MessageActions({
   message, onReply, onUpdate, onDelete, onTasks, onBlock, onDownload, onActivity,
-  lightVersion, onToggleLight,
+  lightVersion, onToggleLight, onLabel,
 }: MessageActionsProps) {
   const { folders, viewAll, emails, messagePatches } = useEmailStore();
   const dark = useMode() === "dark";
@@ -117,6 +119,8 @@ export function MessageActions({
   const showView = (next: "main" | "move" | "label") => setView(next);
 
   const onMenuKey = (event: React.KeyboardEvent) => {
+    // A key of an input method that composes a word belongs to that word.
+    if (event.nativeEvent.isComposing) return;
     const target = event.target as HTMLElement;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -124,9 +128,10 @@ export function MessageActions({
       close(true);
       return;
     }
+    // A disabled stop (the "+" with an empty box) cannot take focus.
     const list = Array.from(
       (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>(MENU_STOPS),
-    );
+    ).filter((el) => !(el as HTMLButtonElement).disabled);
     const from = list.indexOf(target);
     if (event.key === "Tab") {
       // The label view holds a text box, so Tab moves between its stops.
@@ -305,7 +310,7 @@ export function MessageActions({
                   <span className="min-w-0 flex-1 truncate pl-5">{f.label}</span>
                 </button>
               ))}
-          {view === "label" && <LabelMenu email={live} embedded menu />}
+          {view === "label" && <LabelMenu email={live} embedded menu onApplied={onLabel} />}
         </div>
       </AnchoredPanel>
     </div>

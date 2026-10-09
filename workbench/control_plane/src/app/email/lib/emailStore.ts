@@ -246,6 +246,35 @@ export function withPatch<T extends Email>(email: T, patches: Record<string, Mes
   return patch ? { ...email, ...patch } : email;
 }
 
+/** The patches less the entry of a write that ended, if a later write did not replace it. */
+function dropPatch(
+  patches: Record<string, MessagePatch>,
+  id: string,
+  mine: MessagePatch,
+): Record<string, MessagePatch> {
+  if (patches[id] !== mine) return patches;
+  const next = { ...patches };
+  delete next[id];
+  return next;
+}
+
+/**
+ * The patches less every entry whose message is a row of `emails`. The row is
+ * the server's state, so a refetch with a newer value shows through.
+ */
+export function prunePatches(
+  patches: Record<string, MessagePatch>,
+  emails: ReadonlyArray<{ id: string }>,
+): Record<string, MessagePatch> {
+  const ids = Object.keys(patches);
+  if (ids.length === 0) return patches;
+  const rows = new Set(emails.map((e) => e.id));
+  if (!ids.some((id) => rows.has(id))) return patches;
+  const next = { ...patches };
+  for (const id of ids) if (rows.has(id)) delete next[id];
+  return next;
+}
+
 /** The patches with one entry put back as it was before a failed write. */
 function restorePatch(
   patches: Record<string, MessagePatch>,
@@ -507,11 +536,15 @@ interface EmailState {
    *  such as an older card of a thread. The list cannot say. */
   applyLabel: (id: string, name: string, add: boolean, current?: string[]) => Promise<void>;
   /**
-   * The last read, flag, star, folder and label change of each message, by id
-   * (review fix round 1, P2-a). `updateEmail` and `applyLabel` write it for
-   * EVERY message, also one that is not a row of the list. A thread card
-   * reads it through `withPatch`, so its menu shows the change at once.
-   * Memory only, for this page.
+   * The read, flag, star, folder and label change of a write IN FLIGHT, by
+   * id (review fix round 1, P2-a, and round 3, P3). `updateEmail` and
+   * `applyLabel` write it for every message, also one that is not a row of
+   * the list, and a card reads it through `withPatch`.
+   *
+   * It is short-lived. A write that succeeds drops its patch, and a write
+   * that fails restores the one before. A list that holds the row drops the
+   * patch too, because the row is the server's state. After that the list
+   * row, or the thread copy of the reading pane, shows the change.
    */
   messagePatches: Record<string, MessagePatch>;
   /** Add/remove one category across many messages at once. */
@@ -1714,6 +1747,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       updates.folder !== get().selectedFolder &&
       get().selectedFolder !== "starred";
     const prevPatch = get().messagePatches[id];
+    const patch: MessagePatch = { ...prevPatch, ...updates };
     set({
       emails: movedAway
         ? prevEmails.filter((e) => e.id !== id)
@@ -1721,7 +1755,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       emailsTotal: movedAway && inList
         ? Math.max(0, get().emailsTotal - 1)
         : get().emailsTotal,
-      messagePatches: { ...get().messagePatches, [id]: { ...prevPatch, ...updates } },
+      messagePatches: { ...get().messagePatches, [id]: patch },
     });
     // Demo: keep the optimistic change; there's no backend to persist to.
     if (DEMO) return;
@@ -1734,6 +1768,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           ),
         });
       }
+      // The write is done: the list row or the pane's thread copy holds it.
+      set({ messagePatches: dropPatch(get().messagePatches, id, patch) });
     } catch (err: any) {
       // Revert on failure
       set({
@@ -1803,13 +1839,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     // The labels of now: the patch, the list row, or what the caller holds.
     const base =
       prevPatch?.categories ?? prevEmails.find((e) => e.id === id)?.categories ?? current ?? [];
+    const patch: MessagePatch = { ...prevPatch, categories: toggle(base) };
     // Optimistically update the message's category chips.
     set({
       emails: prevEmails.map((e) => {
         if (e.id !== id) return e;
         return { ...e, categories: toggle(e.categories || []) };
       }),
-      messagePatches: { ...get().messagePatches, [id]: { ...prevPatch, categories: toggle(base) } },
+      messagePatches: { ...get().messagePatches, [id]: patch },
     });
     // Track a brand-new label so it's offered for other messages immediately.
     if (add && !get().availableLabels.includes(name)) {
@@ -1826,6 +1863,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       set({
         emails: get().emails.map((e) => (e.id === id ? { ...e, ...updated } : e)),
       });
+      set({ messagePatches: dropPatch(get().messagePatches, id, patch) });
     } catch (err: any) {
       set({
         emails: prevEmails,
@@ -1849,9 +1887,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       const cats = email?.categories || [];
       if (cats.length === 0) continue;
       const prev = get().emails;
-      // Optimistically drop all category chips for this message.
+      // Optimistically drop all category chips for this message. A patch of
+      // its labels would hide the change, so it goes (fix round 3, P3).
       set({
         emails: prev.map((e) => (e.id === id ? { ...e, categories: [] } : e)),
+        messagePatches: restorePatch(get().messagePatches, id, undefined),
       });
       try {
         await api.updateEmailLabels(id, [], cats);
@@ -2273,3 +2313,12 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+// A list that holds a row drops that row's patch: the row is the server's
+// state, and it shows through (review fix round 3, P3). An optimistic write
+// sets the row to the patch's value, so the drop changes nothing on screen.
+useEmailStore.subscribe((state, prev) => {
+  if (state.emails === prev.emails) return;
+  const pruned = prunePatches(state.messagePatches, state.emails);
+  if (pruned !== state.messagePatches) useEmailStore.setState({ messagePatches: pruned });
+});

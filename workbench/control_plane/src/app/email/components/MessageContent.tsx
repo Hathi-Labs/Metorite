@@ -1,7 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import DOMPurify from "dompurify";
 import { splitQuotedHtml, splitQuotedText } from "../lib/quoting";
 import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtml";
@@ -37,10 +37,29 @@ interface MessageContentProps {
  */
 const LightVersionContext = createContext(false);
 
-/** The live value of an app token, for the colours of a dark look. */
+/**
+ * The live value of an app token: the accent of the links of a dark look.
+ * While `<html>` still carries `.light`, the page shows the light tokens, so
+ * the read gives nothing and THEME's dark value stands (fix round 3, P2-a).
+ */
 function readToken(name: string): string | null {
   if (typeof document === "undefined") return null;
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || null;
+  const root = document.documentElement;
+  if (root.classList.contains("light")) return null;
+  return getComputedStyle(root).getPropertyValue(name).trim() || null;
+}
+
+/** Each change of the class or the inline style of `<html>`: a mode or an accent. */
+function subscribeRoot(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
+  return () => observer.disconnect();
+}
+
+/** A key of the mode class and the accent of `<html>`, as the page shows them now. */
+function rootKey(): string {
+  const root = document.documentElement;
+  return `${root.className}|${root.style.getPropertyValue("--primary")}`;
 }
 
 /** Matches a remote (http/https) URL inside src/srcset/poster/background or CSS url(). */
@@ -183,10 +202,12 @@ function HtmlFrame({ html, quoted = false }: { html: string; quoted?: boolean })
     () => chooseBodyLook({ dark, lightVersion, html: purified?.clean ?? "" }),
     [dark, lightVersion, purified],
   );
-  // The token colours of a dark look, read once per mode from the live page.
-  // `dark` is a real input: a change of mode changes the live tokens.
+  // The colours of a dark look: THEME's dark values, and the live accent.
+  // The accent is read again after `<html>` changes its class or its style,
+  // because next-themes swaps the class only after its own state changed.
+  const root = useSyncExternalStore(subscribeRoot, rootKey, () => "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const palette =useMemo(() => (mounted ? bodyPalette(readToken) : bodyPalette()), [mounted, dark]);
+  const palette = useMemo(() => (mounted ? bodyPalette(readToken) : bodyPalette()), [mounted, root]);
   // The native look turns the sender's own dark media queries on. A child
   // frame reads its colour scheme from the OS, not from the app, so its
   // queries cannot see the app's dark mode. Fixed words replace the media
