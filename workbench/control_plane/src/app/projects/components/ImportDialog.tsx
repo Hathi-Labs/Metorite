@@ -696,7 +696,8 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                           value={targetValue(row.target)}
                           options={becomes}
                           onChange={(next) => chooseTarget(status, next)}
-                          widthClass="max-w-[13rem]"
+                          // Fixed widths, so the controls line up row by row.
+                          widthClass="w-[12rem]"
                           filterAbove={8}
                         />
                         {creating[status.name] && (
@@ -706,13 +707,15 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                             placeholder={newStatusName(status.name)}
                             value={statusNames[status.name] ?? ""}
                             maxLength={64}
-                            className="max-w-[10rem]"
+                            className="w-[10rem]"
                             onChange={(e) => setStatusNames((n) => ({ ...n, [status.name]: e.target.value }))}
                           />
                         )}
                         {row.existing ? (
                           // The status exists: its stage is fixed, and shown as text.
-                          <span className="w-[6rem] text-[11px] text-muted-foreground">{stageLabel(row.stage)}</span>
+                          <span className="w-[7rem] px-2 text-[11px] text-muted-foreground">
+                            {stageLabel(row.stage)}
+                          </span>
                         ) : (
                           // The stage never changes by itself: a name typed on
                           // the way to another could move closed tasks to open
@@ -722,7 +725,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                             value={row.stage}
                             options={STAGE_OPTIONS}
                             onChange={(next) => setStages((st) => ({ ...st, [status.name]: next as Stage }))}
-                            widthClass="max-w-[8rem]"
+                            widthClass="w-[7rem]"
                           />
                         )}
                       </li>
