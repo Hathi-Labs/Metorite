@@ -33,6 +33,8 @@ import {
   NEW_STATUS,
   newStatusName,
   orderedStatusRows,
+  targetChoice,
+  targetValue,
   type PlanStatus,
   resolveStatuses,
   stageClashes,
@@ -308,10 +310,30 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     expect(summary.check).toBe(
       "1 status needs a check: the stage is a guess. Open Review mapping to choose it.",
     );
-    const picked = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "in_progress" });
+    // Only a PICK clears the mark. A stage the wizard seeds by itself does
+    // not (the PR #803 review, P2-1).
+    const seeded = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "in_progress" });
+    expect(statusSummary(seeded, SEED, null).guesses).toBe(1);
+    const picked = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "in_progress" }, [], { "Fancy lane": true });
     expect(statusSummary(picked, SEED, null).guesses).toBe(0);
     // A plan saved before I-10b has no field, which means no guess.
     expect(resolveStatuses(FRACKTAL, SEED, {}, {}).every((r) => !r.guessed)).toBe(true);
+  });
+
+  it("choosing New status… or a status another row adds is no stage pick (PR #803 P2-1)", () => {
+    const fancy = { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true };
+    const guessed = [...FRACKTAL, fancy];
+    const resolved = resolveStatuses(guessed, SEED, {}, {});
+    // "New status…" seeds no stage, so the row keeps the plan's stage and its mark.
+    expect(targetChoice(fancy, NEW_STATUS, resolved)).toEqual({ name: "Fancy lane", creating: true });
+    // Joining a status another row adds takes that row's stage, to keep the
+    // merge in one stage, and still leaves the mark: nobody picked a stage.
+    const join = targetChoice(fancy, targetValue("On hold"), resolved);
+    expect(join).toEqual({ name: "On hold", creating: false, stage: "in_progress" });
+    const after = resolveStatuses(guessed, SEED, { "Fancy lane": join.name }, { "Fancy lane": join.stage! });
+    expect(after.find((r) => r.source === "Fancy lane")?.guessed).toBe(true);
+    // A status of the space needs no seed: it gives its own stage.
+    expect(targetChoice(fancy, targetValue("Backlog"), resolved).stage).toBeUndefined();
   });
 
   it("puts the rows that need a check first, paired by source, never by index (I-10b)", () => {

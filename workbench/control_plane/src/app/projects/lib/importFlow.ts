@@ -521,6 +521,12 @@ export function resolveStatuses(
   names: Record<string, string>,
   stages: Record<string, Stage>,
   reserved: readonly string[] = [],
+  /**
+   * The rows whose stage the admin PICKED in the stage picker (I-10b build
+   * rule 1). Only a pick clears the "Guessed" mark. A stage the wizard seeds
+   * by itself, for example to keep a merge in one stage, does not.
+   */
+  picked: Readonly<Record<string, boolean>> = {},
 ): ResolvedStatus[] {
   const held = new Map(targetSet.map((t) => [fold(t.name), t]));
   const pen = new Set(reserved.map(fold));
@@ -531,15 +537,42 @@ export function resolveStatuses(
     if (pen.has(fold(target)) && !held.has(fold(target))) target = `${target.slice(0, 64 - IMPORTED.length)}${IMPORTED}`;
     const hit = held.get(fold(target));
     if (hit) return { source: s.name, target: hit.name, stage: hit.category, existing: true, guessed: false };
-    const picked = stages[s.name];
     return {
       source: s.name,
       target,
-      stage: picked ?? s.category,
+      stage: stages[s.name] ?? s.category,
       existing: false,
-      guessed: Boolean(s.guessed) && picked === undefined,
+      guessed: Boolean(s.guessed) && !picked[s.name],
     };
   });
+}
+
+/** What one "Becomes" choice changes in the wizard's state. */
+export interface TargetChoice {
+  /** The status the row becomes. */
+  name: string;
+  /** The row shows a name box: the admin chose "New status…". */
+  creating: boolean;
+  /**
+   * A stage to seed, or undefined to keep the row's own. Seeded only to join
+   * a status another row adds, so the merge holds one stage. It is NOT a
+   * pick, so it never clears the "Guessed" mark (the PR #803 review, P2-1).
+   */
+  stage?: Stage;
+}
+
+/** The pure half of the "Becomes" picker's `onChange`. */
+export function targetChoice(
+  status: PlanStatus,
+  value: string,
+  resolved: readonly ResolvedStatus[],
+): TargetChoice {
+  if (value === NEW_STATUS) return { name: newStatusName(status.name), creating: true };
+  const name = value.slice(targetValue("").length);
+  const other = resolved.find(
+    (r) => !r.existing && r.source !== status.name && fold(r.target) === fold(name),
+  );
+  return { name, creating: false, stage: other?.stage };
 }
 
 /** One Map row: the plan's row and what it resolves to, paired by name. */

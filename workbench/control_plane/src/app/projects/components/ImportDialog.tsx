@@ -49,9 +49,9 @@ import {
   type ContainerChoice,
   GRANT_ORG,
   grantOptions,
-  NEW_STATUS,
   newStatusName,
   orderedStatusRows,
+  targetChoice,
   type PlanStatus,
   resolveStatuses,
   stageClashes,
@@ -128,6 +128,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   // I-10: the rows whose "Becomes" picker chose "New status…", so the row
   // shows a name box, and whether the admin opened the rows at all.
   const [creating, setCreating] = useState<Record<string, boolean>>({});
+  // I-10b: the rows whose stage the admin picked. Only a pick clears the
+  // "Guessed" mark; a stage the wizard seeds does not (PR #803, P2-1).
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [reviewOpen, setReviewOpen] = useState(false);
   const [columns, setColumns] = useState<Record<string, ColumnChoice>>({});
   const picker = useRef<HTMLInputElement>(null);
@@ -169,6 +172,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
     setContainers({});
     setStatusNames({});
     setCreating({});
+    setPicked({});
     setReviewOpen(false);
     setColumns({});
     setConfirmedNewTree(false);
@@ -414,8 +418,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   // I-10: what each ClickUp status becomes, with the admin's edits.
   const targetSet = useMemo(() => plan?.target_statuses ?? [], [plan]);
   const resolved = useMemo(
-    () => resolveStatuses(plan?.statuses ?? [], targetSet, statusNames, stages, plan?.reserved_statuses ?? []),
-    [plan, targetSet, statusNames, stages],
+    () =>
+      resolveStatuses(plan?.statuses ?? [], targetSet, statusNames, stages, plan?.reserved_statuses ?? [], picked),
+    [plan, targetSet, statusNames, stages, picked],
   );
   const merges = useMemo(() => statusMerges(resolved), [resolved]);
   const clashes = useMemo(() => stageClashes(resolved, merges), [resolved, merges]);
@@ -431,20 +436,12 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   const summary = statusSummary(resolved, targetSet, where);
 
   const chooseTarget = (status: PlanStatus, value: string) => {
-    if (value === NEW_STATUS) {
-      setCreating((c) => ({ ...c, [status.name]: true }));
-      setStatusNames((n) => ({ ...n, [status.name]: newStatusName(status.name) }));
-      setStages((st) => ({ ...st, [status.name]: st[status.name] ?? status.proposed }));
-      return;
-    }
-    const name = value.slice(targetValue("").length);
-    setCreating((c) => ({ ...c, [status.name]: false }));
-    setStatusNames((n) => ({ ...n, [status.name]: name }));
-    // A status another row adds: take its stage, so the merge never clashes.
-    const other = resolved.find(
-      (r) => !r.existing && r.source !== status.name && r.target.toLowerCase() === name.toLowerCase(),
-    );
-    if (other) setStages((st) => ({ ...st, [status.name]: other.stage }));
+    // The pure half lives in `importFlow.targetChoice`, with its test. A
+    // seeded stage keeps a merge in one stage, and it is never a pick.
+    const choice = targetChoice(status, value, resolved);
+    setCreating((c) => ({ ...c, [status.name]: choice.creating }));
+    setStatusNames((n) => ({ ...n, [status.name]: choice.name }));
+    if (choice.stage) setStages((st) => ({ ...st, [status.name]: choice.stage as Stage }));
   };
 
   return (
@@ -777,7 +774,10 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                               label={`Stage for ${status.name}`}
                               value={row.stage}
                               options={STAGE_OPTIONS}
-                              onChange={(next) => setStages((st) => ({ ...st, [status.name]: next as Stage }))}
+                              onChange={(next) => {
+                                setStages((st) => ({ ...st, [status.name]: next as Stage }));
+                                setPicked((p) => ({ ...p, [status.name]: true }));
+                              }}
                               widthClass="w-[9rem]"
                             />
                           )}
