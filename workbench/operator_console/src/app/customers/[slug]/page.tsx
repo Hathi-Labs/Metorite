@@ -462,13 +462,17 @@ export default async function CustomerDetailPage({
                 <div className="warn-t small">More people seated than seats bought</div>
               )}
             </div>
-            <div className="stat">
-              <div className="lbl">Credits left</div>
-              <div className="num small-num">{formatCr(Number(org.credit_balance) || 0)}</div>
-              <div className="muted small">
-                <a href={tabHref("billing")}>Where they came from →</a>
+            {/* Only when the money strip below cannot show the balance: one
+                figure, one place. */}
+            {!money && (
+              <div className="stat">
+                <div className="lbl">Credits left</div>
+                <div className="num small-num">{formatCr(Number(org.credit_balance) || 0)}</div>
+                <div className="muted small">
+                  <a href={tabHref("billing")}>Where they came from →</a>
+                </div>
               </div>
-            </div>
+            )}
             <div className="stat">
               <div className="lbl">Dates</div>
               <div className="muted small">
