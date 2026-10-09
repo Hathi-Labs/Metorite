@@ -472,9 +472,10 @@ The owner chose three things:
 - **Every List and Folder that the run creates sets `owns_statuses =
   false`**, so it uses the space's set. Each List's entry in the progress
   map (`progress["statuses"]`) is the space's set.
-- **A task with no status takes the set's default status**, which is Backlog
-  in the seed (`is_default`). `_status_for` already falls back to the first
-  status.
+- **A task with no status takes the first status of the set by position.**
+  `core.load_default_status` names it, and it skips a triage lane. In the
+  seed it is Backlog. The writer never reads `is_default`, because the owner
+  retired that flag for statuses on 2026-09-06. Live check 8.1 holds it.
 - **D79, per set.** A set that holds any done-stage status gains nothing.
   `layout.project_statuses` stops adding a "Done" to each List that uses the
   space's set. `done_status_added` counts the SETS that gained a Done. That
