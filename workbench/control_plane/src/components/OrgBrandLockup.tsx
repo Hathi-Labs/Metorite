@@ -122,6 +122,8 @@ interface Props {
   height?: number;
   /** Widest the logo may render before it starts crowding the nav controls. */
   maxWidth?: number;
+  /** One line, for the shell bar. `BrandMark`'s `compact` says what changes. */
+  compact?: boolean;
 }
 
 export default function OrgBrandLockup({
@@ -130,6 +132,7 @@ export default function OrgBrandLockup({
   onNavigate,
   height = 28,
   maxWidth = 152,
+  compact = false,
 }: Props) {
   const branding = useOrgBranding();
   // D51: the organization's NAME is the workspace indicator now that hostnames
@@ -149,10 +152,18 @@ export default function OrgBrandLockup({
         orgName={orgName}
         height={height}
         maxWidth={maxWidth}
+        compact={compact}
       />
     </Link>
   );
 }
+
+/**
+ * The width the compact lockup keeps for "powered by Metorite" beside the
+ * logo: the caption at `text-[10px]` (about 90px) and its gap. Kept even below
+ * `lg`, where the caption hides, so the logo is one size at every width.
+ */
+export const COMPACT_CAPTION_RESERVE = 100;
 
 /**
  * The mark itself, without the link.
@@ -168,15 +179,23 @@ export function BrandMark({
   height = 28,
   maxWidth = 152,
   mode,
+  compact = false,
 }: {
   branding: OrgBranding | null | undefined;
   fallbackCaption: string;
   /** The organization's display name — the D51 workspace indicator. */
   orgName?: string;
   height?: number;
+  /** The widest the whole lockup may be. Compact keeps room for the caption. */
   maxWidth?: number;
   /** Pin one colour mode, for a preview of it. Absent, the page's mode picks. */
   mode?: "light" | "dark";
+  /**
+   * One line, for the full-width shell bar (owner, 2026-10-09). A customer's
+   * logo with "powered by Metorite" after it, from `lg` up. Ours is the mark
+   * and the organization's name. Nothing stacks, so it fits a 44px bar.
+   */
+  compact?: boolean;
 }) {
   const mark = lockup(branding, fallbackCaption, orgName);
 
@@ -203,8 +222,16 @@ export function BrandMark({
     const darkHeight = height - plateInset;
     const showLight = mode === "light" ? "block" : mode === "dark" ? "hidden" : "hidden [.light_&]:block";
     const showDark = mode === "dark" ? "inline-flex" : mode === "light" ? "hidden" : "inline-flex [.light_&]:hidden";
-    return (
-      <span className="flex min-w-0 flex-col items-start gap-1">
+    // Compact puts the caption BESIDE the logo, so the logo gets the rest.
+    const logoMax = compact ? Math.max(height, maxWidth - COMPACT_CAPTION_RESERVE) : maxWidth;
+    // ⚠️ Compact lets the LOGO give way, never the caption. The bar's brand
+    // zone is `w-64`, which follows the member's density, and these sizes are
+    // px, which do not. At compact density the zone is 224px, and the caption
+    // ran into the app's own rail toggle (measured 2026-10-09). Shrunk, the
+    // logo keeps its shape (`object-contain`), so it only draws smaller.
+    const fit = compact ? "min-w-0 shrink" : "shrink-0";
+    const images = (
+      <>
         {/* A `data:` URI from our own gateway, whose MIME type was derived from
             the file's magic bytes rather than from anything the uploader
             declared. `next/image` has nothing to optimise here and would only
@@ -213,13 +240,13 @@ export function BrandMark({
         <img
           src={mark.logo.dataUri}
           alt={mark.alt}
-          style={{ height, width: logoBoxWidth(mark.logo, height, maxWidth) }}
-          className={`${showLight} shrink-0 object-contain object-left`}
+          style={{ height, width: logoBoxWidth(mark.logo, height, logoMax) }}
+          className={`${showLight} ${fit} object-contain object-left`}
         />
         {/* The plate is white on purpose, in every theme: it is the brand's
             own backing, for a dark, colourful logo, not a surface of ours. */}
         <span
-          className={`${showDark} shrink-0 items-center ${mark.plate ? "rounded-md bg-white px-1.5" : ""}`}
+          className={`${showDark} ${fit} items-center ${mark.plate ? "rounded-md bg-white px-1.5" : ""}`}
           style={{ height }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -228,16 +255,53 @@ export function BrandMark({
             alt={mark.alt}
             style={{
               height: darkHeight,
-              width: logoBoxWidth(mark.logoDark, darkHeight, maxWidth - (mark.plate ? 12 : 0)),
+              width: logoBoxWidth(mark.logoDark, darkHeight, logoMax - (mark.plate ? 12 : 0)),
             }}
-            className="object-contain object-left"
+            className={compact ? "min-w-0 max-w-full object-contain object-left" : "object-contain object-left"}
           />
         </span>
+      </>
+    );
+    if (compact) {
+      // ⚠️ The caption hides below `lg`, never truncates. A clipped
+      // "powered by Co…" is the defect this lockup shipped once
+      // (`e2e/org-branding.spec.ts`), and in a 44px bar a byline that does
+      // not fit is better gone than cut.
+      return (
+        <span className="flex min-w-0 items-center gap-2">
+          {images}
+          <span className="hidden shrink-0 whitespace-nowrap text-[10px] leading-none text-muted-foreground lg:inline">
+            {mark.caption}
+          </span>
+        </span>
+      );
+    }
+    return (
+      <span className="flex min-w-0 flex-col items-start gap-1">
+        {images}
         {/* Ours sits under theirs, quietly. At `text-[10px]` on muted it reads
             as a byline rather than as competing branding, which is the whole
             point of the arrangement. */}
         <span className="block truncate text-[10px] leading-tight text-muted-foreground">
           {mark.caption}
+        </span>
+      </span>
+    );
+  }
+
+  if (compact) {
+    // D51: a logo-less organization still shows its OWN name, here on the
+    // same line as our mark. With no organization yet, the product's name.
+    return (
+      <span className="flex min-w-0 items-center gap-2">
+        <span
+          className="flex shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
+          style={{ height, width: height }}
+        >
+          <Icon name="Command" size={Math.round(height * 0.54)} strokeWidth={2.5} />
+        </span>
+        <span className="min-w-0 truncate text-sm font-semibold tracking-tight text-foreground">
+          {orgName.trim() || mark.title}
         </span>
       </span>
     );

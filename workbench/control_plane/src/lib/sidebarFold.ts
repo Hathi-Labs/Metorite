@@ -80,16 +80,26 @@ export function setAutoFoldEnabled(on: boolean): void {
  * ⚠️ The fold waits while one is open. Several of our menus measure their
  * trigger ONE time, when they open. The fold then moves the trigger about
  * 200px to the left, and the menu stays where the trigger was.
+ *
+ * ⚠️ The fold's own control is not a menu. With the full-width shell bar
+ * (owner, 2026-10-09) it sits in the bar, outside the sidebar, and it says
+ * `aria-expanded="true"` while the sidebar is open. Read as a menu, it held
+ * every fold for ever. So anything inside {@link FOLD_CONTROL_ATTR} is skipped.
  */
 export function floatingOpen(root: ParentNode, sidebar: Element | null): boolean {
   const open = root.querySelectorAll(
     '[aria-expanded="true"], [role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]',
   );
   for (const el of Array.from(open)) {
-    if (!sidebar || !sidebar.contains(el)) return true;
+    if (sidebar?.contains(el)) continue;
+    if (typeof el.closest === "function" && el.closest(`[${FOLD_CONTROL_ATTR}]`)) continue;
+    return true;
   }
   return false;
 }
+
+/** The fold control's wrapper carries this attribute (`SidebarFold.tsx`). */
+export const FOLD_CONTROL_ATTR = "data-sidebar-fold";
 
 export function readCollapsed(): boolean {
   return read(COLLAPSED_KEY) === "1";
