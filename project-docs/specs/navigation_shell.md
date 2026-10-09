@@ -450,12 +450,12 @@ manifest" section, and the spec-auditor refuses one without it.
 
 | App | `team` | Jobs | `search` | `needs` | Cards | `agent` | Work owed |
 |---|---|---|---|---|---|---|---|
-| My Tasks | personal | New task, Capture | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
-| Calendar | personal | Block focus time | — | — | Today | `task-manager` | Move its `h1` into the title slot |
+| My Tasks | personal | New task | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
+| Calendar | personal | Plan my day (built). Block focus time is a target | — | — | Today | `task-manager` | Move its `h1` into the title slot |
 | Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
 | My WhatsApp | personal | — (owner to name) | — | — | — | — | The owner names its job |
 | Projects | across | New space | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
-| People | people | Request leave | the directory | — | Out today | — | None beyond the manifest |
+| People | people | Find a colleague (built). Request leave is a target | the directory | — | Out today | — | None beyond the manifest |
 | My Profile | personal | Update my profile | — | — | — | — | Move to the account menu |
 | My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
@@ -902,7 +902,7 @@ Done when:
 6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
    a changed accent, and the neighbouring app.
 
-### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slices 1 and 2 BUILT 2026-10-09, ON in production since 2026-10-09
+### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slices 1 and 2 BUILT 2026-10-09. Slice 1 is ON in production since 2026-10-09. Slice 2 rides the same flag, so it is live when it merges
 
 **Built in slice 1:**
 
