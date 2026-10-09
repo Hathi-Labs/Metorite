@@ -820,6 +820,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // A send runs already: the click or the Ctrl+Enter does nothing (f10).
     if (sendingRef.current) return;
     if (!email) return;
+    // No answer came for the last forward, so it can be in Sent already. The
+    // member says "I checked Sent" first, and Ctrl+Enter waits for it too
+    // (verifier F3).
+    if (replyMode === "forward" && forwardUnsure) return;
     // An old send error must not hide a later "Not saved" (review round 1).
     setSendErr(null);
     if (!fromId) {
@@ -1683,11 +1687,22 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 </Button>
               </div>
             )}
-            {/* No answer about the forward: look in Sent, never send again. */}
-            {replyMode === "forward" && forwardUnsure && sendErr && (
-              <div className="px-4 pb-1.5" data-forward-unsure="">
+            {/* No answer about the forward: Send stays off until the member
+                says that Sent does not hold it (verifier F3). */}
+            {replyMode === "forward" && forwardUnsure && (
+              <div className="px-4 pb-1.5 flex flex-wrap gap-2" data-forward-unsure="">
                 <Button variant="secondary" size="sm" icon="Send" onClick={() => selectFolder("sent")}>
                   Open Sent
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setForwardUnsure(false);
+                    setSendErr(null);
+                  }}
+                >
+                  I checked Sent, send again
                 </Button>
               </div>
             )}
@@ -1740,7 +1755,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <AppIcon name="Trash2" size={13} />
                   <span className="hidden sm:inline">Discard</span>
                 </Button>
-                <Button size="none" radius="keep" layout="flex items-center" icon="Send" loading={sending} disabled={!replyTo.trim() || (replyMode !== "forward" && !replyBody.trim())} onClick={() => void handleInlineSend()} className="px-4 py-1 text-xs rounded-md gap-1.5">
+                <Button size="none" radius="keep" layout="flex items-center" icon="Send" loading={sending} disabled={!replyTo.trim() || (replyMode !== "forward" && !replyBody.trim()) || (replyMode === "forward" && forwardUnsure)} onClick={() => void handleInlineSend()} className="px-4 py-1 text-xs rounded-md gap-1.5">
                   Send
                 </Button>
               </div>

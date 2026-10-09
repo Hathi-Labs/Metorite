@@ -212,6 +212,10 @@ describe("the pane sends the forward through the route", () => {
     expect(finish).toMatch(
       /const drained = autosave\.drain\(session\);\s*resetReplySession\(\);\s*await drained;\s*const ids = draftsToDiscard\(/,
     );
+    // Verifier F1: each draft of the session goes, after the list is known.
+    expect(finish).toMatch(
+      /const ids = draftsToDiscard\([\s\S]*?\);\s*for \(const id of ids\) void deleteEmail\(id\);/,
+    );
     // While it is in flight, its fields are read-only and no save starts.
     expect(pane).toContain('const forwarding = sending && replyMode === "forward";');
     expect(pane.match(/readOnly=\{forwarding\}/g)?.length).toBe(4);
@@ -219,9 +223,13 @@ describe("the pane sends the forward through the route", () => {
   });
 
   // Review round 1, P2: an unsure answer offers Sent, never a send.
-  it("an unsure forward offers Open Sent", () => {
+  it("an unsure forward offers Open Sent, and Send waits for the member", () => {
     expect(pane).toContain("setForwardUnsure(failure.unsure);");
-    expect(pane).toMatch(/forwardUnsure && sendErr && \([\s\S]{0,200}selectFolder\("sent"\)/);
+    expect(pane).toMatch(/forwardUnsure && \([\s\S]{0,300}selectFolder\("sent"\)/);
+    // Verifier F3: Send is off, Ctrl+Enter waits, and one button ends it.
+    expect(pane).toContain('|| (replyMode === "forward" && forwardUnsure)}');
+    expect(pane).toContain('if (replyMode === "forward" && forwardUnsure) return;');
+    expect(pane).toMatch(/setForwardUnsure\(false\);\s*setSendErr\(null\);\s*\}\}\s*>\s*I checked Sent, send again/);
   });
 
   // Review round 1: the full composer drops the files of the email.

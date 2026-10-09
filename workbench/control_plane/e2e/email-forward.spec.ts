@@ -58,8 +58,16 @@ function message(accountId: string) {
 
 type Forwarded = Array<Record<string, unknown>>;
 
-/** The drafts the pane saved and deleted, and when the forward answered. */
-type DraftLog = { saved: Array<{ id: string; at: number }>; deleted: string[]; answeredAt: number };
+/**
+ * The drafts the pane saved and deleted, and when the forward answered. A
+ * save counts when its answer goes back, after `putDelayMs`.
+ */
+type DraftLog = {
+  saved: Array<{ id: string; at: number }>;
+  deleted: Array<{ id: string; at: number }>;
+  answeredAt: number;
+  putDelayMs?: number;
+};
 
 type Answer = { status: number; body: unknown; delayMs?: number };
 
@@ -87,14 +95,17 @@ async function installMocks(
   await page.route(new RegExp(`.*/api/email/messages/${MAIL}(\\?.*)?$`), (r) => json(r, message(account.id)));
   await page.route(/.*\/api\/email\/sent-from.*/, (r) => json(r, {}));
   await page.route(/.*\/api\/email\/contacts\/suggest.*/, (r) => json(r, []));
-  await page.route("**/api/email/drafts", (r) => {
+  await page.route("**/api/email/drafts", async (r) => {
     const sent = JSON.parse(r.request().postData() ?? "{}");
     const id = String(sent.draft_id ?? `draft-${log.saved.length + 1}`);
+    if (log.putDelayMs) await new Promise((done) => setTimeout(done, log.putDelayMs));
     log.saved.push({ id, at: Date.now() });
     return json(r, { ...message(account.id), id, folder: "drafts" });
   });
   await page.route(/.*\/api\/email\/messages\/draft-\d+$/, (r) => {
-    if (r.request().method() === "DELETE") log.deleted.push(r.request().url().split("/").pop() ?? "");
+    if (r.request().method() === "DELETE") {
+      log.deleted.push({ id: r.request().url().split("/").pop() ?? "", at: Date.now() });
+    }
     return json(r, {});
   });
   await page.route("**/api/email/send", (r) => json(r, { detail: "the pane must not send a forward here" }, 500));
@@ -207,27 +218,74 @@ test.describe("The reading-pane Forward", () => {
     expect(forwarded).toHaveLength(1);
   });
 
-  // Review round 1, P3-a. Mutation caught: a finish with no drain, or a
-  // field that took an edit in flight, left a stray "Fwd:" draft.
+  // Verifier F3. Mutation caught: Send stayed on after an unsure answer, so
+  // one more click sent the mail twice.
+  test("after an unsure answer, Send waits until the member checked Sent", async ({ page }) => {
+    const forwarded = await installMocks(page, GMAIL, (n) =>
+      n === 1 ? { status: 502, body: { error: "aborted" } } : SENT);
+    await openForward(page, GMAIL);
+    await page.getByRole("combobox", { name: "To recipients" }).fill("geo@fracktal.test");
+    const send = page.getByRole("button", { name: "Send", exact: true });
+    await send.click();
+    const unsure = page.locator("[data-forward-unsure]");
+    await expect(unsure.getByRole("button", { name: "Open Sent" })).toBeVisible();
+    await expect(send).toBeDisabled();
+    // Ctrl+Enter in the note waits too.
+    await page.getByRole("textbox", { name: /Write your forward/ }).press("Control+Enter");
+    await page.waitForTimeout(500);
+    expect(forwarded).toHaveLength(1);
+    await unsure.getByRole("button", { name: "I checked Sent, send again" }).click();
+    await expect(unsure).toHaveCount(0);
+    await expect(send).toBeEnabled();
+    await send.click();
+    await expect.poll(() => forwarded.length).toBe(2);
+  });
+
+  // Review round 1, P3-a, and verifier F1 of round 2. The autosave keeps a
+  // "Fwd:" draft of the forward. A sent forward must delete it, and no save
+  // may land after the forward. So the test waits for a real saved draft,
+  // starts a second save that is still running when Send is pressed, and
+  // types while the forward is in flight.
+  // The save takes 4.5 s, so it is still running when the forward answers
+  // unless a drain waits for it.
+  // Mutations caught: no deleteEmail loop after draftsToDiscard (the saved
+  // draft stays), and no drain at all (the running save lands after the
+  // delete, and its draft stays). The send drain and the finish drain each
+  // cover this alone, so the source fence in forward.test.ts pins the
+  // finish drain.
   test("typing during the send leaves no stray draft", async ({ page }) => {
-    const log: DraftLog = { saved: [], deleted: [], answeredAt: 0 };
+    const log: DraftLog = { saved: [], deleted: [], answeredAt: 0, putDelayMs: 4500 };
     await installMocks(page, GMAIL, () => ({ ...SENT, delayMs: 3000 }), log);
     await openForward(page, GMAIL);
     const note = page.getByRole("textbox", { name: /Write your forward/ });
     await note.fill("See the quote.");
     await page.getByRole("combobox", { name: "To recipients" }).fill("geo@fracktal.test");
+    // A real draft exists before the send.
+    await expect.poll(() => log.saved.length, { timeout: 15_000 }).toBeGreaterThan(0);
+    const first = log.saved.length;
+    // A second save starts, and it is still running when Send is pressed.
+    await note.press("End");
+    await page.keyboard.type(" Thanks.");
+    await page.waitForTimeout(1600);
+    expect(log.saved.length, "the second save is still running").toBe(first);
     await page.getByRole("button", { name: "Send", exact: true }).click();
     // In flight: the fields are read-only, so the typing changes nothing.
     await expect(note).toHaveAttribute("readonly", "");
     await note.press("End");
     await page.keyboard.type(" More words.");
-    await expect(note).toHaveValue(/See the quote\.\s*$/);
+    await expect(note).toHaveValue(/Thanks\.\s*$/);
     // Pop out is off while the forward keeps the files of the email.
     await expect(page.getByRole("button", { name: "Pop out to full composer" })).toBeDisabled();
     await expect(page.locator("[data-forward-files]")).toBeHidden({ timeout: 15_000 });
-    // Longer than the autosave wait, so a late save would have landed.
-    await page.waitForTimeout(3000);
-    expect(log.saved.filter((s) => s.at > log.answeredAt)).toEqual([]);
-    for (const { id } of log.saved) expect(log.deleted).toContain(id);
+    // Longer than the autosave wait and the save, so a late save would land.
+    await page.waitForTimeout(6000);
+    expect(log.answeredAt, "the forward answered").toBeGreaterThan(0);
+    expect(log.saved.length, "the second save landed").toBeGreaterThan(first);
+    // No stray draft: each saved draft is deleted AFTER its last save.
+    for (const { id } of log.saved) {
+      const lastSave = Math.max(...log.saved.filter((x) => x.id === id).map((x) => x.at));
+      const deletedAfter = log.deleted.some((d) => d.id === id && d.at >= lastSave);
+      expect(deletedAfter, `draft ${id} stays after the forward`).toBe(true);
+    }
   });
 });

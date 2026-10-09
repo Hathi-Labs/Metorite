@@ -640,7 +640,7 @@ class TestTheForwardTool:
             assert line.startswith('- file "') and line[8:-1] in names, "a file name was cut"
 
     def test_a_hidden_mark_in_a_file_name_does_not_reach_the_card(self) -> None:
-        shown = agents._forward_files([{"filename": "invoice‮fdp.exe", "size_bytes": 2048}])
+        shown = agents._forward_files([{"filename": "invoice\u202efdp.exe", "size_bytes": 2048}])
         assert shown == ["invoicefdp.exe (2 KB)"]
 
     def test_a_long_file_name_keeps_its_extension(self) -> None:

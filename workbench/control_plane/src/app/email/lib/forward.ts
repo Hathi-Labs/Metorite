@@ -30,7 +30,7 @@ export function forwardFilesOf(attachments: readonly Attachment[] | undefined): 
 }
 
 /** Each bidi control: the marks, the embeddings, the overrides, the isolates. */
-const BIDI_CONTROLS = /[؜‎‏‪-‮⁦-⁩]/g;
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 /**
  * A file name as the chip shows it. A sender chooses the name, and a
