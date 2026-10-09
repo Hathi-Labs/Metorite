@@ -28,11 +28,15 @@ ALTER TABLE org_settings
     ADD COLUMN IF NOT EXISTS organization_id UUID
         REFERENCES organization(id) ON DELETE CASCADE;
 
--- Every row that predates tenancy is the operator's. Under forced RLS and no
--- bound tenant this matches nothing, which is correct: there the column is
--- already NOT NULL.
+-- A row that predates tenancy belongs to the ONLY organization, when there is
+-- only one. With two or more, the subquery is NULL and the check below
+-- refuses, because no rule here can say whose row it is. It names no slug on
+-- purpose (the default-slug ratchet in test_org_provisioning.py). Under forced
+-- RLS and no bound tenant this matches nothing, which is correct: there the
+-- column is already NOT NULL.
 UPDATE org_settings
-   SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+   SET organization_id = (SELECT id FROM organization
+                           WHERE (SELECT count(*) FROM organization) = 1)
  WHERE organization_id IS NULL;
 
 DO $$

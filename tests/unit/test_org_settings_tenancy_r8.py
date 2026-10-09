@@ -27,7 +27,7 @@ from sqlalchemy import text
 # The two-org phase-4 fixture and its DB gate. Used by name for injection.
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
-    promoted,
+    promoted,  # noqa: F811
 )
 
 
@@ -93,6 +93,28 @@ def test_with_no_tenant_a_read_is_the_default_and_a_write_refuses(db) -> None:
     assert org_settings.load_org_setting("branding", default="dflt") == "dflt"
     with pytest.raises(TenantUnbound):
         org_settings.save_org_setting("branding", {"logo": "?"})
+
+
+def _save_policy(engine, org: str, value: str) -> None:
+    from gateway.routes.people.schedule import UPSERT_POLICY_SQL
+
+    with engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
+        c.execute(text(UPSERT_POLICY_SQL), {"key": "work_schedule", "value": value, "by": "a@x.test"})
+
+
+def test_the_work_schedule_upsert_is_per_organization(db, app_engine) -> None:
+    # Measured 2026-10-09: after 234 the old `ON CONFLICT (key)` matched no
+    # constraint, and every PUT /people/schedule answered 500.
+    _save_policy(app_engine, db.org_a, '{"week": "A1"}')
+    _save_policy(app_engine, db.org_a, '{"week": "A2"}')
+    _save_policy(app_engine, db.org_b, '{"week": "B"}')
+    with db.admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT organization_id::text, value->>'week' FROM org_settings "
+            "WHERE key = 'work_schedule' ORDER BY 2"
+        )).all()
+    assert rows == [(db.org_a, "A2"), (db.org_b, "B")]
 
 
 def test_the_primary_key_is_per_organization(db) -> None:
