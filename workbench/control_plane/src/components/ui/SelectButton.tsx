@@ -254,6 +254,12 @@ export interface SelectButtonProps {
    * this. Absent: no filter box.
    */
   filterAbove?: number;
+  /**
+   * WS-41 I-10b. How tall the open list may get, in px. Absent: the panel's
+   * default of 256, so no other control changes. The import's stage picker
+   * needs more, because each stage carries its meaning on a second line.
+   */
+  panelMaxHeight?: number;
 }
 
 export function SelectButton({
@@ -271,6 +277,7 @@ export function SelectButton({
   prefix,
   prompt,
   filterAbove,
+  panelMaxHeight,
 }: SelectButtonProps) {
   const [{ open, query }, dispatch] = useReducer(selectPanelReducer, {
     open: autoOpen,
@@ -377,6 +384,9 @@ export function SelectButton({
         anchor={trigger}
         open={open}
         layer={layer}
+        // The inline max-height `AnchoredPanel` sets beats the class, so
+        // `max-h-64` only stays as the fallback when no number is given.
+        maxHeight={panelMaxHeight}
         className="max-h-64 w-max p-1"
         panelProps={structured ? undefined : { id: listId, role: "listbox", "aria-label": label }}
       >

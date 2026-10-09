@@ -778,6 +778,9 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                               label={`Stage for ${status.name}`}
                               value={row.stage}
                               options={STAGE_OPTIONS}
+                              // Five stages, each with its meaning on a second
+                              // line, fit with no scroll (the PR #803 review).
+                              panelMaxHeight={420}
                               onChange={(next) => {
                                 setStages((st) => ({ ...st, [status.name]: next as Stage }));
                                 setPicked((p) => ({ ...p, [status.name]: true }));
