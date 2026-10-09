@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aiMarginOf,
   customerMoney,
   daysLeft,
   daysLeftLabel,
@@ -290,5 +291,27 @@ describe("the lifetime average leaves unpriced bought credits out", () => {
       }),
     );
     expect(m.paidCredits.value).toBeCloseTo(1000);
+  });
+});
+
+describe("aiMarginOf — AI alone, seats left out", () => {
+  it("is bought credits used against the AI cost of the paid calls", () => {
+    const m = customerMoney(input());
+    // ₹1,200 of bought credits, ₹850 of AI cost, nothing free.
+    expect(aiMarginOf(m)).toBeCloseTo(350 / 1200);
+    // The overall margin, with ₹5,000 of seats, reads far higher.
+    expect(m.margin.value).toBeGreaterThan(0.8);
+  });
+
+  it("does not fall when a customer leans on free credits", () => {
+    const m = customerMoney(
+      input({ row: row({ paidCredits: "600", paidValueInr: "720", freeCredits: "400" }) }),
+    );
+    // ₹850 of AI cost, 40% on free credits: ₹510 paid cost against ₹720.
+    expect(aiMarginOf(m)).toBeCloseTo((720 - 510) / 720);
+  });
+
+  it("is null with no credit price", () => {
+    expect(aiMarginOf(customerMoney(input({ price: null, row: row({ unpricedPaidCredits: "1" }) })))).toBeNull();
   });
 });

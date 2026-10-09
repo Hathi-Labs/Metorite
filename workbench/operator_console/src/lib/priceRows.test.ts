@@ -17,6 +17,9 @@ import {
   multiplierOfPct,
   perUnitVendorUsd,
   plannedMargin,
+  legMargins,
+  cachedAboveInput,
+  cachedGivenAway,
   priceState,
   pricingAlert,
   rowCost,
@@ -370,5 +373,59 @@ describe("the margin's two units", () => {
     for (const pct of ["0", "25", "45", "50", "99"]) {
       expect(floorPctOf(floorOfPct(pct))).toBe(pct);
     }
+  });
+});
+
+// ── WS-50: one margin per price, and the cached-price trap (2026-10-09) ────
+
+describe("legMargins", () => {
+  // Vendor per 1M at ₹100 a dollar, ₹1 a credit: input 1000, output 2000,
+  // cached 500 credits.
+  it("reads the margin on input, output and cached input separately", () => {
+    const rate = {
+      mode: "priced", unit: "tokens",
+      inputPer1m: "2000", outputPer1m: "2500", cachedInputPer1m: "50000",
+    } as TierRate;
+    const legs = legMargins(row({ rate }), A)!;
+    expect(legs.input).toBeCloseTo(0.5, 10);
+    expect(legs.output).toBeCloseTo(0.2, 10);
+    // The trap: a cached price 100 times the vendor's reads 99 percent.
+    expect(legs.cached).toBeCloseTo(0.99, 10);
+  });
+
+  it("is null for a card that is not priced", () => {
+    expect(legMargins(row({ rate: { mode: "absorbed" } as TierRate }), A)).toBeNull();
+  });
+});
+
+describe("cachedGivenAway", () => {
+  it("catches a cached price of zero against a vendor that charges for it", () => {
+    const free = { mode: "priced", unit: "tokens", inputPer1m: "300", outputPer1m: "600", cachedInputPer1m: "0" } as TierRate;
+    expect(cachedGivenAway(row({ rate: free }), A)).toBe(500);
+    const alert = pricingAlert([{ rows: [row({ rate: free })] }], {
+      inrPerCredit: "1", usdToInr: "100", effectiveFrom: null,
+    });
+    expect(alert.tone).toBe("danger");
+    expect(alert.detail).toContain("nothing at all on Fast");
+  });
+});
+
+describe("cachedAboveInput", () => {
+  it("catches a cached price above the fresh input price, the production mistake", () => {
+    const bad = { mode: "priced", unit: "tokens", inputPer1m: "300", outputPer1m: "600", cachedInputPer1m: "500" } as TierRate;
+    const good = { ...bad, cachedInputPer1m: "10.7" } as TierRate;
+    expect(cachedAboveInput(row({ rate: bad }))).toBe(true);
+    expect(cachedAboveInput(row({ rate: good }))).toBe(false);
+  });
+
+  it("raises the board's alert, naming the tier", () => {
+    const bad = { mode: "priced", unit: "tokens", inputPer1m: "300", outputPer1m: "600", cachedInputPer1m: "500" } as TierRate;
+    const alert = pricingAlert([{ rows: [row({ rate: bad })] }], {
+      inrPerCredit: "1", usdToInr: "100", effectiveFrom: null,
+    });
+    expect(alert.tone).toBe("danger");
+    expect(alert.title).toContain("cached-input price is wrong");
+    expect(alert.detail).toContain("more than fresh input on Fast");
+    expect(alert.detail).toContain("Fast");
   });
 });

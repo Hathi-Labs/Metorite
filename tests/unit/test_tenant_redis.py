@@ -79,6 +79,10 @@ class _FakeRedis:
         self.calls.append(("get", (name,)))
         return self.store.get(name)
 
+    async def mget(self, names: list[str]) -> list[Any]:
+        self.calls.append(("mget", tuple(names)))
+        return [self.store.get(n) for n in names]
+
     async def set(self, name: str, value: Any, **kwargs: Any) -> bool:
         self.calls.append(("set", (name, value)))
         self.store[name] = value
@@ -474,6 +478,72 @@ def test_binary_client_is_the_same_wrapper_over_a_second_small_pool(monkeypatch)
         assert tr._POOL is None and tr._BINARY_POOL is None
     finally:
         tr.reset_pool_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# 5c. ``mget`` (WS-17 EM-T16 PR-A) — one round trip, the same key discipline.
+# ---------------------------------------------------------------------------
+#
+# The Reply Zero backfill reads the back-off mark of up to 200 threads in ONE
+# call. A list argument is the easy hole: one raw string in it must refuse the
+# whole call before redis-py sees any key.
+
+async def test_mget_sends_only_prefixed_keys_in_one_call() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        await client.set(client.key("email-status-backoff", "acc", "t1", "m1"), "1")
+        values = await client.mget([
+            client.key("email-status-backoff", "acc", "t1", "m1"),
+            client.key("email-status-backoff", "acc", "t2", "m2")])
+    assert values == ["1", None]
+    reads = [args for name, args in fake.calls if name == "mget"]
+    prefix = f"{KEY_ROOT}:{ORG_A}:email-status-backoff:acc:"
+    assert reads == [(f"{prefix}t1:m1", f"{prefix}t2:m2")], reads
+
+
+async def test_mget_refuses_a_raw_string_anywhere_in_the_list() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.mget([client.key("email-status-backoff", "t1"),
+                           "cc:email-status-backoff:t2"])  # type: ignore[list-item]
+    assert fake.calls == [], "a key reached redis-py before the refusal"
+
+
+async def test_mget_refuses_a_key_of_another_tenant() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        stolen = key("email-status-backoff", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.mget([key("email-status-backoff", "t1"), stolen])
+    assert fake.calls == []
+
+
+async def test_mget_unbound_raises_and_an_empty_list_sends_nothing() -> None:
+    fake = _FakeRedis()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        captured = key("email-status-backoff", "t1")
+    with pytest.raises(TenantNotBound):
+        await client.mget([captured])
+    with organization_scope(ORG_A):
+        assert await client.mget([]) == []
+    assert fake.calls == []
+
+
+def test_mget_stays_inside_the_r5c_ratchet() -> None:
+    """R5(c): the new command takes typed keys, and the back-off mark of
+    ``replyzero.py`` reaches Redis only through this wrapper."""
+    annotation = str(inspect.signature(TenantRedis.mget).parameters["keys"].annotation)
+    assert "TenantKey" in annotation, annotation
+    replyzero = (_REPO / "apps/services/gateway/gateway/routes/email/automation"
+                 / "replyzero.py")
+    assert not _imports_redis_package(replyzero)
+    assert _rel(replyzero) not in _ALLOWED_DIRECT_REDIS
+    with organization_scope(ORG_A):
+        assert key("email-status-backoff", "a").value.startswith(f"{KEY_ROOT}:{ORG_A}:")
 
 
 # ---------------------------------------------------------------------------

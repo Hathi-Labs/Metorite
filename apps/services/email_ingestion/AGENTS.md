@@ -586,6 +586,14 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
     gap is left below `import_reached_at`. `advance_import_since` writes
     `onboarding_done_at` for a mailbox with no `import_since`, so the guided
     setup does not open for it.
+- ⚠️ **One Reply Zero classify in each cycle (WS-17 EM-T16 PR-A).** It ships
+  dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`, and
+  `post_sync.triage_once_per_cycle` is its one reader. With the flag on, a
+  cycle skips the `classify_threads` hook when the gateway registered
+  `on_new_mail` and that hook did not raise, because `process_new_mail`
+  already ran the classify. Every other cycle runs the hook, so a quiet mailbox still drains.
+  The manual sync and the webhook do not change. R7:
+  `tests/unit/test_email_triage_once.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
