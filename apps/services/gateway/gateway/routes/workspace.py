@@ -464,8 +464,15 @@ def _get_workspace_path(
             )
 
         # ── 2. Derive from agent clone directory ────────────────────────────
+        # The orchestrator is a shared agent like any other (2026-10-09). Its
+        # runs work in its tenant dir (`executor._resolve_run_workspace`), so
+        # its sessions resolve that dir here too. This line returned None for
+        # it from June 2026, when the main chat had no agent clone, so every
+        # upload into a new main chat answered 404. A name with no clone (for
+        # example "default") still gives None, through `_agent_clone_dir`.
+        # Fence: tests/unit/test_chat_upload_every_agent.py.
         agent_name: str = row.agent_name or ""
-        if not agent_name or agent_name in ("orchestrator", "default"):
+        if not agent_name:
             return None
 
         # H-201 part 3: a personal agent gives the viewer's own folder, and a
