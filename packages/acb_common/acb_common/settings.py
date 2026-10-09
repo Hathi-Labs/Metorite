@@ -414,6 +414,21 @@ class Settings(BaseSettings):
     email_llm_daily_calls: int = 2000
     email_llm_budget_mode: str = "log"
 
+    # ── One triage pass in each sync cycle (WS-17 EM-T16 PR-A, D-EM-62) ─────
+    #
+    # True does two things. (1) A sync cycle that ran the `on_new_mail` hook
+    # does not run the `classify_threads` hook, so the Reply Zero backfill
+    # runs once in each cycle. (2) In `on` of `email.thread_status`, an
+    # undecided status ask of the backfill stores a back-off mark in tenant
+    # Redis for 30 minutes, and the backfill skips a thread with a mark.
+    # False is the default, and then both paths are the same as before.
+    # The one reader is `email_ingestion.post_sync.triage_once_per_cycle`.
+    #
+    # A value of `true` on a box is gate `enforcement-flip`. Spec:
+    # email_app_master_plan.md §10.4.17 PR-A. Fences:
+    # tests/unit/test_email_triage_once.py and test_email_ai_cost.py.
+    email_triage_once_per_cycle: bool = False
+
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
     # `customer_console.md` §5.1 already names the destination: the provider,

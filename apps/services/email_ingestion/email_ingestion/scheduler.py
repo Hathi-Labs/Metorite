@@ -54,7 +54,12 @@ from sqlalchemy import text
 
 from email_ingestion import body_backfill, email_embeddings, import_window, storage
 from email_ingestion.persist import upsert_message
-from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
+from email_ingestion.post_sync import (
+    hooks,
+    run_hook,
+    run_label_learn_hook,
+    triage_once_per_cycle,
+)
 from email_ingestion.providers.base import ProviderRateLimited
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import (
@@ -1721,9 +1726,12 @@ async def _account_sync_loop(
                 # each step's failures internally. The SAME pipeline is
                 # enqueued by the manual-sync route and the webhook (H1) so
                 # mail is processed identically however it arrived.
+                ran_new_mail = False
                 if new_mail:
                     try:
+                        registered = hooks.on_new_mail is not None
                         await run_hook(hooks.on_new_mail, account_id)
+                        ran_new_mail = registered
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "sync.process_new_mail_failed account_id=%s error=%s",
@@ -1736,13 +1744,20 @@ async def _account_sync_loop(
                 # behind. Measured on a live account: 295 of 3,487 threads had
                 # a status. Cheap when idle: the selection query returns no
                 # rows and the hook does nothing.
-                try:
-                    await run_hook(hooks.classify_threads, account_id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "sync.classify_threads_failed account_id=%s error=%s",
-                        account_id, str(exc),
-                    )
+                #
+                # WS-17 EM-T16 PR-A (D-EM-62): with the flag on, a cycle in
+                # which `on_new_mail` was registered and did not raise skips
+                # this hook. `process_new_mail` already ran the classify, so
+                # the cycle runs it once. A cycle with no new mail, or with a
+                # failed or missing `on_new_mail`, still runs it here.
+                if not (ran_new_mail and triage_once_per_cycle()):
+                    try:
+                        await run_hook(hooks.classify_threads, account_id)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "sync.classify_threads_failed account_id=%s error=%s",
+                            account_id, str(exc),
+                        )
                 # Send a scheduled digest if one is due (opt-in per account).
                 try:
                     await run_hook(hooks.send_digest, account_id)

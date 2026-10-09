@@ -489,6 +489,15 @@ class TenantRedis:
     async def get(self, k: TenantKey) -> Any:
         return await self._client.get(self._raw(k))
 
+    async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
+        """Read many keys in ONE round trip. Each key goes through
+        :meth:`_raw`, so one ``str`` or one key of another tenant refuses the
+        whole call. An empty list sends nothing (WS-17 EM-T16 PR-A)."""
+        raw = [self._raw(k) for k in keys]
+        if not raw:
+            return []
+        return list(await self._client.mget(raw))
+
     async def set(self, k: TenantKey, value: Any, **kwargs: Any) -> Any:
         return await self._client.set(self._raw(k), value, **kwargs)
 
