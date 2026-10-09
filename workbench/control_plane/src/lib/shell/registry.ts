@@ -114,7 +114,9 @@ export const JOBS: readonly ShellJob[] = [
     // holds its pane, and `visibleSections` holds Organisation for an admin.
     id: "invite",
     label: "Invite a member",
-    words: ["invite", "member", "members", "user", "join", "onboard", "seat"],
+    // ⚠️ Not "members" or "seat". Those name the roster, so an admin who types
+    // them and presses Enter must open Organisation, not the invite form.
+    words: ["invite", "join", "onboard", "welcome", "newcomer"],
     app: "/settings/organization",
     href: "/settings/organization?do=invite",
     icon: "UserPlus",
