@@ -801,6 +801,7 @@ async def _llm_determine_thread_status(
             for attempt_model in attempts:
                 data, content, _used = await _llm_json(
                     attempt_model, messages, max_tokens=_STATUS_MAX_TOKENS,
+                    feature="thread_status",
                     thinking=dict(_STATUS_THINKING),
                 )
                 st = ((data.get("status") if isinstance(data, dict) else "") or "")

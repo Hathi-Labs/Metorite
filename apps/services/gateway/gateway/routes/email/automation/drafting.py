@@ -493,6 +493,7 @@ async def _llm_extract_reply_memories(
             [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": user}],
             max_tokens=1000,
+            feature="reply_memory",
         )
         items = data.get("memories") if isinstance(data, dict) else None
         out: list[dict[str, str]] = []
@@ -671,6 +672,7 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
                 messages=[{"role": "system", "content": sys_prompt},
                           {"role": "user", "content": "Preferences:\n" + listed}],
                 temperature=0.2, max_tokens=1000,
+                feature="email.voice_profile",
             )
         return (resp.choices[0].message.content or "").strip()[:1500]
     except Exception as exc:  # noqa: BLE001
@@ -945,6 +947,7 @@ async def _llm_draft_reply(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.draft",
                     on_delta=on_delta,
                 )
         else:
@@ -952,6 +955,7 @@ async def _llm_draft_reply(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.draft",
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
@@ -1098,6 +1102,7 @@ async def _llm_compose_assist(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.compose_assist",
                     on_delta=on_delta,
                 )
         else:
@@ -1105,6 +1110,7 @@ async def _llm_compose_assist(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.compose_assist",
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
@@ -1171,6 +1177,7 @@ async def _draft_consult_plan(
             [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": user_prompt}],
             max_tokens=500,
+            feature="draft_consult",
         )
         consult = data.get("consult", []) if isinstance(data, dict) else []
         out = []

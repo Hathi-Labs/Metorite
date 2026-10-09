@@ -1408,6 +1408,7 @@ async def _llm_is_cold(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_prompt}],
                 max_tokens=500,
+                feature="cold_check",
             )
             if isinstance(data, dict):
                 return bool(data.get("cold")), str(data.get("reason", ""))[:300]

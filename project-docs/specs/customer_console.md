@@ -12,6 +12,10 @@ are dark behind `DECIDE_ENABLED`.
 CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
 (2026-09-24). CP-13e to CP-13g are SPEC ONLY. **§6A.14** is the contract.
 
+🆕 **§4.3a is BUILT on branch `ai-call-attribution` (2026-10-10).** A
+background model call names its feature on the usage report, as
+`email.rule_match`. It has no flag, because it changes metadata only.
+
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
 2026-08-26 (D57)** — the SERVING HOP, the first-caller ticket §6 (d) has waited for
@@ -985,6 +989,62 @@ done-when pins it.
 > today holds the service identity too. The rotation is a redeploy (delivery
 > recovered 2026-08-09, WS-25) and it is the **owner's** act. **An agent must not
 > perform it.**
+
+### 4.3a A background model call names its feature
+
+**Status: BUILT 2026-10-10, branch `ai-call-attribution`.** It ships with no
+flag. It changes metadata only: the `agent` value of a usage row. It changes no
+call, no price and no route.
+
+**The defect.** On production, the Operator dashboard showed 97% of the email
+model calls as "not attributed". In 7 days, about 8,500 email calls had `agent`
+NULL, and about 175 named `email-assistant`. The dashboard groups by
+`COALESCE(agent, 'unattributed')` (`store.py`). A background job bound a member
+and an app, and it bound no agent.
+
+**The rule.** Each model call names an agent, by these steps in order:
+
+1. An agent that the caller passes explicitly wins.
+2. A bound agent comes next. A chat agent, such as `email-assistant`, keeps its
+   own name. No automation name replaces it.
+3. A background call names its feature as `<app>.<feature>`, for example
+   `email.rule_match`. The feature name is a code constant and never member text (R5).
+4. A background call with no feature names `<app>.automation`.
+5. **The backstop.** A call with no agent bound and a known module reports
+   `<module>.automation`. A call with no module reports no agent. The backstop
+   never invents an app.
+
+**A chat agent cannot claim an automation name.** An agent name may hold a dot
+(`agent_paths.AGENT_NAME_RE`). So the readers report a bound name of the shape
+`<app>.<feature>` as `agent:<name>`, unless the automation seam bound it.
+
+**The seams.** One rule serves both readers, `acb_common.attributed_agent`.
+
+- `acb_llm.routed.run_attribution` feeds the in-process Router and `decide`.
+- `acb_llm.attribution.attribution_headers` feeds the HTTP agents.
+- `acb_common.automation_agent_scope` binds a name for one block and restores
+  the earlier name on exit. `job_member_scope(agent=)`,
+  `llm_cap.automation_scope`, `acompletion_with_fallback(feature=)`,
+  `acompletion_stream_text(feature=)`, email `core._llm_json(feature=)` and
+  `decide_features.ask` and `shadow` all use it.
+
+**The names.** The email features are `rule_match`, `thread_status`,
+`cold_check`, `sender_pin`, `draft`, `compose_assist`, `draft_consult`,
+`reply_memory`, `voice_profile`, `digest`, `template_fill`, `rules_generate`
+and `insights_screen` (`core.EMAIL_AI_FEATURES`). The five `decide` features
+keep their names. The background jobs bind `email.automation`,
+`whatsapp.automation` and `workflows.automation`. WhatsApp names
+`whatsapp.draft`, `whatsapp.group_summary` and `whatsapp.nudge`. Tasks names
+`tasks.capture_email`. Notes, Shell and the custom apps rely on the backstop.
+
+**What it does not fix.** Three paths write no usage row at all, so no name
+can reach the dashboard. `HANDOFF.md` H-287 holds them.
+
+**Fences.** `tests/unit/test_usage_attribution.py` holds the backstop, the
+scope, the chat-agent rules and the scan. The scan fails when an email model
+call names no known feature and has no allowlist reason.
+`tests/unit/test_background_ai_member.py` holds the real seam, through
+`as_mailbox_owner` and `automation_scope` to the Router and `decide`.
 
 ### 4.4 The balance gate and failure semantics
 

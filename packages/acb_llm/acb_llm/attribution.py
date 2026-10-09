@@ -103,7 +103,12 @@ def attribution_headers(ctx: dict[str, str] | None = None) -> dict[str, str]:
     run_id = str(ctx.get("run_id") or "").strip()
     if run_id:
         out[RUN] = run_id
-    agent = str(ctx.get("agent") or "").strip()
+    # The ONE agent rule, shared with `routed.run_attribution`: the bound
+    # agent, else `<app>.automation`, and a chat agent never passes as an
+    # automation name (AI-call attribution, 2026-10-10).
+    from acb_common._log import attributed_agent
+
+    agent = attributed_agent(ctx, app) or ""
     if agent:
         out[AGENT] = agent
     return out

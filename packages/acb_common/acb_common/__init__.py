@@ -1,5 +1,7 @@
 """Shared cross-cutting helpers (settings, logging, OTel)."""
 from acb_common._log import (
+    attributed_agent,
+    automation_agent_scope,
     bind_run_context,
     clear_run_context,
     configure_logging,
@@ -22,6 +24,8 @@ from acb_common.settings import Settings, get_settings
 __all__ = [
     "Settings",
     "active_runs",
+    "attributed_agent",
+    "automation_agent_scope",
     "bind_run_context",
     "clear_run_context",
     "configure_logging",

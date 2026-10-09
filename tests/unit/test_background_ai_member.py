@@ -917,3 +917,227 @@ class TestNoNewMemberlessCallSite:
             if path not in allowed
         ]
         assert not offenders, f"OpenAI clients that cannot attribute: {offenders}"
+
+
+# ── The background call names its FEATURE, on the real seam (2026-10-10) ───
+#
+# 🔴 Production, 2026-10-10: 97% of the email AI calls showed as "not
+# attributed" on the Operator dashboard, because no background job bound an
+# agent. Spec: `customer_console.md` §4.3a.
+
+_OK_BODY = {
+    "id": "cmpl-1",
+    "model": "deepseek/deepseek-v4-flash",
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "{}"},
+                 "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+}
+_ORG = "11111111-1111-1111-1111-111111111111"
+
+
+class _RouterSpy:
+    """``chat_completion_on_console``: records each attribution it is handed."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, payload, **kw):
+        self.calls.append(kw)
+        return 200, _OK_BODY
+
+
+class _DecideSpy:
+    """``acb_llm.decide``: records each attribution, and answers yes."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, state, questions, **kw):
+        from types import MappingProxyType
+
+        import acb_llm
+
+        self.calls.append(kw)
+        return acb_llm.Decision(
+            answers=MappingProxyType(
+                {qid: acb_llm.BooleanAnswer(probability=0.9) for qid in questions}),
+            request_id="req-1",
+        )
+
+
+@pytest.fixture
+def router(monkeypatch):
+    """The in-process Router path, served by a spy: the real
+    ``acompletion_with_fallback`` -> ``completion_on_router`` ->
+    ``run_attribution`` chain, with only the Console call faked."""
+    from acb_auth import console_resolve
+    from acb_common import _log
+    from acb_llm import routed
+
+    spy = _RouterSpy()
+    monkeypatch.setattr(routed, "routing_is_on", lambda: True)
+    monkeypatch.setattr(console_resolve, "chat_completion_on_console", spy)
+    _log._AUTOMATION_AGENT.set(None)
+    yield spy
+    _log._AUTOMATION_AGENT.set(None)
+
+
+@pytest.fixture
+def decide_spy(monkeypatch):
+    import acb_llm
+
+    spy = _DecideSpy()
+    monkeypatch.setattr(acb_llm, "decide", spy)
+    return spy
+
+
+def _as_owner(monkeypatch, owner="owner@acme.com"):
+    from gateway.routes.email import scheduler_hooks
+
+    async def _owner(_aid):
+        return owner
+
+    monkeypatch.setattr(scheduler_hooks, "mailbox_owner", _owner)
+
+
+_MSG = [{"role": "user", "content": "hello"}]
+
+
+def _boolean_request():
+    from acb_llm import BooleanQuestion
+
+    return {"case": "fixture"}, {"q": BooleanQuestion(instructions="Is it so?")}
+
+
+class TestTheBackgroundCallNamesItsFeature:
+    def test_an_email_job_names_rule_match_on_the_ROUTER(self, monkeypatch, router):
+        """The whole chain: ``as_mailbox_owner`` + ``automation_scope``, then
+        ``_llm_json(feature="rule_match")``. A call with no feature keeps the
+        job's ``email.automation``."""
+        from gateway.routes.email import scheduler_hooks
+        from gateway.routes.email.core import _llm_json
+
+        _as_owner(monkeypatch)
+
+        @scheduler_hooks.as_mailbox_owner
+        async def _job(_aid):
+            await _llm_json("tier-fast", _MSG, max_tokens=10, feature="rule_match")
+            await _llm_json("tier-fast", _MSG, max_tokens=10)
+
+        async def go():
+            bind_run_context(user="creator@acme.com", member_verified=True)
+            await _job("acc-1")
+            return dict(get_run_context())
+
+        after = asyncio.run(go())
+        named = [(c["agent"], c["module_slug"], c["member"]) for c in router.calls]
+        assert named == [
+            ("email.rule_match", "email", "owner@acme.com"),
+            ("email.automation", "email", "owner@acme.com"),
+        ]
+        assert "agent" not in after, "the job leaked its agent"
+
+    def test_an_automation_job_ALONE_names_email_automation(self, router):
+        """(b): ``@automation_job`` binds nothing else. The call here comes
+        from no ``routes.<app>`` module, so the backstop has no app to name.
+        Only the scope can name it."""
+        from acb_llm.context import acompletion_with_fallback
+        from email_ingestion.llm_cap import automation_job
+
+        @automation_job
+        async def _job(_aid):
+            await acompletion_with_fallback(model="tier-fast", messages=_MSG, max_tokens=10)
+
+        asyncio.run(_job("acc-1"))
+        assert [c["agent"] for c in router.calls] == ["email.automation"]
+
+    def test_the_DECIDE_request_names_the_feature(self, monkeypatch, router, decide_spy):
+        """``decide_features.ask`` sends the Router the same names."""
+        from acb_common.db import bind_tenant, release_tenant
+        from gateway import decide_features
+        from gateway.routes.email import scheduler_hooks
+
+        _as_owner(monkeypatch)
+
+        @scheduler_hooks.as_mailbox_owner
+        async def _job(_aid):
+            return await decide_features.ask(
+                "email.rule_match", account_id="acc-1", message_id="m-1",
+                build=_boolean_request, read=lambda d: (True, {}))
+
+        token = bind_tenant(_ORG)
+        try:
+            assert asyncio.run(_job("acc-1")) is True
+        finally:
+            release_tenant(token)
+        call = decide_spy.calls[0]
+        assert (call["agent"], call["module_slug"], call["member"]) == (
+            "email.rule_match", "email", "owner@acme.com")
+
+    def test_the_SHADOW_names_both_the_old_call_and_decide(
+        self, monkeypatch, router, decide_spy,
+    ):
+        from acb_common import get_settings
+        from acb_common.db import bind_tenant, release_tenant
+        from gateway import decide_features as df
+        from gateway.routes.email import scheduler_hooks
+        from gateway.routes.email.core import _llm_json
+
+        monkeypatch.setenv("DECIDE_FEATURE_MODES", "email.cold_check=shadow")
+        monkeypatch.setenv("DECIDE_FEATURE_ORGS", _ORG)
+        get_settings.cache_clear()
+        df._parse_modes.cache_clear()
+        df._parse_orgs.cache_clear()
+        _as_owner(monkeypatch)
+
+        async def _old():
+            return await _llm_json("tier-fast", _MSG, max_tokens=10, feature="cold_check")
+
+        @scheduler_hooks.as_mailbox_owner
+        async def _job(_aid):
+            return await df.shadow(
+                "email.cold_check", _old, account_id="acc-1", build=_boolean_request,
+                compare=df.compare_boolean(lambda r: True, qid="q"))
+
+        token = bind_tenant(_ORG)
+        try:
+            asyncio.run(_job("acc-1"))
+        finally:
+            release_tenant(token)
+            get_settings.cache_clear()
+            df._parse_modes.cache_clear()
+            df._parse_orgs.cache_clear()
+        assert [c["agent"] for c in router.calls] == ["email.cold_check"]
+        assert decide_spy.calls and decide_spy.calls[0]["agent"] == "email.cold_check"
+
+    def test_a_CHAT_agent_keeps_its_name_through_an_email_helper(
+        self, monkeypatch, router, decide_spy,
+    ):
+        """🔴 An executor run of ``email-assistant`` calls helpers that name a
+        feature. Both the Router and ``decide`` still read ``email-assistant``."""
+        from acb_common.db import bind_tenant, release_tenant
+        from gateway import decide_features
+        from gateway.routes.email.core import _llm_json
+
+        async def go():
+            bind_run_context(agent="email-assistant", app="email",
+                             user="owner@acme.com", member_verified=True)
+            await _llm_json("tier-fast", _MSG, max_tokens=10, feature="draft_consult")
+            await decide_features.ask(
+                "email.rule_match", account_id="acc-1", message_id="m-1",
+                build=_boolean_request, read=lambda d: (True, {}))
+            return dict(get_run_context())
+
+        token = bind_tenant(_ORG)
+        try:
+            after = asyncio.run(go())
+        finally:
+            release_tenant(token)
+        assert [c["agent"] for c in router.calls] == ["email-assistant"]
+        assert decide_spy.calls[0]["agent"] == "email-assistant"
+        assert after["agent"] == "email-assistant"
+
+    def test_the_WHATSAPP_pass_names_its_automation(self, monkeypatch):
+        n, seen, _db = TestTheWhatsAppGroupSummaries._run(monkeypatch, "owner@acme.com")
+        assert n == 1
+        assert seen.get("X-CC-Agent") == "whatsapp.automation"

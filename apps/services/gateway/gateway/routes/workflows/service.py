@@ -611,7 +611,7 @@ async def _execute_run(
     billing_member = await _workflow_billing_member(workflow_id)
     if billing_member:
         member_scope.enter_context(
-            job_member_scope(billing_member, app="workflows")
+            job_member_scope(billing_member, app="workflows", agent="workflows.automation")
         )
 
     status = "failed"
