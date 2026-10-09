@@ -1,7 +1,7 @@
 # The shell — how a member finds an app, a job or an answer
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
-and 2, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+and 2, NS-3 slice A, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
@@ -381,7 +381,7 @@ altitudes it supports.
 |---|---|---|---|
 | Today | Personal | Calendar | The lens, `scheduledStart` and `scheduledEnd` |
 | Next actions | Personal | My Tasks | The lens, `/projects/my/*` |
-| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2443` |
+| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2554`. It reads `GET /email/digest`, the route `get_digest` in `routes/email/digest.py` |
 | Needs you | Personal | Every app | `GET /shell/needs` (§7.2) |
 | Team pulse | Team, all my teams | Projects | Report template T1, "Team pulse" (`projects_reports.md`) |
 | At-risk work | Team, all my teams | Projects | The analytics reads under `projects_ai_chat.md` §13 |
@@ -693,6 +693,74 @@ two:
     owner check of the email routes.
   - My Tasks: due today and overdue, through the lens.
 
+**Built in NS-3 slice A (2026-10-09, dark).** `gateway/routes/shell/needs.py`
+serves `GET /shell/needs` on the router of `search.py`. Three providers are
+built. Each one checks its feature, then calls the app's own read:
+
+| Source | Feature | Function |
+|---|---|---|
+| `tasks` | `feature:projects` | `my_due_tasks` in `routes/projects/personal.py` |
+| `projects` | `feature:projects` | `list_notifications`, unread only |
+| `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
+
+**Each read is one bounded query.** `my_due_tasks` reads the lens rows that
+are due before the member's tomorrow, in the member's zone. It gives the
+oldest deadline first, and 15 rows at most. `needs_reply_threads` gives the
+thread that waited longest first, and 15 rows at most.
+
+⚠️ **My Tasks needs `feature:projects`, not `feature:tasks`.** The lens
+routes are on the Projects router, and that router demands `projects`.
+
+**A Someday task never shows in the feed, also with a due date, but a Waiting
+task does.** The lens read leaves out each task that is not the member's to
+do now, and the provider checks the disposition of each row again.
+
+**A Reference task never shows in the feed either.** It is information, not an
+action. `NOT_NOW_DISPOSITIONS` in `routes/projects/personal.py` holds the two
+values, and the lens read and the feed both take them from it.
+
+**A snoozed or archived thread never shows in the feed.** The email read takes
+the rows that the Needs-reply count of the email app counts. So the feed
+leaves out a thread when the member snoozed its last message, or put it in
+the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
+an archived thread too.
+
+**Approvals is slice C, and it waits on H-201.** Until then the feed has no
+`approvals` source.
+
+**The contract.** My Day and the bell read this shape:
+
+- `GET /shell/needs?limit=` gives 30 rows by default, and 50 at most.
+- The answer is `{count, items, sources}`. `count` is the length of `items`.
+- Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
+  and `act_ref`.
+- `id` is `tasks:<task id>`, `projects:<notification id>` or
+  `email:<account id>:<thread id>`.
+- `kind` is `overdue`, `due_today`, `notification` or `needs_reply`.
+- `act` is `done`, `read` or null. `done` runs
+  `POST /projects/tasks/{act_ref}/complete`. `read` runs
+  `POST /projects/notifications/read` with the id in `ids`.
+- `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
+  that the member does not hold the feature.
+
+**The order.** Overdue rows come first, the oldest first. Then rows due today,
+then notifications with the newest first. Then needs-reply rows, with the
+person who waits longest first. Each source gives 15 rows at most, so one app
+cannot fill the feed.
+
+**Two rules from the email app apply.** A mailbox that the member keeps
+separate stays out of the feed (D-EM-30). The read of the mail never starts
+a backfill of the reply status.
+
+**A mailbox that fails costs only its own rows.** Each mailbox has a time
+limit of one second. The `email` source reads `failed` only when every
+mailbox failed.
+
+Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
+a failed source and the SQL of the two reads. `tests/unit/test_shell_needs_r8.py`
+is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
+a member with more work than the cap.
+
 ---
 
 ### 7.3 Updating, not broken
@@ -995,7 +1063,15 @@ Done when:
 5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
-### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on)
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, dark
+
+**Slice A is built.** `GET /shell/needs` serves three of the four providers
+of §7.2: My Tasks, Projects and Email. §7.2 records the contract. Done-when 2
+to 4 are met for those three, and the R8 run is in the pull request.
+
+Slice C adds Approvals after H-201. My Day itself (done-when 1 and 5) is a separate
+slice. No page reads the feed yet, so the route changes nothing that a member
+sees.
 
 Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
 app exports, and `gateway/routes/shell/needs.py` with its providers.
@@ -1288,7 +1364,7 @@ npx vitest run src/lib/nav.test.ts src/lib/shell/ src/lib/theme/
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_search.py tests/unit/test_shell_intent.py -q
+uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_search.py tests/unit/test_shell_intent.py -q
 uv run pytest tests/unit/test_tenant_coverage.py -q
 
 # This spec's prose
