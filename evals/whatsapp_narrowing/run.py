@@ -23,8 +23,8 @@ against the gateway stub, and the after path runs the REAL pipeline of
 2. COST. The after path's credits on the gated questions are at most
    :data:`COST_BAR` of the before path's credits.
 3. NEVER MORE (H-276). No gated question costs more after than before, and
-   the gated questions together do not. :data:`KNOWN_COSTS_MORE` names the one
-   question that already does, with the ratio that it may not pass.
+   the gated questions together do not. :data:`KNOWN_COSTS_MORE` is empty
+   since H-279, so no question has an exception.
 4. The rules of :func:`_rules` hold: tenancy, the real route parameters, one
    message for each PICK item, and a READ that changes no state.
 
@@ -80,15 +80,17 @@ THREAD = "thread-whatsapp-narrowing-eval"
 #: eval (§7.2). A WhatsApp message is about 15 tokens, and PICK spends about
 #: 160 tokens on each candidate. N4 gated at 1.00 with a ratio of 0.650. H-276
 #: skips PICK when it does not pay, and the ratio fell to 0.622. So the bar
-#: moves toward the email bar, to 0.65: a ratchet with a small headroom. The
-#: summary prints the email bar beside it, so nobody reads a pass as a saving.
-COST_BAR = Decimal("0.65")
+#: moved toward the email bar, to 0.65: a ratchet with a small headroom. H-279
+#: reads one whole chat once and merges windows that overlap, and the ratio
+#: fell to 0.544. So the ratchet moves again, to 0.57. The summary prints the
+#: email bar beside it, so nobody reads a pass as a saving.
+COST_BAR = Decimal("0.57")
 #: The questions that cost more than today's path, with the highest ratio that
-#: the rule of H-276 accepts for each, and the HANDOFF id of the fix. Q2 asks
-#: for every message of one group in three weeks. NARROW finds 27 messages,
-#: more than the READ cap of 25, so PICK must run, and the READ windows of one
-#: chat overlap. With no PICK at all (a READ cap of 30), Q2 costs 1.447 times today.
-KNOWN_COSTS_MORE: dict[str, tuple[Decimal, str]] = {"Q2": (Decimal("1.45"), "H-279")}
+#: the rule of H-276 accepts for each, and the HANDOFF id of the fix. It is
+#: EMPTY, so the rule holds for every gated question. Q2 was here at 1.45
+#: until H-279: it asks for every message of one group in three weeks, and the
+#: adapter now reads that chat in ONE read, with no PICK and no windows.
+KNOWN_COSTS_MORE: dict[str, tuple[Decimal, str]] = {}
 #: The bar of the email eval, printed for comparison. It is not a gate here.
 EMAIL_BAR = Decimal("0.40")
 
@@ -284,15 +286,23 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
     off_route: list[str] = []
     from acb_skills import narrowing
 
-    window = scripted_window()
+    window, span_limit = scripted_window(), scripted_span_limit()
     for qid, paths in results.items():
         after = paths["after"]
         reads = [r for r in after.requests if r.path != "/whatsapp/search"]
-        off_route += [f"{qid}:{r.path}" for r in reads
-                      if not _is_read(r) or "around" not in r.params
-                      or r.params.get("window") != [str(window)]]
-        anchors = [(r.params.get("around") or [""])[-1] for r in reads]
-        if len(anchors) > narrowing.READ_CAP or not set(anchors) <= set(after.found):
+        # H-279: a read of one whole chat is the thread route with `limit` and
+        # no `around`, once, and it reads only messages that NARROW found.
+        spans = [r for r in reads if _is_read(r) and "around" not in r.params]
+        windows = [r for r in reads if r not in spans]
+        off_route += [f"{qid}:{r.path}" for r in windows
+                      if not _is_read(r) or r.params.get("window") != [str(window)]]
+        off_route += [f"{qid}:{r.path}?{sorted(r.params)}" for r in spans
+                      if set(r.params) != {"limit"}
+                      or not 0 < int(r.params["limit"][-1]) <= span_limit]
+        anchors = [(r.params.get("around") or [""])[-1] for r in windows]
+        if (len(anchors) > narrowing.READ_CAP or not set(anchors) <= set(after.found)
+                or len(spans) > 1 or (spans and windows)
+                or not {i for r in spans for i in r.ids} <= set(after.found)):
             over.append(qid)
     bodies = _one_message_each(ds, door)
     return {
@@ -302,8 +312,8 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
         "narrow_is_hybrid_websearch_201": {"pass": bool(searches) and not not_fixed,
                                            "detail": not_fixed},
         "read_only_kept_within_cap": {"pass": not over, "detail": over},
-        # READ changes no state: a GET of the thread route with `around`, and
-        # no other method or route on either path.
+        # READ changes no state: a GET of the thread route, with `around` or,
+        # for one whole chat, with `limit` (H-279), and no other method or route.
         "read_changes_no_state": {"pass": not writes and not off_route,
                                   "detail": writes + off_route},
         "one_message_for_each_pick_item": (
@@ -313,14 +323,23 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
     }
 
 
-def scripted_window() -> int:
-    """The adapter's READ window, read from the adapter file."""
+def _adapter() -> Any:
     spec = importlib.util.spec_from_file_location(
         "whatsapp_narrowing_eval_source", AGENT_DIR / "narrow_source.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return int(module.READ_WINDOW)
+    return module
+
+
+def scripted_window() -> int:
+    """The adapter's READ window, read from the adapter file."""
+    return int(_adapter().READ_WINDOW)
+
+
+def scripted_span_limit() -> int:
+    """The most messages of one whole-chat read (H-279), from the adapter file."""
+    return int(_adapter().SPAN_LIMIT)
 
 
 def _break_even(
@@ -522,9 +541,11 @@ def summary_lines(s: Summary) -> list[str]:
         f"ratio {t['ratio']} (bar {t['cost_bar']}), best case for today "
         f"{t['ratio_best_case_for_today']}"
     )
+    decide = t["break_even_decide_x"]
     lines.append(
         f"  break-even: tier-powerful x{t['break_even_powerful_x']}, "
-        f"tier-decide x{t['break_even_decide_x']}"
+        + (f"tier-decide x{decide}" if decide is not None
+           else "tier-decide none (no gated question sends a PICK request)")
     )
     lines.extend(never_more_lines(s.rules))
     for name, rule in s.rules.items():

@@ -16,12 +16,15 @@ and the eval must fail on it:
   ``test_recall_fails_when_pick_drops_an_answer``; the keep rule drops a low
   ``no`` -> ``test_recall_fails_when_the_keep_rule_drops_a_low_no``; the READ
   cap leaves an answer unread -> ``test_recall_fails_when_read_leaves_an_answer``;
-* the rule of H-276: Q2 costs more than its known gate ->
-  ``test_never_more_fails_when_q2_costs_more_than_its_gate``; a question over
-  today's path that the eval does not name ->
-  ``test_never_more_fails_on_a_question_it_does_not_name``;
-* the cost check stops skipping PICK on short messages ->
-  ``test_the_short_questions_skip_pick``;
+* the rule of H-276, with no exception since H-279: Q2 goes back to PICK and
+  windows (the cost of 1.45 times today) ->
+  ``test_never_more_fails_when_q2_regresses``;
+* the cost check stops skipping PICK on short messages, or Q2 stops reading
+  its chat as one span -> ``test_the_short_questions_skip_pick``;
+* READ shows a message twice (windows that overlap do not merge) ->
+  ``test_no_message_shows_twice``;
+* a span read takes a message that NARROW did not find ->
+  ``test_a_span_read_past_its_matches_fails_the_rule``;
 * a leak of another member's chat -> ``test_a_leak_of_another_members_chat_fails``;
 * a PICK item with more than its one message -> ``test_the_wire_rule_finds_a_thread``;
 * a write on either path -> ``test_a_write_fails_the_no_state_rule``;
@@ -131,17 +134,17 @@ def test_the_scripted_sweep_passes(raw: run.Raw) -> None:
 
 
 def test_the_summary_says_the_email_bar_is_not_met(raw: run.Raw) -> None:
-    """The bar here is 0.65, over the email bar. The summary prints the email
+    """The bar here is 0.57, over the email bar. The summary prints the email
     bar beside it, and each question that costs more, so a pass never reads
     as a measured saving."""
     summary = run.judge(raw)
     lines = "\n".join(run.summary_lines(summary))
-    assert summary.totals["cost_bar"] == "0.65" and summary.totals["email_bar"] == "0.40"
+    assert summary.totals["cost_bar"] == "0.57" and summary.totals["email_bar"] == "0.40"
     assert summary.totals["ratio"] > 0.40
     assert "EMAIL BAR: the email eval gates at 0.40. This ratio is OVER it" in lines
     assert "WEAK CASE: today's path with every chat read in ONE request" in lines
     assert "break-even: tier-powerful x" in lines
-    assert "COSTS MORE: Q2" in lines
+    assert "COSTS MORE" not in lines  # H-279: no gated question costs more
     assert any("PICK verdict" in s for s in summary.totals["stubbed"])
 
 
@@ -278,8 +281,9 @@ def test_compare_refuses_a_door_that_is_not_local(monkeypatch: pytest.MonkeyPatc
 
 def test_the_short_questions_skip_pick(raw: run.Raw) -> None:
     """A WhatsApp message is short, so the cost check skips PICK and READ takes
-    every candidate. Q2 has 27 candidates, more than the READ cap of 25, so
-    PICK still runs there. Recall stays 1.0 on every gated question."""
+    every candidate. Q2 has 27 candidates, more than the READ cap of 25. Its
+    filters choose one whole chat, so READ takes that chat in ONE read, with no
+    PICK (H-279). Recall stays 1.0 on every gated question."""
     summary = run.judge(raw)
     end = (
         ", with no PICK step. A check of items this short costs more than it saves. "
@@ -291,46 +295,70 @@ def test_the_short_questions_skip_pick(raw: run.Raw) -> None:
         assert "tier-decide" not in q["after"]["tiers"], qid
         assert q["after"]["read"] == q["after"]["found"], qid
     q2 = _q(summary, "Q2")
-    assert q2["after"]["count_line"].startswith("Checked 27 matches.")
-    assert q2["after"]["tiers"]["tier-decide"]["requests"] == 2
+    assert q2["after"]["count_line"].startswith(
+        "Read all 27 matches in full, as one span in reading order, with no PICK step.")
+    assert "tier-decide" not in q2["after"]["tiers"]
+    assert q2["after"]["read"] == q2["after"]["found"] == 27
+    reads = [r for r in raw.results["Q2"]["after"].requests if r.path != "/whatsapp/search"]
+    assert [(r.path, r.params) for r in reads] == [
+        (reads[0].path, {"limit": ["27"]})]  # one GET of the thread route
     assert all(q["after"]["recall"] == 1.0 for q in summary.questions if q["gated"])
 
 
-def test_never_more_holds_with_q2_named(raw: run.Raw) -> None:
-    """Q2 costs more than today's path, and the eval names it with its fix
-    (H-279). Every other gated question, and the four together, cost less."""
+def test_never_more_holds_for_every_question(raw: run.Raw) -> None:
+    """H-279 removed the one exception. No gated question costs more than
+    today's path, and the four together cost less."""
     summary = run.judge(raw)
     rule = summary.rules[run.NEVER_MORE]
-    assert rule["pass"] is True and rule["detail"] == []
-    assert len(rule["accepted"]) == 1 and rule["accepted"][0].startswith("Q2 x")
-    assert "H-279" in rule["accepted"][0]
-    known = run.KNOWN_COSTS_MORE
-    assert known == {"Q2": (Decimal("1.45"), "H-279")}
-    for qid in ("Q1", "Q3", "Q4"):
+    assert run.KNOWN_COSTS_MORE == {}
+    assert rule["pass"] is True and rule["detail"] == [] and rule["accepted"] == []
+    for qid in ("Q1", "Q2", "Q3", "Q4"):
         assert _q(summary, qid)["ratio"] <= 1, qid
     lines = "\n".join(run.summary_lines(summary))
-    assert "COSTS MORE: Q2 costs x" in lines and "(known, H-279)" in lines
-    assert "NEVER MORE: accepted Q2 x" in lines
+    assert "NEVER MORE: accepted" not in lines and "COSTS MORE" not in lines
 
 
-def test_never_more_fails_when_q2_costs_more_than_its_gate(raw: run.Raw) -> None:
-    """A card where ``tier-decide`` costs 1.5 times the eval card puts Q2 past
-    its gate of x1.45. The rule fails on it."""
-    card = stub_api.load_card()
-    scaled = {tier: ({k: str(Decimal(v) * Decimal("1.5")) for k, v in rate.items()}
-                     if tier == "tier-decide" else rate)
-              for tier, rate in card.items()}
-    broken = run.judge(raw, scaled)
-    rule = broken.rules[run.NEVER_MORE]
-    assert rule["pass"] is False and broken.passed is False
-    assert [d for d in rule["detail"] if d.startswith("Q2 x")], rule
+def test_never_more_fails_when_q2_regresses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no span read, Q2 goes back to PICK and to windows that overlap,
+    at about 1.45 times today's path. The gate has no exception for it now,
+    so the rule fails."""
 
+    async def no_span(*_a: Any, **_k: Any) -> None:
+        return None  # the span read is off: the steps of PICK take over
 
-def test_never_more_fails_on_a_question_it_does_not_name(
-    raw: run.Raw, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(run, "KNOWN_COSTS_MORE", {})
-    broken = run.judge(raw)
-    rule = broken.rules[run.NEVER_MORE]
-    assert rule["pass"] is False and broken.passed is False
+    monkeypatch.setattr(narrowing, "_span_answer", no_span)
+    summary = _sweep(only=("Q2",))
+    q2 = _q(summary, "Q2")
+    assert q2["after"]["count_line"].startswith("Checked 27 matches.")
+    assert q2["ratio"] > 1
+    rule = summary.rules[run.NEVER_MORE]
+    assert rule["pass"] is False and summary.passed is False
     assert rule["detail"] and rule["detail"][0].startswith("Q2 x")
+
+
+def test_no_message_shows_twice(raw: run.Raw) -> None:
+    """READ windows of one chat that overlap merge (H-279), so no message line
+    shows twice in any output. Q1 has windows that overlap."""
+    for qid, paths in raw.results.items():
+        out = paths["after"].output
+        lines = [ln for ln in out.splitlines() if ln.startswith((">> [", "   ["))]
+        assert len(lines) == len(set(lines)), qid
+    q1 = raw.results["Q1"]["after"]
+    rows = [i for r in q1.requests if r.path != "/whatsapp/search" for i in r.ids]
+    assert len(rows) > len(set(rows))  # the windows of Q1 DO overlap
+    assert q1.output.count("--- item ") < len([r for r in q1.requests
+                                               if r.path != "/whatsapp/search"])
+
+
+def test_a_span_read_past_its_matches_fails_the_rule(raw: run.Raw) -> None:
+    """A whole-chat read takes only messages that NARROW found. A read of one
+    more fails the rule."""
+    after = raw.results["Q2"]["after"]
+    [span] = [r for r in after.requests if r.path != "/whatsapp/search"]
+    span.ids.append(raw.ds.messages[0]["id"])
+    try:
+        assert raw.ds.messages[0]["id"] not in after.found
+        assert run._rules(raw.ds, raw.results, None)["read_only_kept_within_cap"]["pass"] is False
+    finally:
+        span.ids.pop()
+    assert run._rules(raw.ds, raw.results, None)["read_only_kept_within_cap"]["pass"] is True
