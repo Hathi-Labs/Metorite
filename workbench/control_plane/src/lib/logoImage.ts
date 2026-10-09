@@ -105,12 +105,20 @@ export function fitAspect(box: Box, min = MIN_ASPECT, max = MAX_ASPECT): Box {
   return box;
 }
 
-/** The output size in px: the slot's height at 3×, never wider than the slot. */
+/**
+ * The output size in px: the slot's height at 3×, never wider than the slot.
+ * ⚠️ Rounding can push an exact 8:1 box to 540×67, which is 8.06 and refused.
+ * So the short side grows by a pixel when the rounded shape passes a bound.
+ */
 export function outputSize(box: Box, density = LOGO_DENSITY): { width: number; height: number } {
   const maxH = LOGO_DISPLAY_HEIGHT * density;
   const maxW = LOGO_DISPLAY_MAX_WIDTH * density;
   const scale = Math.min(maxH / box.h, maxW / box.w);
-  return { width: Math.max(1, Math.round(box.w * scale)), height: Math.max(1, Math.round(box.h * scale)) };
+  let width = Math.max(1, Math.round(box.w * scale));
+  let height = Math.max(1, Math.round(box.h * scale));
+  if (width / height > MAX_ASPECT) height = Math.ceil(width / MAX_ASPECT);
+  if (width / height < MIN_ASPECT) width = Math.ceil(height * MIN_ASPECT);
+  return { width, height };
 }
 
 /**

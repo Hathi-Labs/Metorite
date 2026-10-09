@@ -3,6 +3,9 @@
  * an admin really has: a PNG on transparency, a JPEG on white, a wordmark too
  * long for the server, a black logo that vanishes on the dark sidebar.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +17,8 @@ import {
   outputSize,
   removeSolid,
   toWhite,
+  MAX_ASPECT,
+  MIN_ASPECT,
   type Pixels,
 } from "./logoImage";
 
@@ -78,7 +83,32 @@ describe("the shape always fits, so the server never refuses it", () => {
   });
 });
 
+describe("the editor's bounds are the gateway's", () => {
+  // The editor pads every logo into these bounds so the server never refuses
+  // it. If the gateway's numbers change and these do not, it would.
+  const SETTINGS = fileURLToPath(new URL("../../../../apps/services/gateway/gateway/routes/settings.py", import.meta.url));
+  const py = readFileSync(SETTINGS, "utf8");
+  const num = (name: string) => Number(new RegExp(`^${name}\\s*=\\s*([0-9.]+)`, "m").exec(py)?.[1]);
+
+  it("has the same shape bounds", () => {
+    expect(num("_LOGO_MIN_ASPECT")).toBe(MIN_ASPECT);
+    expect(num("_LOGO_MAX_ASPECT")).toBe(MAX_ASPECT);
+  });
+});
+
 describe("the output size", () => {
+  it("never rounds an exact 8:1 box past 8:1 (measured: 540x67)", () => {
+    for (const w of [1054.546, 800.5, 2047.3, 333.333]) {
+      const s = outputSize({ x: 0, y: 0, w, h: w / 8 });
+      expect(s.width / s.height).toBeLessThanOrEqual(8);
+    }
+  });
+  it("never rounds an exact 1:2 box under 1:2", () => {
+    for (const h of [101.3, 77.77, 2047.9]) {
+      const s = outputSize({ x: 0, y: 0, w: h / 2, h });
+      expect(s.width / s.height).toBeGreaterThanOrEqual(0.5);
+    }
+  });
   it("is the slot's height at 3x for a normal wordmark", () => {
     expect(outputSize({ x: 0, y: 0, w: 1200, h: 400 })).toEqual({ width: 252, height: 84 });
   });

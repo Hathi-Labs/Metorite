@@ -70,6 +70,14 @@ describe("PUT /api/settings/branding", () => {
     expect(res.status).toBe(400);
   });
 
+  it("admits two images, each at its own cap", async () => {
+    const { PUT } = await import("./route");
+    const big = "A".repeat(256 * 1024);
+    const res = await PUT(put({ logoBase64: big, logoDarkBase64: big, darkStyle: "white" }));
+    expect(res.status).toBe(200);
+    expect((sent?.logoDarkBase64 as string).length).toBe(big.length);
+  });
+
   it("refuses an image past its own cap", async () => {
     const { PUT } = await import("./route");
     const res = await PUT(put({ logoBase64: "A".repeat(256 * 1024 + 4) }));

@@ -186,6 +186,19 @@ describe("the first-paint cache (OI-3a)", () => {
     expect(readCachedBranding(s)?.logo?.dataUri).toBe("data:image/png;base64,AAAA");
   });
 
+  it("drops a bad cached dark image and keeps the logo", () => {
+    const s = fakeStore();
+    writeCachedBranding(s, {
+      ...good,
+      logoDark: { ...good.logo!, dataUri: "javascript:alert(1)" },
+      darkStyle: "white",
+    });
+    const read = readCachedBranding(s);
+    expect(read?.logo?.dataUri).toBe("data:image/png;base64,AAAA");
+    expect(read?.logoDark).toBeNull();
+    expect(read?.darkStyle).toBe("same");
+  });
+
   it("treats a cached 'no logo' as a real answer, not a miss", () => {
     // Otherwise every org WITHOUT a logo pays the round-trip forever, which is
     // the majority of orgs.
