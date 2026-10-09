@@ -38,6 +38,8 @@ import {
   marginPctOf,
   multiplierOfPct,
   plannedMargin,
+  legMargins,
+  cachedAboveInput,
   priceState,
   pricingAlert,
   rowCost,
@@ -150,6 +152,7 @@ function TierCard({
   const state = priceState(row);
   const cost = rowCost(row, assumptions);
   const planned = plannedMargin(row, assumptions);
+  const legs = legMargins(row, assumptions);
   const unit = singular(row.unit);
 
   const STATE_CHIP: Record<typeof state, { tone: Parameters<typeof chipClass>[0]; label: string; help: string }> = {
@@ -196,7 +199,20 @@ function TierCard({
 
         <dt title={HELP_PRICING.marginVsFloor}>margin</dt>
         <dd>
-          {planned === null ? (
+          {legs ? (
+            // 🔴 One margin per price, because one number hid a 99 percent
+            // cached price behind a 57 percent input price (2026-10-09).
+            <>
+              input {marginLabelPct(legs.input)} · output {marginLabelPct(legs.output)} ·
+              cached {marginLabelPct(legs.cached)}{" "}
+              <span className="muted small">of what they pay is ours</span>
+              {cachedAboveInput(row) && (
+                <div>
+                  <span className={chipClass("danger")}>cached costs more than fresh input</span>
+                </div>
+              )}
+            </>
+          ) : planned === null ? (
             <span className="muted">—</span>
           ) : (
             <>
@@ -297,7 +313,7 @@ function TierCard({
 
 /** What the vendor charges us, in the card's own scale and in rupees. */
 function costLine(
-  cost: { input: number | null; output: number | null },
+  cost: { input: number | null; output: number | null; cached: number | null },
   row: TierPriceRow,
   a: ReturnType<typeof savedAssumptions>,
   catalog: AiCatalog,
@@ -330,11 +346,15 @@ function costLine(
   }
   const i = roundCredits(cost.input);
   const o = cost.output === null ? "—" : roundCredits(cost.output);
+  // WS-50: the cached price shows too. Most input tokens are cache hits, and
+  // a card that left this price out hid the costliest mistake on the board.
+  const c = cost.cached === null ? "—" : roundCredits(cost.cached);
   return (
     <>
-      {i} in / {o} out per 1M{" "}
+      {i} in / {o} out / {c} cached per 1M{" "}
       <span className="muted small">
-        ({inrLabel(i, catalog.creditPrice)} / {inrLabel(o, catalog.creditPrice)})
+        ({inrLabel(i, catalog.creditPrice)} / {inrLabel(o, catalog.creditPrice)} /{" "}
+        {inrLabel(c, catalog.creditPrice)})
       </span>
     </>
   );
@@ -355,10 +375,11 @@ function chargeLine(row: TierPriceRow, catalog: AiCatalog) {
   if (row.tokenPriced) {
     return (
       <>
-        {rate.inputPer1m} in / {rate.outputPer1m} out per 1M{" "}
+        {rate.inputPer1m} in / {rate.outputPer1m} out / {rate.cachedInputPer1m} cached per 1M{" "}
         <span className="muted small">
           ({inrLabel(rate.inputPer1m, catalog.creditPrice)} /{" "}
-          {inrLabel(rate.outputPer1m, catalog.creditPrice)})
+          {inrLabel(rate.outputPer1m, catalog.creditPrice)} /{" "}
+          {inrLabel(rate.cachedInputPer1m, catalog.creditPrice)})
         </span>
       </>
     );

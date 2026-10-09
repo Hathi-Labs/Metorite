@@ -81,6 +81,12 @@ describe("fleetMoney", () => {
     expect(fleet.totals.profit).toBe(1200 - 935);
   });
 
+  it("states the AI margin apart from seats", () => {
+    // AI alone: ₹200 of bought credits against ₹935 of AI cost.
+    expect(fleet.totals.aiRevenue).toBe(200);
+    expect(fleet.totals.aiMargin).toBeCloseTo((200 - 935) / 200);
+  });
+
   it("counts the customers that lose money", () => {
     // b: ₹100 charged, ₹850 AI cost.
     expect(fleet.totals.losing).toBe(1);

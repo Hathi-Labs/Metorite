@@ -65,21 +65,60 @@ export type TierPriceRow = {
 export function rowCost(
   row: TierPriceRow,
   a: Assumptions | null,
-): { input: number | null; output: number | null } {
-  if (a === null || row.primary === null) return { input: null, output: null };
+): { input: number | null; output: number | null; cached: number | null } {
+  if (a === null || row.primary === null) return { input: null, output: null, cached: null };
   if (!row.tokenPriced) {
     // A per-unit task prices from the profile column its task uses. The
     // conversion already happened in the feed read, so nothing scales here.
     const usd = perUnitVendorUsd(row.task, row.primary);
     const c = creditsPerUnitFromUsd(usd, a);
-    return { input: c, output: null };
+    return { input: c, output: null, cached: null };
   }
   const inC = vendorCostCreditsPer1k(row.primary.inputPer1M, a);
   const outC = vendorCostCreditsPer1k(row.primary.outputPer1M, a);
+  const cachedC = vendorCostCreditsPer1k(row.primary.cachedInputPer1M, a);
   return {
     input: inC === null ? null : inC * PER_1M,
     output: outC === null ? null : outC * PER_1M,
+    cached: cachedC === null ? null : cachedC * PER_1M,
   };
+}
+
+/** The margin on EACH price of a token tier: input, output and cached input.
+ *
+ * 🔴 **Why three.** `plannedMargin` judges the input price alone. On
+ * 2026-10-09 the board read about 57 percent while the cached-input price was
+ * 500 credits per 1M against a vendor price near 4 credits: a 99 percent
+ * margin on the price that carried 77 percent of all AI revenue, because an
+ * agent re-sends its context and most input tokens are cache hits. One
+ * number hid it. Each leg is null when either side is unknown.
+ */
+export function legMargins(
+  row: TierPriceRow,
+  a: Assumptions | null,
+): { input: number | null; output: number | null; cached: number | null } | null {
+  if (row.rate === null || row.rate.mode !== "priced" || !row.tokenPriced) return null;
+  const cost = rowCost(row, a);
+  const one = (charge: string, c: number | null): number | null => {
+    const n = Number(charge);
+    if (c === null || !Number.isFinite(n) || n <= 0) return null;
+    return (n - c) / n;
+  };
+  return {
+    input: one(row.rate.inputPer1m, cost.input),
+    output: one(row.rate.outputPer1m, cost.output),
+    cached: one(row.rate.cachedInputPer1m, cost.cached),
+  };
+}
+
+/** True when a tier charges MORE for a cached input token than a fresh one.
+ *  The vendor charges a small fraction for a cache hit, so this is almost
+ *  always a typing mistake, and an expensive one. */
+export function cachedAboveInput(row: TierPriceRow): boolean {
+  if (row.rate === null || row.rate.mode !== "priced" || !row.tokenPriced) return false;
+  const i = Number(row.rate.inputPer1m);
+  const c = Number(row.rate.cachedInputPer1m);
+  return Number.isFinite(i) && Number.isFinite(c) && c > i;
 }
 
 /** Which profile column a non-token task takes its vendor cost from (H-78).
@@ -248,6 +287,25 @@ export function pricingAlert(
       detail:
         "These bill below the margin they were given. Real traffic says so, " +
         "not a forecast. Reprice them, or lower the floor on purpose.",
+    };
+  }
+
+  // 🔴 A cached price above the fresh price is a mistake that bills the
+  // customer for the cheapest tokens at the dearest rate (2026-10-09).
+  const cachedHigh = rows.filter(cachedAboveInput);
+  if (cachedHigh.length > 0) {
+    return {
+      tone: "danger",
+      title:
+        cachedHigh.length === 1
+          ? "1 tier charges more for cached input than for fresh input"
+          : `${cachedHigh.length} tiers charge more for cached input than for fresh input`,
+      detail:
+        "The vendor charges a small fraction for a cached token, and most input " +
+        "tokens are cached, because an agent sends its context again on every " +
+        "call. Check the cached price on each card below: " +
+        cachedHigh.map((r) => r.tier.label || r.tier.slug).join(", ") +
+        ".",
     };
   }
 

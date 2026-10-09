@@ -430,6 +430,16 @@ export function rowMoney(
   return { charged, aiCost, profit, margin };
 }
 
+/** The margin on AI alone: bought credits used against the AI cost. Seats
+ *  are left out, because they carry no AI cost and pull the margin up.
+ *  A FRACTION, or null when either side is unknown or nothing was bought. */
+export function aiMarginOf(m: CustomerMoney): number | null {
+  const rev = m.paidCredits.value;
+  const cost = m.aiCost.value;
+  if (rev === null || cost === null || rev <= 0) return null;
+  return (rev - cost) / rev;
+}
+
 /** The average rupees a credit earned this customer in the window. */
 export function earnedPerCredit(whole: CustomerMoney): number | null {
   return whole.paidCredits.value !== null && whole.creditsUsed > 0
