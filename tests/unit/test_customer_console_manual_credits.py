@@ -274,3 +274,12 @@ def test_a_grant_without_a_price_is_still_legal(client, org):
     r = _grant(client, org, "50", ref=f"UTR-{uuid.uuid4().hex[:10]}")
     assert r.status_code == 200, r.text
     assert ("purchase", Decimal("50"), None) in _lots(org)
+
+
+def test_a_price_with_more_than_two_decimals_is_refused(client, org):
+    """The lot holds paise. A third decimal would round in the lot and not in
+    the audit row, so the two would disagree."""
+    r = client.post("/credits/grant", headers=OP, json={
+        "org_slug": org, "credits": "10", "reason": "manual",
+        "ref": f"UTR-{uuid.uuid4().hex[:10]}", "price_paid_inr": "1200.005"})
+    assert r.status_code == 422

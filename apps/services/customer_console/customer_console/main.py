@@ -648,7 +648,11 @@ class CreditGrantRequest(BaseModel):
     #: the operator console could not say what those credits earned and had
     #: to guess at the current credit price. Optional, so an old caller stays
     #: legal (R6), and legal only on a reason that SELLS credits.
-    price_paid_inr: Decimal | None = Field(default=None, ge=Decimal(0), le=Decimal("9999999999"))
+    #: ⚠️ Two decimal places, the precision of `credit_lot.price_paid_inr`
+    #: (NUMERIC(12,2)), so the lot and the audit row cannot disagree.
+    price_paid_inr: Decimal | None = Field(
+        default=None, ge=Decimal(0), le=Decimal("9999999999"), decimal_places=2
+    )
 
     @field_validator("reason")
     @classmethod
@@ -6444,7 +6448,9 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 "delta": str(req.credits),
                 "reason": req.reason,
                 "price_paid_inr": (
-                    None if req.price_paid_inr is None else str(req.price_paid_inr)
+                    None
+                    if req.price_paid_inr is None
+                    else str(req.price_paid_inr.quantize(Decimal("0.01")))
                 ),
             },
             actor=staff.actor,
