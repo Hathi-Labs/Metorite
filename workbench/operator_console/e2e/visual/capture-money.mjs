@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 
 const OUT = process.argv[2];
 const BASE = "http://localhost:3102";
-const ROUTE = process.env.ROUTE ?? "/customers/hathi-labs-llp";
+const ROUTE = process.argv[3] ?? "/customers/hathi-labs-llp";
 mkdirSync(OUT, { recursive: true });
 
 const CONTEXTS = [
