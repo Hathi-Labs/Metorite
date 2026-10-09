@@ -24,6 +24,10 @@
 -- Depends on: 151_org_settings.sql, 130_org_access_control.sql (organization).
 -- ============================================================================
 
+-- One transaction. The runner pipes the file to psql without -1, so without
+-- this a lock timeout on ADD PRIMARY KEY would leave the table with NO key.
+BEGIN;
+
 ALTER TABLE org_settings
     ADD COLUMN IF NOT EXISTS organization_id UUID
         REFERENCES organization(id) ON DELETE CASCADE;
@@ -63,3 +67,5 @@ BEGIN
             PRIMARY KEY (organization_id, key);
     END IF;
 END $$;
+
+COMMIT;
