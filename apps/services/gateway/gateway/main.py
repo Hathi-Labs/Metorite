@@ -1492,6 +1492,19 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-47 WAC-1 — Chat on WhatsApp, the member's link code
+    # (whatsapp_assistant_channel.md §5.2). A router of its own, gated on
+    # `feature:chat`, and NOT on the `/whatsapp` router above, whose
+    # `feature:whatsapp` gate belongs to the inbox app. Ships dark behind
+    # WHATSAPP_ASSISTANT_ENABLED + WHATSAPP_ASSISTANT_ORGS: off ⇒ 404, nothing
+    # written. `test_wac_link_code.py` fails if this mount is lost.
+    from gateway.routes.whatsapp_channel import router as _whatsapp_channel_router
+
+    app.include_router(_whatsapp_channel_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # Custom Apps / App Workshop (docs/app-workshop/README.md) — app CRUD,
     # workspace files, publish/versions, and the App Runtime API (prefix /apps).
     from gateway.routes.apps import router as _apps_router
