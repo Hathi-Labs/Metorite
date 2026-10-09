@@ -14,11 +14,18 @@ Spec `project-docs/specs/project_import.md` §5.3, §6, §7.3, §9 row I-3 · **
 5. A run that cannot read its file ends `failed` with a reason.
 6. In a second organization: an import into an EXISTING space follows the
    grammar, a task the pre-D52 importer wrote is skipped, and a re-run into
-   the same space reuses its folders and projects.
+   the same space reuses its folders and projects. The space gains only the
+   status names it lacks, and keeps them after a discard (I-10).
+7. In a third organization (I-10): a task with no status lands in Backlog.
+   Then the tree is rebuilt by hand in its pre-I-10 shape, with one status
+   set per List, and a re-upload of the same file adds 0 lanes.
+
+I-10 also checks, in the first organization, that a new space holds ONE set
+and that every List and Folder the run creates uses it (2b).
 
 It drives the REAL writer, which opens its own tenant sessions, so it points
 the shared engine at the scratch database through `DATABASE_URL`. The writer
-COMMITS, so this script works in two fresh organizations and deletes both.
+COMMITS, so this script works in three fresh organizations and deletes them.
 
 ── How to run ───────────────────────────────────────────────────────────────
 
@@ -45,10 +52,16 @@ os.environ["PROJECT_IMPORT_DIR"] = tempfile.mkdtemp(prefix="ws41-live-")
 sys.path.insert(0, os.environ.get("LIVE_GATEWAY_PATH", "apps/services/gateway"))
 
 from gateway.db import tenant_session
-from gateway.routes.projects import import_writer, imports
+from gateway.routes.projects import import_discard, import_writer, imports
 from gateway.routes.projects.core import resolve_visibility_for
 from gateway.routes.projects.importer import clickup
-from gateway.routes.projects.importer.plan import ImportMapping, Target, build_plan
+from gateway.routes.projects.importer.layout import STAGE_ORDER
+from gateway.routes.projects.importer.plan import (
+    ImportMapping,
+    Target,
+    build_plan,
+    propose_category,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -59,6 +72,9 @@ TAG = uuid.uuid4().hex[:6]
 ADMIN = f"admin.{TAG}@acme.test"
 MEMBER = f"member.{TAG}@acme.test"
 ADMIN2 = f"admin2.{TAG}@acme.test"
+ADMIN3 = f"admin3.{TAG}@acme.test"
+#: I-10 — what the ten ClickUp statuses of the fixture become (§6.3).
+SIX = {"Backlog", "To do", "In progress", "Review", "On hold", "Done"}
 
 results: list[tuple[str, bool, str]] = []
 
@@ -185,12 +201,15 @@ async def main() -> None:
     await eng.dispose()
     person1 = sum(1 for t in bundle.tasks if "name:person 1" in t.assignee_refs)
     org2 = await seed("b", [ADMIN2])
+    org3 = await seed("c", [ADMIN3])
     try:
         await first_org(org, bundle, raw, person1)
         await second_org(org2, bundle, raw)
+        await third_org(org3, raw)
     finally:
         await drop(org)
         await drop(org2)
+        await drop(org3)
 
 
 async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
@@ -275,6 +294,93 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     )
     check("2.7 task numbers are unique per space", numbers == 0, str(numbers))
 
+    # ── 2b. I-10: one status set per space (§6.3) ───────────────────────
+    owning = await one(
+        org,
+        "SELECT count(*) FROM pm_projects WHERE organization_id = CAST(:org AS uuid) "
+        "   AND source = 'import' AND parent_project_id IS NOT NULL AND owns_statuses",
+    )
+    check(
+        "2b.1 every List and Folder the run created sets owns_statuses = false",
+        owning == 0,
+        str(owning),
+    )
+    holders = await rows(
+        org,
+        "SELECT p.parent_project_id IS NULL AS is_space, count(DISTINCT p.id) AS n "
+        "  FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) AND p.source = 'import' GROUP BY 1",
+    )
+    check(
+        "2b.2 a new space holds one set, and only the five spaces hold one",
+        {(r.is_space, r.n) for r in holders} == {(True, 5)},
+        str([(r.is_space, r.n) for r in holders]),
+    )
+    lanes = await rows(
+        org,
+        "SELECT s.name, s.category, count(*) AS n FROM pm_task_statuses s "
+        "  JOIN pm_projects p ON p.id = s.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) AND p.source = 'import' GROUP BY 1, 2",
+    )
+    stage = {r.name: r.category for r in lanes}
+    per_name = {r.name: r.n for r in lanes}
+    check(
+        "2b.3 the sets hold the seed in every space, and the proposals: six names",
+        set(stage) == SIX
+        and all(per_name[n] == 5 for n in ("Backlog", "To do", "In progress", "Done"))
+        and stage["Review"] == "in_progress"
+        and stage["On hold"] == "backlog",
+        str(sorted(per_name.items())),
+    )
+    foreign = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = :id "
+        "   AND s.project_id <> t.root_project_id",
+        id=run_id,
+    )
+    check("2b.4 every task's status comes from its space's set", foreign == 0, str(foreign))
+    landed = {
+        r.name: r.n
+        for r in await rows(
+            org,
+            "SELECT s.name, count(*) AS n FROM pm_tasks t JOIN pm_task_statuses s "
+            "    ON s.id = t.status_id "
+            " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = :id "
+            " GROUP BY 1",
+            id=run_id,
+        )
+    }
+    check(
+        "2b.5 the merges land: closed + done + completed in Done, the rest by name",
+        landed
+        == {
+            "Done": 1647,
+            "Backlog": 564,
+            "To do": 125,
+            "In progress": 78,
+            "Review": 5,
+            "On hold": 4,
+        },
+        str(landed),
+    )
+    misplaced = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses n "
+        "  JOIN pm_projects p ON p.id = n.project_id "
+        "  JOIN pm_task_statuses lo ON lo.project_id = n.project_id "
+        "  JOIN pm_task_statuses hi ON hi.project_id = n.project_id "
+        " WHERE p.organization_id = CAST(:org AS uuid) "
+        "   AND ((n.name = 'Review' AND lo.name = 'In progress' AND hi.name = 'Done') "
+        "     OR (n.name = 'On hold' AND lo.name = 'Backlog' AND hi.name = 'To do')) "
+        "   AND NOT (lo.position < n.position AND n.position < hi.position)",
+    )
+    check(
+        "2b.6 Review lands after In progress, and On hold after Backlog",
+        misplaced == 0,
+        str(misplaced),
+    )
+
     # ── 3. comments, people, quiet ──────────────────────────────────────
     comments = await one(
         org,
@@ -313,7 +419,9 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         "3.5 the report counts what it wrote",
         report.get("tasks_written") == 2423
         and report.get("comments_written") == 93
-        and report.get("done_status_added") == 7
+        # I-10: D79 counts SETS that gained a Done, and the seed holds one.
+        # Before I-10 it was 7, one per List with no done-like status.
+        and report.get("done_status_added") == 0
         and report.get("tags_dropped") == 0,
         json.dumps(
             {
@@ -327,6 +435,11 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
                 )
             }
         ),
+    )
+    check(
+        "3.5b the names a run adds to its own new spaces are not lanes_added (I-10)",
+        report.get("lanes_added") == 0,
+        str(report.get("lanes_added")),
     )
     per_space = await rows(
         org,
@@ -574,7 +687,9 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
     )
 
     # A member renames a status lane. The same export again must not bring the
-    # old name back as a new lane, nor move a task.
+    # old name back as a new lane, nor move a task. I-10: the lane is the
+    # space's "Backlog", on a node with no parent, because a List made by
+    # this run holds no set of its own.
     lane = (
         await rows(
             org,
@@ -582,7 +697,8 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
             "        WHERE x.project_id = s.project_id) AS n "
             "  FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
             " WHERE p.organization_id = CAST(:org AS uuid) AND p.source = 'import' "
-            "   AND p.parent_project_id IS NOT NULL AND s.name = 'backlog' LIMIT 1",
+            "   AND p.parent_project_id IS NULL AND s.name = 'Backlog' "
+            "   AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.status_id = s.id) LIMIT 1",
         )
     )[0]
     async with tenant_session(org) as db:
@@ -801,6 +917,41 @@ async def second_org(org: str, bundle: object, raw: bytes) -> None:
     check(
         "6.4 the space's own task keeps its number; no number repeats", numbers == 0, str(numbers)
     )
+    # I-10: the hand-made space held only "To do". It gains the names it
+    # lacks, through the one insert path, and keeps its own "To do".
+    lanes = await rows(
+        org,
+        "SELECT id, name FROM pm_task_statuses WHERE project_id = CAST(:t AS uuid)",
+        t=target,
+    )
+    names = [r.name for r in lanes]
+    check(
+        "6.6 an existing space gains only the missing names, case-blind",
+        set(names) == SIX
+        and len(names) == len(SIX)
+        and any(str(r.id) == sid and r.name == "To do" for r in lanes)
+        and len(lanes) == 1 + int(report.get("lanes_added") or 0)
+        and report.get("done_status_added") == 0,
+        f"{sorted(names)} lanes_added={report.get('lanes_added')}",
+    )
+    elsewhere = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'run_id' = :id "
+        "   AND s.project_id <> CAST(:t AS uuid)",
+        id=run_id,
+        t=target,
+    )
+    owning = await one(
+        org,
+        "SELECT count(*) FROM pm_projects WHERE organization_id = CAST(:org AS uuid) "
+        "   AND source = 'import' AND owns_statuses",
+    )
+    check(
+        "6.7 every task takes a status of the space's set, and no node owns one",
+        elsewhere == 0 and owning == 0,
+        f"tasks elsewhere={elsewhere} owning nodes={owning}",
+    )
     again, lease = await new_run(org, ADMIN2, bundle, raw, mapping)
     await import_writer.apply_run(org, again, lease)
     second = as_dict(
@@ -813,6 +964,154 @@ async def second_org(org: str, bundle: object, raw: bytes) -> None:
         and created.get("projects") == 0
         and second.get("tasks_written") == 0,
         json.dumps(created),
+    )
+    # I-10: a discard removes the run's own nodes and tasks. The lanes it
+    # added to a space it did not create stay (§6.9 "what a discard cannot
+    # undo"). The later run goes first, because it continued the earlier one.
+    refusals = []
+    for discarded in (again, run_id):
+        async with tenant_session(org) as db:
+            row = (
+                await db.execute(text(imports.LOAD_RUN_SQL), {"id": discarded, "org": org})
+            ).fetchone()
+        try:
+            async with tenant_session(org) as db:
+                await import_discard.discard_written_run(db, org, row)
+        except import_discard.DiscardRefused as refused:
+            refusals.append(refused.message)
+    kept = await rows(
+        org,
+        "SELECT id, name FROM pm_task_statuses WHERE project_id = CAST(:t AS uuid)",
+        t=target,
+    )
+    left = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE organization_id = CAST(:org AS uuid) "
+        "   AND origin->>'run_id' = :id",
+        id=run_id,
+    )
+    check(
+        "6.8 after a discard, the run's tasks are gone and the added lanes stay",
+        not refusals and left == 0 and {str(r.id) for r in kept} == {str(r.id) for r in lanes},
+        f"refusals={refusals} tasks left={left} lanes {len(lanes)}->{len(kept)}",
+    )
+
+
+async def third_org(org: str, raw: bytes) -> None:
+    """I-10 in a third organization: a task with no status, then a re-upload
+    of a tree in its pre-I-10 shape."""
+    import csv
+    import io
+
+    # One root task loses its status in the file.
+    table = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+    col = {name: i for i, name in enumerate(table[0])}
+    blank = next(r for r in table[1:] if r[col["Parent ID"]] == "null")
+    blank_ref = blank[col["Task ID"]]
+    blank[col["Status"]] = ""
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows(table)
+    file = out.getvalue().encode("utf-8")
+    bundle = clickup.parse([(FIXTURE.name, file)])
+
+    run_id, lease = await new_run(org, ADMIN3, bundle, file, ImportMapping())
+    await import_writer.apply_run(org, run_id, lease)
+    landed = await one(
+        org,
+        "SELECT s.name FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        " WHERE t.organization_id = CAST(:org AS uuid) AND t.origin->>'external_id' = :r",
+        r=blank_ref,
+    )
+    check("7.1 a task with no status lands in its space's Backlog", landed == "Backlog", landed)
+
+    # Rebuild the tree as the writer made it before I-10: each List owns a
+    # set of the source names its tasks use, with a Done where none is
+    # done-like, and the run recorded no status names.
+    progress = as_dict(
+        await one(
+            org, "SELECT progress FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=run_id
+        )
+    )
+    async with tenant_session(org) as db:
+        for ref, node in progress["nodes"].items():
+            names: list[tuple[str, str]] = []
+            for task in bundle.tasks:
+                name = task.status_name
+                seen = {n.lower() for n, _ in names}
+                if task.container_ref == ref and name and name.lower() not in seen:
+                    names.append((name, propose_category(name)))
+            ordered = sorted(names, key=lambda nc: STAGE_ORDER[nc[1]]) or [("To do", "todo")]
+            if not any(c == "done" for _, c in ordered):
+                ordered.append(("Done", "done"))
+            await db.execute(
+                text("UPDATE pm_projects SET owns_statuses = true WHERE id = CAST(:p AS uuid)"),
+                {"p": node},
+            )
+            entries = []
+            for position, (name, category) in enumerate(ordered, start=1):
+                lane = (
+                    await db.execute(
+                        text(
+                            "INSERT INTO pm_task_statuses "
+                            "  (project_id, name, color, position, category, is_default) "
+                            "VALUES (CAST(:p AS uuid), :n, 'gray', :pos, :c, :d) RETURNING id"
+                        ),
+                        {
+                            "p": node,
+                            "n": name,
+                            "pos": position * 10,
+                            "c": category,
+                            "d": position == 1,
+                        },
+                    )
+                ).scalar_one()
+                entries.append([name.lower(), str(lane), category])
+                await db.execute(
+                    text(
+                        "UPDATE pm_tasks SET status_id = CAST(:s AS uuid), origin = jsonb_set("
+                        "       origin, '{import_values,status_id}', to_jsonb(CAST(:s AS text))) "
+                        " WHERE project_id = CAST(:p AS uuid) AND ("
+                        "       origin->'import_source'->>'status_id' = :n "
+                        "       OR (:first AND origin->'import_source'->>'status_id' IS NULL))"
+                    ),
+                    {"s": str(lane), "p": node, "n": name, "first": position == 1},
+                )
+            progress["statuses"][ref] = entries
+        progress.pop("status_names", None)
+        await db.execute(
+            text(
+                "UPDATE pm_import_runs SET progress = CAST(:p AS jsonb) WHERE id = CAST(:id AS uuid)"
+            ),
+            {"p": json.dumps(progress), "id": run_id},
+        )
+    state_sql = (
+        "SELECT (SELECT count(*) FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id "
+        "         WHERE p.organization_id = CAST(:org AS uuid)) AS lanes, "
+        "       (SELECT md5(string_agg(id::text || status_id::text, ',' ORDER BY id)) FROM pm_tasks "
+        "         WHERE organization_id = CAST(:org AS uuid)) AS placed"
+    )
+    before = (await rows(org, state_sql))[0]
+    again, lease = await new_run(org, ADMIN3, bundle, file, ImportMapping())
+    await import_writer.apply_run(org, again, lease)
+    report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=again)
+    )
+    after = (await rows(org, state_sql))[0]
+    check(
+        "7.2 a re-upload of a pre-I-10 tree adds 0 lanes and moves no task",
+        report.get("lanes_added") == 0
+        and report.get("done_status_added") == 0
+        and report.get("tasks_written") == 0
+        and report.get("tasks_updated") == 0
+        and after.lanes == before.lanes
+        and after.placed == before.placed,
+        json.dumps(
+            {
+                **{k: report.get(k) for k in ("lanes_added", "done_status_added", "tasks_updated")},
+                "lanes": [before.lanes, after.lanes],
+                "same_places": after.placed == before.placed,
+            }
+        ),
     )
 
 
