@@ -1,6 +1,6 @@
 # Project import — bring work in from another tool by file
 
-**Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28, with I-8 (the Spaces step and unknown columns) built, I-5 deferred, and the other tools still spec.**
+**Status: ACTIVE — the ClickUp import is LIVE on production since 2026-09-28, with I-8 (the Spaces step and unknown columns) built, I-5 deferred, and the other tools still spec. I-10 (statuses) and I-11 (tags and types into the shared vocabulary) were specified on 2026-10-09 (§6.3, §6.5, §7.7).**
 
 Owner directive, 2026-09-26.
 Verified against code on 2026-09-26 at `main` `04995db9`. One real ClickUp
@@ -435,6 +435,57 @@ each one holds.
 Metorite keeps a status set on the nearest node with `owns_statuses`
 (migration 196). ClickUp keeps one per List.
 
+⚠️ **I-10 replaces the first rule below. Owner decisions, 2026-10-09.** The
+owner saw the Map step and asked why an admin can only map a status, and
+not create one. Each row already created a status, but the screen did not say so.
+The owner chose three things:
+
+1. **One status set per space.** A new space owns one set, and every List
+   that the run creates uses it. A List keeps its own set only when an admin
+   chooses that later, in Settings.
+2. **The step opens on a summary.** It shows the statuses that the import
+   will make, with merges already proposed. One button opens the rows.
+3. **Rules now, Jev later.** Name rules make the proposals. An AI proposal
+   for a name that the rules cannot place is a later slice (I-13).
+
+**The I-10 model.**
+
+- **The target set.** A new space starts with the root seed of
+  `tree._seed_root`: Backlog, To do, In progress and Done. An existing-space
+  target uses the set of that node's status owner (`status_owner_id`).
+- **Each ClickUp status becomes one target status.** It is a status that the
+  target set already holds, or a new status with a name and a stage. The
+  mapping shape does not change: `StatusChoice` holds a name and a category.
+  A name that matches a status in the target set, case-blind, takes the
+  stage of that status, and the screen shows that stage as fixed.
+- **Two ClickUp statuses with one target merge**, as before.
+- **The writer.** A space that the run creates gets the new statuses after
+  its seed, in stage order and then first sight. Every List and Folder that
+  the run creates sets `owns_statuses = false`, so it uses the space's set.
+  An existing-space target gets its new statuses through the rule of
+  `_reuse_statuses`: a name that the set holds keeps its stage, and a new
+  name goes in after the last status of its stage.
+- **Continuity (§6.9).** A List that an earlier run made, and that owns its
+  set, keeps that set. The run adds a missing name to it, as before. Only a
+  List that this run creates uses the space's set.
+- **A seed status that no ClickUp status maps to stays.** It holds no task.
+- **The proposal.** The screen proposes a target for each name. The table
+  is case-blind and folds runs of spaces:
+
+  | ClickUp name | Proposed target |
+  |---|---|
+  | done, closed, complete, completed, finished, resolved, shipped | Done |
+  | to do, todo, open, new, not started | To do |
+  | in progress, in process, doing, wip | In progress |
+  | backlog | Backlog |
+  | cancelled, canceled, won't do, wont do | Cancelled, a new status in the cancelled stage |
+  | anything else | A new status with the same name and a capital first letter. Its stage comes from the category table below |
+
+  On the real Fracktal export, the ten ClickUp statuses become six: Backlog,
+  To do, In progress, Review, On hold and Done.
+
+**The rule that I-10 replaces**, kept for the record:
+
 - **Each imported project owns its statuses** (`owns_statuses = true`). Its
   set is the status names the file shows for that List, in first-seen order.
 - The admin sets the **category** of each name: backlog, todo, in_progress,
@@ -478,6 +529,44 @@ the highest priority in its CSV, and 4 for the highest in its API.
 The importer never writes `leveraged`.
 
 ### 6.5 Tags, types and custom fields
+
+⚠️ **I-11 changes where tags and types land. Owner directive, 2026-10-09:**
+the import must bring in tags and the other task data too, and it must fill
+the shared vocabulary from the file in a suitable way. Migration 175 (WS-27bj) holds the shared vocabulary.
+A row with `project_id IS NULL` belongs to the whole organization. On
+2026-10-09, Fracktal held no org-wide tag, type or field, and
+`PROJECTS_ORG_VOCABULARIES` was on in production.
+
+**The I-11 model.**
+
+- **A ClickUp tag becomes a shared tag.** A tag that matches an existing tag
+  of the organization or of the target space, case-blind, uses that tag. A
+  new tag is registered org-wide through the `organization_id` argument of
+  the tag helper in `tags.py`. Two ClickUp tags that differ only in case
+  merge into one.
+- **The admin may change each tag**: use an existing tag, make a new shared
+  tag, or leave it out. A tag left out is counted in the report.
+- **A task type follows the same rule.** A name that matches a type of the
+  root or of the organization uses it. A new type is created org-wide. The
+  Epic rule below does not change.
+- **The fallback.** An org-wide row needs `admin:settings:manage` and the
+  flag (`core.ORG_VOCABULARY_WRITE`, `org_vocabularies_enabled`). The import
+  needs only `admin:access:manage`. An admin who lacks the first, or a box
+  with the flag off, gets the tags and types on the target SPACE, never on
+  each List. The step says which one applies before the import.
+- **The caps.** `tags.py` counts the effective set, which is the space's
+  tags and the org-wide tags together, against `MAX_TAGS_PER_PROJECT`
+  (500). The import uses the same count, and a tag over the cap is dropped
+  and counted, as before.
+- **Continuity (§6.9).** A tag that an earlier run wrote on a List stays on
+  its tasks. The I-11 build checks how the update rule compares tags, and
+  records here whether a shared tag of the same name counts as no change.
+- **The step.** The Map step adds "Tags and types", which opens on a summary,
+  for example "3 ClickUp tags become 3 new shared tags. The type Task
+  matches the existing type Task." One button opens the rows. Each row has
+  one "Becomes" picker, as in §7.7.
+
+**The rules below still bind, except where the I-11 model replaces them.**
 
 - **Tags** go through `apply_task_tags`, scoped to the imported project.
   The shared caps of `tags.py` bind: 64 characters a tag, 25 tags a task, 500
@@ -896,6 +985,35 @@ look (`DESIGN_SYSTEM.md`). I-8 added step 3 and moved the target into it:
    and the columns the importer does not read. Custom field types join in I-5.
 5. **Import** — the progress, then the report with a link to the new space.
 
+**The Statuses section of Map (I-10).** The rule is "show the result, and
+hide the work". Most imports need no change, so the admin sees the outcome
+first.
+
+- **The summary.** One line, for example "Your 10 ClickUp statuses become 6
+  statuses in Fracktal". Under it, one chip per target status, in stage
+  order. The chip colour comes from `statusAccent.ts`, never from a new
+  palette. A chip marks a status that the import adds as "new". Under the
+  chips, one line per merge, for example "Closed, done and completed become
+  Done". The button "Review mapping" opens the rows.
+- **The rows.** One row per ClickUp status: its name, and its task and List
+  counts. Each row has ONE control, a "Becomes" picker. It replaces the name
+  box and the stage dropdown of I-8. The picker holds three groups:
+  1. **In this space**: the statuses of the target set, each with its stage.
+  2. **Added by this import**: the new statuses that other rows already make.
+  3. **New status…**: this opens a name box and a stage picker in the row.
+- **A row that points at an existing status** shows that status's stage, as
+  fixed text. A row that makes a new status shows the stage picker.
+- **The I-8 merge mark stays.** When two ClickUp statuses with different
+  proposed stages share one target, the row says so.
+- **No new primitive.** The picker is `SelectButton` with option groups and
+  its filter. The rows sit in a `Collapsible`. Both live in
+  `src/components/ui/`.
+
+**The Tags and types section of Map (I-11)** follows the same shape: a
+summary, one button, and rows with one "Becomes" picker. Its groups are
+"Shared in your organization", "In this space", "New shared tag" and
+"Leave out".
+
 **An earlier import of the same workspace (built in I-4).** The plan carries
 `inherited_from` and `continues`. The upload and the mapping route both ask
 `import_writer.continues_earlier`, which is the writer's own reuse rule, read
@@ -949,6 +1067,10 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-7** ✅ live 2026-09-28 | Flip `PROJECTS_IMPORT` and `NEXT_PUBLIC_PROJECTS_IMPORT` on production. The owner asked for it on 2026-09-29 ("there is no UI/UX currently deployed"), and the `enforcement-flip` grant runs to 2026-11-30 | The owner flips them (§3a allows it until the window ends — name the box). **Before the flip:** the nightly sweep of §7.2 exists, and the proxy in front of the gateway caps a request body near 260 MB. FastAPI spools the whole multipart body to disk before any dependency runs, so the route's own 50 MB cap acts only after the upload has landed. **Built:** the sweep (§7.2) and a labelled entry (§7.7). The browser path is app.metorite.com, then the Next proxy, then the gateway on loopback, so it never meets Caddy's api host. The Next proxy caps it at 10 MiB, and the trailing fields of §7.4 refuse a cut body. The gateway caps an import upload at 260 MB BEFORE it is read (`import_body_limit.py`, a pure-ASGI wrapper), because FastAPI spools a whole body ahead of every dependency, sign-in included. The cap is not in Caddy: a new matcher there changes the sign-in lines `test_caddy_auth_gate.py` holds for the owner, and the browser path never passes Caddy's api host. `test_import_body_limit.py` fences it. The flip follows the merge, and its evidence is recorded here. **Flipped on 2026-09-28, box srv1914284.** `PROJECTS_IMPORT=1` went into `/opt/acb/app/.env`, and `NEXT_PUBLIC_PROJECTS_IMPORT=1` into `workbench/control_plane/.env.local`, before the merge of #526. Backups of both files sit beside them as `*.bak-pre-import-flip`. **Evidence:** `/version` serves `b35399b8`. The gateway process restarted at 19:38:33 UTC with the flag in its environment, and it logged `projects.import.sweep_started`. The workbench rebuilt at 19:40:22 UTC. Its static bundle holds no unset `NEXT_PUBLIC_PROJECTS_IMPORT` literal, so the value was inlined, and it holds the entry text |
 | **I-8** ✅ built 2026-09-30 | The mapping step, made complete (owner, 2026-09-30: "sort out the unknown fields"). A **Spaces** step between Review and Map shows every ClickUp Space, Folder and List. The admin unticks one to leave it out with everything under it, or renames it. The same step sets **who can see** a new space: the organization, or one group (§5.3). On **Map**, a status takes a new name, and two statuses given one name merge (§6.3). The columns the importer does not read are listed with their counts and examples, and each is left out or kept as a line in the task's description (§6.5b) | `plan.choose` is the ONE place the choices apply: the dry run and the writer both read through it (`test_import_choices.py`). A subtask of a skipped task stays out, wherever it lives. **Review fixes:** a later export that keeps OTHER lists still continues the earlier space, because "same export" is judged on every task in the file (`file_task_refs`). A choice for a container the file no longer holds is dropped, never an error. A rename in an existing space keeps the folder a re-run reuses (`source_name`). The Map step never changes a stage by itself, and marks a merge whose stages differ. **Met:** `live_ws41_choices.py` passes 14/14 on Postgres. A skipped list creates no node and no task, a renamed list lands under its new name, a kept column reaches the description, and a second run that keeps everything adds the rest into the same space. The writer, import and discard live suites still pass (58, 21, 33). A browser walk against a real gateway ran the five steps on a fixture with two unknown columns |
 | **I-9** ✅ built 2026-09-30 | People added AFTER an import get their tasks (§6.2, §6.9). A production dry run of the real export (read only, counts only, 2026-09-30) found the organization's People directory holds 1 person, so 50 of 51 ClickUp people had no member and 2,024 assignments would land unassigned. The three-way rule moved nothing on a mapping change, so adding the team later and importing again did not help. Now the unchanged-source branch FILLS A GAP: when no member edited the field, a re-run adds newly matched people to the assignees and rewrites the description's "Assigned in ClickUp to" line (`layout._fills_a_gap`). It never takes anybody off (4c.3 still holds). The Map step and the report say how to close the gap | `tests/live/live_ws41_people_later.py` passes 10/10 on Postgres, through the upload route's own inheritance: an unassigned task is assigned on the next run once the person is in People, the name line goes, and a member's own assignment is kept. `live_ws41_writer.py` still passes 58/58. Unit: `test_import_layout.py` pins the fill, the member-edit guard and the add-only rule |
+| **I-10** 🟢 next | Statuses: one set per space, a target for each ClickUp status, and a Map section that opens on a summary (§6.3, §7.7). Owner decisions, 2026-10-09 | **Plan:** the plan carries the target set and the proposed target of each ClickUp status. On the fixture, the ten statuses propose six targets, and the plan holds no error. A choice that names an existing status takes that status's stage. **Writer:** `live_ws41_writer.py` gains checks. A new space holds one set, and every List that the run creates sets `owns_statuses = false`. Each task's status comes from the space's set. An existing-space target gains only the missing names, through `_reuse_statuses`. A List that an earlier run made keeps its own set. The live writer, choices, discard and people-later suites still pass. **Surface:** `importFlow.test.ts` pins the summary text, the merge lines and the picker groups. The `visual-review` walk covers the summary and the open rows in light mode, at compact density, under a changed accent, and at 390 px |
+| **I-11** | Tags and task types land in the shared vocabulary, with the same summary-first section (§6.5, §7.7). Owner directive, 2026-10-09 | A ClickUp tag that matches an existing org-wide or space tag, case-blind, uses it. A new tag lands org-wide (`project_id IS NULL`). A type follows the same rule. Without `admin:settings:manage` or the flag, both land on the target space, and the step says so before the import. The caps count the effective set. R8: a live check finds the org-wide rows, and finds no tag row on any List that the run creates. The update rule's handling of a tag that moved from a List to the organization is stated in §6.5 and has a test |
+| **I-12** ⏸ waits for a file | A column the importer does not read can become a shared custom field, with the §6.5 type guess. It is a third choice beside "Leave out" and "Keep in the description" (§6.5b) | Build this when a customer's file carries such columns. The Fracktal workspace export carries none, because ClickUp puts custom fields only in a per-view export (I-5) |
+| **I-13** later | Jev proposes a target status, tag or type for a name that the I-10 and I-11 rules cannot place. The admin confirms each one (owner, 2026-10-09: "rules now, Jev later") | Every proposal shows as a proposal, and nothing applies without the admin's choice. The spend goes through the metered path, so H-171 does not grow |
 
 **Then one adapter per slice, in this order.** Each needs its own real sample
 file first, exactly like P-1:
