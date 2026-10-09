@@ -40,8 +40,9 @@ def _clean_handlers():
 # DB-free (also fixes the Windows "unit run hangs on a real connect" foot-gun).
 
 class _FakeResult:
-    def __init__(self, rows):
+    def __init__(self, rows, rowcount=0):
         self._rows = rows
+        self.rowcount = rowcount
 
     def mappings(self):
         return self
@@ -59,12 +60,16 @@ class _FakeSession:
     def __init__(self, select_rows=None):
         self.executed: list[tuple[str, dict | None]] = []
         self.select_rows = select_rows if select_rows is not None else []
+        #: What an UPDATE reports it changed. 0 models "no such pending row".
+        self.update_rowcount = 1
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
         self.executed.append((sql, params))
         if sql.lstrip().upper().startswith("SELECT"):
             return _FakeResult(self.select_rows)
+        if sql.lstrip().upper().startswith("UPDATE"):
+            return _FakeResult([], rowcount=self.update_rowcount)
         return _FakeResult([])
 
     def add(self, *_a, **_k):  # acb_audit.record() calls sess.add(AuditRow)
@@ -291,6 +296,21 @@ def test_reject_marks_rejected_and_never_executes(_fake_db):
     assert not called
     updates = _fake_db.statements("UPDATE")
     assert any(p and p.get("status") == "rejected" for p in updates)
+
+
+def test_reject_changes_only_a_row_that_is_still_pending(_fake_db):
+    reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    sql, params = next((s, p) for s, p in _fake_db.executed if s.lstrip().upper().startswith("UPDATE"))
+    assert "AND status = :only_from" in sql
+    assert params["only_from"] == "pending"
+
+
+def test_reject_of_no_pending_row_says_so(_fake_db):
+    # Another tenant's id, a missing id or an action already decided: the
+    # UPDATE changes nothing, and the answer must not claim it did.
+    _fake_db.update_rowcount = 0
+    res = reject("11111111-1111-1111-1111-111111111111", "user:vijay")
+    assert res["ok"] is False and "no pending action" in res["error"]
 
 
 def test_list_pending_returns_rows(_fake_db):

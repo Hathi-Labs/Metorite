@@ -349,9 +349,13 @@ def _load_proposal(action_id: str) -> tuple[ActionProposal | None, str | None]:
 
 def _mark(
     action_id: str, status: str, *, reviewed_by: str | None = None,
-    result: dict[str, Any] | None = None,
-) -> None:
+    result: dict[str, Any] | None = None, only_from: str | None = None,
+) -> int:
     """Update a queued row's status (+ reviewer / result). Best-effort.
+
+    Returns the number of rows it changed, 0 when it changed none. With
+    ``only_from`` it changes the row only while it still has that status, so a
+    late reject cannot rewrite an action that already ran (review, 2026-10-09).
 
     The UPDATE reaches only the bound tenant's rows. With no bound tenant it
     changes nothing.
@@ -360,35 +364,44 @@ def _mark(
 
     org = _bound_tenant("mark")
     if org is None:
-        return
+        return 0
     try:
         from acb_graph import tenant_session
         from sqlalchemy import text
 
         reviewed_at_expr = "now()" if reviewed_by is not None else "reviewed_at"
+        guard = " AND status = :only_from" if only_from is not None else ""
         with tenant_session(org) as sess:
-            sess.execute(
+            res = sess.execute(
                 text(
                     "UPDATE pending_actions SET status = :status, "
                     "reviewed_by = COALESCE(:reviewed_by, reviewed_by), "
                     f"reviewed_at = {reviewed_at_expr}, "
                     "result = CAST(:result AS jsonb) "
-                    "WHERE id = :id"
+                    f"WHERE id = :id{guard}"
                 ),
                 {
                     "id": action_id,
                     "status": status,
                     "reviewed_by": reviewed_by,
                     "result": json.dumps(result) if result is not None else None,
+                    "only_from": only_from,
                 },
             )
+            return int(getattr(res, "rowcount", 0) or 0)
     except Exception:
-        pass
+        return 0
 
 
 def reject(action_id: str, reviewed_by: str) -> dict[str, Any]:
-    """Reject a pending action — it is never executed. Audited."""
-    _mark(action_id, "rejected", reviewed_by=reviewed_by)
+    """Reject a pending action — it is never executed. Audited.
+
+    It answers ``ok: False`` when no pending row of the bound tenant has that
+    id: another tenant's id, a missing id, or an action already decided. It
+    used to answer ``ok`` for all three (review, 2026-10-09).
+    """
+    if not _mark(action_id, "rejected", reviewed_by=reviewed_by, only_from="pending"):
+        return {"ok": False, "error": f"no pending action {action_id!r}"}
     record(AuditEvent(
         actor=reviewed_by,
         action="action_rejected",

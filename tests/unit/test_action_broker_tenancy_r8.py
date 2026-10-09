@@ -148,7 +148,8 @@ def test_another_org_cannot_reject_or_approve_a_row(broker_as_app):
     assert row_id is not None
 
     with _as_tenant(b):
-        reject(row_id, "carol@b.test")
+        rejected = reject(row_id, "carol@b.test")
+        assert rejected["ok"] is False
         _mark(row_id, "applied", reviewed_by="carol@b.test")
         res = asyncio.run(approve(row_id, "carol@b.test"))
     assert res["ok"] is False and "no pending action" in res["error"]
@@ -169,8 +170,10 @@ def test_an_org_rejects_its_own_row(broker_as_app):
     a = broker_as_app.org_a
     with _as_tenant(a):
         row_id = enqueue(_proposal())
-        reject(row_id, "alice@a.test")
+        assert reject(row_id, "alice@a.test")["ok"] is True
         assert row_id not in _ids(list_pending())
+        # A second reject finds no pending row, and changes nothing.
+        assert reject(row_id, "alice@a.test")["ok"] is False
     assert _row(broker_as_app, row_id).status == "rejected"
 
 
