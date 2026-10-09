@@ -507,6 +507,15 @@ The owner chose three things:
 - **What a null name means on a new tree.** The I-10 wizard sends the target
   name on every row, so `name = null` comes only from a pre-I-10 mapping.
   On a new tree, a null name and a missing choice both take the proposal.
+- **An import never lands a task in an intake lane** (the I-10 review,
+  P1-b). An existing space can hold the intake lane "Triage", in the
+  category `triage` (`core.TRIAGE_CATEGORY`). Lists and boards hide a task in
+  that lane. So the writer never matches a triage lane and never adds a task
+  to one. The name is still taken, because `UNIQUE (project_id, name)` holds
+  it. Decision: a target with the name of an intake lane, proposed or
+  chosen, becomes a new status "<name> (imported)". The plan and the Map
+  step show that name. If an intake lane appears after the plan's read, the
+  writer stops the run with the reason. Live check 8.2 holds it.
 - **A seed status that no ClickUp status maps to stays.** It holds no task.
 - **The proposal.** The screen proposes a target for each name. The table
   is case-blind and folds runs of spaces:

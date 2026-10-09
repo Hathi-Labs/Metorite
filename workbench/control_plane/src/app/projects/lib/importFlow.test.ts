@@ -321,6 +321,19 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     expect(options.find((o) => o.label === "On hold")?.hint).toBe("backlog");
   });
 
+  it("no target takes an intake lane's name, as the gateway plans it (P1-b)", () => {
+    const resolved = resolveStatuses(FRACKTAL, SEED, { review: "triage" }, {}, ["Triage"]);
+    expect(resolved.find((r) => r.source === "review")).toMatchObject({
+      target: "triage (imported)",
+      existing: false,
+    });
+    // A lane of the set with that name still wins.
+    const held = resolveStatuses(FRACKTAL, [...SEED, { name: "triage", category: "todo" }], { review: "Triage" }, {}, [
+      "Triage",
+    ]);
+    expect(held.find((r) => r.source === "review")).toMatchObject({ target: "triage", existing: true });
+  });
+
   it("a new status starts with the ClickUp name, with a capital", () => {
     expect(newStatusName("  waiting   on vendor ")).toBe("Waiting on vendor");
   });

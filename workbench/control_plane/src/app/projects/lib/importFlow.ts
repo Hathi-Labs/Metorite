@@ -163,6 +163,11 @@ export interface ImportPlan {
    * space, or the set of the existing space. Absent before I-10.
    */
   target_statuses?: TargetStatus[];
+  /**
+   * The names of the target set's intake lanes. No import target takes one:
+   * it becomes "<name> (imported)" (§6.3, the I-10 review P1-b).
+   */
+  reserved_statuses?: string[];
   closed_tasks: number;
   completed_at_estimated: number;
   done_status_added: number;
@@ -378,6 +383,7 @@ export function mappingFrom(
     run.plan.target_statuses ?? [],
     choices.statusNames ?? {},
     stages,
+    run.plan.reserved_statuses ?? [],
   );
   for (const row of resolved) statuses[row.source] = { category: row.stage, name: row.target };
   // A row the admin left on the proposal is NOT saved, so a later import
@@ -491,6 +497,8 @@ export interface ResolvedStatus {
 }
 
 const fold = (name: string) => cleanName(name).toLowerCase();
+/** What a target takes when an intake lane holds its name (`plan.IMPORTED`). */
+export const IMPORTED = " (imported)";
 
 /**
  * Each row's target, as the gateway's `plan._statuses` decides it: the
@@ -502,10 +510,15 @@ export function resolveStatuses(
   targetSet: readonly TargetStatus[],
   names: Record<string, string>,
   stages: Record<string, Stage>,
+  reserved: readonly string[] = [],
 ): ResolvedStatus[] {
   const held = new Map(targetSet.map((t) => [fold(t.name), t]));
+  const pen = new Set(reserved.map(fold));
   return statuses.map((s) => {
-    const target = cleanName(names[s.name] ?? "") || s.becomes || s.name;
+    let target = cleanName(names[s.name] ?? "") || s.becomes || s.name;
+    // The gateway's `plan.off_the_pen`: an intake lane's name is taken, and
+    // no import task lands in that lane (§6.3, the I-10 review P1-b).
+    if (pen.has(fold(target)) && !held.has(fold(target))) target = `${target.slice(0, 64 - IMPORTED.length)}${IMPORTED}`;
     const hit = held.get(fold(target));
     if (hit) return { source: s.name, target: hit.name, stage: hit.category, existing: true };
     return { source: s.name, target, stage: stages[s.name] ?? s.category, existing: false };

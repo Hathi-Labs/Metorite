@@ -411,7 +411,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
   // I-10: what each ClickUp status becomes, with the admin's edits.
   const targetSet = useMemo(() => plan?.target_statuses ?? [], [plan]);
   const resolved = useMemo(
-    () => resolveStatuses(plan?.statuses ?? [], targetSet, statusNames, stages),
+    () => resolveStatuses(plan?.statuses ?? [], targetSet, statusNames, stages, plan?.reserved_statuses ?? []),
     [plan, targetSet, statusNames, stages],
   );
   const merges = useMemo(() => statusMerges(resolved), [resolved]);
