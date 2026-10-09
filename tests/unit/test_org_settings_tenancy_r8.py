@@ -26,9 +26,14 @@ from sqlalchemy import text
 
 # The two-org phase-4 fixture and its DB gate. Used by name for injection.
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    _DB_GATE,
     app_engine,
     promoted,
 )
+
+# ⚠️ Every test here needs the real database. Without this gate the suite
+# ERRORS where no ladder URL is set (the deploy run), and the deploy stops.
+pytestmark = _DB_GATE
 
 
 @pytest.fixture
