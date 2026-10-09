@@ -58,13 +58,14 @@ finds the file, and calls :func:`extract_text` on its bytes.
 """
 from __future__ import annotations
 
+import codecs
 import functools
 import io
 import posixpath
 import re
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
@@ -72,11 +73,18 @@ from xml.parsers import expat
 
 __all__ = [
     "DEADLINE_SECONDS",
+    "KIND_NAMES",
+    "LEGACY_OFFICE",
     "MAX_DOCX_PARAGRAPHS",
     "MAX_DOCX_XML_BYTES",
     "MAX_EXTRACT_CHARS",
     "MAX_FILE_BYTES",
+    "MAX_OFFICE_ELEMENTS",
     "MAX_PDF_PAGES",
+    "MAX_PPTX_PARAGRAPHS",
+    "MAX_PPTX_SLIDES",
+    "MAX_PPTX_XML_BYTES",
+    "MAX_RTF_DEPTH",
     "MAX_TEXT_LINES",
     "MAX_XLSX_CELLS",
     "MAX_XLSX_COLUMN",
@@ -92,6 +100,7 @@ __all__ = [
     "AttachmentRefused",
     "Extracted",
     "extract_text",
+    "unsupported_sentence",
 ]
 
 #: The upload cap of ``gateway/routes/workspace.py`` (``_MAX_UPLOAD_BYTES``).
@@ -157,14 +166,71 @@ MAX_XLSX_STRINGS_BYTES = 20 * 1024 * 1024
 #: that does not fit in what is left stops the read.
 MAX_XLSX_XML_BYTES = 60 * 1024 * 1024
 
-_TEXT_SUFFIXES = frozenset({".txt", ".md", ".csv"})
+#: The text kinds. Each is read as lines of text and never parsed, so an
+#: ``.xml`` file expands no entity and loads no DTD (attachment formats).
+_TEXT_SUFFIXES = frozenset({
+    ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".log",
+})
 _HTML_SUFFIXES = frozenset({".html", ".htm"})
+#: The OpenDocument kinds. Each reads ``content.xml`` only.
+_ODF_SUFFIXES = frozenset({".odt", ".ods", ".odp"})
+#: The kinds that are a zip package. Their bytes start with :data:`_ZIP_MAGIC`.
+_ZIP_SUFFIXES = frozenset({".docx", ".xlsx", ".pptx"}) | _ODF_SUFFIXES
 SUPPORTED_SUFFIXES = (
-    frozenset({".docx", ".xlsx", ".pdf"}) | _HTML_SUFFIXES | _TEXT_SUFFIXES
+    _ZIP_SUFFIXES | frozenset({".pdf", ".rtf"}) | _HTML_SUFFIXES | _TEXT_SUFFIXES
 )
 #: The ONE sentence that lists the kinds. ``attachment_tools`` and the email
-#: text route of the gateway say it too.
-SUPPORTED_SENTENCE = "I read .docx, .xlsx, .pdf, .html, .htm, .txt, .md and .csv files."
+#: text route of the gateway say it too. A test parses it, and it must name
+#: each suffix of :data:`SUPPORTED_SUFFIXES` and no other.
+SUPPORTED_SENTENCE = (
+    "I read .docx, .xlsx, .pptx, .pdf, .odt, .ods, .odp, .rtf, .html, .htm, "
+    ".txt, .md, .csv, .tsv, .json, .xml, .yaml, .yml and .log files."
+)
+#: The name of each kind, by ``Extracted.kind``. The chat tool and the email
+#: assistant show it in the head line of the text.
+KIND_NAMES = {
+    "docx": "Word document",
+    "xlsx": "Excel workbook",
+    "pptx": "PowerPoint deck",
+    "pdf": "PDF",
+    "odt": "OpenDocument text",
+    "ods": "OpenDocument spreadsheet",
+    "odp": "OpenDocument presentation",
+    "rtf": "Rich Text document",
+    "html": "web page",
+    "txt": "text file",
+    "md": "Markdown file",
+    "csv": "CSV file",
+    "tsv": "TSV file",
+    "json": "JSON file",
+    "xml": "XML file",
+    "yaml": "YAML file",
+    "yml": "YAML file",
+    "log": "log file",
+}
+#: The older binary Office kinds. No reader takes them: an OLE parser is a
+#: large attack surface, and the app saves each one again in its new kind.
+#: ``(app, new suffix)``.
+LEGACY_OFFICE = {
+    ".doc": ("Word", ".docx"),
+    ".xls": ("Excel", ".xlsx"),
+    ".ppt": ("PowerPoint", ".pptx"),
+}
+
+
+def unsupported_sentence(suffix: str) -> str:
+    """The one refusal for a kind that this module does not read.
+
+    An older Office kind gets its own sentence, which says how to fix it.
+    The chat upload route says it at upload, and the email text route says it
+    before it fetches a byte.
+    """
+    kind = (suffix or "").lower()
+    legacy = LEGACY_OFFICE.get(kind)
+    if legacy is not None:
+        app, new = legacy
+        return f"This is an older {app} file. Save it as {new} and attach it again."
+    return f"I cannot read a {kind or 'file without a type'} file. {SUPPORTED_SENTENCE}"
 
 #: The bytes of a Word part that the parser takes between two deadline checks.
 _CHUNK = 64 * 1024
@@ -227,24 +293,86 @@ def extract_text(data: bytes, suffix: str, *, seconds: float | None = None) -> E
     """
     kind = suffix.lower()
     if kind not in SUPPORTED_SUFFIXES:
-        raise AttachmentRefused(
-            f"I cannot read a {kind or 'file without a type'} file. {SUPPORTED_SENTENCE}"
-        )
+        raise AttachmentRefused(unsupported_sentence(kind))
     if len(data) > MAX_FILE_BYTES:
         raise AttachmentRefused(
             f"This file is {len(data)} bytes, and I read files of at most "
             f"{MAX_FILE_BYTES} bytes."
         )
+    _check_magic(data, kind)
     deadline = _Deadline(DEADLINE_SECONDS if seconds is None else seconds)
+    got = _dispatch(data, kind, deadline)
+    # No control character reaches the model. A file can hide text behind
+    # one, or end a line where no line ends (attachment formats).
+    return replace(got, text=got.text.translate(_CONTROLS))
+
+
+def _dispatch(data: bytes, kind: str, deadline: _Deadline) -> Extracted:
     if kind == ".docx":
         return _docx_text(data, deadline)
     if kind == ".xlsx":
         return _xlsx_text(data, deadline)
+    if kind == ".pptx":
+        return _pptx_text(data, deadline)
+    if kind in _ODF_SUFFIXES:
+        return _odf_text(data, kind, deadline)
     if kind == ".pdf":
         return _pdf_text(data, deadline)
+    if kind == ".rtf":
+        return _rtf_text(data, deadline)
     if kind in _HTML_SUFFIXES:
         return _html_text(data, deadline)
-    return _plain_text(data, kind)
+    return _plain_text(data, kind, deadline)
+
+
+#: The C0 controls but tab, line feed and carriage return, and DEL. Each is
+#: deleted from the text of every kind, in one linear pass.
+_CONTROLS = dict.fromkeys([*(c for c in range(0x20) if c not in (9, 10, 13)), 0x7F])
+
+_ZIP_MAGIC = b"PK\x03\x04"
+#: An OLE compound file: an older Office file, or a new one with a password.
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+#: The starts of binary kinds that a text file never has.
+_BINARY_MAGIC = (_ZIP_MAGIC, _OLE_MAGIC, b"%PDF-", b"\x89PNG", b"\xff\xd8\xff")
+
+
+def _kind_name(kind: str) -> str:
+    return KIND_NAMES.get(kind.lstrip("."), "file")
+
+
+def _wrong_content(kind: str) -> str:
+    fmt = _kind_name(kind)
+    return (
+        f"I could not read this file as {_article(fmt)} {fmt}. Its name ends in "
+        f"{kind}, but its content is a different kind of file."
+    )
+
+
+def _check_magic(data: bytes, kind: str) -> None:
+    """Refuse a file whose first bytes do not match its suffix.
+
+    So a renamed file gets one clear sentence, and never reaches a parser
+    that expects another kind. A text kind refuses only the starts of
+    :data:`_BINARY_MAGIC`; a NUL byte refuses it later (:func:`_decode`).
+    """
+    if kind in _ZIP_SUFFIXES:
+        if data.startswith(_OLE_MAGIC):
+            fmt = _kind_name(kind)
+            raise AttachmentRefused(
+                f"I could not read this file as {_article(fmt)} {fmt}. It has a "
+                f"password, or it is an older file with a new name. Ask the member "
+                f"to remove the password, or to save it again as {kind}."
+            )
+        if not data.startswith(_ZIP_MAGIC):
+            raise AttachmentRefused(_wrong_content(kind))
+    elif kind == ".pdf":
+        if b"%PDF-" not in data[:1024]:
+            raise AttachmentRefused(_wrong_content(kind))
+    elif kind == ".rtf":
+        if not data[:64].lstrip().startswith(b"{\\rtf"):
+            raise AttachmentRefused(_wrong_content(kind))
+    elif data.startswith(_BINARY_MAGIC):
+        raise AttachmentRefused(_wrong_content(kind))
 
 
 # ── .txt .md .csv ────────────────────────────────────────────────────────────
@@ -261,8 +389,12 @@ def _decode(data: bytes) -> str:
     return text
 
 
-def _plain_text(data: bytes, kind: str) -> Extracted:
+def _plain_text(data: bytes, kind: str, deadline: _Deadline) -> Extracted:
+    """The lines of a text kind. Nothing parses them: a ``.json``, ``.yaml``
+    or ``.xml`` file is its text, so no entity and no DTD is ever read."""
+    deadline.check()
     lines = _decode(data).splitlines()
+    deadline.check()
     kept = lines[:MAX_TEXT_LINES]
     text = "\n".join(kept)
     clipped = len(text) > MAX_EXTRACT_CHARS
@@ -715,16 +847,7 @@ def _parse_xml(xml: bytes, handler: Any, deadline: _Deadline, fmt: str = _WORD) 
     parse early with :class:`_Stop`. *fmt* names the format in each refusal.
     """
     _require_utf8(xml, fmt)
-    handler = _Guard(handler, deadline, fmt)
-    parser = expat.ParserCreate(encoding="UTF-8", namespace_separator="}")
-    refuse = functools.partial(_no_dtd, fmt)
-    parser.StartDoctypeDeclHandler = refuse
-    parser.EntityDeclHandler = refuse
-    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
-    parser.buffer_text = True
-    parser.StartElementHandler = handler.start
-    parser.EndElementHandler = handler.end
-    parser.CharacterDataHandler = handler.text
+    parser = _new_parser(handler, deadline, fmt)
     try:
         for at in range(0, len(xml), _CHUNK):
             deadline.check()
@@ -732,6 +855,66 @@ def _parse_xml(xml: bytes, handler: Any, deadline: _Deadline, fmt: str = _WORD) 
         parser.Parse(b"", True)
     except _Stop:
         return
+
+
+def _new_parser(handler: Any, deadline: _Deadline, fmt: str) -> Any:
+    """The ONE expat parser of a package part, with *handler* behind
+    :class:`_Guard`.
+
+    It refuses a DTD and an entity declaration at the first event, and an
+    external entity reference too. With no DTD, no entity exists to expand,
+    and expat fetches nothing. Fence: ``test_attachment_formats.py``
+    ``TestTheEntityRule``.
+    """
+    guard = _Guard(handler, deadline, fmt)
+    parser = expat.ParserCreate(encoding="UTF-8", namespace_separator="}")
+    refuse = functools.partial(_no_dtd, fmt)
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.ExternalEntityRefHandler = refuse
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.buffer_text = True
+    parser.StartElementHandler = guard.start
+    parser.EndElementHandler = guard.end
+    parser.CharacterDataHandler = guard.text
+    return parser
+
+
+def _stream_xml(
+    zf: zipfile.ZipFile, info: zipfile.ZipInfo, handler: Any, deadline: _Deadline,
+    fmt: str, cap: int,
+) -> tuple[int, bool]:
+    """Parse one part AS IT UNPACKS: ``(bytes read, whether the cap cut it)``.
+
+    The part never sits in memory whole. The parse takes at most *cap*
+    unpacked bytes, and then it stops with no refusal, so a zip bomb costs
+    *cap* bytes of parse and one chunk of memory, and the text before the cut
+    stays (attachment formats). The checks of :func:`_parse_xml` all hold:
+    UTF-8 only, no DTD, :class:`_Guard`, and a deadline check per chunk. A
+    handler ends the parse early with :class:`_Stop`.
+    """
+    if info.flag_bits & 0x1:
+        raise AttachmentRefused(_not_readable(fmt))
+    parser = _new_parser(handler, deadline, fmt)
+    read = 0
+    try:
+        with zf.open(info) as fh:
+            while True:
+                deadline.check()
+                chunk = fh.read(min(_CHUNK, cap - read + 1))
+                if not chunk:
+                    break
+                if read == 0:
+                    _require_utf8(chunk, fmt)
+                if read + len(chunk) > cap:
+                    parser.Parse(chunk[:cap - read], False)
+                    return cap, True
+                read += len(chunk)
+                parser.Parse(chunk, False)
+        parser.Parse(b"", True)
+    except _Stop:
+        pass
+    return read, False
 
 
 class _Rels:
@@ -795,11 +978,17 @@ class _Body:
     the depth, the element count and the time.
     """
 
-    def __init__(self) -> None:
+    #: Elements whose text is no text. A PowerPoint field (``a:fld``) is a
+    #: slide number or a date, so the deck reader mutes it.
+    _MUTED: frozenset[str] = frozenset()
+
+    def __init__(self, max_paragraphs: int | None = None) -> None:
         self.lines: list[str] = []
         self.chars = 0
         self.paragraphs = 0
         self.clipped = False
+        self._max_paragraphs = MAX_DOCX_PARAGRAPHS if max_paragraphs is None else max_paragraphs
+        self._muted = 0
         self._rows: list[list[str]] = []
         self._cells: list[list[str]] = []
         self._paras: list[list[str]] = []
@@ -809,7 +998,7 @@ class _Body:
         self._pending = 0
 
     def full(self) -> bool:
-        return (self.clipped or self.paragraphs >= MAX_DOCX_PARAGRAPHS
+        return (self.clipped or self.paragraphs >= self._max_paragraphs
                 or self.chars >= MAX_EXTRACT_CHARS)
 
     def _emit(self, line: str) -> None:
@@ -824,7 +1013,9 @@ class _Body:
             self._para_chars.append(0)
         elif local == "t":
             self._in_text += 1
-        elif local == "tabs":
+        elif local in self._MUTED:
+            self._muted += 1
+        elif local in ("tabs", "tabLst"):
             self._in_tabs += 1
         elif local in _MARKS and self._paras and not self._in_tabs:
             self._paras[-1].append(_MARKS[local])
@@ -837,7 +1028,7 @@ class _Body:
             self._cells[-1] = []
 
     def text(self, data: str) -> None:
-        if self._in_text and self._paras:
+        if self._in_text and self._paras and not self._muted:
             self._paras[-1].append(data)
             self._para_chars[-1] += len(data)
             self._pending += len(data)
@@ -865,7 +1056,9 @@ class _Body:
         local = _local(name)
         if local == "t":
             self._in_text = max(0, self._in_text - 1)
-        elif local == "tabs":
+        elif local in self._MUTED:
+            self._muted = max(0, self._muted - 1)
+        elif local in ("tabs", "tabLst"):
             self._in_tabs = max(0, self._in_tabs - 1)
         elif local == "p" and self._paras:
             self._end_paragraph()
@@ -1216,30 +1409,35 @@ class _Sheet:
             self._row = None
 
 
-def _xl_part(name: str) -> str:
-    """*name* when it is a normal path inside ``xl/``, else a refusal."""
+def _xl_part(name: str, prefix: str = "xl/", fmt: str = _EXCEL) -> str:
+    """*name* when it is a normal path inside *prefix*, else a refusal."""
     norm = posixpath.normpath(name)
-    if norm != name or not norm.startswith("xl/"):
-        raise AttachmentRefused(_not_readable(_EXCEL))
+    if norm != name or not norm.startswith(prefix):
+        raise AttachmentRefused(_not_readable(fmt))
     return norm
 
 
-def _target(base_dir: str, target: str) -> str:
-    """The part that a relationship of the workbook names, inside ``xl/``.
+def _target(base_dir: str, target: str, prefix: str = "xl/", fmt: str = _EXCEL) -> str:
+    """The part that a relationship names, inside *prefix* (``xl/``).
 
     A target that starts with ``/`` starts at the package root. Any other
-    target starts at the folder of the workbook.
+    target starts at the folder of the part that holds the relationship.
     """
     joined = target.lstrip("/") if target.startswith("/") else posixpath.join(base_dir, target)
-    return _xl_part(posixpath.normpath(joined))
+    return _xl_part(posixpath.normpath(joined), prefix, fmt)
 
 
 class _Budget:
-    """The unpacked XML that one workbook may read, :data:`MAX_XLSX_XML_BYTES`."""
+    """The unpacked XML that one package may read: a workbook
+    (:data:`MAX_XLSX_XML_BYTES`) or a deck (:data:`MAX_PPTX_XML_BYTES`)."""
 
-    def __init__(self, zf: zipfile.ZipFile) -> None:
+    def __init__(
+        self, zf: zipfile.ZipFile, total: int | None = None, fmt: str = _EXCEL,
+    ) -> None:
         self._zf = zf
-        self.left = MAX_XLSX_XML_BYTES
+        self._fmt = fmt
+        # Read at each call, so a test can lower the cap.
+        self.left = MAX_XLSX_XML_BYTES if total is None else total
 
     def read(self, info: zipfile.ZipInfo, cap: int) -> bytes | None:
         """The bytes of *info*, or ``None`` when they do not fit what is left.
@@ -1247,10 +1445,10 @@ class _Budget:
         A part over its own *cap* is refused, as a Word part is.
         """
         if info.file_size > cap:
-            raise AttachmentRefused(_too_large(_EXCEL))
+            raise AttachmentRefused(_too_large(self._fmt))
         if info.file_size > self.left:
             return None
-        data = _read_part(self._zf, info, min(cap, self.left), _EXCEL)
+        data = _read_part(self._zf, info, min(cap, self.left), self._fmt)
         self.left -= len(data)
         return data
 
@@ -1370,6 +1568,212 @@ def _read_book(zf: zipfile.ZipFile, deadline: _Deadline) -> _Book:
         if book.done:
             break
     return book
+
+
+# ── .pptx (attachment formats) ───────────────────────────────────────────────
+
+_POWERPOINT = "PowerPoint deck"
+_SLIDE_REL = "/slide"
+_NOTES_REL = "/notesSlide"
+#: The slides that one read takes, in the order of the deck. More stop it.
+MAX_PPTX_SLIDES = 500
+#: The paragraphs of a whole deck, notes too. More stop the read. A slide
+#: holds many empty paragraphs, so this is higher than the Word cap.
+MAX_PPTX_PARAGRAPHS = 20_000
+#: The unpacked XML of one deck, every part that the reader reads. A part
+#: that does not fit stops the read where the budget ends.
+MAX_PPTX_XML_BYTES = 60 * 1024 * 1024
+#: The elements of the content parts of one package, a deck or an
+#: OpenDocument file. More stop the read and set ``stopped``. It is under
+#: :data:`MAX_DOCX_ELEMENTS`, so the read stops before :class:`_Guard`
+#: refuses one part.
+MAX_OFFICE_ELEMENTS = 500_000
+
+
+class _Counted:
+    """A handler with one count of elements for a whole package.
+
+    Past :data:`MAX_OFFICE_ELEMENTS` it sets ``stopped`` and ends the parse.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.elements = 0
+        self.stopped = False
+        self.text = inner.text
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        self.elements += 1
+        if self.elements > MAX_OFFICE_ELEMENTS:
+            self.stopped = True
+            raise _Stop
+        self.inner.start(name, attrs)
+
+    def end(self, name: str) -> None:
+        self.inner.end(name)
+
+
+class _Drawing(_Body):
+    """The text of a slide or a notes page. DrawingML names its paragraph,
+    run text, break and table as Word does (``p``, ``t``, ``br``, ``tbl``,
+    ``tr``, ``tc``), so the Word body reads it. A field is muted."""
+
+    _MUTED = frozenset({"fld"})
+
+
+class _SlideIds:
+    """The relationship id of each slide in ``presentation.xml``, in order.
+
+    It keeps at most :data:`MAX_PPTX_SLIDES` + 1 ids, so a list of a million
+    entries costs no more than that.
+    """
+
+    def __init__(self) -> None:
+        self.ids: list[str] = []
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        if _local(name) != "sldId":
+            return
+        # The plain ``id`` is a number. The relationship id is ``r:id``.
+        rid = next((str(v) for k, v in attrs.items() if "}" in k and _local(k) == "id"), "")
+        if rid:
+            self.ids.append(rid)
+        if len(self.ids) > MAX_PPTX_SLIDES:
+            raise _Stop
+
+    def end(self, _name: str) -> None:
+        return None
+
+    def text(self, _data: str) -> None:
+        return None
+
+
+def _rels_of(
+    zf: zipfile.ZipFile, part: str, deadline: _Deadline, budget: _Budget,
+) -> list[dict[str, str]]:
+    """The relationships of *part* that are not external, in order."""
+    folder = posixpath.dirname(part)
+    info = _getinfo(zf, posixpath.join(folder, "_rels", posixpath.basename(part) + ".rels"))
+    if info is None:
+        return []
+    raw = budget.read(info, MAX_DOCX_RELS_BYTES)
+    if raw is None:
+        return []
+    rels = _Rels()
+    _parse_xml(raw, rels, deadline, _POWERPOINT)
+    return [r for r in rels.found if r["TargetMode"].lower() != "external"]
+
+
+def _slide_parts(zf: zipfile.ZipFile, deadline: _Deadline, budget: _Budget) -> list[str]:
+    """The slide parts of the deck, in the order of ``presentation.xml``,
+    each once. A target outside ``ppt/`` is refused."""
+    main = _xl_part(
+        _main_part(zf, deadline, "ppt/presentation.xml", _POWERPOINT).filename,
+        "ppt/", _POWERPOINT,
+    )
+    folder = posixpath.dirname(main)
+    by_id: dict[str, str] = {}
+    for rel in _rels_of(zf, main, deadline, budget):
+        if rel["Type"].endswith(_SLIDE_REL):
+            by_id.setdefault(rel["Id"], _target(folder, rel["Target"], "ppt/", _POWERPOINT))
+    info = _getinfo(zf, main)
+    raw = None if info is None else budget.read(info, MAX_DOCX_XML_BYTES)
+    if raw is None:
+        raise AttachmentRefused(_not_readable(_POWERPOINT))
+    order = _SlideIds()
+    _parse_xml(raw, order, deadline, _POWERPOINT)
+    parts: list[str] = []
+    for rid in order.ids:
+        part = by_id.get(rid)
+        if part is not None and part not in parts:
+            parts.append(part)
+    return parts
+
+
+class _Deck:
+    """One deck read: the text, the slides read, and the stops."""
+
+    def __init__(self) -> None:
+        self.body = _Drawing(MAX_PPTX_PARAGRAPHS)
+        self.counted = _Counted(self.body)
+        self.slides = 0
+        self.cut = False
+
+    def full(self) -> bool:
+        return self.cut or self.counted.stopped or self.body.full()
+
+    def part(
+        self, zf: zipfile.ZipFile, name: str, deadline: _Deadline, budget: _Budget,
+    ) -> None:
+        """Parse one slide or notes part into the deck, inside the budget.
+
+        A part that the budget or :data:`MAX_DOCX_XML_BYTES` cuts stops the
+        read (a zip bomb). The text before the cut stays.
+        """
+        info = _getinfo(zf, name)
+        if info is None:
+            return
+        cap = min(MAX_DOCX_XML_BYTES, budget.left)
+        used, cut = _stream_xml(zf, info, self.counted, deadline, _POWERPOINT, cap)
+        budget.left -= used
+        self.cut = self.cut or cut
+
+
+def _read_deck(zf: zipfile.ZipFile, deadline: _Deadline, deck: _Deck) -> int:
+    """Each slide in order, then its notes. Returns the count of slides."""
+    budget = _Budget(zf, MAX_PPTX_XML_BYTES, _POWERPOINT)
+    parts = _slide_parts(zf, deadline, budget)
+    total = len(parts)
+    if total > MAX_PPTX_SLIDES:
+        deck.cut = True
+        parts = parts[:MAX_PPTX_SLIDES]
+    for number, part in enumerate(parts, 1):
+        deck.body._emit(f"## Slide {number}")
+        deck.part(zf, part, deadline, budget)
+        deck.slides = number
+        if deck.full():
+            break
+        notes = [
+            _target(posixpath.dirname(part), r["Target"], "ppt/", _POWERPOINT)
+            for r in _rels_of(zf, part, deadline, budget) if r["Type"].endswith(_NOTES_REL)
+        ]
+        if notes and notes[0] not in parts:
+            head = len(deck.body.lines)
+            deck.body._emit("### Notes")
+            deck.part(zf, notes[0], deadline, budget)
+            if len(deck.body.lines) == head + 1:  # a notes page with no text
+                deck.body.lines.pop()
+                deck.body.chars -= len("### Notes") + 1
+        if deck.full():
+            break
+    return total
+
+
+def _pptx_text(data: bytes, deadline: _Deadline) -> Extracted:
+    """The text of each slide in order, then its speaker notes.
+
+    The zip and XML helpers of a Word document, with no new dependency. Each
+    part unpacks into the parse (:func:`_stream_xml`), inside one budget of
+    :data:`MAX_PPTX_XML_BYTES`. A bomb, :data:`MAX_OFFICE_ELEMENTS`,
+    :data:`MAX_PPTX_PARAGRAPHS`, :data:`MAX_PPTX_SLIDES` and
+    :data:`MAX_EXTRACT_CHARS` each stop the read and set ``stopped``.
+    """
+    deck = _Deck()
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            if len(zf.infolist()) > MAX_ZIP_ENTRIES:
+                raise AttachmentRefused(_not_readable(_POWERPOINT))
+            total = _read_deck(zf, deadline, deck)
+        deck.body.flush()
+    except AttachmentRefused:
+        raise
+    except Exception:  # every parser failure is one clean refusal
+        raise AttachmentRefused(_not_readable(_POWERPOINT)) from None
+    stopped = deck.full()
+    return Extracted(
+        text="\n".join(deck.body.lines)[:MAX_EXTRACT_CHARS], kind="pptx", unit="slide",
+        read=deck.slides, total=total, stopped=stopped,
+    )
 
 
 # ── .pdf ────────────────────────────────────────────────────────────────────
@@ -1552,4 +1956,540 @@ def _pdf_text(data: bytes, deadline: _Deadline) -> Extracted:
     return Extracted(
         text=text[:MAX_EXTRACT_CHARS], kind="pdf", unit="page", read=read, total=total,
         stopped=read < total or deadline.fired or len(text) > MAX_EXTRACT_CHARS,
+    )
+
+
+# ── .odt .ods .odp (attachment formats) ──────────────────────────────────────
+
+_ODF_OFFICE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
+_ODF_TEXT = "urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+_ODF_TABLE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
+_ODF_DRAW = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}"
+_ODF_PRES = "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0}"
+_ODF_BODY = _ODF_OFFICE + "body"
+_ODF_PARAS = frozenset({_ODF_TEXT + "p", _ODF_TEXT + "h"})
+_ODF_CELLS = frozenset({_ODF_TABLE + "table-cell", _ODF_TABLE + "covered-table-cell"})
+_ODF_MARKS = frozenset({_ODF_TEXT + "s", _ODF_TEXT + "tab", _ODF_TEXT + "line-break"})
+#: Elements whose text is no text: a comment, tracked deleted text, and the
+#: number of a note.
+_ODF_MUTED = frozenset({
+    _ODF_OFFICE + "annotation", _ODF_TEXT + "tracked-changes", _ODF_TEXT + "note-citation",
+})
+#: The ``mimetype`` entry of each kind. A file of another kind is refused.
+_ODF_MIME = {
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    ".odp": "application/vnd.oasis.opendocument.presentation",
+}
+#: The spaces that one ``text:s`` adds at most. Its count is the file's word.
+_MAX_ODF_SPACES = 64
+_REPEAT_RE = re.compile(r"[0-9]{1,9}")
+
+
+def _repeat(attrs: dict[str, str], local: str) -> int:
+    """A ``number-*-repeated`` count, at least 1. The reader never expands
+    it past a cap: an empty cell repeated 16,384 times only moves the column."""
+    raw = _attr(attrs, local) or ""
+    return max(1, int(raw)) if _REPEAT_RE.fullmatch(raw) else 1
+
+
+class _OdfBody:
+    """The paragraphs of a text document or a presentation, in order.
+
+    A table row is one line, its cells joined by `` | ``, as in a Word
+    document. A presentation starts each page with ``## Slide N`` and its
+    speaker notes with ``### Notes``. Each event costs O(1). It raises
+    :class:`_Stop` at the paragraph cap or :data:`MAX_EXTRACT_CHARS`.
+    """
+
+    def __init__(self, slides: bool) -> None:
+        self.lines: list[str] = []
+        self.chars = 0
+        self.paragraphs = 0
+        self.pages = 0
+        self.clipped = False
+        self._slides = slides
+        self._max = MAX_PPTX_PARAGRAPHS if slides else MAX_DOCX_PARAGRAPHS
+        self._in_body = 0
+        self._muted = 0
+        self._paras: list[list[str]] = []
+        self._para_chars: list[int] = []
+        self._pending = 0
+        self._rows: list[list[str]] = []
+        self._cells: list[list[str]] = []
+        self._notes_at: int | None = None
+
+    def full(self) -> bool:
+        return self.clipped or self.paragraphs >= self._max or self.chars >= MAX_EXTRACT_CHARS
+
+    def _emit(self, line: str) -> None:
+        if line:
+            self.lines.append(line)
+            self.chars += len(line) + 1
+
+    def _add(self, text: str) -> None:
+        if not self._paras:
+            return
+        self._paras[-1].append(text)
+        self._para_chars[-1] += len(text)
+        self._pending += len(text)
+        if self.chars + self._pending >= MAX_EXTRACT_CHARS:
+            self.clipped = True
+            raise _Stop
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        if name == _ODF_BODY:
+            self._in_body += 1
+        elif not self._in_body:
+            return
+        elif name in _ODF_MUTED:
+            self._muted += 1
+        elif self._muted:
+            return
+        elif name in _ODF_PARAS:
+            self._paras.append([])
+            self._para_chars.append(0)
+        elif name in _ODF_MARKS:
+            self._mark(name, attrs)
+        elif name == _ODF_TABLE + "table":
+            self._rows.append([])
+            self._cells.append([])
+        elif name == _ODF_TABLE + "table-row" and self._rows:
+            self._rows[-1] = []
+        elif name in _ODF_CELLS and self._cells:
+            self._cells[-1] = []
+        elif self._slides and name == _ODF_DRAW + "page":
+            self.pages += 1
+            self._emit(f"## Slide {self.pages}")
+        elif self._slides and name == _ODF_PRES + "notes":
+            self._notes_at = len(self.lines)
+            self._emit("### Notes")
+
+    def _mark(self, name: str, attrs: dict[str, str]) -> None:
+        if name == _ODF_TEXT + "s":
+            self._add(" " * min(_repeat(attrs, "c"), _MAX_ODF_SPACES))
+        elif name == _ODF_TEXT + "tab":
+            self._add("\t")
+        else:
+            self._add("\n")
+
+    def text(self, data: str) -> None:
+        if self._in_body and not self._muted:
+            self._add(_SPACES.sub(" ", data))
+
+    def end(self, name: str) -> None:
+        if name == _ODF_BODY:
+            self._in_body = max(0, self._in_body - 1)
+        elif name in _ODF_MUTED:
+            self._muted = max(0, self._muted - 1)
+        elif self._muted or not self._in_body:
+            return
+        elif name in _ODF_PARAS and self._paras:
+            self._end_paragraph()
+        elif name in _ODF_CELLS and self._cells and self._rows:
+            self._rows[-1].append(" ".join(t for t in self._cells[-1] if t))
+        elif name == _ODF_TABLE + "table-row" and self._rows:
+            self._end_row()
+        elif name == _ODF_TABLE + "table" and self._rows:
+            self._rows.pop()
+            self._cells.pop()
+        elif name == _ODF_PRES + "notes" and self._notes_at is not None:
+            if len(self.lines) == self._notes_at + 1:  # notes with no text
+                self.chars -= len(self.lines.pop()) + 1
+            self._notes_at = None
+        if self.full():
+            raise _Stop
+
+    def _end_row(self) -> None:
+        if not any(self._rows[-1]):
+            return
+        row = " | ".join(self._rows[-1])
+        if len(self._cells) > 1:
+            self._cells[-2].append(row)
+        else:
+            self._emit(row)
+
+    def _end_paragraph(self) -> None:
+        self.paragraphs += 1
+        text = "".join(self._paras.pop()).strip()
+        self._pending -= self._para_chars.pop()
+        if self._cells:
+            self._cells[-1].append(text)
+        else:
+            self._emit(text)
+
+    def flush(self) -> None:
+        """Keep the text of the paragraphs that a stop cut off."""
+        for buf in self._paras:
+            self._emit("".join(buf).strip())
+        self._paras.clear()
+        self._para_chars.clear()
+        self._pending = 0
+
+
+class _OdsBook:
+    """The rows of each sheet of a spreadsheet, as an Excel workbook gives
+    them: a line starts with the reference of its first value, and a tab
+    separates two columns.
+
+    The caps of a workbook hold: :data:`MAX_XLSX_SHEETS`,
+    :data:`MAX_XLSX_ROWS`, :data:`MAX_XLSX_COLUMN`, :data:`MAX_XLSX_CELLS`
+    and :data:`MAX_EXTRACT_CHARS`. A repeated cell or row is written once for
+    each copy, and each copy counts toward the caps. An empty one only moves
+    the column or the row, so the 16,384 empty cells that end a real row cost
+    nothing.
+    """
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.chars = 0
+        self.cells = 0
+        self.values = 0
+        self.stopped = False
+        self._in_body = 0
+        self._muted = 0
+        self._tables = 0
+        self._sheets = 0
+        self._title: str | None = None
+        self._rows = 0
+        self._row_num = 0
+        self._row: list[tuple[int, str]] | None = None
+        self._row_repeat = 1
+        self._col = 0
+        self._cell: tuple[int, int] | None = None
+        self._paras: list[str] = []
+        self._buf: list[str] = []
+        self._pending = 0
+
+    def _stop(self) -> None:
+        self.stopped = True
+        raise _Stop
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        if name == _ODF_BODY:
+            self._in_body += 1
+        elif not self._in_body:
+            return
+        elif name in _ODF_MUTED:
+            self._muted += 1
+        elif self._muted:
+            return
+        elif name == _ODF_TABLE + "table":
+            self._tables += 1
+            if self._tables == 1:
+                self._start_sheet(attrs)
+        elif self._tables != 1:
+            return
+        elif name == _ODF_TABLE + "table-row":
+            self._rows += 1
+            if self._rows > MAX_XLSX_ROWS:
+                self._stop()
+            self._row, self._row_repeat = [], _repeat(attrs, "number-rows-repeated")
+            self._col = 0
+        elif name in _ODF_CELLS and self._row is not None:
+            self._count_cell()
+            self._cell = (self._col + 1, _repeat(attrs, "number-columns-repeated"))
+            self._paras = []
+        elif name in _ODF_PARAS and self._cell is not None:
+            self._buf = []
+        elif name in _ODF_MARKS:
+            self._add(" ")
+
+    def _start_sheet(self, attrs: dict[str, str]) -> None:
+        self._sheets += 1
+        if self._sheets > MAX_XLSX_SHEETS:
+            self._stop()
+        self._title = f"## Sheet: {(_attr(attrs, 'name') or '').translate(_FLAT)}"
+        self._rows = self._row_num = 0
+
+    def _count_cell(self) -> None:
+        self.cells += 1
+        if self.cells > MAX_XLSX_CELLS:
+            self._stop()
+
+    def _add(self, text: str) -> None:
+        if self._cell is None:
+            return
+        self._buf.append(text)
+        self._pending += len(text)
+        if self.chars + self._pending >= MAX_EXTRACT_CHARS:
+            self._stop()
+
+    def text(self, data: str) -> None:
+        if self._in_body and not self._muted:
+            self._add(data)
+
+    def end(self, name: str) -> None:
+        if name == _ODF_BODY:
+            self._in_body = max(0, self._in_body - 1)
+        elif name in _ODF_MUTED:
+            self._muted = max(0, self._muted - 1)
+        elif self._muted or not self._in_body:
+            return
+        elif name == _ODF_TABLE + "table":
+            self._tables = max(0, self._tables - 1)
+        elif self._tables != 1:
+            return
+        elif name in _ODF_PARAS and self._cell is not None:
+            self._paras.append("".join(self._buf))
+            self._buf = []
+        elif name in _ODF_CELLS and self._cell is not None:
+            self._end_cell()
+        elif name == _ODF_TABLE + "table-row" and self._row is not None:
+            self._end_row()
+
+    def _end_cell(self) -> None:
+        first, repeat = self._cell or (0, 1)
+        self._cell = None
+        self._col = first + repeat - 1
+        value = " ".join(p for p in self._paras if p).translate(_FLAT).strip()
+        if not value or self._row is None:
+            return
+        last = min(self._col, MAX_XLSX_COLUMN)
+        if self._col > MAX_XLSX_COLUMN:
+            self.stopped = True  # a value past column GR is dropped
+        for col in range(first, last + 1):
+            if col > first:
+                self._count_cell()
+            self._row.append((col, value))
+
+    def _line(self, row_num: int) -> str:
+        cells = self._row or []
+        out = [f"{_column_name(cells[0][0])}{row_num}"]
+        prev = cells[0][0] - 1
+        for col, value in cells:
+            out.append("\t" * (col - prev) + value)
+            prev = col
+        return "".join(out)
+
+    def _end_row(self) -> None:
+        first = self._row_num + 1
+        self._row_num += self._row_repeat
+        if self._row:
+            copies = min(self._row_repeat, MAX_XLSX_ROWS - self._rows + 1)
+            for i in range(copies):
+                if i:
+                    self._rows += 1
+                    for _ in self._row:
+                        self._count_cell()
+                self._emit(self._line(first + i), len(self._row))
+            if copies < self._row_repeat:
+                self._stop()
+        self._row = None
+        self._pending = 0
+
+    def _emit(self, line: str, values: int) -> None:
+        if self._title is not None:
+            self.lines.append(self._title)
+            self.chars += len(self._title) + 1
+            self._title = None
+        self.lines.append(line)
+        self.chars += len(line) + 1
+        self.values += values
+        if self.chars >= MAX_EXTRACT_CHARS:
+            self._stop()
+
+
+def _check_odf_type(zf: zipfile.ZipFile, kind: str) -> None:
+    """Refuse an OpenDocument file of another kind, by its ``mimetype``."""
+    info = _getinfo(zf, "mimetype")
+    if info is None:
+        return
+    raw = _read_part(zf, info, 256, _kind_name(kind)).decode("ascii", "replace").strip()
+    if not raw.startswith(_ODF_MIME[kind]):
+        raise AttachmentRefused(_wrong_content(kind))
+
+
+def _odf_text(data: bytes, kind: str, deadline: _Deadline) -> Extracted:
+    """The text of an OpenDocument file: ``content.xml`` and nothing else.
+
+    The part unpacks into the parse (:func:`_stream_xml`), so a bomb stops
+    at :data:`MAX_DOCX_XML_BYTES` with ``stopped``. :data:`MAX_OFFICE_ELEMENTS`
+    stops it too. A text file and a presentation read as paragraphs, a
+    spreadsheet as rows under the caps of an Excel workbook.
+    """
+    fmt = _kind_name(kind)
+    handler: _OdfBody | _OdsBook = _OdsBook() if kind == ".ods" else _OdfBody(kind == ".odp")
+    counted = _Counted(handler)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            if len(zf.infolist()) > MAX_ZIP_ENTRIES:
+                raise AttachmentRefused(_not_readable(fmt))
+            _check_odf_type(zf, kind)
+            info = _getinfo(zf, "content.xml")
+            if info is None:
+                raise AttachmentRefused(_not_readable(fmt))
+            _used, cut = _stream_xml(zf, info, counted, deadline, fmt, MAX_DOCX_XML_BYTES)
+        if isinstance(handler, _OdfBody):
+            handler.flush()
+    except AttachmentRefused:
+        raise
+    except Exception:  # every parser failure is one clean refusal
+        raise AttachmentRefused(_not_readable(fmt)) from None
+    text = "\n".join(handler.lines)[:MAX_EXTRACT_CHARS]
+    if isinstance(handler, _OdsBook):
+        stopped = cut or counted.stopped or handler.stopped
+        return Extracted(text=text, kind="ods", unit="cell", read=handler.values,
+                         total=None if stopped else handler.values, stopped=stopped)
+    stopped = cut or counted.stopped or handler.full()
+    slides = kind == ".odp"
+    read = handler.pages if slides else handler.paragraphs
+    return Extracted(text=text, kind=kind.lstrip("."), unit="slide" if slides else "paragraph",
+                     read=read, total=None if stopped else read, stopped=stopped)
+
+
+# ── .rtf (attachment formats) ────────────────────────────────────────────────
+
+#: The open groups of an RTF file. More refuse it.
+MAX_RTF_DEPTH = 256
+#: One token of RTF, by bytes: a control word with its number, a ``\'hh``
+#: byte, a control symbol, a brace, a run of text, or line ends. Each
+#: branch is bounded or one plain class, so the match is linear.
+_RTF_TOKEN = re.compile(
+    rb"\\([a-zA-Z]{1,32})(-?[0-9]{1,10})? ?|\\'([0-9a-fA-F]{2})|\\([^a-zA-Z])"
+    rb"|([{}])|([^\\{}\r\n]+)|[\r\n]+|\\"
+)
+#: The groups whose content is no text: tables of fonts, colours and
+#: styles, metadata, pictures, objects, field codes, headers and footers.
+_RTF_SKIP = frozenset({
+    b"fonttbl", b"colortbl", b"stylesheet", b"info", b"pict", b"object", b"objdata",
+    b"objclass", b"themedata", b"colorschememapping", b"datastore", b"latentstyles",
+    b"listtable", b"listoverridetable", b"rsidtbl", b"generator", b"xmlnstbl", b"mmathPr",
+    b"fldinst", b"filetbl", b"revtbl", b"header", b"headerl", b"headerr", b"headerf",
+    b"footer", b"footerl", b"footerr", b"footerf", b"bkmkstart", b"bkmkend", b"sp",
+    b"shppict", b"nonshppict", b"pgdsctbl", b"userprops", b"xform",
+})
+_RTF_WORDS = {
+    b"par": "\n", b"line": "\n", b"sect": "\n", b"page": "\n", b"row": "\n",
+    b"cell": " | ", b"tab": "\t", b"emdash": "\u2014", b"endash": "\u2013",
+    b"bullet": "\u2022", b"lquote": "\u2018", b"rquote": "\u2019",
+    b"ldblquote": "\u201c", b"rdblquote": "\u201d", b"emspace": " ", b"enspace": " ",
+}
+_RTF_SYMBOLS = {
+    b"\\": "\\", b"{": "{", b"}": "}", b"~": "\u00a0", b"_": "-", b"\n": "\n", b"\r": "\n",
+}
+
+
+def _rtf_codec(param: bytes | None) -> str:
+    """The codec of ``\\ansicpgN``, else ``cp1252``. Only digits reach it."""
+    name = f"cp{abs(int(param))}" if param else "cp1252"
+    try:
+        codecs.lookup(name)
+    except LookupError:
+        return "cp1252"
+    return name
+
+
+class _Rtf:
+    """The state of one RTF read. It keeps text, never a tree."""
+
+    def __init__(self) -> None:
+        self.out: list[str] = []
+        self.chars = 0
+        self.stopped = False
+        self.codec = "cp1252"
+        self.skipping = False
+        self.uc = 1
+        self.fallback = 0
+        self.stack: list[tuple[bool, int]] = []
+        self.pend = bytearray()
+
+    def put(self, text: str) -> None:
+        """Add *text*, after the code page bytes that wait before it."""
+        if self.pend:
+            raw, self.pend = bytes(self.pend), bytearray()
+            self._keep(raw.decode(self.codec, "replace"))
+        self._keep(text)
+
+    def _keep(self, text: str) -> None:
+        if text:
+            self.out.append(text)
+            self.chars += len(text)
+            if self.chars >= MAX_EXTRACT_CHARS:
+                self.stopped = True
+
+    def raw(self, data: bytes) -> None:
+        """Bytes of text in the code page, less the fallback of a ``\\u``."""
+        drop = min(self.fallback, len(data))
+        self.fallback -= drop
+        if not self.skipping:
+            self.pend += data[drop:]
+            if len(self.pend) >= _CHUNK:
+                self.put("")
+
+    def word(self, word: bytes, param: bytes | None) -> None:
+        if word == b"ansicpg":
+            self.codec = _rtf_codec(param)
+        elif word == b"uc" and param:
+            self.uc = max(0, min(int(param), 8))
+        elif word == b"u" and param:
+            if not self.skipping:
+                self.put(chr(int(param) % 0x10000))
+            self.fallback = self.uc
+        elif not self.skipping and word in _RTF_WORDS:
+            self.put(_RTF_WORDS[word])
+
+    def group(self, brace: bytes) -> None:
+        if brace == b"{":
+            self.stack.append((self.skipping, self.uc))
+            if len(self.stack) > MAX_RTF_DEPTH:
+                raise AttachmentRefused(_too_complex("Rich Text document"))
+        elif self.stack:
+            self.skipping, self.uc = self.stack.pop()
+        self.fallback = 0
+
+
+def _rtf_text(data: bytes, deadline: _Deadline) -> Extracted:
+    """The text of an RTF file, by a small control-word stripper.
+
+    It runs nothing and embeds nothing: a picture, an object, a field code
+    and every ``{\\*\\...}`` group are skipped whole, and ``\\binN`` skips N
+    raw bytes. ``\\'hh`` decodes in the code page of ``\\ansicpg``, and
+    ``\\uN`` is one character. Caps: :data:`MAX_RTF_DEPTH` open groups (more
+    refuse), :data:`MAX_EXTRACT_CHARS` and :data:`MAX_TEXT_LINES` (more
+    stop), and a deadline check every :data:`_CHECK_EVERY` tokens.
+    """
+    state = _Rtf()
+    pos, end, tokens, fresh = 0, len(data), 0, False
+    while pos < end and not state.stopped:
+        tokens += 1
+        if tokens % _CHECK_EVERY == 0:
+            deadline.check()
+        m = _RTF_TOKEN.match(data, pos)
+        if m is None:  # the last branch takes a lone backslash, so never
+            break
+        pos = m.end()
+        word, param, hexa, symbol, brace, run = m.groups()
+        first, fresh = fresh, brace == b"{"
+        if brace is not None:
+            state.group(brace)
+        elif word == b"bin":
+            pos += max(0, int(param or 0))
+        elif word is not None:
+            if first and word in _RTF_SKIP:
+                state.skipping = True
+            else:
+                state.word(word, param)
+        elif symbol is not None:
+            if first and symbol == b"*":
+                state.skipping = True
+            elif not state.skipping and symbol in _RTF_SYMBOLS:
+                state.put(_RTF_SYMBOLS[symbol])
+        elif hexa is not None:
+            state.raw(bytes([int(hexa, 16)]))
+        elif run is not None:
+            state.raw(run)
+    deadline.check()
+    state.put("")
+    text = "".join(state.out).encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    head = next((i for i, line in enumerate(lines) if line), len(lines))
+    lines = lines[head:]
+    kept = lines[:MAX_TEXT_LINES]
+    stopped = state.stopped or len(kept) < len(lines)
+    return Extracted(
+        text="\n".join(kept)[:MAX_EXTRACT_CHARS], kind="rtf", unit="line",
+        read=len(kept), total=None if stopped else len(kept), stopped=stopped,
     )

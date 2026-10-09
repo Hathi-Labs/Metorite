@@ -276,7 +276,7 @@ def test_a_parse_past_its_deadline_stops(suffix: str, make) -> None:
 
 def test_an_unknown_type_is_refused() -> None:
     with pytest.raises(at.AttachmentRefused, match=r"I read \.docx"):
-        at.extract_text(b"PK", ".pptx")
+        at.extract_text(b"PK", ".exe")
 
 
 # ── 3. It runs no process ───────────────────────────────────────────────────
