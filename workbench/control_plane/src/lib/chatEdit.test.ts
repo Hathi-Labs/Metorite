@@ -8,12 +8,17 @@
  * - an edit of an earlier message, or of another person's, is offered or sent;
  * - the browser removes the old turn, or tombstones it, before the server
  *   accepts the edit, so a refusal leaves a fork on reload (review of #795);
- * - a stale poll brings back a row an accepted edit removed.
+ * - a stale poll brings back a row an accepted edit removed;
+ * - an edit held during an app update loses its target or its answer, goes
+ *   out as a plain send, or draws a bubble before the server accepts it.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import type { ChatMessage } from "@/lib/chatStore";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getSessionState, setSessionState, type ChatMessage } from "@/lib/chatStore";
+import {
+  heldEditFor, holdForUpdate, registerSender, retryHeldNow, setRecoveryDeps, type SendOptions,
+} from "@/lib/chatRecovery";
 import {
   EDIT_NOT_LAST,
   EDIT_NOT_YOURS,
@@ -158,7 +163,7 @@ describe("a refused edit changes nothing (review of #795)", () => {
   it("sendMessage leaves the thread alone until the server answers, then settles it once", () => {
     const src = readFileSync(join(__dirname, "..", "hooks", "useAgentChat.ts"), "utf8");
     // The first state change of an edit moves only the loading state.
-    expect(src).toMatch(/messages: supersedes \? prev\.messages : \[\.\.\.prev\.messages, userMsg, assistantMsg\]/);
+    expect(src).toMatch(/if \(supersedes\) \{\s*return \{ \.\.\.prev, isLoading: true, error: null, abortController: controller \};/);
     // The answer decides the thread, through the one pure helper.
     expect(src).toMatch(/const accepted = res\.status !== 202 && res\.ok && !!res\.body;/);
     expect(src).toMatch(/settleEditAnswer\(\s*threadId, prev\.messages, supersedes, res\.status, accepted, body,/);
@@ -167,5 +172,50 @@ describe("a refused edit changes nothing (review of #795)", () => {
     expect(src).toMatch(/stopGeneration = useCallback\(\(\): Promise<void> =>/);
     // A stale poll must not resurrect a superseded row.
     expect(src).toMatch(/if \(isSuperseded\(threadId, rm\.id\)\) continue;/);
+  });
+});
+
+describe("an edit held during an app update is sent as a supersede (#797 + #795)", () => {
+  afterEach(() => setRecoveryDeps(null));
+
+  it("keeps its target and its answer, keeps the old turn, and goes out as an edit", async () => {
+    const tid = `t-held-edit-${Math.random()}`;
+    const before = thread();
+    setSessionState(tid, (p) => ({ ...p, messages: before }));
+    const sent: Array<[string, SendOptions | undefined]> = [];
+    registerSender(tid, async (text, opts) => { sent.push([text, opts]); });
+    setRecoveryDeps({ probe: async () => false, sleep: () => new Promise(() => {}) });
+
+    const outcomes: unknown[] = [];
+    const onEditOutcome = (o: unknown) => outcomes.push(o);
+    holdForUpdate(tid, "create two tasks", { edit: { supersedes: "u2", onEditOutcome } });
+
+    // While held: no bubble, the old turn stays, the notice is up.
+    const held = getSessionState(tid);
+    expect(held.messages).toBe(before);
+    expect(held.outage).toBe(true);
+    expect(heldEditFor(tid, "create two tasks")?.supersedes).toBe("u2");
+
+    await retryHeldNow(tid);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const [text, opts] = sent[0];
+    expect(text).toBe("create two tasks");
+    expect(opts?.supersedes).toBe("u2");
+    expect(opts?.fromHold).toBe(true);
+    expect(opts?.heldId).toBeUndefined();
+    // The answer is the original one: a refusal after the hold reaches it.
+    opts?.onEditOutcome?.({ ok: false, reason: EDIT_NOT_LAST });
+    expect(outcomes).toEqual([{ ok: false, reason: EDIT_NOT_LAST }]);
+    expect(heldEditFor(tid, "create two tasks")).toBeUndefined();
+  });
+
+  it("sendMessage holds an edit on an outage instead of answering it", () => {
+    const src = readFileSync(join(__dirname, "..", "hooks", "useAgentChat.ts"), "utf8");
+    expect(src).toMatch(/if \(before\.outage\) \{ holdEdit\(false\); return; \}/);
+    expect(src).toMatch(/if \(opts\?\.fromHold\) holdEdit\(true\);/);
+    expect(src).toMatch(/!accepted && isUpdateOutage\(\{ status: res\.status, gotResponse: true \}\)/);
+    expect(src).toMatch(/if \(isUpdateOutage\(\{ status: failedStatus, gotResponse, err \}\)\) holdEdit\(!!opts\?\.fromHold\);/);
+    // An edit is never collapsed into a held plain send.
+    expect(src).toMatch(/const plan = supersedes \? "send" : planSend\(before, text, held\?\.id\);/);
   });
 });

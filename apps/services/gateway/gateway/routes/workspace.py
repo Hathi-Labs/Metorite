@@ -2021,10 +2021,12 @@ from fastapi import UploadFile
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
 #: Every kind that ``read_attachment`` reads must be here, ``.htm`` too
 #: (2026-10-09). The chat's file picker mirrors this list exactly
-#: (``CHAT_UPLOAD_ACCEPT``). Fence:
-#: ``workbench/control_plane/src/lib/chatUpload.test.ts``.
+#: (``CHAT_UPLOAD_ACCEPT``). Fences:
+#: ``workbench/control_plane/src/lib/chatUpload.test.ts`` and
+#: ``tests/unit/test_attachment_formats.py``.
 _ALLOWED_EXTENSIONS = {
-    ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
+    ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".tsv",
+    ".odt", ".ods", ".odp", ".rtf",
     ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
     ".py", ".sh", ".ps1", ".toml", ".ini", ".cfg",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
@@ -2032,6 +2034,16 @@ _ALLOWED_EXTENSIONS = {
     ".zip", ".tar", ".gz", ".bz2", ".7z",
     ".log", ".sql", ".db", ".sqlite",
 }
+
+
+def _refuse_legacy_office(ext: str) -> None:
+    """Refuse an older binary Office file at upload, with the sentence that
+    says how to fix it. No reader takes it, so the member hears it at once,
+    and not after a chat turn (``attachment_text.LEGACY_OFFICE``)."""
+    from acb_skills.attachment_text import LEGACY_OFFICE, unsupported_sentence
+
+    if ext in LEGACY_OFFICE:
+        raise HTTPException(status_code=400, detail=unsupported_sentence(ext))
 
 
 @router.post("/workspace/{session_id}/upload")
@@ -2091,6 +2103,7 @@ async def upload_files(
         # Validate filename
         safe_name = Path(f.filename or "untitled").name
         ext = Path(safe_name).suffix.lower()
+        _refuse_legacy_office(ext)
         if ext not in _ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,

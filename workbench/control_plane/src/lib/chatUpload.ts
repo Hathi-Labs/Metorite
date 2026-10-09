@@ -20,7 +20,8 @@
 
 /** The kinds the gateway's upload route takes, in its order. */
 export const CHAT_UPLOAD_ACCEPT: readonly string[] = [
-  ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv",
+  ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".tsv",
+  ".odt", ".ods", ".odp", ".rtf",
   ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".css", ".js", ".ts",
   ".py", ".sh", ".ps1", ".toml", ".ini", ".cfg",
   ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",

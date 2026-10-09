@@ -41,6 +41,7 @@ function Est({ on }: { on: boolean }) {
 }
 
 export default function CustomerUsage({
+  periodLabel,
   row,
   days,
   windowDays,
@@ -49,6 +50,8 @@ export default function CustomerUsage({
   price,
   priceReported = true,
 }: {
+  /** The period's words: "last 30 days", "1 Aug – 31 Aug 2026". */
+  periodLabel: string;
   /** This organization's row from the fleet read. ⚠️ `null` can mean EITHER
    *  "no traffic" or "the capped fleet page did not include them" — H-76.
    *  `customerUsageState` tells the two apart; this file never guesses. */
@@ -70,7 +73,7 @@ export default function CustomerUsage({
   return (
     <section className="panel">
       <div className="panel-head">
-        <h2>Money — last {windowDays} days</h2>
+        <h2>Money — {periodLabel}</h2>
         <p>
           What we charged this customer, what their AI cost us, and what is
           left. All figures are in rupees. Select ⓘ beside a figure to see how
@@ -97,7 +100,7 @@ export default function CustomerUsage({
 
       {!error && state.kind === "quiet" && (
         <div className="empty">
-          <h3>No AI use in the last {windowDays} days</h3>
+          <h3>No AI use in this period ({periodLabel})</h3>
           <p className="muted">
             This customer made no AI calls in this period, so there is no AI
             cost and no credit use to show. Seat revenue, if any, is on the

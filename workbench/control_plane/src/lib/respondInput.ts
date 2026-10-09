@@ -11,11 +11,23 @@
  * - `drop`: any 4xx. 409 says no question waits on that id, and 403 says
  *   this member cannot answer it. A restored card fails the same way on
  *   every click. That loop is what the member saw on 2026-10-06.
+ * - A 409 `run_restarted` is a `drop` that carries `resend`: the run that
+ *   asked died with an app update, and the gateway hands back the question
+ *   and the answer as one message. The caller sends THAT, not the bare
+ *   answer, so the next run knows what was asked (incident 2026-10-09).
  *
  * Fence: `src/lib/confirmationQueue.test.ts` ("the answer POST").
  */
 
+import { restartedCardMessage } from "@/lib/chatRecovery";
+
 export type RespondOutcome = "ok" | "drop" | "retry";
+
+/** The outcome, plus the message to send instead when the run restarted. */
+export interface RespondResult {
+  outcome: RespondOutcome;
+  resend: string | null;
+}
 
 export interface RespondInputBody {
   request_id: string;
@@ -36,6 +48,13 @@ export async function sendRespondInput(
   body: RespondInputBody,
   fetchFn: typeof fetch = fetch,
 ): Promise<RespondOutcome> {
+  return (await sendRespondInputResult(body, fetchFn)).outcome;
+}
+
+export async function sendRespondInputResult(
+  body: RespondInputBody,
+  fetchFn: typeof fetch = fetch,
+): Promise<RespondResult> {
   let res: Response;
   try {
     res = await fetchFn("/api/agent/respond-input", {
@@ -45,15 +64,17 @@ export async function sendRespondInput(
     });
   } catch (err) {
     console.error("respond-input failed — restoring HITL card", err);
-    return "retry";
+    return { outcome: "retry", resend: null };
   }
-  if (res.ok) return "ok";
+  if (res.ok) return { outcome: "ok", resend: null };
   const text = await res.text().catch(() => "");
   const outcome = respondFailure(res.status);
   if (outcome === "drop") {
+    const resend = res.status === 409 ? restartedCardMessage(text) : null;
+    if (resend) return { outcome, resend };
     console.warn(`respond-input refused (${res.status}), card dropped`, text);
   } else {
     console.error(`respond-input failed (${res.status}) — restoring HITL card`, text);
   }
-  return outcome;
+  return { outcome, resend: null };
 }

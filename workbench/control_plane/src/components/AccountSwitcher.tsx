@@ -138,8 +138,9 @@ function AccountMenu({
   /** False in the phone drawer, whose row above already shows it. */
   showActive?: boolean;
   /**
-   * The shell nav's account rows (NS-2): My Profile, My access, Appearance,
-   * and Organisation for an admin. Absent, the menu is the switcher alone.
+   * The shell nav's account rows (NS-2): My Profile, My access and
+   * Appearance. Organisation is an app in Admin since 2026-10-09, so it is
+   * not here. Absent, the menu is the switcher alone.
    */
   you?: readonly AccountLink[];
   /** Called when a row opens a page, so the menu or the drawer can close. */
@@ -536,7 +537,7 @@ export function DrawerAccountFoot({
   onNavigate,
   children,
 }: {
-  /** The shell nav's account rows: My Profile, My access, Appearance, Organisation. */
+  /** The shell nav's account rows: My Profile, My access and Appearance. */
   you?: readonly AccountLink[];
   onNavigate?: () => void;
   children?: React.ReactNode;

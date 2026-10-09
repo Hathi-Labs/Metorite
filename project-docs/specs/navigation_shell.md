@@ -1,12 +1,17 @@
 # The shell — how a member finds an app, a job or an answer
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
-and 2, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+and 2, NS-3 slice A, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
 NS-2 slice 2 (2026-10-09) adds three jobs and the job route fence. It rides
 the shell bar flag, which is on.
+
+**BUILT 2026-10-09, by owner direction:** the shell bar spans the full width
+and carries the organization's logo (§3.1). Organisation is an app in Admin,
+and it left the account menu (§3.2a item 4). Both ride the two shell flags,
+which are on in production.
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -121,8 +126,28 @@ had no seam to offer them.
 One row across the top of every desktop surface. Its height is `h-10`, the
 height of today's app bar, so no app loses height.
 
+**The bar spans the full width, and it carries the logo** (owner,
+2026-10-09). The sidebar and the page sit under the bar. Before, the logo sat
+in the sidebar's head and went away when the sidebar folded. Now a member
+sees whose workspace this is at all times (D51).
+
+- The brand zone is as wide as the open sidebar (`w-64`). It keeps that width
+  when the sidebar folds, so the logo does not move.
+- The zone holds the sidebar's fold control, then the logo on one line, 24px
+  tall. A logo-less organization shows our mark and its own name.
+- "powered by Metorite" follows the logo from the `lg` width up. Below `lg`
+  it hides, because a cut byline reads as a defect.
+- The fold tip points up at the bar's control. The fold rules of §3.2 do not
+  change.
+
+This frame needs both shell flags. With the shell bar alone, the bar sits
+over the page column, as NS-1 built it. `desktopFrame` in
+`src/lib/shell/shellNav.ts` holds the rule. Fences: `shellNav.test.ts`,
+`e2e/shell-bar.spec.ts` and `e2e/sidebar-fold.spec.ts`.
+
 | Slot | Owner | What it holds |
 |---|---|---|
+| Brand | The shell | The fold control and the organization's logo, on one line |
 | Title | The app | The rail toggle and the app's name. The app keeps its one `h1` |
 | Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked |
 | Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
@@ -152,10 +177,10 @@ The launcher lists every app the member holds, grouped by team. Each tile
 shows the name and the manifest's one-line purpose. A star pins or unpins.
 
 **Admin panes leave the sidebar.** Approvals and Organisation appear in the
-launcher under Admin, for a member who holds them. Organisation also opens
-from the account menu. Approvals' items reach every approver through the bell
-and My Day. ⚠️ Until NS-6 builds the bell, Approvals keeps its sidebar door
-(§3.2a item 2).
+launcher under Admin, for a member who holds them. ⚠️ The owner reversed this
+for Organisation on 2026-10-09 (§3.2a item 4). Approvals' items reach every
+approver through the bell and My Day. ⚠️ Until NS-6 builds the bell,
+Approvals keeps its sidebar door (§3.2a item 2).
 Appearance is a personal preference, so it moves to every member's avatar
 menu.
 
@@ -189,7 +214,7 @@ The owner asked on 2026-10-09 that every shell change be "genuinely a step
 ahead" for a member who is not technical. Slice 1 was measured against that
 on screen, before and after, and three parts of §3.2 changed. Each one waits
 on a ticket that is not built yet. When that ticket lands, the §3.2 shape
-applies.
+applies. Item 4 is a later owner change, and it does not wait on a ticket.
 
 1. **No "My apps" group, and the top item is "Home".** Pins need NS-7, so
    the group would be empty for every member. A heading over nothing costs
@@ -205,18 +230,27 @@ applies.
    taller than a 900px screen. A member who opens the sidebar every day reads
    that line once. The purpose now shows on hover. All apps prints it in
    full, because a member goes there to find out what an app is.
+4. **Organisation is an app in Admin, in the sidebar** (owner, 2026-10-09).
+   Slice 1 put its door in the account menu, so an admin found it only by
+   opening their own account. An admin works in Organisation, so it is an
+   app and not a page about the member. ⚠️ This item does not wait on a
+   ticket. It replaces the §3.2 shape for Organisation.
 
 **Groups, in order:** Home, then Personal Center, Across teams, AI Studio and
-Admin, each only when it has an item. All apps and the account menu are at the
-foot. `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
-`shellNav.test.ts` pins four shapes: a full admin, a member with three apps, a
-member with none, and an unresolved viewer.
+Admin, each only when it has an item. Admin holds Approvals, and Organisation
+for an admin. All apps and the account menu are at the foot.
+`src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
+`shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
+The others are a member with three apps, one with none, and an unresolved
+viewer.
 
 ### 3.3 The account menu
 
-It holds My Profile, My access, Appearance and sign-out, and Organisation for
-an admin. These pages describe the member or the organization. The member does
-not work in them, so they leave the sidebar.
+It holds My Profile, My access, Appearance and sign-out. These pages describe
+the member. The member does not work in them, so they leave the sidebar.
+Organisation was in this menu until 2026-10-09. It is an app in Admin now
+(§3.2a item 4), so it has one door. The menu holds only the member's own
+pages. Fences: `shellNav.test.ts` and `e2e/account-switcher.spec.ts`.
 
 ⚠️ **Approvals is NOT in this menu** (§3.2a item 2). It keeps its sidebar door
 until NS-6 builds the bell. The colour-mode toggle sits beside the foot's
@@ -234,7 +268,7 @@ Slack, Notion and Linear put the menu in the same place.
 The foot's menu holds these rows, in order:
 
 1. the active account
-2. My Profile, My access and Appearance, and Organisation for an admin
+2. My Profile, My access and Appearance
 3. the other accounts
 4. "Add another account" and sign-out
 
@@ -251,8 +285,8 @@ accounts.
   control, and "Add another account". Nothing else.
 - **The apps come next,** because opening an app is the frequent act.
 - **The foot holds the rare acts,** under "Account and settings": My Profile,
-  My access, Appearance, Organisation for an admin, Dark mode, Desktop view and
-  sign-out.
+  My access, Appearance, Dark mode, Desktop view and sign-out. Organisation is
+  in the drawer's Admin group, with the apps.
 - The sheet is solid. A translucent sheet let the page's words read through.
 
 The phone has no account tab in the bottom bar. `DrawerAccountHeader` and
@@ -347,7 +381,7 @@ altitudes it supports.
 |---|---|---|---|
 | Today | Personal | Calendar | The lens, `scheduledStart` and `scheduledEnd` |
 | Next actions | Personal | My Tasks | The lens, `/projects/my/*` |
-| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2443` |
+| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2554`. It reads `GET /email/digest`, the route `get_digest` in `routes/email/digest.py` |
 | Needs you | Personal | Every app | `GET /shell/needs` (§7.2) |
 | Team pulse | Team, all my teams | Projects | Report template T1, "Team pulse" (`projects_reports.md`) |
 | At-risk work | Team, all my teams | Projects | The analytics reads under `projects_ai_chat.md` §13 |
@@ -465,7 +499,7 @@ manifest" section, and the spec-auditor refuses one without it.
 | My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | Review pending approvals (a link) | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
-| Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the account menu |
+| Organisation | admin | Invite a member | members | seat requests | — | — | An app in Admin, in the sidebar (§3.2a item 4) |
 | Appearance | personal | Change how Metorite looks | — | — | — | — | Moves to every member's account menu |
 
 A `preview` app writes its manifest in the pull request that promotes it.
@@ -658,6 +692,74 @@ two:
   - Email: needs reply, only for the accounts the member owns, through the
     owner check of the email routes.
   - My Tasks: due today and overdue, through the lens.
+
+**Built in NS-3 slice A (2026-10-09, dark).** `gateway/routes/shell/needs.py`
+serves `GET /shell/needs` on the router of `search.py`. Three providers are
+built. Each one checks its feature, then calls the app's own read:
+
+| Source | Feature | Function |
+|---|---|---|
+| `tasks` | `feature:projects` | `my_due_tasks` in `routes/projects/personal.py` |
+| `projects` | `feature:projects` | `list_notifications`, unread only |
+| `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
+
+**Each read is one bounded query.** `my_due_tasks` reads the lens rows that
+are due before the member's tomorrow, in the member's zone. It gives the
+oldest deadline first, and 15 rows at most. `needs_reply_threads` gives the
+thread that waited longest first, and 15 rows at most.
+
+⚠️ **My Tasks needs `feature:projects`, not `feature:tasks`.** The lens
+routes are on the Projects router, and that router demands `projects`.
+
+**A Someday task never shows in the feed, also with a due date, but a Waiting
+task does.** The lens read leaves out each task that is not the member's to
+do now, and the provider checks the disposition of each row again.
+
+**A Reference task never shows in the feed either.** It is information, not an
+action. `NOT_NOW_DISPOSITIONS` in `routes/projects/personal.py` holds the two
+values, and the lens read and the feed both take them from it.
+
+**A snoozed or archived thread never shows in the feed.** The email read takes
+the rows that the Needs-reply count of the email app counts. So the feed
+leaves out a thread when the member snoozed its last message, or put it in
+the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
+an archived thread too.
+
+**Approvals is slice C, and it waits on H-201.** Until then the feed has no
+`approvals` source.
+
+**The contract.** My Day and the bell read this shape:
+
+- `GET /shell/needs?limit=` gives 30 rows by default, and 50 at most.
+- The answer is `{count, items, sources}`. `count` is the length of `items`.
+- Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
+  and `act_ref`.
+- `id` is `tasks:<task id>`, `projects:<notification id>` or
+  `email:<account id>:<thread id>`.
+- `kind` is `overdue`, `due_today`, `notification` or `needs_reply`.
+- `act` is `done`, `read` or null. `done` runs
+  `POST /projects/tasks/{act_ref}/complete`. `read` runs
+  `POST /projects/notifications/read` with the id in `ids`.
+- `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
+  that the member does not hold the feature.
+
+**The order.** Overdue rows come first, the oldest first. Then rows due today,
+then notifications with the newest first. Then needs-reply rows, with the
+person who waits longest first. Each source gives 15 rows at most, so one app
+cannot fill the feed.
+
+**Two rules from the email app apply.** A mailbox that the member keeps
+separate stays out of the feed (D-EM-30). The read of the mail never starts
+a backfill of the reply status.
+
+**A mailbox that fails costs only its own rows.** Each mailbox has a time
+limit of one second. The `email` source reads `failed` only when every
+mailbox failed.
+
+Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
+a failed source and the SQL of the two reads. `tests/unit/test_shell_needs_r8.py`
+is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
+a member with more work than the cap.
 
 ---
 
@@ -961,7 +1063,15 @@ Done when:
 5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
-### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on)
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, dark
+
+**Slice A is built.** `GET /shell/needs` serves three of the four providers
+of §7.2: My Tasks, Projects and Email. §7.2 records the contract. Done-when 2
+to 4 are met for those three, and the R8 run is in the pull request.
+
+Slice C adds Approvals after H-201. My Day itself (done-when 1 and 5) is a separate
+slice. No page reads the feed yet, so the route changes nothing that a member
+sees.
 
 Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
 app exports, and `gateway/routes/shell/needs.py` with its providers.
@@ -1254,7 +1364,7 @@ npx vitest run src/lib/nav.test.ts src/lib/shell/ src/lib/theme/
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_search.py tests/unit/test_shell_intent.py -q
+uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_search.py tests/unit/test_shell_intent.py -q
 uv run pytest tests/unit/test_tenant_coverage.py -q
 
 # This spec's prose

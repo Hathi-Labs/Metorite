@@ -67,7 +67,7 @@ import pytest
 import structlog
 from acb_common import get_settings, tenant_redis
 from acb_common._log import clear_run_context, run_context_scope
-from acb_common.db import bind_tenant, release_tenant
+from acb_common.db import bind_tenant, clear_tenant, release_tenant
 from gateway import decide_features as df
 from gateway.routes.email import core as email_core
 from gateway.routes.email import digest as digest_mod
@@ -83,8 +83,12 @@ from sqlalchemy import text
 
 from tests.unit.test_email_automation_tenancy import (
     _FakeProvider,
+    _is_match_ask,
     _patch_providers,
+    _seed_done_rule,
+    _seed_label_rule,
     _seed_message,
+    _watch_model,
 )
 from tests.unit.test_email_decide_on import _as_app, _seed_rule, _status_rows
 from tests.unit.test_email_decide_questions import FakeDecide
@@ -428,20 +432,40 @@ class TestNoReAskStorm:
 
 
 class FakeTenantRedis:
-    """``TenantRedis`` in memory: it takes a ``TenantKey`` and nothing else."""
+    """``TenantRedis`` in memory: it takes a ``TenantKey`` and nothing else.
 
-    def __init__(self) -> None:
+    EM-T16 PR-A: ``mget`` records each batch read, ``set`` records NO time to
+    live, and ``fail`` makes each command raise as a Redis that is down."""
+
+    def __init__(self, *, fail: bool = False) -> None:
         self.store: dict[str, str] = {}
-        self.ttls: dict[str, int] = {}
+        self.ttls: dict[str, int | None] = {}
+        self.reads: list[list[str]] = []
+        self.fail = fail
+
+    def _check(self, k) -> str:
+        assert isinstance(k, tenant_redis.TenantKey)
+        if self.fail:
+            raise ConnectionError("redis is down")
+        return k.value
 
     async def get(self, k):
-        assert isinstance(k, tenant_redis.TenantKey)
-        return self.store.get(k.value)
+        return self.store.get(self._check(k))
+
+    async def mget(self, keys):
+        names = [self._check(k) for k in keys]
+        self.reads.append(names)
+        return [self.store.get(n) for n in names]
 
     async def setex(self, k, ttl, value):
-        assert isinstance(k, tenant_redis.TenantKey)
-        self.store[k.value] = value
-        self.ttls[k.value] = ttl
+        name = self._check(k)
+        self.store[name] = value
+        self.ttls[name] = ttl
+
+    async def set(self, k, value, **kw):
+        name = self._check(k)
+        self.store[name] = value
+        self.ttls[name] = kw.get("ex")
 
 
 def _brief_db() -> AsyncMock:
@@ -519,6 +543,316 @@ class TestTheBriefCache:
             return_value=SimpleNamespace(morning_brief_enabled=False)))
         assert await digest_mod._digest_brief(db, ACC, BACKLOG, []) == ""
         assert brief_env.calls == []
+
+
+# ── EM-T16 PR-A, A2: the back-off of an undecided status ask in `on` (R8) ───
+#
+# Spec: ``email_app_master_plan.md`` §10.4.17 PR-A (D-EM-62). In ``on`` of
+# ``email.thread_status``, with ``EMAIL_TRIAGE_ONCE_PER_CYCLE``, an undecided
+# status ask of the backfill keeps a mark for 30 minutes, and the selection
+# skips a marked thread before its caps. Three asks write the mark: (a)
+# ``ask_status_first``, (b) ``_resolve_on`` on an undecided Block S status
+# and (c) ``_mark_thread_replied`` on a sent thread. (d) An undecided rule
+# match and a spent budget write none.
+
+
+def _backoff_env(monkeypatch, *, flag: bool = True, modes: str = "email.thread_status=on",
+                 fail: bool = False) -> SimpleNamespace:
+    _modes(monkeypatch, modes)
+    monkeypatch.setenv("EMAIL_TRIAGE_ONCE_PER_CYCLE", "true" if flag else "false")
+    _clear()
+    redis = FakeTenantRedis(fail=fail)
+    got: list[int] = []
+
+    def _client(*_a, **_k):
+        got.append(1)
+        return redis
+
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", _client)
+    return SimpleNamespace(redis=redis, got=got)
+
+
+def _decide_gives_nothing(monkeypatch) -> list[str]:
+    """``decide`` answers no request. Returns the question ids of each call."""
+    asks: list[str] = []
+
+    async def _none(_state, questions, **_kw):
+        asks.append(",".join(sorted(questions)))
+        raise decide_mod.DecideUnavailable("HTTP 503")
+
+    monkeypatch.setattr(decide_mod, "decide", _none)
+    return asks
+
+
+def _status_asks_of(asks: list[str]) -> list[str]:
+    return [a for a in asks if not _is_match_ask("decide", a)]
+
+
+def _gap_conversation(p, *, label: str) -> tuple[str, str, str]:
+    """A mailbox of org B with Receipt and the conversation rule Done, and a
+    thread that is a conversation: our older reply in ``sent``, then an
+    inbox row from outside. Returns (account, thread, inbox row)."""
+    acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t16.test")
+    _seed_label_rule(p.admin_engine, org=p.org_b, account_id=acc)
+    _seed_done_rule(p.admin_engine, org=p.org_b, account_id=acc)
+    return (acc, *_conversation_thread(p, acc, label))
+
+
+def _conversation_thread(p, acc: str, label: str, *, age_h: float = 0.0) -> tuple[str, str]:
+    tid = f"t-t16-{label}-{acc}"
+    when = datetime.now(UTC) - timedelta(hours=age_h)
+    _seed_message(p.admin_engine, org=p.org_b, account_id=acc, folder="sent",
+                  thread_id=tid, received_at=when - timedelta(hours=1))
+    mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                        thread_id=tid, received_at=when)
+    return tid, mid
+
+
+def _gap_new_thread(p, *, label: str) -> tuple[str, str, str]:
+    """A mailbox of org B with the conversation rules Reply and Done, and a
+    new thread of one inbox row. The match picks Reply, then Block S asks."""
+    acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@em-t16.test")
+    _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Reply",
+               instructions="A mail that asks a question.",
+               created_at=datetime.now(UTC) - timedelta(days=2))
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE email_rules SET system_type = 'REPLY' "
+                       "WHERE account_id = CAST(:a AS uuid)"), {"a": acc})
+    _seed_done_rule(p.admin_engine, org=p.org_b, account_id=acc)
+    tid = f"t-t16-{label}-{acc}"
+    mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread_id=tid)
+    return acc, tid, mid
+
+
+def _sent_last(p, *, label: str) -> tuple[str, str, str]:
+    """A mailbox of org B and a thread whose latest row is our reply in
+    ``sent``, with no status row. Returns (account, thread, sent row)."""
+    owner = f"owner-{uuid.uuid4().hex[:8]}@em-t16.test"
+    acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+    _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Receipt",
+               instructions="Receipts.", created_at=datetime.now(UTC) - timedelta(hours=9))
+    tid = f"t-t16-{label}-{acc}"
+    _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread_id=tid,
+                  sender="x@ext-em-t16.test",
+                  received_at=datetime.now(UTC) - timedelta(hours=8, minutes=30))
+    sent = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, folder="sent",
+                         thread_id=tid, sender=owner,
+                         received_at=datetime.now(UTC) - timedelta(hours=8))
+    return acc, tid, sent
+
+
+async def _cycles(p, acc: str, n: int) -> None:
+    for _ in range(n):
+        async with _as_app(p, p.org_b):
+            await rz._maybe_classify_threads(acc)
+
+
+def _mark(p, acc: str, tid: str, mid: str) -> str:
+    return f"cc:{p.org_b}:{rz.STATUS_BACKOFF_NAMESPACE}:{acc}:{tid}:{mid}"
+
+
+@_DB_GATE
+class TestTheOnBackoff:
+    """A2, R8 on the phase-4 catalog as the non-owner role. Only ``decide``,
+    the old completion and Redis are fakes."""
+
+    async def test_an_undecided_first_ask_waits_and_new_mail_asks_again(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """(a). Three cycles ask once. The mark is tenant-scoped, holds no
+        verdict and lives 1800 seconds, and no status row is written
+        (D-EM-8). A new message makes a new key, so the next cycle asks."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        env = _backoff_env(monkeypatch)
+        acc, tid, mid = _gap_conversation(p, label="first")
+        _patch_providers(monkeypatch, _FakeProvider())
+        asks = _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 3)
+
+        assert len(_status_asks_of(asks)) == 1, f"asked {asks} in one window"
+        assert env.redis.store == {_mark(p, acc, tid, mid): "1"}
+        assert env.redis.ttls == {_mark(p, acc, tid, mid): 1800}
+        assert _status_rows(p.admin_engine, acc) == [], "an undecided ask wrote a row"
+
+        new = _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread_id=tid,
+                            received_at=datetime.now(UTC) + timedelta(minutes=1))
+        await _cycles(p, acc, 1)
+        assert len(_status_asks_of(asks)) == 2, "a new message did not ask at once"
+        assert _mark(p, acc, tid, new) in env.redis.store
+
+    async def test_an_undecided_late_ask_waits(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """(b). The match picks Reply, Block S asks, and ``_resolve_on``
+        rejects the undecided status. The next cycle pays neither ask."""
+        p = promoted
+        env = _backoff_env(monkeypatch)
+        acc, tid, mid = _gap_new_thread(p, label="late")
+        seen: list[tuple[str, int]] = []
+        _watch_model(monkeypatch, {"open": 0}, seen, match=True)
+        _patch_providers(monkeypatch, _FakeProvider())
+        asks = _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 2)
+
+        assert len(_status_asks_of(asks)) == 1, asks
+        assert [leaf for leaf, _n in seen] == ["completion"], seen
+        assert env.redis.store == {_mark(p, acc, tid, mid): "1"}
+        assert _status_rows(p.admin_engine, acc) == []
+
+    async def test_an_undecided_sent_ask_waits(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """(c). ``_mark_thread_replied`` returns the undecided state, and the
+        backfill keeps the mark of the sent row."""
+        p = promoted
+        env = _backoff_env(monkeypatch)
+        acc, tid, sent = _sent_last(p, label="sent")
+        _patch_providers(monkeypatch, _FakeProvider())
+        asks = _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 3)
+
+        assert len(_status_asks_of(asks)) == 1, asks
+        assert env.redis.store == {_mark(p, acc, tid, sent): "1"}
+        assert env.redis.ttls == {_mark(p, acc, tid, sent): 1800}
+        assert _status_rows(p.admin_engine, acc) == []
+
+    async def test_an_undecided_rule_match_keeps_no_mark(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """(d). The rule match is in ``on`` too and gives nothing. That is
+        not a status ask, so each cycle asks again."""
+        p = promoted
+        env = _backoff_env(
+            monkeypatch, modes="email.thread_status=on,email.rule_match=on")
+        acc, _tid, _mid = _gap_new_thread(p, label="match")
+        _patch_providers(monkeypatch, _FakeProvider())
+        asks = _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 2)
+
+        match_asks = [a for a in asks if _is_match_ask("decide", a)]
+        assert len(match_asks) == 2 and _status_asks_of(asks) == [], asks
+        assert env.redis.store == {}
+
+    async def test_a_spent_budget_keeps_no_mark(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """(d). ``LLMBudgetExhausted`` is not an undecided ask."""
+        from email_ingestion.llm_cap import LLMBudgetExhausted
+
+        p = promoted
+        env = _backoff_env(monkeypatch)
+        acc, _tid, _sent = _sent_last(p, label="budget")
+        _patch_providers(monkeypatch, _FakeProvider())
+        spent: list[int] = []
+
+        async def _budget(*_a, **_kw):
+            spent.append(1)
+            raise LLMBudgetExhausted("limit 1")
+
+        monkeypatch.setattr(rz, "_llm_determine_thread_status", _budget)
+        await _cycles(p, acc, 2)
+        assert len(spent) == 2 and env.redis.store == {}
+
+    @pytest.mark.parametrize("modes", ["email.thread_status=shadow", ""])
+    async def test_outside_on_the_flag_keeps_no_mark(
+        self, modes, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The back-off is for ``on`` only. With the flag on in ``shadow`` or
+        ``off``, a sent thread whose ask is undecided keeps no mark, and the
+        backfill reads no mark. ``_PROVISIONAL_RECHECK_HOURS`` does this job
+        outside ``on``."""
+        p = promoted
+        env = _backoff_env(monkeypatch, modes=modes)
+        acc, tid, _sent = _sent_last(p, label=f"outside-{modes or 'off'}")
+        _patch_providers(monkeypatch, _FakeProvider())
+        replied: list[str] = []
+
+        async def _undecided(account_id, thread_id, *_a, **_kw):
+            replied.append(thread_id)
+            return rz.UNDECIDED
+
+        monkeypatch.setattr(rz, "_mark_thread_replied", _undecided)
+        await _cycles(p, acc, 2)
+
+        assert replied == [tid, tid], replied
+        assert env.redis.store == {} and env.redis.reads == [] and env.got == []
+
+    async def test_flag_off_asks_in_each_cycle_and_touches_no_redis(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        p = promoted
+        env = _backoff_env(monkeypatch, flag=False)
+        acc, _tid, _mid = _gap_conversation(p, label="off")
+        _patch_providers(monkeypatch, _FakeProvider())
+        asks = _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 3)
+
+        assert len(_status_asks_of(asks)) == 3, asks
+        assert env.got == [] and env.redis.store == {}
+
+    async def test_a_redis_failure_reads_as_no_mark(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        p = promoted
+        _backoff_env(monkeypatch, fail=True)
+        acc, _tid, _mid = _gap_conversation(p, label="down")
+        _patch_providers(monkeypatch, _FakeProvider())
+        asks = _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 2)
+
+        assert len(_status_asks_of(asks)) == 2, asks
+
+    async def test_a_marked_thread_takes_no_slot_of_the_cap(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The skip comes BEFORE ``_BACKFILL_INBOUND_CAP``. With a cap of one,
+        the second cycle reaches the older thread."""
+        p = promoted
+        env = _backoff_env(monkeypatch)
+        acc, newer, newer_mid = _gap_conversation(p, label="cap-new")
+        older, older_mid = _conversation_thread(p, acc, "cap-old", age_h=2)
+        monkeypatch.setattr(rz, "_BACKFILL_INBOUND_CAP", 1)
+        _patch_providers(monkeypatch, _FakeProvider())
+        _decide_gives_nothing(monkeypatch)
+
+        await _cycles(p, acc, 2)
+
+        assert set(env.redis.store) == {_mark(p, acc, newer, newer_mid),
+                                        _mark(p, acc, older, older_mid)}
+
+
+class TestTheBackoffNeedsATenant:
+    """R5: with no tenant bound, no mark is read or written, and no Redis
+    client is taken."""
+
+    async def test_no_tenant_no_mark(self, monkeypatch) -> None:
+        env = _backoff_env(monkeypatch)
+        token = clear_tenant()
+        try:
+            row = SimpleNamespace(thread_id="t1", id="m1")
+            assert await rz._status_backoff_marked(ACC, [row]) == set()
+            await rz._mark_status_backoff(ACC, "t1", "m1")
+        finally:
+            release_tenant(token)
+        assert env.got == [] and env.redis.store == {} and env.redis.reads == []
+
+    async def test_a_bound_tenant_reads_in_one_batch(self, monkeypatch, tenant) -> None:
+        env = _backoff_env(monkeypatch)
+        await rz._mark_status_backoff(ACC, "t1", "m1")
+        rows = [SimpleNamespace(thread_id="t1", id="m1"),
+                SimpleNamespace(thread_id="t1x", id="m2")]
+        assert await rz._status_backoff_marked(ACC, rows) == {"t1"}
+        prefix = f"cc:{ORG}:{rz.STATUS_BACKOFF_NAMESPACE}:{ACC}:"
+        assert env.redis.reads == [[f"{prefix}t1:m1", f"{prefix}t1x:m2"]]
+        assert rz.STATUS_BACKOFF_TTL_SECS == 1800
+        assert env.redis.ttls == {f"{prefix}t1:m1": 1800}
 
 
 # ── The text that read_email gives the model ────────────────────────────────

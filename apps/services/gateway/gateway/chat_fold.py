@@ -428,8 +428,17 @@ async def persist_final_assistant_message(
     run_id: str = "",
     model: str | None = None,
     organization_id: str | None,
+    expect_run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Replay the run's event log and upsert the authoritative message row.
+
+    ``expect_run_id`` makes the fold refuse a stream that belongs to ANOTHER
+    run. The restart sweep folds a dead run after the fact (gateway.
+    chat_recovery). If a new run has reset the thread's stream by then, its
+    ``RUN_STARTED`` names the new run, and folding it would write the new
+    run's answer into the old row. A stream with no ``RUN_STARTED`` (its head
+    trimmed) is folded as before. Fence:
+    ``tests/unit/test_chat_deploy_recovery.py``.
 
     Called from the detached task's ``finally`` — the run is over (finished,
     errored, or cancelled) and every event it emitted is in Redis. Idempotent
@@ -460,6 +469,17 @@ async def persist_final_assistant_message(
         events = await replay_events(
             thread_id, since_id="0-0", count=10_000, drain=True,
         )
+        if expect_run_id:
+            started = next(
+                (e for e in events if e.get("type") == "RUN_STARTED"), None,
+            )
+            held = str((started or {}).get("runId") or "")
+            if held and held != expect_run_id:
+                _log.warning(
+                    "chat_fold.persist_refused_other_run",
+                    thread_id=thread_id[:12], message_id=message_id[:40],
+                )
+                return None
         # Head-trim visibility (audit R1): the stream is MAXLEN-capped, and
         # Redis trims the OLDEST entries — so a very long turn can lose its
         # head (RUN_STARTED + the start of the answer) before this replay

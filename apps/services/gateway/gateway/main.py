@@ -385,6 +385,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_zoho_sync_skipped", error=str(exc))
 
+    # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
+    # key, so a run it holds reads as alive and a run of a dead process reads
+    # as dead. The loop also sweeps: each run a dead process left is closed,
+    # and its partial reply is saved with an "interrupted by an update" marker
+    # (gateway.chat_recovery). The first sweep runs in the loop, so startup
+    # never waits on it. Fence: tests/unit/test_chat_deploy_recovery.py.
+    try:
+        from orchestrator.run_liveness import start_instance_heartbeat
+
+        from gateway.chat_recovery import persist_interrupted
+
+        start_instance_heartbeat(on_interrupted=persist_interrupted)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("gateway.run_liveness_skipped", error=str(exc)[:200])
+
     # Anthropic prompt-cache warming (specs/llm_caching_memory.md Phase 6).
     # Fire the orchestrator's stable prefix at any Anthropic-backed tier with
     # max_tokens=0 so the first real user request is a cache HIT, not a cold
@@ -393,6 +408,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _asyncio.ensure_future(_prewarm_prompt_cache())
 
     yield
+
+    # First on the way out: delete this process's heartbeat key, so the next
+    # process sees the chat runs this one held as dead at once, and closes
+    # them, rather than after the key's TTL.
+    try:
+        from orchestrator.run_liveness import stop_instance_heartbeat
+        await stop_instance_heartbeat()
+    except Exception:
+        pass
 
     # Stop background email sync scheduler
     try:

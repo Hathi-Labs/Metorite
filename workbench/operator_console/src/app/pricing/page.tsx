@@ -48,8 +48,8 @@ export default async function PricingPage() {
       <CreditPrice price={catalog.data.creditPrice} />
       <PriceBoard catalog={catalog.data} />
       <p className="note">
-        New here? The go-live rail on the{" "}
-        <a href="/">Organizations page</a> walks the whole setup order — keys,
+        New here? The <a href="/setup">setup checklist</a> walks the whole
+        setup order — keys,
         models, tiers, then prices. Credits themselves are granted per
         customer, on the customer&apos;s own page.
       </p>

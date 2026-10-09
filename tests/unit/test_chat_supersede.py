@@ -257,3 +257,53 @@ def test_a_missing_message_is_not_found():
     with pytest.raises(SupersedeRefused) as err:
         plan_supersede(_rows(), "nope", actor=_ME)
     assert err.value.status == 404
+
+
+# ── A dead run, after #797 (incident 2026-10-09) ────────────────────────────
+# ``cc:active`` and ``cc:runactor`` outlive a process that died. An edit must
+# close a dead run the way the route does, not answer 409 ``run_in_progress``
+# until the sweep runs. Mutation: drop ``_recover_if_dead`` from
+# ``settle_active_run``, and the first case fails.
+
+from tests.unit.test_chat_deploy_recovery import (  # noqa: E402,F401
+    _DEAD,
+    _LIVE_SIBLING,
+    _record,
+    _run,
+    _seed_run,
+    fake_redis,
+    liveness,
+    no_persist,
+)
+
+_BOB = "bob@example.test"
+
+
+def _seed_actor(r, tid: str, actor: str) -> None:
+    from orchestrator import stream_relay
+
+    r.store[stream_relay._run_actor_key(tid)] = actor
+
+
+def test_an_edit_against_a_dead_run_proceeds(liveness, no_persist):
+    from gateway.chat_supersede import settle_active_run
+
+    tid = "t-edit-dead"
+    _seed_run(liveness, tid, _DEAD, record=_record(tid))
+    _seed_actor(liveness, tid, _BOB)   # a stale actor of another member
+    stopped = _run(settle_active_run(tid, _ME))
+    assert stopped is False            # nothing was running any more
+    assert f"cc:active:{tid}" not in liveness.store
+
+
+def test_a_live_run_of_another_member_still_refuses_the_edit(liveness):
+    from gateway.chat_supersede import settle_active_run
+
+    tid = "t-edit-live"
+    _seed_run(liveness, tid, _LIVE_SIBLING)
+    liveness.store[f"cc:instance:{_LIVE_SIBLING}"] = "1"
+    _seed_actor(liveness, tid, _BOB)
+    with pytest.raises(SupersedeRefused) as err:
+        _run(settle_active_run(tid, _ME))
+    assert err.value.code == "run_in_progress"
+    assert liveness.store.get(f"cc:active:{tid}") == "1"

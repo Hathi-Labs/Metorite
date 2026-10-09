@@ -42,7 +42,18 @@ import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import AppLauncher from "@/lib/shell/AppLauncher";
-import { HOME_PANE, accountLinks, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
+import {
+  HOME_PANE,
+  accountLinks,
+  desktopFrame,
+  isActive,
+  launcherGroups,
+  shellNavOn,
+  shellSidebar,
+} from "@/lib/shell/shellNav";
+import { shouldPollWorkspace } from "@/lib/access";
+import OrgBrandLockup from "@/components/OrgBrandLockup";
+import { SidebarFoldButton, SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -116,6 +127,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useChatScope();
   useChatSignOutClear();
 
+  // The shell nav flag, read once as the Sidebar reads it: the dev override
+  // must not flip mid-session, and the two must agree on the frame.
+  const [navOn] = useState(() => shellNavOn());
+
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
     setDrawerOpen(true);
@@ -169,9 +184,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   // ── Desktop layout ───────────────────────────────────────────────────────
   if (!isMobile) {
+    // Three frames (`desktopFrame`, fenced in `shellNav.test.ts`). `full` is
+    // the owner's of 2026-10-09: one bar across the whole width, then the
+    // sidebar and the page under it. The other two are exactly as before.
+    const frame = desktopFrame(shellBarOn(), navOn);
     return (
-      <div className="flex h-screen overflow-hidden">
-        <Sidebar />
+      <SidebarFoldProvider placement={frame === "full" ? "bar" : "rail"}>
+      <div className={frame === "full" ? "flex h-screen flex-col overflow-hidden" : "flex h-screen overflow-hidden"}>
+        {frame === "full" ? (
+          <ShellFrame lead={<BarBrand />}>
+            <div className="flex min-h-0 flex-1">
+              <Sidebar />
+              <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                <AccountStateBanner />
+                <AccessGate>{children}</AccessGate>
+              </main>
+            </div>
+          </ShellFrame>
+        ) : (
+          <Sidebar />
+        )}
         {/* CP-2j: the banner sits INSIDE the scrolling column, above the page,
             so it scrolls away rather than eating vertical space on every
             screen. It renders nothing for an `active` org, which is the
@@ -179,7 +211,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* NS-1: with the shell bar on, one row across the top holds the
             app's name, the command bar and the app's tools. Off, the page
             column is exactly as it was. */}
-        {shellBarOn() ? (
+        {frame === "column" ? (
           <div className="flex min-w-0 flex-1 flex-col">
             <ShellFrame>
               <main className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -188,12 +220,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </main>
             </ShellFrame>
           </div>
-        ) : (
+        ) : frame === "classic" ? (
           <main className="flex-1 min-w-0 overflow-auto">
             <AccountStateBanner />
             <AccessGate>{children}</AccessGate>
           </main>
-        )}
+        ) : null}
         <WelcomeDialog />
         <FocusSession />
         {/* D-PM-38 (S5) — the store's subtask question. Global, like the
@@ -213,6 +245,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </button>
         )}
       </div>
+      </SidebarFoldProvider>
     );
   }
 
@@ -280,6 +313,36 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         )}
       </div>
     </MobileDrawerCtx.Provider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The full-width bar's first zone: the fold control and the logo
+// ---------------------------------------------------------------------------
+
+/**
+ * The owner's words, 2026-10-09: "have the top bar extend the full width and
+ * also always have the logo of the organization over there at the top. That
+ * way, even when the leftmost sidebar is minimized, we'll always see the logo."
+ *
+ * So the zone is `w-64`, the open sidebar's width, and it KEEPS that width
+ * when the sidebar folds. Open, the zone and the rail read as one column.
+ * Folded, the logo stays where it was, and only the rail under it narrows.
+ *
+ * The fold control shows only when a sidebar does. A person with no
+ * organization gets no sidebar (`Sidebar`'s `canPoll`), so a control that
+ * folds nothing would be a broken button.
+ */
+function BarBrand() {
+  const { access, loading } = useAccess();
+  const workspace = shouldPollWorkspace(access, loading);
+  return (
+    <div data-shell-brand className="flex w-64 shrink-0 items-center gap-1.5 pl-2 pr-2">
+      {workspace ? <SidebarFoldButton /> : null}
+      {/* 24px tall, one line: a 44px bar has no room for the sidebar's stack.
+          200px is the zone less its padding and the control. */}
+      <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={200} compact />
+    </div>
   );
 }
 

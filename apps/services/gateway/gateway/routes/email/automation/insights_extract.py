@@ -78,8 +78,9 @@ FILE_CAP = 20_000
 #: The three levels of §13.5 item 7. The model gives no confidence.
 CONF_FULL, CONF_PART, CONF_CUT = 0.9, 0.6, 0.3
 #: D-EM-40: the job reads no figure from a spreadsheet. The job sends the text
-#: of each other kind that the shared reader reads.
-EXTRACT_SUFFIXES = SUPPORTED_SUFFIXES - frozenset({".xlsx", ".csv"})
+#: of each other kind that the shared reader reads. ``.ods`` and ``.tsv`` are
+#: spreadsheets too (attachment formats).
+EXTRACT_SUFFIXES = SUPPORTED_SUFFIXES - frozenset({".xlsx", ".csv", ".ods", ".tsv"})
 
 #: The meaning of each finance type, as §13.4 gives it. A type of a later
 #: domain gets its meaning in its own slice (EM-T14e, EM-T14f).

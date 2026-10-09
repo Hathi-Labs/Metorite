@@ -69,6 +69,14 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     # gateway to the route). The server never sends it, because a 401 here
     # is our own key to our own Router.
     "signed_out",
+    # A restart (incident 2026-10-09). `updating` is the browser's own: the
+    # gateway did not answer, so the chat holds the message and sends it when
+    # the gateway is back. `interrupted` is a run a restart ended, whose saved
+    # reply carries the `run_interrupted` marker. `run_restarted` is a card
+    # answer that reached a dead run (`POST /agent/respond-input`).
+    "updating",
+    "interrupted",
+    "run_restarted",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.

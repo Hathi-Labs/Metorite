@@ -429,6 +429,31 @@ _SETTLE_TIMEOUT_S = 6.0
 _SETTLE_POLL_S = 0.2
 
 
+async def _recover_if_dead(thread_id: str) -> None:
+    """Close a dead run on *thread_id*, the same way ``_route_incoming_turn``
+    does (``gateway.chat_recovery.recover_dead_run``). Best effort: a failed
+    read leaves the run as it is, and ``run_liveness`` answers "live" then.
+
+    ``hold=False``: the edit is not the run that starts next yet. Its own
+    route decision follows, and an edit that would steer is refused there.
+    """
+    try:
+        from orchestrator.run_liveness import (  # noqa: PLC0415
+            recovery_in_progress, run_liveness, wait_out_recovery,
+        )
+
+        if await recovery_in_progress(thread_id):
+            await wait_out_recovery(thread_id)
+        if await run_liveness(thread_id) == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            if await recover_dead_run(thread_id, why="edit") is None:
+                await wait_out_recovery(thread_id)
+            _log.info("chat.supersede_dead_run_closed", thread_id=thread_id[:12])
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.supersede_liveness_failed", thread_id=thread_id[:12])
+
+
 async def settle_active_run(thread_id: str, actor: str) -> bool:
     """Stop the member's own run on *thread_id*, and wait for it to end.
 
@@ -441,6 +466,12 @@ async def settle_active_run(thread_id: str, actor: str) -> bool:
         )
     except Exception:  # noqa: BLE001 — no relay means no run to stop
         return False
+    # A DEAD run first (#797, incident 2026-10-09). ``cc:active`` and
+    # ``cc:runactor`` outlive the process that held the run, so without this a
+    # dead run of another member answered 409 ``run_in_progress`` until the
+    # sweep ran. Close it the way the route does (its partial reply is saved
+    # with the "interrupted" marker), then decide on what is left.
+    await _recover_if_dead(thread_id)
     try:
         if not await is_active(thread_id) and get_detached_task(thread_id) is None:
             return False

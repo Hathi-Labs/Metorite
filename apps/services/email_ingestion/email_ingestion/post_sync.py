@@ -73,6 +73,19 @@ def register_post_sync_hooks(**kwargs: PostSyncHook | None) -> None:
         setattr(hooks, name, fn)
 
 
+def triage_once_per_cycle() -> bool:
+    """The ONE reader of ``email_triage_once_per_cycle`` (WS-17 EM-T16 PR-A).
+
+    True: a cycle that ran ``on_new_mail`` skips ``classify_threads``, and
+    the Reply Zero backfill keeps its back-off marks in ``on``. The scheduler
+    and ``replyzero`` both read it here. Fence:
+    ``tests/unit/test_email_triage_once.py``.
+    """
+    from acb_common.settings import get_settings
+
+    return bool(getattr(get_settings(), "email_triage_once_per_cycle", False))
+
+
 async def run_hook(hook: PostSyncHook | None, account_id: str) -> None:
     """Await ``hook`` if one is registered; no-op otherwise."""
     if hook is not None:
