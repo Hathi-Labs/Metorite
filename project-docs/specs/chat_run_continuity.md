@@ -7,7 +7,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | Slice | State |
 |---|---|
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
-| S2 — a durable "needs input" | Spec only |
+| S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
 | S3 — the top-right activity control | Spec only |
 | S4 — the server saves the prompt at run start | Spec only |
 | S5 — unread replies, the toast, the tab title and the phone pill | Spec only |
@@ -225,6 +225,82 @@ lookup against a real Postgres.
 
 **Fences.** A `tests/unit/test_pending_ask_*.py` suite under R8, and an
 entry in `tests/unit/test_tenant_coverage.py`.
+
+**As built (2026-10-10).** The flag is `CHAT_DURABLE_ASKS`, and it is OFF by
+default. OFF writes no row, parks no run, and reports every run as
+`running`.
+
+1. **The table.** Migration 237 adds `chat_pending_ask`. It is expand only
+   (R6). The key is `(organization_id, request_id)`. The states are `open`,
+   `parked`, `answered` and `closed`. A row expires after 7 days
+   (`CHAT_ASK_TTL_HOURS`). The migration carries its own FORCE policy, and
+   the generated phase files carry the table too.
+2. **The one write point.** `executor._push_sse_to_stream` carries every
+   card, so `orchestrator/pending_ask.py` writes the row there. It writes a
+   row only for a card whose Future still waits in this process.
+3. **The run settles the row.** `executor.wait_user_future` is the wait of
+   every parking site. It closes the row when the wait ends. After
+   `CHAT_ASK_PARK_SECONDS` (600) it parks the run. The row goes to `parked`,
+   a `RUN_FINISHED` with `parked: true` ends the stream, and the run's task
+   is cancelled. The drain then saves the reply so far.
+4. **A parked card stays open.** `request_confirmation` sends no
+   `confirmation_resolved` for a parked card, so the chat can show it again.
+5. **The late answer.** `POST /agent/respond-input` reads the row and moves
+   it to `answered` in one statement. Then it answers 409 `run_restarted`
+   with the question from the row. Two late answers resend once.
+6. **The chat.** `GET /chat/pending-asks` lists the cards to draw again, for
+   a member who may send in the room. `AgentChat` replays each card through
+   its own HITL handler.
+7. **The badge.** `runBadge` in `lib/runActivity.ts` is the one rule. A run
+   that waits on the member turns the badge amber (`warning`), over the
+   green count. Its spoken name is "1 assistant needs your answer".
+
+**Where the build differs from the text above.**
+
+- **Item 4, the org.** Under FORCE RLS a row is readable only after its org
+  is bound. The route reads the row under the caller's own tenant, which the
+  session binds (R5e). One identity resolves to one org
+  (`acb_auth.access.resolve_identity`), so no member of two orgs can reach
+  this route. A read across orgs needs a SECURITY DEFINER function, and this
+  slice adds none.
+- **The other account.** A tab that drew a card for account A sends `as`.
+  When the browser is now signed in to account B, the BFF route refuses
+  with 409 `answer_in_other_account`, and it calls no gateway. The chat
+  says "Switch to A to answer". After the switch, the answer resumes the
+  run in its own org.
+- **"needs_input" is the asker's.** `/chat/active-sessions` reads the rows of
+  the caller (`actor_email`). A viewer of a shared room sees the run as
+  `running`.
+
+**Fences (R7), as built.**
+
+| Fence | What it holds |
+|---|---|
+| `tests/unit/test_pending_ask_store.py` | R8 as the NOBYPASSRLS role: the migration's own policy block, FORCE, two tenants, an unbound session, a write stamped with another org, one move, expiry, the late answer, and the list |
+| `tests/unit/test_pending_ask_flow.py` | One row per waiting card, park and end, the open card, the late answer, the race, another org, needs_input after a restart, and the pending-asks route |
+| `tests/unit/test_tenant_coverage.py` | The table is scoped and never exempt |
+| `src/lib/runActivity.test.ts`, `src/components/navBadge.test.ts` | Amber wins over green, on the sidebar and on the phone |
+| `src/lib/liveRuns.test.ts` | The poller carries `state` |
+| `src/lib/pendingAsks.test.ts`, `src/lib/respondInput.test.ts` | The cards that come back, and the other-account refusal |
+
+**Mutation record (2026-10-10).** Ten mutants, eight killed on the first
+run. The two that lived led to two new tests:
+
+- A policy with no WITH CHECK lived. That mutant does the same thing,
+  because Postgres uses USING as the check. The phase files also re-made the policy,
+  so the suite now runs the migration alone. FORCE removed and `USING
+  (true)` are both killed.
+- A resend that did not move the row lived. A test of two answers that race
+  now kills it.
+
+**Known limits.**
+
+- A blocking generative UI is not drawn again from the server. The saved
+  reply keeps its event, and its answer takes the same late path.
+- A parked confirmation asks again in the new run. The new run calls the
+  tool again, so the member approves twice. Nothing approves by itself.
+- On a Windows checkout, three source-reading vitest files fail on CRLF.
+  They fail on `origin/main` too, and none of them is an S2 file.
 
 ### S3 — the top-right activity control
 
