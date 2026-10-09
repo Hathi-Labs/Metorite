@@ -658,15 +658,19 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
                         {chips.map((chip) => (
                           <li
                             key={chip.name}
-                            className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusAccent({ category: chip.stage }).chip}`}
+                            // A lane no ClickUp status lands in stays in the set,
+                            // so it is on the board too, drawn plainly (PR #803, P2-3).
+                            title={chip.unused ? `${chip.name}: no imported tasks land here` : undefined}
+                            className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusAccent({ category: chip.stage }).chip} ${chip.unused ? "opacity-60" : ""}`}
                           >
                             <span className="truncate">{chip.name}</span>
                             {chip.isNew && <span className="shrink-0 font-normal opacity-80">· new</span>}
+                            {chip.unused && <span className="shrink-0 font-normal">· no tasks</span>}
                           </li>
                         ))}
                       </ul>
                     ) : (
-                      <span className="px-2 text-[11px] text-muted-foreground" aria-label="No status">
+                      <span className="px-2 text-[11px] text-muted-foreground" aria-label="No status in this stage">
                         —
                       </span>
                     )}

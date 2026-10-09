@@ -651,6 +651,11 @@ export interface SummaryChip {
   stage: Stage;
   /** The import adds this status. */
   isNew: boolean;
+  /**
+   * A lane of the target set that no ClickUp status lands in. It is still in
+   * the set after the import, so the board shows it, plainly (PR #803, P2-3).
+   */
+  unused?: boolean;
 }
 
 export interface StatusSummary {
@@ -662,7 +667,10 @@ export interface StatusSummary {
   merges: string[];
   /**
    * I-10b: the summary is a small board. All five stages, in the order of
-   * the Settings screen, each with the chips it gets. An empty stage has none.
+   * the Settings screen, each with the statuses the set will hold: the
+   * targets, and the lanes of the target set that no row hits (`unused`).
+   * So the board equals what Settings shows later. A stage with nothing in
+   * it is a stage the set truly lacks.
    */
   stages: { stage: Stage; chips: SummaryChip[] }[];
   /** I-10b: how many rows hold a guessed stage, and the line that says so. */
@@ -704,6 +712,17 @@ export function statusSummary(
       return text.charAt(0).toUpperCase() + text.slice(1);
     });
   const chips = ordered.map(([, g]) => g.chip);
+  // The board holds the whole resulting set: the targets, and every lane of
+  // the target set that no row hits, in the set's own order (PR #803, P2-3).
+  const board = [
+    ...ordered.map(([key, g]) => ({ chip: g.chip, rank: rank(key, g.seen) })),
+    ...targetSet
+      .filter((t) => !byTarget.has(fold(t.name)))
+      .map((t) => ({
+        chip: { name: t.name, stage: t.category, isNew: false, unused: true },
+        rank: setIndex.get(fold(t.name)) ?? 0,
+      })),
+  ].sort((a, b) => a.rank - b.rank);
   const guesses = resolved.filter((r) => r.guessed).length;
   const check = guesses
     ? `${guesses} ${guesses === 1 ? "status needs" : "statuses need"} a check: the stage is a guess. ` +
@@ -713,7 +732,10 @@ export function statusSummary(
     line,
     chips,
     merges,
-    stages: STAGE_ORDER.map((stage) => ({ stage, chips: chips.filter((c) => c.stage === stage) })),
+    stages: STAGE_ORDER.map((stage) => ({
+      stage,
+      chips: board.filter(({ chip }) => chip.stage === stage).map(({ chip }) => chip),
+    })),
     guesses,
     check,
   };

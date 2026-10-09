@@ -303,6 +303,27 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     expect(summary.check).toBeNull();
   });
 
+  it("puts every lane of the resulting set on the board, a lane with no task too (PR #803 P2-3)", () => {
+    // No ClickUp status maps to the seed's Backlog, but the new space keeps it.
+    const noBacklog = FRACKTAL.filter((s) => s.name !== "backlog");
+    const summary = statusSummary(resolveStatuses(noBacklog, SEED, {}, {}), SEED, null);
+    expect(summary.stages.find((g) => g.stage === "backlog")?.chips).toEqual([
+      { name: "Backlog", stage: "backlog", isNew: false, unused: true },
+    ]);
+    // The line still counts what the ClickUp statuses become.
+    expect(summary.line).toBe("Your 9 ClickUp statuses become 5 statuses.");
+    expect(summary.chips.some((c) => c.unused)).toBe(false);
+    // An existing space with a Cancelled lane nobody maps keeps it, in the
+    // set's own order, after the lanes the import uses.
+    const space: TargetStatus[] = [...SEED, { name: "Won't fix", category: "cancelled" }];
+    const withLane = statusSummary(resolveStatuses(FRACKTAL, space, {}, {}), space, "Ops");
+    expect(withLane.stages.find((g) => g.stage === "cancelled")?.chips.map((c) => [c.name, c.unused])).toEqual([
+      ["Won't fix", true],
+    ]);
+    // A stage the set truly lacks stays empty, which the board draws as a dash.
+    expect(summary.stages.find((g) => g.stage === "cancelled")?.chips).toEqual([]);
+  });
+
   it("counts the guessed stages, and the count clears when the admin picks one (I-10b)", () => {
     const guessed = [...FRACKTAL, { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true }];
     const summary = statusSummary(resolveStatuses(guessed, SEED, {}, {}), SEED, null);
