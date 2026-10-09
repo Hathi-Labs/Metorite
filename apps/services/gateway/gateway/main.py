@@ -320,6 +320,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.import_sweep_skipped", error=str(exc))
 
+    # WS-47 WAC-3: the WhatsApp bot's sweep. It reads the kill switch on each
+    # pass, so a dark channel runs nothing (whatsapp_assistant_channel.md §5.4).
+    try:
+        from gateway.routes.whatsapp_channel.bot_run import (
+            start_sweep as start_whatsapp_bot_sweep,
+        )
+        await start_whatsapp_bot_sweep()
+    except Exception as exc:
+        _log.warning("gateway.whatsapp_bot_sweep_skipped", error=str(exc))
+
     # Workflow scheduling subsystem — the orphan-run reconcile sweep and the
     # cron schedule scanner. Both carry a default-ON launch-defang kill-switch
     # (WORKFLOW_SCHEDULER_ENABLED) INSIDE their own functions (WS-29); one flag
@@ -438,6 +448,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    try:
+        from gateway.routes.whatsapp_channel.bot_run import (
+            stop_sweep as stop_whatsapp_bot_sweep,
+        )
+        await stop_whatsapp_bot_sweep()
+    except Exception:
+        pass
+
     # Stop the CRM ⟷ Zoho sync loop. Unconditional, like every other
     # supervised loop here: a flag-gated loop that never started is still
     # stopped, so the shutdown path never has to know why it is absent.
@@ -494,6 +512,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.projects.agent_dispatch import stop_runs
         await stop_runs()
+    except Exception:
+        pass
+
+    # WS-47 WAC-3: cancel the WhatsApp bot's live runs. Each row stays
+    # `running`, and the next process's sweep runs it again.
+    try:
+        from gateway.routes.whatsapp_channel.bot_run import (
+            stop_runs as stop_whatsapp_bot_runs,
+        )
+        await stop_whatsapp_bot_runs()
     except Exception:
         pass
 

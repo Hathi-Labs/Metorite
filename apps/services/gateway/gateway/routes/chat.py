@@ -257,7 +257,17 @@ def _session_is_new(session_id: str, *, organization_id: str | None) -> bool:
 
 def _upsert_session(
     user_id: str, req: SessionUpsertRequest, *, organization_id: str | None,
+    channel: str | None = None,
 ) -> None:
+    """Create or update one session row, in the caller's tenant.
+
+    ``channel`` is for a SERVER caller only (WS-47 WAC-3 writes
+    ``whatsapp``). It is a keyword and never a field of
+    :class:`SessionUpsertRequest`, so no request body can set it. It marks a
+    row that has no channel yet and that this ``user_id`` created, in the
+    same transaction as the upsert. With no channel the SQL is exactly as
+    before.
+    """
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -305,6 +315,14 @@ def _upsert_session(
                 "message_count": req.message_count,
             },
         )
+        if channel:
+            s.execute(
+                text(
+                    "UPDATE chat_session SET channel = :channel "
+                    "WHERE id = :id AND user_id = :uid AND channel IS NULL"
+                ),
+                {"channel": channel, "id": req.id, "uid": user_id},
+            )
 
 
 def _ensure_session(

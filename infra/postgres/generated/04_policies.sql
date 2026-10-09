@@ -979,6 +979,13 @@ CREATE POLICY wa_templates_tenant_isolation ON wa_templates
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE whatsapp_bot_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_bot_messages FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS whatsapp_bot_messages_tenant_isolation ON whatsapp_bot_messages;
+CREATE POLICY whatsapp_bot_messages_tenant_isolation ON whatsapp_bot_messages
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE whatsapp_member_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whatsapp_member_links FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS whatsapp_member_links_tenant_isolation ON whatsapp_member_links;

@@ -266,14 +266,25 @@ def test_an_unlinked_phone_without_a_code_gets_exactly_the_fixed_reply(
         assert secret not in world.sent[0][1]
 
 
-def test_a_linked_phone_without_a_code_gets_no_reply_and_no_run(
-    world: _World,
+def test_a_linked_phone_without_a_code_gets_no_fixed_reply_and_goes_to_the_run(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """WAC-3 replaced the WAC-2 hold: the message goes to ``bot_run`` with
+    the phone's links, and no fixed reply goes out. ``test_wac_bot_run.py``
+    covers the run itself."""
     world.phone_links = [{"organization_id": ORG_A, "member_email": MEMBER,
                           "is_current": True}]
+    recorded: list[tuple[Any, ...]] = []
+
+    async def _record(links, wa_id, wamid, body):
+        recorded.append((list(links), wa_id, body))
+        return None
+
+    monkeypatch.setattr(inbound.bot_run, "record_inbound", _record)
     res = _post(_message("What is due today?"))
     assert res.status_code == 200
     assert world.sent == [] and world.sessions == 0
+    assert recorded == [(world.phone_links, PHONE, "What is due today?")]
 
 
 def test_a_button_tap_gets_no_action(world: _World) -> None:

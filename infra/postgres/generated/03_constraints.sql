@@ -1643,6 +1643,18 @@ ALTER TABLE wa_templates ADD CONSTRAINT wa_templates_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS wa_templates_org_idx ON wa_templates (organization_id);
 
+-- whatsapp_bot_messages
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM whatsapp_bot_messages WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: whatsapp_bot_messages still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE whatsapp_bot_messages ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE whatsapp_bot_messages ADD CONSTRAINT whatsapp_bot_messages_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS whatsapp_bot_messages_org_idx ON whatsapp_bot_messages (organization_id);
+
 -- whatsapp_member_links
 DO $$
 BEGIN
