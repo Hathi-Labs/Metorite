@@ -354,11 +354,17 @@ def _dispatch(data: bytes, kind: str, deadline: _Deadline) -> Extracted:
 #: deleted from the text of every kind, in one linear pass.
 _CONTROLS = dict.fromkeys([*(c for c in range(0x20) if c not in (9, 10, 13)), 0x7F])
 
+_UTF8_BOM = bytes([0xEF, 0xBB, 0xBF])
 _ZIP_MAGIC = b"PK\x03\x04"
 #: An OLE compound file: an older Office file, or a new one with a password.
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 #: The starts of binary kinds that a text file never has.
 _BINARY_MAGIC = (_ZIP_MAGIC, _OLE_MAGIC, b"%PDF-", b"\x89PNG", b"\xff\xd8\xff")
+
+
+def _strip_bom(data: bytes) -> bytes:
+    """*data* without a leading UTF-8 byte order mark."""
+    return data[3:] if data.startswith(_UTF8_BOM) else data
 
 
 def _kind_name(kind: str) -> str:
@@ -394,7 +400,7 @@ def _check_magic(data: bytes, kind: str) -> None:
         if b"%PDF-" not in data[:1024]:
             raise AttachmentRefused(_wrong_content(kind))
     elif kind == ".rtf":
-        if not data[:64].lstrip().startswith(b"{\\rtf"):
+        if not _strip_bom(data[:64]).lstrip().startswith(b"{\\rtf"):
             raise AttachmentRefused(_wrong_content(kind))
     elif data.startswith(_BINARY_MAGIC):
         raise AttachmentRefused(_wrong_content(kind))
@@ -1064,11 +1070,14 @@ class _Body:
     def _end_paragraph(self) -> None:
         self.paragraphs += 1
         text = "".join(self._paras.pop()).strip()
-        self._pending -= self._para_chars.pop()
+        held = self._para_chars.pop()
         if self._cells:
+            # The text of a cell stays charged until its outermost row is
+            # kept, so a wide row cannot pass the char cap (PR #781 review).
             self._cells[-1].append(text)
-        else:
-            self._emit(text)
+            return
+        self._pending -= held
+        self._emit(text)
 
     def _end_row(self) -> None:
         row = " | ".join(self._rows[-1])
@@ -1076,6 +1085,7 @@ class _Body:
             self._cells[-2].append(row)
         else:
             self._emit(row)
+            self._pending = sum(self._para_chars)
 
     def end(self, name: str) -> None:
         local = _local(name)
@@ -1094,6 +1104,8 @@ class _Body:
         elif local == "tbl" and self._rows:
             self._rows.pop()
             self._cells.pop()
+            if not self._cells:
+                self._pending = sum(self._para_chars)
         if self.full():
             raise _Stop
 
@@ -2008,6 +2020,9 @@ _ODF_MIME = {
 }
 #: The spaces that one ``text:s`` adds at most. Its count is the file's word.
 _MAX_ODF_SPACES = 64
+#: The characters of a sheet name that the head line keeps. The name is an
+#: attribute, so the char cap of the text does not see it.
+_MAX_SHEET_NAME = 256
 _REPEAT_RE = re.compile(r"[0-9]{1,9}")
 
 
@@ -2118,6 +2133,8 @@ class _OdfBody:
         elif name == _ODF_TABLE + "table" and self._rows:
             self._rows.pop()
             self._cells.pop()
+            if not self._cells:
+                self._pending = sum(self._para_chars)
         elif name == _ODF_PRES + "notes" and self._notes_at is not None:
             if len(self.lines) == self._notes_at + 1:  # notes with no text
                 self.chars -= len(self.lines.pop()) + 1
@@ -2133,15 +2150,19 @@ class _OdfBody:
             self._cells[-2].append(row)
         else:
             self._emit(row)
+            self._pending = sum(self._para_chars)
 
     def _end_paragraph(self) -> None:
         self.paragraphs += 1
         text = "".join(self._paras.pop()).strip()
-        self._pending -= self._para_chars.pop()
+        held = self._para_chars.pop()
         if self._cells:
+            # The text of a cell stays charged until its outermost row is
+            # kept, so a wide row cannot pass the char cap (PR #781 review).
             self._cells[-1].append(text)
-        else:
-            self._emit(text)
+            return
+        self._pending -= held
+        self._emit(text)
 
     def flush(self) -> None:
         """Keep the text of the paragraphs that a stop cut off."""
@@ -2224,7 +2245,8 @@ class _OdsBook:
         self._sheets += 1
         if self._sheets > MAX_XLSX_SHEETS:
             self._stop()
-        self._title = f"## Sheet: {(_attr(attrs, 'name') or '').translate(_FLAT)}"
+        name = (_attr(attrs, "name") or "")[:_MAX_SHEET_NAME]
+        self._title = f"## Sheet: {name.translate(_FLAT)}"
         self._rows = self._row_num = 0
 
     def _count_cell(self) -> None:
@@ -2276,16 +2298,39 @@ class _OdsBook:
         for col in range(first, last + 1):
             if col > first:
                 self._count_cell()
+                # Each copy of a repeated cell costs its characters BEFORE
+                # the row keeps it (review of PR #781, P0). ``_add`` charged
+                # the first copy only, so 200 copies of a 1.99 M value once
+                # made a line of 400 M characters.
+                self._pending += len(value) + 1
+                if self.chars + self._pending >= MAX_EXTRACT_CHARS:
+                    self._cut_row()
             self._row.append((col, value))
 
+    def _cut_row(self) -> None:
+        """Keep the row so far, inside the budget, and stop the read."""
+        if self._row:
+            self._emit(self._line(self._row_num + 1), len(self._row))
+        self._stop()
+
+    def _room(self) -> int:
+        title = len(self._title) + 1 if self._title is not None else 0
+        return max(0, MAX_EXTRACT_CHARS - self.chars - title - 1)
+
     def _line(self, row_num: int) -> str:
+        """The row as one line, at most the room left in the budget."""
         cells = self._row or []
+        limit = self._room()
         out = [f"{_column_name(cells[0][0])}{row_num}"]
+        size = len(out[0])
         prev = cells[0][0] - 1
         for col, value in cells:
+            if size > limit:
+                break
             out.append("\t" * (col - prev) + value)
+            size += col - prev + len(value)
             prev = col
-        return "".join(out)
+        return "".join(out)[:limit + 1]
 
     def _end_row(self) -> None:
         first = self._row_num + 1
@@ -2304,14 +2349,18 @@ class _OdsBook:
         self._pending = 0
 
     def _emit(self, line: str, values: int) -> None:
+        """Keep *line*. A line past the budget is cut, and the read stops."""
+        room = self._room()
         if self._title is not None:
             self.lines.append(self._title)
             self.chars += len(self._title) + 1
             self._title = None
+        cut = len(line) > room
+        line = line[:room]
         self.lines.append(line)
         self.chars += len(line) + 1
         self.values += values
-        if self.chars >= MAX_EXTRACT_CHARS:
+        if cut or self.chars >= MAX_EXTRACT_CHARS:
             self._stop()
 
 
@@ -2474,6 +2523,7 @@ def _rtf_text(data: bytes, deadline: _Deadline) -> Extracted:
     refuse), :data:`MAX_EXTRACT_CHARS` and :data:`MAX_TEXT_LINES` (more
     stop), and a deadline check every :data:`_CHECK_EVERY` tokens.
     """
+    data = _strip_bom(data)
     state = _Rtf()
     pos, end, tokens, fresh = 0, len(data), 0, False
     while pos < end and not state.stopped:

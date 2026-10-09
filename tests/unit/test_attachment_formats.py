@@ -29,6 +29,9 @@ R7 fences named here, each a test class:
   not match its suffix gets one clear sentence, never a parser error.
 * ``formats-refusals`` (:class:`TestTheRefusals`). A malformed file of each
   kind gives one sentence, never an exception.
+* ``formats-amplify`` (:class:`TestNoAmplification`). A repeat attribute, a
+  space count, a wide table row or a long run of marks never makes text past
+  ``MAX_EXTRACT_CHARS``, and the peak memory of the read stays under 64 MB.
 * ``formats-deadline`` (:class:`TestTheDeadline`). A read past its deadline
   stops, for each new kind, and no read starts a process.
 
@@ -800,3 +803,102 @@ class TestTheDeadline:
     def test_no_read_starts_a_process(self, suffix: str, process_trap) -> None:  # noqa: F811
         _read_kind(NEW_KINDS[suffix](), suffix)
         assert process_trap == []
+
+
+# ── 9. No attribute multiplies text past the budget (PR #781 review, P0) ─────
+
+#: The peak memory of one read in this class. The P0 file peaked at 764 MB.
+_PEAK = 64 * 1024 * 1024
+#: A character of four bytes in UTF-8 and in a Python string.
+_WIDE = chr(0x1F600)
+
+
+def _bounded(data: bytes, suffix: str) -> tuple[at.Extracted, int]:
+    tracemalloc.start()
+    try:
+        got = _read_kind(data, suffix)
+        _now, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return got, peak
+
+
+class TestNoAmplification:
+    """Fence ``formats-amplify``. Each copy that a repeat attribute makes is
+    charged to :data:`MAX_EXTRACT_CHARS` before the reader keeps it.
+
+    Mutation-proved: drop the charge of each copy in ``_OdsBook._end_cell``
+    AND the budget of ``_OdsBook._line``, and the first test peaks far past
+    the bound. Either layer alone keeps the bound."""
+
+    @pytest.mark.parametrize("char", ["a", _WIDE], ids=["ascii", "four-byte"])
+    def test_a_repeated_cell_of_a_large_value_stays_in_the_budget(self, char: str) -> None:
+        size = 1_990_000 if char == "a" else 1_000_000
+        data = _ods(_table("S", _row(_cell(char * size, repeat=200))))
+        assert len(data) < 64 * 1024
+        got, peak = _bounded(data, ".ods")
+        assert peak < _PEAK, peak
+        assert len(got.text) <= at.MAX_EXTRACT_CHARS
+        assert got.stopped is True
+
+    def test_a_repeated_row_of_a_large_value_stays_in_the_budget(self) -> None:
+        data = _ods(_table("S", _row(_cell("b" * 100_000, repeat=20), repeat=5_000)))
+        got, peak = _bounded(data, ".ods")
+        assert peak < _PEAK, peak
+        assert len(got.text) <= at.MAX_EXTRACT_CHARS
+        assert got.stopped is True
+
+    def test_a_long_sheet_name_is_cut(self) -> None:
+        got, peak = _bounded(_ods(_table("n" * 1_000_000, _row(_cell("v")))), ".ods")
+        assert peak < _PEAK, peak
+        assert len(got.text.splitlines()[0]) <= 300
+
+    @pytest.mark.parametrize("kind", [".odt", ".odp", ".ods"])
+    def test_a_huge_space_count_adds_few_spaces(self, kind: str) -> None:
+        mark = '<text:s text:c="999999999"/>'
+        if kind == ".ods":
+            inner = _table("S", _row("<table:table-cell><text:p>a" + mark * 50_000
+                                     + "</text:p></table:table-cell>"))
+        elif kind == ".odp":
+            inner = _odp_page("a" + mark * 50_000 + "b")
+        else:
+            inner = "<text:p>a" + mark * 50_000 + "b</text:p>"
+        got, peak = _bounded(_odf(kind, inner), kind)
+        assert peak < _PEAK, peak
+        assert len(got.text) <= at.MAX_EXTRACT_CHARS
+
+    @pytest.mark.parametrize("mark", ["<text:tab/>", "<text:line-break/>"])
+    def test_many_tabs_or_breaks_stop_at_the_char_cap(self, mark: str, monkeypatch) -> None:
+        monkeypatch.setattr(at, "MAX_EXTRACT_CHARS", 1_000)
+        got, peak = _bounded(_odf(".odt", "<text:p>a" + mark * 100_000 + "b</text:p>"), ".odt")
+        assert peak < _PEAK, peak
+        assert len(got.text) <= 1_000 and got.stopped is True
+
+    @pytest.mark.parametrize("kind", [".pptx", ".odt"])
+    def test_a_wide_table_row_stays_in_the_budget(self, kind: str) -> None:
+        big = "c" * 900_000
+        if kind == ".pptx":
+            cells = "".join(f"<a:tc><a:txBody>{_paras(big)}</a:txBody></a:tc>" for _ in range(4))
+            data = _deck([_slide(f"<a:tbl><a:tr>{cells}</a:tr></a:tbl>")])
+        else:
+            data = _odf(".odt", "<table:table>" + _row(*[_cell(big)] * 4) + "</table:table>")
+        got, peak = _bounded(data, kind)
+        assert peak < _PEAK, peak
+        assert len(got.text) <= at.MAX_EXTRACT_CHARS
+        assert got.stopped is True
+
+    def test_a_deck_of_many_runs_stays_in_the_budget(self) -> None:
+        runs = "".join("<a:r><a:t>" + "d" * 1_000 + "</a:t></a:r>" for _ in range(3_000))
+        got, peak = _bounded(_deck([_slide(f"<a:p>{runs}</a:p>")] * 3), ".pptx")
+        assert peak < _PEAK, peak
+        assert len(got.text) <= at.MAX_EXTRACT_CHARS and got.stopped is True
+
+    def test_many_rtf_cells_stop_at_the_char_cap(self, monkeypatch) -> None:
+        monkeypatch.setattr(at, "MAX_EXTRACT_CHARS", 30_000)
+        got, peak = _bounded(_rtf("{^rtf1 " + "^cell " * 50_000 + "}"), ".rtf")
+        assert peak < _PEAK, peak
+        assert len(got.text) <= 30_000 and got.stopped is True
+
+    def test_an_rtf_with_a_utf8_bom_reads(self) -> None:
+        data = bytes([0xEF, 0xBB, 0xBF]) + _rtf("{^rtf1 ok}")
+        assert _read_kind(data, ".rtf").text == "ok"
