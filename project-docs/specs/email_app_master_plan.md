@@ -14921,3 +14921,22 @@ migration, and no flag.
   fields, Open Sent, Pop out and the chip name. `test_email_forward.py` holds the file
   line, the empty marker and the long path. `e2e/email-forward.spec.ts` holds a 502
   with no detail, and typing during the send.
+
+**Verifier round 2 (2026-10-09).** Three findings, each fixed in this slice.
+
+- **F1. The e2e test of a stray draft checked nothing.** It pressed Send before the
+  autosave saved, so its loop over the saved drafts never ran. The test now waits for a
+  real draft. It starts a second save that takes 4.5 seconds and is still running at
+  Send. Then it checks that each saved draft is deleted after its last save.
+  - The test turns red when the `deleteEmail` loop goes, and when both drains go.
+  - The drain at the start of the send and the drain in `finishForward` each cover the
+    case alone. So the e2e stays green when only the finish drain goes. The source fence
+    in `forward.test.ts` pins that drain, and it pins the `deleteEmail` loop after
+    `draftsToDiscard`.
+- **F2. Raw bidi controls in the source.** `BIDI_CONTROLS` in `forward.ts` and one Python
+  test held the characters themselves. Both now use escapes. No changed file holds a raw
+  control from U+202A to U+202E or from U+2066 to U+2069.
+- **F3. Send stayed on after an unsure answer.** Send is now off, and Ctrl+Enter does
+  nothing, until the member clicks "I checked Sent, send again". "Open Sent" stays
+  beside it. The e2e test "after an unsure answer, Send waits until the member checked
+  Sent" and a source fence in `forward.test.ts` hold the rule.
