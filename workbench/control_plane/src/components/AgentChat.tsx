@@ -44,6 +44,7 @@ import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
+import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
@@ -691,6 +692,29 @@ export default function AgentChat({
   const drainingRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── The composer's height (owner request, 2026-10-09) ─────────────────────
+  // It grows with the message up to a cap, and goes back to one line when the
+  // message is sent. ⚠️ An `onInput` handler alone missed the send: clearing
+  // the text is not an input event, so the box stayed tall. So the height
+  // follows `input` itself. A message past the cap offers a taller editor.
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [composerOverflow, setComposerOverflow] = useState(false);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cap = composerCap(window.innerHeight, composerExpanded, window.innerWidth < PHONE_MAX_WIDTH);
+    el.style.height = "auto";
+    el.style.maxHeight = `${cap}px`;
+    el.style.height = `${composerHeight(el.scrollHeight, cap)}px`;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- measured from the DOM
+    setComposerOverflow(offerExpand(el.scrollHeight, cap, composerExpanded));
+  }, [input, composerExpanded]);
+  // A sent (emptied) message closes the taller editor too.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- follows the text
+    if (!input) setComposerExpanded(false);
+  }, [input]);
 
   // Inject one-shot external text into the composer (e.g. the email Assistant's
   // "Fix" flow hands a correction prompt here for the user to review & send).
@@ -1687,6 +1711,13 @@ export default function AgentChat({
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.
   const canSend = room ? room.you.canSend : true;
+  // The box's second row draws only when it holds a control. With none, the
+  // whole box is the message (owner request, 2026-10-09).
+  const hasComposerControls =
+    controls.showAgentSwitch ||
+    (mailboxes?.length ?? 0) > 0 ||
+    (!lockModel && modelPlan.showPicker) ||
+    controls.showEffort;
 
   return (
     <div className="flex h-full bg-background">
@@ -1959,19 +1990,62 @@ export default function AgentChat({
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the
             ThinkingContainer is expanded or collapsed. */}
-        {isRunActive && (
-          <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-muted-foreground chat-fade-in">
-            <Icon name="LoaderCircle" className="text-sky-400 animate-spin shrink-0" size={12} strokeWidth={1.5} />
-            <span className="italic truncate">
-              {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
-            </span>
-            <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
-              <span className="chat-typing-dot" />
-              <span className="chat-typing-dot" />
-              <span className="chat-typing-dot" />
-            </span>
+        {/* The composer's header row (owner request, 2026-10-09): the live
+            status on the left, and the context ring always on the right, in
+            one place. It used to sit in a second row INSIDE the message box,
+            and took its bottom from the message. */}
+        <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {isRunActive ? (
+              <span className="flex min-w-0 items-center gap-2 chat-fade-in">
+                <Icon name="LoaderCircle" className="text-sky-400 animate-spin shrink-0" size={12} strokeWidth={1.5} />
+                <span className="italic truncate">
+                  {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
+                </span>
+                <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
+                  <span className="chat-typing-dot" />
+                  <span className="chat-typing-dot" />
+                  <span className="chat-typing-dot" />
+                </span>
+              </span>
+            ) : !compact ? (
+              <span className="hidden sm:inline text-[10px]">
+                <kbd className="text-muted-foreground">⏎</kbd> send · <kbd className="text-muted-foreground">⇧⏎</kbd> newline
+              </span>
+            ) : null}
           </div>
-        )}
+          {isRunActive && sendMode !== "send" && (
+            <span className="shrink-0 text-cat-12 text-[10px] font-medium">
+              {sendMode === "queue" ? "⏱ Queued" : "⤳ Steering"}
+            </span>
+          )}
+          {composerOverflow && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              icon={composerExpanded ? "Minimize2" : "Maximize2"}
+              onClick={() => {
+                setComposerExpanded((v) => !v);
+                inputRef.current?.focus();
+              }}
+              aria-label={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
+              title={composerExpanded ? "Make the message box smaller" : "Make the message box taller"}
+              className="shrink-0"
+            />
+          )}
+          <span className="shrink-0">
+            <ContextRing
+              pct={contextUsage.pct}
+              usedTokens={contextUsage.usedTokens}
+              totalTokens={contextUsage.totalTokens}
+              compacting={compacting}
+              onCompact={handleCompact}
+              modelId={modelPlan.covered ? undefined : currentModel}
+              isLoading={isLoading}
+            />
+          </span>
+        </div>
 
         <div className="max-w-3xl mx-auto">
           {/* One note from the parent, for example the email chat after the
@@ -2012,8 +2086,11 @@ export default function AgentChat({
             "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
-            {/* Row 1: upload + textarea + send */}
-            <div className="flex items-end gap-2 px-2 pt-2 pb-1">
+            {/* Row 1: upload + textarea + send. Every control is 36px, the
+                height of one line, and the padding is even when this row is
+                the whole box: so on one line all three sit centred, and a
+                longer message keeps Send at its foot, beside the caret. */}
+            <div className={`flex items-end gap-2 px-2 ${hasComposerControls ? "pt-2 pb-1" : "py-2"}`}>
               <FileUploadButton sessionId={sessionId}
                 onUploadComplete={(files) => {
                   // The note names read_attachment, the one reader of an
@@ -2023,7 +2100,7 @@ export default function AgentChat({
                   setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
                   inputRef.current?.focus();
                 }}
-                className="shrink-0 self-end mb-1" />
+                className="shrink-0 self-end flex h-9 w-9 items-center justify-center" />
 
               <textarea ref={inputRef} value={input}
                 onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} rows={1}
@@ -2036,9 +2113,8 @@ export default function AgentChat({
                       ? `${SEND_MODE_LABELS[sendMode]} a follow-up to ${currentAgentLabel}…`
                       : `Message ${currentAgentLabel}…`
                 }
-                className="flex-1 resize-none bg-transparent px-1 py-1.5 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none max-h-40 overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ minHeight: "32px" }}
-                onInput={(e) => { const t = e.currentTarget; t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, 160)}px`; }} />
+                className="flex-1 resize-none bg-transparent px-1 py-2 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ minHeight: "36px" }} />
 
               {/* Contextual send / stop button */}
               {/* While history loads, the send button stays in place and is
@@ -2129,7 +2205,10 @@ export default function AgentChat({
               )}
             </div>
 
-            {/* Row 2: control bar inside the pill — wraps on narrow screens */}
+            {/* Row 2: control bar inside the pill — wraps on narrow screens.
+                Drawn only when it holds a control: the context ring, the send
+                mode and the keyboard hint moved to the header row above. */}
+            {hasComposerControls && (
             <div className="flex items-center gap-1 px-2 pb-1.5 text-[11px] text-muted-foreground flex-wrap" ref={modelMenuRef}>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
@@ -2325,32 +2404,8 @@ export default function AgentChat({
               </div>
               )}
 
-              {/* The effort selector's divider goes with it. */}
-              {controls.showEffort && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
-
-              {/* Context-window ring — always visible inline */}
-              <ContextRing
-                pct={contextUsage.pct}
-                usedTokens={contextUsage.usedTokens}
-                totalTokens={contextUsage.totalTokens}
-                compacting={compacting}
-                onCompact={handleCompact}
-                modelId={modelPlan.covered ? undefined : currentModel}
-                isLoading={isLoading}
-              />
-
-              {isRunActive && sendMode !== "send" && (
-                <span className="text-cat-12 text-[10px] font-medium">
-                  {sendMode === "queue" ? "⏱ Queued" : "⤳ Steering"}
-                </span>
-              )}
-
-              {!compact && (
-                <span className="hidden sm:inline text-muted-foreground text-[10px] ml-auto">
-                  <kbd className="text-muted-foreground">⏎</kbd> send · <kbd className="text-muted-foreground">⇧⏎</kbd> newline
-                </span>
-              )}
             </div>
+            )}
           </div>
 
           {/* Disclaimer */}
