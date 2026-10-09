@@ -157,6 +157,23 @@ describe("the list belongs to the signed-in member", () => {
   });
 });
 
+describe("a poll in flight belongs to the member who asked", () => {
+  it("drops an answer that lands after a change of member", async () => {
+    bindIdentity("a@example.com");
+    let release: (v: unknown) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    bindIdentity("b@example.com");
+    release({ ok: true, json: async () => [{ threadId: "a-run", agentName: "orchestrator" }] });
+    await flush();
+    expect(getLiveRuns()).toEqual([]);
+    off();
+  });
+});
+
 describe("a hidden tab polls slower", () => {
   it("waits HIDDEN_MS between polls while hidden", async () => {
     expect(HIDDEN_MS).toBe(30_000);
@@ -213,7 +230,8 @@ describe("no surface polls the run list on its own", () => {
     const offenders = walk(SRC)
       .map((f) => relative(SRC, f).replace(/\\/g, "/"))
       .filter((rel) => !rel.startsWith("app/api/"))
-      .filter((rel) => readFileSync(join(SRC, rel), "utf8").includes('"/api/chat/active-sessions"'))
+      // Any quote: "…", '…' or a template string.
+      .filter((rel) => /["'`]\/api\/chat\/active-sessions/.test(readFileSync(join(SRC, rel), "utf8")))
       .filter((rel) => !ALLOWED.has(rel));
     expect(offenders).toEqual([]);
   });

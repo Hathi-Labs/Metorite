@@ -41,6 +41,9 @@ const _listeners = new Set<() => void>();
 let _timer: ReturnType<typeof setTimeout> | null = null;
 let _inflight = false;
 let _onVisibility: (() => void) | null = null;
+/** Bumped when the member changes. A poll that started under an older
+ *  generation belongs to the member who asked, and publishes nothing. */
+let _generation = 0;
 
 function _hidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -72,11 +75,13 @@ async function _poll(): Promise<void> {
   // not start a second one beside it.
   if (_inflight) return;
   _inflight = true;
+  const generation = _generation;
   try {
     const res = await fetch(ENDPOINT, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (res.ok) {
+    if (res.ok && generation === _generation) {
       const data = (await res.json()) as unknown;
-      if (Array.isArray(data)) {
+      // Checked again after the body: the member may change while it reads.
+      if (Array.isArray(data) && generation === _generation) {
         _publish(
           data
             .filter((d): d is LiveRun => !!d && typeof (d as LiveRun).threadId === "string")
@@ -130,6 +135,7 @@ export function subscribeLiveRuns(listener: () => void): () => void {
 
 // A new member on this browser starts with no runs, not the last member's.
 onClear(() => {
+  _generation += 1;
   if (_runs === EMPTY) return;
   _key = "";
   _runs = EMPTY;

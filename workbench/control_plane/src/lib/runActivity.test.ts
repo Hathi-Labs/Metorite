@@ -38,25 +38,28 @@ describe("one agent → app mapping", () => {
     expect(appForAgent("")).toBe(CHAT_HREF);
   });
 
-  it("no two panes name one agent, so the mapping has one answer", () => {
-    const owners = new Map<string, string[]>();
-    for (const s of NAV_SECTIONS) {
-      for (const p of s.items) {
-        if (!p.agent) continue;
-        owners.set(p.agent, [...(owners.get(p.agent) ?? []), p.href]);
-      }
-    }
-    const doubled = [...owners].filter(([, hrefs]) => hrefs.length > 1);
-    expect(doubled).toEqual([]);
+  it("the first pane that names an agent owns it", () => {
+    // `navigation_shell.md` §5.3 gives Calendar the task-manager agent too.
+    // Its runs stay on My Tasks, the first pane that names it.
+    const sections = [
+      { id: "a", label: "A", items: [{ href: "/tasks", agent: "task-manager" }] },
+      { id: "b", label: "B", items: [{ href: "/calendar", agent: "task-manager" }] },
+    ] as unknown as typeof NAV_SECTIONS;
+    expect(appForAgent("task-manager", sections)).toBe("/tasks");
+    expect(countRunsByApp([{ threadId: "x", agentName: "task-manager" }], null, sections)).toEqual({
+      "/tasks": 1,
+    });
   });
 
   it("the mapping lives in the manifest, and nowhere else", () => {
-    // Every agent the manifest names maps back to its own pane.
+    // Every agent the manifest names maps to the FIRST pane that names it.
+    const first = new Map<string, string>();
     for (const s of NAV_SECTIONS) {
       for (const p of s.items) {
-        if (p.agent) expect(appForAgent(p.agent)).toBe(p.href);
+        if (p.agent && !first.has(p.agent)) first.set(p.agent, p.href);
       }
     }
+    for (const [agent, href] of first) expect(appForAgent(agent)).toBe(href);
   });
 });
 

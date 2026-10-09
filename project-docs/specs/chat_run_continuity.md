@@ -124,7 +124,9 @@ second account's cookie, so it takes the full review loop.
    reads it. My Tasks names `task-manager`, My Email names `email-assistant`,
    Projects names `projects-assistant`, and App Workshop names `app-builder`.
    Every other agent counts on Chat, the orchestrator too. A run whose pane
-   the member cannot see also counts on Chat, so no run is invisible. The
+   the member cannot see also counts on Chat. If two panes name one agent,
+   the first pane owns it. Calendar can thus take `task-manager` (§5.3 of
+   `navigation_shell.md`), and its runs stay on My Tasks. The
    tab's own record of a session's agent names a run that the server still
    calls `unknown`.
 3. **The desktop sidebar.** `NavLink` takes `badgeTone` and `badgeLabel`.
@@ -177,16 +179,23 @@ second account's cookie, so it takes the full review loop.
 
 **Known limits.** Each item below is open, and none blocks S1.
 
-- A folded sidebar section hides its items, and with them their badges.
+- A folded sidebar section hides its items, and with them their badges. A
+  later item puts the sum of its items on the section heading.
 - The phone drawer shows the counts of the moment it opened.
 - A member with no `chat` feature has no Chat pane. A run that folds to Chat
-  then shows only in the phone total. The review of 2026-10-10 found this.
+  then shows only in the phone total, and the desktop shows it nowhere. So
+  for that member a run CAN be invisible on the desktop. The review of
+  2026-10-10 found this.
 - A replay that ends with no content keeps its controller
   (`useAgentChat.ts`, the `done` case and the end of the stream). The badge
   then counts the run until the chat unmounts. This defect is older than S1.
 
 The run list is bound to the member like the read cache. `bindIdentity` in
-`lib/dataCache.ts` empties it through `onClear`.
+`lib/dataCache.ts` empties it through `onClear`, and a generation count drops
+a poll that was in flight when the member changed.
+
+**No flag.** S1 ships with no flag, because it only reads a list that the
+server already serves, and it writes nothing.
 
 ### S2 — a durable "needs input"
 
@@ -201,7 +210,8 @@ The run list is bound to the member like the read cache. `bindIdentity` in
    ends. The row stays open, in the state `parked`.
 3. An answer to a parked row starts a NEW run on the same thread. That run
    reads the question and the answer as its first turn. This reuses the
-   `run_restarted` shape of #797 (`gateway/routes/drain.py`).
+   `run_restarted` shape of #797, which `POST /agent/respond-input` builds
+   (`gateway/routes/agent.py`, near line 2805).
 4. `POST /agent/respond-input` finds the row by its request id. It takes the
    org from the row, never from the request (R5e). Then it checks that the
    caller is a member of that org, with a right to the thread.
@@ -241,6 +251,10 @@ The write is idempotent by message id, so the browser's save stays harmless.
 **Done when.** A tab closed one second after a send still shows the prompt on
 the next open. R8 binds the upsert.
 
+**Fence.** A `tests/unit/test_chat_prompt_saved_at_start.py` suite under R8.
+It closes the stream after the first event, then reads the turn back from
+Postgres.
+
 ### S5 — signals outside an open chat
 
 **What.**
@@ -254,6 +268,9 @@ the next open. R8 binds the upsert.
 **Done when.** Each signal reads the S1 store and the S2 `state`. The toast
 uses the shell's one toast viewport.
 
+**Fence.** A `src/lib/runSignals.test.ts` vitest. It pins the title text for
+each state, the unread rule, and one toast for each finished run.
+
 ### S6 — the activity of the other signed-in accounts
 
 **What.** The S3 list adds the runs of the other accounts on this device. The
@@ -264,6 +281,9 @@ the chat.
 **Done when.** A run in account B shows in account A's list, with B's name.
 No row of B reaches A's tenant cache. The full review loop runs, because this
 reads a second identity.
+
+**Fence.** A vitest on the BFF route. It proves that each slot's request
+carries that slot's cookie only, and that a row keeps its account label.
 
 ---
 
