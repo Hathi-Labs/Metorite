@@ -379,6 +379,7 @@ jobs:
             tests/unit/test_owner_bootstrap.py \
             tests/unit/test_credential_tenant_threading.py \
             tests/unit/test_h3_rls_promotion_rehearsal.py \
+            tests/unit/test_org_settings_tenancy_r8.py \
             tests/unit/test_h6_identity_shadow.py \
             tests/unit/test_h6_rbac_rekey.py \
             tests/unit/test_email_otp_token.py \

@@ -23,9 +23,13 @@ from gateway.routes.projects.importer.plan import (
     Target,
     build_plan,
     propose_category,
+    propose_target,
 )
+from gateway.routes.projects.tree import _SEED_STATUSES
 
 FIXTURE = pathlib.Path(__file__).parent / "import_fixtures" / "clickup_workspace.csv"
+#: The root seed, as the route reads it into the facts (I-10).
+SEED = [(name, category) for name, _color, _pos, category, _default in _SEED_STATUSES]
 
 
 @pytest.fixture(scope="module")
@@ -95,13 +99,14 @@ def test_every_status_of_the_real_file_proposes_the_right_stage(bundle: ImportBu
 
 
 def test_the_real_file_plans_with_its_measured_counts(bundle: ImportBundle) -> None:
-    p = build_plan(bundle, ImportMapping(), {})
+    p = build_plan(bundle, ImportMapping(), {}, target_statuses=SEED)
     assert p["summary"]["tasks"] == 2423
     assert p["closed_tasks"] == 1647
     # §6.6 — every closed task needs an estimated completion date.
     assert p["completed_at_estimated"] == 1647
-    # D79 — 7 Lists show no done-like status, so each gets a Done status.
-    assert p["done_status_added"] == 7
+    # D79, per set (I-10): a new space starts with the seed, which holds Done.
+    # Before I-10 each of 7 Lists gained a Done of its own.
+    assert p["done_status_added"] == 0
     assert p["to_write"] == {"tasks": 2423, "comments": 93}
     assert p["utc_offset_minutes"] == 330
     assert p["ready"] is True and p["errors"] == []
@@ -113,8 +118,154 @@ def test_mapping_a_status_to_another_stage_changes_the_closed_count(bundle: Impo
         r["name"]: r["tasks"] for r in build_plan(bundle, ImportMapping(), {})["statuses"]
     }["Closed"]
     assert closed_named == 844  # tasks, not rows: 902 rows hold 58 duplicates
-    m = ImportMapping(statuses={"Closed": StatusChoice(category="in_progress")})
-    assert build_plan(bundle, m, {})["closed_tasks"] == 1647 - 844
+    # I-10: a new status takes the stage the admin gives it.
+    m = ImportMapping(statuses={"Closed": StatusChoice(category="in_progress", name="Closed")})
+    assert build_plan(bundle, m, {}, target_statuses=SEED)["closed_tasks"] == 1647 - 844
+
+
+# ── §6.3 I-10: a target for each status ─────────────────────────────────────
+
+
+def test_the_ten_statuses_of_the_real_file_propose_six_targets(bundle: ImportBundle) -> None:
+    """§9 I-10: on the fixture, ten ClickUp statuses become six statuses."""
+    p = build_plan(bundle, ImportMapping(), {}, target_statuses=SEED)
+    becomes = {r["name"]: r["becomes"] for r in p["statuses"]}
+    assert becomes == {
+        "Closed": "Done",
+        "done": "Done",
+        "completed": "Done",
+        "backlog": "Backlog",
+        "on hold": "On hold",
+        "to do": "To do",
+        "todo": "To do",
+        "in process": "In progress",
+        "in progress": "In progress",
+        "review": "Review",
+    }
+    assert len(set(becomes.values())) == 6
+    assert p["errors"] == [] and p["ready"]
+    new = {r["becomes"] for r in p["statuses"] if not r["existing"]}
+    assert new == {"On hold", "Review"}
+    assert {r["becomes"]: r["category"] for r in p["statuses"]}["On hold"] == "backlog"
+    # The plan carries the target set, in its own order.
+    assert [s["name"] for s in p["target_statuses"]] == ["Backlog", "To do", "In progress", "Done"]
+
+
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [
+        ("Closed", ("Done", "done", True)),
+        ("  RESOLVED ", ("Done", "done", True)),
+        ("in   process", ("In progress", "in_progress", True)),
+        ("Not Started", ("To do", "todo", True)),
+        ("wip", ("In progress", "in_progress", True)),
+        ("won't do", ("Cancelled", "cancelled", False)),
+        ("canceled", ("Cancelled", "cancelled", False)),
+        ("on  hold", ("On hold", "backlog", False)),
+        ("qa review", ("Qa review", "in_progress", False)),
+    ],
+)
+def test_a_source_name_proposes_a_target(name: str, target: tuple[str, str, bool]) -> None:
+    assert propose_target(name, SEED) == target
+
+
+def test_a_name_the_target_set_holds_is_that_status_with_its_stage() -> None:
+    """A choice that names an existing status takes that status's stage."""
+    target = [("Closed", "done"), ("Doing", "in_progress")]
+    b = _small(_row("a", status="closed"), _row("b", status="review"))
+    m = ImportMapping(statuses={"review": StatusChoice(category="backlog", name="doing")})
+    rows = {r["name"]: r for r in build_plan(b, m, {}, target_statuses=target)["statuses"]}
+    assert (rows["closed"]["becomes"], rows["closed"]["category"]) == ("Closed", "done")
+    assert (rows["review"]["becomes"], rows["review"]["category"]) == ("Doing", "in_progress")
+    assert rows["review"]["existing"] and rows["closed"]["existing"]
+
+
+def test_on_a_new_tree_a_choice_with_no_name_takes_the_proposal() -> None:
+    """A null name comes only from a mapping made before I-10."""
+    b = _small(_row("a", status="in process"))
+    m = ImportMapping(statuses={"in process": StatusChoice(category="backlog")})
+    row = build_plan(b, m, {}, target_statuses=SEED)["statuses"][0]
+    assert (row["becomes"], row["category"]) == ("In progress", "in_progress")
+
+
+def test_a_run_that_continues_keeps_the_earlier_names() -> None:
+    """§6.3 continuity: a run into an earlier tree keeps that import's names.
+    A name the earlier run recorded keeps its target. A run written before
+    I-10 recorded none, so the source name stays, as it did then."""
+    b = _small(_row("a", status="in process"), _row("b", status="todo"), _row("c", status="qa"))
+    earlier = {"todo": ("To do", "todo")}
+    rows = {
+        r["name"]: r
+        for r in build_plan(
+            b,
+            ImportMapping(statuses={"qa": StatusChoice(category="done")}),
+            {},
+            target_statuses=SEED,
+            continues=True,
+            earlier_names=earlier,
+        )["statuses"]
+    }
+    assert rows["in process"]["becomes"] == "in process"
+    assert rows["todo"]["becomes"] == "To do"
+    # A choice with no name keeps the source name and the choice's stage.
+    assert (rows["qa"]["becomes"], rows["qa"]["category"]) == ("qa", "done")
+
+
+def test_no_target_takes_the_name_of_an_intake_lane() -> None:
+    """The I-10 review, P1-b. An existing space can hold the intake lane
+    "Triage" (category ``triage``), which hides its tasks. A source status of
+    that name, proposed or chosen, becomes a NEW status "Triage (imported)"."""
+    b = _small(_row("a", status="triage"), _row("b", status="hold me"))
+    target = [("To do", "todo")]
+    m = ImportMapping(statuses={"hold me": StatusChoice(category="backlog", name="TRIAGE")})
+    p = build_plan(b, m, {}, target_statuses=target, reserved_statuses=["Triage"])
+    rows = {r["name"]: r for r in p["statuses"]}
+    assert (rows["triage"]["becomes"], rows["triage"]["existing"]) == ("Triage (imported)", False)
+    assert rows["triage"]["category"] == "in_progress"
+    assert rows["hold me"]["becomes"] == "TRIAGE (imported)"
+    assert p["reserved_statuses"] == ["Triage"]
+    # A lane of the set with the same name still wins: the writer matches it.
+    held = build_plan(
+        b, ImportMapping(), {}, target_statuses=[("triage", "todo")], reserved_statuses=["Triage"]
+    )
+    assert {r["name"]: r["becomes"] for r in held["statuses"]}["triage"] == "triage"
+
+
+def test_a_run_that_continues_follows_a_renamed_lane() -> None:
+    """The I-10 review, P2-b. The target set is the continued space's REAL
+    set, and a lane a member renamed since keeps its tasks under the new
+    name. A new tree ignores the rename map."""
+    b = _small(_row("a", status="review"), _row("b", status="to do"))
+    real = [("Backlog", "backlog"), ("To do", "todo"), ("In review", "in_progress")]
+    p = build_plan(
+        b,
+        ImportMapping(),
+        {},
+        target_statuses=real,
+        continues=True,
+        earlier_names={"review": ("Review", "in_progress"), "to do": ("To do", "todo")},
+        renamed_statuses={"review": "In review"},
+    )
+    rows = {r["name"]: r for r in p["statuses"]}
+    assert (rows["review"]["becomes"], rows["review"]["existing"]) == ("In review", True)
+    assert rows["to do"]["existing"]
+    fresh = build_plan(
+        b, ImportMapping(), {}, target_statuses=real, renamed_statuses={"review": "In review"}
+    )
+    assert {r["name"]: r["becomes"] for r in fresh["statuses"]}["review"] == "Review"
+
+
+def test_d79_counts_the_sets_that_gain_a_done() -> None:
+    """D79, per set: an existing space with no done-stage status gains one,
+    unless the mapping already makes one. A new space has the seed's Done."""
+    b = _small(_row("a", status="review"))
+    existing = ImportMapping(target=Target(kind="existing", project_id="x"))
+    no_done = build_plan(b, existing, {}, target_statuses=[("To do", "todo")])
+    assert no_done["done_status_added"] == 1
+    closed = _small(_row("a", status="shipped"))
+    has_done = build_plan(closed, existing, {}, target_statuses=[("To do", "todo")])
+    assert has_done["done_status_added"] == 0
+    assert build_plan(b, ImportMapping(), {}, target_statuses=SEED)["done_status_added"] == 0
 
 
 # ── §6.2 people ─────────────────────────────────────────────────────────────
@@ -188,8 +339,9 @@ def test_a_person_mapped_outside_the_organization_blocks_the_import() -> None:
 def test_two_spellings_merge_into_one_status() -> None:
     b = _small(_row("a", status="to do"), _row("b", status="todo"))
     m = ImportMapping(statuses={"todo": StatusChoice(category="todo", name="to do")})
-    p = build_plan(b, m, {})
-    assert {r["name"]: r["becomes"] for r in p["statuses"]} == {"to do": "to do", "todo": "to do"}
+    p = build_plan(b, m, {}, target_statuses=SEED)
+    # I-10: both land in the seed's "To do", with its spelling.
+    assert {r["name"]: r["becomes"] for r in p["statuses"]} == {"to do": "To do", "todo": "To do"}
     assert p["ready"]
 
 
@@ -203,7 +355,24 @@ def test_a_merge_across_two_stages_is_refused() -> None:
 
 def test_a_status_name_is_bounded() -> None:
     with pytest.raises(ValueError):
-        StatusChoice(category="todo", name="x" * 65)
+        StatusChoice(category="todo", name="x" * 501)
+
+
+def test_a_long_name_is_refused_only_for_a_NEW_status() -> None:
+    """The I-10 review: ``admin.create_status`` sets no length limit, so a
+    space can hold a lane longer than 64 characters. A choice of that lane
+    is valid. A NEW status still holds at most 64 characters."""
+    long_lane = "Waiting for the customer to sign the statement of work, then go"  # 63
+    long_lane += " on"
+    b = _small(_row("a", status="waiting"))
+    target = [(long_lane, "backlog")]
+    pick = ImportMapping(statuses={"waiting": StatusChoice(category="todo", name=long_lane)})
+    p = build_plan(b, pick, {}, target_statuses=target)
+    assert p["ready"] and p["statuses"][0]["existing"]
+    fresh = ImportMapping(statuses={"waiting": StatusChoice(category="todo", name="y" * 65)})
+    refused = build_plan(b, fresh, {}, target_statuses=target)
+    assert not refused["ready"]
+    assert any("64 characters" in e for e in refused["errors"])
 
 
 # ── §6.9 work that exists ───────────────────────────────────────────────────
