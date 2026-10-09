@@ -141,6 +141,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
+    # Owner, 2026-10-09: a `no_egress` run may send a typed question to the
+    # decision model. It moves what a sub-processor receives, so only the
+    # operator writes it (data_narrowing_pipeline.md Q4).
+    "DECIDE_IN_NO_EGRESS",
     # WS-44 NS-4b: the command bar's coordinator. It sends the member's words
     # to the decision model and spends credits, so only the operator writes it
     # (navigation_shell.md NS-4b).

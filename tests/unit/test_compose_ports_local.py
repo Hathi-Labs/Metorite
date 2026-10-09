@@ -332,16 +332,25 @@ def test_the_compose_unit_is_a_repo_file() -> None:
     assert keys["Type"] == ["oneshot"]
     assert keys["RemainAfterExit"] == ["yes"]
     assert keys["WorkingDirectory"] == ["/opt/acb/app"]
-    assert keys["EnvironmentFile"] == ["/opt/acb/app/.env"]
+    # WS-49 BH-6a (F1): no env file. Root docker starts under `env -i`, and
+    # compose reads .env itself (tests/unit/test_backup_env_values.py).
+    assert "EnvironmentFile" not in keys
     assert keys["Requires"] == ["docker.service"]
     assert keys["WantedBy"] == ["multi-user.target"]
-    assert keys["ExecStop"] == ["/usr/bin/docker compose -f infra/docker-compose.yml down"]
+    assert keys["ExecStop"] == [_CLEAN + "-f infra/docker-compose.yml down"]
+
+
+#: The prefix of every docker call of acb.service (WS-49 BH-6a, F1).
+_CLEAN = (
+    "/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+    "HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb "
+)
 
 
 def test_the_compose_unit_starts_the_core_profile_only() -> None:
     (start,) = _unit_keys()["ExecStart"]
     assert start == (
-        "/usr/bin/docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans"
+        _CLEAN + "-f infra/docker-compose.yml --profile core up -d --remove-orphans"
     )
     assert re.findall(r"--profile\s+(\S+)", start) == ["core"]
     assert "--profile memory" not in _read(_UNIT)
