@@ -14,7 +14,7 @@ import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
-import { HOME_PANE, accountLinks, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
+import { accountLinks, homePane, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -60,6 +60,13 @@ export default function Sidebar() {
   // The shell nav (NS-2, `lib/shell/shellNav.ts`). Read once: the flag is
   // build-time, and the dev override must not flip mid-session.
   const [shellNav] = useState(() => shellNavOn());
+  // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
+  // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
+  // `localStorage` override the server and the browser can disagree, and
+  // React warns once. Production reads the build-time flag on both sides,
+  // so it never disagrees. `app/page.tsx` needs `useSyncExternalStore`
+  // because it swaps the whole page; a label here does not.
+  const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
   const railSections = shellNav ? shellSidebar(sections) : sections;
   /**
@@ -274,7 +281,7 @@ export default function Sidebar() {
           {shellNav && (
             // The same column as a group's items, so Home lines up with them.
             <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
-              <NavLink pane={HOME_PANE} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
+              <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
             </div>
           )}
           {railSections.map((section) => (

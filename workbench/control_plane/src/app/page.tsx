@@ -1,9 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useSyncExternalStore } from "react";
 import { visibleSections } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import ThemedIcon from "@/components/Icon";
+import MyDay from "@/lib/shell/MyDayPage";
+import { myDayOn, myDayOnServer } from "@/lib/shell/myDayFlag";
 
 // The landing page mirrors the sidebar, and it mirrors it through the SAME
 // filter (`launch_surface.md` LS-2). It used to map `NAV_SECTIONS` directly,
@@ -15,7 +18,21 @@ import ThemedIcon from "@/components/Icon";
 // Primary sections (Personal Center, Apps) render as card grids; sub sections
 // (AI Studio, Admin) as compact rows.
 
+// NS-3 (`navigation_shell.md` §4): with `NEXT_PUBLIC_MY_DAY` on, `/` is My
+// Day. Off, it is the "Welcome back" grid below, unchanged. Fence:
+// `src/lib/shell/myDayPage.test.ts`, which renders both branches.
+//
+// The flag goes through `useSyncExternalStore` so the server render reads
+// the build-time value only. A browser's dev override then takes effect
+// after hydration, with no mismatch.
+const noSubscribe = () => () => {};
+
 export default function Home() {
+  const on = useSyncExternalStore(noSubscribe, myDayOn, myDayOnServer);
+  return on ? <MyDay /> : <WelcomeBack />;
+}
+
+function WelcomeBack() {
   const { access, loading } = useAccess();
   const sections = visibleSections(
     loading ? null : access.features,
