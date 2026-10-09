@@ -54,11 +54,15 @@ export default async function CustomersPage() {
   // WS-50: the usage read, so each row can say what the customer paid us and
   // cost us. A failure here blanks only the money columns, never the list.
   let usageView: Partial<OrgUsageView> | null = null;
+  let usageError: string | null = null;
   try {
     const u = await orgUsage(30, { authToken: gate.authToken });
     if (u.status === 200) usageView = JSON.parse(u.body) as Partial<OrgUsageView>;
-  } catch {
+    else usageError = `the Console answered ${u.status}`;
+  } catch (e) {
     usageView = null;
+    usageError =
+      e instanceof ConsoleUnconfigured ? "the Console is not configured" : "the Console did not answer";
   }
   try {
     // ⚠️ The CALLER's session, not the shared token. Without it this read
@@ -174,6 +178,11 @@ export default async function CustomersPage() {
         </div>
       )}
 
+      {!error && usageError && (
+        <p className="field-hint warn">
+          The money columns are empty because the usage figures did not load: {usageError}.
+        </p>
+      )}
       {!error && rows.length > 0 && <CustomerTable rows={rows} money={moneyBySlug} />}
 
       {!error && purged.length > 0 && (

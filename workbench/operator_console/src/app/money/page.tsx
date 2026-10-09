@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 
 import { ConsoleUnconfigured, listOrganizations, orgUsage, usageDaily } from "@/lib/console";
 import { fleetMoney } from "@/lib/fleet";
-import type { OrgList, OrgRow } from "@/lib/format";
+import { partitionRoster, type OrgList, type OrgRow } from "@/lib/format";
 import { readProviderSpend } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import type { OrgUsageRow, OrgUsageView, UsageDay } from "@/lib/usage";
@@ -39,6 +39,8 @@ export default async function MoneyPage() {
   let silentSlugs: string[] = [];
   let unbilled = { orgs: 0, calls: 0, tokens: 0 };
   let days: UsageDay[] = [];
+  let spikes: string[] = [];
+  let seriesError: string | null = null;
   let error: string | null = null;
 
   try {
@@ -70,7 +72,11 @@ export default async function MoneyPage() {
       error = `The usage figures did not load: the Console answered ${usageRes.status}.`;
     }
     if (seriesRes.status === 200) {
-      days = (JSON.parse(seriesRes.body) as { days?: UsageDay[] }).days ?? [];
+      const series = JSON.parse(seriesRes.body) as { days?: UsageDay[]; spikes?: string[] };
+      days = series.days ?? [];
+      spikes = series.spikes ?? [];
+    } else {
+      seriesError = `The daily chart did not load: the Console answered ${seriesRes.status}.`;
     }
   } catch (e) {
     if (e instanceof ConsoleUnconfigured) {
@@ -81,7 +87,13 @@ export default async function MoneyPage() {
   }
 
   const spend = await readProviderSpend(deps);
-  const fleet = fleetMoney(orgs, view, new Date());
+  // 🔴 Deleted customers stay OUT of the totals, the same as on the
+  // customer list, so the two pages quote one profit (review, slice 4).
+  // Their rows are computed apart and shown only on request.
+  const { roster, purged } = partitionRoster(orgs);
+  const now = new Date();
+  const fleet = fleetMoney(roster, view, now);
+  const purgedRows = fleetMoney(purged, view, now).rows;
   const usageRows: OrgUsageRow[] = view?.rows ?? [];
 
   return (
@@ -102,8 +114,11 @@ export default async function MoneyPage() {
         ) : (
           <MoneyBoard
             fleet={fleet}
+            purgedRows={purgedRows}
             usageRows={usageRows}
             days={days}
+            spikes={spikes}
+            seriesError={seriesError}
             silentSlugs={silentSlugs}
             unbilled={unbilled}
           />

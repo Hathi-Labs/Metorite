@@ -110,6 +110,16 @@ describe("a customer missing from the usage read", () => {
   });
 });
 
+describe("a failed usage read", () => {
+  it("leaves every total unknown, never ₹0", () => {
+    const fleet = fleetMoney([org("a", 100_000)], null, NOW);
+    expect(fleet.totals.charged).toBeNull();
+    expect(fleet.totals.aiCost).toBeNull();
+    expect(fleet.totals.profit).toBeNull();
+    expect(fleet.totals.missing).toBe(1);
+  });
+});
+
 describe("no credit price", () => {
   it("cannot total the money, and says the price was not saved", () => {
     const fleet = fleetMoney(

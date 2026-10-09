@@ -16,7 +16,8 @@ import { useMemo, useState } from "react";
 
 import Explain from "../Explain";
 import Spark from "../Spark";
-import { type Fleet, type FleetSort, sortFleet, totalsHow } from "@/lib/fleet";
+import { type Fleet, type FleetRow, type FleetSort, sortFleet, totalsHow } from "@/lib/fleet";
+import { formatDate } from "@/lib/format";
 import { daysLeftLabel, formatCr, formatInr, formatPct } from "@/lib/money";
 import { chipClass, lifecycleTone } from "@/lib/tone";
 import {
@@ -25,9 +26,6 @@ import {
   orgFlags,
   runwayTone,
 } from "@/lib/usage";
-
-/** A purged organization's slug: `<slug>-purged-<6 hex>`. */
-const TOMBSTONE = /-purged-[0-9a-f]{6}$/;
 
 function Est({ on }: { on: boolean }) {
   return on ? <span className="est">estimated</span> : null;
@@ -40,12 +38,21 @@ const SORTS: { key: FleetSort; label: string }[] = [
 
 export default function MoneyBoard({
   fleet,
+  purgedRows,
   usageRows,
   days,
+  spikes,
+  seriesError,
   silentSlugs,
   unbilled,
 }: {
+  /** The live customers. Every total comes from these rows only. */
   fleet: Fleet;
+  /** Deleted customers, shown on request and never in a total. */
+  purgedRows: FleetRow[];
+  /** Days whose AI spend was over 5 times the days before. */
+  spikes: string[];
+  seriesError: string | null;
   /** The usage rows, for the activity flags (silent, walled, below zero). */
   usageRows: OrgUsageRow[];
   days: UsageDay[];
@@ -56,20 +63,19 @@ export default function MoneyBoard({
   const [showPurged, setShowPurged] = useState(false);
   const { totals, price } = fleet;
 
-  const live = fleet.rows.filter((r) => !TOMBSTONE.test(r.org.slug));
-  const purgedCount = fleet.rows.length - live.length;
+  const purgedCount = purgedRows.length;
   const shown = useMemo(
-    () => sortFleet(showPurged ? fleet.rows : live, sort),
-    [fleet.rows, live, showPurged, sort],
+    () => sortFleet(showPurged ? [...fleet.rows, ...purgedRows] : fleet.rows, sort),
+    [fleet.rows, purgedRows, showPurged, sort],
   );
   const usageBySlug = useMemo(
     () => new Map(usageRows.map((r) => [r.slug, r])),
     [usageRows],
   );
   const silentNames = silentSlugs
-    .filter((s) => !TOMBSTONE.test(s))
+    .filter((s) => !purgedRows.some((r) => r.org.slug === s))
     .map((s) => fleet.rows.find((r) => r.org.slug === s)?.org.name ?? s);
-  const how = totalsHow(totals, live.length);
+  const how = totalsHow(totals, fleet.rows.length);
 
   return (
     <>
@@ -100,6 +106,14 @@ export default function MoneyBoard({
           {unbilled.tokens > 0 && <> (about {unbilled.tokens.toLocaleString("en-IN")} tokens)</>}.
           The meter could not read the vendor&apos;s reply, so we paid the
           vendor and charged nothing.
+        </div>
+      )}
+
+      {spikes.length > 0 && (
+        <div className="banner">
+          <strong>Unusual AI spend</strong> on {spikes.map((d) => formatDate(d)).join(", ")}: a
+          day that cost more than 5 times the days before it. Open the customers
+          below to find which one.
         </div>
       )}
 
@@ -185,6 +199,7 @@ export default function MoneyBoard({
           </p>
         )}
 
+        {seriesError && <p className="field-hint warn">{seriesError}</p>}
         {days.some((d) => d.calls > 0) && <Spark days={days} label="Credits per day, all customers" />}
       </section>
 

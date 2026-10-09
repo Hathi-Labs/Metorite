@@ -82,19 +82,23 @@ export function fleetMoney(
   return { rows, totals: fleetTotals(rows), price, priceReported, windowDays };
 }
 
-/** Sum a figure across rows. `null` if any included row cannot answer it. */
+/** Sum a figure across rows. `null` if any included row cannot answer it,
+ *  and `null` when NO row has money: a failed usage read is unknown, never
+ *  ₹0 (review, slice 4). */
 function sum(
   rows: FleetRow[],
   pick: (m: CustomerMoney) => number | null,
 ): number | null {
   let total = 0;
+  let counted = 0;
   for (const r of rows) {
     if (!r.money) continue;
     const v = pick(r.money);
     if (v === null) return null;
     total += v;
+    counted += 1;
   }
-  return total;
+  return counted === 0 ? null : total;
 }
 
 export function fleetTotals(rows: FleetRow[]): FleetTotals {
