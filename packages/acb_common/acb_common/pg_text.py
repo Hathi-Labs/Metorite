@@ -33,10 +33,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from acb_common._log import get_logger
+
 __all__ = ["REPLACEMENT", "storable"]
 
+_log = get_logger("acb_common.pg_text")
+
 #: The character that takes the place of each character Postgres refuses.
-REPLACEMENT = "�"
+REPLACEMENT = "\ufffd"
 
 #: NUL, and every surrogate code point. A Python ``str`` holds an astral
 #: character as ONE code point, so a surrogate in a ``str`` is always unpaired.
@@ -49,13 +53,30 @@ def storable(value: Any) -> Any:
     It walks a ``dict`` (keys and values), a ``list`` and a ``tuple`` to any
     depth, and it returns a new container. A ``str`` with nothing to replace
     comes back as the same object. Any other value comes back unchanged.
+
+    **A key collision keeps the FIRST value** (fix round 1). Two keys can
+    become one key: "a" + NUL and "a" + U+FFFD both become "a" + U+FFFD. The
+    key that comes first in the order of the dict keeps its value. Each later
+    key with the same result is dropped, and one ``pg_text.key_collision``
+    warning gives the count of dropped keys. The warning never names a key or
+    a value, because both are member data.
     """
     if isinstance(value, str):
         if _UNSTORABLE.search(value) is None:
             return value
         return _UNSTORABLE.sub(REPLACEMENT, value)
     if isinstance(value, dict):
-        return {storable(k): storable(v) for k, v in value.items()}
+        out: dict[Any, Any] = {}
+        dropped = 0
+        for k, v in value.items():
+            key = storable(k)
+            if key in out:
+                dropped += 1
+                continue
+            out[key] = storable(v)
+        if dropped:
+            _log.warning("pg_text.key_collision", dropped_keys=dropped)
+        return out
     if isinstance(value, list):
         return [storable(v) for v in value]
     if isinstance(value, tuple):

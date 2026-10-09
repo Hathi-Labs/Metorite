@@ -4528,6 +4528,21 @@ escape `\u0000` in `jsonb`. So `POST /chat/sessions/{id}/messages` answered
    permission refusal. An approval only gives the model the same bytes again.
    The containment check runs first, so the check never opens a path outside
    the workspace.
+6. **The check always approves an image name** (fix round 1, P1). The `view` tool
+   of the CLI sends a `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` file to the
+   model as an image, and it decides by the suffix in any case (`TQr` in CLI
+   1.0.66). Its text result holds no NUL. So the check keys on the same
+   suffix and does not open the file. A screenshot that a member attaches
+   stays visible. The check still refuses PNG bytes under a name with no
+   image suffix, because the CLI reads that file as text.
+7. **A file with a UTF-16 or UTF-32 byte order mark is text** (fix round 1).
+   Its NULs are part of the text. Rule 1 guards the save of a NUL that comes
+   through.
+8. **A key collision keeps the first value** (fix round 1). Two dict keys can
+   become one key after the change. `storable` keeps the value of the first
+   key in the order of the dict and drops the later ones. It logs one
+   `pg_text.key_collision` warning with the count, and never a key or a
+   value.
 
 **What this change does not do.**
 
@@ -4559,6 +4574,9 @@ escape `\u0000` in `jsonb`. So `POST /chat/sessions/{id}/messages` answered
    bytes, in `enforce` and in `audit`.
 4. A text file, a missing file and a path outside the workspace keep the
    decision that they had before.
+5. The check approves a read of `screen.PNG`, `photo.webp` and a `.png` name
+   that holds ZIP bytes. It approves a UTF-16 or UTF-32 file with a byte
+   order mark.
 
 **Verification.**
 
@@ -4569,6 +4587,8 @@ uv run pytest tests/unit/test_chat_nul_persist.py -q -rs
 
 The `-rs` output must show no skip. On the code before this change, 17 of
 the 23 cases failed. The R8 fold case logged the exact error of the incident.
+Fix round 1 added 14 cases. On the code of the first round, 12 of them failed,
+and the other 2 are cases that must stay refused. The file now has 37 cases.
 
 ## 22. Chat attachments, read on the platform (H-229)
 

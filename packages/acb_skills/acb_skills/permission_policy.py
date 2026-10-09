@@ -310,6 +310,19 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
 #: The kinds that ``acb_skills.attachment_tools.read_attachment`` reads.
 _ATTACHMENT_KINDS = frozenset({"docx", "xlsx", "pdf"})
 
+#: The suffixes that the Copilot CLI's ``view`` tool sends to the model as an
+#: IMAGE, not as text (``TQr`` in CLI 1.0.66 ``app.js``). It decides by the
+#: suffix alone, in any case, and its text result is "Viewed image file
+#: successfully.", with no NUL. So a read of such a name is always approved,
+#: whatever the bytes are, or a screenshot that a member attaches cannot be
+#: seen (fix round 1, P1).
+_CLI_IMAGE_SUFFIXES = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
+
+#: The byte order marks of UTF-32 and UTF-16 text. Such a file holds NULs and
+#: is still text. ``acb_common.pg_text.storable`` guards the save of a NUL
+#: that comes through.
+_TEXT_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe", b"\xfe\xff")
+
 
 def _size_text(size: int) -> str:
     if size < 1024:
@@ -327,6 +340,11 @@ def binary_file_note(path: str, root: str) -> str | None:
     The sentence names the file, its kind and its size, and it points a
     .docx, .xlsx or .pdf file at ``read_attachment``.
 
+    Two kinds of file are never binary here. A name with an image suffix of
+    :data:`_CLI_IMAGE_SUFFIXES` is an image to the CLI, so the file is not
+    opened at all. A file that starts with a UTF-16 or UTF-32 byte order mark
+    is text.
+
     It opens the file through :mod:`acb_skills.safe_open` (a link at any depth
     fails), so call it only after the containment check. Any failure, a
     missing file and a folder return ``None``, and the read goes on as before.
@@ -341,6 +359,8 @@ def binary_file_note(path: str, root: str) -> str | None:
         rel = os.path.relpath(target, base).replace(os.sep, "/")
         if rel == "." or rel.startswith("../") or rel == "..":
             return None
+        if PurePosixPath(rel).suffix.lower().lstrip(".") in _CLI_IMAGE_SUFFIXES:
+            return None
         fh = safe_open.open_read(Path(base), rel)
         if fh is None:
             return None
@@ -348,6 +368,8 @@ def binary_file_note(path: str, root: str) -> str | None:
             size = os.fstat(fh.fileno()).st_size
             head = fh.read(_SNIFF_BYTES)
     except (safe_open.UnsafePath, OSError, ValueError):
+        return None
+    if head.startswith(_TEXT_BOMS):
         return None
     magic = next((kind for sig, kind in _MAGIC if head.startswith(sig)), None)
     if magic is None and b"\x00" not in head:

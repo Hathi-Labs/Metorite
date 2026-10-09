@@ -40,7 +40,7 @@ import pytest
 
 #: The head of an XLSX file, as the incident's tool result held it.
 _ZIP_HEAD = "PK\x03\x04\x14\x00\x06\x00\x08\x00\x00\x00!\x00"
-_FFFD = "�"
+_FFFD = "\ufffd"
 
 
 def _no_nul(value: Any) -> bool:
@@ -81,6 +81,33 @@ def test_storable_keeps_the_length_and_returns_a_clean_string_as_is() -> None:
     clean = "no nul here"
     assert storable(clean) is clean
     assert len(storable(_ZIP_HEAD)) == len(_ZIP_HEAD)
+
+
+def test_storable_keeps_the_first_value_on_a_key_collision_and_warns_with_a_count(
+    monkeypatch,
+) -> None:
+    """Fix round 1. "a" + NUL and "a" + U+FFFD become one key. The first key
+    in the dict's order keeps its value. The warning carries a count only."""
+    from acb_common import pg_text
+
+    lines: list[tuple[str, dict[str, Any]]] = []
+
+    class _Spy:
+        def warning(self, event: str, **fields: Any) -> None:
+            lines.append((event, fields))
+
+    monkeypatch.setattr(pg_text, "_log", _Spy())
+    secret = "member-secret-value"
+    got = pg_text.storable({
+        "a\x00": secret, "a" + _FFFD: "second", "a\ud800": "third", "b": 1,
+    })
+    assert got == {"a" + _FFFD: secret, "b": 1}
+    assert lines == [("pg_text.key_collision", {"dropped_keys": 2})]
+    assert secret not in repr(lines) and "a" not in repr(lines[0][1])
+
+    lines.clear()
+    assert pg_text.storable({"a": 1, "b\x00": 2}) == {"a": 1, "b" + _FFFD: 2}
+    assert lines == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -297,9 +324,13 @@ def _xlsx_bytes() -> bytes:
     ("book.xlsx", _xlsx_bytes(), "xlsx"),
     ("brief.docx", b"PK\x03\x04" + b"\x14\x00" * 40, "docx"),
     ("scan.pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n", "pdf"),
+    # PNG bytes under a name with NO image suffix. The CLI keys on the suffix,
+    # so it reads this file as text and returns the bytes. It stays refused.
     ("photo", b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, "png"),
     ("blob.dat", b"abc\x00def", "dat"),
-], ids=["xlsx", "docx", "pdf", "png-no-suffix", "nul-in-head"])
+    ("table.csv", b"a,b\n1,\x00\n", "csv"),
+], ids=["xlsx", "docx", "pdf", "png-bytes-no-image-suffix", "nul-in-head",
+        "csv-with-nul-no-bom"])
 def test_a_read_of_a_binary_file_is_refused_with_a_pointer(
     workspace, name: str, data: bytes, kind: str,
 ) -> None:
@@ -329,6 +360,54 @@ def test_a_read_of_a_text_file_is_approved(workspace, data: bytes) -> None:
     path = workspace / "notes.md"
     path.write_bytes(data)
     assert decide({"kind": "read", "path": str(path)})[:2] == (True, "read_in_workspace")
+
+
+_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 32
+_WEBP = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 32
+
+
+@pytest.mark.parametrize(("name", "data"), [
+    ("screen.png", _PNG),
+    ("screen.PNG", _PNG),
+    ("photo.webp", _WEBP),
+    ("shot.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 32),
+    ("shot.JPEG", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 32),
+    ("anim.gif", b"GIF89a\x01\x00\x01\x00\x00\x00\x00"),
+    # ZIP bytes under an image name: the CLI still treats it as an image and
+    # sends no bytes as text, so the read is approved.
+    ("book.png", _xlsx_bytes()),
+], ids=["png", "png-upper", "webp", "jpg", "jpeg-upper", "gif", "zip-named-png"])
+def test_a_read_of_an_image_suffix_is_approved_as_the_cli_sends_it_as_vision(
+    workspace, name: str, data: bytes,
+) -> None:
+    """Fix round 1, P1. The CLI's ``view`` sends these suffixes to the model
+    as an IMAGE (``TQr`` in CLI 1.0.66), keyed on the suffix in any case. A
+    refusal here would hide every screenshot that a member attaches."""
+    from acb_skills.permission_policy import decide
+
+    path = workspace / name
+    path.write_bytes(data)
+    assert decide({"kind": "read", "path": str(path)})[:2] == (True, "read_in_workspace")
+
+
+@pytest.mark.parametrize(("name", "data"), [
+    ("notes.txt", "a,b\nzz\n".encode("utf-16-le")),
+    ("notes.txt", b"\xff\xfe" + "a,b\nzz\n".encode("utf-16-le")),
+    ("table.csv", b"\xfe\xff" + "a,b\n1,2\n".encode("utf-16-be")),
+    ("table.csv", b"\xff\xfe\x00\x00" + "a,b\n".encode("utf-32-le")),
+    ("table.csv", b"\x00\x00\xfe\xff" + "a,b\n".encode("utf-32-be")),
+], ids=["utf16le-no-bom-is-binary", "utf16le-bom", "utf16be-bom",
+        "utf32le-bom", "utf32be-bom"])
+def test_a_utf16_or_utf32_file_with_a_bom_is_text(workspace, name: str, data: bytes) -> None:
+    """Fix round 1. A byte order mark says the NULs are text. With no mark the
+    NULs make the file binary, as before. ``storable`` guards the save."""
+    from acb_skills.permission_policy import decide
+
+    path = workspace / name
+    path.write_bytes(data)
+    has_bom = data.startswith((b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff"))
+    want = (True, "read_in_workspace") if has_bom else (False, "read_binary_file")
+    assert decide({"kind": "read", "path": str(path)})[:2] == want
 
 
 def test_a_read_of_a_missing_file_or_a_folder_is_approved(workspace) -> None:

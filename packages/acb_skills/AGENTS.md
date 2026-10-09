@@ -107,6 +107,11 @@ clone cache.
    kind and the size, and `read_attachment` for a .docx, .xlsx or .pdf file.
    The refusal holds in `enforce` and in `audit`, because an approval only
    gives the model the bytes again. Fence: tests/unit/test_chat_nul_persist.py.
+   ⚠️ It never refuses a name with an image suffix (`_CLI_IMAGE_SUFFIXES`:
+   png, jpg, jpeg, gif, webp, in any case), and it does not open that file.
+   The CLI's `view` sends such a file to the model as an image, by the suffix
+   alone, so a refusal would hide a screenshot (fix round 1, P1). A file that
+   starts with a UTF-16 or UTF-32 byte order mark is text.
 5d. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
    Every host reader and writer of a dir that a sandbox container mounts opens
    its paths here: `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux
