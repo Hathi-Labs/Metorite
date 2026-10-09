@@ -60,14 +60,16 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "Web access, file writing and rich generative UI, todo tracking, "
             "asking the user a question, diagnostics, working notes, the "
-            "coding skill, delegation to other agents, and fast typed decisions."
+            "coding skill, delegation to other agents, fast typed "
+            "decisions, and the text of a file attached in this chat."
         ),
         "description": (
             "The guaranteed baseline every agent receives regardless of "
             "tool_scope: web access, file writing & generative UI, task "
             "tracking, HITL questions, diagnostics, working notes, the "
-            "coding skill, inter-agent delegation, and fast typed "
-            "decisions (decide, WS-31 CP-13d). Not toggleable "
+            "coding skill, inter-agent delegation, fast typed "
+            "decisions (decide, WS-31 CP-13d), and the text of a chat "
+            "attachment (read_attachment, H-229). Not toggleable "
             "(skills_registry.md rule 2)."
         ),
         "tools": (
@@ -84,6 +86,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "load_artifact_kit",
             "load_design_system",
             "manage_todo_list",
+            "read_attachment",
             "recall_notes",
             "run_diagnostics",
             "run_script",
@@ -138,23 +141,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
-    "attachments": {
-        "label": "Chat attachments",
-        "summary": (
-            "Read the text of a document that the member attached in this "
-            "chat: Word, Excel, PDF, HTML, text, Markdown or CSV."
-        ),
-        "description": (
-            "Reads the text of a file attached in the caller's own chat "
-            "(H-229): .docx, .xlsx, .pdf, .html, .htm, .txt, .md and .csv, by "
-            "pure parsing with caps and a deadline. It never reads a file of "
-            "another chat, and it runs no code."
-        ),
-        "tools": ("read_attachment",),
-        "core": False,
-        "scope_governed": True,
-        "dynamic": False,
-    },
+    # There is no "attachments" family since 2026-10-09: read_attachment is
+    # in the core floor, because every chat can attach a file. A stored
+    # toggle row for the old slug is ignored (``_resolve_declared_scope``
+    # reads only slugs that are here).
     "coding": {
         "label": "Coding extras",
         "summary": (
