@@ -349,17 +349,33 @@ function RunDetail({ event, running, dur }: { event: ToolEvent; running: boolean
  */
 export function ClampText({ text, clamp }: { text: string; clamp: boolean }) {
   const [more, setMore] = useState(false);
+  // The flag is a count of characters, and a wide pane can fit 300 of them
+  // in three lines. So the browser measures as well: a clamped value that
+  // fits needs no toggle, because "Show more" would show nothing more.
+  const [fits, setFits] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!clamp || more || !el) return;
+    const check = () => setFits(el.scrollHeight <= el.clientHeight + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const watch = new ResizeObserver(check);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [clamp, more, text]);
   const clamped = clamp && !more;
   return (
     <div className="min-w-0">
       <div
+        ref={ref}
         data-step-value=""
         {...(clamped ? { "data-clamped": "" } : {})}
         className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${clamped ? "line-clamp-3" : ""}`}
       >
         {text}
       </div>
-      {clamp && (
+      {clamp && (more || !fits) && (
         <Button
           variant="text"
           size="none"
