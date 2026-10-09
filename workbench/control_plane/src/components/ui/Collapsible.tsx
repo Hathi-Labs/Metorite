@@ -29,6 +29,9 @@ import { Collapsible as Base } from "@base-ui/react/collapsible";
 
 import Icon from "@/components/Icon";
 
+/** Room for a focus ring inside the clipping panel; see the note at its use. */
+export const PANEL_CLASS = "-mx-1.5 -mb-1.5 overflow-hidden px-1.5 pb-1.5";
+
 export interface CollapsibleSectionProps {
   /** The heading. Kept short — it sits beside the count and the chevron. */
   label: string;
@@ -123,7 +126,16 @@ export function CollapsibleSection({
         />
       </Base.Trigger>
       </h3>
-      <Base.Panel className="overflow-hidden" keepMounted={keepMounted}>
+      {/* ⚠️ The panel clips (`overflow-hidden`, for the fold), and a field's
+          focus ring is drawn OUTSIDE the field: 2px of outline after a 2px
+          offset (`.cc-control:focus-visible`, globals.css). With no room at
+          the sides, the ring of a full-width field was cut off at both ends
+          (owner report, 2026-10-09, the task's Description). So the panel
+          reaches 1.5 units past the section on three sides and pads back by
+          the same amount: the content does not move, and the ring has room.
+          1.5, not 1, because compact density shrinks a unit below 4px.
+          Fence: `src/components/ui/collapsible.test.ts`. */}
+      <Base.Panel className={PANEL_CLASS} keepMounted={keepMounted}>
         <div className="pt-1.5">{children}</div>
       </Base.Panel>
     </Base.Root>
