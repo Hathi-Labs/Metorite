@@ -73,7 +73,7 @@ export interface InfoTipProps {
   label: string;
   /** A bold first line in the panel. Absent: the panel holds only the text. */
   title?: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
   /** Starts open. For a test render only. */
   defaultOpen?: boolean;
 }
@@ -94,9 +94,16 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
     width: INFO_TIP_WIDTH,
   });
 
+  // Measured as it opens, in the handler, so no effect sets state.
+  const act = (action: InfoTipAction) => {
+    if (!open && anchor && infoTipReducer({ open }, action).open) {
+      setFit(infoTipFit(anchor.getBoundingClientRect(), window.innerWidth));
+    }
+    dispatch(action);
+  };
+
   useEffect(() => {
     if (!open) return;
-    if (anchor) setFit(infoTipFit(anchor.getBoundingClientRect(), window.innerWidth));
     const onDown = (event: MouseEvent) =>
       dispatch({
         type: "outside",
@@ -113,7 +120,7 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, anchor]);
+  }, [open]);
 
   return (
     <span ref={attach} className="inline-flex align-middle">
@@ -124,12 +131,12 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
         aria-label={label}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        onClick={() => dispatch({ type: "click" })}
+        onClick={() => act({ type: "click" })}
         onKeyDown={(event) => {
           // Handled here, so the native click does not toggle a second time.
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            dispatch({ type: "key", key: event.key });
+            act({ type: "key", key: event.key });
           }
         }}
       />
