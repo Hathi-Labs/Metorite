@@ -64,7 +64,11 @@ export type OrgUsageRow = {
   unbackedCredits?: string;
   lifePaidUsed?: string;
   lifePaidValueInr?: string;
+  lifeUnpricedPaidUsed?: string;
   lifeFreeUsed?: string;
+  /** The share of calls (0..1) that carry a vendor cost. Below 1, `costUsd`
+   *  is the cost of SOME calls only. NULL when there are no calls. */
+  costedShare?: string | null;
   /** Credits billed in the last 7 days: the numerator of `runwayDays`. */
   creditsLast7Days?: string | null;
 };

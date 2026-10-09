@@ -2942,3 +2942,13 @@ button.explain-btn:focus-visible {
 .moneynotes { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
 .moneynotes li { margin: 2px 0; }
 th .explain { margin-left: 4px; }
+/* A bridge over the 6px gap, so a pointer moving from the icon into the
+   popover does not leave the wrapper and close it. */
+.explain-pop::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}

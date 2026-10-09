@@ -63,9 +63,12 @@ describe("the customer money panels", () => {
     for (const term of ["weCharged", "aiCost", "profit", "margin", "daysLeft"]) {
       expect(usage, term).toContain(`term="${term}"`);
     }
-    for (const term of ["weCharged", "aiCost", "margin"]) {
+    // The table leaves seats out, so it must NOT borrow "We charged", whose
+    // meaning includes seats (review, S1+S2).
+    for (const term of ["aiRevenue", "aiCost", "aiMargin"]) {
       expect(breakdown, term).toContain(`term="${term}"`);
     }
+    expect(breakdown).not.toContain('term="weCharged"');
   });
 
   it("only tsx files under app/ import the glossary through Explain", () => {

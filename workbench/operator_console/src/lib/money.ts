@@ -174,8 +174,12 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
   const untracedPaid = untraced * paidShare;
   const untracedFree = untraced - untracedPaid;
   const lifeValue = num(row.lifePaidValueInr);
+  // ⚠️ `lifePaidValueInr` covers PRICED lots only, so the divisor leaves the
+  // unpriced bought credits out. Dividing by every bought credit let a large
+  // grant with no price drag the average toward ₹0 (review, S1+S2).
+  const lifePricedUsed = lifePaid - num(row.lifeUnpricedPaidUsed);
   const perPaidCredit =
-    lifePaid > 0 && lifeValue > 0 ? lifeValue / lifePaid : price?.inrPerCredit ?? null;
+    lifePricedUsed > 0 && lifeValue > 0 ? lifeValue / lifePricedUsed : price?.inrPerCredit ?? null;
 
   if (hasUntraced) {
     const since = input.drawsSince ? ` before ${shortDate(new Date(input.drawsSince))}` : "";
@@ -200,6 +204,9 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
   const seatsValue = seatsMonthly === null ? null : (seatsMonthly * windowDays) / 30;
   const perSeat =
     seatsMonthly !== null && input.seatsBought ? seatsMonthly / input.seatsBought : null;
+  // ⚠️ From the subscription as it is NOW. A plan that started, changed or
+  // ended inside the window is not reflected, and the sentence says so.
+  const SEATS_NOW = " This uses the subscription as it is today.";
   const seats: Figure = {
     value: seatsValue,
     estimated: false,
@@ -207,11 +214,12 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
       seatsMonthly === null
         ? "The subscription read did not answer, so seat revenue is unknown."
         : seatsMonthly === 0
-          ? "No active paid subscription, so seats earn nothing yet."
+          ? "No active paid subscription today, so seats earn nothing." + SEATS_NOW
           : (perSeat !== null
               ? `${input.seatsBought} seats × ${formatInr(perSeat)} a month = ${formatInr(seatsMonthly)} a month`
               : `${formatInr(seatsMonthly)} a month`) +
-            (windowDays === 30 ? "." : `, × ${windowDays}/30 days = ${formatInr(seatsValue)}.`),
+            (windowDays === 30 ? "." : `, × ${windowDays}/30 days = ${formatInr(seatsValue)}.`) +
+            SEATS_NOW,
   };
 
   // ── Paid credits ──────────────────────────────────────────────────────
@@ -247,14 +255,28 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
   };
 
   // ── AI cost ───────────────────────────────────────────────────────────
+  // 🔴 `costUsd` sums only the calls that carry a vendor cost. When some do
+  // not, the AI cost is TOO LOW and the profit too high, so both say so
+  // (`analytics.margin_ratio` guarded this with `costedShare`, review S1+S2).
+  const costedShare =
+    row.costedShare === null || row.costedShare === undefined ? null : num(row.costedShare);
+  const costPartial = row.calls > 0 && costedShare !== null && costedShare < 0.995;
+  if (costPartial) {
+    notes.push(
+      `Only ${formatPct(costedShare)} of this customer's calls have a recorded vendor cost. ` +
+        "The AI cost covers those calls only, so the real AI cost is higher and the profit lower.",
+    );
+  }
   const aiCostValue = price ? costUsd * price.inrPerUsd : null;
   const aiCost: Figure = {
     value: aiCostValue,
-    estimated: false,
-    how: price
-      ? `The AI vendors billed us ${formatUsdPlain(costUsd)} for this customer's calls. ` +
-        `× ₹${price.inrPerUsd} a dollar (the planning rate on Pricing) = ${formatInr(aiCostValue)}.`
-      : `The AI vendors billed us ${formatUsdPlain(costUsd)}. ${NO_PRICE}`,
+    estimated: costPartial,
+    how:
+      (price
+        ? `The AI vendors billed us ${formatUsdPlain(costUsd)} for this customer's calls. ` +
+          `× ₹${price.inrPerUsd} a dollar (the planning rate on Pricing) = ${formatInr(aiCostValue)}.`
+        : `The AI vendors billed us ${formatUsdPlain(costUsd)}. ${NO_PRICE}`) +
+      (costPartial ? ` Only ${formatPct(costedShare)} of calls have a recorded cost.` : ""),
   };
 
   // ── Given away ────────────────────────────────────────────────────────
@@ -277,7 +299,7 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
     chargedValue === null || aiCostValue === null ? null : chargedValue - aiCostValue;
   const profit: Figure = {
     value: profitValue,
-    estimated: charged.estimated,
+    estimated: charged.estimated || aiCost.estimated,
     how:
       profitValue === null
         ? NO_PRICE
@@ -289,7 +311,7 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
       : profitValue / chargedValue;
   const margin: Figure = {
     value: marginValue,
-    estimated: charged.estimated,
+    estimated: charged.estimated || aiCost.estimated,
     how:
       marginValue === null
         ? chargedValue === 0
@@ -299,14 +321,16 @@ export function customerMoney(input: MoneyInput): CustomerMoney {
   };
 
   // ── Owed ──────────────────────────────────────────────────────────────
-  const owedCredits = Math.max(unbackedN, balance < 0 ? -balance : 0);
+  // ⚠️ The balance NOW, never the window's unbacked draws: a customer who went
+  // below zero and then bought credits owes nothing (review, S1+S2).
+  const owedCredits = balance < 0 ? -balance : 0;
   const owedValue = price ? owedCredits * price.inrPerCredit : null;
   const owed: Figure = {
     value: owedCredits > 0 ? owedValue : 0,
     estimated: false,
     how:
       owedCredits <= 0
-        ? "The balance never went below zero."
+        ? "The balance is not below zero."
         : `The balance is ${formatCr(balance)} credits. We kept serving after it reached zero. ` +
           (price
             ? `At ${formatInr(price.inrPerCredit)} a credit, they owe ${formatInr(owedValue)}.`

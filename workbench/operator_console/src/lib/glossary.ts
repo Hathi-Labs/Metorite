@@ -65,6 +65,20 @@ export const GLOSSARY = {
     means: "The share of what we charged that we keep after the AI cost.",
     formula: "Profit ÷ We charged, as a percent",
   },
+  aiRevenue: {
+    title: "Charged for AI",
+    means:
+      "The value of the bought credits this app or person used. Seats are not split by app " +
+      "or person, so they are not in this column.",
+    formula: "Credits used × the customer's average earned per credit in the period",
+  },
+  aiMargin: {
+    title: "AI margin",
+    means:
+      "The share of what we charged for AI that we keep after the AI cost. It leaves out " +
+      "seats, so it can be lower than the customer's overall margin.",
+    formula: "(Charged for AI − AI cost) ÷ Charged for AI, as a percent",
+  },
   creditsLeft: {
     title: "Credits left",
     means:

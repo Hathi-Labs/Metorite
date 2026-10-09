@@ -68,16 +68,16 @@ function Head({ first }: { first: string }) {
           <Explain term="creditsUsed" />
         </th>
         <th>
-          We charged
-          <Explain term="weCharged" />
+          Charged for AI
+          <Explain term="aiRevenue" />
         </th>
         <th>
           AI cost
           <Explain term="aiCost" />
         </th>
         <th>
-          Margin
-          <Explain term="margin" />
+          AI margin
+          <Explain term="aiMargin" />
         </th>
       </tr>
     </thead>
@@ -153,11 +153,12 @@ export default function CustomerBreakdown({
       {!error && data && (data.apps.length > 0 || data.members.length > 0) && (
         <p className="field-hint">
           {perCredit !== null
-            ? `"We charged" for each row is estimated: its credits used × ${formatInr(
+            ? `"Charged for AI" for each row is estimated: its credits used × ${formatInr(
                 perCredit,
               )}, this customer's average earned per credit in the period. Free credits ` +
-              `bring that average down. "AI cost" is exact.`
-            : `"We charged" needs the credit price, which is not saved yet. "AI cost" is exact.`}
+              `bring that average down. Seats are not split by app or person, so they are ` +
+              `not in these rows. "AI cost" is exact.`
+            : `"Charged for AI" needs the credit price, which is not saved yet. "AI cost" is exact.`}
         </p>
       )}
 

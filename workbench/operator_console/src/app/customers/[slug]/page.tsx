@@ -104,6 +104,8 @@ type Loaded = {
   usageError: string | null;
   /** WS-50: the saved credit price and when draws began, from the same read. */
   price: Price | null;
+  /** False when the Console sent no credit-price field (a build before it). */
+  priceReported: boolean;
   drawsSince: string | null;
   /** Usage slice 3 — by app, agent and person, with our cost. `null` with no
    *  error means the read was not attempted; with an error, it failed. */
@@ -157,6 +159,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         usageDays: [],
         usageError: null,
         price: null,
+        priceReported: true,
         drawsSince: null,
         breakdown: null,
         breakdownError: null,
@@ -223,6 +226,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
     let usageDays: UsageDay[] = [];
     let usageError: string | null = null;
     let price: Price | null = null;
+    let priceReported = true;
     let drawsSince: string | null = null;
     if (usageRes.status !== 200) {
       usageError = `The usage read returned ${usageRes.status}.`;
@@ -231,6 +235,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         const view = JSON.parse(usageRes.body) as Partial<OrgUsageView>;
         usageRow = (view.rows ?? []).find((r) => r.slug === slug) ?? null;
         price = priceFrom(view.inrPerCredit, view.usdToInr);
+        priceReported = "inrPerCredit" in view;
         drawsSince = view.drawsSince ?? null;
       } catch {
         usageError = "The usage read could not be parsed.";
@@ -279,6 +284,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       usageDays,
       usageError,
       price,
+      priceReported,
       drawsSince,
       breakdown,
       breakdownError,
@@ -299,6 +305,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       usageDays: [],
       usageError: null,
       price: null,
+      priceReported: true,
       drawsSince: null,
       breakdown: null,
       breakdownError: null,
@@ -322,7 +329,7 @@ export default async function CustomerDetailPage({
   const { slug } = await params;
   const {
     org, plans, plansError, members, membersError, lots, keys, keysError,
-    usageRow, usageDays, usageError, price, drawsSince,
+    usageRow, usageDays, usageError, price, priceReported, drawsSince,
     breakdown, breakdownError,
     ledger, ledgerError, error,
   } = await loadOrg(slug, gate.authToken);
@@ -479,6 +486,7 @@ export default async function CustomerDetailPage({
         error={usageError}
         money={money}
         price={price}
+        priceReported={priceReported}
       />
 
       <CustomerBreakdown

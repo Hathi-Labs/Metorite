@@ -197,6 +197,12 @@ describe("no credit price — unknown is null, never zero", () => {
 });
 
 describe("owed — credits spent below zero", () => {
+  it("is nothing once a top-up brings the balance back above zero", () => {
+    // Went to −20 in the window, then bought 100: balance 80, owes nothing.
+    const m = customerMoney(input({ row: row({ balance: "80", unbackedCredits: "20" }) }));
+    expect(m.owed.value).toBe(0);
+  });
+
   it("is shown apart from We charged", () => {
     const m = customerMoney(
       input({ row: row({ balance: "-250", unbackedCredits: "250", runwayDays: 0 }) }),
@@ -250,5 +256,39 @@ describe("formatInr", () => {
     expect(formatInr(123456.7)).toBe("₹1,23,457");
     expect(formatInr(0.43)).toBe("₹0.43");
     expect(formatInr(-50)).toBe("−₹50.00");
+  });
+});
+
+describe("partial vendor cost coverage", () => {
+  it("flags the AI cost, the profit and the margin when some calls carry no cost", () => {
+    const m = customerMoney(input({ row: row({ costedShare: "0.1" }) }));
+    expect(m.aiCost.estimated).toBe(true);
+    expect(m.profit.estimated).toBe(true);
+    expect(m.margin.estimated).toBe(true);
+    expect(m.estimateNotes.some((n) => n.includes("Only 10% of this customer's calls"))).toBe(true);
+  });
+
+  it("does not flag full coverage", () => {
+    const m = customerMoney(input({ row: row({ costedShare: "1" }) }));
+    expect(m.aiCost.estimated).toBe(false);
+  });
+});
+
+describe("the lifetime average leaves unpriced bought credits out", () => {
+  it("does not let a big grant with no price drag the value toward zero", () => {
+    // 900 unpriced + 100 bought at ₹1 each. The priced average is ₹1, not ₹0.10.
+    const m = customerMoney(
+      input({
+        row: row({
+          paidCredits: "0",
+          paidValueInr: "0",
+          lifePaidUsed: "1000",
+          lifeUnpricedPaidUsed: "900",
+          lifePaidValueInr: "100",
+          lifeFreeUsed: "0",
+        }),
+      }),
+    );
+    expect(m.paidCredits.value).toBeCloseTo(1000);
   });
 });

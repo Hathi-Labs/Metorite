@@ -47,6 +47,7 @@ export default function CustomerUsage({
   error,
   money,
   price,
+  priceReported = true,
 }: {
   /** This organization's row from the fleet read. ⚠️ `null` can mean EITHER
    *  "no traffic" or "the capped fleet page did not include them" — H-76.
@@ -60,6 +61,9 @@ export default function CustomerUsage({
   /** `lib/money.ts`'s figures for this row, or null when there is no row. */
   money: CustomerMoney | null;
   price: Price | null;
+  /** False when the Console sent no credit-price field at all (a build that
+   *  predates it), which is not the same as "no price saved". */
+  priceReported?: boolean;
 }) {
   const state = customerUsageState(row, days);
 
@@ -76,11 +80,18 @@ export default function CustomerUsage({
 
       {error && <p className="result err">{error}</p>}
 
-      {!error && !price && (
+      {!error && !price && priceReported && (
         <div className="banner">
           <strong>No credit price is saved,</strong> so credits and the
           vendor&apos;s dollar bill cannot be shown in rupees.{" "}
           <a href="/pricing">Set the credit price →</a>
+        </div>
+      )}
+      {!error && !price && !priceReported && (
+        <div className="banner">
+          <strong>This Console build does not send the credit price yet,</strong>{" "}
+          so the figures below cannot be shown in rupees. They appear after
+          the next Console deploy.
         </div>
       )}
 
@@ -142,6 +153,7 @@ export default function CustomerUsage({
               <div className="lbl">
                 AI cost
                 <Explain term="aiCost" detail={money.aiCost.how} />
+                <Est on={money.aiCost.estimated} />
               </div>
               <div className="num">{formatInr(money.aiCost.value)}</div>
               <div className="sub">
