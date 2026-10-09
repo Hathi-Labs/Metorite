@@ -302,6 +302,14 @@ def _at_least(floor: str, tier: str) -> str:
     return LADDER[max(low, high)]
 
 
+def rung_up(tier: str) -> str:
+    """The rung above *tier*. The top rung, and a tier off the ladder, stay."""
+    rank = _rank(tier)
+    if rank is None:
+        return tier
+    return LADDER[min(rank + 1, len(LADDER) - 1)]
+
+
 def tier_for_kind(kind: str, default: str) -> str:
     """The tier of a *kind* of work, never below the agent's *default*."""
     target = KIND_TIERS.get(kind)
@@ -327,17 +335,25 @@ def choose(*, default: str, kind: str, effort: str | None) -> Choice:
     * Otherwise the turn's *kind* sets the tier, never below *default*:
       ``plan``, ``analysis`` and ``code`` take the stronger tier, and
       ``chat`` keeps the agent's default.
-    * Thinking (from the API, or from the member's words) moves no tier. It
-      sets ``reasoning_effort`` and the System-1 threshold. The rung up that
-      D90 gave Thinking acted only after a hinted tool, and hints no longer
-      move a request.
+    * Thinking (from the API, or from the member's words) starts the turn
+      one rung above the agent's *default*, and the turn keeps it (owner,
+      2026-10-09). A ``plan``, ``analysis`` or ``code`` turn may already
+      start higher, so the turn takes the higher of the two. A tier off the
+      ladder stays (§4.2 rule 2). Thinking also sets ``reasoning_effort`` and
+      the System-1 threshold, as before.
+    * Auto: the kind's tier, as above.
 
     A System-1 request never comes here. Its tier is fixed (§5).
     """
     kind = kind if kind in TURN_KINDS else "chat"
-    if normalise_effort(effort) == "max":
+    mode = normalise_effort(effort)
+    if mode == "max":
         return Choice(_at_least(default, MAX_TIER), kind, "effort")
     base = tier_for_kind(kind, default)
+    if mode == "thinking":
+        stepped = _at_least(base, rung_up(default))
+        if stepped != base:
+            return Choice(stepped, kind, "effort")
     return Choice(base, kind, "default" if base == default else "turn_kind")
 
 

@@ -23,6 +23,9 @@ back out:
 * the short bound goes (``short_only`` dropped) ->
   ``test_a_long_context_stays_on_tier_fast`` and
   ``test_a_long_option_stays_on_tier_fast``;
+* the context bound moves off 500 characters, either way (owner,
+  2026-10-09, after #760) -> ``test_a_501_character_context_goes_to_tier_fast``
+  and ``test_a_500_character_context_goes_to_tier_decide``;
 * the switch ships OFF, or a broken read opens it ->
   ``test_the_switch_ships_on`` and ``test_a_broken_read_reads_as_off``;
 * the turn-kind question reaches the door ->
@@ -138,6 +141,32 @@ def test_a_long_context_stays_on_tier_fast(monkeypatch) -> None:
     codes = [e.get("reason") for e in logs if e["event"] == FALLBACK]
     assert codes == [decide_tools.NOT_SHORT]
     assert "member text" not in repr(logs)
+
+
+def test_the_bound_is_500_characters() -> None:
+    """About two sentences (owner, 2026-10-09, after #760)."""
+    assert decide_tools.NO_EGRESS_CONTEXT_MAX == 500
+    assert decide_tools.NO_EGRESS_QUESTION_MAX == 400
+    assert decide_tools.NO_EGRESS_OPTION_MAX == 120
+
+
+def test_a_501_character_context_goes_to_tier_fast(monkeypatch) -> None:
+    door = _door(monkeypatch, lambda b: _verdict(b))
+    wire = _wire(monkeypatch, _fast_ok)
+    with structlog.testing.capture_logs() as logs:
+        _ask(question="Is it urgent?", context="c" * 501)
+    assert door.requests == []
+    assert len(wire.requests) == 1 and wire.bodies[0]["model"] == "tier-fast"
+    assert [e.get("reason") for e in logs if e["event"] == FALLBACK] == [
+        decide_tools.NOT_SHORT]
+
+
+def test_a_500_character_context_goes_to_tier_decide(monkeypatch) -> None:
+    door = _door(monkeypatch, lambda b: _verdict(b))
+    wire = _wire(monkeypatch, _fast_ok)
+    _ask(question="Is it urgent?", context="c" * 500)
+    assert len(door.requests) == 1 and wire.requests == []
+    assert door.bodies[0]["state"] == "c" * 500
 
 
 def test_a_long_option_stays_on_tier_fast(monkeypatch) -> None:
