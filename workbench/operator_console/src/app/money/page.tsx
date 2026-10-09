@@ -6,6 +6,8 @@ import { partitionRoster, type OrgList, type OrgRow } from "@/lib/format";
 import { readProviderSpend } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import type { OrgUsageRow, OrgUsageView, UsageDay } from "@/lib/usage";
+import { consoleQuery, rangeFrom } from "@/lib/range";
+import RangePicker from "../RangePicker";
 import Header from "../Header";
 import { Unconfigured } from "../Shell";
 import MoneyBoard from "./MoneyBoard";
@@ -28,10 +30,17 @@ export const dynamic = "force-dynamic";
 
 const WINDOW_DAYS = 30;
 
-export default async function MoneyPage() {
+export default async function MoneyPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ range?: string; from?: string; to?: string }>;
+}) {
   const session = await staffSession();
   if (!session.configured) return <Unconfigured />;
   if (!session.ok) redirect("/login");
+  // WS-50 slice 7: the period comes from the URL.
+  const range = rangeFrom(await searchParams, new Date());
+  const rangeQ = consoleQuery(range);
 
   const deps = { authToken: session.authToken };
   let orgs: OrgRow[] = [];
@@ -46,8 +55,8 @@ export default async function MoneyPage() {
   try {
     const [orgRes, usageRes, seriesRes] = await Promise.all([
       listOrganizations(deps),
-      orgUsage(WINDOW_DAYS, deps),
-      usageDaily(WINDOW_DAYS, undefined, deps),
+      orgUsage(WINDOW_DAYS, deps, rangeQ),
+      usageDaily(WINDOW_DAYS, undefined, deps, rangeQ),
     ]);
     if (orgRes.status === 200) {
       orgs = (JSON.parse(orgRes.body) as OrgList).organizations;
@@ -86,7 +95,11 @@ export default async function MoneyPage() {
     }
   }
 
-  const spend = await readProviderSpend(deps);
+  const spend = await readProviderSpend(deps, rangeQ);
+  // 🔴 A Console before the range read ignores `from`, answers the last 30
+  // days, and sends no `rangeFrom`. Say so rather than label 30 days as the
+  // chosen period.
+  const rangeIgnored = range.from !== null && view !== null && !("rangeFrom" in view);
   // 🔴 Deleted customers stay OUT of the totals, the same as on the
   // customer list, so the two pages quote one profit (review, slice 4).
   // Their rows are computed apart and shown only on request.
@@ -104,15 +117,24 @@ export default async function MoneyPage() {
           <div>
             <h1>Money</h1>
             <p className="muted">
-              What each customer paid us, what their AI cost us, and the profit.
-              The last {WINDOW_DAYS} days, in rupees.
+              What each customer paid us, what their AI cost us, and the profit,
+              in rupees. Choose the period below.
             </p>
           </div>
         </div>
+        <RangePicker path="/money" range={range} />
+        {rangeIgnored && (
+          <div className="banner">
+            <strong>This Console build cannot answer a date range yet,</strong> so the
+            figures below are the last 30 days. The range works after the next
+            Console deploy.
+          </div>
+        )}
         {error ? (
           <div className="banner danger">{error}</div>
         ) : (
           <MoneyBoard
+            periodLabel={rangeIgnored ? "last 30 days" : range.label}
             fleet={fleet}
             purgedRows={purgedRows}
             usageRows={usageRows}
@@ -125,7 +147,7 @@ export default async function MoneyPage() {
         )}
         {/* What the vendors billed US, by vendor. It moved here from the
             Providers tab: it is a bill, and a bill belongs with the money. */}
-        <VendorSpend spend={spend.data} days={WINDOW_DAYS} />
+        <VendorSpend spend={spend.data} days={rangeIgnored ? WINDOW_DAYS : range.days} />
       </main>
     </>
   );

@@ -38,6 +38,8 @@ import {
 } from "@/lib/format";
 import { customerMoney, formatCr, formatInr, priceFrom, type Price } from "@/lib/money";
 import { lifecycleSteps, nextStep, tabFrom, TABS, type TabKey } from "@/lib/lifecycle";
+import { consoleQuery, rangeFrom, type UsageRange } from "@/lib/range";
+import RangePicker from "../../RangePicker";
 import {
   readBreakdown,
   type OrgUsageRow,
@@ -120,7 +122,7 @@ type Loaded = {
  *  quote different periods for the same customer. */
 const USAGE_WINDOW_DAYS = 30;
 
-async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
+async function loadOrg(slug: string, authToken?: string, range?: UsageRange): Promise<Loaded> {
   try {
     // Four reads in parallel, all operator-door: the cross-org list (this
     // org's numbers), the catalog (the plan pickers), the per-org summary
@@ -141,9 +143,9 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         billingSummary(slug, d),
         listKeys(slug, d),
         creditLedger(slug, d),
-        orgUsage(USAGE_WINDOW_DAYS, d),
-        usageDaily(USAGE_WINDOW_DAYS, slug, d),
-        usageBreakdown(USAGE_WINDOW_DAYS, slug, d),
+        orgUsage(USAGE_WINDOW_DAYS, d, range && consoleQuery(range)),
+        usageDaily(USAGE_WINDOW_DAYS, slug, d, range && consoleQuery(range)),
+        usageBreakdown(USAGE_WINDOW_DAYS, slug, d, range && consoleQuery(range)),
       ]);
     if (listRes.status !== 200) {
       return {
@@ -324,7 +326,7 @@ export default async function CustomerDetailPage({
   searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ tab?: string | string[] }>;
+  searchParams: Promise<{ tab?: string | string[]; range?: string; from?: string; to?: string }>;
 }) {
   const gate = await staffSession();
   if (!gate.configured) redirect("/");
@@ -333,13 +335,16 @@ export default async function CustomerDetailPage({
   const { slug } = await params;
   // WS-50 slice 3: one tab at a time. A link, so a tab can be bookmarked and
   // sent to a colleague, and the page stays a server component.
-  const tab = tabFrom((await searchParams).tab);
+  const sp = await searchParams;
+  const tab = tabFrom(sp.tab);
+  // WS-50 slice 7: the period for the money on the Overview tab.
+  const range = rangeFrom(sp, new Date());
   const {
     org, plans, plansError, members, membersError, lots, keys, keysError,
     usageRow, usageDays, usageError, price, priceReported, drawsSince,
     breakdown, breakdownError,
     ledger, ledgerError, error,
-  } = await loadOrg(slug, gate.authToken);
+  } = await loadOrg(slug, gate.authToken, range);
 
   if (error) {
     return (
@@ -378,7 +383,7 @@ export default async function CustomerDetailPage({
         price,
         seatsMonthlyInr: Number.isFinite(org.mrr_paise) ? org.mrr_paise / 100 : null,
         seatsBought: totals?.purchased ?? null,
-        windowDays: USAGE_WINDOW_DAYS,
+        windowDays: range.days,
         drawsSince,
         now,
       })
@@ -485,10 +490,12 @@ export default async function CustomerDetailPage({
 
           {/* 🔴 WS-50: money FIRST. The owner opens a customer to learn what we
               charge them and what they cost us. */}
+          <RangePicker path={`/customers/${encodeURIComponent(org.slug)}`} range={range} />
           <CustomerUsage
+            periodLabel={range.label}
             row={usageRow}
             days={usageDays}
-            windowDays={USAGE_WINDOW_DAYS}
+            windowDays={range.days}
             error={usageError}
             money={money}
             price={price}

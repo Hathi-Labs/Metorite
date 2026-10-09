@@ -2990,3 +2990,38 @@ th .explain { margin-left: 4px; }
 .lifestep.current .lifedot { background: var(--accent); border-color: var(--accent); box-shadow: var(--ring); }
 .lifenext { margin: 10px 0 0; font-size: 13.5px; }
 .tabs.customertabs { margin: 14px 0 6px; }
+
+/* ── The period picker (WS-50 slice 7) ──────────────────────────────────
+   Presets are links in the segmented look; a custom range is a GET form. */
+.rangebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: 4px 0 14px;
+}
+.rangebar .segmented a {
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.rangebar .segmented a:hover { color: var(--text); }
+.rangebar .segmented a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rangeform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.rangeform label { display: flex; align-items: center; gap: 6px; margin: 0; text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 400; }
+.rangeform input[type="date"] { width: auto; padding: 5px 8px; font-size: 13px; }
+.rangeform button { margin: 0; padding: 6px 12px; font-size: 13px; }
+.rangebar .field-hint { flex-basis: 100%; margin: 0; }

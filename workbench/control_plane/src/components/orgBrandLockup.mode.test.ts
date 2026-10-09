@@ -37,6 +37,46 @@ const imgs = (html: string) =>
 const render = (b: OrgBranding, mode?: "light" | "dark") =>
   imgs(renderToStaticMarkup(createElement(BrandMark, { branding: b, fallbackCaption: "x", mode })));
 
+/**
+ * The shell bar's one-line lockup (owner, 2026-10-09). It is the same
+ * BrandMark, so it must keep the same two-image rule, and the D51 name.
+ */
+describe("the compact lockup in the full-width shell bar", () => {
+  const WHITE = "data:image/png;base64,V0hJVEU=";
+  const html = (b: OrgBranding | null, orgName = "") =>
+    renderToStaticMarkup(
+      createElement(BrandMark, { branding: b, fallbackCaption: "Control Plane", orgName, height: 24, maxWidth: 200, compact: true }),
+    );
+
+  it("still lets CSS pick the image for the colour mode", () => {
+    const [light, dark] = imgs(html(branding({ logoDark: logo(WHITE), darkStyle: "white" })));
+    expect(light.src).toBe(PNG);
+    expect(light.cls.split(" ")).toEqual(expect.arrayContaining(["hidden", "[.light_&]:block"]));
+    expect(dark.src).toBe(WHITE);
+    expect(html(branding({ logoDark: logo(WHITE), darkStyle: "white" }))).toContain("[.light_&amp;]:hidden");
+  });
+
+  it("draws the logo 24px tall, and keeps room for the caption beside it", () => {
+    // 252×84 is 3:1, so 72px wide at 24px. The cap is 200 less the reserve.
+    const out = html(branding({}));
+    expect(out).toMatch(/height:24px;width:72px/);
+    expect(out).toContain("powered by Metorite");
+    // The caption hides below lg and never truncates.
+    expect(out).toMatch(/class="hidden shrink-0 whitespace-nowrap[^"]*lg:inline"/);
+  });
+
+  it("with no logo: our mark and the organization's own name on one line (D51)", () => {
+    const out = html({ logo: null, updatedBy: "", updatedAt: "" } as OrgBranding, "Acme Robotics");
+    expect(imgs(out)).toEqual([]);
+    expect(out).toContain("Acme Robotics");
+    expect(out).not.toContain("Control Plane");
+  });
+
+  it("with no organization yet: our mark and the product's name", () => {
+    expect(html(null)).toContain("Metorite");
+  });
+});
+
 describe("the theme provider and BrandMark agree on the class", () => {
   it("next-themes writes the mode as a class on the root", () => {
     expect(read("components/Providers.tsx")).toMatch(/<ThemeProvider\s[^>]*attribute="class"/);

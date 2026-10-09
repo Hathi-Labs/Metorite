@@ -79,6 +79,23 @@ test("an admin's invite link opens the invite form", async ({ page }) => {
   await expect(page.getByText("Work email", { exact: true })).toBeVisible({ timeout: 15_000 });
 });
 
+// Organisation moved from the account menu to the sidebar (owner,
+// 2026-10-09). The job reads the held panes, not the door, so it must still
+// reach the form from the command bar.
+test("an admin's “invite” in the command bar opens the invite form", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await stub(page, true);
+  await page.goto("/tasks");
+  await page.locator("[data-shell-bar]").getByRole("button", { name: /Search or ask anything/ }).click();
+  const bar = page.getByRole("dialog", { name: "Search or ask" });
+  await bar.getByRole("combobox", { name: "Search or ask anything" }).fill("invite");
+  await expect(bar.getByRole("option").first()).toContainText("Invite a member");
+  await page.keyboard.press("Enter");
+  await page.waitForURL((u) => u.pathname === "/settings/organization");
+  await expect(page.getByText("Work email", { exact: true })).toBeVisible({ timeout: 15_000 });
+});
+
 test("a member's invite link opens nothing", async ({ page }) => {
   test.setTimeout(120_000);
   await stub(page, false);

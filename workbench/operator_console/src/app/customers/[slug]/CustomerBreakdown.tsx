@@ -133,7 +133,7 @@ export default function CustomerBreakdown({
       <div className="panel-head">
         <h2>Where it went</h2>
         <p>
-          {`The same ${data?.windowDays ?? 30} days, split by app, by agent and by person. `} The customer&apos;s own admin sees these rows with credits
+          {`The same period, split by app, by agent and by person. `} The customer&apos;s own admin sees these rows with credits
           only. They never see the AI cost or the margin.
         </p>
       </div>
@@ -157,7 +157,8 @@ export default function CustomerBreakdown({
                 perCredit,
               )}, this customer's average earned per credit in the period. Free credits ` +
               `bring that average down. Seats are not split by app or person, so they are ` +
-              `not in these rows. "AI cost" is exact.`
+              `not in these rows. "AI cost" is exact. "AI margin" tests the price: the row's ` +
+              `credits at what a bought credit sold for, against its AI cost.`
             : `"Charged for AI" needs the credit price, which is not saved yet. "AI cost" is exact.`}
         </p>
       )}

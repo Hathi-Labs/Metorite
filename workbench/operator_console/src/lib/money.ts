@@ -426,8 +426,41 @@ export function rowMoney(
   const charged = perCredit === null ? null : credits * perCredit;
   const aiCost = price ? num(part.costUsd) * price.inrPerUsd : null;
   const profit = charged === null || aiCost === null ? null : charged - aiCost;
-  const margin = profit === null || charged === null || charged <= 0 ? null : profit / charged;
+  // The AI margin is the PRICE margin, the same definition as `aiMarginOf`:
+  // the row's credits at the average price of a BOUGHT credit, against the
+  // row's AI cost. Free credits do not lower it; they show as Given away.
+  const paidPrice = boughtCreditPrice(whole);
+  const atPrice = paidPrice === null ? null : credits * paidPrice;
+  const margin =
+    atPrice === null || aiCost === null || atPrice <= 0 ? null : (atPrice - aiCost) / atPrice;
   return { charged, aiCost, profit, margin };
+}
+
+/** The average rupees one BOUGHT credit sold for in the window, or null. */
+export function boughtCreditPrice(whole: CustomerMoney): number | null {
+  const v = whole.paidCredits.value;
+  const free = whole.givenAway.value;
+  const cost = whole.aiCost.value;
+  if (v === null || whole.creditsUsed <= 0) return null;
+  // Bought credits = all credits × the paid share of the AI cost, which is
+  // how `givenAway` split it. With no cost to split, fall back to all credits.
+  const paidShare =
+    cost !== null && cost > 0 && free !== null ? (cost - free) / cost : 1;
+  const bought = whole.creditsUsed * paidShare;
+  return bought > 0 ? v / bought : null;
+}
+
+/** The margin on PAID AI traffic: bought credits used against the AI cost of
+ *  the calls they paid for. Seats are left out (no AI cost), and so are calls
+ *  paid with free credits, which show as Given away. So this tests the PRICE,
+ *  and a trial-heavy customer does not read as a pricing problem (review,
+ *  S5b). A FRACTION, or null when a side is unknown or nothing was bought. */
+export function aiMarginOf(m: CustomerMoney): number | null {
+  const rev = m.paidCredits.value;
+  const cost = m.aiCost.value;
+  if (rev === null || cost === null || rev <= 0) return null;
+  const paidCost = cost - (m.givenAway.value ?? 0);
+  return (rev - paidCost) / rev;
 }
 
 /** The average rupees a credit earned this customer in the window. */
