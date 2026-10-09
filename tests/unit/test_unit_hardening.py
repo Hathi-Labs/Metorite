@@ -809,6 +809,7 @@ HARDENING_LINES = [
     "Environment=PATH=/opt/acb/app/.venv/bin:/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin",
     "Environment=VIRTUAL_ENV=/opt/acb/app/.venv",
     "Environment=MEM0_DIR=/var/lib/acb-gateway/mem0",
+    "Environment=npm_config_cache=/var/cache/acb-gateway/npm",
     "NoNewPrivileges=yes",
     "PrivateTmp=yes",
     "ProtectSystem=strict",

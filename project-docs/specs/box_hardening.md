@@ -1084,6 +1084,7 @@ ExecStart=/opt/acb/app/.venv/bin/uvicorn gateway.main:app --host 0.0.0.0 --port 
 Environment=PATH=/opt/acb/app/.venv/bin:/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=VIRTUAL_ENV=/opt/acb/app/.venv
 Environment=MEM0_DIR=/var/lib/acb-gateway/mem0
+Environment=npm_config_cache=/var/cache/acb-gateway/npm
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
@@ -1126,9 +1127,21 @@ RestrictRealtime=yes
      `/home/acb`. The import sits in the `try` of `mem0_client.py:103-195`,
      so a refusal turns memory off with one `mem0.init_failed` line and no
      error. `MEM0_DIR` moves that dir into the `StateDirectory`.
-   - A file in `ReadWritePaths` must exist, or the unit fails to start. The
-     deploy makes `data/`. A missing tracked file or `.env` stops the deploy
-     BEFORE the gateway restart (`ensure_gateway_rw_paths`), so the gateway
+   - **`npm_config_cache` (fix round 1, P2-2).** `install_t2_deps.mjs:106`
+     runs `npm install` in the Copilot shell of the app-builder agent, and
+     npm writes its cache to `~/.npm`. The conf sets
+     `npm_config_cache=/var/cache/acb-gateway/npm`, under the
+     `CacheDirectory`. An agent child gets the same value by value from
+     `acb_common.child_env.AGENT_PATH_VALUES`. No other npm, npx, yarn or
+     pnpm call is in the gateway tree, and
+     `test_agent_children_get_an_npm_cache_outside_the_home` fails on a new one.
+   - A file in `ReadWritePaths` must exist, or the unit fails to start.
+     `ensure_gateway_rw_paths` runs BEFORE the gateway restart (fix round 1,
+     P3-1 and P3-2). It makes `data/`, and it makes a missing JSON file with
+     the shape the gateway reads: `[]` for `agents.json` and `{}` for the
+     models cache. It makes `~/.acb/agents`, `~/.copilot` and
+     `~/.cache/copilot` as the service user, so their `-` entries bind on a
+     fresh box. Only a missing `.env` stops the deploy, and then the gateway
      that runs keeps serving.
 
    **The write locations, read from the code at build (2026-10-09).** Each
@@ -1146,6 +1159,7 @@ RestrictRealtime=yes
    | `/var/lib/acb-gateway/agent-site` | `acb_skills/agent_site.py:197` (BH-7) | `StateDirectory` |
    | `/var/cache/acb-gateway/uv` | `uv pip install` (`UV_CACHE_DIR`, `40-agent-site.conf`) | `CacheDirectory` |
    | `/var/lib/acb-gateway/mem0` | mem0 at import (`MEM0_DIR`) | `StateDirectory` |
+   | `/var/cache/acb-gateway/npm` | `npm install` of `install_t2_deps.mjs:106` (`npm_config_cache`) | `CacheDirectory` |
    | `/tmp` | `local_diarization.py:80` (`NamedTemporaryFile` for ffmpeg), `monorepo_pr.py:236` (`mkdtemp`) | `PrivateTmp` |
 
    Read only, with no write: `~/.local/bin/uv` (`agent_site.py:111`, an exec
@@ -1155,9 +1169,16 @@ RestrictRealtime=yes
    writes its output to a pipe. `~/.config/uv/` holds only the deploy's
    `uv-receipt.json`. No code runs `git config --global`.
 
-   Python cannot write `__pycache__` under `/opt/acb/app` or `.venv`. It
-   skips that write with no error, so a module that changed in a deploy
-   compiles again at each start. The staging reads the start time.
+   **Bytecode (fix round 1, P2-3).** Python cannot write `__pycache__` under
+   `/opt/acb/app` or `.venv` in the sandbox. It skips that write with no
+   error, so a module that changed would compile again at each start. So
+   `vps_apply.sh` runs `compile_bytecode` before the gateway restart. It runs
+   `python -m compileall -q -j 0 --invalidation-mode timestamp` over
+   `.venv/lib`, `apps/` and `packages/`, as the owner of the checkout, and
+   skips `node_modules`, `.next` and `.git`. It is best-effort: a file that
+   does not compile is logged, and the deploy goes on. The timestamp mode is
+   right, because `git reset` and `uv sync` give a changed file a new mtime.
+   The staging still reads the start time.
 3. **The other units.**
    - acb-workbench, acb-customer-console, acb-smoke-chat and
      acb-whatsapp-bridge get `NoNewPrivileges=yes`, `PrivateTmp=yes` and
@@ -1171,23 +1192,45 @@ RestrictRealtime=yes
      The BO-23 unit loop then finds a byte-identical unit, and changes
      nothing.
    - `acb-pull` gets nothing. It needs sudo until BH-5.
-4. **The inode rule (advisory, W1).** A file in `ReadWritePaths` binds the
-   file's inode at start. A tool that REPLACES the file (a new inode) leaves
-   the gateway on the old one. So a gateway restart follows each replace of
-   these three files. The line numbers are those of `vps_apply.sh` at
-   `7e9844a48`:
-   - `.env`. `scripts/secrets.sh push app-env` already restarts
-     acb-gateway (the `restart` list of `deploy/secrets/manifest.json`). The
-     `GRAPHITI_ENABLED` edit (`sed -i`, a replace, line 589) and
-     `upsert_env` (`sed -i`, line 868) run before the gateway restart at
-     line 1273. The BH-7 strip of `CUSTOM_APPS_T2_VENDOR_DIR` (line 1009) is
-     a replace too, and it also runs before that restart.
+4. **The inode rule: a writer of `.env` must keep its inode (fix round 1,
+   P2-1).** A file in `ReadWritePaths` binds the file's inode at start. A
+   tool that REPLACES the file (a rename, so a new inode) leaves the running
+   gateway on the old, unlinked copy. The saves of the gateway then go to
+   that dead copy, its next restart drops them, and it never sees the new
+   values.
+   - **`.env` is written INTO, never replaced.** `vps_apply.sh` edits it
+     with `env_edit_in_place`: the new content goes to a temp file, then
+     `cat tmp > .env` writes it into the same inode, so the mode and the
+     owner stay. That covers `upsert_env`, the two secret generators
+     (`WHATSAPP_BRIDGE_SECRET`, `MEETING_BOT_TOKEN`) and the BH-7 strip.
+     `scripts/setup_secrets.sh` does the same. The apply holds the deploy
+     lock, so no other deploy writes `.env` at the same time.
+   - **`scripts/secrets.sh push app-env`** merges through `r_put`. It writes
+     into the file with `dd oflag=nofollow` when the file has the meta that
+     the push needs, so a link that appears after the link check fails the
+     write. Else it renames, and the `restart` list then gives the units the
+     new inode. A rollback goes through `r_put` too. **`secrets.sh` takes NO
+     deploy lock.** A push during a deploy can interleave with an edit of the
+     deploy. The push restarts acb-gateway after its write, so the gateway
+     ends on the pushed file.
+   - **Two lines are KNOWN AND BLOCKED.** The Graphiti off-switch in
+     `vps_apply.sh` and in `deploy/hostinger/deploy.sh` still runs `sed -i`.
+     plan-guard's content arm refuses any written text that sets that flag
+     name to true, and no grant unlocks the arm. The `sed` expression holds
+     that text, so an agent cannot edit the line. The branch runs only when
+     someone sets the flag to true. The owner, or a `guard-write` repair of
+     the false positive, closes the two. The fence lists them by prefix,
+     and the list may only shrink.
    - `infra/provider_models_cache.json` and
      `apps/services/gateway/agents.json`. Git tracks both, so the
      `git reset --hard` of a deploy replaces their inodes. The deploy
      restarts the gateway after that reset.
    - The gateway's own writes (`write_text`, `write_bytes`) keep the inode.
-   - No test checks this rule. It is advisory, with those facts.
+   - The fence is `tests/unit/test_env_inode.py`. It scans every shell file
+     of `scripts/` and `deploy/` for a `sed -i` or a `mv` onto `.env`. It also
+     runs `env_edit_in_place` and compares the inode.
+     `test_env_merge_keeps_the_inode_of_the_app_env` in
+     `tests/unit/test_secrets_drop.py` does the same for a push.
 5. **The strict check (S2, S3, B2-1 to B2-3).** It runs at the END of
    `vps_apply.sh`. The anchors are those of `7e9844a48`:
    - It goes after the last restart, which is `restart_stale_dropin_units`
@@ -1330,7 +1373,8 @@ uv run pytest tests/unit/test_unit_hardening.py tests/unit/test_bh2_strict_check
   tests/unit/test_bh2_rollback.py tests/unit/test_gateway_drain.py \
   tests/unit/test_deploy_reexec.py tests/unit/test_deploy_pipeline.py \
   tests/unit/test_agent_deps_target.py tests/unit/test_deploy_serialize.py \
-  tests/unit/test_backup_deploy_wiring.py -q
+  tests/unit/test_backup_deploy_wiring.py tests/unit/test_env_inode.py \
+  tests/unit/test_secrets_drop.py -q
 ssh metorite 'systemctl show acb-gateway -p NoNewPrivileges -p ProtectSystem -p ProtectHome -p ActiveState'
 ssh metorite 'systemd-analyze security acb-gateway --no-pager | tail -1'
 ssh metorite 'bash /opt/acb/app/scripts/box_hardening_probe.sh acb-gateway'
@@ -1398,6 +1442,10 @@ fences the drain flag on the effective `ExecStart` (B1).
 - A file in `ReadWritePaths` that the gateway replaces, not rewrites, needs
   a write to its dir. The gateway rewrites all three in place (item 1
   table). A future write by `os.replace` fails with EROFS.
+- **A writer of `.env` must keep its inode** (item 4). A writer outside the
+  gateway that renames a new `.env` into place leaves the gateway on a dead
+  copy, and the gateway's next restart drops what it saved there.
+  `tests/unit/test_env_inode.py` fails on a new `sed -i` or `mv` onto `.env`.
 - The startup sweeps of `main.py:152-171` log one line when Docker is absent,
   and the gateway starts. That is the documented behaviour.
 - A rollback that nobody removes expires after 72 hours, and then the deploy
@@ -1868,6 +1916,7 @@ P1 to P5, and it cannot reach the off-box key.
 | BH-F2 | `tests/unit/test_copilot_child_env.py` | a secret in the env of a stub CLI |
 | BH-F3 | `tests/unit/test_unit_hardening.py` | an `acb` unit with no NoNewPrivileges, a line of `50-hardening.conf` removed, a new write path, `.venv` on the write list, no strict check in `vps_apply.sh`, `acb.service` missing or with `--profile memory` |
 | BH-F3 (strict check) | `tests/unit/test_bh2_strict_check.py` | a strict check that passes a gateway that is inactive or not sandboxed, honours an expired rollback, or runs after the marker. A watchdog that does not log `WARN BH-2 rolled back` |
+| BH-F3 (`.env` inode) | `tests/unit/test_env_inode.py` | a `sed -i` or a `mv` onto `.env` in `scripts/` or `deploy/`, an edit that replaces the inode |
 | BH-F3 (lock, drain) | `tests/unit/test_bh2_rollback.py` · `tests/unit/test_gateway_drain.py` | an `on` or `off` that does not take the deploy lock. An effective `ExecStart` with no `--timeout-graceful-shutdown` |
 | BH-F4 | `tests/unit/test_root_units_root_owned.py` | a root unit that runs or loads a file under `/opt/acb` or `/home`, a `source` of `.env`, a pattern or a `_BIND` name in the `root.env` list, a second compose project dir |
 | BH-F5 | `tests/unit/test_compose_ports_local.py` | a port that does not start with the literal `127.0.0.1:` |

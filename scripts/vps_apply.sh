@@ -575,6 +575,37 @@ echo "==> Ensuring memory-layer env vars (Neo4j disabled for low-memory VPS)"
 # secrets into the live box while you thought you were in a sandbox. Until this
 # is unified (owner's call), hand-run it only with APP_DIR=/opt/acb/app.
 ENV_FILE="/opt/acb/app/.env"
+
+# ── WS-49 BH-2: a writer of .env must keep its inode ─────────────────────────
+# 🔴 The gateway sandbox (50-hardening.conf) lists .env on ReadWritePaths.
+# systemd bind-mounts the INODE that .env has when the gateway starts. A
+# writer that replaces the file by rename (`sed -i`, `tmp && mv`) leaves the
+# running gateway on the old, unlinked copy. The saves of the gateway then go
+# to that dead copy, and the next restart drops them. So every edit of .env
+# here builds the new content in a temp file and writes it back INTO the same
+# inode. The mode and the owner stay, because the inode stays. An append
+# (`>>`) keeps the inode already.
+# This apply holds the deploy lock, so no other deploy writes .env at once.
+# Fence: tests/unit/test_env_inode.py.
+# >>> env helpers
+# env_edit_in_place <file> <cmd> [args...] — run "<cmd> [args...] <file>" into
+# a temp file, then write the result INTO <file>. A failed command changes
+# nothing. `grep -v` exits 1 when it prints no line, and that is a result.
+env_edit_in_place() {
+  local f="$1" tmp rc=0
+  shift
+  tmp="$(mktemp "$(dirname "$f")/.env-edit.XXXXXX")"
+  "$@" "$f" > "$tmp" || rc=$?
+  if [ "$rc" -gt 1 ] || { [ "$rc" = 1 ] && [ "$1" != grep ]; }; then
+    rm -f "$tmp"
+    echo "    !! could not edit $f (exit $rc). It is unchanged."
+    return 1
+  fi
+  cat "$tmp" > "$f"
+  rm -f "$tmp"
+}
+# <<< env helpers
+
 for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
@@ -865,7 +896,7 @@ SEG_MODEL="$MODELS_DIR/segmentation.onnx"
 EMB_MODEL="$MODELS_DIR/embedding.onnx"
 upsert_env() {  # key value — set-or-replace in $ENV_FILE (paths ok)
   if grep -qE "^$1=" "$ENV_FILE" 2>/dev/null; then
-    sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"
+    env_edit_in_place "$ENV_FILE" sed "s|^$1=.*|$1=$2|"
   else
     echo "$1=$2" >> "$ENV_FILE"
   fi
@@ -941,8 +972,9 @@ strip_t2_vendor_env_line() {  # <env file>
   local f="$1" pat='^[[:space:]]*(export[[:space:]]+)?CUSTOM_APPS_T2_VENDOR_DIR[[:space:]]*='
   [ -f "$f" ] || return 0
   grep -qE "$pat" "$f" || return 0
-  # sed -i keeps the mode and the owner of the file. No value is printed.
-  sed -i -E "/$pat/d" "$f"
+  # A write INTO the file keeps its inode, mode and owner (env helpers above,
+  # WS-49 BH-2). `sed -i` would replace the inode. No value is printed.
+  env_edit_in_place "$f" sed -E "/$pat/d"
   echo "    WARN BH-7: removed a CUSTOM_APPS_T2_VENDOR_DIR line from $f."
   echo "    WARN BH-7: the T2 vendor dir is /opt/acb/t2-vendor, from 40-agent-site.conf."
 }
@@ -1016,11 +1048,12 @@ echo "    drop-ins installed and systemd reloaded"
 # deploy/hostinger/acb-gateway.service.d/50-hardening.conf went in with the
 # drop-ins above, so the gateway restart below runs the sandbox.
 #
-# 1. ensure_gateway_rw_paths runs before that restart. A path on
-#    ReadWritePaths with no "-" must exist, or systemd cannot set up the
-#    sandbox and the gateway does not start. It makes data/, which no tracked
-#    file holds. A tracked file or .env that is missing stops the deploy HERE,
-#    before the restart, so the gateway that runs now keeps serving.
+# 1. compile_bytecode and ensure_gateway_rw_paths run before that restart. A
+#    path on ReadWritePaths with no "-" must exist, or systemd cannot set up
+#    the sandbox and the gateway does not start. The step makes each such
+#    path but .env, and the home dirs of the "-" entries. A missing .env
+#    stops the deploy HERE, before the restart, so the gateway that runs now
+#    keeps serving.
 # 2. bh2_strict_check runs near the end, after the last restart and before
 #    the marker. It passes ONLY when acb-gateway is active, with
 #    NoNewPrivileges=yes and ProtectSystem=strict. A valid rollback
@@ -1033,25 +1066,77 @@ echo "    drop-ins installed and systemd reloaded"
 # >>> bh2 helpers
 BH2_UNIT="${BH2_UNIT:-acb-gateway}"
 BH2_ROLLBACK_SCRIPT="${BH2_ROLLBACK_SCRIPT:-$APP_DIR/scripts/bh2_rollback.sh}"
+# The home of the service user, as 50-hardening.conf names it.
+BH2_HOME="${BH2_HOME:-/home/acb}"
 
-ensure_gateway_rw_paths() {  # <app dir>
-  local app="$1" f missing=0
+# Each path on the ReadWritePaths of 50-hardening.conf, before the restart.
+# - .env is the one path the deploy cannot make: it holds the secrets. A
+#   missing .env stops the deploy, and the gateway that runs keeps serving.
+# - data/ and the two JSON files are made when absent. Git tracks the JSON
+#   files today, but a later commit that drops one must not stop every deploy.
+#   agents.json holds a list, and the models cache holds an object.
+# - The "-" home dirs are made as the service user, so they bind on a fresh
+#   box. ~/.cache/github-copilot-sdk comes from the Copilot CLI fetch above.
+ensure_gateway_rw_paths() {  # <app dir> [<home of the service user>]
+  local app="$1" home="${2:-$BH2_HOME}" owner user f body d
+  owner="$(stat -c '%U:%G' "$app")"
+  user="${owner%%:*}"
+  if [ ! -f "$app/.env" ]; then
+    echo "    !! $app/.env is missing. It is on the ReadWritePaths of 50-hardening.conf,"
+    echo "       so the sandboxed gateway cannot start without it."
+    return 1
+  fi
   if [ ! -d "$app/data" ]; then
     mkdir -p "$app/data"
-    if [ "$(id -u)" = "0" ]; then
-      chown "$(stat -c '%U:%G' "$app")" "$app/data"
-    fi
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$app/data"; fi
     echo "    made $app/data, a ReadWritePaths dir of the gateway"
   fi
-  for f in "$app/.env" "$app/infra/provider_models_cache.json" \
-           "$app/apps/services/gateway/agents.json"; do
-    if [ ! -f "$f" ]; then
-      echo "    !! $f is missing. It is on the ReadWritePaths of 50-hardening.conf,"
-      echo "       so the sandboxed gateway cannot start without it."
-      missing=1
-    fi
+  for f in "$app/infra/provider_models_cache.json" "$app/apps/services/gateway/agents.json"; do
+    [ -f "$f" ] && continue
+    case "$f" in */agents.json) body='[]' ;; *) body='{}' ;; esac
+    mkdir -p "$(dirname "$f")"
+    printf '%s\n' "$body" > "$f"
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$f"; fi
+    echo "    made $f as $body: it is on the ReadWritePaths of the gateway"
   done
-  [ "$missing" = 0 ]
+  for d in "$home/.acb/agents" "$home/.copilot" "$home/.cache/copilot"; do
+    [ -d "$d" ] && continue
+    if [ "$(id -un)" = "$user" ]; then
+      mkdir -p "$d"
+    else
+      sudo -u "$user" mkdir -p "$d"
+    fi
+    echo "    made $d as $user, so its ReadWritePaths entry binds"
+  done
+}
+
+# The gateway cannot write __pycache__ under .venv, apps/ or packages/ in
+# the sandbox. Python then skips the write with no error, and compiles each
+# changed module again at every start. So the deploy compiles them, as the
+# owner of the checkout, before the restart. Best-effort: a file that does
+# not compile is logged, and the deploy goes on. The timestamp mode is right
+# here, because `git reset` and `uv sync` give a changed file a new mtime.
+compile_bytecode() {  # <app dir>
+  local app="$1" owner py rc=0
+  owner="$(stat -c '%U' "$app")"
+  py="${BH2_PYTHON:-$app/.venv/bin/python}"
+  if [ ! -x "$py" ]; then
+    echo "    ! no $py, so no bytecode was compiled (non-fatal)"
+    return 0
+  fi
+  local -a cmd=("$py" -m compileall -q -j 0 --invalidation-mode timestamp
+                -x '[/\\](node_modules|\.next|\.git)[/\\]' "$app/.venv/lib" "$app/apps" "$app/packages")
+  if [ "$(id -un)" = "$owner" ]; then
+    "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  else
+    sudo -u "$owner" -H "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  if [ "$rc" = "0" ]; then
+    echo "    compiled the bytecode of .venv, apps/ and packages/"
+  else
+    echo "    ! compileall exited $rc: a file did not compile (non-fatal). Python compiles it at start."
+  fi
+  return 0
 }
 
 bh2_strict_check() {
@@ -1106,7 +1191,7 @@ grep -qE '^WHATSAPP_BRIDGE_CALL_RETENTION_DAYS=' "$ENV_FILE" || echo "WHATSAPP_B
 # Generate a strong shared secret once (used by BOTH gateway + bridge).
 if ! grep -qE '^WHATSAPP_BRIDGE_SECRET=.+' "$ENV_FILE"; then
   _wbsecret="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  grep -vE '^WHATSAPP_BRIDGE_SECRET=' "$ENV_FILE" > "$ENV_FILE.wb.tmp" && mv "$ENV_FILE.wb.tmp" "$ENV_FILE"
+  env_edit_in_place "$ENV_FILE" grep -vE '^WHATSAPP_BRIDGE_SECRET='
   echo "WHATSAPP_BRIDGE_SECRET=$_wbsecret" >> "$ENV_FILE"
   echo "    + generated WHATSAPP_BRIDGE_SECRET"
 fi
@@ -1181,7 +1266,7 @@ grep -qE '^MEET_VNC=' "$ENV_FILE" || echo "MEET_VNC=0" >> "$ENV_FILE"
 # worker's live-segment callback). Generated once, then reused.
 if ! grep -qE '^MEETING_BOT_TOKEN=.+' "$ENV_FILE"; then
   _mbtoken="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  grep -vE '^MEETING_BOT_TOKEN=' "$ENV_FILE" > "$ENV_FILE.mb.tmp" && mv "$ENV_FILE.mb.tmp" "$ENV_FILE"
+  env_edit_in_place "$ENV_FILE" grep -vE '^MEETING_BOT_TOKEN='
   echo "MEETING_BOT_TOKEN=$_mbtoken" >> "$ENV_FILE"
   echo "    + generated MEETING_BOT_TOKEN"
 fi
@@ -1341,9 +1426,11 @@ echo "==> Restarting gateway (systemd)"
 # at the BH-7 step above, before any restart, so this restart runs with them.
 # That includes the BH-2 sandbox (50-hardening.conf). Its ReadWritePaths must
 # exist first, or the gateway does not start (ensure_gateway_rw_paths).
+echo "==> WS-49 BH-2: compile the Python bytecode (best-effort)"
+compile_bytecode "$APP_DIR"
 ensure_gateway_rw_paths "$APP_DIR" || {
-  echo "GATEWAY NOT RESTARTED: a ReadWritePaths file of 50-hardening.conf is missing."
-  echo "    The gateway that runs now keeps serving. Restore the file, then deploy again."
+  echo "GATEWAY NOT RESTARTED: .env is missing, and the sandboxed gateway cannot start without it."
+  echo "    The gateway that runs now keeps serving. Restore .env, then deploy again."
   exit 1
 }
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service

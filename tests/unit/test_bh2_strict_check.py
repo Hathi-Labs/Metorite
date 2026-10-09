@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -320,20 +321,98 @@ def test_the_check_comment_names_the_retry_cost() -> None:
 # ── ensure_gateway_rw_paths ──────────────────────────────────────────────
 
 
-@needs_bash
-def test_the_rw_paths_step_makes_data_and_refuses_a_missing_file(box: Box) -> None:
-    app = box.tmp / "app"
-    for rel in (".env", "infra/provider_models_cache.json", "apps/services/gateway/agents.json"):
-        (app / rel).parent.mkdir(parents=True, exist_ok=True)
-        (app / rel).write_text("", encoding="utf-8")
+def _ensure(box: Box, app: Path, home: Path) -> subprocess.CompletedProcess:
     helpers = _helpers(box.tmp).as_posix()
-    r = box.bash(f'set -e; source "{helpers}"; ensure_gateway_rw_paths "{app.as_posix()}"')
+    return box.bash(f'set -e; source "{helpers}"; '
+                    f'ensure_gateway_rw_paths "{app.as_posix()}" "{home.as_posix()}"')
+
+
+@needs_bash
+def test_the_rw_paths_step_makes_each_path_but_env(box: Box) -> None:
+    """Fix round 1, P3-1 and P3-2. data/ and the two JSON files are made when
+    absent, with the shape the gateway reads. The "-" home dirs are made, so
+    they bind on a fresh box. A present file is never touched."""
+    app, home = box.tmp / "app", box.tmp / "home"
+    (app / "infra").mkdir(parents=True)
+    (app / ".env").write_text("A=1\n", encoding="utf-8")
+    (app / "infra/provider_models_cache.json").write_text('{"kept": 1}\n', encoding="utf-8")
+    home.mkdir()
+    r = _ensure(box, app, home)
     assert r.returncode == 0, r.stdout + r.stderr
     assert (app / "data").is_dir()
-    (app / "apps/services/gateway/agents.json").unlink()
-    r = box.bash(f'set -e; source "{helpers}"; ensure_gateway_rw_paths "{app.as_posix()}"')
+    assert (app / "apps/services/gateway/agents.json").read_text(encoding="utf-8") == "[]\n"
+    assert (app / "infra/provider_models_cache.json").read_text(encoding="utf-8") == '{"kept": 1}\n'
+    for d in (".acb/agents", ".copilot", ".cache/copilot"):
+        assert (home / d).is_dir(), d
+    assert "made " in r.stdout and "agents.json as []" in r.stdout
+    (app / "infra/provider_models_cache.json").unlink()
+    r = _ensure(box, app, home)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (app / "infra/provider_models_cache.json").read_text(encoding="utf-8") == "{}\n"
+    r = _ensure(box, app, home)
+    assert r.returncode == 0 and "made " not in r.stdout, r.stdout
+
+
+@needs_bash
+def test_the_rw_paths_step_refuses_a_missing_env(box: Box) -> None:
+    app, home = box.tmp / "app", box.tmp / "home"
+    app.mkdir()
+    home.mkdir()
+    r = _ensure(box, app, home)
     assert r.returncode == 1, r.stdout + r.stderr
-    assert "agents.json is missing" in r.stdout
+    assert ".env is missing" in r.stdout
+
+
+# ── compile_bytecode (fix round 1, P2-3) ─────────────────────────────────
+
+
+def _compile(box: Box, app: Path) -> subprocess.CompletedProcess:
+    helpers = _helpers(box.tmp).as_posix()
+    return box.bash(f'set -e; source "{helpers}"; compile_bytecode "{app.as_posix()}"',
+                    BH2_PYTHON=Path(sys.executable).as_posix())
+
+
+@needs_bash
+def test_the_deploy_compiles_the_bytecode_that_the_gateway_cannot_write(box: Box) -> None:
+    app = box.tmp / "app"
+    for rel in (".venv/lib/site/pkg.py", "apps/svc/mod.py", "packages/p/m.py"):
+        (app / rel).parent.mkdir(parents=True, exist_ok=True)
+        (app / rel).write_text("X = 1\n", encoding="utf-8")
+    (app / "apps/svc/node_modules").mkdir()
+    (app / "apps/svc/node_modules/skip.py").write_text("X = 1\n", encoding="utf-8")
+    r = _compile(box, app)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "compiled the bytecode" in r.stdout
+    for d in (".venv/lib/site", "apps/svc", "packages/p"):
+        assert list((app / d / "__pycache__").glob("*.pyc")), d
+    assert not (app / "apps/svc/node_modules/__pycache__").exists()
+
+
+@needs_bash
+def test_a_file_that_does_not_compile_does_not_stop_the_deploy(box: Box) -> None:
+    app = box.tmp / "app"
+    for rel in (".venv/lib", "apps", "packages"):
+        (app / rel).mkdir(parents=True, exist_ok=True)
+    (app / "apps/bad.py").write_text("def (:\n", encoding="utf-8")
+    (app / "apps/good.py").write_text("X = 1\n", encoding="utf-8")
+    r = _compile(box, app)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "non-fatal" in r.stdout
+    assert list((app / "apps/__pycache__").glob("good*.pyc"))
+
+
+def test_the_compile_runs_before_the_gateway_restart_in_timestamp_mode() -> None:
+    lines = [ln for ln in APPLY.read_text(encoding="utf-8").splitlines()
+             if not ln.lstrip().startswith("#")]
+    comp = lines.index('compile_bytecode "$APP_DIR"')
+    ensure = next(i for i, ln in enumerate(lines) if ln.startswith('ensure_gateway_rw_paths "$APP_DIR"'))
+    restart = lines.index("sudo systemctl restart acb-gateway")
+    assert comp < ensure < restart
+    block = _block("# >>> bh2 helpers", "# <<< bh2 helpers")
+    fn = block[block.index("compile_bytecode() {"):]
+    assert "--invalidation-mode timestamp" in fn
+    assert '"$app/.venv/lib" "$app/apps" "$app/packages"' in fn
+    assert 'sudo -u "$owner"' in fn, "root must not leave root-owned __pycache__"
 
 
 # ── The watchdog WARN (acceptance 6) ─────────────────────────────────────

@@ -28,6 +28,7 @@ import ast
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -425,12 +426,43 @@ def test_both_agent_children_get_the_two_paths_by_value(monkeypatch: pytest.Monk
     assert seam.AGENT_PATH_VALUES == {
         "PYTHONPATH": BOX_AGENT_SITE,
         "CUSTOM_APPS_T2_VENDOR_DIR": BOX_T2_VENDOR,
+        "npm_config_cache": BOX_NPM_CACHE,
     }
     for env in (seam.copilot_env(), code_tools._script_env()):
         assert env["PYTHONPATH"] == BOX_AGENT_SITE
         assert env["CUSTOM_APPS_T2_VENDOR_DIR"] == BOX_T2_VENDOR
     # A child that is not an agent child keeps the gateway's own value.
     assert seam.child_env()["PYTHONPATH"] == "/srv/py"
+
+
+#: WS-49 BH-2 fix round 1, P2-2. Under the gateway unit's CacheDirectory.
+BOX_NPM_CACHE = "/var/cache/acb-gateway/npm"
+
+
+def test_agent_children_get_an_npm_cache_outside_the_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ProtectHome=read-only` refuses `~/.npm`. So `npm install` in
+    install_t2_deps.mjs (the Copilot shell) and any `run_script` child get the
+    npm cache in the gateway's CacheDirectory, by value, whatever the gateway
+    env holds. The gateway itself gets the same value from 50-hardening.conf."""
+    from acb_skills import code_tools
+
+    monkeypatch.setenv("npm_config_cache", "/home/acb/.npm")
+    for env in (seam.copilot_env(), code_tools._script_env()):
+        assert env["npm_config_cache"] == BOX_NPM_CACHE
+    assert BOX_NPM_CACHE.startswith("/var/cache/acb-gateway/")
+    assert not seam.SECRET_SHAPED.search("npm_config_cache")
+    seam.check_lists()
+    conf = UNITS / "acb-gateway.service.d" / "50-hardening.conf"
+    assert f"Environment=npm_config_cache={BOX_NPM_CACHE}" in _conf_lines(conf)
+    # Every npm call of the gateway tree runs in an agent child.
+    npm_callers = sorted(
+        p.relative_to(ROOT).as_posix()
+        for base in ("apps/services", "packages", "apps/agents", "apps/skills")
+        for p in (ROOT / base).rglob("*")
+        if p.suffix in (".py", ".mjs", ".js", ".ts") and "node_modules" not in p.parts
+        and re.search(r"""["'](npm|npx|yarn|pnpm)["']""", p.read_text(encoding="utf-8", errors="ignore"))
+    )
+    assert npm_callers == ["apps/agents/agent-app-builder/build/install_t2_deps.mjs"], npm_callers
 
 
 def _conf_lines(p: Path) -> list[str]:
@@ -537,11 +569,16 @@ needs_bash = pytest.mark.skipif(_bash() is None, reason="needs a POSIX bash")
 
 
 def _helpers(tmp: Path) -> Path:
+    """The bh7 helpers, after the env helpers that the strip calls (WS-49
+    BH-2: the strip writes INTO .env, so its inode stays)."""
     lines = _apply_lines()
-    a = lines.index("# >>> bh7 helpers")
-    b = lines.index("# <<< bh7 helpers")
+    out_lines: list[str] = []
+    for name in ("env helpers", "bh7 helpers"):
+        a = lines.index(f"# >>> {name}")
+        b = lines.index(f"# <<< {name}")
+        out_lines += lines[a:b + 1]
     out = tmp / "bh7_helpers.sh"
-    out.write_text("\n".join(lines[a:b + 1]) + "\n", encoding="utf-8", newline="\n")
+    out.write_text("\n".join(out_lines) + "\n", encoding="utf-8", newline="\n")
     return out
 
 

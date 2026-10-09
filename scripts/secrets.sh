@@ -193,6 +193,29 @@ r_prune() {
   echo "R pruned $n"
 }
 
+# r_put SRC PATH — put the bytes of SRC at PATH, and remove SRC.
+# WS-49 BH-2: a writer of /opt/acb/app/.env must keep its inode. The gateway
+# sandbox bind-mounts that inode at start, and a rename leaves the running
+# gateway on the old, unlinked copy until its restart. So when PATH is a
+# regular file with the owner, group and mode of SRC, the bytes go INTO it.
+# dd opens PATH with O_NOFOLLOW, so a link that appears after r_no_link fails
+# the write. It never sends a root write somewhere else. Any other case (no
+# file yet, other meta) renames, as before. The restart list of the entry
+# then gives each unit the new inode.
+# Fence: tests/unit/test_env_inode.py and tests/unit/test_secrets_drop.py.
+r_put() {
+  local src="$1" path="$2"
+  if [ -f "$path" ] && [ ! -L "$path" ] \
+     && [ "$(stat -c '%U:%G %a' "$src")" = "$(stat -c '%U:%G %a' "$path")" ]; then
+    dd if="$src" of="$path" oflag=nofollow conv=fsync status=none
+    rm -f -- "$src"
+    echo "R put in-place"
+  else
+    mv -f -T "$src" "$path"
+    echo "R put renamed"
+  fi
+}
+
 r_write() {
   local path="$1" owner="$2" group="$3" mode="$4" how="$5" dir bak k btmp
   dir="$(dirname "$path")"
@@ -248,7 +271,13 @@ r_write() {
   chown "$owner:$group" "$r_tmp"
   chmod "$mode" "$r_tmp"
   echo "R meta $(stat -c '%U:%G %a' "$r_tmp")"
-  mv -f -T "$r_tmp" "$path"
+  # A merge edits the app env file that running units hold, so it keeps the
+  # inode (r_put). A whole-file push renames.
+  if [ "$how" = merge ]; then
+    r_put "$r_tmp" "$path"
+  else
+    mv -f -T "$r_tmp" "$path"
+  fi
   trap - EXIT
   echo "R sha $(sd_sha < "$path")"
   if [ "$how" = merge ]; then
@@ -276,7 +305,7 @@ r_rollback() {
   tmp="$(mktemp "$dir/.secrets-drop.XXXXXX")"
   trap 'rm -f "$tmp"' EXIT
   cp -p "$bak" "$tmp"
-  mv -f -T "$tmp" "$path"
+  r_put "$tmp" "$path"
   trap - EXIT
   echo "R rolled-back restored"
   echo "R sha $(sd_sha < "$path")"
