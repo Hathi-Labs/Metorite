@@ -19,11 +19,12 @@
  * 2. Chat and Approvals keep a sidebar door until NS-6 builds the dock and
  *    the bell that would replace them. Before that, moving them away would
  *    hide the assistant and an approver's queue.
- * 3. A group with no item is dropped, and Home is called "Home" until NS-3
- *    makes it My Day. A heading over nothing, or a name the page does not
- *    keep, costs trust.
+ * 3. A group with no item is dropped, and Home is called "Home" until My
+ *    Day is on (NS-3, `homePane`). A heading over nothing, or a name the
+ *    page does not keep, costs trust.
  */
 import type { NavPane, NavSection } from "@/lib/nav";
+import { myDayOn } from "@/lib/shell/myDayFlag";
 
 /** The flag for the shell nav. Off, the sidebar and the drawer are as before. */
 export function shellNavOn(): boolean {
@@ -50,7 +51,7 @@ export const TEAM_GROUPS: readonly { team: string; label: string }[] = [
   { team: "admin", label: "Admin" },
 ];
 
-/** The first item of the sidebar. NS-3 renames it My Day when that page exists. */
+/** The first item of the sidebar, as it reads with My Day off. */
 export const HOME_PANE: NavPane = {
   href: "/",
   label: "Home",
@@ -60,6 +61,16 @@ export const HOME_PANE: NavPane = {
   blurb: "Where you start",
   launch: "live",
 };
+
+/**
+ * The first item of the sidebar and the drawer. With My Day on (NS-3), `/`
+ * IS My Day, so the item carries that name. Off, it stays "Home", because a
+ * name the page does not keep costs trust.
+ */
+export function homePane(on: boolean = myDayOn()): NavPane {
+  if (!on) return HOME_PANE;
+  return { ...HOME_PANE, label: "My Day", note: "What needs you today", blurb: "What needs you today" };
+}
 
 function held(sections: readonly NavSection[]): NavPane[] {
   return sections.flatMap((s) => s.items);

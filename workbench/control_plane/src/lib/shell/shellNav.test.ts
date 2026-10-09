@@ -9,7 +9,9 @@ import { PANES, visibleSections, type NavPane, type NavSection } from "@/lib/nav
 import {
   MY_ACCESS,
   TEAM_GROUPS,
+  HOME_PANE,
   accountLinks,
+  homePane,
   isActive,
   launcherGroups,
   shellSidebar,
@@ -111,6 +113,24 @@ describe("All apps lists every app the member holds, never a preference", () => 
   it("gives every app it shows a purpose to print", () => {
     const shown = launcherGroups(visibleSections(ALL, true)).flatMap((g) => g.items);
     expect(shown.filter((p) => !p.blurb).map((p) => p.href)).toEqual([]);
+  });
+});
+
+describe("the first item is Home, or My Day with that flag on (NS-3)", () => {
+  it("keeps the name Home while My Day is off", () => {
+    expect(homePane(false)).toBe(HOME_PANE);
+    expect(homePane(false).label).toBe("Home");
+  });
+
+  it("names it My Day, at the same place, with the flag on", () => {
+    const pane = homePane(true);
+    expect(pane.label).toBe("My Day");
+    expect(pane.href).toBe("/");
+    expect(pane.icon).toBe(HOME_PANE.icon);
+  });
+
+  it("reads the flag itself when no answer is given, and it is off by default", () => {
+    expect(homePane().label).toBe("Home");
   });
 });
 
