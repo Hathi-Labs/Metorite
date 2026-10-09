@@ -6440,6 +6440,10 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 ),
             ) from None
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
+        # Quantized to paise, the precision the lot stores, so the two agree.
+        paid_inr = (
+            None if req.price_paid_inr is None else str(req.price_paid_inr.quantize(Decimal("0.01")))
+        )
         _audit(
             conn,
             org_id,
@@ -6447,11 +6451,7 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
             {
                 "delta": str(req.credits),
                 "reason": req.reason,
-                "price_paid_inr": (
-                    None
-                    if req.price_paid_inr is None
-                    else str(req.price_paid_inr.quantize(Decimal("0.01")))
-                ),
+                "price_paid_inr": paid_inr,
             },
             actor=staff.actor,
         )
