@@ -40,6 +40,7 @@ import {
   plannedMargin,
   legMargins,
   cachedAboveInput,
+  cachedGivenAway,
   priceState,
   pricingAlert,
   rowCost,
@@ -153,6 +154,7 @@ function TierCard({
   const cost = rowCost(row, assumptions);
   const planned = plannedMargin(row, assumptions);
   const legs = legMargins(row, assumptions);
+  const free = cachedGivenAway(row, assumptions);
   const unit = singular(row.unit);
 
   const STATE_CHIP: Record<typeof state, { tone: Parameters<typeof chipClass>[0]; label: string; help: string }> = {
@@ -204,7 +206,14 @@ function TierCard({
             // cached price behind a 57 percent input price (2026-10-09).
             <>
               input {marginLabelPct(legs.input)} · output {marginLabelPct(legs.output)} ·
-              cached {marginLabelPct(legs.cached)}{" "}
+              cached{" "}
+              {free !== null ? (
+                <span className={chipClass("danger")}>
+                  free, we pay {inrLabel(roundCredits(free), catalog.creditPrice) ?? roundCredits(free)} per 1M
+                </span>
+              ) : (
+                marginLabelPct(legs.cached)
+              )}{" "}
               <span className="muted small">of what they pay is ours</span>
               {cachedAboveInput(row) && (
                 <div>
@@ -349,13 +358,11 @@ function costLine(
   // WS-50: the cached price shows too. Most input tokens are cache hits, and
   // a card that left this price out hid the costliest mistake on the board.
   const c = cost.cached === null ? "—" : roundCredits(cost.cached);
+  const rupees = [i, o, c].map((v) => (v === "—" ? "—" : inrLabel(v, catalog.creditPrice) ?? "—"));
   return (
     <>
       {i} in / {o} out / {c} cached per 1M{" "}
-      <span className="muted small">
-        ({inrLabel(i, catalog.creditPrice)} / {inrLabel(o, catalog.creditPrice)} /{" "}
-        {inrLabel(c, catalog.creditPrice)})
-      </span>
+      <span className="muted small">({rupees.join(" / ")})</span>
     </>
   );
 }

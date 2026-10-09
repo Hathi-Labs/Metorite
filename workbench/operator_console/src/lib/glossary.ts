@@ -75,10 +75,11 @@ export const GLOSSARY = {
   aiMargin: {
     title: "AI margin",
     means:
-      "The share of what we charged for AI that we keep after the AI cost. It leaves out " +
-      "seats, so it can be lower than the overall margin. This is the number the AI " +
-      "prices aim at.",
-    formula: "(Bought credits used − AI cost) ÷ bought credits used, as a percent",
+      "The margin our AI prices earn: what customers paid for the credits they used, " +
+      "against the AI cost of those calls. Seats are left out, and so are calls paid " +
+      "with free credits (they show as Given away). This is the number the AI prices " +
+      "aim at.",
+    formula: "(Bought credits used − AI cost of paid calls) ÷ bought credits used",
   },
   creditsLeft: {
     title: "Credits left",

@@ -19,6 +19,7 @@ import {
   plannedMargin,
   legMargins,
   cachedAboveInput,
+  cachedGivenAway,
   priceState,
   pricingAlert,
   rowCost,
@@ -397,6 +398,18 @@ describe("legMargins", () => {
   });
 });
 
+describe("cachedGivenAway", () => {
+  it("catches a cached price of zero against a vendor that charges for it", () => {
+    const free = { mode: "priced", unit: "tokens", inputPer1m: "300", outputPer1m: "600", cachedInputPer1m: "0" } as TierRate;
+    expect(cachedGivenAway(row({ rate: free }), A)).toBe(500);
+    const alert = pricingAlert([{ rows: [row({ rate: free })] }], {
+      inrPerCredit: "1", usdToInr: "100", effectiveFrom: null,
+    });
+    expect(alert.tone).toBe("danger");
+    expect(alert.detail).toContain("nothing at all on Fast");
+  });
+});
+
 describe("cachedAboveInput", () => {
   it("catches a cached price above the fresh input price, the production mistake", () => {
     const bad = { mode: "priced", unit: "tokens", inputPer1m: "300", outputPer1m: "600", cachedInputPer1m: "500" } as TierRate;
@@ -411,7 +424,8 @@ describe("cachedAboveInput", () => {
       inrPerCredit: "1", usdToInr: "100", effectiveFrom: null,
     });
     expect(alert.tone).toBe("danger");
-    expect(alert.title).toContain("more for cached input");
+    expect(alert.title).toContain("cached-input price is wrong");
+    expect(alert.detail).toContain("more than fresh input on Fast");
     expect(alert.detail).toContain("Fast");
   });
 });

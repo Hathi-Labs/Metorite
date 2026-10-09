@@ -112,8 +112,11 @@ export function fleetTotals(rows: FleetRow[]): FleetTotals {
   const profit = charged === null || aiCost === null ? null : charged - aiCost;
   const margin = profit === null || charged === null || charged <= 0 ? null : profit / charged;
   const aiRevenue = sum(rows, (m) => m.paidCredits.value);
+  // The margin on PAID traffic, as `aiMarginOf`: free calls stay in Given away.
   const aiMargin =
-    aiRevenue === null || aiCost === null || aiRevenue <= 0 ? null : (aiRevenue - aiCost) / aiRevenue;
+    aiRevenue === null || aiCost === null || aiRevenue <= 0
+      ? null
+      : (aiRevenue - (aiCost - (givenAway ?? 0))) / aiRevenue;
   const owed = rows.reduce((n, r) => n + (r.money?.owed.value ?? 0), 0);
   const losing = rows.filter((r) => (r.money?.profit.value ?? 0) < 0).length;
   const missing = rows.filter((r) => r.money === null).length;

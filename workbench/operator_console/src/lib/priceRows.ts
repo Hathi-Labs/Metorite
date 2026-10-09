@@ -111,6 +111,18 @@ export function legMargins(
   };
 }
 
+/** The vendor's cached price, in credits per 1M, when this tier charges
+ *  NOTHING for a cached token and the vendor charges something. Null
+ *  otherwise. A zero cached price gives most input away, because most input
+ *  tokens are cache hits (review, S5b). */
+export function cachedGivenAway(row: TierPriceRow, a: Assumptions | null): number | null {
+  if (row.rate === null || row.rate.mode !== "priced" || !row.tokenPriced) return null;
+  const charge = Number(row.rate.cachedInputPer1m);
+  const cost = rowCost(row, a).cached;
+  if (!Number.isFinite(charge) || charge !== 0 || cost === null || cost <= 0) return null;
+  return cost;
+}
+
 /** True when a tier charges MORE for a cached input token than a fresh one.
  *  The vendor charges a small fraction for a cache hit, so this is almost
  *  always a typing mistake, and an expensive one. */
@@ -293,19 +305,28 @@ export function pricingAlert(
   // 🔴 A cached price above the fresh price is a mistake that bills the
   // customer for the cheapest tokens at the dearest rate (2026-10-09).
   const cachedHigh = rows.filter(cachedAboveInput);
-  if (cachedHigh.length > 0) {
+  const cachedFree = rows.filter((r) => cachedGivenAway(r, savedAssumptions(creditPrice)) !== null);
+  // The other open problems, said in the same banner so this one cannot hide
+  // them (review, S5b).
+  const unpricedCount = rows.filter((r) => priceState(r) === "unpriced").length;
+  const alsoNote =
+    unpricedCount > 0
+      ? ` Also: ${unpricedCount} ${plural(unpricedCount, "tier")} ${unpricedCount === 1 ? "bills" : "bill"} nothing yet.`
+      : "";
+  if (cachedHigh.length > 0 || cachedFree.length > 0) {
+    const names = (rs: TierPriceRow[]) => rs.map((r) => r.tier.label || r.tier.slug).join(", ");
+    const parts: string[] = [];
+    if (cachedHigh.length > 0) parts.push(`more than fresh input on ${names(cachedHigh)}`);
+    if (cachedFree.length > 0) parts.push(`nothing at all on ${names(cachedFree)}`);
     return {
       tone: "danger",
-      title:
-        cachedHigh.length === 1
-          ? "1 tier charges more for cached input than for fresh input"
-          : `${cachedHigh.length} tiers charge more for cached input than for fresh input`,
+      title: "A cached-input price is wrong",
       detail:
-        "The vendor charges a small fraction for a cached token, and most input " +
-        "tokens are cached, because an agent sends its context again on every " +
-        "call. Check the cached price on each card below: " +
-        cachedHigh.map((r) => r.tier.label || r.tier.slug).join(", ") +
-        ".",
+        `The cached price is ${parts.join(", and ")}. The vendor charges a small ` +
+        "fraction for a cached token, and most input tokens are cached, because " +
+        "an agent sends its context again on every call. Check the cached price " +
+        "on each card below." +
+        alsoNote,
     };
   }
 
