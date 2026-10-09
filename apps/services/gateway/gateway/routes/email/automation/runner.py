@@ -1783,8 +1783,9 @@ async def _run_rules_job(
         # The thread status that this run asked, for each thread (WS-17,
         # 2026-10-09). The ask reads the WHOLE thread, so each new row of one
         # thread in one run gets the same answer. Before this, a thread with
-        # five new rows cost five status asks in one run. `on` asks in Block
-        # R (`status_before_match`) and never reaches this map.
+        # five new rows cost five status asks in one run. `on` never reaches
+        # this map: each row asks, as before, so the decide path does not
+        # change (EM-T4a-2 PR-B3).
         asked_status: dict[str, Any] = {}
 
         for r in rows:
@@ -1807,20 +1808,25 @@ async def _run_rules_job(
                         multi_rule=multi_rule, resolve=not dry_run)
                     # Fail closed: this raises when a reader swallowed a failed statement.
                     await db.execute(text("SELECT 1"))
+                # PR-B3: in `on`, the status-first ask runs with NO block
+                # open, before the rule match. "Undecided" raises here.
+                status = await rz.ask_status_first(plan.first)
                 # Multi-rule applies every match; otherwise the single best.
                 asked = await ask_rule_match(plan.match)
                 # Block S (EM-T4a-2 PR-B2): only when the job asks the
                 # thread status. The ask runs with NO block open after it.
-                status = rz.NOT_ASKED
                 if rz.status_ask_needed(plan, r, asked):
-                    status = asked_status.get(r.thread_id, rz.NOT_ASKED)
+                    memo = asked_status if plan.first is None else {}
+                    status = memo.get(r.thread_id, rz.NOT_ASKED)
                     if status is rz.NOT_ASKED:
                         async with _tenant_session() as db:
-                            seen = await rz.read_job_status(db, account_id, r)
+                            seen = await rz.read_job_status(
+                                db, account_id, r,
+                                move_keys=rz.status_move_keys(plan))
                             # Fail closed, as at the end of Block R.
                             await db.execute(text("SELECT 1"))
                         status = await rz.ask_job_status(seen)
-                        asked_status[r.thread_id] = status
+                        memo[r.thread_id] = status
                 # Block W: ONE block, where the per-row commit used to land.
                 # The apply, the projection and the stamp commit together.
                 # EM-T4 owns the model and provider I/O that stays inside.
