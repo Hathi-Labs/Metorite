@@ -456,6 +456,18 @@ The owner chose three things:
   target uses the set of that node's status owner (`core.status_owner_id`).
   The route reads that set into the plan's facts, as it reads the people
   directory, so the plan stays pure.
+- **A run that continues reads the real sets** (the I-10 review, P2-b). It
+  plans against the sets of the spaces it goes into again, never against
+  the seed alone. So a lane that the earlier run added does not show as
+  "new". The seed joins only when the run also makes a new space. Live
+  check 4.2b holds it.
+- **A lane that a member renamed keeps its tasks.** Each run records the
+  status ids of each set it used. A run that continues follows a lane
+  through those ids. The plan shows the new name when every such lane
+  carries one new name (`import_writer.continuation_facts`). The writer
+  reads the ids of ALL earlier Lists for every List, and also for a List it
+  creates now (P1-a). So it never adds the old name back as a second lane.
+  Live checks 9.1, 9.2 and 9.3 hold it.
 - **Each ClickUp status becomes one target status.** It is a status that the
   target set already holds, or a new status with a name and a stage. The
   mapping shape does not change: `StatusChoice` holds a name and a category.
