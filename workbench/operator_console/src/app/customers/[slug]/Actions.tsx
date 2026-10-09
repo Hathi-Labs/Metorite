@@ -330,6 +330,9 @@ function StartPaidPlanPanel({
   const [reference, setReference] = useState("");
   const [result, setResult] = useState<Result>(null);
   const [busy, setBusy] = useState(false);
+  // Set once the plan has started, so a second press cannot send a second
+  // start (the Console would answer 409 already_active).
+  const [started, setStarted] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -342,6 +345,7 @@ function StartPaidPlanPanel({
     if (credits.trim()) body.credits = credits.trim();
     if (reference.trim()) body.reference = reference.trim();
     const r = await post("/api/operator/activate", body);
+    if (r?.ok) setStarted(true);
     if (r?.ok && status === "trial") {
       // The second half of the same act: end the trial on the account.
       const life = await post("/api/operator/lifecycle", {
@@ -350,11 +354,14 @@ function StartPaidPlanPanel({
         reason: "paid plan started",
       });
       if (!life?.ok) {
+        // Ending the trial needs an ADMIN, and starting a plan needs only an
+        // editor, so an editor can stop half way. Say who can finish it.
         setResult({
           ok: false,
           text:
             "The paid plan started, but the account is still marked trial. " +
-            "Use End the trial on the Access & keys tab.\n" + (life?.text ?? ""),
+            "Ending the trial needs an admin: ask one to press End the trial " +
+            "on the Access & keys tab. Reload to see the plan.\n" + (life?.text ?? ""),
         });
         setBusy(false);
         return;
@@ -370,7 +377,7 @@ function StartPaidPlanPanel({
       <h2 style={{ marginTop: 0 }}>Start paid plan</h2>
       <p className="muted">
         The customer has paid you, for example by bank transfer. Record the
-        payment and their seats here. This also ends the trial.
+        payment and their seats here.{status === "trial" ? " This also ends the trial." : ""}
       </p>
       <label>Plan</label>
       <PlanPicker plans={plans} value={plan} onChange={setPlan} showPrice />
@@ -401,9 +408,9 @@ function StartPaidPlanPanel({
             ? "Choose a plan first."
             : "Record the payment, set the seats and end the trial."
         }
-        disabled={busy || !plan}
+        disabled={busy || !plan || started}
       >
-        {busy ? "Starting…" : "Start paid plan"}
+        {busy ? "Starting…" : started ? "Started" : "Start paid plan"}
       </button>
       <ResultLine result={result} />
     </form>
@@ -581,8 +588,10 @@ function CreditsPanel({ slug, price }: { slug: string; price: Price | null }) {
   const [paid, setPaid] = useState("");
   const n = Number(credits);
   const worth = price && Number.isFinite(n) && n > 0 ? n * price.inrPerCredit : null;
-  const paidN = Number(paid);
-  const paidValid = paid.trim() === "" || (Number.isFinite(paidN) && paidN >= 0);
+  const paidValid =
+    reason !== "manual" ||
+    paid.trim() === "" ||
+    (/^\d+(\.\d{1,2})?$/.test(paid.trim()) && Number.isFinite(n) && n > 0);
   const [result, setResult] = useState<Result>(null);
   const [busy, setBusy] = useState(false);
 
@@ -633,7 +642,7 @@ function CreditsPanel({ slug, price }: { slug: string; price: Price | null }) {
           ? "Free credits earn nothing. Their AI cost shows as Given away on the Money page."
           : reason === "manual"
             ? "Paid credits count toward We charged when the customer uses them."
-            : "A correction moves the balance. It is neither revenue nor a free grant."}
+            : "A correction adds or removes credits. Credits it adds count as free, so they earn nothing."}
       </div>
       {reason === "manual" && (
         <>
@@ -690,7 +699,7 @@ function CreditsPanel({ slug, price }: { slug: string; price: Price | null }) {
           !credits.trim()
             ? "Type how many credits to add."
             : !paidValid
-              ? "Type the amount they paid as a number of rupees."
+              ? "Type the amount they paid in rupees, with at most two decimals, for a positive number of credits."
             : reason === "manual" && !ref.trim()
               ? "A manual payment needs its bank reference. It is what stops " +
                 "the same transfer being credited twice."

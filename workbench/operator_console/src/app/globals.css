@@ -2989,4 +2989,4 @@ th .explain { margin-left: 4px; }
 .lifestep.current { color: var(--text); font-weight: 600; }
 .lifestep.current .lifedot { background: var(--accent); border-color: var(--accent); box-shadow: var(--ring); }
 .lifenext { margin: 10px 0 0; font-size: 13.5px; }
-.pagetabs { margin: 14px 0 6px; }
+.tabs.customertabs { margin: 14px 0 6px; }

@@ -432,7 +432,7 @@ export default async function CustomerDetailPage({
         )}
       </section>
 
-      <nav className="tabs pagetabs" aria-label="Customer sections">
+      <nav className="tabs customertabs" aria-label="Customer sections">
         {TABS.map((t) => (
           <a key={t.key} href={tabHref(t.key)} aria-current={t.key === tab ? "page" : undefined}>
             {t.label}
@@ -461,6 +461,13 @@ export default async function CustomerDetailPage({
               {totals?.oversubscribed && (
                 <div className="warn-t small">More people seated than seats bought</div>
               )}
+            </div>
+            <div className="stat">
+              <div className="lbl">Credits left</div>
+              <div className="num small-num">{formatCr(Number(org.credit_balance) || 0)}</div>
+              <div className="muted small">
+                <a href={tabHref("billing")}>Where they came from →</a>
+              </div>
             </div>
             <div className="stat">
               <div className="lbl">Dates</div>
@@ -604,6 +611,12 @@ export default async function CustomerDetailPage({
 
       {tab === "people" && (
         <>
+          {plansError && (
+            <div className="banner danger">
+              <strong>Plans unavailable.</strong> {plansError} The seat pickers below
+              cannot list plans until it loads.
+            </div>
+          )}
           {org.seats.length > 1 && (
             <div className="panel">
               <h2 style={{ marginTop: 0 }}>Seats by plan</h2>
