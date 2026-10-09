@@ -652,7 +652,9 @@ async def test_the_send_card_shows_each_bcc_and_each_file_before_a_long_subject(
 ) -> None:
     """A mail body can ask the model to add a hidden recipient or a file. The
     card shows both, even when a long subject from the sender of the mail fills
-    the 500 characters that the card keeps."""
+    the 500 characters that the card keeps. Since verifier F1 (2026-10-09)
+    each recipient is in ``context``, which that cut never reaches, and the
+    subject is clipped so that the files still close ``detail``."""
     gw.accounts = TWO[:1]
     await agents.send_email(
         body="Hi", to=["kim@contoso.test"], subject="S" * 600,
@@ -660,9 +662,10 @@ async def test_the_send_card_shows_each_bcc_and_each_file_before_a_long_subject(
     )
     [card] = gw.cards
     shown = str(card["detail"]).strip()[:500]  # the cut of ask_tools.py
-    assert "records@evil.test" in shown
-    assert "outputs/payroll.xlsx" in shown
-    assert shown.index("payroll.xlsx") < shown.index("Subject:")
+    context = str(card["context"]).strip()[:4000]
+    assert "- Bcc: records@evil.test" in context
+    assert "- To: kim@contoso.test" in context
+    assert shown.endswith("Attachments: outputs/payroll.xlsx")
 
 
 # ── email-chat-binding-skips-separate (EM-T8g-1) ─────────────────────────────

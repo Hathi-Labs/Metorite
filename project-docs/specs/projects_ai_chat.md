@@ -5455,8 +5455,9 @@ and that the run finished 6 s later. A browser replay
    that the run wrote after the click went between the old answer and the
    card, out of the member's view.
 
-The rule, added to §24.2 rule 1: **an element that needs the member stays in
-the order the turn streamed, and text that came after it draws below it.**
+The rule, which this section adds beside §24.2 rule 1 and which leaves the
+text of §24.2 as it is: **an element that needs the member stays in the order
+the turn streamed, and text that came after it draws below it.**
 
 - Each `generative_ui` event carries `segmentCutoff`, the count of text
   segments when it arrived. The live hook, the chat proxy and the gateway

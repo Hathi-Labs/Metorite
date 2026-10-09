@@ -14744,10 +14744,13 @@ optional note, and `include_attachments` (true by default) or `attachment_ids`.
    that is down is 502, because a 4xx would tell the caller to change a right request.
    No detail holds a URL.
 
-The agent tool `forward_email` shows a confirmation card before it posts. The card names
-each bcc and each file FIRST, then the mailbox, To and Cc, and the subject last. When the
-500 characters of the card cannot hold every item, it says "+N more". `send_email` uses
-the same builder (`_card_detail`). A "no" sends nothing. `instructions.md` says
+The agent tool `forward_email` shows a confirmation card before it posts. Each target is in
+`context`: the From mailbox, then each To, Cc and Bcc address, one line each
+(`_card_targets`). The card keeps 4,000 characters of `context` and 500 of `detail`, so
+no subject and no file name can push a recipient off the card (verifier F1). A list over
+ten addresses ends with "+N more". `detail` starts with From and the first To, then the
+subject, and the files come last, with "+N more" when they do not fit (`_card_detail`).
+`send_email` builds its card the same way. A "no" sends nothing. `instructions.md` says
 to forward, not to send, when the user asks to pass an email to a new person.
 
 ⚠️ `POST /email/send` writes no audit row, and it checks no send right beyond the `email`

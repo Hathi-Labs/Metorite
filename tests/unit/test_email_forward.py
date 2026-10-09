@@ -522,6 +522,12 @@ def chat(monkeypatch):
     return rec
 
 
+def _shown(card: dict[str, Any]) -> tuple[str, str]:
+    """What the member sees: ``request_confirmation`` keeps 500 characters of
+    ``detail`` and 4,000 of ``context`` (``acb_skills/ask_tools.py``)."""
+    return str(card["detail"]).strip()[:500], str(card.get("context") or "").strip()[:4000]
+
+
 class TestTheForwardTool:
     def test_it_is_registered_annotated_and_in_scope(self) -> None:
         assert agents.forward_email in agents._TOOLS
@@ -533,18 +539,20 @@ class TestTheForwardTool:
         assert re.search(
             r"@_annotate_risk\(destructive=True, open_world=True\)\nasync def forward_email", src)
 
-    async def test_the_card_names_each_file_and_each_hidden_recipient_first(self, chat) -> None:
+    async def test_the_card_names_each_target_in_context_and_the_files_in_detail(self, chat) -> None:
         out = await agents.forward_email(MAIL, ["geo@fracktal.test"], bcc=["boss@fracktal.test"],
                                          note="See the quote.")
         [card] = chat.cards
         assert card["title"] == "Forward this email?"
-        detail = card["detail"]
-        # The hidden recipient and the files come first (review round 1, P3).
-        assert detail.startswith(
-            "Bcc boss@fracktal.test · Attachments: quote.pdf (2.0 MB), rates.xlsx (29 KB) · "
-            "From Fracktal · dana@fracktal.in · To geo@fracktal.test")
-        assert detail.index("rates.xlsx") < detail.index("Subject:")
-        assert card["context"] == "See the quote."
+        detail, context = _shown(card)
+        assert detail.startswith("From Fracktal · dana@fracktal.in · To geo@fracktal.test · Subject: ")
+        assert detail.endswith("Attachments: quote.pdf (2.0 MB), rates.xlsx (29 KB)")
+        # Every target is in ``context``, which the 500-character cut never
+        # reaches, and the note follows them (verifier F1).
+        assert context == (
+            "The mailbox and each recipient:\n- From: Fracktal · dana@fracktal.in\n"
+            "- To: geo@fracktal.test\n- Bcc: boss@fracktal.test\n\nSee the quote."
+        )
         [(path, body)] = chat.posts
         assert path == "/email/forward"
         assert body == {
@@ -553,21 +561,63 @@ class TestTheForwardTool:
         }
         assert "with 2 attachment(s)" in out and "Fracktal · dana@fracktal.in" in out
 
-    def test_a_cut_card_says_how_many_it_left_out(self) -> None:
-        to = [f"person{i:02d}@fracktal.test" for i in range(40)]
-        detail = agents._card_detail("Fracktal · dana@fracktal.in", to=to,
-                                     bcc=["hidden@evil.test"], files=["payroll.xlsx"],
-                                     subject="S" * 300)
-        assert len(detail) <= 500
-        assert detail.startswith("Bcc hidden@evil.test · Attachments: payroll.xlsx · From ")
-        shown = sum(1 for t in to if t in detail)
-        assert 0 < shown < 40
-        assert f"+{40 - shown} more" in detail
-        assert detail.index("more") < detail.index("Subject:") if "Subject:" in detail else True
+    async def test_eight_long_file_names_cannot_hide_a_recipient(self, chat, monkeypatch) -> None:
+        """Verifier F1: the sender of the mail names its files. Eight long
+        names filled the 500 characters of ``detail`` and pushed From and To
+        off the card."""
+        files = [{"id": f"{i:08d}-0000-4000-8000-000000000000", "size_bytes": 1000,
+                  "filename": f"invoice-{i}-" + "x" * 70 + ".pdf"} for i in range(8)]
+        real_get = agents._get
+
+        async def get(path, params=None):
+            got = await real_get(path, params)
+            return {**got, "attachments": files} if path == f"/email/messages/{MAIL}" else got
+
+        monkeypatch.setattr(agents, "_get", get)
+        await agents.forward_email(MAIL, ["geo@fracktal.test"], cc=["cc@fracktal.test"],
+                                   bcc=["records@evil.test"])
+        detail, context = _shown(chat.cards[0])
+        for target in ("- From: Fracktal · dana@fracktal.in", "- To: geo@fracktal.test",
+                       "- Cc: cc@fracktal.test", "- Bcc: records@evil.test"):
+            assert target in context
+        assert len(chat.cards[0]["detail"]) <= 500
+        # The card clips each name a sender chose to 60 characters.
+        shown = sum(1 for i in range(8) if f"invoice-{i}-" in detail)
+        assert 0 < shown < 8
+        assert detail.endswith(f", +{8 - shown} more")
+
+    async def test_six_workspace_files_cannot_hide_the_to_of_a_send(self, chat) -> None:
+        paths = [f"outputs/report-{i}-" + "y" * 80 + ".pdf" for i in range(6)]
+        await agents.send_email(BOX, body="See attached.", to=["kim@contoso.test"],
+                                subject="Reports", attachments=paths)
+        detail, context = _shown(chat.cards[0])
+        assert "- To: kim@contoso.test" in context
+        assert context.endswith("\n\nSee attached.")
+        assert detail.startswith("From Fracktal · dana@fracktal.in · To kim@contoso.test")
+        assert "more" in detail
+
+    def test_a_list_over_the_cap_says_how_many_more(self) -> None:
+        to = [f"person{i:02d}@fracktal.test" for i in range(13)]
+        block = agents._card_targets("Box", to=to, bcc=["b@evil.test"])
+        lines = block.splitlines()
+        assert [ln for ln in lines if ln.startswith("- To: person")] == [
+            f"- To: {t}" for t in to[:agents._CARD_TARGET_CAP]]
+        assert f"- To: +{13 - agents._CARD_TARGET_CAP} more" in lines
+        assert lines[-1] == "- Bcc: b@evil.test", "a long To list never hides the Bcc"
+
+    def test_the_target_block_fits_and_never_cuts_an_address(self) -> None:
+        long_addrs = [("a" * 60) + f"{i}@" + ("b" * 180) + ".test" for i in range(10)]
+        block = agents._card_targets("Box", to=long_addrs, cc=long_addrs, bcc=long_addrs)
+        assert len(block) <= agents._CARD_TARGET_BUDGET
+        for line in block.splitlines()[2:]:
+            value = line.split(": ", 1)[1]
+            assert value in long_addrs or value.endswith(" more"), "an address was cut"
+        for head in ("To", "Cc", "Bcc"):
+            assert f"- {head}: +" in block, f"the {head} count shows"
 
     def test_a_card_that_fits_says_nothing_more(self) -> None:
-        detail = agents._card_detail("Box", to=["a@b.test"], cc=["c@b.test"], subject="Hi")
-        assert detail == "From Box · To a@b.test · Cc c@b.test · Subject: Hi"
+        assert agents._card_detail("Box", to=["a@b.test", "c@b.test"], subject="Hi") == (
+            "From Box · To a@b.test +1 more · Subject: Hi")
 
     async def test_a_no_on_the_card_sends_nothing(self, chat) -> None:
         chat.answer = False

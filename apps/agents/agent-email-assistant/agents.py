@@ -2350,66 +2350,93 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     return refs
 
 
-#: The characters of a card's detail that ``request_confirmation`` keeps.
-_CARD_DETAIL_LIMIT = 500
+#: The most addresses of one list that a send card names one by one. A longer
+#: list ends with "+N more", so the count always shows.
+_CARD_TARGET_CAP = 10
+#: The characters of ``context`` that the targets may take. The rest of the
+#: 4,000 that ``request_confirmation`` keeps is for the note or the body.
+_CARD_TARGET_BUDGET = 3000
+
+
+def _card_targets(
+    sender: str,
+    *,
+    to: list[str],
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+) -> str:
+    """The targets of a send, for the top of ``context``: the From mailbox,
+    then each To, Cc and Bcc address, one line each, in the line shape of the
+    draft card (``_draft_address_line``: no hidden character, an IDN domain
+    marked).
+
+    ``context`` is the part of a card that the 500-character cut of
+    ``detail`` never reaches, so no file name and no subject can push a
+    recipient off the card (verifier F1 of 2026-10-09, EM-T13a/13b-1). A list
+    longer than the cap ends with "+N more", so the card always shows the
+    count. If the block is still too long, the cap goes down, one address at a
+    time. An address is never cut in half.
+    """
+    lists = (("To", list(to)), ("Cc", list(cc or [])), ("Bcc", list(bcc or [])))
+    block = ""
+    for cap in range(_CARD_TARGET_CAP, 0, -1):
+        lines = ["The mailbox and each recipient:", f"- From: {sender}"]
+        for head, addrs in lists:
+            lines += [f"- {head}: {_draft_address_line(a)}" for a in addrs[:cap]]
+            if len(addrs) > cap:
+                lines.append(f"- {head}: +{len(addrs) - cap} more")
+        block = "\n".join(lines)
+        if len(block) <= _CARD_TARGET_BUDGET:
+            break
+    return block
+
+
+def _card_context(targets: str, body: str | None) -> str:
+    """``context``: the targets first, then the note or the body."""
+    text = (body or "").strip()
+    return f"{targets}\n\n{text}" if text else targets
 
 
 def _card_detail(
     sender: str,
     *,
     to: list[str],
-    cc: list[str] | None = None,
-    bcc: list[str] | None = None,
+    subject: str = "",
     files_label: str = "Attachments",
     files: list[str] | None = None,
-    subject: str = "",
     limit: int = _CARD_DETAIL_LIMIT,
 ) -> str:
-    """The detail of a send card, in the order a member must read it.
+    """The one line of a send card: From and the first To, the subject, and
+    the files LAST, with "+N more" when the line cannot hold every file.
 
-    The hidden recipients and the files come FIRST, because a mail body can
-    ask the model to add either one, and the card keeps only ``limit``
-    characters (review round 1, P3). Then the From mailbox, To and Cc, and
-    the subject last, because the sender of the mail chooses it. When the
-    items do not all fit, the detail says how many it left out ("+N more"),
-    so a cut list never reads as the whole list.
+    The full list of targets is in ``context`` (:func:`_card_targets`), so
+    this line only has to stay short. It starts with From and To, as the
+    send card always did.
     """
-    sections: list[tuple[str, list[str]]] = []
-    if bcc:
-        sections.append(("Bcc", list(bcc)))
-    if files is not None:
-        sections.append((f"{files_label}:", list(files) or ["none"]))
-    sections.append(("From", [sender]))
-    sections.append(("To", list(to)))
-    if cc:
-        sections.append(("Cc", list(cc)))
-    # Room for " · +NNN more", so the marker always fits.
-    budget = limit - 16
-    parts: list[str] = []
-    left_out = 0
+    head = f"From {sender} · To {to[0] if to else '(none)'}"
+    if len(to) > 1:
+        head += f" +{len(to) - 1} more"
+    tail_room = 40 if files is not None else 0
+    room = max(0, min(120, limit - len(head) - len(" · Subject: ") - tail_room))
+    detail = f"{head} · Subject: {(subject or '(none)')[:room]}"
+    if files is None:
+        return detail[:limit]
+    items = list(files) or ["none"]
+    prefix = f" · {files_label}: "
+    budget = limit - len(detail) - len(prefix) - len(", +999 more")
+    shown: list[str] = []
     used = 0
-    for label, items in sections:
-        if left_out:
-            left_out += len(items)
-            continue
-        shown: list[str] = []
-        for i, item in enumerate(items):
-            piece = f"{label} {item}" if not shown else item
-            sep = (" · " if parts else "") if not shown else ", "
-            if used + len(sep) + len(piece) > budget:
-                left_out = len(items) - i
-                break
-            used += len(sep) + len(piece)
-            shown.append(item)
-        if shown:
-            parts.append(f"{label} {', '.join(shown)}")
-    detail = " · ".join(parts)
-    if left_out:
-        detail += f" · +{left_out} more"
-    room = limit - len(detail) - len(" · Subject: ")
-    if subject and room >= 10:
-        detail += f" · Subject: {subject[:room]}"
-    return detail
+    for item in items:
+        add = len(item) + (2 if shown else 0)
+        if used + add > budget:
+            break
+        shown.append(item)
+        used += add
+    more = len(items) - len(shown)
+    listed = ", ".join(shown)
+    if more:
+        listed = f"{listed}, +{more} more" if listed else f"+{more} more"
+    return f"{detail}{prefix}{listed}"
 
 
 def _reply_fill(
@@ -2540,15 +2567,16 @@ async def send_email(
     verb = "reply" if reply_to_email_id else "email"
     if not await request_confirmation(
         title=f"Send this {verb}?",
-        # A mail body can ask the model to add a hidden recipient or a file, so
-        # the card shows each bcc address and each attachment FIRST, and says
-        # how many it left out (EM-T8e-2 review, review round 1 P3).
+        # A mail body can ask the model to add a hidden recipient or a file.
+        # Each target sits in ``context``, which no subject and no file name
+        # can push off the card. The files close ``detail`` (EM-T8e-2 review,
+        # verifier F1).
         detail=_card_detail(
-            sender, to=to, cc=cc, bcc=bcc,
+            sender, to=to,
             files=[r.get("path", "") for r in refs] if refs else None,
             subject=(subject or "(none)")[:120],
         ),
-        context=body,
+        context=_card_context(_card_targets(sender, to=to, cc=cc, bcc=bcc), body),
     ):
         return f"Send cancelled — the {verb} was not sent."
     res = await _post("/email/send", payload)
@@ -2639,13 +2667,12 @@ async def forward_email(
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
         title="Forward this email?",
-        # Each bcc and each file that leaves with the forward come first, and
-        # the card says how many it left out (review round 1, P3).
+        # Each target in ``context``, which the cut of ``detail`` never
+        # reaches. The files close ``detail`` (verifier F1).
         detail=_card_detail(
-            sender, to=to, cc=cc, bcc=bcc,
-            files=_forward_files(carried), subject=subject,
+            sender, to=to, files=_forward_files(carried), subject=subject,
         ),
-        context=note or "",
+        context=_card_context(_card_targets(sender, to=to, cc=cc, bcc=bcc), note),
     ):
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {
