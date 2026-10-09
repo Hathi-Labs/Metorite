@@ -668,15 +668,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   // is still running.
   if (reconnect && threadId) {
     const since = lastEventId || "0-0";
-    // Read once, in the request: a reattach runs later, inside the stream.
-    const reconHeaders = await buildGatewayHeaders();
     let reconRes: Response;
     try {
       reconRes = await gatewayFetch(
         `${GATEWAY_URL}/agent/run/${encodeURIComponent(threadId)}/reconnect?since=${encodeURIComponent(since)}`,
         {
           method: "GET",
-          headers: reconHeaders,
+          headers: await buildGatewayHeaders(),
           signal: AbortSignal.timeout(310_000),
         },
       );
@@ -700,7 +698,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       async start(controller) {
         await translateAndPersistStream(
           reconRes.body!, controller, threadId, assistantMessageId,
-          undefined, reattachFor(threadId, reconHeaders),
         );
       },
     });
@@ -742,7 +739,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     try {
       streamRes = await gatewayFetch(`${GATEWAY_URL}/agent/run/stream`, {
         method: "POST",
-        headers: runHeaders,
+        headers: { ...runHeaders, "Content-Type": "application/json" },
         body: JSON.stringify({
           agent: resolvedAgentName,
           payload: {

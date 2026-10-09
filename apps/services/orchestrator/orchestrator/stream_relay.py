@@ -347,6 +347,7 @@ async def mark_active(
     actor: str | None = None,
     source: str | None = None,
     floor: list[str] | None = None,
+    keep_run_facts: bool = False,
 ) -> None:
     """Mark a thread's agent as currently running.
 
@@ -370,24 +371,29 @@ async def mark_active(
                    folded over.  Recorded so a steer from somebody who was not
                    in that fold can be refused rather than silently moving the
                    floor under a turn already executing.
+        keep_run_facts: Mark the SAME run again, and leave its actor, source
+                   and floor as they are. Only the executor's own call inside
+                   a run passes it (``run_agent_stream``). Any other call
+                   clears an omitted fact, so a new run never inherits the
+                   previous run's actor (``test_concurrent_run_guard.py``).
     """
     r = await _get_client()
     try:
         if reset:
             await r.delete(_stream_key(thread_id))
         await r.set(_active_key(thread_id), "1", ex=STREAM_TTL_SECONDS)
-        # ⚠️ An omitted fact CLEARS the old value only at a run boundary
-        # (``reset=True``). A call without ``reset`` marks the SAME run again,
-        # and the executor makes one inside every detached run
-        # (``run_agent_stream`` → ``_relay_mark_active(thread_id)``, with no
-        # actor). Before the fix, that call deleted the actor, the source and
-        # the floor that ``run_detached`` had just written. The steer floor
-        # then failed open, the supersede guard never answered 409, and a cron
-        # run read as a person's. Fence:
-        # ``tests/unit/test_chat_deploy_recovery.py::test_the_executor_prologue_keeps_the_run_facts``.
+        # ⚠️ An omitted fact is CLEARED, except when the caller marks the
+        # same run again (``keep_run_facts``). The executor makes that call
+        # inside every detached run (``run_agent_stream``). Before the fix it
+        # passed nothing, and deleted the actor, the source and the floor
+        # that ``run_detached`` had just written. The steer floor then failed
+        # open, the supersede guard never answered 409, and a cron run read as
+        # a person's. Fences: ``test_chat_deploy_recovery.py::
+        # test_the_executor_prologue_keeps_the_run_facts`` (same run) and
+        # ``test_concurrent_run_guard.py`` (a new run inherits nothing).
         if actor:
             await r.set(_run_actor_key(thread_id), actor, ex=STREAM_TTL_SECONDS)
-        elif reset:
+        elif not keep_run_facts:
             # A run with no known actor must not inherit the previous one's,
             # or an anonymous/internal run would look like it belongs to
             # whoever ran last and could be refused on their behalf.
@@ -400,7 +406,7 @@ async def mark_active(
             await r.set(
                 _run_source_key(thread_id), source, ex=STREAM_TTL_SECONDS,
             )
-        elif reset:
+        elif not keep_run_facts:
             await r.delete(_run_source_key(thread_id))
         if floor:
             await r.set(
@@ -408,7 +414,7 @@ async def mark_active(
                 json.dumps(sorted({str(m) for m in floor})),
                 ex=STREAM_TTL_SECONDS,
             )
-        elif reset:
+        elif not keep_run_facts:
             await r.delete(_run_floor_key(thread_id))
         # Which PROCESS holds this run, so a run whose process died is never
         # read as live again (orchestrator.run_liveness, incident 2026-10-09).
@@ -882,29 +888,38 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
     A zero-subscriber publish is retried once (~0.3s) to ride out the short
     listener-startup race at run boundaries.
 
-    After the call, ``command["delivery"]`` says what happened (incident
-    2026-10-09). Read it with :func:`delivery_of`:
+    After the call, :func:`delivery_of` says what happened (incident
+    2026-10-09):
 
     * ``"applied"``: a worker that owns the run applied it.
     * ``"unacked"``: a listener heard it and sent no ack. A process still
-      holds the run, so this is never read as a dead run.
-    * ``"undelivered"``: no subscriber anywhere, twice. No process holds the
-      run's listener, which ``run_liveness`` reads as a dead run.
+      holds the run.
+    * ``"undelivered"``: no subscriber anywhere, twice. ``run_liveness``
+      reads a run as dead only when its owner's heartbeat is ALSO gone.
+
+    The status is kept BESIDE the command, never written into it: an applier
+    may hold the command dict, and it must see only what the caller sent
+    (``evals/trajectories/test_stream_replay_trajectory.py``).
     """
     status = await _deliver_control(thread_id, command)
-    command["delivery"] = status
+    if len(_DELIVERY) > 1024:  # a caller that never asked; keep it bounded
+        _DELIVERY.clear()
+    _DELIVERY[id(command)] = status
     return status == "applied"
 
 
-def delivery_of(command: dict[str, Any]) -> str:
-    """What :func:`dispatch_control` did with *command*.
+#: id(command) -> what dispatch_control did with it, until delivery_of reads it.
+_DELIVERY: dict[int, str] = {}
 
-    ``"unacked"`` when nothing stamped it (a stub, or a dispatch that raised):
-    a delivery nobody can describe proves nothing about the run, so it is
-    never read as "undelivered".
+
+def delivery_of(command: dict[str, Any]) -> str:
+    """What :func:`dispatch_control` did with *command*. Read it once.
+
+    ``"unacked"`` when nothing recorded it (a stub, or a dispatch that
+    raised): a delivery nobody can describe proves nothing about the run, so
+    it is never read as "undelivered".
     """
-    status = command.get("delivery")
-    return status if status in ("applied", "unacked", "undelivered") else "unacked"
+    return _DELIVERY.pop(id(command), "unacked")
 
 
 async def _deliver_control(thread_id: str, command: dict[str, Any]) -> str:

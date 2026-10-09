@@ -67,7 +67,7 @@ export function ErrorCardView({
             type="button"
             size="sm"
             variant="secondary"
-            icon={words.action ? "CornerDownRight" : "RefreshCw"}
+            icon={words.action ? "ArrowRight" : "RefreshCw"}
             onClick={onRetry}
           >
             {words.action ?? "Retry"}
