@@ -1515,8 +1515,9 @@ line — never reclaim a number by deleting the other entry.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
 - **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
 - **Done, by orchestrator report on 2026-10-02:** `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` are on the box since 16:31 UTC. The first live `decide.decided` line came at 16:50:47 UTC.
-- **First, PR-B3 of EM-T4a-2 must merge.** Until then the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6).
-- **Next, after EM-T5b-2 in full merges and after PR-B3:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
+- **Measured on the box, 2026-10-09:** `DECIDE_ENABLED=true`, `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on` and `DECIDE_FEATURE_ORGS=*`. So `email.thread_status` is already `on`, and it is no longer next.
+- ⚠️ **Drift (D-EM-62).** The thread status went `on` before PR-B3 of EM-T4a-2 merged. Until PR-B3 merges, the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6). EM-T16 PR-0 is PR-B3, and its merge closes the drift (§10.4.17).
+- **Next, after EM-T16 PR-C merges:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. D-EM-62 approves this step. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
@@ -1527,8 +1528,8 @@ line — never reclaim a number by deleting the other entry.
   7. Say whether the shadow window may start before EM-T4b, the shared cap. The 2026-10-02 note of this entry tied each mode to that cap. With one live mailbox, the runner asks about one email at a time.
 - ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37 writes one (H-36). A reseller call passes through both.
 - **Then:** the agents run the shadow window of `email_app_master_plan.md` §10.4.8.
-- **Authority:** D-EM-7 to D-EM-9 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
-- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit
+- **Authority:** D-EM-7 to D-EM-9 · D-EM-62 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
+- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit · **corrected 2026-10-09** by the EM-T16 spec
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The
