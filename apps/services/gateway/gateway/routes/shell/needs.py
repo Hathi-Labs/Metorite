@@ -22,28 +22,35 @@ The three providers, and the function each one calls:
 =========  ===================  ===========================================
 Source     Feature              Function
 =========  ===================  ===========================================
-tasks      ``feature:projects``  ``projects.personal.my_today``, then
-                                 ``my_inbox``. Due today and overdue only.
+tasks      ``feature:projects``  ``projects.personal.my_due_tasks``: one
+                                 bounded read of the lens, due today and
+                                 overdue, the oldest deadline first.
 projects   ``feature:projects``  ``projects.notifications.list_notifications``,
                                  unread only.
 email      ``feature:email``     ``email.transport.accounts.list_accounts``,
-                                 then ``automation.replyzero.reply_zero``
-                                 (``type=needs_reply``) for each mailbox.
+                                 then ``email.digest.needs_reply_threads``
+                                 for each mailbox, the longest wait first.
 =========  ===================  ===========================================
 
 ⚠️ **My Tasks needs ``feature:projects``, not ``feature:tasks``.** The lens
 routes live on the Projects router, and that router demands ``projects``.
 The ``tasks`` feature only shows the pane.
 
-⚠️ **A Someday task is left out, even with a due date** (``HIDDEN_DISPOSITIONS``).
-A WAITING task stays.
+⚠️ **A Someday task is left out, even with a due date.** The lens read
+leaves it out (``personal.ACTIONABLE_CLAUSE``), and the provider checks the
+row's ``disposition`` again (``HIDDEN_DISPOSITIONS``). A WAITING task stays.
 
 ⚠️ **A separate mailbox is left out** (D-EM-30). The feed reads more than one
 mailbox, and a mailbox that the member keeps separate leaves every such read.
 
-⚠️ **The email read never starts a backfill.** ``reply_zero`` schedules one
-on a mailbox with no classified thread. The provider hands it a fresh
-``BackgroundTasks`` and never runs it, so a glance at the bell starts no work.
+⚠️ **The email rows are the digest's live threads.** ``needs_reply_threads``
+reads the rows that the email app's Needs-reply count counts
+(``digest._LIVE_THREAD``). So a thread whose last message is in trash or
+junk, or is snoozed, stays out. Snooze is the member's "not now". The read
+starts no backfill.
+
+⚠️ **One mailbox that fails costs only its own rows.** Each mailbox has its
+own time limit. The source reads ``failed`` only when every mailbox failed.
 
 **Where each row opens** (``href``), and the app code it copies:
 
@@ -74,10 +81,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
-from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -91,24 +97,19 @@ PER_APP = 15
 DEFAULT_LIMIT = 30
 MAX_LIMIT = 50
 #: Seconds one provider may take. The email provider makes one read per
-#: mailbox, and the tasks provider makes two, so this is wider than search's.
+#: mailbox, so this is wider than search's.
 PROVIDER_TIMEOUT_S = 2.0
+#: Seconds one mailbox may take inside the email provider.
+MAILBOX_TIMEOUT_S = 1.0
 #: Seconds for the whole answer, all providers together. Each provider gets
 #: what is left, the rule of ``search.TOTAL_BUDGET_S``.
 TOTAL_BUDGET_S = 4.0
-#: Lens pages the tasks provider reads at most. ``my_inbox`` caps a page at
-#: ``MAX_PAGE_SIZE`` (100), so the provider sees the first 300 open tasks.
-TASK_PAGES = 3
-#: Threads each mailbox gives. The route lists the newest first, and the
-#: feed shows the oldest first, so the provider asks for more than it shows.
-EMAIL_FETCH = 50
-
 #: The lens dispositions that never reach the feed, even with a due date.
 #: Someday is the member's deliberate "not now", and a nag about it teaches
 #: people to stop using Someday. WAITING stays: an overdue waiting-for is a
-#: cue to chase someone. `my_inbox` filters to ONE disposition and cannot
-#: leave one out, so the provider narrows the lens's own rows by the
-#: effective ``disposition`` the lens sets on each.
+#: cue to chase someone. ``my_due_tasks`` leaves these out in its SQL. The
+#: provider checks the effective ``disposition`` of each row again, so a
+#: change to the lens can only narrow the feed.
 HIDDEN_DISPOSITIONS = frozenset({"SOMEDAY"})
 
 #: The order of the feed, by kind (§7.2 contract).
@@ -153,32 +154,16 @@ def _item(*, id: str, app: str, kind: str, title: Any, detail: Any, href: str,
 
 
 async def _tasks(user: UserContext) -> list[Item]:
-    from gateway.routes.projects.core import MAX_PAGE_SIZE, Page
-    from gateway.routes.projects.personal import my_inbox, my_today
+    from gateway.routes.projects.personal import my_due_tasks
 
-    # The member's own date and zone, the lens's one read of them.
-    day = await my_today(user=user)
-    zone = ZoneInfo(str(day.get("timezone") or "UTC"))
-    today = date.fromisoformat(str(day["today"]))
+    # One bounded read: due before the member's tomorrow, in the member's
+    # zone, the oldest deadline first, at most PER_APP rows.
+    answer = await my_due_tasks(user, limit=PER_APP)
     now = datetime.now(UTC)
-
-    rows: list[dict[str, Any]] = []
-    for number in range(1, TASK_PAGES + 1):
-        # ⚠️ Every parameter, by name. The route declares `page` with
-        # `Depends()`, and a direct call that left one out would pass the
-        # marker itself. `test_shell_needs.py` fails if the route gains one.
-        answer = await my_inbox(
-            user=user, disposition=None, context=None, include_deferred=False,
-            include_done=False, include_archived=False, untriaged=False,
-            page=Page(page=number, page_size=MAX_PAGE_SIZE),
-        )
-        rows.extend(answer.rows)
-        if number * MAX_PAGE_SIZE >= answer.total:
-            break
 
     overdue: list[Item] = []
     due_today: list[Item] = []
-    for task in rows:
+    for task in answer.get("rows") or []:
         due = _instant(task.get("due_at"))
         if due is None or task.get("completed_at"):
             continue
@@ -186,10 +171,9 @@ async def _tasks(user: UserContext) -> list[Item]:
             continue  # Someday is "not now", see HIDDEN_DISPOSITIONS
         if due < now:
             kind, bucket = "overdue", overdue
-        elif due.astimezone(zone).date() == today:
-            kind, bucket = "due_today", due_today
         else:
-            continue
+            # The read holds nothing due after the member's today.
+            kind, bucket = "due_today", due_today
         task_id = str(task["id"])
         bucket.append(_item(
             id=f"tasks:{task_id}", app="tasks", kind=kind,
@@ -252,30 +236,43 @@ def _email_href(message_id: str, account_id: str) -> str:
 
 
 async def _email(user: UserContext) -> list[Item]:
-    from fastapi import BackgroundTasks
-    from gateway.routes.email.automation.replyzero import reply_zero
+    from gateway.routes.email.digest import needs_reply_threads
     from gateway.routes.email.transport.accounts import list_accounts
 
     accounts = await list_accounts(user=user)
     out: list[Item] = []
+    asked = failed = 0
     for account in accounts:
         row = account if isinstance(account, dict) else account.model_dump()
         if not row.get("in_all_inboxes", True):
             continue  # D-EM-30, see the module note
         account_id = str(row["id"])
-        answer = await reply_zero(
-            background=BackgroundTasks(), account_id=account_id,
-            type="needs_reply", limit=EMAIL_FETCH, user=user,
-        )
-        for thread in answer.get("threads") or []:
-            sender = thread.get("from") or thread.get("from_email") or ""
+        asked += 1
+        try:
+            threads = await asyncio.wait_for(
+                needs_reply_threads(user, account_id, PER_APP), MAILBOX_TIMEOUT_S,
+            )
+        except Exception as exc:
+            # This mailbox only. The type only, for the reason in shell_needs.
+            failed += 1
+            logger.warning(
+                "shell.needs mailbox failed",
+                extra={"provider": "email", "error": type(exc).__name__},
+            )
+            continue
+        for thread in threads:
+            if not thread.get("message_id"):
+                continue  # nothing to open
+            who = thread.get("who") or ""
             out.append(_item(
                 id=f"email:{account_id}:{thread['thread_id']}", app="email",
                 kind="needs_reply", title=thread.get("subject") or "(no subject)",
-                detail=f"From {sender}" if sender else None,
+                detail=f"From {who}" if who else None,
                 href=_email_href(str(thread["message_id"]), account_id),
-                at=thread.get("received_at"),
+                at=thread.get("last_message_at"),
             ))
+    if asked and failed == asked:
+        raise RuntimeError("every mailbox failed")
     return _sort(out)[:PER_APP]
 
 

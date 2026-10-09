@@ -660,15 +660,25 @@ built. Each one checks its feature, then calls the app's own read:
 
 | Source | Feature | Function |
 |---|---|---|
-| `tasks` | `feature:projects` | `my_today`, then `my_inbox` |
+| `tasks` | `feature:projects` | `my_due_tasks` in `routes/projects/personal.py` |
 | `projects` | `feature:projects` | `list_notifications`, unread only |
-| `email` | `feature:email` | `list_accounts`, then `reply_zero` with `type=needs_reply` |
+| `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
+
+**Each read is one bounded query.** `my_due_tasks` reads the lens rows that
+are due before the member's tomorrow, in the member's zone. It gives the
+oldest deadline first, and 15 rows at most. `needs_reply_threads` gives the
+thread that waited longest first, and 15 rows at most.
 
 ⚠️ **My Tasks needs `feature:projects`, not `feature:tasks`.** The lens
 routes are on the Projects router, and that router demands `projects`.
 
 **A Someday task never shows in the feed, also with a due date, but a Waiting
-task does.** The provider reads the disposition that the lens sets on each row.
+task does.** The lens read leaves out each task that is not the member's to
+do now, and the provider checks the disposition of each row again.
+
+**A snoozed thread never shows in the feed.** The email read takes the rows
+that the Needs-reply count of the email app counts. So the feed leaves out a
+thread when the member snoozed its last message, or put it in junk or trash.
 
 **Approvals is slice C, and it waits on H-201.** Until then the feed has no
 `approvals` source.
@@ -697,9 +707,14 @@ cannot fill the feed.
 separate stays out of the feed (D-EM-30). The read of the mail never starts
 a backfill of the reply status.
 
-Fences: `tests/unit/test_shell_needs.py` (the gate, the order, the caps and a
-failed source) and `tests/unit/test_shell_needs_r8.py` (R8, as the role with
-no privileges and with RLS forced).
+**A mailbox that fails costs only its own rows.** Each mailbox has a time
+limit of one second. The `email` source reads `failed` only when every
+mailbox failed.
+
+Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
+a failed source and the SQL of the two reads. `tests/unit/test_shell_needs_r8.py`
+is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
+a member with more work than the cap.
 
 ---
 

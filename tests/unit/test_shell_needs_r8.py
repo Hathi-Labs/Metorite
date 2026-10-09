@@ -14,9 +14,17 @@ one row of the other organization:
 * **Projects.** The member's unread notification returns. The other member's
   notification, on a task the member can see, never returns.
 * **Email.** The member's own needs-reply thread returns. The other member's
-  mailbox, with a needs-reply thread of its own, never returns.
+  mailbox, with a needs-reply thread of its own, never returns. Nor does the
+  member's own SNOOZED thread or JUNK thread: the feed reads the digest's
+  live threads (`digest._LIVE_THREAD`).
 * **The other organization.** Its task, assigned to the member's address,
   never returns: RLS and the lens's tenant bind each hold it out.
+* **The two bounded reads** (`TestTheLensDueRead`). A third member holds more
+  due work than the cap. The lens read gives the oldest deadlines first and
+  stops at the cap. It leaves out what the Python rule calls not mine to act
+  on (SOMEDAY, TRASH, a backlog lane, a closed lane), and keeps a stated DONE
+  on an open lane and a WAITING task. The email read gives the threads that
+  waited longest, and stops at the cap.
 
 Each source must read ``ok``. A provider that FAILED also returns no row, so
 an empty answer alone would pass on a broken build.
@@ -54,6 +62,7 @@ pytestmark = _DB_GATE
 TAG = uuid.uuid4().hex[:8]
 ME = f"needs-me-{TAG}@ns3.test"
 OTHER = f"needs-other-{TAG}@ns3.test"
+BUSY = f"needs-busy-{TAG}@ns3.test"
 
 
 def _member(email: str) -> UserContext:
@@ -82,6 +91,22 @@ def _project(c, *, org: str, name: str, owner: str | None = None,
             "organization_id) VALUES (CAST(:p AS uuid), 'org', :by, CAST(:o AS uuid))"),
             {"p": project, "by": ME, "o": org})
     return project, lane
+
+
+def _lane(c, *, project: str, name: str, category: str, position: int) -> str:
+    lane = str(uuid.uuid4())
+    c.execute(text(
+        "INSERT INTO pm_task_statuses (id, project_id, name, position, category, "
+        "is_default) VALUES (CAST(:s AS uuid), CAST(:p AS uuid), :n, :pos, :cat, "
+        "false)"), {"s": lane, "p": project, "n": name, "pos": position, "cat": category})
+    return lane
+
+
+def _stated(c, *, org: str, task: str, email: str, disposition: str) -> None:
+    c.execute(text(
+        "INSERT INTO pm_task_personal (task_id, member_email, disposition, "
+        "organization_id) VALUES (CAST(:t AS uuid), :e, :d, CAST(:o AS uuid))"),
+        {"t": task, "e": email, "d": disposition, "o": org})
 
 
 def _task(c, *, org: str, project: str, lane: str, title: str, due: datetime,
@@ -170,12 +195,86 @@ def seeded(promoted):  # noqa: F811
     ids["mail_theirs"] = _mail(p.admin_engine, org=org, account_id=ids["theirs"],
                                sender="priya@x.test", subject="Their secret quote",
                                thread=f"th-theirs-{TAG}", minutes_ago=30)
+    # The member's own threads that the email app does not count as live: a
+    # snoozed one and one in junk. Older than the live one, so a feed that
+    # kept them would put them FIRST.
+    ids["mail_snoozed"] = _mail(p.admin_engine, org=org, account_id=ids["mine"],
+                                sender="priya@x.test", subject="Snoozed for later",
+                                thread=f"th-snoozed-{TAG}", minutes_ago=300)
+    ids["mail_junk"] = _mail(p.admin_engine, org=org, account_id=ids["mine"],
+                             sender="spam@x.test", subject="You won a prize",
+                             folder="junk", thread=f"th-junk-{TAG}", minutes_ago=400)
     with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE email_messages SET snoozed_until = now() + interval '1 day' "
+            "WHERE id = CAST(:m AS uuid)"), {"m": ids["mail_snoozed"]})
         _needs_reply(c, org=org, account=ids["mine"], thread=f"th-mine-{TAG}",
                      message=ids["mail_mine"], at=now - timedelta(minutes=90))
         _needs_reply(c, org=org, account=ids["theirs"], thread=f"th-theirs-{TAG}",
                      message=ids["mail_theirs"], at=now - timedelta(minutes=30))
+        _needs_reply(c, org=org, account=ids["mine"], thread=f"th-snoozed-{TAG}",
+                     message=ids["mail_snoozed"], at=now - timedelta(minutes=300))
+        _needs_reply(c, org=org, account=ids["mine"], thread=f"th-junk-{TAG}",
+                     message=ids["mail_junk"], at=now - timedelta(minutes=400))
     return ids
+
+
+@pytest.fixture(scope="module")
+def busy(promoted):  # noqa: F811
+    """A third member with more due work and more waiting mail than the cap."""
+    p = promoted
+    org = p.org_b
+    now = datetime.now(UTC)
+    out: dict[str, object] = {}
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, "
+            "organization_id) VALUES (:e, :e, 'employee', 'active', "
+            "CAST(:o AS uuid))"), {"e": BUSY, "o": org})
+        project, todo = _project(c, org=org, name=f"Busy {TAG}", grant_org=True)
+        backlog = _lane(c, project=project, name="Backlog", category="backlog", position=0)
+        done = _lane(c, project=project, name="Done", category="done", position=9)
+
+        def due(days: int) -> datetime:
+            return now - timedelta(days=days)
+
+        def make(title: str, days: int, lane: str, number: int) -> str:
+            return _task(c, org=org, project=project, lane=lane, title=title,
+                         due=due(days), assignee=BUSY, number=number)
+
+        # Not mine to act on: each is OLDER than every row that returns, so
+        # a read that kept one would put it first.
+        someday = make("Stated someday", 40, todo, 100)
+        _stated(c, org=org, task=someday, email=BUSY, disposition="SOMEDAY")
+        trash = make("Stated trash", 39, todo, 101)
+        _stated(c, org=org, task=trash, email=BUSY, disposition="TRASH")
+        make("Unstated in backlog", 38, backlog, 102)
+        closed = make("Closed lane", 37, done, 103)
+        _stated(c, org=org, task=closed, email=BUSY, disposition="NEXT")
+        # Mine to act on.
+        reopened = make("Stated done on an open lane", 31, todo, 104)
+        _stated(c, org=org, task=reopened, email=BUSY, disposition="DONE")
+        waiting = make("Stated waiting", 30, todo, 105)
+        _stated(c, org=org, task=waiting, email=BUSY, disposition="WAITING")
+        # Seventeen plain overdue tasks, so the cap of 15 cuts the list.
+        # Inserted newest deadline first, so creation order is no help.
+        plain = [make(f"Plain {d}", d, todo, 200 + d) for d in range(1, 18)]
+    out["expected_tasks"] = [reopened, waiting, *[plain[d - 1] for d in range(17, 4, -1)]]
+
+    box = _account(p.admin_engine, org=org, owner=BUSY, default=True)
+    threads = []
+    for n in range(17):
+        minutes = 10 + 10 * n
+        mail = _mail(p.admin_engine, org=org, account_id=box, sender="a@x.test",
+                     subject=f"Thread {n}", thread=f"th-busy-{n}-{TAG}", minutes_ago=minutes)
+        threads.append((f"th-busy-{n}-{TAG}", mail, now - timedelta(minutes=minutes)))
+    with p.admin_engine.begin() as c:
+        for thread, mail, at in threads:
+            _needs_reply(c, org=org, account=box, thread=thread, message=mail, at=at)
+    # The longest wait first: thread 16 (170 minutes) down to thread 2.
+    out["expected_mail"] = [f"email:{box}:th-busy-{n}-{TAG}" for n in range(16, 1, -1)]
+    out["box"] = box
+    return out
 
 
 async def _needs(p, monkeypatch, user: UserContext) -> dict:
@@ -231,3 +330,31 @@ class TestTheFeedOnARealDatabase:
         assert f"email:{seeded['theirs']}:th-theirs-{TAG}" in got
         assert f"tasks:{seeded['overdue']}" not in got
         assert f"projects:{seeded['note_mine']}" not in got
+
+
+class TestTheLensDueRead:
+    async def test_the_oldest_deadlines_first_and_only_work_still_mine(
+        self, promoted, busy, monkeypatch,  # noqa: F811
+    ):
+        answer = await _needs(promoted, monkeypatch, _member(BUSY))
+        assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok"}
+        tasks = [i["id"] for i in answer["items"] if i["app"] == "tasks"]
+        assert tasks == [f"tasks:{t}" for t in busy["expected_tasks"]]
+        assert len(tasks) == shell.PER_APP
+
+    async def test_the_lens_read_alone_is_bounded_and_ordered(
+        self, promoted, busy,  # noqa: F811
+    ):
+        from gateway.routes.projects.personal import my_due_tasks
+
+        async with _as_member(promoted, promoted.org_b):
+            answer = await my_due_tasks(_member(BUSY), limit=5)
+        assert [r["id"] for r in answer["rows"]] == busy["expected_tasks"][:5]
+        assert [r["disposition"] for r in answer["rows"][:2]] == ["NEXT", "WAITING"]
+
+    async def test_the_threads_that_waited_longest_and_no_more_than_the_cap(
+        self, promoted, busy, monkeypatch,  # noqa: F811
+    ):
+        answer = await _needs(promoted, monkeypatch, _member(BUSY))
+        mail = [i["id"] for i in answer["items"] if i["app"] == "email"]
+        assert mail == busy["expected_mail"]
