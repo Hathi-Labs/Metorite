@@ -9,7 +9,7 @@
 
 Either one fails the whole statement. On 2026-10-09 a tool result held the
 raw bytes of a ZIP file (``PK\\x03\\x04\\x14\\x00``), and
-``POST /chat/sessions/{id}/messages`` answered 500 for 40 seconds. The reply
+``POST /chat/sessions/{id}/messages`` answered 500 for 42 seconds. The reply
 of that run was never saved.
 
 :func:`storable` is the ONE answer. A writer of model output, tool output or

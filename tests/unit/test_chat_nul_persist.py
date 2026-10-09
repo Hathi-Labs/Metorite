@@ -373,21 +373,58 @@ _WEBP = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 32
     ("shot.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 32),
     ("shot.JPEG", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 32),
     ("anim.gif", b"GIF89a\x01\x00\x01\x00\x00\x00\x00"),
+    # Fix round 2: the rest of imageHelpersIsBinaryImageFile's suffixes.
+    ("icon.bmp", b"BM\x36\x00\x00\x00\x00\x00\x00\x00" + b"\x00" * 32),
+    ("favicon.ico", b"\x00\x00\x01\x00\x01\x00\x10\x10" + b"\x00" * 32),
+    ("scan.tif", b"II*\x00\x08\x00\x00\x00" + b"\x00" * 32),
+    ("scan.TIFF", b"MM\x00*\x00\x00\x00\x08" + b"\x00" * 32),
+    ("IMG_0001.HEIC", b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32),
+    ("photo.heic", b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32),
+    ("photo.avif", b"\x00\x00\x00\x1cftypavif" + b"\x00" * 32),
     # ZIP bytes under an image name: the CLI still treats it as an image and
     # sends no bytes as text, so the read is approved.
     ("book.png", _xlsx_bytes()),
-], ids=["png", "png-upper", "webp", "jpg", "jpeg-upper", "gif", "zip-named-png"])
+], ids=["png", "png-upper", "webp", "jpg", "jpeg-upper", "gif", "bmp", "ico",
+        "tif", "tiff-upper", "heic-upper", "heic", "avif", "zip-named-png"])
 def test_a_read_of_an_image_suffix_is_approved_as_the_cli_sends_it_as_vision(
     workspace, name: str, data: bytes,
 ) -> None:
-    """Fix round 1, P1. The CLI's ``view`` sends these suffixes to the model
-    as an IMAGE (``TQr`` in CLI 1.0.66), keyed on the suffix in any case. A
-    refusal here would hide every screenshot that a member attaches."""
+    """Fix rounds 1 and 2. The CLI's ``view`` asks the native
+    ``imageHelpersIsBinaryImageFile`` (CLI 1.0.66), which keys on the suffix
+    in any case, and sends such a file to the model as an IMAGE. A refusal
+    here would hide every screenshot that a member attaches."""
     from acb_skills.permission_policy import decide
 
     path = workspace / name
     path.write_bytes(data)
     assert decide({"kind": "read", "path": str(path)})[:2] == (True, "read_in_workspace")
+
+
+def test_the_image_suffixes_are_exactly_the_cli_set() -> None:
+    """Pin the list to ``imageHelpersIsBinaryImageFile`` of CLI 1.0.66. A CLI
+    upgrade that changes the native list must change this test with it."""
+    from acb_skills.permission_policy import _CLI_IMAGE_SUFFIXES
+
+    pinned = set(_CLI_IMAGE_SUFFIXES)
+    assert pinned == {
+        "png", "jpg", "jpeg", "gif", "webp",
+        "bmp", "ico", "tif", "tiff", "heic", "avif",
+    }
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_utf16_with_no_bom_is_refused_with_a_way_on(workspace, encoding: str) -> None:
+    """Fix round 2. Still refused, but the sentence asks for a UTF-8 copy
+    instead of "Do not read it as text"."""
+    from acb_skills.permission_policy import decide
+
+    path = workspace / "export.csv"
+    path.write_bytes("name,amount\nAsha,12\nRavi,30\n".encode(encoding))
+    approved, code, detail = decide({"kind": "read", "path": str(path)})
+    assert (approved, code) == (False, "read_binary_file")
+    assert "looks like UTF-16 text with no byte order mark" in detail
+    assert "save it again as UTF-8" in detail
+    assert "Do not read it as text" not in detail
 
 
 @pytest.mark.parametrize(("name", "data"), [

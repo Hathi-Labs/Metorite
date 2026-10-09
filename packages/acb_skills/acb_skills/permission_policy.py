@@ -311,17 +311,45 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
 _ATTACHMENT_KINDS = frozenset({"docx", "xlsx", "pdf"})
 
 #: The suffixes that the Copilot CLI's ``view`` tool sends to the model as an
-#: IMAGE, not as text (``TQr`` in CLI 1.0.66 ``app.js``). It decides by the
-#: suffix alone, in any case, and its text result is "Viewed image file
-#: successfully.", with no NUL. So a read of such a name is always approved,
-#: whatever the bytes are, or a screenshot that a member attaches cannot be
-#: seen (fix round 1, P1).
-_CLI_IMAGE_SUFFIXES = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
+#: IMAGE, not as text. ``view`` asks the native
+#: ``imageHelpersIsBinaryImageFile`` (``function Lk`` in CLI 1.0.66
+#: ``app.js``), which answers by the suffix alone, in any case. Its text
+#: result is "Viewed image file successfully.", with no NUL. So a read of such
+#: a name is always approved, whatever the bytes are, or a screenshot that a
+#: member attaches cannot be seen (fix rounds 1 and 2).
+#:
+#: ⚠️ This list follows CLI 1.0.66. Production fetches the CLI runtime of its
+#: SDK pin (``scripts/vps_apply.sh``, the H-181 fetch). A CLI upgrade must
+#: check this list again against ``imageHelpersIsBinaryImageFile``.
+_CLI_IMAGE_SUFFIXES = frozenset({
+    "png", "jpg", "jpeg", "gif", "webp",
+    "bmp", "ico", "tif", "tiff", "heic", "avif",
+})
 
 #: The byte order marks of UTF-32 and UTF-16 text. Such a file holds NULs and
 #: is still text. ``acb_common.pg_text.storable`` guards the save of a NUL
 #: that comes through.
 _TEXT_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe", b"\xfe\xff")
+
+
+def _bomless_utf16(head: bytes) -> bool:
+    """True when *head* looks like UTF-16 text with no byte order mark.
+
+    In UTF-16 text that is mostly Latin, every second byte is zero. LE puts
+    the zero byte after the letter, and BE puts it before. Nine in ten byte
+    pairs must show the pattern, and the other byte must not be zero.
+    """
+    pairs = len(head) // 2
+    if pairs < 2:
+        return False
+    for zero_at in (1, 0):
+        hits = sum(
+            1 for i in range(pairs)
+            if head[2 * i + zero_at] == 0 and head[2 * i + 1 - zero_at] != 0
+        )
+        if hits * 10 >= pairs * 9:
+            return True
+    return False
 
 
 def _size_text(size: int) -> str:
@@ -343,7 +371,8 @@ def binary_file_note(path: str, root: str) -> str | None:
     Two kinds of file are never binary here. A name with an image suffix of
     :data:`_CLI_IMAGE_SUFFIXES` is an image to the CLI, so the file is not
     opened at all. A file that starts with a UTF-16 or UTF-32 byte order mark
-    is text.
+    is text. UTF-16 text with no mark stays refused, with a sentence that
+    asks for a UTF-8 copy (:func:`_bomless_utf16`).
 
     It opens the file through :mod:`acb_skills.safe_open` (a link at any depth
     fails), so call it only after the containment check. Any failure, a
@@ -376,6 +405,14 @@ def binary_file_note(path: str, root: str) -> str | None:
         return None
     name = PurePosixPath(rel).name
     kind = PurePosixPath(rel).suffix.lower().lstrip(".") or magic or "binary"
+    if magic is None and _bomless_utf16(head):
+        # Still refused: a text read gives a NUL after each letter. But the
+        # agent gets a way on (fix round 2).
+        return (
+            f"{name} ({kind}, {_size_text(size)}) looks like UTF-16 text with "
+            "no byte order mark, so a text read returns it with a NUL in each "
+            "letter. It was not read. Ask the member to save it again as UTF-8."
+        )
     note = (
         f"{name} is a binary file ({kind}, {_size_text(size)}), so a text "
         "read returns only raw bytes. It was not read."

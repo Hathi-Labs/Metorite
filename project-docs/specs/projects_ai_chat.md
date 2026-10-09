@@ -4528,16 +4528,24 @@ escape `\u0000` in `jsonb`. So `POST /chat/sessions/{id}/messages` answered
    permission refusal. An approval only gives the model the same bytes again.
    The containment check runs first, so the check never opens a path outside
    the workspace.
-6. **The check always approves an image name** (fix round 1, P1). The `view` tool
-   of the CLI sends a `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` file to the
-   model as an image, and it decides by the suffix in any case (`TQr` in CLI
-   1.0.66). Its text result holds no NUL. So the check keys on the same
-   suffix and does not open the file. A screenshot that a member attaches
-   stays visible. The check still refuses PNG bytes under a name with no
-   image suffix, because the CLI reads that file as text.
+6. **The check always approves an image name** (fix rounds 1 and 2). The
+   `view` tool of the CLI asks the native `imageHelpersIsBinaryImageFile`.
+   That function answers by the suffix alone, in any case, for `png`, `jpg`,
+   `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tif`, `tiff`, `heic` and `avif`.
+   The tool then sends the file to the model as an image, and its text result
+   holds no NUL. So the check keys on the same suffixes and does not open the
+   file. A screenshot that a member attaches stays visible. The check still
+   refuses PNG bytes under a name with no image suffix, because the CLI reads
+   that file as text.
+   ⚠️ **The list follows CLI 1.0.66.** Production fetches the CLI runtime of
+   its SDK pin, 1.0.11 today (`scripts/vps_apply.sh`, the H-181 fetch). A CLI
+   upgrade must check the list again against `imageHelpersIsBinaryImageFile`.
+   `test_the_image_suffixes_are_exactly_the_cli_set` pins it.
 7. **A file with a UTF-16 or UTF-32 byte order mark is text** (fix round 1).
    Its NULs are part of the text. Rule 1 guards the save of a NUL that comes
-   through.
+   through. UTF-16 text with no mark stays refused (fix round 2). Its sentence
+   says that the file looks like UTF-16 text with no byte order mark, and it
+   tells the agent to ask the member for a UTF-8 copy.
 8. **A key collision keeps the first value** (fix round 1). Two dict keys can
    become one key after the change. `storable` keeps the value of the first
    key in the order of the dict and drops the later ones. It logs one
