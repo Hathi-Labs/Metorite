@@ -126,9 +126,15 @@ async def _digest_top_senders(
 # the quiet re-sync to bring it straight back (and the needs-reply count never
 # moved). It reappears — here and in the inbox — the moment snoozed_until
 # passes, with no scheduler involved.
+# An ARCHIVED last message is out too: archive is the member saying "dealt
+# with", and Reply Zero (`replyzero.reply_zero`) already hides an archived
+# thread from its active buckets, so this count, that list and the shell's
+# needs feed (`needs_reply_threads`) now agree. Every user of this predicate
+# reads an ACTIVE bucket (NEEDS_REPLY, AWAITING). A read of DONE, where an
+# archived thread belongs, must not reuse it.
 _LIVE_THREAD = ("NOT EXISTS (SELECT 1 FROM email_messages tem "
                 "WHERE tem.id = ts.last_message_id "
-                "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk') "
+                "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk', 'archive') "
                 "OR tem.snoozed_until > now()))")
 
 

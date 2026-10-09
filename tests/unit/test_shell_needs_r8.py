@@ -15,8 +15,9 @@ one row of the other organization:
   notification, on a task the member can see, never returns.
 * **Email.** The member's own needs-reply thread returns. The other member's
   mailbox, with a needs-reply thread of its own, never returns. Nor does the
-  member's own SNOOZED thread or JUNK thread: the feed reads the digest's
-  live threads (`digest._LIVE_THREAD`).
+  member's own SNOOZED, JUNK or ARCHIVED thread: the feed reads the digest's
+  live threads (`digest._LIVE_THREAD`). Archive is "dealt with", as in Reply
+  Zero.
 * **The other organization.** Its task, assigned to the member's address,
   never returns: RLS and the lens's tenant bind each hold it out.
 * **The two bounded reads** (`TestTheLensDueRead`). A third member holds more
@@ -204,6 +205,10 @@ def seeded(promoted):  # noqa: F811
     ids["mail_junk"] = _mail(p.admin_engine, org=org, account_id=ids["mine"],
                              sender="spam@x.test", subject="You won a prize",
                              folder="junk", thread=f"th-junk-{TAG}", minutes_ago=400)
+    ids["mail_archived"] = _mail(p.admin_engine, org=org, account_id=ids["mine"],
+                                 sender="priya@x.test", subject="Dealt with already",
+                                 folder="archive", thread=f"th-archived-{TAG}",
+                                 minutes_ago=500)
     with p.admin_engine.begin() as c:
         c.execute(text(
             "UPDATE email_messages SET snoozed_until = now() + interval '1 day' "
@@ -216,6 +221,8 @@ def seeded(promoted):  # noqa: F811
                      message=ids["mail_snoozed"], at=now - timedelta(minutes=300))
         _needs_reply(c, org=org, account=ids["mine"], thread=f"th-junk-{TAG}",
                      message=ids["mail_junk"], at=now - timedelta(minutes=400))
+        _needs_reply(c, org=org, account=ids["mine"], thread=f"th-archived-{TAG}",
+                     message=ids["mail_archived"], at=now - timedelta(minutes=500))
     return ids
 
 

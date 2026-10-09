@@ -676,9 +676,11 @@ routes are on the Projects router, and that router demands `projects`.
 task does.** The lens read leaves out each task that is not the member's to
 do now, and the provider checks the disposition of each row again.
 
-**A snoozed thread never shows in the feed.** The email read takes the rows
-that the Needs-reply count of the email app counts. So the feed leaves out a
-thread when the member snoozed its last message, or put it in junk or trash.
+**A snoozed or archived thread never shows in the feed.** The email read takes
+the rows that the Needs-reply count of the email app counts. So the feed
+leaves out a thread when the member snoozed its last message, or put it in
+the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
+an archived thread too.
 
 **Approvals is slice C, and it waits on H-201.** Until then the feed has no
 `approvals` source.

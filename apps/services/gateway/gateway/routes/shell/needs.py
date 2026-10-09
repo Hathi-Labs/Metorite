@@ -45,9 +45,9 @@ mailbox, and a mailbox that the member keeps separate leaves every such read.
 
 ⚠️ **The email rows are the digest's live threads.** ``needs_reply_threads``
 reads the rows that the email app's Needs-reply count counts
-(``digest._LIVE_THREAD``). So a thread whose last message is in trash or
-junk, or is snoozed, stays out. Snooze is the member's "not now". The read
-starts no backfill.
+(``digest._LIVE_THREAD``). So a thread whose last message is in trash, junk
+or the archive, or is snoozed, stays out. Snooze is the member's "not now",
+and archive is "dealt with", as in Reply Zero. The read starts no backfill.
 
 ⚠️ **One mailbox that fails costs only its own rows.** Each mailbox has its
 own time limit. The source reads ``failed`` only when every mailbox failed.

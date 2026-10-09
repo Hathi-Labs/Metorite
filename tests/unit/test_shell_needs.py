@@ -497,10 +497,12 @@ class TestTheEmailRead:
         assert "ORDER BY ts.last_message_at ASC LIMIT :lim" in threads
         assert db.params[db.sql.index(threads)]["lim"] == 15
 
-    def test_the_live_rule_leaves_out_snoozed_trash_and_junk(self):
+    def test_the_live_rule_leaves_out_snoozed_trash_junk_and_archive(self):
         rule = " ".join(digest._LIVE_THREAD.split())
         assert "tem.snoozed_until > now()" in rule
-        assert "'trash', 'junk'" in rule
+        # Archive is "dealt with", the rule Reply Zero applies to its active
+        # buckets, so an archived thread never asks for a reply.
+        assert "IN ('trash', 'junk', 'archive')" in rule
 
     def test_another_members_mailbox_is_404_before_any_thread_read(self, monkeypatch):
         db = _recording(monkeypatch, digest)
