@@ -345,7 +345,8 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         set(stage) == SIX
         and all(per_name[n] == 5 for n in ("Backlog", "To do", "In progress", "Done"))
         and stage["Review"] == "in_progress"
-        and stage["On hold"] == "backlog",
+        # I-10b: a task on hold has started, so On hold is In progress.
+        and stage["On hold"] == "in_progress",
         str(sorted(per_name.items())),
     )
     foreign = await one(
@@ -388,11 +389,11 @@ async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
         "  JOIN pm_task_statuses hi ON hi.project_id = n.project_id "
         " WHERE p.organization_id = CAST(:org AS uuid) "
         "   AND ((n.name = 'Review' AND lo.name = 'In progress' AND hi.name = 'Done') "
-        "     OR (n.name = 'On hold' AND lo.name = 'Backlog' AND hi.name = 'To do')) "
+        "     OR (n.name = 'On hold' AND lo.name = 'In progress' AND hi.name = 'Done')) "
         "   AND NOT (lo.position < n.position AND n.position < hi.position)",
     )
     check(
-        "2b.6 Review lands after In progress, and On hold after Backlog",
+        "2b.6 Review and On hold land in the In progress stage, before Done",
         misplaced == 0,
         str(misplaced),
     )

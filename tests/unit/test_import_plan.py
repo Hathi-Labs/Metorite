@@ -67,10 +67,20 @@ def _row(
         ("todo", "todo"),
         ("Open", "todo"),
         ("backlog", "backlog"),
-        ("on hold", "backlog"),
+        # I-10b: a task on hold has started (owner, 2026-10-09).
+        ("on hold", "in_progress"),
+        ("Waiting on vendor", "in_progress"),
+        ("Paused", "in_progress"),
+        ("stuck", "in_progress"),
+        # The hold rule comes before the backlog rule: first match wins.
+        ("Blocked - backlog", "in_progress"),
+        ("someday", "backlog"),
+        ("Icebox", "backlog"),
         ("in process", "in_progress"),
         ("in progress", "in_progress"),
         ("review", "in_progress"),
+        ("QA", "in_progress"),
+        ("Testing", "in_progress"),
         ("Cancelled", "cancelled"),
         ("won't do", "cancelled"),
         ("Undone work", "in_progress"),
@@ -87,7 +97,7 @@ def test_every_status_of_the_real_file_proposes_the_right_stage(bundle: ImportBu
         "done": "done",
         "completed": "done",
         "backlog": "backlog",
-        "on hold": "backlog",
+        "on hold": "in_progress",
         "to do": "todo",
         "todo": "todo",
         "in process": "in_progress",
@@ -147,7 +157,7 @@ def test_the_ten_statuses_of_the_real_file_propose_six_targets(bundle: ImportBun
     assert p["errors"] == [] and p["ready"]
     new = {r["becomes"] for r in p["statuses"] if not r["existing"]}
     assert new == {"On hold", "Review"}
-    assert {r["becomes"]: r["category"] for r in p["statuses"]}["On hold"] == "backlog"
+    assert {r["becomes"]: r["category"] for r in p["statuses"]}["On hold"] == "in_progress"
     # The plan carries the target set, in its own order.
     assert [s["name"] for s in p["target_statuses"]] == ["Backlog", "To do", "In progress", "Done"]
 
@@ -162,12 +172,59 @@ def test_the_ten_statuses_of_the_real_file_propose_six_targets(bundle: ImportBun
         ("wip", ("In progress", "in_progress", True)),
         ("won't do", ("Cancelled", "cancelled", False)),
         ("canceled", ("Cancelled", "cancelled", False)),
-        ("on  hold", ("On hold", "backlog", False)),
+        ("on  hold", ("On hold", "in_progress", False)),
         ("qa review", ("Qa review", "in_progress", False)),
     ],
 )
 def test_a_source_name_proposes_a_target(name: str, target: tuple[str, str, bool]) -> None:
     assert propose_target(name, SEED) == target
+
+
+def test_each_fixture_row_says_whether_its_stage_is_a_guess(bundle: ImportBundle) -> None:
+    """I-10b build rule 1: a guess is a stage that only the default gave.
+    On the fixture, every status meets a lane, a synonym or a rule, so none
+    is a guess, "review" included."""
+    p = build_plan(bundle, ImportMapping(), {}, target_statuses=SEED)
+    assert {r["name"]: r["guessed"] for r in p["statuses"]} == {
+        "Closed": False,
+        "done": False,
+        "completed": False,
+        "backlog": False,
+        "on hold": False,
+        "to do": False,
+        "todo": False,
+        "in process": False,
+        "in progress": False,
+        "review": False,
+    }
+
+
+def test_a_name_that_no_rule_matches_is_marked_as_a_guess() -> None:
+    b = _small(_row("a", status="Fancy lane"), _row("b", status="Blocked - backlog"))
+    rows = {
+        r["name"]: r for r in build_plan(b, ImportMapping(), {}, target_statuses=SEED)["statuses"]
+    }
+    assert rows["Fancy lane"]["guessed"] and rows["Fancy lane"]["category"] == "in_progress"
+    assert not rows["Blocked - backlog"]["guessed"]
+    assert rows["Blocked - backlog"]["category"] == "in_progress"
+    # A stage that an earlier run recorded is no guess, and neither is a lane
+    # of the set.
+    held = build_plan(
+        b,
+        ImportMapping(),
+        {},
+        target_statuses=[("Fancy lane", "todo")],
+    )
+    assert not {r["name"]: r for r in held["statuses"]}["Fancy lane"]["guessed"]
+    carried = build_plan(
+        b,
+        ImportMapping(),
+        {},
+        target_statuses=SEED,
+        continues=True,
+        earlier_names={"Fancy lane": ("Fancy lane", "todo")},
+    )
+    assert not {r["name"]: r for r in carried["statuses"]}["Fancy lane"]["guessed"]
 
 
 def test_a_name_the_target_set_holds_is_that_status_with_its_stage() -> None:

@@ -189,6 +189,22 @@ describe("(5) the filter box sits above the listbox, and each group is a group",
     expect(inside.match(/role="option"/g)?.length).toBe(4);
   });
 
+  it("draws a description UNDER the label, and keeps the hint beside it (I-10b)", () => {
+    const stages: SelectOption[] = [
+      { value: "todo", label: "To do", description: "Committed and not started." },
+      { value: "x", label: "Plain", hint: "2" },
+    ];
+    const html = render(stages, false, false);
+    const label = html.indexOf(">To do<");
+    const meaning = html.indexOf("Committed and not started.");
+    expect(label).toBeGreaterThan(0);
+    expect(meaning).toBeGreaterThan(label);
+    // The description is its own block line, and it wraps.
+    expect(html).toMatch(/class="block[^"]*whitespace-normal[^"]*">Committed and not started\./);
+    // An option with no description renders as before, hint beside the label.
+    expect(html).toContain('>Plain</span><span class="shrink-0 text-[11px] text-muted-foreground">2</span>');
+  });
+
   it("a plain list renders option rows only, as before R5b", () => {
     const plain: SelectOption[] = [
       { value: "a", label: "A" },
