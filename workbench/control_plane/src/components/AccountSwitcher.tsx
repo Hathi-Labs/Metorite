@@ -388,7 +388,10 @@ export function SidebarAccountFooter({
  * chevron say that more accounts wait behind it.
  *
  * Tapped, it unfolds: each other account as a one-tap switch with its own ✕,
- * then the member's pages (NS-2), then Add account and Sign out.
+ * and "Add another account". Nothing else. The member's pages and sign-out
+ * are rare acts, so they sit at the menu's foot (`DrawerAccountFoot`), where
+ * Gmail and Slack put them. The apps, the frequent act, keep the space between.
+ * (Owner review of the phone menu, 2026-10-09: "very crowded".)
  *
  * Why not a card. An earlier version put a large "Organization · Signed in
  * as" card and an open "Switch to" list under the header. It said the
@@ -399,17 +402,7 @@ export function SidebarAccountFooter({
  * The mark no longer links Home, because a tap now opens the accounts. Home
  * is the first item of the shell nav, below.
  */
-export function DrawerAccountHeader({
-  onClose,
-  you,
-  onNavigate,
-}: {
-  onClose: () => void;
-  /** The shell nav's account rows (NS-2): My Profile, My access, Appearance. */
-  you?: readonly AccountLink[];
-  /** Called when a row opens a page, so the menu can close. */
-  onNavigate?: () => void;
-}) {
+export function DrawerAccountHeader({ onClose }: { onClose: () => void }) {
   // Its own hooks, never props: the drawer captures its content once.
   const { accounts, reload } = useAccounts(true);
   const { access } = useAccess();
@@ -513,36 +506,63 @@ export function DrawerAccountHeader({
             </div>
           )}
           {error && <p className="px-2 text-xs text-destructive">{error}</p>}
-
-          {you && you.length > 0 && (
-            <nav aria-label="Your account" className="flex flex-col">
-              {you.map((l) => (
-                <Link
-                  key={l.href}
-                  href={l.href}
-                  onClick={onNavigate}
-                  className="flex items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground hover:bg-secondary tech-transition"
-                >
-                  <Icon name={l.icon} size={15} className="shrink-0 text-muted-foreground" />
-                  {l.label}
-                </Link>
-              ))}
-            </nav>
+          {accounts.enabled && (
+            <button
+              type="button"
+              onClick={() => void addAccount()}
+              className="flex items-center gap-3 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-dashed border-border">
+                <Icon name="Plus" size={14} />
+              </span>
+              Add another account
+            </button>
           )}
-
-          <div className={`mt-1 grid gap-2 ${accounts.enabled ? "grid-cols-2" : "grid-cols-1"}`}>
-            {accounts.enabled && (
-              <Button variant="secondary" size="sm" icon="UserPlus" onClick={() => void addAccount()}>
-                Add account
-              </Button>
-            )}
-            <Button variant="secondary" size="sm" icon="LogOut" onClick={() => void signOutAll()}>
-              {others.length > 0 ? "Sign out of all" : "Sign out"}
-            </Button>
-          </div>
         </div>
       )}
       {switching && <SwitchingCover email={switching} />}
     </div>
+  );
+}
+
+/**
+ * The phone menu's foot: the member's pages and the settings, then sign-out,
+ * in one list under one heading. These are rare acts, so they come after the
+ * apps (owner review, 2026-10-09). `children` is the shell's own rows, Dark
+ * mode and Desktop view, so all of them share one place and one look.
+ */
+export function DrawerAccountFoot({
+  you,
+  onNavigate,
+  children,
+}: {
+  /** The shell nav's account rows: My Profile, My access, Appearance, Organisation. */
+  you?: readonly AccountLink[];
+  onNavigate?: () => void;
+  children?: React.ReactNode;
+}) {
+  const { accounts } = useAccounts();
+  const { data: session } = useSession();
+  if (!session?.user) return <>{children}</>;
+  const others = accounts.enabled ? accounts.others.length : 0;
+  const row =
+    "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition";
+  return (
+    <section aria-label="Account and settings" className="flex flex-col gap-0.5">
+      <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Account and settings
+      </div>
+      {you?.map((l) => (
+        <Link key={l.href} href={l.href} onClick={onNavigate} className={row}>
+          <Icon name={l.icon} size={16} className="shrink-0" />
+          {l.label}
+        </Link>
+      ))}
+      {children}
+      <button type="button" onClick={() => void signOutAll()} className={row}>
+        <Icon name="LogOut" size={16} className="shrink-0" />
+        {others > 0 ? "Sign out of all accounts" : "Sign out"}
+      </button>
+    </section>
   );
 }

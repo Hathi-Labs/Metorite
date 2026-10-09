@@ -37,7 +37,7 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
-import { DrawerAccountHeader } from "@/components/AccountSwitcher";
+import { DrawerAccountFoot, DrawerAccountHeader } from "@/components/AccountSwitcher";
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
@@ -265,7 +265,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               className="absolute inset-0 bg-black/60"
               onClick={closeDrawer}
             />
-            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in tech-glass-subtle">
+            {/* Solid, not glass: the page's words read through a translucent
+                sheet and made every menu look broken (owner, 2026-10-09). */}
+            <aside className="absolute inset-x-0 bottom-0 flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
               {/* Drag handle */}
               <div className="flex justify-center pt-2 pb-1">
                 <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
@@ -313,7 +315,7 @@ function MobileBottomNavInner({
       {/* The header is the account surface (owner, 2026-10-09): the mark and
           the organization, the signed-in address under it, and a tap opens
           the other accounts and the account actions. */}
-      <DrawerAccountHeader onClose={close} you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close} />
+      <DrawerAccountHeader onClose={close} />
       {/* NS-1 on the phone: the one search. */}
       {shellBarOn() ? (
         <div className="border-b border-border px-3 py-2">
@@ -417,12 +419,16 @@ function MobileBottomNavInner({
           </div>
         )}
       </nav>
-      <div className="mt-auto border-t border-border p-3 space-y-2">
-        <ThemeToggleMenuItem onClick={close} />
-        <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
-          <AppIcon name="Monitor" size={16} className="shrink-0" />
-          Desktop view
-        </Button>
+      {/* The rare acts, after the apps: the member's pages, the settings and
+          sign-out, in one list (owner review, 2026-10-09). */}
+      <div className="mt-auto border-t border-border px-2 py-3">
+        <DrawerAccountFoot you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close}>
+          <ThemeToggleMenuItem onClick={close} />
+          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
+            <AppIcon name="Monitor" size={16} className="shrink-0" />
+            Desktop view
+          </Button>
+        </DrawerAccountFoot>
       </div>
     </>
   );
