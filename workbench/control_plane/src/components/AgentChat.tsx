@@ -1884,7 +1884,9 @@ export default function AgentChat({
               list tail so the card is never lost. */}
           {hitlAnchorId === null && renderHitlCards()}
 
-          {!isLoading && messages.length > 0 && (() => {
+          {/* No follow-up pills under a cut answer or during an update: the
+              notice below is the next step, and it sits right under the answer. */}
+          {!isLoading && !outage && !interruptedId && messages.length > 0 && (() => {
             const last = messages[messages.length - 1];
             if (last?.role === "assistant" && last.content.trim() && !last.streaming) {
               return (
