@@ -43,9 +43,9 @@ import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
-  HOME_PANE,
   accountLinks,
   desktopFrame,
+  homePane,
   isActive,
   launcherGroups,
   shellNavOn,
@@ -370,6 +370,13 @@ function MobileBottomNavInner({
   );
   // The shell nav (NS-2): the drawer takes the sidebar's shape (§9).
   const [shellNav] = useState(() => shellNavOn());
+  // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
+  // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
+  // `localStorage` override the server and the browser can disagree, and
+  // React warns once. Production reads the build-time flag on both sides,
+  // so it never disagrees. `app/page.tsx` needs `useSyncExternalStore`
+  // because it swaps the whole page; a label here does not.
+  const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
   const drawerSections = shellNav ? shellSidebar(navSections) : navSections;
 
@@ -412,18 +419,18 @@ function MobileBottomNavInner({
         {shellNav && !accessLoading && (
           <div className="px-2 pt-2">
             <Link
-              href={HOME_PANE.href}
+              href={home.href}
               onClick={close}
               className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
-                isActive(pathname, HOME_PANE.href)
+                isActive(pathname, home.href)
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
-                <AppIcon name={HOME_PANE.icon} size={15} />
+                <AppIcon name={home.icon} size={15} />
               </span>
-              <span className="text-sm font-medium">{HOME_PANE.label}</span>
+              <span className="text-sm font-medium">{home.label}</span>
             </Link>
           </div>
         )}

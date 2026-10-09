@@ -70,11 +70,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from acb_common import get_logger, get_settings
+from acb_common import automation_agent_scope, get_logger, get_settings
 from acb_common.db import current_tenant
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 
 __all__ = [
+    "AUTOMATION_AGENT",
     "BUDGET_BREAKER_S",
     "BUDGET_MODES",
     "BUDGET_NAMESPACE",
@@ -158,17 +159,29 @@ class _Scope:
 _SCOPE: ContextVar[_Scope | None] = ContextVar("email_llm_scope", default=None)
 
 
+#: The agent name of a mailbox job's model calls when no call names a
+#: narrower feature (AI-call attribution, 2026-10-10).
+AUTOMATION_AGENT = "email.automation"
+
+
 @contextmanager
-def automation_scope(account_id: Any) -> Iterator[None]:
+def automation_scope(account_id: Any, *, agent: str = AUTOMATION_AGENT) -> Iterator[None]:
     """Mark the calls in this block as the automation of one mailbox.
 
     The cap and the budget bind each model call inside. A falsy account id
     still opens the scope, so the cap binds, but the budget then counts
     nothing, because it has no mailbox to count against.
+
+    It also names the calls ``agent`` for the usage report, through
+    ``acb_common.automation_agent_scope``. A chat agent that the task already
+    holds keeps its name, and the agent before the block comes back on exit.
+    Before 2026-10-10 a job bound no agent, and the Operator dashboard
+    showed 97% of the email calls as "not attributed".
     """
     token = _SCOPE.set(_Scope(str(account_id).strip() if account_id else ""))
     try:
-        yield
+        with automation_agent_scope(agent):
+            yield
     finally:
         _reset(_SCOPE, token)
 

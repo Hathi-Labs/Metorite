@@ -480,6 +480,32 @@ export async function lensFetchUntriaged(): Promise<MyTask[]> {
   return (await fetchAll(MY_ROUTES.inbox, "untriaged=true")).map(mapLensItem);
 }
 
+/**
+ * My scheduled tasks in a window, `[start, end)`, earliest first.
+ * `GET /projects/my/calendar`, the Calendar's one read (D54). The route is
+ * unpaged on purpose, because the window is the bound. My Day's Today card
+ * reads it for one day (NS-3).
+ */
+export async function lensFetchScheduled(start: string, end: string): Promise<MyTask[]> {
+  const q = new URLSearchParams({ start, end });
+  const res = await projectsCall<ListResponse>(`my/calendar?${q}`);
+  return res.rows.map(mapLensItem);
+}
+
+/**
+ * My first next actions, in the inbox's own order. One page of
+ * `GET /projects/my/inbox?disposition=NEXT`. The route filters BEFORE it
+ * pages, so `limit` rows are the first `limit` next actions. My Day's Next
+ * actions card reads it (NS-3), and it never needs the whole list.
+ */
+export async function lensFetchNext(limit = 20): Promise<MyTask[]> {
+  const size = Math.max(1, Math.min(limit, PAGE_SIZE));
+  const res = await projectsCall<ListResponse>(
+    `${MY_ROUTES.inbox}?disposition=NEXT&page=1&page_size=${size}`,
+  );
+  return res.rows.map(mapLensItem);
+}
+
 /** A project I lead, as `/projects/my/led` answers it. */
 export interface LensLedProject {
   id: string;

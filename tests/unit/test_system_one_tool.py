@@ -263,6 +263,31 @@ def test_the_run_binding_names_the_agent_over_a_stale_run_context(monkeypatch) -
     assert wire.requests[0].headers["X-CC-Agent"] == PA
 
 
+@pytest.mark.parametrize(("calling", "sent"), [
+    ("email.rule_match", "agent:email.rule_match"),
+    ("projects-assistant", "projects-assistant"),
+])
+def test_a_calling_agent_cannot_claim_an_automation_name_ON_THE_WIRE(
+    monkeypatch, calling, sent,
+) -> None:
+    """AI-call attribution, ``customer_console.md`` §4.3a (review P2).
+
+    ``system_one._ask`` sends the calling agent as a per-request
+    ``extra_headers`` value, and a per-request header beats ``_stamp``. A MAF
+    slug may hold a dot, so a member agent named ``email.rule_match`` must
+    leave the process as ``agent:email.rule_match``. A plain chat name is
+    unchanged. Mutation-checked 2026-10-10: delete ``chat_agent_label`` in
+    ``system_one._ask`` and the first case fails."""
+    clear_run_context()
+    bind_run_context(run_id="run-s1", agent=calling)
+    bind_artifact_context(agent_name=calling, run_id="run-s1", think_mode="auto")
+    wire = _wire(monkeypatch, lambda _b: _answers(
+        {"id": "q", "choice": "yes", "confidence": 0.9, "reason": ""},
+    ))
+    _ask(question="Is it urgent?", context="due today")
+    assert wire.requests[0].headers["X-CC-Agent"] == sent
+
+
 def test_the_message_frames_the_context_as_data(monkeypatch) -> None:
     wire = _wire(monkeypatch, lambda _b: _answers(
         {"id": "q", "choice": "no", "confidence": 0.9, "reason": ""},

@@ -76,7 +76,10 @@ def as_mailbox_owner(fn: Any) -> Any:
         from email_ingestion.llm_cap import automation_scope
 
         owner = await mailbox_owner(account_id)
-        with job_member_scope(owner, app="email"), automation_scope(account_id):
+        with (
+            job_member_scope(owner, app="email", agent="email.automation"),
+            automation_scope(account_id),
+        ):
             return await fn(account_id, *args, **kwargs)
 
     return _wrapped

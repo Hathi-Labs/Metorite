@@ -680,6 +680,18 @@ _ALLOWED_CC_LITERALS: dict[str, str] = {
         "import ratchet cannot see it",
     "apps/services/gateway/gateway/room_stream.py":
         "FOLLOW-UP: ROOM_STREAM_PREFIX / PRESENCE_PREFIX (:39-40)",
+    # Incident 2026-10-09. Four keys belong to a PROCESS, not to a tenant: its
+    # heartbeat, the set of processes, the sweep's claim, and the runs one
+    # process holds. That last hash, cc:instance-runs:{id}, DOES hold the org
+    # ids, row ids and run ids of many tenants, because one process holds the
+    # runs of many orgs, so no single tenant can prefix it. It holds no member
+    # email: the sweep reads the actor from cc:runactor. RUN_OWNER_PREFIX and
+    # RECOVER_PREFIX sit beside cc:active:{tid} and are read wherever it is
+    # read, so they convert with stream_relay's prefixes in the same follow-up.
+    "apps/services/orchestrator/orchestrator/run_liveness.py":
+        "FOLLOW-UP: RUN_OWNER_PREFIX and RECOVER_PREFIX convert with stream_relay's "
+        "ACTIVE_PREFIX; INSTANCE_* are process-scoped, and instance-runs holds the "
+        "org and row ids of many tenants (no emails)",
 }
 
 

@@ -649,6 +649,7 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
             [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": prompt[:4000]}],
             max_tokens=2500,
+            feature="rules_generate",
         )
         rules = data.get("rules") if isinstance(data, dict) else data
         return _normalize_generated_rules(rules)

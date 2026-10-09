@@ -183,7 +183,7 @@ async def _route_incoming_turn(
     will ever apply. ``run_detached``'s own guard still stands behind that, so
     engaging on a bad read cannot destroy a transcript — it raises instead.
     """
-    from orchestrator.steer import Route, TurnDecision, route_turn
+    from orchestrator.steer import Route, TurnDecision, is_bare_stop, route_turn
 
     if not thread_id:
         return TurnDecision(Route.ENGAGE, "no_thread")
@@ -196,12 +196,81 @@ async def _route_incoming_turn(
         _log.warning("agent.turn_route_probe_failed", thread_id=thread_id[:12])
         return TurnDecision(Route.ENGAGE, "probe_failed")
 
+    # ── A dead run is never steered into (incident 2026-10-09) ───────────────
+    # ``cc:active`` outlives the process that held the run. When the owner
+    # process has no heartbeat key, close the run here (its partial reply is
+    # saved with an "interrupted" marker) and route as if nothing ran. A bare
+    # "stop" to a dead run has nothing left to stop.
+    #
+    # ONE recovery at a time (``cc:recover:{tid}``). A request that loses the
+    # claim waits for the winner, then routes as usual: into the winner's new
+    # run as a steer, so a second run never starts (two held sends that flush
+    # together are the likely case).
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        recovery_in_progress, run_liveness, wait_out_recovery,
+    )
+
+    async def _reread() -> tuple[bool, str]:
+        a = await is_active(thread_id)
+        return a, (await get_run_source(thread_id) if a else "")
+
+    try:
+        if await recovery_in_progress(thread_id):
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+        if active and await run_liveness(thread_id) == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            stop = is_bare_stop(text)
+            rec = await recover_dead_run(thread_id, why="owner_gone", hold=not stop)
+            if rec is not None:
+                if stop:
+                    return TurnDecision(Route.DROP, "dead_run_stopped")
+                return TurnDecision(Route.ENGAGE, "dead_run_recovered")
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.turn_recovery_failed", thread_id=thread_id[:12])
+
     return route_turn(
         author_kind="human" if actor else "agent",
         text=text,
         run_active=active,
         target_run_kind=_run_kind_for_source(source),
     )
+
+
+async def _resume_note_for(
+    thread_id: str, member: str, organization_id: str | None,
+) -> str | None:
+    """The server's Continue note, built from the thread's saved partial reply.
+
+    Reads the last assistant row of the thread under the caller's tenant.
+    ``None`` unless that row carries the restart marker: any member who can
+    send may set ``resume: true``, so the flag counts only for an answer a
+    restart cut. The caller then sends the message as it came.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from gateway.chat_recovery import (  # noqa: PLC0415
+        compose_resume_note, row_was_interrupted,
+    )
+
+    try:
+        from gateway.routes.chat import _get_messages  # noqa: PLC0415
+
+        rows = await asyncio.to_thread(
+            _get_messages, thread_id, (member or "").strip() or "anonymous",
+            limit=20, organization_id=organization_id,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.resume_partial_unread", thread_id=thread_id[:12])
+        return None
+    last = next((r for r in reversed(rows or []) if r.get("role") == "assistant"), None)
+    if last is None or not row_was_interrupted(last):
+        _log.info("agent.resume_refused_no_marker", thread_id=thread_id[:12])
+        return None
+    return compose_resume_note(str(last.get("content") or ""))
 
 
 #: Sources whose runs nobody is standing in. A person's message arriving during
@@ -338,6 +407,36 @@ async def _apply_turn_decision(
 
     text = str(req.payload.get("message") or req.payload.get("user_query") or "")
     signal = await send_steer(thread_id, actor, text, run_id=req.run_id)
+
+    # ── A steer that NO process heard (incident 2026-10-09) ──────────────────
+    # The owner may still have a heartbeat (it is in its graceful stop) while
+    # its control listener is already gone. Nothing will ever apply this
+    # steer. So close the dead run, take THIS steer back out of the store (the
+    # message itself carries it), and start the next run in this request. The
+    # ENGAGE branch replays the steers stored earlier, such as a "Continue"
+    # that an earlier request left behind.
+    #
+    # "Nobody heard it" alone proves nothing (a listener can be a moment from
+    # subscribing on another worker). The run must ALSO have lost its owner's
+    # heartbeat. And only the request that wins the recovery claim engages: a
+    # loser keeps its steer stored for replay, as before.
+    if signal.get("undelivered"):
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        if await run_liveness(thread_id) == "dead":
+            from orchestrator.steer import Route as _Route  # noqa: PLC0415
+            from orchestrator.steer import TurnDecision as _Decision  # noqa: PLC0415
+            from orchestrator.steer import discard_signal  # noqa: PLC0415
+
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            rec = await recover_dead_run(thread_id, why="steer_undelivered", hold=True)
+            if rec is not None:
+                await discard_signal(thread_id, str(signal.get("id") or ""))
+                return await _apply_turn_decision(
+                    _Decision(_Route.ENGAGE, "dead_run_recovered"),
+                    req, agent_name, actor, room,
+                )
 
     # The room sees WHO redirected the run and when. Deliberately on
     # `cc:room:` and not on the run stream: run events are folded into the
@@ -2133,6 +2232,37 @@ async def run_agent_stream_endpoint(
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     await _prepare_if_new_thread(room, req.thread_id, _room_org)
 
+    # ── An edited message SUPERSEDES the last one (owner, 2026-10-09) ────────
+    # Step 1 of 3, and it changes no row. Refuse an edit the rules forbid,
+    # then stop the member's OWN run, so the edit starts a run of its own and
+    # never folds into the old one as a steer. Steps 2 and 3 are below: the
+    # route refuses an edit it would steer, and the rows go only after
+    # `_refuse_if_another_run_is_active`, so a refusal deletes nothing.
+    # gateway/chat_supersede.py holds the rules.
+    _supersede_note = ""
+    _superseded_ids: list[str] = []
+    _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
+    _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    _edit_shared = bool(room is not None and room.is_shared)
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            check_supersede,
+            settle_active_run,
+        )
+        try:
+            await asyncio.to_thread(
+                check_supersede, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+            await settle_active_run(req.thread_id, actor_email)
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+
     # The other people in the room find out what was asked, and by whom, the
     # moment it is asked — the run stream carries only the agent's side.
     if room is not None and room.is_shared:
@@ -2147,12 +2277,32 @@ async def run_agent_stream_endpoint(
     # Before anything expensive — before memory assembly, before the executor —
     # decide what this message DOES. Four outcomes; only one of them starts a
     # run. See _route_incoming_turn / orchestrator.steer.route_turn.
+    # ── Continue after a restart (incident 2026-10-09) ───────────────────────
+    # The chat's Continue button sends ``resume: true``. The words the model
+    # reads are the SERVER's, built from the saved partial reply, so a client
+    # cannot write that instruction. See gateway.chat_recovery.
+    if req.payload.pop("resume", None) and req.thread_id:
+        _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
+        if _note is not None:
+            req.payload["message"] = _note
+
     _incoming_text = str(
         req.payload.get("message") or req.payload.get("user_query") or ""
     )
     _decision = await _route_incoming_turn(
         req.thread_id or "", actor_email, _incoming_text,
     )
+    # Edit, step 2: an edit is never a steer. A run that started since step 1
+    # (another member's) refuses the edit, and no row has gone yet.
+    if _supersedes and _decision.route.name != "ENGAGE":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "run_in_progress",
+                "message": "A run is in progress on this conversation. "
+                           "Wait for it to end, then edit your message.",
+            },
+        )
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -2402,6 +2552,19 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
         )
+        if _superseded_ids:
+            # A cancelled run on another worker can fold its row after the
+            # edit deleted it. Delete the superseded rows again, by id.
+            from gateway.chat_supersede import delete_rows  # noqa: PLC0415
+            try:
+                await asyncio.to_thread(
+                    delete_rows, thread_id, _superseded_ids,
+                    organization_id=_room_org,
+                )
+            except Exception:  # noqa: BLE001 — best effort, never fail the fold
+                _log.warning(
+                    "agent.supersede_redelete_failed", thread_id=thread_id[:12],
+                )
         # Memory extraction at the SAME run boundary (review P1-9): the Next
         # translator only extracted while its reader was alive, so turns
         # completed after a browser-gone/reconnect contributed nothing to
@@ -2414,6 +2577,28 @@ async def run_agent_stream_endpoint(
 
     _actor = (getattr(user, "email", "") or "").strip()
     await _refuse_if_another_run_is_active(thread_id, _actor)
+
+    # Edit, step 3: every refusal is behind us, so the old turn and its
+    # replies go now, in one locked transaction that decides again. The note
+    # is composed from their stored tool events.
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            compose_supersede_note,
+            supersede_rows,
+        )
+        try:
+            _plan = await asyncio.to_thread(
+                supersede_rows, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+        _supersede_note = compose_supersede_note(_plan)
+        _superseded_ids = _plan.removed_ids
 
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a
@@ -2436,6 +2621,18 @@ async def run_agent_stream_endpoint(
     # sourcing the tenant from it is a tenant-spoofing hole (R11,
     # user_management_contract.md; §0.9.3). No DB write is converted this slice.
     _organization_id = getattr(user, "organization_id", None)
+
+    # The supersede note goes in LAST, after memory search, the Graphiti
+    # episode and the extraction input read the message: memory files the
+    # member's words, never the platform's note. `message` is what every
+    # runtime reads as the current turn (the Copilot SDK path, the MAF string
+    # path and a MAF native session alike), so the note reaches the model on
+    # each of them.
+    if _supersede_note:
+        _edited = str(req.payload.get("message") or "")
+        req.payload["message"] = (
+            f"{_supersede_note}\n\n{_edited}" if _edited else _supersede_note
+        )
 
     agent_gen = run_agent_stream(
         agent_name,
@@ -2467,6 +2664,14 @@ async def run_agent_stream_endpoint(
                 # never req.payload. Binds the detached drain task's own scope so
                 # the on_complete persist hook sees the right tenant (R11).
                 organization_id=_organization_id,
+                # What the restart sweep needs to save this run's partial
+                # reply if this process dies (orchestrator.run_liveness).
+                record={
+                    "messageId": _persist_message_id,
+                    "agent": agent_name,
+                    "runId": run_id,
+                    "model": req.model,
+                },
             ):
                 yield f"data: {json.dumps(evt)}\n\n"
         except SupersedeRefused:
@@ -2565,19 +2770,47 @@ async def respond_user_input(
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
+    _command: dict[str, Any] = {
+        "cmd": "respond_input",
+        "request_id": req.request_id,
+        "answer": req.answer,
+        "was_freeform": req.was_freeform,
+    }
     if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
-        delivered = await dispatch_control(
-            req.thread_id,
-            {
-                "cmd": "respond_input",
-                "request_id": req.request_id,
-                "answer": req.answer,
-                "was_freeform": req.was_freeform,
-            },
-        )
+        delivered = await dispatch_control(req.thread_id, _command)
     if not delivered:
+        # ── A card answer across a restart (incident 2026-10-09) ─────────────
+        # The run that asked may have died with its process. Then a bare 409
+        # drops the answer. Instead, close the dead run and hand the answer
+        # back, with the question it answers, as a message the browser sends.
+        # That message starts the next run (it ENGAGEs, the run is closed).
+        from orchestrator.stream_relay import delivery_of  # noqa: PLC0415
+
+        from gateway.chat_recovery import card_answer_after_restart  # noqa: PLC0415
+
+        resend = await card_answer_after_restart(
+            req.thread_id, req.request_id, req.answer,
+            delivery=delivery_of(_command),
+        )
+        if resend is not None:
+            _log.info(
+                "agent.user_input_after_restart",
+                request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "run_restarted",
+                    "message": (
+                        "The assistant restarted. Your answer will be sent "
+                        "as a new message."
+                    ),
+                    "resumeMessage": resend,
+                    "threadId": req.thread_id,
+                },
+            )
         # The run may have ended or the request id is stale.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -2657,6 +2890,20 @@ async def reconnect_agent_stream(
         _since = since
         if _since.startswith("local-"):
             _since = "0-0"
+
+        # A dead run never holds a reconnect open (incident 2026-10-09). Its
+        # flag outlives its process, and Phase 2 below would then wait on it
+        # for up to an hour, with the chat showing "Reconnecting…". Close it
+        # first: the replay then carries its "interrupted" marker and ends.
+        try:
+            from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+            if await is_active(thread_id) and await run_liveness(thread_id) == "dead":
+                from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+                await recover_dead_run(thread_id, why="reconnect")
+        except Exception:  # noqa: BLE001 — never block a replay on this check
+            _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between

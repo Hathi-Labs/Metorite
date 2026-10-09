@@ -55,6 +55,7 @@ import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 import { Input } from "@/components/ui/Input";
 import ManagerFrame from "./ManagerFrame";
+import { StageTip } from "./StageHelp";
 import {
   ACCENT_HUES,
   type AccentHue,
@@ -440,20 +441,15 @@ export function StatusManager({
                       statusAccent({ category: group.category }).dot
                     }`}
                   />
-                  <h3
-                    className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
-                    title={group.hint}
-                  >
+                  <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {group.label}
                   </h3>
                   {/* The explanation, on ask. It used to be a paragraph under
                       every heading — five of them, read once and then read
-                      past forever, on a screen whose job is to show a list. */}
-                  <Icon
-                    name="Info"
-                    className="h-3 w-3 shrink-0 text-muted-foreground/60"
-                    aria-label={group.hint}
-                  />
+                      past forever, on a screen whose job is to show a list.
+                      I-10b: an `InfoTip`, because the bare icon's native
+                      `title` showed nothing on a phone or to a keyboard. */}
+                  <StageTip label={group.label} hint={group.hint} />
                   {/* ⚠️ Say what the number COUNTS. It sat here bare, next to a
                       stage name, in a product that shows TASK counts in the
                       same shape on the board and the list — so "2" read as

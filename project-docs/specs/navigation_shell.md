@@ -1,7 +1,7 @@
 # The shell — how a member finds an app, a job or an answer
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
-and 2, NS-3 slice A, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+and 2, NS-3 slices A and B, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
@@ -12,6 +12,10 @@ the shell bar flag, which is on.
 and carries the organization's logo (§3.1). Organisation is an app in Admin,
 and it left the account menu (§3.2a item 4). Both ride the two shell flags,
 which are on in production.
+
+NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
+`NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
+production (§13.1).
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -220,6 +224,8 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    the group would be empty for every member. A heading over nothing costs
    attention and gives nothing. `/` is still the "Welcome back" grid, so the
    name "My Day" would promise a page that does not exist. NS-3 renames it.
+   Since NS-3 slice B, the item reads "My Day" when the My Day flag is on
+   (`homePane` in `shellNav.ts`). With the flag off, it still reads "Home".
 2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
    because the bell and My Day carry its items. Neither is built (NS-3,
    NS-6). Until they are, Approvals is an approver's only door to the queue,
@@ -381,12 +387,19 @@ altitudes it supports.
 |---|---|---|---|
 | Today | Personal | Calendar | The lens, `scheduledStart` and `scheduledEnd` |
 | Next actions | Personal | My Tasks | The lens, `/projects/my/*` |
-| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2554`. It reads `GET /email/digest`, the route `get_digest` in `routes/email/digest.py` |
+| Needs reply | Personal | Email | Folded into Needs you. See the note below the table. As a card it would read `getDigest`, `app/email/lib/api.ts:2554`, which reads `GET /email/digest`, the route `get_digest` in `routes/email/digest.py` |
 | Needs you | Personal | Every app | `GET /shell/needs` (§7.2) |
 | Team pulse | Team, all my teams | Projects | Report template T1, "Team pulse" (`projects_reports.md`) |
 | At-risk work | Team, all my teams | Projects | The analytics reads under `projects_ai_chat.md` §13 |
 | Out today | Team | People | `people_absences` |
 | Waiting for you | Personal, for an approver | Approvals | `pending_actions` |
+
+**Needs reply is a group of Needs you, not a card** *(NS-3 slice B,
+2026-10-09)*. The needs feed already carries each mail thread that waits for
+a reply. So the Needs you card shows those threads as its last group,
+"Waiting for your reply". One thread in two cards teaches the eye to skip
+both cards. For the same reason, Next actions leaves out each task that
+Needs you already shows. Fence: `src/lib/shell/myDay.test.ts`.
 
 **No second arithmetic.** A team card draws a number that a Projects read or a
 report section already computes. The shell computes nothing.
@@ -1063,15 +1076,14 @@ Done when:
 5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
-### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, dark
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, live · slice B BUILT 2026-10-09, dark
 
 **Slice A is built.** `GET /shell/needs` serves three of the four providers
 of §7.2: My Tasks, Projects and Email. §7.2 records the contract. Done-when 2
 to 4 are met for those three, and the R8 run is in the pull request.
 
-Slice C adds Approvals after H-201. My Day itself (done-when 1 and 5) is a separate
-slice. No page reads the feed yet, so the route changes nothing that a member
-sees.
+Slice C adds Approvals after H-201. My Day itself (done-when 1 and 5) is
+slice B, below. It is dark, so no page that a member sees reads the feed yet.
 
 Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
 app exports, and `gateway/routes/shell/needs.py` with its providers.
@@ -1088,6 +1100,47 @@ Done when:
 4. The needs SQL ran against a real Postgres (R8), and the run is in the pull
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
+
+**Slice B, built 2026-10-09, dark.** It builds My Day at `/`, behind
+`NEXT_PUBLIC_MY_DAY`. Done-when 1 and 5 hold for the page, and
+`src/lib/shell/myDayPage.test.ts` renders both branches. Done-when 2 to 4
+belong to slice A, the gateway feed.
+
+- **The cards.** `NeedsYouCard` is in `src/lib/shell/`. `TodayCard` is in
+  `app/calendar/components/`, and `NextActionsCard` is in
+  `app/tasks/components/`. Each card reads through `useCachedResource`.
+- **The feed's door.** `src/app/api/shell/needs/route.ts` sends the feed on
+  from the gateway. When the gateway is down, it answers 502. An empty feed
+  would say "Nothing needs you", and that is a claim, not a silence.
+- **The acts.** A one-click act runs through the code of the app that owns
+  it (`src/lib/shell/needs.ts`). My Day adds no write route. A done is the
+  My Tasks store's own gesture, `quickDispose`, through
+  `app/tasks/lib/completeFromHome.ts`. So a parent with open subtasks asks
+  the D-PM-38 question first, and Undo is the store's toast (D79). The first
+  done on a visit loads the store once. Before each later done, the store
+  reads that one task again (`refreshItem`). A task that the store never saw
+  makes it load again. While the question is up, the row stays on the card.
+  It leaves only when the answer completes the task. When the store's Undo
+  puts the task back from done, the row comes back too. The watch for a failed
+  write starts when the store writes, so it also sees a late answer. A
+  notification marked read has no Undo, because the Projects bell has no
+  route that marks it unread.
+- **The cache.** A write that lands while a read of the same key is in
+  flight makes that read's answer stale (`lib/dataCache.ts`). The read does
+  not store it, and it reads again. Before this, an Undo during the re-read
+  after a Done showed the state from before the Undo. Each such write also
+  wakes the key's watchers, so a read that gave up never stays on screen.
+- **Not yet in the manifest.** My Day imports its three cards directly. They
+  are not declared through the `cards` field of §5.1 yet. The manifest slice,
+  with NS-7, moves them there.
+- **Who gets a card.** A card asks for what the server asks for. Today and
+  Next actions read `/projects/my/*`, and the Projects router demands
+  `feature:projects`. So both cards need `tasks` and `projects`. Needs you
+  needs `projects` or `email`, the features of its sources.
+- **One caveat, once.** When a source does not answer, the Needs you card
+  names the gap and offers Retry. An example is "Email did not answer, so
+  its replies may be missing". The summary then says nothing about needs.
+- **The sidebar.** With the flag on, the first item reads "My Day".
 
 ### NS-4a · Tier 1, record search — AGENT-SAFE · BUILT 2026-10-08, dark
 
@@ -1397,12 +1450,15 @@ table is the only fence (R7, advisory).
   the five rules of §4.2. The owner gave this call to the design.
 - **Q3 → D88.** Tiers 0 and 1 are free. Tier 2 is metered at the cheapest tier
   and shows no price. The owner accepted the recommendation.
+- **Q2, answered by the owner on 2026-10-09.** Yes. `/` becomes My Day for
+  every member, behind `NEXT_PUBLIC_MY_DAY`. To turn the flag on in
+  production stays owner-only (§13.1).
 
 ### 13.3 Still open — each has a default an agent builds to
 
 | # | Question | Default |
 |---|---|---|
-| Q2 | Does `/` become My Day for every member? | Yes, in NS-3, behind its flag |
+| Q2 | Does `/` become My Day for every member? | Answered on 2026-10-09. See §13.2 |
 | Q4 | Does the shell bar take one shared row with each app's bar? | Yes. One row, merged in NS-1 |
 | Q5 | Fixed presets, or an editor for each organization? | Eight fixed presets first. Add the editor when a second customer asks |
 | Q6 | Does Desk mode hide All apps? | Yes. The command bar stays |

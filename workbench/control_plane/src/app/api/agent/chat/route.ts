@@ -81,6 +81,18 @@ interface ChatRequest {
   /** When true, the client is reconnecting to an existing agent run rather
    *  than starting a new one.  The route calls the reconnect endpoint. */
   reconnect?: boolean;
+  /** The id of the member's last message, when this turn is its EDIT. The
+   *  edit replaces that message and every reply after it (owner,
+   *  2026-10-09). The gateway checks that the member wrote it and that it is
+   *  the last one, and composes the note the new run reads
+   *  (`gateway/chat_supersede.py`). */
+  supersedes?: string;
+  /** The id of this turn's own user row, so the edit never deletes it. */
+  userMessageId?: string;
+  /** The Continue button after a restart (incident 2026-10-09). The gateway
+   *  writes the words the model reads, from the saved partial reply, so this
+   *  is a flag and never text. */
+  resume?: boolean;
 }
 
 const LITELLM_BASE_URL =
@@ -157,13 +169,16 @@ async function translateAndPersistStream(
    *  not know which agent runs, so they pass nothing, and the server stamps
    *  the room's agent (WS-27bm S10). */
   agentName?: string,
+  /** Re-open the run's stream after `since` (a Redis stream id), or null.
+   *  Used when the stream ends with no terminal event (incident 2026-10-09). */
+  reattach?: (since: string) => Promise<ReadableStream<Uint8Array> | null>,
 ): Promise<string> {
   // Stable per-STREAM persistence id: when the frontend didn't supply one,
   // mint it once here — per-call minting would write a new row on every 3s
   // checkpoint, and the old per-thread constant collapsed all turns into one.
   const persistId =
     assistantMessageId || `assistant-${threadId}-${Date.now().toString(36)}`;
-  const reader = agUiBody.getReader();
+  let reader = agUiBody.getReader();
   const decoder = new TextDecoder();
   const toolNames: Record<string, string> = {};
   const toolArgs: Record<string, string> = {};
@@ -217,6 +232,11 @@ async function translateAndPersistStream(
   let lastPersistTime = Date.now();
   let clientConnected = true;
 
+  /** True once the run said it ended (finished or failed). */
+  let sawTerminal = false;
+  /** The last Redis stream id seen, so a reattach replays only what is new. */
+  let lastStreamId: string | null = null;
+
   /** Safely enqueue to the client; sets clientConnected=false on failure. */
   const enqueue = (data: Record<string, unknown>) => {
     if (!clientConnected) return;
@@ -229,6 +249,13 @@ async function translateAndPersistStream(
     }
   };
 
+  // A stream that ends with no terminal event is NOT proof the run died: a
+  // run parked on a card hits the fetch budget, and a restart cuts the
+  // connection. So the route re-opens the run's stream from the last event
+  // it saw (incident 2026-10-09, review of #797). The gateway's reconnect
+  // closes a run whose process is dead and replays the server's own
+  // `run_interrupted` marker. A live run simply streams on.
+  for (let attempt = 0; ; attempt++) {
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -243,6 +270,10 @@ async function translateAndPersistStream(
         let ev: Record<string, unknown>;
         try { ev = JSON.parse(raw); } catch { continue; }
         const t = ev.type as string;
+        if (t === "RUN_FINISHED" || t === "RUN_ERROR" || t === "done") sawTerminal = true;
+        if (typeof ev._stream_id === "string" && !ev._stream_id.startsWith("local-")) {
+          lastStreamId = ev._stream_id;
+        }
         let out: Record<string, unknown> | null = null;
 
         if (t === "TEXT_MESSAGE_CONTENT") {
@@ -492,6 +523,13 @@ async function translateAndPersistStream(
   } catch {
     // Backend stream ended early
   }
+  // Only a Redis id lets the reattach replay what is new and nothing twice.
+  if (sawTerminal || !reattach || !lastStreamId || !clientConnected || attempt >= MAX_REATTACH) break;
+  const next = await reattach(lastStreamId).catch(() => null);
+  if (!next) break;
+  reader = next.getReader();
+  buf = "";
+  }
 
   // Final persist — ensure the complete message is saved with all stream metadata.
   // ⚠️ This persist retries through a gateway restart (H-194), and it is
@@ -508,6 +546,21 @@ async function translateAndPersistStream(
   }
 
   return assistantContent;
+}
+
+/** How often one chat response re-opens a run's stream. Each reattach gets
+ *  its own fetch budget, so a card can wait well past the first one. */
+const MAX_REATTACH = 6;
+
+/** Re-open a run's stream through the gateway's reconnect, after `since`. */
+function reattachFor(threadId: string, headers: Record<string, string>) {
+  return async (since: string): Promise<ReadableStream<Uint8Array> | null> => {
+    const res = await gatewayFetch(
+      `${GATEWAY_URL}/agent/run/${encodeURIComponent(threadId)}/reconnect?since=${encodeURIComponent(since)}`,
+      { method: "GET", headers, signal: AbortSignal.timeout(310_000) },
+    );
+    return res.ok && res.body ? res.body : null;
+  };
 }
 
 // ─── Memory extraction (post-stream) ─────────────────────────────────────────
@@ -594,7 +647,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect } = body;
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId } = body;
   if (!agentName || !message) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
@@ -659,6 +712,42 @@ export async function POST(req: NextRequest): Promise<Response> {
     return new Response(reconStream, { headers: sseHeaders() });
   }
 
+  // ── An edit on a path with no gateway run ───────────────────────────────
+  // The copilot path hands `supersedes` to /agent/run/stream, which stops the
+  // old run, removes the old turn and composes the note in one place. The
+  // other paths have no gateway run, and the history this request carries is
+  // the model's whole memory, so removing the stored rows is the whole job.
+  if (supersedes && threadId && mode !== "copilot") {
+    let res: Response;
+    try {
+      res = await gatewayFetch(
+        `${GATEWAY_URL}/chat/sessions/${encodeURIComponent(threadId)}/supersede`,
+        {
+          method: "POST",
+          headers: await buildGatewayHeaders(),
+          body: JSON.stringify({
+            superseded_id: supersedes,
+            keep_ids: [userMessageId, assistantMessageId].filter(Boolean),
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return new Response(
+        `data: ${JSON.stringify({ type: "error", content: `Gateway unreachable: ${msg}`, code: "connection" })}\n\n`,
+        { status: 502, headers: sseHeaders() },
+      );
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => `status ${res.status}`);
+      return new Response(
+        `data: ${JSON.stringify({ type: "error", content: text, code: codeForStatus(res.status) })}\n\n`,
+        { status: res.status, headers: sseHeaders() },
+      );
+    }
+  }
+
   // ── Gateway /v1 path: stream directly via litellm SDK ────────────────────
   // Routes to LiteLLM tier aliases (tier1/2/3 are cost-optimized tiers).
   // Backend can optionally route tiers through Copilot, Claude, GPT-4, or Gemini
@@ -689,10 +778,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (mode === "copilot") {
     // /agent/run/stream returns the same AG-UI event format as /copilot/chat.
     let streamRes: Response;
+    // Read once, in the request: a reattach runs later, inside the stream.
+    const runHeaders = await buildGatewayHeaders();
     try {
       streamRes = await gatewayFetch(`${GATEWAY_URL}/agent/run/stream`, {
         method: "POST",
-        headers: await buildGatewayHeaders(),
+        headers: { ...runHeaders, "Content-Type": "application/json" },
         body: JSON.stringify({
           agent: resolvedAgentName,
           payload: {
@@ -702,11 +793,15 @@ export async function POST(req: NextRequest): Promise<Response> {
               message,
             ),
             think_mode: thinkMode ?? "auto",
+            ...(resume === true ? { resume: true } : {}),
             // Forward the caller's system context (persona / persistent memory /
             // app-specific context like the email app's selected account + open
             // email) so named agents — not just the orchestrator — receive it.
             // The executor injects it as a leading system message.
             ...(context ? { system_context: context } : {}),
+            // An edit of the last message: the gateway pops both keys
+            // before the payload reaches the executor.
+            ...(supersedes ? { supersedes, user_message_id: userMessageId ?? "" } : {}),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,
@@ -757,6 +852,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           // An `@name` turn in a room may run another agent, so it claims
           // no author (WS-27bm S10 fix round 1).
           checkpointAgent(resolvedAgentName, message),
+          threadId ? reattachFor(threadId, runHeaders) : undefined,
         );
       },
     });

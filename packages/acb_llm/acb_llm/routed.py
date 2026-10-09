@@ -135,8 +135,12 @@ def router_wired() -> bool:
         return False
 
 
-def run_attribution() -> dict[str, Any]:
+def run_attribution(*, module_slug: str | None = None) -> dict[str, Any]:
     """Who to bill and what to blame, from the ambient run context.
+
+    ``module_slug`` is an explicit app that beats the run context, as
+    :func:`completion_on_router` passes its ``source``. The agent backstop
+    then names that app too.
 
     Public since WS-17 EM-T5 (CP-13e). The email shadow helper in
     ``gateway/decide_features.py`` passes these fields to ``acb_llm.decide``.
@@ -157,6 +161,12 @@ def run_attribution() -> dict[str, Any]:
     ⚠️ **A member without an ``@`` is dropped**, exactly as
     :mod:`acb_llm.attribution` drops it, so the two routed paths cannot
     disagree about who a person is.
+
+    🔴 **The agent has a backstop** (AI-call attribution, 2026-10-10).
+    ``acb_common.attributed_agent`` is the one rule. An explicit agent wins,
+    then the bound agent, then ``<module>.automation``. Before it, every
+    background call with no agent bound reached the Router with ``agent``
+    NULL, and the dashboard showed it as "not attributed".
     """
     try:
         from acb_common._log import get_run_context
@@ -166,14 +176,21 @@ def run_attribution() -> dict[str, Any]:
         ctx = {}
     member = str(ctx.get("user") or "").strip()
     member = member if "@" in member else ""
+    module = module_slug or ctx.get("app") or ctx.get("source") or None
+    try:
+        from acb_common._log import attributed_agent
+
+        agent = attributed_agent(ctx, module)
+    except Exception:
+        agent = ctx.get("agent") or None
     return {
         "member": member or None,
         # H-73: only the SESSION's member may decide a cap. This call runs in
         # the gateway's own process, so there is no header to sign: the run
         # context itself is the server-side fact.
         "member_proven": bool(member) and ctx.get("member_verified") == "1",
-        "agent": ctx.get("agent") or None,
-        "module_slug": ctx.get("app") or ctx.get("source") or None,
+        "agent": agent,
+        "module_slug": module,
         "run_id": ctx.get("run_id") or None,
     }
 
@@ -236,11 +253,10 @@ async def completion_on_router(
     """
     from acb_auth.console_resolve import chat_completion_on_console
 
-    attribution = run_attribution()
     # An explicit `source` beats the inferred one: Custom Apps all run through
-    # one module, so only the caller knows which app it is.
-    if source:
-        attribution["module_slug"] = source
+    # one module, so only the caller knows which app it is. It goes IN, so the
+    # agent backstop names the same app as `module_slug`.
+    attribution = run_attribution(module_slug=source or None)
 
     # 🔴 **Built against `CompletionRequest`, which is `extra="forbid"`.**
     # A first version sent `{"tier": ...}` and spread the caller's `**extra`.

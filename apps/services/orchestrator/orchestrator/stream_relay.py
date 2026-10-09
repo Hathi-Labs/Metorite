@@ -347,6 +347,7 @@ async def mark_active(
     actor: str | None = None,
     source: str | None = None,
     floor: list[str] | None = None,
+    keep_run_facts: bool = False,
 ) -> None:
     """Mark a thread's agent as currently running.
 
@@ -370,15 +371,29 @@ async def mark_active(
                    folded over.  Recorded so a steer from somebody who was not
                    in that fold can be refused rather than silently moving the
                    floor under a turn already executing.
+        keep_run_facts: Mark the SAME run again, and leave its actor, source
+                   and floor as they are. Only the executor's own call inside
+                   a run passes it (``run_agent_stream``). Any other call
+                   clears an omitted fact, so a new run never inherits the
+                   previous run's actor (``test_concurrent_run_guard.py``).
     """
     r = await _get_client()
     try:
         if reset:
             await r.delete(_stream_key(thread_id))
         await r.set(_active_key(thread_id), "1", ex=STREAM_TTL_SECONDS)
+        # ⚠️ An omitted fact is CLEARED, except when the caller marks the
+        # same run again (``keep_run_facts``). The executor makes that call
+        # inside every detached run (``run_agent_stream``). Before the fix it
+        # passed nothing, and deleted the actor, the source and the floor
+        # that ``run_detached`` had just written. The steer floor then failed
+        # open, the supersede guard never answered 409, and a cron run read as
+        # a person's. Fences: ``test_chat_deploy_recovery.py::
+        # test_the_executor_prologue_keeps_the_run_facts`` (same run) and
+        # ``test_concurrent_run_guard.py`` (a new run inherits nothing).
         if actor:
             await r.set(_run_actor_key(thread_id), actor, ex=STREAM_TTL_SECONDS)
-        else:
+        elif not keep_run_facts:
             # A run with no known actor must not inherit the previous one's,
             # or an anonymous/internal run would look like it belongs to
             # whoever ran last and could be refused on their behalf.
@@ -391,7 +406,7 @@ async def mark_active(
             await r.set(
                 _run_source_key(thread_id), source, ex=STREAM_TTL_SECONDS,
             )
-        else:
+        elif not keep_run_facts:
             await r.delete(_run_source_key(thread_id))
         if floor:
             await r.set(
@@ -399,8 +414,13 @@ async def mark_active(
                 json.dumps(sorted({str(m) for m in floor})),
                 ex=STREAM_TTL_SECONDS,
             )
-        else:
+        elif not keep_run_facts:
             await r.delete(_run_floor_key(thread_id))
+        # Which PROCESS holds this run, so a run whose process died is never
+        # read as live again (orchestrator.run_liveness, incident 2026-10-09).
+        from orchestrator.run_liveness import claim_run  # noqa: PLC0415
+
+        await claim_run(thread_id)
     finally:
         pass  # shared pooled client — never closed per-call
 
@@ -469,6 +489,9 @@ async def mark_inactive(thread_id: str) -> None:
         # finished run must not lend either to whatever starts next.
         await r.delete(_run_source_key(thread_id))
         await r.delete(_run_floor_key(thread_id))
+        from orchestrator.run_liveness import release_run  # noqa: PLC0415
+
+        await release_run(thread_id)
         # Also refresh the stream TTL so late reconnectors can still replay.
         await r.expire(_stream_key(thread_id), STREAM_TTL_SECONDS)
     finally:
@@ -524,7 +547,9 @@ async def touch_active(thread_id: str) -> None:
 # The org of a run is therefore WHICH HASH it is in, written at run start from
 # the server-side ``organization_id`` (never from the payload, R11). The actor
 # is recorded HERE and not read from ``cc:runactor``, because the executor's own
-# ``mark_active(thread_id)`` call clears ``cc:runactor`` mid-run.
+# ``mark_active(thread_id)`` call used to clear ``cc:runactor`` mid-run. That
+# call keeps it now (``mark_active`` clears only on ``reset=True``), and the
+# index still records its own copy.
 #
 # Why per organization and not per member: a shared room shows the green dot to
 # every participant, and the run belongs to only one of them. A per-member set
@@ -862,9 +887,44 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
     (audit R2: the card cleared while the agent stayed parked for an hour).
     A zero-subscriber publish is retried once (~0.3s) to ride out the short
     listener-startup race at run boundaries.
+
+    After the call, :func:`delivery_of` says what happened (incident
+    2026-10-09):
+
+    * ``"applied"``: a worker that owns the run applied it.
+    * ``"unacked"``: a listener heard it and sent no ack. A process still
+      holds the run.
+    * ``"undelivered"``: no subscriber anywhere, twice. ``run_liveness``
+      reads a run as dead only when its owner's heartbeat is ALSO gone.
+
+    The status is kept BESIDE the command, never written into it: an applier
+    may hold the command dict, and it must see only what the caller sent
+    (``evals/trajectories/test_stream_replay_trajectory.py``).
     """
+    status = await _deliver_control(thread_id, command)
+    if len(_DELIVERY) > 1024:  # a caller that never asked; keep it bounded
+        _DELIVERY.clear()
+    _DELIVERY[id(command)] = status
+    return status == "applied"
+
+
+#: id(command) -> what dispatch_control did with it, until delivery_of reads it.
+_DELIVERY: dict[int, str] = {}
+
+
+def delivery_of(command: dict[str, Any]) -> str:
+    """What :func:`dispatch_control` did with *command*. Read it once.
+
+    ``"unacked"`` when nothing recorded it (a stub, or a dispatch that
+    raised): a delivery nobody can describe proves nothing about the run, so
+    it is never read as "undelivered".
+    """
+    return _DELIVERY.pop(id(command), "unacked")
+
+
+async def _deliver_control(thread_id: str, command: dict[str, Any]) -> str:
     if _apply_control_local(thread_id, command):
-        return True
+        return "applied"
     # Not ours — relay to the owner and wait for its applied-ack.
     ack_id = command.setdefault("ack_id", uuid.uuid4().hex)
     delivered = await publish_control(thread_id, command)
@@ -876,14 +936,14 @@ async def dispatch_control(thread_id: str, command: dict[str, Any]) -> bool:
             "stream_relay.control_undelivered",
             thread_id=thread_id[:12], cmd=str(command.get("cmd")),
         )
-        return False
+        return "undelivered"
     if await wait_control_ack(ack_id):
-        return True
+        return "applied"
     _log.warning(
         "stream_relay.control_unacked",
         thread_id=thread_id[:12], cmd=str(command.get("cmd")),
     )
-    return False
+    return "unacked"
 
 
 async def _control_listener(thread_id: str) -> None:
@@ -1019,6 +1079,7 @@ async def run_detached(
     source: str | None = None,
     floor: list[str] | None = None,
     organization_id: str | None = None,
+    record: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run *gen* (an SSE-line async generator) in a DETACHED background task
     and yield its events from the Redis stream.
@@ -1057,6 +1118,9 @@ async def run_detached(
                    event loop (including the ``on_complete`` persist hook, which
                    runs AFTER the generator's own binding has been released) see
                    the right tenant. WS-29 MT-1d (H4), slice 2 — DARK.
+        record:    What the restart sweep needs to persist this run if its
+                   process dies (``orchestrator.run_liveness``): the message
+                   row id, the agent, the run id. Server-side facts only.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
@@ -1113,6 +1177,21 @@ async def run_detached(
         thread_id, organization_id=organization_id, actor=actor,
         token=_live_token,
     )
+    # What a later process needs to close this run if THIS process dies
+    # (orchestrator.run_liveness, incident 2026-10-09). The executor
+    # re-registers the index entry with the run id as its token, so both
+    # tokens travel. No member email: the sweep reads cc:runactor instead.
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        forget_instance_run, record_instance_run,
+    )
+
+    _rec = dict(record or {})
+    await record_instance_run(thread_id, {
+        **_rec,
+        "org": organization_id,
+        "source": source,
+        "tokens": [t for t in (_live_token, _rec.get("runId")) if t],
+    })
 
     # A note buffered for a run that never got to a tool boundary must not leak
     # into the next one; the durable store (cc:steer:) is what carries anything
@@ -1208,6 +1287,11 @@ async def run_detached(
                 # CancelledError before persistence gets to run.
                 with contextlib.suppress(BaseException):
                     await asyncio.shield(on_complete())
+            # The run is persisted, so the restart sweep has nothing to do
+            # for it. After on_complete, so a death before the persist still
+            # leaves the record for the next process.
+            with contextlib.suppress(BaseException):
+                await forget_instance_run(thread_id)
             # Release this task's tenant binding LAST — after on_complete, which
             # is the write that most needs it (WS-29 MT-1d / H4).
             if _tenant_token is not None:

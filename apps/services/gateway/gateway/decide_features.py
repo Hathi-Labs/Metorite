@@ -61,7 +61,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from acb_common import get_logger, get_settings
+from acb_common import automation_agent_scope, get_logger, get_settings
 
 from gateway.db import current_tenant
 
@@ -610,6 +610,26 @@ def _ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 
 
+def _named_by_feature[F: Callable[..., Awaitable[Any]]](fn: F) -> F:
+    """Name each model call of ``fn`` by its feature (AI-call attribution).
+
+    :func:`ask` and :func:`shadow` take the feature first, as
+    ``email.rule_match``. Inside, the run context names the agent so, and
+    both the ``decide`` request and the old LLM call report it. The agent
+    before the call comes back after it. A chat agent such as
+    ``email-assistant`` keeps its own name (``acb_common.automation_agent_scope``).
+    Spec: ``customer_console.md`` §4.3a.
+    """
+
+    @functools.wraps(fn)
+    async def _wrapped(feature: str, *args: Any, **kwargs: Any) -> Any:
+        with automation_agent_scope(feature):
+            return await fn(feature, *args, **kwargs)
+
+    return _wrapped  # type: ignore[return-value]
+
+
+@_named_by_feature
 async def ask[R](
     feature: str,
     *,
@@ -692,6 +712,7 @@ async def ask[R](
     return result
 
 
+@_named_by_feature
 async def shadow[T](
     feature: str,
     old: Callable[[], Awaitable[T]],

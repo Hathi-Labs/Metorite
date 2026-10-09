@@ -26,11 +26,18 @@ CLOSED: frozenset[str] = frozenset({"done", "cancelled"})
 
 #: §6.3 — proposed category by the words in a status name, first match wins.
 #: "cancel" comes before "done", so "Cancelled - done" reads as cancelled.
+#: I-10b (§7.7): work on hold, waiting, blocked, paused or stuck has STARTED,
+#: so it is In progress (owner, 2026-10-09). That rule comes before the
+#: backlog rule, so "Blocked - backlog" reads as In progress. Review, QA and
+#: testing are In progress by a rule, so the Map step does not mark them as
+#: a guess.
 _PROPOSALS: tuple[tuple[re.Pattern[str], Category], ...] = (
     (re.compile(r"cancel|won'?t|wont|rejected|dropped"), "cancelled"),
     (re.compile(r"\b(done|complete|completed|closed|shipped|resolved|finished)\b"), "done"),
-    (re.compile(r"backlog|hold|someday|later|parked|icebox"), "backlog"),
+    (re.compile(r"hold|waiting|\bwait\b|blocked|paused|stuck"), "in_progress"),
+    (re.compile(r"backlog|someday|later|parked|icebox"), "backlog"),
     (re.compile(r"^(to ?do|open|new|not started|pending)$"), "todo"),
+    (re.compile(r"review|\bqa\b|testing|\btest\b"), "in_progress"),
 )
 
 #: A group grant is ``group:<slug>``, with the slug rule of the groups the
@@ -42,12 +49,18 @@ _GRANT = re.compile(r"^(org|group:[\w-]{1,64})$")
 MAX_NAME = 120
 
 
-def propose_category(name: str) -> Category:
+def rule_category(name: str) -> Category | None:
+    """The stage a rule of ``_PROPOSALS`` gives the name, or ``None`` when no
+    rule matches. ``None`` is what the Map step marks as a guess (I-10b)."""
     folded = " ".join(name.lower().split())
     for pattern, category in _PROPOSALS:
         if pattern.search(folded):
             return category
-    return "in_progress"
+    return None
+
+
+def propose_category(name: str) -> Category:
+    return rule_category(name) or "in_progress"
 
 
 #: §6.3 (I-10) — a source name that means one of the usual statuses, folded
@@ -557,6 +570,17 @@ def _statuses(
             # "no choice" cannot be the test (the PR #784 review).
             errors.append(f"A new status name holds 1 to {MAX_STATUS} characters: {name}.")
         final[name] = (target_name, category)
+        # I-10b build rule 1: a GUESS is a stage that only the default of
+        # `propose_category` gave: no lane of the set, no synonym, no stage
+        # rule, and no stage that an earlier run recorded. A plan saved
+        # before I-10b has no field, and the client reads that as false.
+        guessed = (
+            not existing
+            and not (continues and name in earlier)
+            and _fold(name) not in held
+            and _fold(name) not in _SYNONYMS
+            and rule_category(name) is None
+        )
         rows.append(
             {
                 "name": name,
@@ -567,6 +591,7 @@ def _statuses(
                 "category": category,
                 "becomes": target_name,
                 "existing": existing,
+                "guessed": guessed,
             }
         )
 

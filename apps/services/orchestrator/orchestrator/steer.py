@@ -439,6 +439,10 @@ async def send_steer(
     an error the caller should surface as a failure: the signal is on disk and
     the next run on this thread replays it. That is the whole point of writing
     before dispatching.
+
+    ``undelivered`` is True when NO process heard the steer. The route then
+    asks ``run_liveness`` whether the run is dead, and if so it starts the
+    next run itself, in the same request (incident 2026-10-09).
     """
     signal = make_signal(
         thread_id=thread_id, author=author, text=text, run_id=run_id,
@@ -446,21 +450,27 @@ async def send_steer(
     stored = await persist_signal(thread_id, signal)
 
     delivered = False
+    command: dict[str, Any] = {
+        "cmd": "steer",
+        "signal_id": signal["id"],
+        "author": author,
+        "text": text,
+    }
     try:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
-        delivered = await dispatch_control(thread_id, {
-            "cmd": "steer",
-            "signal_id": signal["id"],
-            "author": author,
-            "text": text,
-        })
+        delivered = await dispatch_control(thread_id, command)
     except Exception:  # noqa: BLE001
         _log.warning("steer.dispatch_failed", thread_id=thread_id[:12])
+    from orchestrator.stream_relay import delivery_of  # noqa: PLC0415
 
+    status = delivery_of(command)
     if not delivered:
         _log.info(
             "steer.pending_replay",
             thread_id=thread_id[:12], stored=stored,
         )
-    return {**signal, "delivered": delivered, "stored": stored}
+    return {
+        **signal, "delivered": delivered, "stored": stored,
+        "undelivered": status == "undelivered",
+    }

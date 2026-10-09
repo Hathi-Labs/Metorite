@@ -429,6 +429,21 @@ class Settings(BaseSettings):
     # tests/unit/test_email_triage_once.py and test_email_ai_cost.py.
     email_triage_once_per_cycle: bool = False
 
+    # ── No rule match when the conversation status decides (WS-17 EM-T16 PR-B)
+    #
+    # True: in `on` of `email.thread_status`, the rules job and the Reply
+    # Zero backfill ask no rule match for a known conversation whose status
+    # reaches the bar and has an enabled rule. That rule is then the one live
+    # match, as it is today, and its APPLIED line is the History. No line
+    # records the skip. False is the default, and then each
+    # mode is the same as before PR-B. Its own flag, not the flag of PR-A.
+    # The one reader is `email_ingestion.post_sync.status_skips_rule_match`.
+    #
+    # A value of `true` on a box is gate `enforcement-flip`. Spec:
+    # email_app_master_plan.md §10.4.17 PR-B. Fence:
+    # tests/unit/test_email_automation_tenancy.py (the EM-T16 PR-B section).
+    email_status_skips_rule_match: bool = False
+
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
     # `customer_console.md` §5.1 already names the destination: the provider,
@@ -958,7 +973,7 @@ class Settings(BaseSettings):
     # phone number, digits only with the country code and no "+", for the
     # `wa.me` link. A value that is not 8 to 15 digits reads as unset.
     #
-    # The one reader of all three is
+    # The one reader of all five is
     # `gateway.routes.whatsapp_channel.flags`. It takes the organization from
     # `current_tenant()`, never from request input. `env_guard` refuses each
     # `WHATSAPP_*` name on each Integrations write, so only the env file of
@@ -969,6 +984,14 @@ class Settings(BaseSettings):
     whatsapp_assistant_enabled: bool = False
     whatsapp_assistant_orgs: str = ""
     whatsapp_assistant_display_number: str = ""
+    # WAC-2: the webhook sends a batch for this Meta phone number id to the
+    # bot path, and never to the WS-20 inbox. The bot replies with this
+    # System User token. Both are platform configuration (§5.1). The one
+    # reader is `whatsapp_channel.flags`. 🔴 The token is a secret: no log
+    # line, no answer and no error text may carry it. Fence:
+    # tests/unit/test_wac_bot_inbound.py.
+    whatsapp_assistant_phone_number_id: str = ""
+    whatsapp_assistant_access_token: str = ""
 
     # ── Token accessors ────────────────────────────────────────────────────
 

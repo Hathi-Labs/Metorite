@@ -688,3 +688,305 @@ class TestTheGatewayNamesTheSessionMember:
             authorization="Bearer tok",
         )
         assert attribution_headers().get("X-CC-Member") == "a@example.com"
+
+
+# ── Background AI names its feature (2026-10-10) ────────────────────────────
+#
+# 🔴 Measured on production, 2026-10-10: about 8,500 email calls in 7 days
+# reached the Router with `agent` NULL, and about 175 named `email-assistant`.
+# The Operator dashboard groups by `COALESCE(agent, 'unattributed')`, so it
+# showed 97% of the email calls as "not attributed". Spec:
+# `customer_console.md` §4.3a.
+
+
+@pytest.fixture
+def _no_vouch():
+    """No automation name vouched for at the start or the end of a test."""
+    from acb_common import _log
+
+    vouch = getattr(_log, "_AUTOMATION_AGENT", None)
+    if vouch is not None:
+        vouch.set(None)
+    yield
+    if vouch is not None:
+        vouch.set(None)
+
+
+@pytest.mark.usefixtures("_no_vouch")
+class TestBackgroundAIBackstop:
+    """With no agent bound, a call names its app's automation."""
+
+    def test_no_agent_and_an_APP_reports_app_automation(self):
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(app="notes")
+        assert run_attribution()["agent"] == "notes.automation"
+        assert attribution_headers()["X-CC-Agent"] == "notes.automation"
+
+    def test_the_SURFACE_is_the_in_process_fallback_module(self):
+        """``source`` names the app outside an agent (``run_attribution``)."""
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(source="email")
+        out = run_attribution()
+        assert (out["agent"], out["module_slug"]) == ("email.automation", "email")
+
+    def test_with_NO_module_the_agent_stays_None(self):
+        """The backstop never invents an app."""
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(user="dana@acme.com")
+        assert run_attribution()["agent"] is None
+        assert "X-CC-Agent" not in attribution_headers()
+        assert attribution_headers({}) == {}
+
+    def test_an_EXPLICIT_module_names_the_backstop_too(self):
+        """``completion_on_router`` passes its ``source``. The agent must
+        name the same app as ``module_slug``, never the context's."""
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(app="email")
+        out = run_attribution(module_slug="app:crm")
+        assert (out["agent"], out["module_slug"]) == ("app:crm.automation", "app:crm")
+
+    def test_a_BOUND_agent_beats_the_backstop(self):
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(app="projects", agent="projects-assistant")
+        assert run_attribution()["agent"] == "projects-assistant"
+        assert attribution_headers()["X-CC-Agent"] == "projects-assistant"
+
+
+@pytest.mark.usefixtures("_no_vouch")
+class TestBackgroundAIFeatureScope:
+    """``automation_agent_scope``: scoped, restored, and never over a chat agent."""
+
+    def test_a_feature_narrows_the_job_and_the_job_comes_BACK(self):
+        from acb_common import automation_agent_scope, job_member_scope
+
+        with job_member_scope("owner@acme.com", app="email", agent="email.automation"):
+            assert get_run_context()["agent"] == "email.automation"
+            with automation_agent_scope("email.rule_match"):
+                assert get_run_context()["agent"] == "email.rule_match"
+                assert attribution_headers()["X-CC-Agent"] == "email.rule_match"
+            assert get_run_context()["agent"] == "email.automation", "not restored"
+        assert "agent" not in get_run_context(), "the job leaked its agent"
+
+    def test_the_scope_restores_on_an_ERROR(self):
+        from acb_common import automation_agent_scope
+
+        with contextlib.suppress(RuntimeError), automation_agent_scope("email.digest"):
+            raise RuntimeError("boom")
+        assert "agent" not in get_run_context()
+
+    def test_the_VOUCH_does_not_outlive_its_scope(self):
+        """After the scope, a chat agent bound under the same name is a claim
+        again. A leaked vouch would let it pass as our automation."""
+        from acb_common import automation_agent_scope
+
+        with automation_agent_scope("email.rule_match"):
+            pass
+        bind_run_context(agent="email.rule_match")
+        assert attribution_headers()["X-CC-Agent"] == "agent:email.rule_match"
+
+    def test_a_CHAT_agent_keeps_its_name(self):
+        """🔴 ``email-assistant`` runs an email helper that names a feature.
+        The chat agent made the call, so the report names the chat agent."""
+        from acb_common import automation_agent_scope, job_member_scope
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(app="email", agent="email-assistant")
+        with (
+            job_member_scope("owner@acme.com", app="email", agent="email.automation"),
+            automation_agent_scope("email.rule_match"),
+        ):
+            assert run_attribution()["agent"] == "email-assistant"
+            assert attribution_headers()["X-CC-Agent"] == "email-assistant"
+        assert get_run_context()["agent"] == "email-assistant"
+
+    def test_a_chat_agent_CANNOT_claim_an_automation_name(self):
+        """An agent name may hold a dot, so a member could name an agent
+        ``email.rule_match``. Only the scope vouches for that name."""
+        from acb_llm.routed import run_attribution
+
+        bind_run_context(app="email", agent="email.rule_match")
+        assert run_attribution()["agent"] == "agent:email.rule_match"
+        assert attribution_headers()["X-CC-Agent"] == "agent:email.rule_match"
+
+    @pytest.mark.parametrize("bad", ["Email.Rule", "email", "email.rule.match", "a b.c", ""])
+    def test_a_name_of_ANOTHER_shape_binds_nothing(self, bad):
+        """The name is a code constant. A name that is not of the shape is
+        refused, and the call keeps what it had."""
+        from acb_common import automation_agent_scope
+
+        bind_run_context(app="email")
+        with automation_agent_scope(bad):
+            assert "agent" not in get_run_context()
+
+
+# ── The fence: every email model call names its feature ────────────────────
+
+EMAIL_ROUTES = ROOT / "apps/services/gateway/gateway/routes/email"
+
+#: The callees that make an email model call, and so must name a feature.
+_NAMED_CALLEES = {"_llm_json", "acompletion_with_fallback", "acompletion_stream_text"}
+
+#: ``(path under routes/email, enclosing function, callee)`` -> why it names
+#: no literal feature. A new entry needs a reason a reviewer can check.
+FEATURE_ALLOWLIST = {
+    ("core.py", "_llm_json", "acompletion_with_fallback"):
+        "the seam itself: it passes `feature=agent`, built from its own "
+        "`feature` argument by `email_feature_agent`",
+}
+
+
+def _email_model_calls():
+    """``(rel, function, callee, feature literal or None)``, one of each."""
+    import ast
+
+    out = set()
+    for path in sorted(EMAIL_ROUTES.rglob("*.py")):
+        rel = path.relative_to(EMAIL_ROUTES).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else (
+                    f.attr if isinstance(f, ast.Attribute) else "")
+                if name not in _NAMED_CALLEES:
+                    continue
+                kw = next((k for k in node.keywords if k.arg == "feature"), None)
+                literal = (
+                    kw.value.value
+                    if kw is not None and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str) else None
+                )
+                out.add((rel, fn.name, name, literal, node.lineno))
+    return sorted(out)
+
+
+class TestEveryEmailCallNamesItsFeature:
+    def test_the_feature_names_are_the_ones_the_spec_lists(self):
+        from gateway.routes.email.core import EMAIL_AI_FEATURES
+
+        listed = {
+            "rule_match", "thread_status", "cold_check", "sender_pin", "draft",
+            "compose_assist", "draft_consult", "reply_memory", "voice_profile",
+            "digest", "template_fill", "rules_generate", "insights_screen",
+        }
+        assert listed == EMAIL_AI_FEATURES
+
+    def test_every_decide_feature_keeps_its_name(self):
+        from gateway import decide_features as df
+        from gateway.routes.email.core import EMAIL_AI_FEATURES
+
+        for feature in df.FEATURES:
+            app, short = feature.split(".", 1)
+            assert app == "email" and short in EMAIL_AI_FEATURES, feature
+
+    def test_every_model_call_passes_a_KNOWN_feature_or_is_JUSTIFIED(self):
+        from gateway.routes.email.core import EMAIL_AI_FEATURES
+
+        calls = _email_model_calls()
+        # The scan must see the sites, or it passes for the wrong reason.
+        assert len(calls) >= 19, calls
+        bad = []
+        for rel, fn, callee, literal, line in calls:
+            if (rel, fn, callee) in FEATURE_ALLOWLIST:
+                continue
+            if callee == "_llm_json":
+                ok = literal in EMAIL_AI_FEATURES
+            else:
+                ok = (
+                    literal is not None and literal.startswith("email.")
+                    and literal.removeprefix("email.") in EMAIL_AI_FEATURES
+                )
+            if not ok:
+                bad.append(f"{rel}:{line} {fn} -> {callee}(feature={literal!r})")
+        assert not bad, (
+            "An email model call names no known feature, so the Operator "
+            "dashboard shows it as 'not attributed'. Pass feature=<name> from "
+            "core.EMAIL_AI_FEATURES, or allowlist it with a reason:\n"
+            + "\n".join(bad)
+        )
+
+    def test_each_allowlist_entry_is_still_a_real_call(self):
+        seen = {(rel, fn, callee) for rel, fn, callee, _l, _n in _email_model_calls()}
+        stale = set(FEATURE_ALLOWLIST) - seen
+        assert not stale, f"remove the stale allowlist entries: {stale}"
+
+
+# ── The fixed X-CC-Agent of a MAF client (review P2, 2026-10-10) ────────────
+#
+# 🔴 Native MAF is the default runtime. `_make_openai_client` stamps a FIXED
+# `X-CC-Agent` from the manifest slug, a slug may hold a dot, and `_stamp`
+# never overwrites a header that is set. So a member agent with the slug
+# `email.rule_match` wrote that name into the platform's usage rows.
+
+
+@pytest.mark.usefixtures("_no_vouch")
+class TestAFixedAgentHeaderCannotClaimAnAutomationName:
+    def test_a_MAF_agent_with_a_dotted_slug_sends_agent_prefix_ON_THE_WIRE(
+        self, monkeypatch,
+    ):
+        """``declarative.py`` builds the client with
+        ``_make_openai_client(agent_name=manifest.slug)``. Only the network is
+        replaced, so the header asserted is the one that leaves the process."""
+        import openai
+        from agent_framework import Message
+        from orchestrator.agents import _make_openai_client
+
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update({k.lower(): v for k, v in request.headers.items()})
+            return _response()
+
+        real = openai.DefaultAsyncHttpxClient
+        monkeypatch.setattr(
+            openai, "DefaultAsyncHttpxClient",
+            lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+        )
+        client = _make_openai_client(agent_name="email.rule_match", source="chat")
+        asyncio.run(client.get_response([Message(role="user", contents=["hi"])]))
+        assert seen["x-cc-agent"] == "agent:email.rule_match"
+
+    def test_it_holds_INSIDE_an_automation_scope_of_the_same_name(self):
+        """A fixed header is a chat agent's by construction. The vouch of a
+        scope that binds the same name does not reach it."""
+        from acb_common import automation_agent_scope
+        from orchestrator.agents import _make_openai_client
+
+        with automation_agent_scope("email.rule_match"):
+            client = _make_openai_client(agent_name="email.rule_match")
+        assert client.client.default_headers["X-CC-Agent"] == "agent:email.rule_match"
+
+    @pytest.mark.parametrize("name", [
+        "orchestrator", "email-assistant", "whatsapp-assistant", "crm-assistant",
+        "projects-assistant", "apis-config", "code-task",
+    ])
+    def test_every_existing_agent_name_is_UNCHANGED(self, name):
+        from acb_common import chat_agent_label
+        from orchestrator.agents import _make_openai_client
+
+        assert chat_agent_label(name) == name
+        assert _make_openai_client(agent_name=name).client.default_headers[
+            "X-CC-Agent"] == name
+
+    def test_the_label_is_idempotent(self):
+        from acb_common import chat_agent_label
+
+        once = chat_agent_label("email.rule_match")
+        assert chat_agent_label(once) == once == "agent:email.rule_match"
+
+    def test_the_CALLING_agent_of_decide_and_system_one_is_labelled(self, monkeypatch):
+        """``decide_tools`` and ``system_one`` send the run binding's agent,
+        not the log context's. The same rule applies to it."""
+        from acb_skills import decide_tools, system_one
+
+        monkeypatch.setattr(system_one, "_calling_agent", lambda: "email.rule_match")
+        assert decide_tools._decide_attribution()["agent"] == "agent:email.rule_match"

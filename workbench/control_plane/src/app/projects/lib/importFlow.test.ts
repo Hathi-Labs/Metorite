@@ -32,6 +32,9 @@ import {
   GROUP_IN_SPACE,
   NEW_STATUS,
   newStatusName,
+  orderedStatusRows,
+  targetChoice,
+  targetValue,
   type PlanStatus,
   resolveStatuses,
   stageClashes,
@@ -258,7 +261,8 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     row("in process", "in_progress", "In progress"),
     row("review", "in_progress", "Review", false),
     row("to do", "todo", "To do"),
-    row("on hold", "backlog", "On hold", false),
+    // I-10b: a task on hold has started, so the plan puts it in In progress.
+    row("on hold", "in_progress", "On hold", false),
     row("todo", "todo", "To do"),
     row("in progress", "in_progress", "In progress"),
     row("completed", "done", "Done"),
@@ -277,12 +281,102 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     const summary = statusSummary(resolveStatuses(FRACKTAL, SEED, {}, {}), SEED, null);
     expect(summary.chips).toEqual([
       { name: "Backlog", stage: "backlog", isNew: false },
-      { name: "On hold", stage: "backlog", isNew: true },
       { name: "To do", stage: "todo", isNew: false },
       { name: "In progress", stage: "in_progress", isNew: false },
       { name: "Review", stage: "in_progress", isNew: true },
+      { name: "On hold", stage: "in_progress", isNew: true },
       { name: "Done", stage: "done", isNew: false },
     ]);
+  });
+
+  it("groups the summary by stage, as a small board, with every stage shown (I-10b)", () => {
+    const summary = statusSummary(resolveStatuses(FRACKTAL, SEED, {}, {}), SEED, null);
+    expect(summary.stages.map((g) => [g.stage, g.chips.map((c) => c.name)])).toEqual([
+      ["backlog", ["Backlog"]],
+      ["todo", ["To do"]],
+      ["in_progress", ["In progress", "Review", "On hold"]],
+      ["done", ["Done"]],
+      // An empty stage stays on the board, so the admin sees all five.
+      ["cancelled", []],
+    ]);
+    expect(summary.guesses).toBe(0);
+    expect(summary.check).toBeNull();
+  });
+
+  it("puts every lane of the resulting set on the board, a lane with no task too (PR #803 P2-3)", () => {
+    // No ClickUp status maps to the seed's Backlog, but the new space keeps it.
+    const noBacklog = FRACKTAL.filter((s) => s.name !== "backlog");
+    const summary = statusSummary(resolveStatuses(noBacklog, SEED, {}, {}), SEED, null);
+    expect(summary.stages.find((g) => g.stage === "backlog")?.chips).toEqual([
+      { name: "Backlog", stage: "backlog", isNew: false, unused: true },
+    ]);
+    // The line still counts what the ClickUp statuses become.
+    expect(summary.line).toBe("Your 9 ClickUp statuses become 5 statuses.");
+    expect(summary.chips.some((c) => c.unused)).toBe(false);
+    // An existing space with a Cancelled lane nobody maps keeps it, in the
+    // set's own order, after the lanes the import uses.
+    const space: TargetStatus[] = [...SEED, { name: "Won't fix", category: "cancelled" }];
+    const withLane = statusSummary(resolveStatuses(FRACKTAL, space, {}, {}), space, "Ops");
+    expect(withLane.stages.find((g) => g.stage === "cancelled")?.chips.map((c) => [c.name, c.unused])).toEqual([
+      ["Won't fix", true],
+    ]);
+    // A stage the set truly lacks stays empty, which the board draws as a dash.
+    expect(summary.stages.find((g) => g.stage === "cancelled")?.chips).toEqual([]);
+  });
+
+  it("counts the guessed stages, and the count clears when the admin picks one (I-10b)", () => {
+    const guessed = [...FRACKTAL, { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true }];
+    const summary = statusSummary(resolveStatuses(guessed, SEED, {}, {}), SEED, null);
+    expect(summary.guesses).toBe(1);
+    expect(summary.check).toBe(
+      "1 status needs a check: the stage is a guess. Open Review mapping to choose it.",
+    );
+    // Only a PICK clears the mark. A stage the wizard seeds by itself does
+    // not (the PR #803 review, P2-1).
+    const seeded = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "in_progress" });
+    expect(statusSummary(seeded, SEED, null).guesses).toBe(1);
+    const picked = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "in_progress" }, [], { "Fancy lane": true });
+    expect(statusSummary(picked, SEED, null).guesses).toBe(0);
+    // A plan saved before I-10b has no field, which means no guess.
+    expect(resolveStatuses(FRACKTAL, SEED, {}, {}).every((r) => !r.guessed)).toBe(true);
+  });
+
+  it("choosing New status… or a status another row adds is no stage pick (PR #803 P2-1)", () => {
+    const fancy = { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true };
+    const guessed = [...FRACKTAL, fancy];
+    const resolved = resolveStatuses(guessed, SEED, {}, {});
+    // "New status…" seeds no stage, so the row keeps the plan's stage and its mark.
+    expect(targetChoice(fancy, NEW_STATUS, resolved)).toEqual({ name: "Fancy lane", creating: true });
+    // Joining a status another row adds takes that row's stage, to keep the
+    // merge in one stage, and still leaves the mark: nobody picked a stage.
+    const join = targetChoice(fancy, targetValue("On hold"), resolved);
+    expect(join).toEqual({ name: "On hold", creating: false, stage: "in_progress" });
+    const after = resolveStatuses(guessed, SEED, { "Fancy lane": join.name }, { "Fancy lane": join.stage! });
+    expect(after.find((r) => r.source === "Fancy lane")?.guessed).toBe(true);
+    // A status of the space needs no seed: it gives its own stage.
+    expect(targetChoice(fancy, targetValue("Backlog"), resolved).stage).toBeUndefined();
+  });
+
+  it("puts the rows that need a check first, paired by source, never by index (I-10b)", () => {
+    const guessed = [...FRACKTAL, { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true }];
+    const resolved = resolveStatuses(guessed, SEED, { review: "Doing it" }, {});
+    // The resolver's order differs from the plan's, as after any sort.
+    const pairs = orderedStatusRows(guessed, [...resolved].reverse());
+    expect(pairs[0].status.name).toBe("Fancy lane");
+    expect(pairs.map((p) => p.status.name).slice(1)).toEqual(FRACKTAL.map((s) => s.name));
+    for (const { status, row: resolvedRow } of pairs) expect(resolvedRow.source).toBe(status.name);
+    expect(pairs.find((p) => p.status.name === "review")?.row.target).toBe("Doing it");
+  });
+
+  it("keeps a row in place when the admin picks its stage (PR #803 P2-2)", () => {
+    const guessed = [...FRACKTAL, { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true }];
+    const before = orderedStatusRows(guessed, resolveStatuses(guessed, SEED, {}, {}));
+    const afterPick = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "todo" }, [], { "Fancy lane": true });
+    const after = orderedStatusRows(guessed, afterPick);
+    // The mark clears, and the row stays first: the next click lands where it was aimed.
+    expect(after.find((p) => p.status.name === "Fancy lane")?.row.guessed).toBe(false);
+    expect(after.map((p) => p.status.name)).toEqual(before.map((p) => p.status.name));
+    expect(after[0].status.name).toBe("Fancy lane");
   });
 
   it("writes one line per merge", () => {
@@ -297,7 +391,7 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
   it("a name the space holds IS that status, with its stage, whatever the case", () => {
     const resolved = resolveStatuses(FRACKTAL, SEED, { review: "done" }, { review: "backlog" });
     const review = resolved.find((r) => r.source === "review")!;
-    expect(review).toEqual({ source: "review", target: "Done", stage: "done", existing: true });
+    expect(review).toEqual({ source: "review", target: "Done", stage: "done", existing: true, guessed: false });
     // A new status keeps the stage the admin gives it.
     const held = resolveStatuses(FRACKTAL, SEED, { review: "QA" }, { review: "todo" });
     expect(held.find((r) => r.source === "review")).toEqual({
@@ -305,6 +399,7 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
       target: "QA",
       stage: "todo",
       existing: false,
+      guessed: false,
     });
   });
 
@@ -318,7 +413,7 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     ]);
     expect(options.filter((o) => o.group === GROUP_ADDED).map((o) => o.label)).toEqual(["Review", "On hold"]);
     expect(options.at(-1)).toEqual({ value: NEW_STATUS, label: "New status…" });
-    expect(options.find((o) => o.label === "On hold")?.hint).toBe("backlog");
+    expect(options.find((o) => o.label === "On hold")?.hint).toBe("in_progress");
   });
 
   it("no target takes an intake lane's name, as the gateway plans it (P1-b)", () => {

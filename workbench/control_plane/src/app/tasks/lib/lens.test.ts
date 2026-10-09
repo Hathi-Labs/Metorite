@@ -41,7 +41,9 @@ import {
   lensFetchAreas,
   lensFetchItems,
   lensFetchLed,
+  lensFetchNext,
   lensFetchProjects,
+  lensFetchScheduled,
   lensFetchUntriaged,
   lensMyOverlay,
   filedByMe,
@@ -409,6 +411,37 @@ describe("splitPatch", () => {
 });
 
 // ── 4. The request shapes ───────────────────────────────────────────────────
+
+describe("My Day's two reads (NS-3)", () => {
+  it("reads one day of my calendar through the Calendar's window read", async () => {
+    const { calls, restore } = stub([{ rows: [ROW], total: 1 }]);
+    try {
+      const items = await lensFetchScheduled("2026-10-09T00:00:00.000Z", "2026-10-10T00:00:00.000Z");
+      expect(items.map((t) => t.scheduledStart)).toEqual([ROW.scheduled_start]);
+      const url = new URL(calls[0].url, "http://x");
+      expect(url.pathname).toBe("/api/projects/my/calendar");
+      expect(url.searchParams.get("start")).toBe("2026-10-09T00:00:00.000Z");
+      expect(url.searchParams.get("end")).toBe("2026-10-10T00:00:00.000Z");
+    } finally {
+      restore();
+    }
+  });
+
+  it("reads ONE page of next actions, filtered by the server, never the whole list", async () => {
+    const { calls, restore } = stub([{ rows: [ROW], total: 340 }]);
+    try {
+      const items = await lensFetchNext(20);
+      expect(items).toHaveLength(1);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("/api/projects/my/inbox?disposition=NEXT&page=1&page_size=20");
+      // `MAX_PAGE_SIZE` is 100. A larger ask would be a 422.
+      await lensFetchNext(500);
+      expect(calls[1].url).toContain("page_size=100");
+    } finally {
+      restore();
+    }
+  });
+});
 
 describe("the lens talks to /api/projects, never /api/tasks", () => {
   it("pages the inbox to exhaustion", async () => {
