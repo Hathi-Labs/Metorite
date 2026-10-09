@@ -377,8 +377,12 @@ class _Holder:
     """A deploy that holds the lock: a real `flock` on the same file."""
 
     def __init__(self, lock: Path) -> None:
+        # A session of its own, so release() can kill flock AND its sleep
+        # child in one call. The child inherits the lock fd, so a kill of
+        # flock alone left the lock held for up to 60 s (verifier item 5).
         self.proc = subprocess.Popen([REAL_FLOCK, lock.as_posix(), "sleep", "60"],
-                                     stdin=subprocess.DEVNULL)
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
+        self.lock = lock
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             free = subprocess.run([REAL_FLOCK, "-n", lock.as_posix(), "true"]).returncode == 0
@@ -389,8 +393,12 @@ class _Holder:
         raise AssertionError("the holder never took the lock")
 
     def release(self) -> None:
-        self.proc.kill()
+        import signal
+
+        os.killpg(self.proc.pid, signal.SIGKILL)
         self.proc.wait(timeout=10)
+        # The lock is free at once: nothing of the holder is left.
+        assert subprocess.run([REAL_FLOCK, "-n", self.lock.as_posix(), "true"]).returncode == 0
 
 
 @needs_bash

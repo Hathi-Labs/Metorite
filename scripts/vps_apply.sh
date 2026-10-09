@@ -1139,8 +1139,10 @@ compile_bytecode() {  # <app dir>
   return 0
 }
 
+# On a failure it sets BH2_FAIL_WHY to the reason, for the deploy's last line.
 bh2_strict_check() {
   local active nnp psys rb_out rb_rc=0
+  BH2_FAIL_WHY=""
   active="$(systemctl show "$BH2_UNIT" -p ActiveState --value 2>/dev/null || true)"
   nnp="$(systemctl show "$BH2_UNIT" -p NoNewPrivileges --value 2>/dev/null || true)"
   psys="$(systemctl show "$BH2_UNIT" -p ProtectSystem --value 2>/dev/null || true)"
@@ -1151,6 +1153,7 @@ bh2_strict_check() {
   fi
   if [ "$active" != "active" ]; then
     echo "    !! BH-2 strict check: $BH2_UNIT is '${active:-unknown}', not active."
+    BH2_FAIL_WHY="$BH2_UNIT is not active ('${active:-unknown}'). A rollback does not pass an inactive gateway"
     return 1
   fi
   if [ "$nnp" = "yes" ] && [ "$psys" = "strict" ]; then
@@ -1164,6 +1167,7 @@ bh2_strict_check() {
   fi
   echo "    !! BH-2 strict check: NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?},"
   echo "       and no valid rollback (bh2_rollback.sh status gave $rb_rc: $(printf '%s\n' "$rb_out" | head -n 1))."
+  BH2_FAIL_WHY="$BH2_UNIT is not sandboxed, and no valid rollback is on"
   return 1
 }
 # <<< bh2 helpers
@@ -1998,7 +2002,7 @@ echo "==> WS-49 BH-2: the strict check of the gateway sandbox"
 #   sudo bash /opt/acb/app/scripts/bh2_rollback.sh on
 # Fence: tests/unit/test_bh2_strict_check.py.
 if ! bh2_strict_check; then
-  echo "BH-2 STRICT CHECK FAILED: acb-gateway does not run in its sandbox, and no valid rollback is on."
+  echo "BH-2 STRICT CHECK FAILED: ${BH2_FAIL_WHY:-the check failed}."
   echo "    No marker was written, so the next deploy applies this sha again."
   echo "    Read: systemctl show acb-gateway -p ActiveState -p NoNewPrivileges -p ProtectSystem"
   echo "    Rollback for 72 h: sudo bash $APP_DIR/scripts/bh2_rollback.sh on"

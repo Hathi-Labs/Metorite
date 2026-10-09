@@ -1,4 +1,5 @@
-"""H-75 — the Operator Console must ride the LIVE delivery path.
+"""The Operator Console must ride the LIVE delivery path. Its unit is
+`deploy/hostinger/acb-operator-console.service` (WS-49 BH-2, 2026-10-09).
 
 🔴 **Measured 2026-08-28, and it had been true for two days.**
 `operator.metorite.com` served a login page, Caddy routed it, a process
@@ -50,7 +51,7 @@ def _executable_lines(path: pathlib.Path) -> list[str]:
 
 
 def test_the_delivery_path_builds_the_operator_console() -> None:
-    """The whole of H-75. Both automated paths — the workflow's SSH step and the
+    """The delivery half. Both automated paths — the workflow's SSH step and the
     box's `acb-pull` poller — run `vps_apply.sh`, so the build must live THERE.
     A rebuild somebody runs by hand is what we already had, and it drifted."""
     lines = _executable_lines(_APPLY)
@@ -126,7 +127,7 @@ def test_a_box_that_does_NOT_run_it_skips_cleanly() -> None:
 
 
 def test_the_deploy_proves_the_build_TOOK_not_merely_that_it_STARTED() -> None:
-    """🔴 The half of H-75 that the first pass missed, and the costlier half.
+    """🔴 The half that the first pass missed, and the costlier half.
 
     Measured twice — 2026-08-28 and 2026-08-29 — `acb-operator-console` was
     `active (running)` for the whole window in which `/providers` and `/models`

@@ -294,6 +294,30 @@ def test_the_apply_fails_before_the_marker_when_the_check_fails(box: Box) -> Non
 
 
 @needs_bash
+@pytest.mark.parametrize(("props", "rollback", "want", "never"), [
+    ({**ROLLED_BACK, "ActiveState": "inactive"}, True,
+     "BH-2 STRICT CHECK FAILED: acb-gateway is not active ('inactive')", "no valid rollback is on"),
+    ({**SANDBOXED, "ActiveState": "failed"}, False,
+     "BH-2 STRICT CHECK FAILED: acb-gateway is not active ('failed')", "no valid rollback is on"),
+    ({**SANDBOXED, "ProtectSystem": "full"}, False,
+     "BH-2 STRICT CHECK FAILED: acb-gateway is not sandboxed, and no valid rollback is on",
+     "not active"),
+])
+def test_the_failure_line_names_the_case(box: Box, props: dict[str, str], rollback: bool,
+                                         want: str, never: str) -> None:
+    """Verifier item 1. An inactive gateway with a valid rollback is NOT "no
+    valid rollback". The deploy's failure line names the real reason."""
+    if rollback:
+        box.rollback(NOW + 10 * HOUR)
+    box.set_props(props)
+    r = _run_tail(box)
+    assert r.returncode == 1, r.stdout + r.stderr
+    fail = next(ln for ln in r.stdout.splitlines() if ln.startswith("BH-2 STRICT CHECK FAILED"))
+    assert fail.startswith(want), fail
+    assert never not in fail, fail
+
+
+@needs_bash
 def test_the_apply_reaches_the_marker_when_the_check_passes(box: Box) -> None:
     r = _run_tail(box)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -309,6 +333,25 @@ def test_the_apply_reaches_the_marker_under_a_valid_rollback(box: Box) -> None:
     assert r.returncode == 0, r.stdout + r.stderr
     assert "WARN BH-2 rolled back until" in r.stdout
     assert (box.tmp / "marker").is_file()
+
+
+def test_a_tenant_cannot_write_a_bh2_name_into_env() -> None:
+    """Verifier item 2 (R7). The deploy and the watchdog read BH2_* names. A
+    tenant route that wrote BH2_ROLLBACK_SCRIPT into .env would pick the
+    script that the strict check runs. env_guard refuses the BH2_ prefix."""
+    import re
+
+    from acb_common.env_guard import EnvWriteRefused, check_env_write, is_platform_env
+
+    names: set[str] = set()
+    for p in (APPLY, WATCHDOG, ROOT / "scripts" / "bh2_rollback.sh"):
+        names |= set(re.findall(r"\$\{?(BH2_[A-Z_]+)", p.read_text(encoding="utf-8")))
+    assert {"BH2_ROLLBACK_SCRIPT", "BH2_UNIT", "BH2_HOME", "BH2_PYTHON",
+            "BH2_LOCK_WAIT"} <= names, names
+    for n in sorted(names):
+        assert is_platform_env(n), f"{n} is writable by a tenant route"
+    with pytest.raises(EnvWriteRefused):
+        check_env_write("BH2_ROLLBACK_SCRIPT", "/tmp/evil.sh")
 
 
 def test_the_check_comment_names_the_retry_cost() -> None:

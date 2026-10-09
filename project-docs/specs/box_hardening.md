@@ -1159,6 +1159,7 @@ RestrictRealtime=yes
    | `/var/lib/acb-gateway/agent-site` | `acb_skills/agent_site.py:197` (BH-7) | `StateDirectory` |
    | `/var/cache/acb-gateway/uv` | `uv pip install` (`UV_CACHE_DIR`, `40-agent-site.conf`) | `CacheDirectory` |
    | `/var/lib/acb-gateway/mem0` | mem0 at import (`MEM0_DIR`) | `StateDirectory` |
+   | `~/.npm` | the npm default cache. `npm install` of `install_t2_deps.mjs:106` wrote it before BH-2 | NOT allowed: `ProtectHome=read-only` refuses it with EROFS. So the cache moved to the next row |
    | `/var/cache/acb-gateway/npm` | `npm install` of `install_t2_deps.mjs:106` (`npm_config_cache`) | `CacheDirectory` |
    | `/tmp` | `local_diarization.py:80` (`NamedTemporaryFile` for ffmpeg), `monorepo_pr.py:236` (`mkdtemp`) | `PrivateTmp` |
 
