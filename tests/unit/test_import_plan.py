@@ -211,6 +211,26 @@ def test_a_run_that_continues_keeps_the_earlier_names() -> None:
     assert (rows["qa"]["becomes"], rows["qa"]["category"]) == ("qa", "done")
 
 
+def test_no_target_takes_the_name_of_an_intake_lane() -> None:
+    """The I-10 review, P1-b. An existing space can hold the intake lane
+    "Triage" (category ``triage``), which hides its tasks. A source status of
+    that name, proposed or chosen, becomes a NEW status "Triage (imported)"."""
+    b = _small(_row("a", status="triage"), _row("b", status="hold me"))
+    target = [("To do", "todo")]
+    m = ImportMapping(statuses={"hold me": StatusChoice(category="backlog", name="TRIAGE")})
+    p = build_plan(b, m, {}, target_statuses=target, reserved_statuses=["Triage"])
+    rows = {r["name"]: r for r in p["statuses"]}
+    assert (rows["triage"]["becomes"], rows["triage"]["existing"]) == ("Triage (imported)", False)
+    assert rows["triage"]["category"] == "in_progress"
+    assert rows["hold me"]["becomes"] == "TRIAGE (imported)"
+    assert p["reserved_statuses"] == ["Triage"]
+    # A lane of the set with the same name still wins: the writer matches it.
+    held = build_plan(
+        b, ImportMapping(), {}, target_statuses=[("triage", "todo")], reserved_statuses=["Triage"]
+    )
+    assert {r["name"]: r["becomes"] for r in held["statuses"]}["triage"] == "triage"
+
+
 def test_d79_counts_the_sets_that_gain_a_done() -> None:
     """D79, per set: an existing space with no done-stage status gains one,
     unless the mapping already makes one. A new space has the seed's Done."""

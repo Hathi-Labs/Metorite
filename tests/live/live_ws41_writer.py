@@ -1035,7 +1035,11 @@ async def fourth_org(org: str, raw: bytes) -> None:
 
     P2-a: the space marks "Doing" with the retired ``is_default`` flag, and
     "To do" sits first by position. A task with no status takes the lane that
-    ``core.load_default_status`` names, never the flagged one."""
+    ``core.load_default_status`` names, never the flagged one.
+
+    P1-b: the space also holds the intake lane "Triage" (category
+    ``triage``), first by position, and one task in the file has the ClickUp
+    status "triage". No task lands in the intake lane."""
     target = str(uuid.uuid4())
     async with tenant_session(org) as db:
         await db.execute(
@@ -1053,6 +1057,8 @@ async def fourth_org(org: str, raw: bytes) -> None:
             {"p": target, "me": ADMIN4},
         )
         for name, category, position, default in (
+            # Where intake.load_triage_status puts its lane.
+            ("Triage", "triage", 5, False),
             ("To do", "todo", 10, False),
             ("Doing", "in_progress", 20, True),
         ):
@@ -1063,11 +1069,41 @@ async def fourth_org(org: str, raw: bytes) -> None:
                 ),
                 {"p": target, "n": name, "pos": position, "c": category, "d": default},
             )
-    file, (blank_ref,) = root_statuses(raw, [""])
+    file, (blank_ref, triage_ref) = root_statuses(raw, ["", "triage"])
     bundle = clickup.parse([(FIXTURE.name, file)])
     mapping = ImportMapping(target=Target(kind="existing", project_id=target))
+    async with tenant_session(org) as db:
+        vis = await resolve_visibility_for(db, ADMIN4)
+        facts = await imports._facts(db, bundle, mapping, vis, org)
+    planned = {r["name"]: r for r in build_plan(bundle, mapping, **facts)["statuses"]}
     run_id, lease = await new_run(org, ADMIN4, bundle, file, mapping)
     await import_writer.apply_run(org, run_id, lease)
+    report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=run_id)
+    )
+    in_pen = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id "
+        " WHERE s.project_id = CAST(:t AS uuid) AND s.category = 'triage'",
+        t=target,
+    )
+    pens = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:t AS uuid) "
+        "   AND lower(name) = 'triage'",
+        t=target,
+    )
+    check(
+        "8.2 a ClickUp 'triage' lands in a new 'Triage (imported)', never in the intake lane",
+        planned["triage"]["becomes"] == "Triage (imported)"
+        and not planned["triage"]["existing"]
+        and report.get("tasks_written") == 2423
+        and await lane_of(org, triage_ref) == "Triage (imported)"
+        and in_pen == 0
+        and pens == 1,
+        f"plan={planned['triage']['becomes']} report={report.get('error') or report.get('tasks_written')} "
+        f"in_pen={in_pen} pens={pens}",
+    )
     first = await one(
         org,
         "SELECT name FROM pm_task_statuses WHERE project_id = CAST(:t AS uuid) "
