@@ -47,7 +47,9 @@ import ContextRing from "@/components/ContextRing";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import ChatSendButton from "@/components/ChatSendButton";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
+import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
@@ -559,9 +561,11 @@ export default function AgentChat({
       if (cancelled || remoteRaw.length === 0) return;
       // Drop stale __ERROR__ system messages persisted by older builds —
       // transient errors must never resurface on reload.
-      const remote = (remoteRaw as ChatMessage[]).filter(
+      // An edit in this page removed some rows. A load that answered before
+      // the gateway deleted them must not bring them back (lib/chatEdit.ts).
+      const remote = withoutSuperseded(sessionId, (remoteRaw as ChatMessage[]).filter(
         (m) => !(m.role === "system" && m.content?.startsWith("__ERROR__")),
-      );
+      ));
       if (remote.length === 0) return;
       const local = messages;
       // Quick check: more messages → definitely use DB.
@@ -1436,7 +1440,31 @@ export default function AgentChat({
   // unchanged messages (per-message closures used to defeat the memoization —
   // every message re-ran ReactMarkdown on every streamed token).
   const handleFileOpen = useCallback((entry: FileEntry) => setViewerEntry(entry), []);
-  const handleResend = useCallback((content: string) => { submitText(content); }, [submitText]);
+  // An edit REPLACES the last user message (owner, 2026-10-09). It stops a
+  // run in flight and waits for the stop, then starts one new run that takes
+  // the old message's place. It never appends and never steers, so the thread
+  // has no fork (`lib/chatEdit.ts`, `gateway/chat_supersede.py`).
+  const runActiveRef = useRef(isRunActive);
+  useEffect(() => { runActiveRef.current = isRunActive; }, [isRunActive]);
+  // Resolves with null when the server accepted the edit, or the reason it
+  // refused. The composer stays open with the text on a refusal.
+  const handleEditLast = useCallback(async (messageId: string, content: string): Promise<string | null> => {
+    if (loadingHistory) return null;
+    const out = await submitEdit(
+      {
+        threadId: sessionId,
+        getMessages: () => messagesRef.current,
+        isRunning: () => runActiveRef.current,
+        stop: stopGeneration,
+        send: (text, opts) => new Promise<EditOutcome>((resolve) => {
+          void sendMessage(text, { ...opts, onEditOutcome: resolve });
+        }),
+      },
+      messageId,
+      content,
+    );
+    return out.ok ? null : out.reason;
+  }, [loadingHistory, sessionId, stopGeneration, sendMessage]);
   // The ONE retry path (`lib/chatRetry.ts`): an answer's "Retry" and a failed
   // turn's error-card "Retry" both land here.
   const handleRetryMessage = useCallback((m: ChatMessage) => {
@@ -1684,6 +1712,12 @@ export default function AgentChat({
     useRoom(sessionId, viewerEmail, { enabled: !compact });
   const [railOpen, setRailOpen] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
+  // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
+  // An earlier one would fork, and another person's is not theirs to edit.
+  const lastUserId = useMemo(
+    () => editableLastUserId(messages, viewerEmail || undefined, isRoom),
+    [messages, viewerEmail, isRoom],
+  );
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.
   const canSend = room ? room.you.canSend : true;
@@ -1863,7 +1897,7 @@ export default function AgentChat({
                   askAnswers={askAnswers}
                   emailContext={emailContext}
                   onFileOpen={handleFileOpen}
-                  onResend={handleResend}
+                  onEditLast={msg.id === lastUserId ? handleEditLast : undefined}
                   viewerEmail={viewerEmail}
                   participants={isRoom ? roomPeople : undefined}
                   // Entity pills for the Projects assistant only (S9).
@@ -2121,11 +2155,7 @@ export default function AgentChat({
                   )}
                 </div>
               ) : (
-                <button type="submit" disabled={!input.trim() || loadingHistory}
-                  className="shrink-0 self-end h-9 w-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-25 disabled:cursor-not-allowed hover:opacity-90 tech-transition"
-                  aria-label="Send" title="Send message">
-                  <Icon name="ArrowUp" size={16} strokeWidth={2.5} />
-                </button>
+                <ChatSendButton disabled={!input.trim() || loadingHistory} />
               )}
             </div>
 

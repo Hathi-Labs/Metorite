@@ -42,6 +42,9 @@ import {
   type SendOptions,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
+import {
+  editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
+} from "@/lib/chatEdit";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -142,10 +145,15 @@ interface UseAgentChatReturn {
   messages: ChatMessage[];
   isLoading: boolean;
   error: string | null;
-  /** `opts.resume` is the Continue button after an app update. */
+  /** `opts.resume` is the Continue button after an app update. An edit
+   *  passes `opts.supersedes`: it replaces that last user message and every
+   *  reply after it, only once the server accepts it, and `onEditOutcome`
+   *  hears the answer once, also after a hold (`lib/chatEdit.ts`). */
   sendMessage: (content: string, opts?: SendOptions) => Promise<void>;
   clearMessages: () => void;
-  stopGeneration: () => void;
+  /** Resolves when the server has answered the cancel, so an edit can wait
+   *  for the old run to stop before it starts the new one. */
+  stopGeneration: () => Promise<void>;
   /** Replace the messages array (used to hydrate from Postgres on mount). */
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   /** True while polling is actively recovering a stream that was interrupted
@@ -232,18 +240,55 @@ export function useAgentChat({
   const sendMessage = useCallback(
     async (content: string, opts?: SendOptions) => {
       const text = content.trim();
-      if (!text) return;
+      const supersedes = opts?.supersedes;
+      // An edit hears its answer exactly once: accepted, or the reason why not.
+      let editAnswered = false;
+      const answerEdit = (o: EditOutcome) => {
+        if (editAnswered) return;
+        editAnswered = true;
+        opts?.onEditOutcome?.(o);
+      };
+      // An edit that the app cannot take now waits with its target and its
+      // answer, and never with a bubble: the old turn stays visible until the
+      // server accepts the edit (lib/chatRecovery.ts `holdForUpdate`).
+      const holdEdit = (front: boolean) => holdForUpdate(threadId, text, {
+        front, edit: { supersedes: supersedes!, onEditOutcome: opts?.onEditOutcome },
+      });
+      if (!text) {
+        answerEdit({ ok: false, reason: EDIT_UNSENT });
+        return;
+      }
       const before = getSessionState(threadId);
       const held = opts?.heldId
         ? before.messages.find((m) => m.id === opts.heldId && m.role === "user")
         : undefined;
+
+      // ── An edit of the last message (lib/chatEdit.ts) ───────────────────
+      // It plans for itself: it is never collapsed into another held send,
+      // it waits through an app update, and a held edit that meets a running
+      // turn waits again at the head.
+      if (supersedes) {
+        if (before.outage) { holdEdit(false); return; }
+        if (before.isLoading) {
+          if (opts?.fromHold) holdEdit(true);
+          else answerEdit({ ok: false, reason: EDIT_RUN_BUSY });
+          return;
+        }
+      }
+      // An edit sends the history BEFORE the superseded turn.
+      const editBase = supersedes ? before.messages : null;
+      const editIdx = editBase ? editBase.findIndex((m) => m.id === supersedes) : -1;
+      if (supersedes && editIdx < 0) {
+        answerEdit({ ok: false, reason: EDIT_UNSENT });
+        return;
+      }
 
       // ── An app update (incident 2026-10-09, lib/chatRecovery.ts) ────────
       // `collapse`: the same words that already wait are ONE send, with no
       // second bubble and no second copy on the server. That is the four
       // "Continue" bubbles of the incident. `hold`: the gateway is down, so
       // the send waits once, and goes out when /api/health says it is back.
-      const plan = planSend(before, text, held?.id);
+      const plan = supersedes ? "send" : planSend(before, text, held?.id);
       if (plan === "collapse" || plan === "busy") return;
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
@@ -264,10 +309,15 @@ export function useAgentChat({
       // both would let a reload render the reply before its own prompt.
       const turnTs = Date.now();
       // A held send keeps its bubble and its id, so the saved row is the one
-      // the member already saw.
+      // the member already saw. An edit carries its marker, so the bubble
+      // draws "Edited" after a reload too (the marker persists in
+      // custom_events).
       const userMsg: ChatMessage = held
         ? { ...held, pendingDelivery: false }
-        : { id: nanoid(), role: "user", content: text, timestamp: turnTs };
+        : {
+          id: nanoid(), role: "user", content: text, timestamp: turnTs,
+          ...(supersedes ? { customEvents: [editedMarker(supersedes)] } : {}),
+        };
       const assistantId = nanoid();
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
@@ -283,7 +333,13 @@ export function useAgentChat({
       const streamToken = nanoid();
       claimStreamOwnership(threadId, assistantId, streamToken);
 
+      // An edit changes NO message until the server accepts it (review of
+      // #795): a refused edit must leave the thread, and the rows the save
+      // effect writes, exactly as they were. Only the loading state moves.
       setSessionState(threadId, (prev) => {
+        if (supersedes) {
+          return { ...prev, isLoading: true, error: null, abortController: controller };
+        }
         if (!held) {
           return {
             ...prev,
@@ -316,11 +372,14 @@ export function useAgentChat({
         // the current turn travels separately as `message`, and leaving it in the
         // history sent the user's prompt to the model twice on the copilot and
         // executor paths (only litellm deduped server-side).
-        // A held send (an app update, lib/chatRecovery.ts) keeps its bubble
-        // in place, so the pair is not the last two messages. Its history is
-        // everything before the bubble, minus other held turns.
+        // An edit sends everything BEFORE the superseded turn. A held send
+        // (an app update, lib/chatRecovery.ts) keeps its bubble in place, so
+        // the pair is not the last two messages. Its history is everything
+        // before the bubble, minus other held turns.
         const all = getSessionState(threadId).messages;
-        const prior = held
+        const prior = editBase
+          ? editBase.slice(0, editIdx)
+          : held
           ? all.slice(0, Math.max(all.findIndex((m) => m.id === userMsg.id), 0)).filter((m) => !m.pendingDelivery)
           : getSessionState(threadId).messages.slice(0, -2);
         const active = activeContextSlice(prior);
@@ -347,6 +406,9 @@ export function useAgentChat({
             // every turn and never correlated with the frontend's nanoid —
             // breaking refresh recovery.
             assistantMessageId: assistantId,
+            // The gateway stops the old run, removes the old turn and tells
+            // the model about the edit (gateway/chat_supersede.py).
+            ...(supersedes ? { supersedes, userMessageId: userMsg.id } : {}),
             // Continue after an app update: a flag, never words. The gateway
             // writes the note the model reads (gateway/chat_recovery.py).
             ...(opts?.resume ? { resume: true } : {}),
@@ -363,6 +425,39 @@ export function useAgentChat({
         // exact bug qm hit and warned about.
         //
         // Note 202 IS `res.ok`, so this check has to come first.
+        // ── An edit: the server's answer decides the thread ────────────────
+        // The gateway answers only after its checks passed and the old rows
+        // went, so a stream means accepted. Anything else is a refusal, and
+        // the thread stays as it was.
+        if (supersedes) {
+          const accepted = res.status !== 202 && res.ok && !!res.body;
+          // The app is updating: the gateway never saw the edit. Hold it,
+          // target and answer included, and change nothing in the thread.
+          if (!accepted && isUpdateOutage({ status: res.status, gotResponse: true })) {
+            if (getSessionState(threadId).abortController === controller) {
+              setSessionState(threadId, (prev) => ({ ...prev, isLoading: false, abortController: null }));
+            }
+            holdEdit(!!opts?.fromHold);
+            return;
+          }
+          const body = accepted ? "" : await res.text().catch(() => "");
+          let outcome: EditOutcome = { ok: false, reason: EDIT_UNSENT };
+          setSessionState(threadId, (prev) => {
+            const r = settleEditAnswer(
+              threadId, prev.messages, supersedes, res.status, accepted, body,
+              [userMsg, assistantMsg],
+            );
+            outcome = r.outcome;
+            const idle = !accepted && prev.abortController === controller;
+            return {
+              ...prev,
+              messages: r.messages,
+              ...(idle ? { isLoading: false, abortController: null } : {}),
+            };
+          });
+          answerEdit(outcome);
+          if (!accepted) return;
+        }
         if (res.status === 202) {
           const outcome = (await res.json().catch(() => ({}))) as {
             steered?: boolean;
@@ -478,6 +573,17 @@ export function useAgentChat({
         // answer inside the folded thinking timeline).
         upd((m) => applyStreamEvent(m, { type: "done" }, fold));
       } catch (err) {
+        // An edit that failed before the server accepted it changed nothing.
+        // An outage holds it (target and answer kept). Anything else is
+        // answered as not sent.
+        if (supersedes && !editAnswered) {
+          if (getSessionState(threadId).abortController === controller) {
+            setSessionState(threadId, (prev) => ({ ...prev, isLoading: false, abortController: null }));
+          }
+          if (isUpdateOutage({ status: failedStatus, gotResponse, err })) holdEdit(!!opts?.fromHold);
+          else answerEdit({ ok: false, reason: EDIT_UNSENT });
+          return;
+        }
         // Browser-disconnect errors: the user refreshed, navigated away, or
         // the network dropped.  Don't surface these as agent errors — the
         // backend continues running and polling will recover the output.
@@ -550,7 +656,12 @@ export function useAgentChat({
         // clobbers the replay). Only the still-current owner clears them.
         const stillOwner = ownsStream(threadId, assistantId, streamToken);
         releaseStreamOwnership(threadId, assistantId, streamToken);
-        if (stillOwner) {
+        // A Stop cleared the controller, and an edit may have started a new
+        // run since, with a controller of its own. Only the loop whose
+        // controller is still current (or none is) may clear the loading
+        // state, or the old loop's late exit marks the new run idle.
+        const currentController = getSessionState(threadId).abortController;
+        if (stillOwner && (currentController === controller || currentController === null)) {
           setSessionState(threadId, (prev) => ({ ...prev, isLoading: false, abortController: null }));
         }
       }
@@ -914,20 +1025,21 @@ export function useAgentChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
-  const stopGeneration = useCallback(() => {
+  const stopGeneration = useCallback((): Promise<void> => {
     const current = getSessionState(threadId);
     // 1. Abort the local SSE fetch (stops the browser reading the stream).
     current.abortController?.abort();
     // 2. Tell the backend to ACTUALLY cancel the run.  Without this the agent
     //    keeps executing detached server-side (burning tokens, writing files)
-    //    because it's decoupled from the HTTP response lifecycle.  Fire-and-
-    //    forget — the UI shouldn't block on it.
-    void fetch("/api/agent/cancel", {
+    //    because it's decoupled from the HTTP response lifecycle.  The Stop
+    //    button does not wait on it. An edit awaits the returned promise, so
+    //    the new run starts only after the old one stopped.
+    const settled = fetch("/api/agent/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ threadId }),
       keepalive: true,
-    }).catch(() => {});
+    }).then(() => undefined, () => undefined);
     // 3. Immediately clear loading/recovering state so the UI reflects idle
     //    (don't wait for the next polling tick to clear the stale flag).
     setSessionState(threadId, (prev) => ({
@@ -937,6 +1049,7 @@ export function useAgentChat({
       recovering: false,
       runStatus: "idle",
     }));
+    return settled;
   }, [threadId]);
 
   // ── Reconnection & cross-device polling ─────────────────────────────
@@ -1098,6 +1211,9 @@ export function useAgentChat({
         const merged: ChatMessage[] = [...cur.messages];
 
         for (const rm of remoteMsgs) {
+          // An edit removed this row. A read from before the gateway's
+          // delete must not bring it back (lib/chatEdit.ts tombstones).
+          if (isSuperseded(threadId, rm.id)) continue;
           const localMatch = localById.get(rm.id);
           if (localMatch) {
             // Same id — update if the server has more content/tool events/

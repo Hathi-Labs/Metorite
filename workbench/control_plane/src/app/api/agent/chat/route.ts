@@ -81,6 +81,14 @@ interface ChatRequest {
   /** When true, the client is reconnecting to an existing agent run rather
    *  than starting a new one.  The route calls the reconnect endpoint. */
   reconnect?: boolean;
+  /** The id of the member's last message, when this turn is its EDIT. The
+   *  edit replaces that message and every reply after it (owner,
+   *  2026-10-09). The gateway checks that the member wrote it and that it is
+   *  the last one, and composes the note the new run reads
+   *  (`gateway/chat_supersede.py`). */
+  supersedes?: string;
+  /** The id of this turn's own user row, so the edit never deletes it. */
+  userMessageId?: string;
   /** The Continue button after a restart (incident 2026-10-09). The gateway
    *  writes the words the model reads, from the saved partial reply, so this
    *  is a flag and never text. */
@@ -639,7 +647,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume } = body;
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId } = body;
   if (!agentName || !message) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
@@ -704,6 +712,42 @@ export async function POST(req: NextRequest): Promise<Response> {
     return new Response(reconStream, { headers: sseHeaders() });
   }
 
+  // ── An edit on a path with no gateway run ───────────────────────────────
+  // The copilot path hands `supersedes` to /agent/run/stream, which stops the
+  // old run, removes the old turn and composes the note in one place. The
+  // other paths have no gateway run, and the history this request carries is
+  // the model's whole memory, so removing the stored rows is the whole job.
+  if (supersedes && threadId && mode !== "copilot") {
+    let res: Response;
+    try {
+      res = await gatewayFetch(
+        `${GATEWAY_URL}/chat/sessions/${encodeURIComponent(threadId)}/supersede`,
+        {
+          method: "POST",
+          headers: await buildGatewayHeaders(),
+          body: JSON.stringify({
+            superseded_id: supersedes,
+            keep_ids: [userMessageId, assistantMessageId].filter(Boolean),
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return new Response(
+        `data: ${JSON.stringify({ type: "error", content: `Gateway unreachable: ${msg}`, code: "connection" })}\n\n`,
+        { status: 502, headers: sseHeaders() },
+      );
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => `status ${res.status}`);
+      return new Response(
+        `data: ${JSON.stringify({ type: "error", content: text, code: codeForStatus(res.status) })}\n\n`,
+        { status: res.status, headers: sseHeaders() },
+      );
+    }
+  }
+
   // ── Gateway /v1 path: stream directly via litellm SDK ────────────────────
   // Routes to LiteLLM tier aliases (tier1/2/3 are cost-optimized tiers).
   // Backend can optionally route tiers through Copilot, Claude, GPT-4, or Gemini
@@ -755,6 +799,9 @@ export async function POST(req: NextRequest): Promise<Response> {
             // email) so named agents — not just the orchestrator — receive it.
             // The executor injects it as a leading system message.
             ...(context ? { system_context: context } : {}),
+            // An edit of the last message: the gateway pops both keys
+            // before the payload reaches the executor.
+            ...(supersedes ? { supersedes, user_message_id: userMessageId ?? "" } : {}),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,
