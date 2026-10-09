@@ -9526,6 +9526,9 @@ class OrgUsageRow(BaseModel):
     #: the part of the window that predates `credit_draw` (see `drawsSince`).
     lifePaidUsed: str = "0"
     lifePaidValueInr: str = "0"
+    #: Of `lifePaidUsed`, the credits from a purchase lot with no price.
+    #: `lifePaidValueInr` excludes them, so an average must too.
+    lifeUnpricedPaidUsed: str = "0"
     lifeFreeUsed: str = "0"
     #: Credits billed over the last `analytics.BURN_WINDOW_DAYS` days: the
     #: numerator of `runwayDays`, so the console can show the arithmetic.
@@ -9679,6 +9682,7 @@ def _draw_fields(d: dict[str, Decimal]) -> dict[str, str]:
         "unbackedCredits": "unbacked_credits",
         "lifePaidUsed": "life_paid_used",
         "lifePaidValueInr": "life_paid_value_inr",
+        "lifeUnpricedPaidUsed": "life_unpriced_paid_used",
         "lifeFreeUsed": "life_free_used",
     }
     return {out: str(d.get(key, Decimal(0))) for out, key in names.items()}

@@ -827,7 +827,10 @@ def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
 
     And lifetime figures from `credit_lot`, which the console uses to estimate
     the part of a window that predates migration 036:
-    ``life_paid_used``, ``life_paid_value_inr``, ``life_free_used``.
+    ``life_paid_used``, ``life_paid_value_inr``, ``life_unpriced_paid_used``
+    and ``life_free_used``. ⚠️ ``life_paid_value_inr`` covers only PRICED
+    lots, so a per-credit average must divide by ``life_paid_used`` minus
+    ``life_unpriced_paid_used``, or an unpriced grant drags it toward zero.
 
     ⚠️ **`since` is fleet-wide, not per organization.** It says when draws
     began to be recorded at all. A window that starts before it is partly
@@ -870,6 +873,9 @@ def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
                                  AND l.price_paid_inr IS NOT NULL), 0)
                                                                 AS paid_value_inr,
                    COALESCE(SUM(l.credits_used) FILTER
+                       (WHERE l.source = ANY(:paid)
+                          AND l.price_paid_inr IS NULL), 0)     AS unpriced_used,
+                   COALESCE(SUM(l.credits_used) FILTER
                        (WHERE NOT (l.source = ANY(:paid))), 0)  AS free_used
             FROM credit_lot l
             JOIN organization o ON o.id = l.organization_id
@@ -894,6 +900,7 @@ def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
                 "unbacked_credits": zero,
                 "life_paid_used": zero,
                 "life_paid_value_inr": zero,
+                "life_unpriced_paid_used": zero,
                 "life_free_used": zero,
             },
         )
@@ -909,6 +916,7 @@ def draws_by_org(conn: Connection, *, days: int) -> dict[str, Any]:
         x = row(r.slug)
         x["life_paid_used"] = Decimal(r.paid_used)
         x["life_paid_value_inr"] = Decimal(r.paid_value_inr)
+        x["life_unpriced_paid_used"] = Decimal(r.unpriced_used)
         x["life_free_used"] = Decimal(r.free_used)
     return {"since": since.isoformat() if since else None, "rows": out}
 

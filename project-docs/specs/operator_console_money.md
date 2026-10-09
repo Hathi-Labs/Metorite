@@ -79,7 +79,7 @@ One vocabulary, on every page. `src/lib/money.ts` is its only home.
 A charge that no lot covers writes one more row with a NULL `lot_id`.
 `GET /admin/usage/orgs` gains, per row: `paidCredits`, `paidValueInr`,
 `unpricedPaidCredits`, `freeCredits`, `unbackedCredits`, `lifePaidUsed`,
-`lifePaidValueInr`, `lifeFreeUsed` and `creditsLast7Days`. The view gains
+`lifePaidValueInr`, `lifeUnpricedPaidUsed`, `lifeFreeUsed` and `creditsLast7Days`. The view gains
 `drawsSince`, and the saved credit price as `inrPerCredit` and `usdToInr`.
 
 **An estimate is labelled, never hidden.** Draws begin when migration 036

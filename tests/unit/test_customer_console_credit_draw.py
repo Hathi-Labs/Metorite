@@ -216,6 +216,28 @@ class TestTheWindowRead:
         assert row["life_free_used"] == Decimal("5")
         assert row["life_paid_used"] == Decimal("3")
         assert row["life_paid_value_inr"] == Decimal("6")
+        assert row["life_unpriced_paid_used"] == Decimal("0")
+
+    def test_the_lifetime_UNPRICED_part_is_counted_apart(self, db, org):
+        """A manual grant with no price is a purchase lot. Its credits must
+        be separable, or an average of value over credits reads near zero."""
+        from customer_console import store
+
+        with db.begin() as c:
+            store.add_credit_lot(c, org_id=org["id"], source="purchase", credits=Decimal("900"))
+            store.add_credit_lot(
+                c,
+                org_id=org["id"],
+                source="purchase",
+                credits=Decimal("100"),
+                price_paid_inr=Decimal("100"),
+            )
+            _charge(c, org["id"], "1000", "u-1")
+            row = store.draws_by_org(c, days=30)["rows"][org["slug"]]
+
+        assert row["life_paid_used"] == Decimal("1000")
+        assert row["life_unpriced_paid_used"] == Decimal("900")
+        assert row["life_paid_value_inr"] == Decimal("100")
 
     def test_a_draw_OUTSIDE_the_window_is_not_counted(self, db, org):
         from customer_console import store
