@@ -27,6 +27,7 @@ import ImportHistory, { type DiscardOutcome, DiscardNotice } from "./ImportHisto
 import { LifecyclePolicy } from "./LifecyclePolicy";
 import SharedVocabulary from "./SharedVocabulary";
 import SpaceSettings from "./SpaceSettings";
+import { StatusStageTip } from "./StageHelp";
 import { StatusManager } from "./StatusManager";
 import { TagManager } from "./TagManager";
 import { TypeManager } from "./TypeManager";
@@ -318,12 +319,16 @@ export default function ProjectsSettings({
             All settings
           </button>
           <header>
-            <h2 className="text-sm font-semibold">
-              {current.label}
-              {isSpaceSection && space ? (
-                <span className="font-normal text-muted-foreground"> · {space.name}</span>
-              ) : null}
-            </h2>
+            <div className="flex items-center gap-1">
+              <h2 className="text-sm font-semibold">
+                {current.label}
+                {isSpaceSection && space ? (
+                  <span className="font-normal text-muted-foreground"> · {space.name}</span>
+                ) : null}
+              </h2>
+              {/* I-10b: what a status is, what a stage is, and the five stages. */}
+              {current.id === "statuses" ? <StatusStageTip /> : null}
+            </div>
             <p className="text-xs text-muted-foreground">{current.hint}</p>
           </header>
           {body}

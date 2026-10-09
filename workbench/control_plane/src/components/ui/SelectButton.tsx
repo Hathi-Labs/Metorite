@@ -162,6 +162,12 @@ export interface SelectOption {
   /** Drawn after the label, muted — a count, a hint, an address. */
   hint?: string;
   /**
+   * WS-41 I-10b. A muted second line UNDER the label, for an option whose
+   * meaning matters at the moment of choice, such as what a stage means.
+   * It wraps, so the panel stays inside a 390 px screen.
+   */
+  description?: string;
+  /**
    * WS-27bn R5b. Words the filter matches and the list never draws, such as
    * the address of a person whose row shows only the name.
    */
@@ -248,6 +254,12 @@ export interface SelectButtonProps {
    * this. Absent: no filter box.
    */
   filterAbove?: number;
+  /**
+   * WS-41 I-10b. How tall the open list may get, in px. Absent: the panel's
+   * default of 256, so no other control changes. The import's stage picker
+   * needs more, because each stage carries its meaning on a second line.
+   */
+  panelMaxHeight?: number;
 }
 
 export function SelectButton({
@@ -265,6 +277,7 @@ export function SelectButton({
   prefix,
   prompt,
   filterAbove,
+  panelMaxHeight,
 }: SelectButtonProps) {
   const [{ open, query }, dispatch] = useReducer(selectPanelReducer, {
     open: autoOpen,
@@ -371,6 +384,9 @@ export function SelectButton({
         anchor={trigger}
         open={open}
         layer={layer}
+        // The inline max-height `AnchoredPanel` sets beats the class, so
+        // `max-h-64` only stays as the fallback when no number is given.
+        maxHeight={panelMaxHeight}
         className="max-h-64 w-max p-1"
         panelProps={structured ? undefined : { id: listId, role: "listbox", "aria-label": label }}
       >
@@ -419,7 +435,16 @@ function OptionRow({
         option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
       }
     >
-      <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      {option.description ? (
+        <span className="min-w-0 flex-1 pr-px">
+          <span className="block truncate">{option.label}</span>
+          <span className="block max-w-[16rem] whitespace-normal text-[11px] text-muted-foreground">
+            {option.description}
+          </span>
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
+      )}
       {option.hint ? (
         <span className="shrink-0 text-[11px] text-muted-foreground">
           {option.hint}
