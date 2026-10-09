@@ -935,8 +935,10 @@ check below passes. Here is how the System-1 callable passes each one:
 >   summary. The bound was 1500 in #760.
 > - **The Projects choices fit the bound.** A name question sends at most
 >   about 120 characters. A twin context holds clipped titles and task
->   numbers, so about two pairs fit. The check asks the closest pairs that
->   fit, and leaves out the rest.
+>   numbers, so about two pairs fit. In a `no_egress` run, the check asks
+>   the best pair of each title first, then the pairs that still fit. The
+>   log line `projects.typed_choice` counts the pairs it leaves out. Any
+>   other run asks every pair.
 > - Fences: `test_a_501_character_context_goes_to_tier_fast` and
 >   `test_a_500_character_context_goes_to_tier_decide` in
 >   `tests/unit/test_decide_in_no_egress.py`.

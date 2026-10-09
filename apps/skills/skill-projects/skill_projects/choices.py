@@ -233,7 +233,7 @@ def twin_pairs(
     At most :data:`TWINS_PER_TITLE` tasks for each title, and
     :data:`TWIN_PAIRS_MAX` pairs in all, the closest first.
     """
-    pairs: list[tuple[float, int, dict[str, Any]]] = []
+    pairs: list[tuple[int, float, int, dict[str, Any]]] = []
     for i, title in enumerate(titles):
         if not str(title or "").strip():
             continue
@@ -241,11 +241,16 @@ def twin_pairs(
             ((_alike(title, str(row.get("title") or "")), row) for row in existing),
             key=lambda s: -s[0],
         )
+        rank = 0
         for score, row in scored[:TWINS_PER_TITLE]:
             if score >= TWIN_RATIO:
-                pairs.append((score, i, row))
-    pairs.sort(key=lambda p: -p[0])
-    return [(i, row) for _s, i, row in pairs[:TWIN_PAIRS_MAX]]
+                pairs.append((rank, score, i, row))
+                rank += 1
+    # The best pair of EACH title first, then each second pair, so a trim to
+    # the short bound drops a weaker second pair before any title loses its
+    # best one (review, after #760).
+    pairs.sort(key=lambda p: (p[0], -p[1]))
+    return [(i, row) for _r, _s, i, row in pairs[:TWIN_PAIRS_MAX]]
 
 
 def _number(row: dict[str, Any]) -> str:
@@ -281,12 +286,36 @@ def _twin_context(
     return context, new_keys, old_ids
 
 
+def _short_route() -> bool:
+    """True when the question takes the ``no_egress`` short route."""
+    try:
+        from acb_skills.decide_tools import short_route
+    except Exception:  # pragma: no cover — no platform package
+        return False
+    return short_route()
+
+
 def _short(context: dict[str, Any]) -> bool:
     try:
         from acb_skills.decide_tools import short_context
     except Exception:  # pragma: no cover — no platform package
         return True
     return short_context(context)
+
+
+def trim_to_bound(
+    titles: list[str], pairs: list[tuple[int, dict[str, Any]]],
+) -> list[tuple[int, dict[str, Any]]]:
+    """*pairs*, cut from the end until the twin context fits the short bound.
+
+    Only a ``no_egress`` run on the short route trims (review P1, after
+    #760). Any other run asks every pair. At least one pair always stays.
+    """
+    if not _short_route():
+        return pairs
+    while len(pairs) > 1 and not _short(_twin_context(titles, pairs)[0]):
+        pairs = pairs[:-1]
+    return pairs
 
 
 async def twin_flags(
@@ -318,11 +347,11 @@ async def twin_flags(
     from acb_skills.system_one import YES_NO, Item
 
     # The context keeps the short bound of a `no_egress` run, so the closest
-    # pairs stay and the rest are not asked (review P1, 2026-10-09).
+    # pairs stay and the rest are not asked (review P1, 2026-10-09). Only a
+    # run on that route trims.
+    found = len(pairs)
+    pairs = trim_to_bound(titles, pairs)
     context, new_keys, old_ids = _twin_context(titles, pairs)
-    while len(pairs) > 1 and not _short(context):
-        pairs = pairs[:-1]
-        context, new_keys, old_ids = _twin_context(titles, pairs)
     items = [
         Item(id=f"t{k}", question=_twin_question(new_keys[i], old_ids[str(row.get("id"))]),
              kind="yes_no", options=YES_NO)
@@ -334,7 +363,8 @@ async def twin_flags(
         if i not in flags and _sure(answer) == "yes":
             flags[i] = row
     _log.info("projects.typed_choice", purpose="twin", pairs=len(pairs),
-              flagged=len(flags), outcome="unavailable" if answers is None else "asked")
+              dropped=found - len(pairs), flagged=len(flags),
+              outcome="unavailable" if answers is None else "asked")
     return flags
 
 

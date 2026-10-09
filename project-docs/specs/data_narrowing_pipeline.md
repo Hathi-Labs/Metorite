@@ -273,8 +273,8 @@ filters only. PICK still gets the member's question as `query`.)*
    `no_egress` run may send a batch to the decide door too. The batch goes
    only when its state fits the short bound of 500 characters
    (`decide_tools.short_context`). A longer batch goes to System 1. A batch
-   with more than one full summary is longer, so almost every batch of such
-   a run stays on `tier-fast`. With the switch off, the rule above holds.
+   with one full summary is already longer, so almost every batch of such a
+   run stays on `tier-fast`. With the switch off, the rule above holds.
    The bound was 1500 in #760, and the owner set 500 on 2026-10-09.)*
 
 ### 3.3a The cost check of PICK — PICK pays for itself, or it is skipped

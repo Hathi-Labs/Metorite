@@ -269,20 +269,56 @@ async def test_a_uuid_project_keeps_the_card_of_before(monkeypatch) -> None:
 # ── 2. A twin before a create ────────────────────────────────────────────────
 
 
-def test_the_twin_context_keeps_the_short_bound(monkeypatch) -> None:
-    from acb_skills import decide_tools
-
+def _many_twins() -> tuple[list[str], list[dict[str, Any]]]:
     titles = [f"Prepare the quarterly supplier review pack number {n} " + "x" * 40
               for n in range(10)]
-    existing = [{"id": f"id-{n}", "title": t, "task_number": n} for n, t in enumerate(titles)]
+    existing = [{"id": f"id-{n}", "title": t, "task_number": n, "status_id": S1}
+                for n, t in enumerate(titles)]
+    return titles, existing
+
+
+async def test_the_twin_context_keeps_the_short_bound(monkeypatch) -> None:
+    """A ``no_egress`` run (the fixture) trims to the bound, through the
+    REAL ``twin_flags``, and asks at least one pair."""
+    from acb_skills import decide_tools
+
+    titles, existing = _many_twins()
+    assert len(choices.twin_pairs(titles, existing)) == choices.TWIN_PAIRS_MAX
+    fake_gateway(monkeypatch, _gateway(open_tasks=existing))
+    door = _door(monkeypatch, lambda b: _verdict(b, boolean={"probability": 0.1}))
+    _wire(monkeypatch, _fast_ok)
+    # A fresh proxy: a cached logger can hide a line from capture_logs.
+    monkeypatch.setattr(choices, "_log", structlog.get_logger("skill_projects.choices"))
+    with structlog.testing.capture_logs() as logs:
+        await choices.twin_flags(client.get, PID, titles)
+    assert len(door.requests) == 1
+    assert decide_tools.short_context(door.bodies[0]["state"])
+    assert 1 <= len(door.bodies[0]["questions"]) < choices.TWIN_PAIRS_MAX
+    line = next(e for e in logs if e.get("purpose") == "twin")
+    assert line["dropped"] == choices.TWIN_PAIRS_MAX - line["pairs"] > 0
+
+
+async def test_an_open_run_asks_every_twin_pair(monkeypatch) -> None:
+    """Review P1 (after #760): the bound is the ``no_egress`` rule. A run
+    that may send data off the platform asks every pair."""
+    bind_artifact_context(agent_name=PA, run_id="run-pc", think_mode="auto", no_egress=False)
+    titles, existing = _many_twins()
+    fake_gateway(monkeypatch, _gateway(open_tasks=existing))
+    door = _door(monkeypatch, lambda b: _verdict(b, boolean={"probability": 0.1}))
+    _wire(monkeypatch, _fast_ok)
+    await choices.twin_flags(client.get, PID, titles)
+    assert [len(b["questions"]) for b in door.bodies] == [choices.TWIN_PAIRS_MAX]
+
+
+def test_each_title_keeps_its_best_pair_before_a_second_one() -> None:
+    titles = ["Book the venue", "Print the badges"]
+    existing = [
+        {"id": "a", "title": "Book the venue", "task_number": 1},
+        {"id": "b", "title": "Book a venue", "task_number": 2},
+        {"id": "c", "title": "Print badges", "task_number": 3},
+    ]
     pairs = choices.twin_pairs(titles, existing)
-    assert len(pairs) == choices.TWIN_PAIRS_MAX
-    context, _new, _old = choices._twin_context(titles, pairs)
-    assert not decide_tools.short_context(context)
-    while len(pairs) > 1 and not choices._short(context):
-        pairs = pairs[:-1]
-        context, _new, _old = choices._twin_context(titles, pairs)
-    assert decide_tools.short_context(context) and pairs
+    assert [(i, r["id"]) for i, r in pairs][:2] == [(0, "a"), (1, "c")]
 
 
 async def test_a_twin_is_flagged_and_the_task_is_still_made(monkeypatch) -> None:

@@ -528,6 +528,16 @@ def _decide_route() -> str | None:
         return None
 
 
+def short_route() -> bool:
+    """True when this call takes the ``no_egress`` short route.
+
+    A caller that builds its own context asks this before it trims to
+    :func:`short_context`, so a run that may send data off the platform, or
+    a run on ``tier-fast``, keeps its whole question (review P1, after #760).
+    """
+    return _decide_route() == ROUTE_SHORT
+
+
 def _on_decide() -> bool:
     """Whether this call may send any typed item to ``tier-decide``."""
     return _decide_route() is not None
