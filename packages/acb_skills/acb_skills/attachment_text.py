@@ -5,7 +5,9 @@ the projects-assistant of a customer org used it on the production host to
 read a member's ``.docx``. This module gives that flow back with no code
 execution at all: it parses bytes in this process and returns text.
 
-The rules, each with a test in ``tests/unit/test_read_attachment.py``:
+The rules, each with a test in ``tests/unit/test_read_attachment.py``,
+``tests/unit/test_attachment_xlsx.py`` or
+``tests/unit/test_attachment_formats.py``:
 
 * **No subprocess and no code.** ``.docx`` is a zip read with :mod:`zipfile`
   and :mod:`xml.parsers.expat` from the standard library. ``.pdf`` goes
@@ -52,6 +54,29 @@ The rules, each with a test in ``tests/unit/test_read_attachment.py``:
   ``convert_charrefs=True`` expands no declared entity. The parse drops
   scripts, styles, templates, the head, comments and declarations, and it
   checks the deadline before each chunk.
+* **A deck and an OpenDocument file stream** (attachment formats). A
+  ``.pptx`` reads each slide in deck order, then its speaker notes, with the
+  Word helpers. An ``.odt``, ``.ods`` or ``.odp`` reads ``content.xml`` only.
+  Each part unpacks INTO the parse (:func:`_stream_xml`), so a zip bomb stops
+  at :data:`MAX_DOCX_XML_BYTES` with ``stopped`` and keeps the text before
+  it. :data:`MAX_OFFICE_ELEMENTS` stops a package before :class:`_Guard`
+  refuses one part. A spreadsheet keeps the caps of an Excel workbook, and a
+  repeated empty cell or row costs nothing.
+* **RTF is a small control-word stripper** (:func:`_rtf_text`). It skips
+  pictures, objects, field codes and each ``{\\*\\...}`` group, skips the
+  bytes of ``\\binN``, and caps the open groups (:data:`MAX_RTF_DEPTH`).
+* **A text kind is never parsed.** ``.json``, ``.xml``, ``.yaml`` and the
+  rest are lines of text, so an ``.xml`` file loads no DTD and expands no
+  entity.
+* **The bytes must match the suffix** (:func:`_check_magic`). A renamed file
+  gets one sentence, and never reaches a parser of another kind.
+* **No control character reaches the model.** Each C0 control but tab, line
+  feed and carriage return, and DEL, is deleted from the text of every kind.
+  The chat tool puts its DATA note before the text, so an instruction in a
+  file stays data (``attachment_tools._render``).
+* **An older binary Office file is refused** (:data:`LEGACY_OFFICE`). No OLE
+  parser is added. :func:`unsupported_sentence` says how to save it again,
+  and the chat upload route says it at upload.
 
 The module reads no file and no context. ``acb_skills.attachment_tools``
 finds the file, and calls :func:`extract_text` on its bytes.

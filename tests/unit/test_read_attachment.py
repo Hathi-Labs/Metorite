@@ -499,9 +499,9 @@ def test_a_malformed_attachment_gives_one_clean_sentence(ws) -> None:
 
 
 def test_an_unsupported_type_is_named_without_a_read(ws) -> None:
-    _attach(ws, SID_A, "deck.pptx", b"PK")
-    out = _read(ws, SID_A, "deck.pptx")
-    assert out.startswith("I cannot read deck.pptx.")
+    _attach(ws, SID_A, "deck.key", b"PK")
+    out = _read(ws, SID_A, "deck.key")
+    assert out.startswith("I cannot read deck.key.")
     assert at.SUPPORTED_SENTENCE in out
 
 

@@ -49,7 +49,7 @@ fix round 2).
 route and this tool share the one pool and the :data:`MAX_PARSES` slots. A
 second pool would double the bound on parse threads.
 
-Fences: ``tests/unit/test_read_attachment.py`` and
+Fences: ``tests/unit/test_read_attachment.py``, ``tests/unit/test_attachment_formats.py`` and
 ``tests/unit/test_email_attachment_text.py``.
 """
 from __future__ import annotations
