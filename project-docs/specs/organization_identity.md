@@ -128,7 +128,9 @@ the average while navy text beside it vanished (measured 2026-10-09).
 The branding row stores `logo`, `logoDark` (white style only) and
 `darkStyle`. The server refuses a pair that disagrees. `BrandMark` renders
 both images, and CSS shows one per colour mode (`.light` on the root), so a
-mode switch waits on no fetch. The logo shows at the top of the desktop
+mode switch waits on no fetch. Fence:
+`src/components/orgBrandLockup.mode.test.ts` ties the `.light` class to
+next-themes and to BrandMark. The logo shows at the top of the desktop
 sidebar and at the top of the phone menu.
 
 ## 3. The format rules, and why each one
