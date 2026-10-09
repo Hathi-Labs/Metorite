@@ -1,7 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-2 built, dark (2026-10-09), after WAC-1 on the same day. WAC-3
-is next. Board row
+**Status:** WAC-3 built, dark (2026-10-10), after WAC-1 and WAC-2 on
+2026-10-09. WAC-4 is next. Board row
 **WS-47**. WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test
 number. WAC-0 (the number) is the owner's, and it gates production only. HANDOFF
 **H-251** carries it.
@@ -32,6 +32,22 @@ row of the SAME phone, for the redelivery rule. A new code for a phone that
 the member already linked in that org revokes the old row, so the unique
 index holds. Fences: `tests/unit/test_wac_bot_inbound.py` and
 `tests/unit/test_wac_bot_link_r8.py` (R8).
+
+**WAC-3 as built (2026-10-10).** The run is `whatsapp_channel/bot_run.py`.
+Migration 237 adds `whatsapp_bot_messages` and `chat_session.channel`. Before
+the 200, `inbound.py` binds the org of the phone's current link. It writes the
+member's turn into the WhatsApp thread, and then a `received` row by `wamid`.
+The turn has an id made from the `wamid`, so the sweep reads the text back from
+the thread.
+
+After the 200, the background task starts the run as a task of its own, so a
+slow run never holds the response.
+
+The run checks the switch, the link, the member, `feature:chat` and
+`resolve_identity`, in that order. Then it calls the executor's `run_agent` in
+the process. `acb_skills.ask_tools.refuse_cards` makes every card tool deny at
+once. `chat_fold.persist_channel_reply` writes the reply row. Fences:
+`tests/unit/test_wac_bot_run.py` and `tests/unit/test_wac_bot_run_r8.py` (R8).
 
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
@@ -646,7 +662,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-0** | The Meta setup of §6 | **OWNER-GATE** | The five values of §5.1 are on the box, and `GET /whatsapp/webhook` answers Meta's handshake |
 | **WAC-1** ✅ built 2026-10-09 | The link table (§5.3), its migration, the code-issue route, and "Chat on WhatsApp" in member settings | AGENT-SAFE | A signed-in member gets a `wa.me` link and a QR. The code is stored as a hash and expires. The migration applies on a real database (R8). `test_tenant_coverage.py` passes |
 | **WAC-2** ✅ built 2026-10-09, dark | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
-| **WAC-3** | A linked text runs the main Chat assistant and the reply comes back (§5.4 bot message record, §5.5, §5.6). Read tools only: a card is denied at once (capture moves to WAC-4) | AGENT-SAFE | *(Made testable 2026-10-10.)* A1: a linked sender's message writes one `received` row, the route answers 200 before the run, and `run_agent` gets agent `orchestrator`, the link row's org, the link's email as the session user, and the scope rule in `system_context`. A2: one payload delivered twice, or twice at once, starts one run. A3: `resolve_identity` returning another org or none starts no run and sends the fixed refusal. A4: a member not active in the link's org gets no run and no reply. A5 (R8): a `chat_session` with channel `whatsapp` and its user and assistant rows exist in the link's org, `GET /chat/sessions` lists them for that member, and another org sees none. A6: a card tool in a WhatsApp run returns at once and writes nothing. A7: a `credits` failure sends the credits text, any other failure sends the general text, and the row ends `failed`. A8: the sweep runs a stale `received` row once, a row older than 24 hours ends `expired` with no send, and the tries stop at 3. A9: flag off or org off the allowlist starts no run. A10: the migration applies on a real database and `test_tenant_coverage.py` passes. Fences: `tests/unit/test_wac_bot_run.py`, `tests/unit/test_wac_bot_run_r8.py`. The live phone check stays the manual step of §8 |
+| **WAC-3** ✅ built 2026-10-10, dark | A linked text runs the main Chat assistant and the reply comes back (§5.4 bot message record, §5.5, §5.6). Read tools only: a card is denied at once (capture moves to WAC-4) | AGENT-SAFE | *(Made testable 2026-10-10.)* A1: a linked sender's message writes one `received` row, the route answers 200 before the run, and `run_agent` gets agent `orchestrator`, the link row's org, the link's email as the session user, and the scope rule in `system_context`. A2: one payload delivered twice, or twice at once, starts one run. A3: `resolve_identity` returning another org or none starts no run and sends the fixed refusal. A4: a member not active in the link's org gets no run and no reply. A5 (R8): a `chat_session` with channel `whatsapp` and its user and assistant rows exist in the link's org, `GET /chat/sessions` lists them for that member, and another org sees none. A6: a card tool in a WhatsApp run returns at once and writes nothing. A7: a `credits` failure sends the credits text, any other failure sends the general text, and the row ends `failed`. A8: the sweep runs a stale `received` row once, a row older than 24 hours ends `expired` with no send, and the tries stop at 3. A9: flag off or org off the allowlist starts no run. A10: the migration applies on a real database and `test_tenant_coverage.py` passes. Fences: `tests/unit/test_wac_bot_run.py`, `tests/unit/test_wac_bot_run_r8.py`. The live phone check stays the manual step of §8 |
 | **WAC-4** | Confirmation by reply buttons for class B writes, and the web-app link for guarded acts (§5.6) | AGENT-SAFE | "Add a task: call the vendor tomorrow" asks with buttons, and Confirm writes exactly one task. A tap from another phone or after expiry writes nothing. A delete request answers with a web link and changes nothing |
 | **WAC-5** | Voice notes (§5.7) | AGENT-SAFE | A voice note runs as its transcript, the reply echoes the transcript, and no audio file remains after the run |
 | **WAC-6** | Flow B, the Metorite-initiated link (§5.2) | AGENT-SAFE to build, **OWNER-GATE** to send to a real person | With a test template, YES links the phone and no reply links nothing |
