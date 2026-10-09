@@ -1,8 +1,8 @@
 # Operator Console — money clarity and the UI rebuild (WS-50)
 
 **Status:** ACTIVE. Minted 2026-10-09 by **D94**. Verified against the code on
-2026-10-09 at `main` `5405a0b7f`. Slice 0 (the backend) is BUILT on branch
-`console-money`. Slices 1 to 6 are spec only.
+2026-10-09 at `main` `5405a0b7f`. Slice 0 (the backend) is BUILT in PR #779.
+Slices 1 to 6 are spec only.
 
 **Owner request, 2026-10-09.** The owner wants to see, for each customer, what
 their AI costs us and what we charge them. The owner also wants no ambiguity
@@ -79,7 +79,8 @@ One vocabulary, on every page. `src/lib/money.ts` is its only home.
 A charge that no lot covers writes one more row with a NULL `lot_id`.
 `GET /admin/usage/orgs` gains, per row: `paidCredits`, `paidValueInr`,
 `unpricedPaidCredits`, `freeCredits`, `unbackedCredits`, `lifePaidUsed`,
-`lifePaidValueInr` and `lifeFreeUsed`. The view gains `drawsSince`.
+`lifePaidValueInr`, `lifeFreeUsed` and `creditsLast7Days`. The view gains
+`drawsSince`, and the saved credit price as `inrPerCredit` and `usdToInr`.
 
 **An estimate is labelled, never hidden.** Draws begin when migration 036
 applies. For the part of a window before `drawsSince`, the console splits the

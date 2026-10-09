@@ -245,8 +245,14 @@ class TestTheWindowRead:
 
 class TestTheRoute:
     def test_usage_orgs_carries_the_split(self, db, org):
-        """The operator route returns the draw fields beside each row."""
+        """The operator route returns the draw fields beside the org's row.
+
+        ⚠️ The org needs a LARGE `usage_event` row, or it sorts last and falls
+        off the capped page (H-76), and the assertion never runs (review of
+        PR #779).
+        """
         from customer_console import main, store
+        from sqlalchemy import text
 
         with db.begin() as c:
             store.add_credit_lot(
@@ -257,12 +263,38 @@ class TestTheRoute:
                 price_paid_inr=Decimal("15"),
             )
             _charge(c, org["id"], "2", "u-1")
+            c.execute(
+                text(
+                    "INSERT INTO usage_event (organization_id, request_id, billed_credits) "
+                    "VALUES (CAST(:o AS uuid), :r, 99999999)"
+                ),
+                {"o": org["id"], "r": f"draw-route-{org['slug']}"},
+            )
 
         view = main.admin_usage_by_org(None, days=30)
         mine = [r for r in view.rows if r.slug == org["slug"]]
-        # The fixture org has no usage_event rows, so it can fall off a
-        # capped page. The draws map still answers for it directly.
-        if mine:
-            assert Decimal(mine[0].paidCredits) == Decimal("2")
-            assert Decimal(mine[0].paidValueInr) == Decimal("3")
+        assert len(mine) == 1
+        assert Decimal(mine[0].paidCredits) == Decimal("2")
+        assert Decimal(mine[0].paidValueInr) == Decimal("3")
+        assert Decimal(mine[0].creditsLast7Days) == Decimal("99999999")
         assert view.drawsSince is not None
+
+
+class TestRounding:
+    def test_a_SUB_QUANTUM_charge_writes_no_draw_and_does_not_fail(self, db, org):
+        """`/usage/record` passes credits unrounded. A draw that rounds to
+        0.0000 must be dropped, never trip the CHECK and roll the charge back."""
+        from customer_console import store
+
+        with db.begin() as c:
+            store.add_credit_lot(c, org_id=org["id"], source="purchase", credits=Decimal("1"))
+            _charge(c, org["id"], "0.00003", "u-tiny")
+            assert _draws(c, org["id"]) == []
+
+    def test_a_sub_quantum_OVERDRAFT_remainder_is_dropped(self, db, org):
+        from customer_console import store
+
+        with db.begin() as c:
+            lot = store.add_credit_lot(c, org_id=org["id"], source="purchase", credits=Decimal("1"))
+            _charge(c, org["id"], "1.00003", "u-over")
+            assert _draws(c, org["id"]) == [(lot, Decimal("1.0000"))]

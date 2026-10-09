@@ -31,6 +31,7 @@ from customer_console.credits import (
     LEDGER_REASON_PURCHASE,
     LEDGER_REASON_RELEASE,
     LEDGER_REASON_USAGE,
+    quantize_credits,
 )
 
 __all__ = [
@@ -779,9 +780,18 @@ def record_draws(
     if charged <= 0:
         return
     covered = sum((Decimal(d["credits"]) for d in drawn), Decimal(0))
-    rows = [{"org": org_id, "lot": d["lot_id"], "c": d["credits"]} for d in drawn]
+    pairs = [(d["lot_id"], Decimal(d["credits"])) for d in drawn]
     if charged > covered:
-        rows.append({"org": org_id, "lot": None, "c": charged - covered})
+        pairs.append((None, charged - covered))
+    # ⚠️ Quantized to the ledger's 4 places, and a row that rounds to zero is
+    # dropped. `/usage/record` passes `billed_credits` unrounded, and a
+    # sub-quantum draw would round to 0.0000 in Postgres and trip the CHECK,
+    # which would roll back the whole usage charge (review of PR #779).
+    rows = [
+        {"org": org_id, "lot": lot, "c": q}
+        for lot, c in pairs
+        if (q := quantize_credits(c)) > 0
+    ]
     if not rows:
         return
     conn.execute(

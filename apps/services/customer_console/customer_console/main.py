@@ -9527,6 +9527,9 @@ class OrgUsageRow(BaseModel):
     lifePaidUsed: str = "0"
     lifePaidValueInr: str = "0"
     lifeFreeUsed: str = "0"
+    #: Credits billed over the last `analytics.BURN_WINDOW_DAYS` days: the
+    #: numerator of `runwayDays`, so the console can show the arithmetic.
+    creditsLast7Days: str = "0"
 
 
 class OrgUsageView(BaseModel):
@@ -9557,6 +9560,10 @@ class OrgUsageView(BaseModel):
     #: window that starts earlier is partly ESTIMATED from the lifetime lot
     #: mix, and the console says so. NULL means no draw is recorded yet.
     drawsSince: str | None = None
+    #: The saved credit price in force now, so the console can state money
+    #: in rupees (D94). NULL until the owner saves one on /pricing.
+    inrPerCredit: str | None = None
+    usdToInr: str | None = None
 
 
 class UsageDayRow(BaseModel):
@@ -9607,6 +9614,13 @@ def admin_usage_by_org(
         # the page — the worse the leak, the more certainly it hides.
         unbilled = store.unbilled_fleet_total(conn, days=days)
         draws = store.draws_by_org(conn, days=days)
+        # The same row `/catalog/tiers` and the breakdown read.
+        price = conn.execute(
+            text(
+                "SELECT inr_per_credit, usd_to_inr FROM credit_price "
+                "WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
+            )
+        ).fetchone()
 
     now = datetime.now(UTC)
     annotated = analytics.annotate_orgs(rows, balances, burn, now)
@@ -9628,6 +9642,8 @@ def admin_usage_by_org(
         unbilledCallsTotal=unbilled["calls"],
         unbilledTokensTotal=unbilled["tokens"],
         drawsSince=draws["since"],
+        inrPerCredit=None if price is None else str(price[0]),
+        usdToInr=None if price is None else str(price[1]),
         rows=[
             OrgUsageRow(
                 slug=r["slug"],
@@ -9646,6 +9662,7 @@ def admin_usage_by_org(
                 unbilledCalls=r["unbilled_calls"],
                 unbilledTokens=r["unbilled_tokens"],
                 **_draw_fields(draws["rows"].get(r["slug"], no_draws)),
+                creditsLast7Days=str(burn.get(r["slug"], Decimal(0))),
             )
             for r in annotated
         ],
