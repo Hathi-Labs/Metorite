@@ -844,9 +844,10 @@ def test_the_pending_count_and_the_apply_loop_share_one_definition() -> None:
 
 _OFFBOX_STUBS = r"""
 S3="$W/s3"
-mkdir -p "$S3" "$W/files/att"
+mkdir -p "$S3" "$W/files/att" "$W/app/data/att"
 export S3
-printf 'resume of a candidate\n' > "$W/files/att/cv.txt"
+printf 'resume of a candidate\n' > "$W/app/data/att/cv.txt"
+printf 'meeting audio\n' > "$W/files/att/audio.txt"
 KEYFPR="0123456789ABCDEF0123456789ABCDEF01234567"
 export KEYFPR
 printf 'PUBLIC KEY BLOCK\n' > "$W/pub.asc"
@@ -856,8 +857,9 @@ printf 'PRIVATE KEY BLOCK\n' > "$W/priv.asc"
 printf 'BACKUP_S3_BUCKET=metorite-backups\n' > "$W/backup-offbox.env"
 export BACKUP_OFFBOX_ENV_FILE="$W/backup-offbox.env"
 # No default of the script may reach a HOST path (/home/acb/.acb/agents, a
-# real Docker volume). A test that wants other values sets them itself.
-export BACKUP_FILE_DIRS="$W/files/att $W/files/missing"
+# real Docker volume). A test that wants other values sets them itself. Each
+# dir is under $APP_DIR/data, the root that backup_offbox.sh allows (BH-6a).
+export BACKUP_FILE_DIRS="$W/app/data/att $W/app/data/missing"
 export BACKUP_MEETING_BOT_VOLUME=stub-meeting-bot-data
 id() {
   if [ "${1:-}" = "-u" ]; then echo "${STUB_UID:-0}"; return 0; fi
@@ -1031,9 +1033,33 @@ _S3_ENV = (
     f"BACKUP_S3_ACCESS_KEY_ID={_S3_KEY_ID} BACKUP_S3_SECRET_ACCESS_KEY={_S3_SECRET} "
 )
 _GPG_ENV = 'BACKUP_GPG_RECIPIENT="$KEYFPR" BACKUP_GPG_PUBLIC_KEY_FILE="$W/pub.asc" '
-_DIRS_ENV = 'BACKUP_FILE_DIRS="$W/files/att $W/files/missing" '
+_DIRS_ENV = 'BACKUP_FILE_DIRS="$W/app/data/att $W/app/data/missing" '
 _FULL_ENV = _S3_ENV + _GPG_ENV + _DIRS_ENV
 _NIGHT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z")
+
+#: BH-6a. The scripts read these names from the ROOT key file only, and
+#: ignore them in the env. The harness plays systemd: a test still names them
+#: in `env`, and `_to_root_file` copies each one it sets into the key file, as
+#: a quoted value, so a space or an empty value survives. The env keeps them
+#: too, the way the unit's env holds the root file's values.
+_ROOT_FILE_NAMES = (
+    "BACKUP_S3_ENDPOINT BACKUP_S3_REGION BACKUP_S3_BUCKET BACKUP_S3_ACCESS_KEY_ID "
+    "BACKUP_S3_SECRET_ACCESS_KEY BACKUP_S3_PREFIX BACKUP_S3_KEEP BACKUP_S3_TIMEOUT_SECS "
+    "BACKUP_GPG_RECIPIENT BACKUP_GPG_PUBLIC_KEY_FILE BACKUP_REMOTE"
+)
+
+
+def _to_root_file(env: str) -> str:
+    """A shell step that appends each root-file name that `env` sets to the
+    key file. `env` is a prefix of NAME=value pairs, so `export` reads it."""
+    if not env.strip():
+        return ""
+    return (
+        f"( export {env}\n"
+        f"  for n in {_ROOT_FILE_NAMES}; do\n"
+        "    if [ -n \"${!n+x}\" ]; then printf \"%s='%s'\\n\" \"$n\" \"${!n}\"; fi\n"
+        '  done ) >> "$BACKUP_OFFBOX_ENV_FILE"\n'
+    )
 
 
 def _run_backup_offbox(
@@ -1053,6 +1079,7 @@ def _run_backup_offbox(
         _STUBS
         + _OFFBOX_STUBS
         + setup
+        + _to_root_file(env)
         + env
         + ' PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" '
         + f"bash scripts/backup_db.sh {flags} < /dev/null\n"
@@ -1134,7 +1161,7 @@ def test_the_off_box_happy_path_uploads_only_encrypted_objects() -> None:
     sums = next(i for i, ln in enumerate(rc) if " copyto " in ln and "SHA256SUMS" in ln)
     assert copy < sums, "SHA256SUMS must go up last, as the mark of a complete night"
     assert "--exclude SHA256SUMS.zst.gpg" in rc[copy]
-    assert "files/missing (no such directory)" in out
+    assert "data/missing (no such directory)" in out
     assert "WORK-DIR-LEFT" not in str(r["err"]), "the staging directory was left on the box"
     assert not any(
         " stop " in ln for ln in str(r["calls"]).splitlines() if ln.startswith("docker")
@@ -1219,27 +1246,14 @@ def test_only_the_backup_unit_loads_the_offbox_key_file() -> None:
         ("export STUB_UID=1000\n", "", "runs as uid 1000. Only root may hold the bucket key"),
         ("export STUB_KEYFILE_STAT='1000:1000 600'\n", "", "It must be '0:0 600'"),
         ("export STUB_KEYFILE_STAT='0:0 644'\n", "", "It must be '0:0 600'"),
-        ("", 'BACKUP_OFFBOX_ENV_FILE="$W/nope.env" ', "does not exist. The bucket key belongs there"),
-        (
-            "mkdir -p \"$W/app\"; printf 'POSTGRES_USER=acb\\nBACKUP_S3_SECRET_ACCESS_KEY=x\\n' > \"$W/app/.env\"\n",
-            "", "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE",
-        ),
-        (
-            "mkdir -p \"$W/app\"; printf 'export BACKUP_GPG_RECIPIENT=x\\n' >> \"$W/app/.env\"\n",
-            "", "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE",
-        ),
-        # The acb-writable .env must not choose the key file (round 2). The
-        # stub file it names is root:root 0600, so only this check stops it.
-        (
-            "mkdir -p \"$W/app\"; printf 'BACKUP_OFFBOX_ENV_FILE=%s\\n' \"$W/backup-offbox.env\" >> \"$W/app/.env\"\n",
-            "", "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE",
-        ),
+        ("export STUB_KEYFILE_STAT='0:0 660'\n", "", "It must be '0:0 600'"),
     ],
 )
 def test_the_bucket_key_must_be_root_only(setup: str, env: str, why: str) -> None:
-    """🔴 P1. Not root, a key file that is not root:root 0600, no key file, or
-    a key in /opt/acb/app/.env (the gateway's env): each is refused before any
-    data is staged, and rclone never runs."""
+    """🔴 P1. Not root, or a key file that is not root:root 0600: each is
+    refused before any data is staged, and rclone never runs. (A missing key
+    file is no off-box copy at all, and a key line in the app .env is an
+    ERROR that keeps the upload: tests/unit/test_backup_env_values.py, BH-6a.)"""
     r = _run_backup_offbox(_FULL_ENV + env, setup=setup)
     assert r["rc"] != 0, f"exit 0:\n{r['out']}\n{r['err']}"
     assert why in str(r["err"]), r["err"]

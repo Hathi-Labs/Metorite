@@ -235,9 +235,11 @@ line for each.
 - **Never in the app env file.** `/opt/acb/app/.env` is the env file of
   `acb-gateway` and of the WhatsApp bridge. The gateway's in-process Copilot
   CLI inherits that env (H-270). `backup_offbox.sh` refuses to run as any
-  user but root. It also refuses a key file that is not root:root 0600. It
-  refuses a `BACKUP_S3_*`, `BACKUP_GPG_*` or `BACKUP_OFFBOX_ENV_FILE` line in
-  `/opt/acb/app/.env`, so that acb-writable file cannot name another key file.
+  user but root. It also refuses a key file that is not root:root 0600. The
+  scripts read every off-box name from the key file only, and ignore the same
+  names in the env (BH-6a, 2026-10-09). A `BACKUP_S3_*`, `BACKUP_GPG_*` or
+  `BACKUP_OFFBOX_ENV_FILE` line in an acb-writable `.env` makes the run exit 1
+  with an ERROR. The night still goes up with the values of the key file.
 - **Encrypted on the box, or not sent.** zstd compresses each item, and gpg
   encrypts it to the PUBLIC key named by `BACKUP_GPG_RECIPIENT` (a full
   fingerprint). The box never holds the private key. So the box can write a

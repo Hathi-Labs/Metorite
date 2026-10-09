@@ -28,6 +28,12 @@ User=root
 # managed Postgres made PGHOST, PGUSER, PGPASSWORD and PG_MODE mandatory — the
 # unit had none of them, so it failed, and the timer was disabled rather than
 # repaired. The last dump before this fix was 2026-08-25.
+# 🔴 **BH-6a (WS-49): this file is acb-writable, so root trusts no value in
+# it.** backup_db.sh pins its paths, validates each value it takes, and reads
+# the off-box names from /etc/acb/backup-offbox.env only. Its header lists the
+# class of each name. ⚠️ An `Environment=` line here cannot pin a name: a
+# value from an EnvironmentFile wins over it. box_hardening.md BH-6 removes
+# this line, which also keeps LD_PRELOAD and BASH_ENV from root's bash.
 EnvironmentFile=/opt/acb/app/.env
 # ⚠️ The Customer Console is a SEPARATE Supabase project with its own
 # credentials, so its DSN lives in its own env file. The leading `-` makes it
@@ -42,8 +48,9 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # the gateway's in-process Copilot CLI inherits that env (H-270). So every
 # BACKUP_S3_* and BACKUP_GPG_* key goes in this root:root 0600 file, which
 # only THIS unit loads. The `-` keeps a box without the off-box copy working.
-# backup_offbox.sh refuses a key file that is not root:root 0600, and refuses
-# a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE line in .env.
+# backup_offbox.sh refuses a key file that is not root:root 0600. The scripts
+# read the key names from this file only, and ignore them in the env. A
+# BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE line in .env is an ERROR.
 # ⚠️ This closes the PASSIVE paths only: the inherited env, /proc/<pid>/environ
 # and env dumps in logs. `acb` is equivalent to root on this box (sudo, the
 # docker group, and it owns the scripts this unit runs), so an ACTIVE

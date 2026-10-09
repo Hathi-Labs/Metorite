@@ -1,0 +1,662 @@
+"""BH-6a (WS-49, finding B3): the root backup chain trusts no value from the env.
+
+`acb-backup.service` runs `scripts/backup_db.sh` as ROOT, and it loads
+`/opt/acb/app/.env`, which the gateway can write. So before this fix a line in
+that file chose the image that root runs with the whole dump streamed into it,
+the directory root runs `rm -rf` in, how many nights root keeps, which dirs
+root tars, and (for each name the root key file did not set) where root uploads
+the night. `backup_db.sh`'s header lists the class of every name: PINNED, ROOT
+FILE, VALIDATED or HARMLESS.
+
+These run the REAL scripts with the stub tools of
+`tests/unit/test_backup_deploy_wiring.py`. Each test is RED on the scripts
+before the fix, except the three regression fences that say so.
+
+The root run is forced with `BACKUP_ENV_GUARD=1`, because a test cannot be
+uid 0. That knob can only make a run stricter, so the env may hold it. The
+forced run takes its paths from where the script is, so those tests copy the
+scripts into a layout: `$W/root/opt/acb/app/scripts`.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pytest
+
+from tests.unit.test_backup_deploy_wiring import (
+    _DOCKER,
+    _FULL_ENV,
+    _GPG_ENV,
+    _OFFBOX_STUBS,
+    _ROOT,
+    _S3_ENV,
+    _STUBS,
+    _encrypted,
+    _hermetic_env,
+    _rclone_calls,
+    _to_root_file,
+)
+
+# A psql that also logs the env it got, and answers from STUB_DBS for the
+# database list. It reads stdin for every other call, so the migration
+# runner can pipe SQL into it.
+_PSQL = r"""
+psql() {
+  printf 'psql %s\n' "$*" >> "$CALLS"
+  printf 'psql-env HOME=%s PSQLRC=%s\n' "${HOME-}" "${PSQLRC-<unset>}" >> "$CALLS"
+  case "$*" in
+    *"from pg_class c"*) echo 7 ;;
+    *"select 1"*) echo 1 ;;
+    *"server_version_num"*) echo 17 ;;
+    *"show server_version"*) echo 17.6 ;;
+    *"datistemplate"*) printf '%s\n' ${STUB_DBS:-acb} ;;
+    *"count(*) from pg_database"*) echo 0 ;;
+    *"FROM schema_migrations"*) : ;;
+    *) cat > /dev/null ;;
+  esac
+  return 0
+}
+rsync() { printf 'rsync %s\n' "$*" >> "$CALLS"; }
+tar() { printf 'tar %s\n' "$*" >> "$CALLS"; command tar "$@"; }
+export -f psql rsync tar
+"""
+
+# The root layout of a forced root run. The .env there is the real one; a
+# test puts the attacker's values in OTHER places and in the env.
+_LAYOUT = r"""
+R="$W/root"
+mkdir -p "$R/opt/acb/app/scripts" "$R/opt/acb/backups" "$R/etc/acb"
+cp scripts/backup_db.sh scripts/backup_offbox.sh scripts/offbox_lib.sh "$R/opt/acb/app/scripts/"
+printf 'POSTGRES_USER=acb\n' > "$R/opt/acb/app/.env"
+"""
+
+_ROOT_RUN = 'BACKUP_ENV_GUARD=1 PG_MODE=local bash "$W/root/opt/acb/app/scripts/backup_db.sh"'
+_ACB_RUN = 'PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" bash scripts/backup_db.sh'
+
+
+def _run(
+    env: str = "",
+    *,
+    setup: str = "",
+    flags: str = "",
+    docker: str = "works",
+    offbox: bool = False,
+    root: bool = False,
+    after: str = "",
+    command: str = "",
+) -> dict[str, object]:
+    """Run the REAL backup_db.sh. `root` forces the root run in a layout.
+    `offbox` adds the off-box stubs, whose key file is
+    $W/backup-offbox.env, root:root 0600 to the stub `stat`. Nothing here
+    copies `env` into the key file: a test that wants keys there says so."""
+    run_cmd = command or (_ROOT_RUN if root else _ACB_RUN)
+    prog = (
+        _STUBS
+        + _DOCKER[docker]
+        + (_OFFBOX_STUBS if offbox else "")
+        + _PSQL
+        + (_LAYOUT if root else "")
+        + setup
+        + f"{env} {run_cmd} {flags} < /dev/null\n"
+        + "rc=$?\n"
+        + after
+        + 'printf "\\n===CALLS===\\n" >&2\n'
+        + 'cat "$CALLS" >&2\n'
+        + 'printf "\\n===FILES===\\n" >&2\n'
+        + '(cd "$W" && find . | sed "s#^\\./##" | sort) >&2\n'
+        + 'printf "\\n===S3===\\n" >&2\n'
+        + 'if [ -n "${S3:-}" ] && [ -d "$S3" ]; then (cd "$S3" && find . -type f | sort) >&2; fi\n'
+        + 'rm -rf "$W"\n'
+        + "exit $rc\n"
+    )
+    run = subprocess.run(
+        ["bash"], input=prog.encode(), capture_output=True, timeout=120, cwd=_ROOT,
+        env=_hermetic_env(),
+    )
+    err = run.stderr.decode(errors="replace")
+    err, _, rest = err.partition("\n===CALLS===\n")
+    calls, _, rest = rest.partition("\n===FILES===\n")
+    files, _, s3 = rest.partition("\n===S3===\n")
+    return {
+        "rc": run.returncode,
+        "out": run.stdout.decode(errors="replace"),
+        "err": err,
+        "calls": calls,
+        "files": files.splitlines(),
+        "s3": [ln for ln in s3.splitlines() if ln.strip()],
+    }
+
+
+def _lines(r: dict[str, object], prefix: str) -> list[str]:
+    return [ln for ln in str(r["calls"]).splitlines() if ln.startswith(prefix)]
+
+
+# ── VALIDATED: BACKUP_VERIFY_IMAGE ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "evil/x",
+        "pgvector/pgvector:latest",
+        "pgvector/pgvector:pg17 --privileged",
+        "pgvector/pgvector:pg17@sha256:abc",
+        "docker.io/pgvector/pgvector:pg17",
+    ],
+)
+def test_a_verify_image_from_the_env_never_reaches_docker(image: str) -> None:
+    """🔴 Root runs `docker run <image>` and streams the whole dump into it,
+    so an image that the env names is root code execution. Mutation: take
+    BACKUP_VERIFY_IMAGE as it comes, and `evil/x` reaches docker."""
+    r = _run(f"BACKUP_VERIFY_IMAGE='{image}'", flags="--verify-restore")
+    runs = _lines(r, "docker run")
+    assert runs, f"the verify never started:\n{r['out']}\n{r['err']}"
+    for ln in runs:
+        assert image not in ln, f"docker got the env's image: {ln}"
+        assert "pgvector/pgvector:pg17 " in ln, ln
+    assert "BACKUP_VERIFY_IMAGE is not pgvector/pgvector:pg<N>" in str(r["err"]), r["err"]
+    assert image not in str(r["out"]) + str(r["err"]), "the WARN printed the value"
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+
+
+def test_a_pinned_verify_image_digest_is_still_taken() -> None:
+    """The companion: a guard that refused every value passes the test above,
+    and the operator could no longer pin the image by digest."""
+    image = "pgvector/pgvector:pg17@sha256:" + "a" * 64
+    r = _run(f"BACKUP_VERIFY_IMAGE='{image}'", flags="--verify-restore")
+    assert any(image in ln for ln in _lines(r, "docker run")), r["calls"]
+    assert "BACKUP_VERIFY_IMAGE is not" not in str(r["err"])
+
+
+@pytest.mark.parametrize(("memory", "want"), [("99999999999", "1g"), ("1g --privileged", "1g"), ("512m", "512m")])
+def test_the_verify_memory_is_a_size_or_the_default(memory: str, want: str) -> None:
+    r = _run(f"BACKUP_VERIFY_MEMORY='{memory}'", flags="--verify-restore")
+    run = _lines(r, "docker run")[0]
+    assert f"--memory {want} --memory-swap {want} " in run, run
+
+
+# ── VALIDATED: KEEP_DAILY, and the one shape that retention deletes ────────
+
+_PLANT_20 = (
+    'for d in $(seq -w 1 20); do mkdir -p "$W/backups/2026-01-${d}T000000Z"; '
+    'echo x > "$W/backups/2026-01-${d}T000000Z/acb.dump"; done\n'
+)
+_COUNT = 'echo "NIGHTS=$(ls -1d "$W"/backups/2*Z 2>/dev/null | wc -l)" >&2\n'
+
+
+@pytest.mark.parametrize(("keep", "left"), [("0", 14), ("2", 14), ("-1", 14), ("abc", 14), ("5", 5)])
+def test_keep_daily_below_three_never_prunes_below_the_default(keep: str, left: int) -> None:
+    """🔴 `head -n -0` lists EVERY night, so KEEP_DAILY=0 made root delete the
+    whole local history, tonight's dump too. 20 old nights plus tonight: a bad
+    value keeps 14, and 5 keeps 5 (the companion). Mutation: take KEEP_DAILY
+    as it comes, and the 0 case leaves no night at all."""
+    r = _run(f"KEEP_DAILY='{keep}'", setup=_PLANT_20, after=_COUNT)
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert f"NIGHTS={left}" in str(r["err"]), r["err"]
+    if left == 14:
+        assert "KEEP_DAILY is not a whole number of 3 or more. Using 14." in str(r["err"])
+
+
+def test_retention_deletes_only_a_night_and_never_follows_a_link() -> None:
+    """🔴 Every `rm -rf` goes through one guard: "$BACKUP_DIR/<stamp>". `1Z`
+    matches the old `[0-9]*Z` glob, sorts first, and is NOT a night, so it
+    stays. A symlink named like a night loses the link, never its target.
+    Mutation: drop the case guard in rm_night, and `1Z` goes."""
+    setup = (
+        _PLANT_20
+        + 'mkdir -p "$W/backups/1Z" "$W/victim"; echo keep > "$W/backups/1Z/keep"\n'
+        + 'echo keep > "$W/victim/keep"; ln -s "$W/victim" "$W/backups/2025-01-01T000000Z"\n'
+    )
+    after = (
+        '[ -f "$W/backups/1Z/keep" ] && echo "ODD-ENTRY-KEPT" >&2\n'
+        '[ -f "$W/victim/keep" ] && echo "VICTIM-KEPT" >&2\n'
+    )
+    r = _run("KEEP_DAILY=3", setup=setup, after=after)
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert "ODD-ENTRY-KEPT" in str(r["err"]), "retention deleted a dir that is not a night"
+    assert "VICTIM-KEPT" in str(r["err"]), "retention followed a link out of the backup dir"
+
+
+# ── PINNED: the paths of the root run, and the tool names of its env ───────
+
+
+def test_the_root_run_ignores_its_paths_and_tool_names_in_the_env() -> None:
+    """🔴 BACKUP_DIR, ENV_FILE, APP_DIR and PG_CONTAINER from the env are
+    ignored, and so are PATH, HOME and PSQLRC. The dump lands in the pinned
+    <root>/opt/acb/backups, the user comes from the pinned .env, no binary on
+    the env's PATH runs, and psql sees HOME=/root and no PSQLRC. Mutation:
+    honour BACKUP_DIR in the root run, and the dump lands in $W/x."""
+    setup = (
+        'mkdir -p "$W/a" "$W/evilbin" "$W/x"\n'
+        "printf 'POSTGRES_USER=evil_e\\n' > \"$W/e\"\n"
+        "printf 'POSTGRES_USER=evil_a\\n' > \"$W/a/.env\"\n"
+        # `dirname` is the FIRST external command of the script, and `du` a
+        # late one. Each marks that it ran, then runs the real tool.
+        "for t in dirname du; do printf '#!/bin/sh\\ntouch \"$W/EVIL-PATH-RAN\"\\n"
+        "exec /usr/bin/%s \"$@\"\\n' \"$t\" > \"$W/evilbin/$t\"; chmod +x \"$W/evilbin/$t\"; done\n"
+    )
+    env = (
+        'BACKUP_DIR="$W/x" ENV_FILE="$W/e" APP_DIR="$W/a" PG_CONTAINER=evil '
+        'BACKUP_OFFBOX_ENV_FILE="$W/k" PATH="$W/evilbin:$PATH" HOME="$W/a" PSQLRC="$W/a/rc"'
+    )
+    r = _run(env, setup=setup, root=True)
+    files = r["files"]
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert any(f.startswith("root/opt/acb/backups/") and f.endswith("/acb.dump") for f in files), files  # type: ignore[union-attr]
+    assert not any(f.startswith("x/") for f in files), "the dump went to the env's BACKUP_DIR"  # type: ignore[union-attr]
+    assert "EVIL-PATH-RAN" not in files, "a binary from the env's PATH ran"  # type: ignore[operator]
+    users = [ln for ln in _lines(r, "psql ") if " -U " in ln]
+    assert users and all(" -U acb " in ln for ln in users), users
+    assert "evil" not in str(r["calls"]), "a value from the env reached a tool"
+    for ln in _lines(r, "psql-env "):
+        assert ln == "psql-env HOME=/root PSQLRC=<unset>", ln
+    err = str(r["err"])
+    for name in ("APP_DIR", "BACKUP_DIR", "PG_CONTAINER", "BACKUP_OFFBOX_ENV_FILE"):
+        assert f"{name} is set in the environment. The root run ignores it" in err, (name, err)
+    assert "Backing up cluster 'acb-postgres'" in str(r["out"]), r["out"]
+
+
+def test_a_root_run_outside_the_layout_is_refused() -> None:
+    """The fixed paths come from where the script is. A root run from another
+    place has no fixed paths, so it stops before it touches anything."""
+    r = _run(command=f"BACKUP_ENV_GUARD=1 {_ACB_RUN}")
+    assert r["rc"] == 2, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert "a root run must start from /opt/acb/app/scripts/backup_db.sh" in str(r["err"])
+    assert not _lines(r, "pg_dump"), "a refused run still dumped"
+
+
+def test_an_acb_run_keeps_the_same_defaults() -> None:
+    """Regression fence. The pre-migration backup runs as acb with no path in
+    its env, so it takes the defaults, and they are the old ones. The root
+    run pins the SAME values. Read, not run: a run would write under /opt."""
+    text = (_ROOT / "scripts/backup_db.sh").read_text(encoding="utf-8")
+    for line in (
+        'BACKUP_DIR="${BACKUP_DIR:-/opt/acb/backups}"',
+        'PG_CONTAINER="${PG_CONTAINER:-acb-postgres}"',
+        'APP_DIR="${APP_DIR:-/opt/acb/app}"',
+        'offbox_key_file="${BACKUP_OFFBOX_ENV_FILE:-/etc/acb/backup-offbox.env}"',
+        'BACKUP_DIR="$layout_root/opt/acb/backups"',
+        'APP_DIR="$layout_root/opt/acb/app"',
+        "PG_CONTAINER=acb-postgres",
+        'offbox_key_file="$layout_root/etc/acb/backup-offbox.env"',
+    ):
+        assert any(ln.strip() == line for ln in text.splitlines()), line
+
+
+# ── The migration runner's call, as acb ────────────────────────────────────
+
+
+def test_the_migration_backup_as_acb_still_runs() -> None:
+    """Regression fence (green before the fix too). apply_migrations.sh runs
+    the REAL backup_db.sh as acb before a pending migration. It must still
+    dump, and the migration must still apply after it."""
+    setup = (
+        'mkdir -p "$W/app/scripts" "$W/m"\n'
+        'cp scripts/backup_db.sh scripts/backup_offbox.sh scripts/offbox_lib.sh "$W/app/scripts/"\n'
+        "printf -- '-- MARKER_A\\nselect 1;\\n' > \"$W/m/02_a.sql\"\n"
+    )
+    r = _run(
+        command='PG_MODE=local APP_DIR="$W/app" MIGRATIONS_DIR="$W/m" BACKUP_DIR="$W/backups" '
+                "bash scripts/apply_migrations.sh",
+        setup=setup,
+    )
+    out = str(r["out"])
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{out}\n{r['err']}"
+    assert "Pre-migration backup" in out and "Backup complete" in out, out
+    assert any(f.startswith("backups/") and f.endswith("/acb.dump") for f in r["files"]), r["files"]  # type: ignore[union-attr]
+    assert "(1 applied, 0 already recorded)" in out, out
+
+
+# ── VALIDATED: the names read from the pinned .env, and the database list ──
+
+
+def test_a_database_name_of_an_unsafe_shape_is_not_dumped() -> None:
+    """🔴 A database name becomes a FILE name, as root. Anyone with the DB
+    password can create `../../evil`, and the dump then lands outside the
+    night. It is skipped, the others are dumped, and the run exits 1.
+    Mutation: drop the name check, and $W/evil.dump appears."""
+    r = _run("STUB_DBS='acb ../../evil litellm_proxy'")
+    assert r["rc"] != 0, f"exit 0:\n{r['out']}\n{r['err']}"
+    assert "evil.dump" not in " ".join(r["files"]), r["files"]  # type: ignore[arg-type]
+    assert not any("evil" in ln for ln in _lines(r, "pg_dump")), r["calls"]
+    dumps = [f for f in r["files"] if f.endswith(".dump")]  # type: ignore[union-attr]
+    assert sorted(f.rsplit("/", 1)[1] for f in dumps) == ["acb.dump", "litellm_proxy.dump"], dumps
+    assert "unsafe shape" in str(r["err"]), r["err"]
+
+
+@pytest.mark.parametrize(
+    ("dotenv", "user"),
+    [
+        ("POSTGRES_USER=postgres.abcdefghijklmnopqrst", "postgres.abcdefghijklmnopqrst"),
+        ("POSTGRES_USER=acb;rm", "acb"),
+        ("POSTGRES_USER=--host=evil", "acb"),
+    ],
+)
+def test_the_user_from_the_env_file_has_a_safe_shape(dotenv: str, user: str) -> None:
+    """The Supabase pooler user `postgres.<ref>` passes (the box's own value),
+    and any other shape falls back to acb with a WARN."""
+    r = _run(setup=f"printf '%s\\n' '{dotenv}' > \"$W/app/.env\"\n")
+    users = [ln for ln in _lines(r, "psql ") if " -U " in ln]
+    assert users and all(f" -U {user} " in ln for ln in users), users
+
+
+def test_the_app_database_from_the_env_file_has_a_safe_shape() -> None:
+    r = _run(setup="printf 'DATABASE_URL=postgresql://u:p@h/x%%27%%3Bdrop\\n' > \"$W/app/.env\"\n")
+    assert "app_db:           acb" in str(r["out"]), r["out"]
+    assert "DATABASE_URL" in str(r["err"]) and "Using acb" in str(r["err"]), r["err"]
+
+
+@pytest.mark.parametrize(
+    ("dsn", "dumped"),
+    [
+        ("postgresql://cc:pw@cc.example:5432/postgres?sslkeylogfile=/etc/cron.d/x", False),
+        ("postgresql://cc:pw@cc.example:5432/postgres?passfile=/root/.pgpass", False),
+        ("postgresql://cc:pw@cc.example:5432/postgres?sslmode=require&service=x", False),
+        ("host=cc.example passfile=/root/.pgpass", False),
+        ("postgresql+psycopg://cc:pw@cc.example:5432/postgres?sslmode=require", True),
+    ],
+)
+def test_the_console_dsn_cannot_carry_a_file_option(dsn: str, dumped: bool) -> None:
+    """🔴 Root passes this DSN to pg_dump, and libpq options read or write a
+    FILE as root. Only a postgresql:// URL with sslmode, connect_timeout or
+    application_name. Mutation: drop the check, and pg_dump gets the file
+    option."""
+    r = _run(f"CUSTOMER_CONSOLE_DATABASE_URL='{dsn}'")
+    console = [ln for ln in _lines(r, "pg_dump -d ")]
+    if dumped:
+        assert console, r["calls"]
+        assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    else:
+        assert console == [], f"pg_dump got the DSN: {console}"
+        assert "The Console database is NOT" in str(r["err"]), r["err"]
+        assert r["rc"] != 0
+
+
+# ── ROOT FILE: the off-box names ───────────────────────────────────────────
+
+_ROOT_KEYS = _to_root_file(_S3_ENV + _GPG_ENV)
+_GOOD_ENDPOINT = "endpoint=https://ref.storage.supabase.co/storage/v1/s3"
+
+
+def test_the_root_file_wins_over_an_env_line() -> None:
+    """🔴 The app .env holds BACKUP_S3_ENDPOINT=evil, and the root file holds
+    the real one. The night goes up to the root file's endpoint, and the
+    line in .env is an ERROR (the gateway loads that file). Before the fix
+    the line stopped the upload, so the night had no copy off the box."""
+    setup = _ROOT_KEYS + "printf 'BACKUP_S3_ENDPOINT=https://evil.example/s3\\n' >> \"$W/app/.env\"\n"
+    r = _run(_FULL_ENV, setup=setup, offbox=True, flags="--offbox")
+    assert "off-box copy ok (offbox:metorite-backups/nightly/" in str(r["out"]), f"{r['out']}\n{r['err']}"
+    envs = _lines(r, "rclone-env ")
+    assert envs and all(_GOOD_ENDPOINT in ln for ln in envs), envs
+    assert "evil.example" not in str(r["calls"])
+    assert "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE" in str(r["err"]), r["err"]
+    assert r["rc"] != 0, "a key line in the app .env must turn the run red"
+
+
+def test_an_off_box_name_only_in_the_env_is_ignored() -> None:
+    """🔴 THE HOLE. The root file sets the five keys and nothing else, so a
+    name it does not set (PREFIX, KEEP) fell through from the env. Here the
+    env also names another endpoint and bucket. Every one is ignored: the
+    night goes to metorite-backups/nightly at the real endpoint, and KEEP
+    stays 14, so the three old nights stay. Mutation: read the env, and the
+    night goes to evil.example and prunes the bucket to one night."""
+    setup = (
+        _ROOT_KEYS
+        + "plant_night 2026-01-01T000000Z\nplant_night 2026-01-02T000000Z\n"
+        + "plant_night 2026-01-03T000000Z\n"
+    )
+    env = (
+        _FULL_ENV + "BACKUP_S3_ENDPOINT=https://evil.example/s3 BACKUP_S3_BUCKET=evil-bucket "
+        "BACKUP_S3_PREFIX=evilprefix BACKUP_S3_KEEP=1"
+    )
+    r = _run(env, setup=setup, offbox=True, flags="--offbox")
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    envs = _lines(r, "rclone-env ")
+    assert envs and all(_GOOD_ENDPOINT in ln for ln in envs), envs
+    assert "evil" not in str(r["calls"]), [ln for ln in str(r["calls"]).splitlines() if "evil" in ln]
+    nights = sorted({p.split("/")[3] for p in r["s3"] if p.startswith("./metorite-backups/nightly/")})  # type: ignore[union-attr]
+    assert len(nights) == 4 and nights[:3] == [
+        "2026-01-01T000000Z", "2026-01-02T000000Z", "2026-01-03T000000Z",
+    ], nights
+
+
+def test_no_root_file_means_no_upload() -> None:
+    """Regression fence (green before the fix too). The keys are in the env
+    only, and there is no root file. Nothing is encrypted or uploaded."""
+    r = _run(_FULL_ENV, setup='rm -f "$BACKUP_OFFBOX_ENV_FILE"\n', offbox=True, flags="--offbox")
+    assert _rclone_calls(r["calls"]) == [], "rclone ran with no root file"
+    assert not _encrypted(r["calls"])
+    assert r["s3"] == [], r["s3"]
+
+
+def test_a_group_writable_root_file_is_refused() -> None:
+    """Regression fence (green before the fix too). The root file is 0620.
+    The upload is refused loudly, and rclone never runs."""
+    r = _run(
+        _FULL_ENV, setup=_ROOT_KEYS + "export STUB_KEYFILE_STAT='0:0 620'\n",
+        offbox=True, flags="--offbox",
+    )
+    assert r["rc"] != 0
+    assert "is '0:0 620' (uid:gid mode). It must be '0:0 600'." in str(r["err"]), r["err"]
+    assert "Nothing was uploaded" in str(r["err"])
+    assert _rclone_calls(r["calls"]) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "BACKUP_S3_SECRET_ACCESS_KEY=x",
+        "export BACKUP_GPG_RECIPIENT=x",
+        "BACKUP_OFFBOX_ENV_FILE=/tmp/k",
+    ],
+)
+@pytest.mark.parametrize("where", ["app", "console"])
+def test_a_key_line_in_an_acb_writable_env_file_is_an_error(line: str, where: str) -> None:
+    """🔴 Each acb-writable env file that the unit loads: a key line there is
+    ignored, the night uses the root file, and the run exits 1 with an
+    ERROR. Before the fix the Console file was never checked, and the app
+    file stopped the upload."""
+    path = "$W/app/.env" if where == "app" else "$W/app/apps/services/customer_console/.env"
+    setup = _ROOT_KEYS + f'mkdir -p "$(dirname "{path}")"; printf \'%s\\n\' \'{line}\' >> "{path}"\n'
+    r = _run(_FULL_ENV, setup=setup, offbox=True, flags="--offbox")
+    assert r["rc"] != 0, f"exit 0:\n{r['out']}\n{r['err']}"
+    assert "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE" in str(r["err"]), r["err"]
+    assert "off-box copy ok (offbox:metorite-backups/nightly/" in str(r["out"]), r["out"]
+
+
+# The forced root run reads $R/etc/acb/backup-offbox.env. To the stub `stat`
+# it is root:root 0600, like the harness file.
+_ROOT_RUN_KEYFILE = '"$R/etc/acb/backup-offbox.env"'
+# The pinned paths, named in the env too. The fixed run ignores them (they
+# match its pins, so it says nothing). The run before the fix needs them to
+# get past its mkdir, so it fails for the reason under test.
+_LAYOUT_PATHS = 'APP_DIR="$R/opt/acb/app" BACKUP_DIR="$R/opt/acb/backups" '
+
+
+def test_the_rsync_destination_comes_from_the_root_file_only() -> None:
+    """🔴 BACKUP_REMOTE in the env made root rsync the whole night to the
+    host it named. The root run reads it from the root file, in the shape
+    [user@]host:path. Mutation: read the env, and rsync gets evil@evil."""
+    setup = f"printf 'BACKUP_REMOTE=backup@vault.example:/srv/nights\\n' > {_ROOT_RUN_KEYFILE}\n"
+    r = _run(_LAYOUT_PATHS + "BACKUP_REMOTE=evil@evil.example:/x", setup=setup, root=True, offbox=True)
+    rs = _lines(r, "rsync ")
+    assert len(rs) == 1 and rs[0].endswith(" backup@vault.example:/srv/nights/"), rs
+
+
+def test_without_a_root_file_the_root_run_has_no_rsync_destination() -> None:
+    """🔴 No root file: BACKUP_REMOTE from the env must still not count.
+    Mutation: drop offbox_drop_root_names at the top of the root run, and
+    rsync gets evil@evil."""
+    r = _run(_LAYOUT_PATHS + "BACKUP_REMOTE=evil@evil.example:/x", root=True, offbox=True)
+    assert _lines(r, "rsync ") == [], r["calls"]
+
+
+@pytest.mark.parametrize("remote", ["-e sh@x:/y", "--rsh=sh x:/y", "host"])
+def test_an_rsync_destination_of_another_shape_is_refused(remote: str) -> None:
+    setup = f"printf 'BACKUP_REMOTE=%s\\n' '{remote}' > {_ROOT_RUN_KEYFILE}\n"
+    r = _run(_LAYOUT_PATHS, setup=setup, root=True, offbox=True)
+    assert _lines(r, "rsync ") == [], r["calls"]
+    assert "BACKUP_REMOTE is not [user@]host:path" in str(r["err"]), r["err"]
+
+
+# ── VALIDATED in backup_offbox.sh: the file dirs and the volume names ──────
+
+_SYMLINK_SKIP = pytest.mark.skipif(sys.platform == "win32", reason="MSYS ln -s copies instead of linking")
+
+
+@pytest.mark.parametrize(
+    "dirs",
+    [
+        "/etc",
+        "/root",
+        "/home/acb/.ssh",
+        "$W/app/data/../../../../etc",
+        pytest.param("$W/app/data/link", marks=_SYMLINK_SKIP),
+        "$W/app/data/att /etc",
+    ],
+)
+def test_file_dirs_outside_the_allowlist_are_not_tarred(dirs: str) -> None:
+    """🔴 Root tars every dir that BACKUP_FILE_DIRS names. Only dirs under
+    $APP_DIR/data and /home/acb/.acb/agents, resolved through symlinks and
+    `..`. One dir outside means the default list, with a WARN. Mutation:
+    take the list as it comes, and tar gets etc."""
+    setup = _ROOT_KEYS + 'mkdir -p "$W/app/data/att"; ln -s /etc "$W/app/data/link"\n'
+    r = _run(_S3_ENV + _GPG_ENV + f'BACKUP_FILE_DIRS="{dirs}"', setup=setup, offbox=True, flags="--offbox")
+    for ln in _lines(r, "tar "):
+        args = ln.split()
+        assert not any(
+            a in ("etc", "root") or a.startswith(("etc/", "root/", "home/acb/.ssh")) or ".." in a
+            or a.endswith("/link")
+            for a in args
+        ), ln
+    assert "BACKUP_FILE_DIRS names a directory outside" in str(r["err"]), r["err"]
+    assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
+
+
+@pytest.mark.parametrize("volume", ["--help", "a b;c", "-v"])
+def test_a_meeting_bot_volume_of_another_shape_is_refused(volume: str) -> None:
+    r = _run(
+        _S3_ENV + _GPG_ENV + f"BACKUP_MEETING_BOT_VOLUME='{volume}'",
+        setup=_ROOT_KEYS, offbox=True, flags="--offbox",
+    )
+    inspects = _lines(r, "docker volume inspect")
+    assert inspects and not any(volume.split()[0] in ln.split()[3:] for ln in inspects), inspects
+    assert "BACKUP_MEETING_BOT_VOLUME is not a list of volume names" in str(r["err"])
+
+
+# ── PINNED for every child: the tool names, and BASH_ENV ───────────────────
+
+
+def test_tool_settings_in_the_env_never_reach_the_off_box_child() -> None:
+    """🔴 GNU tar takes options from TAR_OPTIONS (--checkpoint-action=exec
+    runs a program), and a child bash runs the file BASH_ENV names. The
+    off-box step runs both as root. Mutation: drop offbox_scrub_env, and the
+    marker files appear.
+
+    ⚠️ The PARENT bash still reads BASH_ENV before its first line, so its
+    own line is in the log. Only the unit can stop that (box_hardening.md
+    BH-6). This test pins the child, so it is a ROOT run: in production
+    only the root parent scrubs, and the child inherits that. The env also
+    names the pinned paths, so the run before the fix gets as far."""
+    setup = (
+        _ROOT_KEYS
+        + f'cp "$BACKUP_OFFBOX_ENV_FILE" {_ROOT_RUN_KEYFILE}\n'
+        + 'mkdir -p "$R/opt/acb/app/data/att"; echo cv > "$R/opt/acb/app/data/att/cv.txt"\n'
+        + "printf '#!/bin/sh\\ntouch \"$W/TAR-OPTIONS-RAN\"\\n' > \"$W/pwn.sh\"; chmod +x \"$W/pwn.sh\"\n"
+        + "printf 'printf \"%%s\\\\n\" \"$0\" >> \"$W/bash_env.log\"\\n' > \"$W/benv.sh\"\n"
+    )
+    env = _S3_ENV + _GPG_ENV + (
+        'APP_DIR="$R/opt/acb/app" BACKUP_DIR="$R/opt/acb/backups" '
+        'BACKUP_OFFBOX_ENV_FILE="$R/etc/acb/backup-offbox.env" '
+        'BACKUP_FILE_DIRS="$R/opt/acb/app/data/att" VOL_DIR="$W/files/att" '
+        'TAR_OPTIONS="--checkpoint=1 --checkpoint-action=exec=$W/pwn.sh" BASH_ENV="$W/benv.sh"'
+    )
+    after = 'cat "$W/bash_env.log" 2>/dev/null | sed "s/^/BASH-ENV-RAN-IN /" >&2\n'
+    r = _run(env, setup=setup, offbox=True, root=True, flags="--offbox", after=after)
+    assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
+    assert any(ln.startswith("tar ") for ln in str(r["calls"]).splitlines()), "tar never ran"
+    assert "TAR-OPTIONS-RAN" not in r["files"], "TAR_OPTIONS reached the root tar"  # type: ignore[operator]
+    ran_in = [ln for ln in str(r["err"]).splitlines() if ln.startswith("BASH-ENV-RAN-IN ")]
+    assert ran_in, "the harness never exercised BASH_ENV"
+    assert not any(ln.endswith("backup_offbox.sh") for ln in ran_in), ran_in
+
+
+def test_the_off_box_step_scrubs_its_own_env() -> None:
+    """🔴 backup_offbox.sh runs as root and can be started on its own (by
+    hand, or by a parent that did not scrub). It scrubs its own env, so
+    TAR_OPTIONS never reaches its tar. Mutation: drop its offbox_scrub_env
+    call, and the marker file appears."""
+    night = "$W/backups/2026-01-01T000000Z"
+    setup = (
+        _ROOT_KEYS
+        + f'mkdir -p "{night}"; echo DUMP > "{night}/acb.dump"\n'
+        + "printf '#!/bin/sh\\ntouch \"$W/TAR-OPTIONS-RAN\"\\n' > \"$W/pwn.sh\"; chmod +x \"$W/pwn.sh\"\n"
+    )
+    env = _S3_ENV + _GPG_ENV + 'TAR_OPTIONS="--checkpoint=1 --checkpoint-action=exec=$W/pwn.sh"'
+    r = _run(
+        command=f'{env} bash scripts/backup_offbox.sh "{night}" 2026-01-01T000000Z "$W/app" '
+                '"$BACKUP_OFFBOX_ENV_FILE"',
+        setup=setup, offbox=True,
+    )
+    assert "off-box copy ok" in str(r["out"]), f"{r['out']}\n{r['err']}"
+    assert any(ln.startswith("tar ") for ln in str(r["calls"]).splitlines()), "tar never ran"
+    assert "TAR-OPTIONS-RAN" not in r["files"], "TAR_OPTIONS reached the root tar"  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("stat", ["0:0 620", "1000:0 600"])
+def test_the_off_box_step_checks_the_key_file_itself(stat: str) -> None:
+    """backup_offbox.sh is an entry point of its own, so it checks the key
+    file again and does not trust its caller. Mutation: drop that check, and
+    rclone runs."""
+    night = "$W/backups/2026-01-01T000000Z"
+    setup = _ROOT_KEYS + f'mkdir -p "{night}"; echo DUMP > "{night}/acb.dump"\n'
+    r = _run(
+        command=f"STUB_KEYFILE_STAT='{stat}' bash scripts/backup_offbox.sh \"{night}\" "
+                '2026-01-01T000000Z "$W/app" "$BACKUP_OFFBOX_ENV_FILE"',
+        setup=setup, offbox=True,
+    )
+    assert r["rc"] != 0
+    assert "It must be '0:0 600'" in str(r["err"]), r["err"]
+    assert _rclone_calls(r["calls"]) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="MSYS ln -s copies instead of linking")
+def test_a_symlinked_root_file_is_refused() -> None:
+    """The key file must be a plain file. A link could point at a file that
+    another user controls. (The stub `stat` says 0:0 600 for any path, so
+    only the symlink check stops this.)"""
+    setup = (
+        _ROOT_KEYS
+        + 'mv "$BACKUP_OFFBOX_ENV_FILE" "$W/real.env"; ln -s "$W/real.env" "$BACKUP_OFFBOX_ENV_FILE"\n'
+    )
+    r = _run(_FULL_ENV, setup=setup, offbox=True, flags="--offbox")
+    assert r["rc"] != 0
+    assert "is a symlink" in str(r["err"]), r["err"]
+    assert _rclone_calls(r["calls"]) == []
+
+
+@pytest.mark.parametrize("backup_dir", ["/", "//", "relative/dir"])
+def test_backup_dir_must_be_an_absolute_dir_that_is_not_root(backup_dir: str) -> None:
+    """Retention deletes only "$BACKUP_DIR/<stamp>". With "/" that is a
+    night-named dir at the top of the disk. The run stops first."""
+    r = _run(command=f"PG_MODE=local APP_DIR=\"$W/app\" BACKUP_DIR='{backup_dir}' bash scripts/backup_db.sh")
+    assert r["rc"] == 2, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert "BACKUP_DIR must be an absolute path, and not /." in str(r["err"])
+    assert not _lines(r, "pg_dump"), "a refused run still dumped"
+
+
+def test_the_off_box_step_stages_only_under_a_night() -> None:
+    """🔴 backup_offbox.sh deletes its staging dir on exit. A <dest> that is
+    not <dir>/<stamp> is refused before the trap is set, so the delete cannot
+    reach a dir of the caller's choice. Mutation: drop the shape check, and
+    $W/victim/offbox.work goes."""
+    setup = 'mkdir -p "$W/victim/offbox.work"; echo keep > "$W/victim/offbox.work/keep"\n'
+    after = '[ -f "$W/victim/offbox.work/keep" ] && echo "VICTIM-KEPT" >&2\n'
+    r = _run(
+        command='bash scripts/backup_offbox.sh "$W/victim" 2026-01-01T000000Z "$W/app" "$BACKUP_OFFBOX_ENV_FILE"',
+        setup=setup, offbox=True, after=after,
+    )
+    assert "VICTIM-KEPT" in str(r["err"]), "the off-box step deleted a dir it did not make"
+    assert r["rc"] != 0
+    assert "refusing to stage in" in str(r["err"]), r["err"]

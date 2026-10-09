@@ -27,6 +27,108 @@
 #
 # ⚠️ Lower-case names on purpose, as in backup_db.sh. The env-hardening test
 # reads every UPPER-CASE `$NAME` in backup_db.sh as an env name of the box.
+#
+# ── BH-6a: the root run takes no setting from the acb-writable env ───────────
+# acb-backup.service runs as root and loads /opt/acb/app/.env, which the
+# gateway can write. So a value in that env must never choose what root runs,
+# reads, deletes or uploads. Three helpers here, shared by backup_db.sh and
+# backup_offbox.sh:
+#   offbox_scrub_env       pins PATH and HOME, and unsets each env name that a
+#                          tool of this chain reads as config or as code to load
+#   offbox_root_file_ok    the key file is root:root 0600, and not a symlink
+#   offbox_load_root_file  reads the off-box names from that file ONLY. It
+#                          unsets each one first, so an inherited value is gone
+# The fence is tests/unit/test_backup_env_values.py.
+# ⚠️ What this cannot reach. bash reads BASH_ENV and SHELLOPTS, and ld.so reads
+# LD_PRELOAD, BEFORE the first line of backup_db.sh runs. Only the unit can
+# keep those from root, and box_hardening.md BH-6 does that. The scrub keeps
+# them from every CHILD of the backup.
+
+# The names that come from the root key file and from nowhere else.
+offbox_root_names=(
+  BACKUP_S3_ENDPOINT BACKUP_S3_REGION BACKUP_S3_BUCKET
+  BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY
+  BACKUP_S3_PREFIX BACKUP_S3_KEEP BACKUP_S3_TIMEOUT_SECS
+  BACKUP_GPG_RECIPIENT BACKUP_GPG_PUBLIC_KEY_FILE BACKUP_REMOTE
+)
+offbox_root_path='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+# offbox_scrub_env — pin PATH and HOME, and drop the env names that steer a
+# tool of this chain. A deny list by tool family, so a new tool needs a line:
+#   LD_* GCONV_PATH OPENSSL_*   the loader and libcrypto load code from these
+#   BASH_ENV ENV                a child bash runs the file they name
+#   CDPATH GLOBIGNORE           they steer this script's own `cd` and globs
+#   PSQLRC PGSYSCONFDIR PGSERVICEFILE   psql runs `\!` lines from its rc file
+#   TAR_OPTIONS                 GNU tar takes options from it (--to-command)
+#   DOCKER_* RSYNC_* GIT_*      the daemon, the remote shell, the git config
+#   TMPDIR XDG_*                where tools write temp files and read config
+offbox_scrub_env() {
+  local v
+  while IFS= read -r v; do
+    case "$v" in
+      LD_*|GCONV_PATH|OPENSSL_*|BASH_ENV|ENV|CDPATH|GLOBIGNORE|PSQLRC|PGSYSCONFDIR|PGSERVICEFILE|TAR_OPTIONS|DOCKER_*|RSYNC_*|GIT_*|TMPDIR|XDG_*)
+        unset "$v" ;;
+    esac
+  done < <(compgen -e)
+  unset CDPATH GLOBIGNORE
+  PATH="$offbox_root_path"
+  HOME=/root
+  export PATH HOME
+}
+
+# offbox_drop_root_names — unset every name of offbox_root_names.
+offbox_drop_root_names() {
+  local name
+  for name in "${offbox_root_names[@]}"; do
+    unset "$name"
+  done
+}
+
+# offbox_root_file_ok <file> — true when <file> is a regular file, root:root,
+# mode 0600, and readable. Else it prints an ERROR and returns 1.
+offbox_root_file_ok() {
+  local f="${1:-}" perm
+  if [ -L "$f" ]; then
+    echo "ERROR: $f is a symlink. The bucket key belongs in a plain file, root:root 0600." >&2
+    return 1
+  fi
+  if [ ! -f "$f" ]; then
+    echo "ERROR: $f does not exist. The bucket key belongs there, root:root 0600." >&2
+    return 1
+  fi
+  perm="$(stat -c '%u:%g %a' "$f" 2>/dev/null || true)"
+  if [ "$perm" != "0:0 600" ]; then
+    echo "ERROR: $f is '$perm' (uid:gid mode). It must be '0:0 600'." >&2
+    return 1
+  fi
+  if [ ! -r "$f" ]; then
+    echo "ERROR: $f cannot be read by uid $(id -u). Only root reads the bucket key." >&2
+    return 1
+  fi
+  return 0
+}
+
+# offbox_load_root_file <file> — set each name of offbox_root_names from
+# <file>, and from nothing else. The format is the systemd one that
+# scripts/secrets.sh writes: NAME=value, an optional `export `, and the last
+# line of a name wins. A value in matching quotes loses the quotes. A name the
+# file does not hold stays UNSET, so the script default applies. Nothing is
+# run: the file is read with grep, never sourced.
+offbox_load_root_file() {
+  local f="${1:-}" name line value
+  offbox_drop_root_names
+  for name in "${offbox_root_names[@]}"; do
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${name}=" "$f" | tail -n 1 || true)"
+    [ -n "$line" ] || continue
+    value="${line#*=}"
+    value="${value%$'\r'}"
+    case "$value" in
+      \"*\") value="${value#\"}"; value="${value%\"}" ;;
+      \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    printf -v "$name" '%s' "$value"
+  done
+}
 
 offbox_stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z$'
 offbox_bucket_re='^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'

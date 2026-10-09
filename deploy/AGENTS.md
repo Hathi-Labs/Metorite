@@ -28,6 +28,7 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - Every published port in every tracked compose file binds to the literal `127.0.0.1`. That includes `apps/services/meeting_bot/docker-compose.yml`, which also needs `MEETING_BOT_TOKEN` to start
 - Neo4j has no default password in compose. Its guard reads only the env. An existing data volume keeps its stored password, so read `hostinger/README.md` (Memory system) before you turn Neo4j on again. `NEO4J_PASSWORD` goes to the box through `scripts/secrets.sh`
 - Neo4j is required for Graphiti bi-temporal knowledge graph (GRAPHITI_ENABLED=true)
+- `hostinger/acb-backup.service` runs as root and loads the acb-writable `/opt/acb/app/.env`. So `scripts/backup_db.sh` trusts no value from it (WS-49 BH-6a). The header of that script gives the class of each name. Off-box names come from `/etc/acb/backup-offbox.env` only. An `Environment=` line cannot pin a name, because an `EnvironmentFile=` value wins over it. Fence: `tests/unit/test_backup_env_values.py`
 - **LLM routing: gateway /v1/chat/completions reads keys from encrypted Postgres — no separate proxy**
 - Provider keys live in the encrypted `provider_keys` table; seeded from `.env` on first boot
 - Next.js workbench is rebuilt (`npm ci && npm run build`) and restarted on every deploy
