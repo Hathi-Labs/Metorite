@@ -27,7 +27,7 @@
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
-> 🔨 **§15 is BUILT on a branch, not merged (2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag.
+> ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -14692,8 +14692,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 ## 15. Forward with files, and links to an email (2026-10-09)
 
-**Status: 🔨 BUILT on branch `email-chat-forward-links`, not merged (2026-10-09).** No
-migration, and no flag.
+**Status: ✅ MERGED (#766, 2026-10-09).** No migration, and no flag. The follow-ups are
+§15.5.
 
 The owner chatted with the orchestrator, which called the email assistant. The owner asked it
 to forward a BQ email and its PDF to a colleague. The assistant gave two answers. Its send tool
@@ -14745,13 +14745,16 @@ optional note, and `include_attachments` (true by default) or `attachment_ids`.
    No detail holds a URL.
 
 The agent tool `forward_email` shows a confirmation card before it posts. Each target is in
-`context`: the From mailbox, then each To, Cc and Bcc address, one line each
-(`_card_targets`). The card keeps 4,000 characters of `context` and 500 of `detail`, so
-no subject and no file name can push a recipient off the card (verifier F1). A list over
-ten addresses ends with "+N more". `detail` starts with From and the first To, then the
-subject, and the files come last, with "+N more" when they do not fit (`_card_detail`).
-`send_email` builds its card the same way. A "no" sends nothing. `instructions.md` says
-to forward, not to send, when the user asks to pass an email to a new person.
+`context`: the From mailbox, then each To, Bcc and Cc address, one line each
+(`_card_targets`). The Bcc comes before the Cc (§15.5 item 1). The card keeps 4,000
+characters of `context` and 500 of `detail`. So no subject and no file name can push a
+recipient off the card (verifier F1). A list over ten addresses ends with "+N more".
+
+An `Attachments:` block follows the targets and names each file, one line each (§15.5
+item 2). `detail` starts with From and the first To, then the subject, and the files come
+last, with "+N more" when they do not fit (`_card_detail`). `send_email` builds its card
+the same way. A "no" sends nothing. `instructions.md` says to forward, not to send, when
+the user asks to pass an email to a new person.
 
 ⚠️ `POST /email/send` writes no audit row, and it checks no send right beyond the `email`
 feature and the mailbox owner. The forward has the same two guards. It logs
@@ -14793,11 +14796,18 @@ The link opens the email inside the app only. It is not a link to share with ano
 - `src/lib/inAppLink.test.ts`: the external mark, the escaped subject, and the click event.
 - `e2e/email-deep-link.spec.ts`: a fresh link, a second link while the page is open, and
   the same chat link clicked twice.
+- `tests/unit/test_email_forward.py` also holds the card order, the `Attachments:` block
+  and its budget (§15.5 items 1 and 2).
+- `src/lib/confirmationQueue.test.ts`: a list row reads by its key (§15.5 item 3).
+- `src/app/email/lib/forward.test.ts`: the request of the pane, the words of each refusal,
+  and the markers it reads out of `forward.py` (§15.5 item 4).
+- `e2e/email-forward.spec.ts`: the pane sends `POST /email/forward`, the Outlook notice,
+  a file taken out on Gmail, and a 413 with "Forward without files" (§15.5 item 4).
+- `src/app/api/email/[...path]/postTimeout.test.ts`: a forward has 120 seconds at the
+  proxy (§15.5 item 4).
 
 ### 15.4 Not done here
 
-- **The reading pane's Forward still drops the files** (`EmailDetail.tsx`). It can call the
-  new route. That is a UI ticket.
 - **The rule action FORWARD still writes a text-quoted draft** (`automation/actions.py`).
 - **No link leaves the app.** A link that a colleague can open needs a share model.
 - **A slow forward can go out after the tool reports a failure.** The route does not stop
@@ -14810,3 +14820,123 @@ The link opens the email inside the app only. It is not a link to share with ano
 - **Outlook cannot forward a subset of the files.** `createForward`, a delete of the files
   not chosen, and a send would do it. Graph names the copied files with new ids, so the
   match would be by name and size, which two files can share.
+- **The reading-pane Forward takes no file of the member's own.** `POST /email/forward`
+  carries the files of the email only. The pane hides its two attach controls on a
+  forward. "Pop out" opens the full composer, which sends a new mail without the files
+  of the email. A forward with both kinds of file needs `artifacts` on the route.
+- **The pane's forward can still go out after its wait ends.** The proxy waits 120
+  seconds for `POST /email/forward` (§15.5 item 4). A forward that takes longer can
+  still go out. The pane then says that the mail can still go out, and it offers
+  "Open Sent", never a retry (§15.5, review round 1). The bullet on a slow forward
+  above holds the choice of a real fix.
+- **The draft card lists To, Cc, then Bcc** (`_draft_card`). It draws rows, not a box
+  that scrolls, so the order of §15.5 item 1 does not bind it.
+
+### 15.5 Follow-ups of #766 (2026-10-09)
+
+**Status: 🔨 BUILT on branch `email-chat-followups`, not merged (2026-10-09).** No
+migration, and no flag.
+
+1. **The Bcc comes before the Cc on the send and forward cards.** `_card_targets` writes
+   From, To, Bcc, then Cc. The card draws a `context` that holds a note or a body in a
+   box that scrolls at `max-h-40`. A Bcc after a long Cc list sat below that line. The
+   cap of ten for each list, "+N more" and the budget of 3,000 characters are as before.
+2. **The card names each file.** `_card_head` adds an `Attachments:` block to `context`,
+   after the targets and before the note or the body. The block has one line for each
+   file, `- file "<name>" (<size>)`. It names 20 files at most and ends with "+N more".
+   The targets and the files share the budget of 3,000 characters. The targets take
+   what they need first, and the block always keeps room for its count. A forward with
+   no file says "none". `detail` keeps its short form.
+3. **A field row reads by its key.** `parseCardBody` removes a leading `- ` from the key
+   of a row, so `- From` reads `From`. The draft card and the unsubscribe card use the
+   same row shape, so they read right too.
+4. **The reading-pane Forward keeps the files.** `EmailDetail.tsx` sends
+   `POST /email/forward` with the id of the email, To, Cc, Bcc, the note and the files.
+   It no longer builds a forward in the browser.
+   - Each file of the email is a chip, kept by default (`ForwardFileChips.tsx`). Every
+     file kept sends `include_attachments` alone. Some files kept send
+     `attachment_ids`. No file kept sends `include_attachments: false`
+     (`lib/forward.ts`, `forwardRequest`).
+   - On an Outlook mailbox, a chip taken out shows a notice: Outlook forwards all the
+     files of an email, or none of them. The notice has "Keep every file" and "Forward
+     without files". The pane sends nothing while the notice shows.
+   - The route sends from the mailbox that holds the email. A forward with another From
+     stops in the pane and names that mailbox.
+   - `forwardFailure` gives each answer of the route its words. A 413, the Outlook 422,
+     the IMAP 422 and the 422 of a file with no bytes offer "Forward without files",
+     which sends again with no file. A 401, a 404, a 429 and a 502 each say what to do.
+   - The note and the AI help (`compose-assist`, forward mode) are as before. The
+     server adds the forwarded header, the original and the signature.
+   - A sent forward deletes the draft that the autosave kept, as a discard does.
+   - The proxy gives `POST /email/forward` 120 seconds (`FILE_SEND_POST_PATHS`). At 30
+     seconds it answered 502 while the gateway still sent the mail.
+5. **The screenshots.** A capture rig drew the cards, the choice card and the comparison.
+   It drew the email chat inside the Email app and the forward compose. It drew each in dark,
+   light, compact and a changed accent. It found four defects, and this slice fixes
+   each one.
+   - A file name cut at 60 characters lost its extension ("revision.pd"). A long name
+     now keeps its last 16 characters (`_card_file_name`).
+   - The draft card drew its lead-in "Each recipient of this draft:" under its rows. A
+     note that ends with a colon now draws above the rows (`splitNotes`).
+   - The text box of a long card scrolled with no sign of it. The card now says "Scroll
+     the text above to read all of it" when the box holds more.
+   - An option card centred its content, so the titles beside a Recommended badge sat
+     lower. The cards now lay out from the top.
+
+**Fences.**
+
+- `tests/unit/test_email_forward.py`: the Bcc before a long Cc list, the files in
+  `context`, the cap of 20 and the shared budget. It also holds a hidden mark and a long
+  name.
+- `src/lib/confirmationQueue.test.ts`: a list row reads by its key, and a lead-in note
+  draws above the rows.
+- `src/app/email/lib/forward.test.ts`: the request, the Outlook check, the words of each
+  refusal, and the markers that it reads out of `forward.py`.
+- `e2e/email-forward.spec.ts`: the request of the pane, the Outlook notice, a subset on
+  Gmail, and a 413 with "Forward without files".
+- `src/app/api/email/[...path]/postTimeout.test.ts`: the budget of a forward.
+- Advisory: the hint of a box that scrolls measures the DOM, so no unit test reaches it.
+  The screenshots are its only check.
+
+**Review round 1 (2026-10-09).** Four findings, each fixed in this slice.
+
+- **P2. A proxy 502 said "nothing was sent".** A 502 with no `detail` comes from the Next
+  proxy when its wait ends, and the gateway can still send the mail. `forwardFailure`
+  now marks that answer, a 5xx with no detail and a lost request as `unsure`. The pane
+  says that the mail can still go out, and it offers "Open Sent". It offers no retry.
+  The gateway's own 502 has a detail, and it still says that nothing was sent.
+- **P3-a. A late save left a "Fwd:" draft.** A sent forward drains the autosave again,
+  as `discardReply` does, and then deletes each draft. While the forward is in flight,
+  its fields are read-only, and no save starts.
+- **P3-b. A file name could pass for a target line.** Each file line is
+  `- file "<name>" (<size>)`, and a quote in the name is escaped. So a file named
+  `Bcc: ceo@corp.test` cannot read as a target, and a file named `none` reads
+  `- file "none"`, not as the empty marker `- none`. A long workspace path of
+  `send_email` keeps its extension too (`_CARD_PATH_LIMIT`, 120 characters).
+- **Two small ones.** A chip name loses each bidi control, in its text and in its
+  `title`, and it draws in `<bdi>` (`visibleFileName`). "Pop out" is off while the
+  forward keeps a file of the email, because the full composer cannot send those files.
+  Its title says so.
+- **Fences.** `forward.test.ts` holds the unsure answer, the drain, the read-only
+  fields, Open Sent, Pop out and the chip name. `test_email_forward.py` holds the file
+  line, the empty marker and the long path. `e2e/email-forward.spec.ts` holds a 502
+  with no detail, and typing during the send.
+
+**Verifier round 2 (2026-10-09).** Three findings, each fixed in this slice.
+
+- **F1. The e2e test of a stray draft checked nothing.** It pressed Send before the
+  autosave saved, so its loop over the saved drafts never ran. The test now waits for a
+  real draft. It starts a second save that takes 4.5 seconds and is still running at
+  Send. Then it checks that each saved draft is deleted after its last save.
+  - The test turns red when the `deleteEmail` loop goes, and when both drains go.
+  - The drain at the start of the send and the drain in `finishForward` each cover the
+    case alone. So the e2e stays green when only the finish drain goes. The source fence
+    in `forward.test.ts` pins that drain, and it pins the `deleteEmail` loop after
+    `draftsToDiscard`.
+- **F2. Raw bidi controls in the source.** `BIDI_CONTROLS` in `forward.ts` and one Python
+  test held the characters themselves. Both now use escapes. No changed file holds a raw
+  control from U+202A to U+202E or from U+2066 to U+2069.
+- **F3. Send stayed on after an unsure answer.** Send is now off, and Ctrl+Enter does
+  nothing, until the member clicks "I checked Sent, send again". "Open Sent" stays
+  beside it. The e2e test "after an unsure answer, Send waits until the member checked
+  Sent" and a source fence in `forward.test.ts` hold the rule.

@@ -987,7 +987,9 @@ describe("email-drain-own-session: a drain drops only the saves of its own sessi
       expect(src.match(/autosave\.schedule\(/g)?.length, name).toBe(1);
     }
     expect(compose.match(/autosave\.drain\(/g)?.length).toBe(2);
-    expect(detail.match(/autosave\.drain\(/g)?.length).toBe(3);
+    // The fourth is the forward's (review round 1 of the #766 follow-ups):
+    // a sent forward drains again before it deletes its draft.
+    expect(detail.match(/autosave\.drain\(/g)?.length).toBe(4);
     expect(conversation.match(/autosave\.drain\(0\)/g)?.length).toBe(2);
     expect(popOut()).toContain("const drained = autosave.drain(session);");
   });

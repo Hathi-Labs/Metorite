@@ -63,7 +63,7 @@ limitations). Do not add product specs to `docs/`.
 | `specs/department_centers.md` | WS-13 · WS-14 · WS-15 · WS-16 — **all four PARKED by D49** (2026-08-24): the Centers *surface* is withdrawn, so nothing dispatches from this spec today. It stays ACTIVE as the **design record** and §5 remains the Center roster of record (D22) — `lib/centers.ts`, the `center.*` features and the `group:<slug>` slice grants are all still live. See `specs/launch_surface.md` §5. |
 | `specs/colleague_onboarding.md` | WS-24 |
 | `specs/deploy_delivery_path.md` | WS-25 |
-| `specs/email_app_master_plan.md` | WS-17 — §15 (forward an email with its files, and links to an email in chat) built 2026-10-09 on a branch. |
+| `specs/email_app_master_plan.md` | WS-17 — §15 (forward an email with its files, and links to an email in chat) merged as #766 on 2026-10-09. §15.5 (its follow-ups: the card order, the files on the card, and the reading-pane Forward with the files) built 2026-10-09 on a branch. |
 | `specs/task_manager_app.md` | WS-18 · **WS-39** — ⚠️ **§13 (D53) wins over the body**: Tasks is the **personal lens over Projects**, not an app with its own store. `gtd_*` is retired; the `gtd_*` schema described above is the app *as built*, not a build target. |
 | `specs/my_tasks_cutover.md` | **WS-39 phase 2** — the Tasks app becomes **My Tasks** (D73, 2026-09-23). Owns the lens tail (S6a-d), the cutover (S7), the `gtd_*` drop and the schema rename (S8), and the code-name sweep (S9). Wins over `task_manager_app.md` §13 where they disagree. |
 | `specs/note_taker_app.md` + `specs/meeting_bot_platform_plan.md` | WS-19 |
