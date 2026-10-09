@@ -32,14 +32,15 @@ export interface OrgLogo {
 export interface OrgBranding {
   /** `null` means no logo uploaded — a different state from "gateway down". */
   logo: OrgLogo | null;
-  /** The dark-mode version, with `darkStyle === "white"` only. */
+  /** The dark-mode version, with `darkStyle` "white" or "own" only. */
   logoDark?: OrgLogo | null;
   /**
    * How the logo looks in dark mode (`logoImage.ts` `adviseDarkStyle`): as it
-   * is, as its white version, or on a small light card. Absent on a row
-   * written before 2026-10-09, which reads as "same".
+   * is, as its white version, on a small light card, or as the organisation's
+   * own dark-background version. Absent on a row written before 2026-10-09,
+   * which reads as "same".
    */
-  darkStyle?: "same" | "white" | "plate";
+  darkStyle?: "same" | "white" | "plate" | "own";
   updatedBy: string;
   updatedAt: string;
 }
@@ -65,7 +66,7 @@ const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/
 export const LOGO_RULES: readonly string[] = [
   "PNG, JPEG, WebP, GIF or SVG, any size",
   "Metorite trims the empty edges and sizes it for you, and you can adjust the crop",
-  "One logo covers light and dark mode. You choose how it looks on dark",
+  "The logo for a light background is required. For dark mode, Metorite makes a version, or you upload your own",
 ];
 
 export function formatBytes(bytes: number): string {
@@ -128,11 +129,12 @@ export function lockup(
     const caption = orgName.trim() || fallbackCaption;
     return { kind: "default", title: "Metorite", caption };
   }
-  const white = branding?.darkStyle === "white" && branding.logoDark?.dataUri ? branding.logoDark : null;
+  const hasDarkImage = branding?.darkStyle === "white" || branding?.darkStyle === "own";
+  const dark = hasDarkImage && branding?.logoDark?.dataUri ? branding.logoDark : null;
   return {
     kind: "org",
     logo,
-    logoDark: white ?? logo,
+    logoDark: dark ?? logo,
     plate: branding?.darkStyle === "plate",
     // Not "logo" alone: a screen reader reaching the top of the app should
     // hear whose product this is, and the link it sits in is the way home.
@@ -192,7 +194,8 @@ export function readCachedBranding(store: Pick<Storage, "getItem"> | undefined):
     // The dark version is untrusted input too. A bad one is dropped, and the
     // logo then shows in both modes, rather than the whole cache refused.
     if (parsed.logoDark && !isRenderableLogoUri(parsed.logoDark.dataUri)) {
-      return { ...parsed, logoDark: null, darkStyle: parsed.darkStyle === "white" ? "same" : parsed.darkStyle };
+      const needsImage = parsed.darkStyle === "white" || parsed.darkStyle === "own";
+      return { ...parsed, logoDark: null, darkStyle: needsImage ? "same" : parsed.darkStyle };
     }
     return parsed;
   } catch {

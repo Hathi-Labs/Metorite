@@ -67,6 +67,12 @@ describe("the lockup in dark mode", () => {
     expect(l.kind === "org" && l.logoDark.dataUri).toBe("data:image/png;base64,BBBB");
   });
 
+  it("shows the organisation's own dark version, with no card, with the own style", () => {
+    const mine = logo({ dataUri: "data:image/png;base64,CCCC" });
+    const l = lockup(base({ logoDark: mine, darkStyle: "own" }), "x");
+    expect(l.kind === "org" && [l.plate, l.logoDark.dataUri]).toEqual([false, "data:image/png;base64,CCCC"]);
+  });
+
   it("shows the logo itself on a light card with the plate style", () => {
     const l = lockup(base({ darkStyle: "plate" }), "x");
     expect(l.kind === "org" && [l.plate, l.logoDark.dataUri]).toEqual([true, logo().dataUri]);
@@ -184,6 +190,18 @@ describe("the first-paint cache (OI-3a)", () => {
     const s = fakeStore();
     writeCachedBranding(s, good);
     expect(readCachedBranding(s)?.logo?.dataUri).toBe("data:image/png;base64,AAAA");
+  });
+
+  it("drops a bad cached own dark image and keeps the logo", () => {
+    const s = fakeStore();
+    writeCachedBranding(s, {
+      ...good,
+      logoDark: { ...good.logo!, dataUri: "javascript:alert(1)" },
+      darkStyle: "own",
+    });
+    const read = readCachedBranding(s);
+    expect(read?.logoDark).toBeNull();
+    expect(read?.darkStyle).toBe("same");
   });
 
   it("drops a bad cached dark image and keeps the logo", () => {
