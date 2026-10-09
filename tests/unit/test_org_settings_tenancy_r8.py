@@ -27,7 +27,7 @@ from sqlalchemy import text
 # The two-org phase-4 fixture and its DB gate. Used by name for injection.
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
-    promoted,  # noqa: F811
+    promoted,
 )
 
 
