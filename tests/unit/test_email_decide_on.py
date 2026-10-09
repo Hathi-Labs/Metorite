@@ -1500,6 +1500,29 @@ async def test_the_status_is_asked_before_the_rule_match(monkeypatch, tenant) ->
     assert llm == []
 
 
+async def test_the_composed_path_asks_the_rule_match_with_the_skip_flag(
+    monkeypatch, tenant,
+) -> None:
+    """WS-17 EM-T16 PR-B (A3, F6). The skip of PR-B lives in the two jobs
+    only. With ``EMAIL_STATUS_SKIPS_RULE_MATCH`` on, the composed
+    ``classify_matches`` of the request paths still asks the status, then the
+    rule match, although the status decides the thread. The job half of A3
+    is in ``test_email_automation_tenancy.py`` (F1 to F8)."""
+    monkeypatch.setenv("EMAIL_STATUS_SKIPS_RULE_MATCH", "true")
+    _modes(monkeypatch, ALL_ON)
+    fake = _fake(monkeypatch, by_key={"r0": 0.9}, choices={"status": "REPLY"})
+    llm = _llm_tripwire_all(monkeypatch)
+    db = _classify_env(monkeypatch, {"REPLY": NEEDS_REPLY}, conversation=True)
+    row = SimpleNamespace(id=MID, thread_id="t1")
+    with structlog.testing.capture_logs() as caps:
+        out = await eng.classify_matches(db, ACC, row, EMAIL, resolve=True)
+    assert _asked(fake) == ["status", "rule_match"]
+    assert out[0]["rule"] is NEEDS_REPLY and out[0]["source"] == "thread_status"
+    assert out[1]["suppressed"] == "conversation"
+    assert not [c for c in caps if c.get("event") == "email.rule_match_skipped"]
+    assert llm == []
+
+
 @pytest.mark.parametrize("multi", [False, True])
 async def test_a_missing_status_costs_no_rule_match(monkeypatch, tenant, multi) -> None:
     """Fix 3: the status fails first, so the email is undecided (D-EM-8)

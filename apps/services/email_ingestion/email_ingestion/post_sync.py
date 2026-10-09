@@ -86,6 +86,20 @@ def triage_once_per_cycle() -> bool:
     return bool(getattr(get_settings(), "email_triage_once_per_cycle", False))
 
 
+def status_skips_rule_match() -> bool:
+    """The ONE reader of ``email_status_skips_rule_match`` (WS-17 EM-T16
+    PR-B).
+
+    True: in ``on`` of ``email.thread_status``, the rules job and the Reply
+    Zero backfill ask no rule match when the conversation status decides the
+    thread (``replyzero.skip_rule_match``). Fence: the EM-T16 PR-B section of
+    ``tests/unit/test_email_automation_tenancy.py``.
+    """
+    from acb_common.settings import get_settings
+
+    return bool(getattr(get_settings(), "email_status_skips_rule_match", False))
+
+
 async def run_hook(hook: PostSyncHook | None, account_id: str) -> None:
     """Await ``hook`` if one is registered; no-op otherwise."""
     if hook is not None:
