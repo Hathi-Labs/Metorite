@@ -1010,6 +1010,79 @@ strip_t2_vendor_env_line "$ENV_FILE"
 install_dropins "$APP_DIR/deploy/hostinger"
 echo "    drop-ins installed and systemd reloaded"
 
+# ── WS-49 BH-2: the gateway sandbox, its write list and its strict check ────
+# Spec: project-docs/specs/box_hardening.md §5 BH-2 items 2, 5 and 6.
+#
+# deploy/hostinger/acb-gateway.service.d/50-hardening.conf went in with the
+# drop-ins above, so the gateway restart below runs the sandbox.
+#
+# 1. ensure_gateway_rw_paths runs before that restart. A path on
+#    ReadWritePaths with no "-" must exist, or systemd cannot set up the
+#    sandbox and the gateway does not start. It makes data/, which no tracked
+#    file holds. A tracked file or .env that is missing stops the deploy HERE,
+#    before the restart, so the gateway that runs now keeps serving.
+# 2. bh2_strict_check runs near the end, after the last restart and before
+#    the marker. It passes ONLY when acb-gateway is active, with
+#    NoNewPrivileges=yes and ProtectSystem=strict. A valid rollback
+#    (scripts/bh2_rollback.sh status = 0) passes too, and prints the WARN.
+#    Anything else fails the deploy, and no marker is written.
+#
+# tests/unit/test_bh2_strict_check.py sources the block between the two
+# marker lines below. Keep it free of side effects: definitions and defaults
+# only.
+# >>> bh2 helpers
+BH2_UNIT="${BH2_UNIT:-acb-gateway}"
+BH2_ROLLBACK_SCRIPT="${BH2_ROLLBACK_SCRIPT:-$APP_DIR/scripts/bh2_rollback.sh}"
+
+ensure_gateway_rw_paths() {  # <app dir>
+  local app="$1" f missing=0
+  if [ ! -d "$app/data" ]; then
+    mkdir -p "$app/data"
+    if [ "$(id -u)" = "0" ]; then
+      chown "$(stat -c '%U:%G' "$app")" "$app/data"
+    fi
+    echo "    made $app/data, a ReadWritePaths dir of the gateway"
+  fi
+  for f in "$app/.env" "$app/infra/provider_models_cache.json" \
+           "$app/apps/services/gateway/agents.json"; do
+    if [ ! -f "$f" ]; then
+      echo "    !! $f is missing. It is on the ReadWritePaths of 50-hardening.conf,"
+      echo "       so the sandboxed gateway cannot start without it."
+      missing=1
+    fi
+  done
+  [ "$missing" = 0 ]
+}
+
+bh2_strict_check() {
+  local active nnp psys rb_out rb_rc=0
+  active="$(systemctl show "$BH2_UNIT" -p ActiveState --value 2>/dev/null || true)"
+  nnp="$(systemctl show "$BH2_UNIT" -p NoNewPrivileges --value 2>/dev/null || true)"
+  psys="$(systemctl show "$BH2_UNIT" -p ProtectSystem --value 2>/dev/null || true)"
+  # status reads the root-only ack with sudo, and takes no deploy lock.
+  rb_out="$(bash "$BH2_ROLLBACK_SCRIPT" status 2>&1)" || rb_rc=$?
+  if [ "$rb_rc" = "0" ]; then
+    printf '%s\n' "$rb_out" | sed 's/^/    /'
+  fi
+  if [ "$active" != "active" ]; then
+    echo "    !! BH-2 strict check: $BH2_UNIT is '${active:-unknown}', not active."
+    return 1
+  fi
+  if [ "$nnp" = "yes" ] && [ "$psys" = "strict" ]; then
+    echo "    BH-2 strict check: $BH2_UNIT is active, NoNewPrivileges=yes, ProtectSystem=strict"
+    return 0
+  fi
+  if [ "$rb_rc" = "0" ]; then
+    echo "    BH-2 strict check: the sandbox is off (NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?}),"
+    echo "    and a valid rollback holds it off. Fix the cause, then run bh2_rollback.sh off."
+    return 0
+  fi
+  echo "    !! BH-2 strict check: NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?},"
+  echo "       and no valid rollback (bh2_rollback.sh status gave $rb_rc: $(printf '%s\n' "$rb_out" | head -n 1))."
+  return 1
+}
+# <<< bh2 helpers
+
 # ── WhatsApp bridge (whatsmeow, personal-number QR) ───────────────
 # A localhost-only Go service that links a PERSONAL number by QR and
 # streams messages to the gateway's /whatsapp/bridge/ingest (same
@@ -1266,6 +1339,13 @@ echo "==> Restarting gateway (systemd)"
 #
 # The drop-ins (acb-gateway.service.d/40-agent-site.conf and the rest) went in
 # at the BH-7 step above, before any restart, so this restart runs with them.
+# That includes the BH-2 sandbox (50-hardening.conf). Its ReadWritePaths must
+# exist first, or the gateway does not start (ensure_gateway_rw_paths).
+ensure_gateway_rw_paths "$APP_DIR" || {
+  echo "GATEWAY NOT RESTARTED: a ReadWritePaths file of 50-hardening.conf is missing."
+  echo "    The gateway that runs now keeps serving. Restore the file, then deploy again."
+  exit 1
+}
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
 sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
 sudo systemctl daemon-reload
@@ -1605,11 +1685,11 @@ echo "Workbench is active"
 # was up, Caddy routed it, and nothing in this script rebuilt it — so every
 # operator feature merged to `main` stayed on `main`.
 #
-# ⚠️ **The unit file is NOT in this repo.** Every other service here is copied
-# from `deploy/hostinger/*.service`; this one was stood up by hand on the box,
-# so there is nothing to `cp`. That is a real gap and it is recorded in the
-# handoff queue — until it closes, this block manages an artefact it cannot
-# reproduce.
+# The unit file is `deploy/hostinger/acb-operator-console.service` (WS-49
+# BH-2, 2026-10-09). It is the unit that ran on the box, byte for byte, and
+# the BO-23 unit loop below installs it. Its drop-in
+# (`acb-operator-console.service.d/50-hardening.conf`) went in at the BH-7
+# step, before this restart, so this restart runs with it.
 #
 # ⚠️ **Deliberately AFTER the workbench.** Customer surfaces come up first, so
 # a failure here fails the job loudly without having delayed a single customer
@@ -1687,7 +1767,7 @@ else
   echo "    $OC_UNIT is not enabled here — skipping the Operator Console."
   echo "    If it runs under another name, set OPERATOR_CONSOLE_UNIT in .env"
   echo "    on the box. If it runs on this host at all, it is NOT being"
-  echo "    rebuilt by this script and it WILL drift (see HANDOFF H-75)."
+  echo "    rebuilt by this script and it WILL drift."
 fi
 
 echo "==> Checking Caddy is still serving"
@@ -1815,6 +1895,28 @@ echo "==> WS-49 BH-7: one restart for a unit whose drop-in changed"
 # when its build is off, for one) gets ONE restart here. A unit that is not
 # active (the oneshot acb-smoke-chat) gets none: its next start applies them.
 restart_stale_dropin_units "$APP_DIR/deploy/hostinger"
+
+echo "==> WS-49 BH-2: the strict check of the gateway sandbox"
+# 🔴 **THIS GOES AFTER THE LAST RESTART AND BEFORE THE MARKER.** The last
+# restart is restart_stale_dropin_units just above. A restart after this check
+# could start a unit that the check never read. The marker is
+# record_applied_sha at the end. A failure here exits 1 BEFORE it, so the
+# next deploy applies this sha again.
+#
+# ⚠️ That retry has a cost. vps_pull.sh tries one target sha at most 3 times
+# (MAX_FAILS), and each try restarts the gateway before it reaches this check.
+# So a strict check that is broken costs 3 gateway restarts, and then the
+# timer stops and says so. The way out is the rollback, which passes this
+# check for 72 hours:
+#   sudo bash /opt/acb/app/scripts/bh2_rollback.sh on
+# Fence: tests/unit/test_bh2_strict_check.py.
+if ! bh2_strict_check; then
+  echo "BH-2 STRICT CHECK FAILED: acb-gateway does not run in its sandbox, and no valid rollback is on."
+  echo "    No marker was written, so the next deploy applies this sha again."
+  echo "    Read: systemctl show acb-gateway -p ActiveState -p NoNewPrivileges -p ProtectSystem"
+  echo "    Rollback for 72 h: sudo bash $APP_DIR/scripts/bh2_rollback.sh on"
+  exit 1
+fi
 
 echo "==> Running infra health probe"
 cd "$APP_DIR"

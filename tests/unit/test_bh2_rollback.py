@@ -10,9 +10,15 @@ The real script runs against stubs on PATH:
   that gap: every command on a root path starts with `sudo` (B2-3).
 - `date` answers `-u +%s` with a fake now, so the expiry is tested in time.
 - `systemctl`, `curl` and `sleep` record or answer, and never reach a box.
+- `flock` runs the real `flock` when the host has one (Linux). With none (a
+  Windows dev box), it records the call and answers "taken". The lock tests
+  need the real one, and skip without it.
+- `DEPLOY_LOCK` points at a lock file in the test's own dir.
 
-The `status` exit codes are the contract that the strict check of the full
-BH-2 slice reads: 0 on and valid, 1 off, 3 expired or half there, 2 usage.
+The `status` exit codes are the contract that the strict check of
+`vps_apply.sh` and the watchdog WARN read: 0 on and valid, 1 off, 3 expired
+or half there, 2 usage. `on` and `off` exit 4 when a deploy holds the deploy
+lock past `BH2_LOCK_WAIT` (fix round 4, B3).
 """
 from __future__ import annotations
 
@@ -20,6 +26,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -78,6 +85,32 @@ exit "${STUB_CURL_RC:-0}"
 
 STUB_SLEEP = "#!/usr/bin/env bash\nexit 0\n"
 
+#: The real flock when there is one, so the lock is a real lock on Linux.
+STUB_FLOCK = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG.flock"
+if [ -n "${REAL_FLOCK:-}" ]; then exec "$REAL_FLOCK" "$@"; fi
+exit 0
+"""
+
+#: Records whether the deploy lock is held at the moment of the restart. A
+#: new open of the lock file is a new lock, so `flock -n` on it fails while
+#: the script holds its own.
+STUB_SYSTEMCTL_LOCKCHECK = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG.systemctl"
+if [ "$1" = "restart" ]; then
+  if "$REAL_FLOCK" -n "$DEPLOY_LOCK" true; then
+    echo "restart-unlocked" >> "$STUB_LOG.lockstate"
+  else
+    echo "restart-locked" >> "$STUB_LOG.lockstate"
+  fi
+fi
+[ "$1" = "is-active" ] && exit "${STUB_ACTIVE_RC:-0}"
+exit 0
+"""
+
+REAL_FLOCK = shutil.which("flock") or ""
+needs_flock = pytest.mark.skipif(not REAL_FLOCK, reason="needs a real flock (Linux)")
+
 
 class Box:
     def __init__(self, tmp_path: Path) -> None:
@@ -87,18 +120,22 @@ class Box:
         self.log = tmp_path / "log"
         binr = tmp_path / "bin"
         binr.mkdir()
+        self.bin = binr
         for name, body in (("sudo", STUB_SUDO), ("date", STUB_DATE),
                            ("systemctl", STUB_SYSTEMCTL), ("curl", STUB_CURL),
-                           ("sleep", STUB_SLEEP)):
+                           ("sleep", STUB_SLEEP), ("flock", STUB_FLOCK)):
             (binr / name).write_text(body, encoding="utf-8", newline="\n")
             (binr / name).chmod(0o755)
+        self.lock = tmp_path / "acb-deploy.lock"
         self.env = dict(
             os.environ,
             PATH=f"{binr}{os.pathsep}{os.environ.get('PATH', '')}",
             FAKE_ROOT=self.root.as_posix(),
             FAKE_NOW=str(NOW),
             REAL_DATE=shutil.which("date") or "date",
+            REAL_FLOCK=REAL_FLOCK,
             STUB_LOG=self.log.as_posix(),
+            DEPLOY_LOCK=self.lock.as_posix(),
         )
 
     def run(self, *args: str, now: int = NOW, **extra: str) -> subprocess.CompletedProcess:
@@ -331,6 +368,120 @@ def test_a_second_off_does_not_restart(box: Box) -> None:
 @pytest.mark.parametrize("args", [(), ("bogus",), ("on", "off")])
 def test_usage(box: Box, args: tuple[str, ...]) -> None:
     assert box.run(*args).returncode == 2
+
+
+# ── the deploy lock (fix round 4, B3) ─────────────────────────────────────
+
+
+class _Holder:
+    """A deploy that holds the lock: a real `flock` on the same file."""
+
+    def __init__(self, lock: Path) -> None:
+        self.proc = subprocess.Popen([REAL_FLOCK, lock.as_posix(), "sleep", "60"],
+                                     stdin=subprocess.DEVNULL)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            free = subprocess.run([REAL_FLOCK, "-n", lock.as_posix(), "true"]).returncode == 0
+            if not free:
+                return
+            time.sleep(0.05)
+        self.release()
+        raise AssertionError("the holder never took the lock")
+
+    def release(self) -> None:
+        self.proc.kill()
+        self.proc.wait(timeout=10)
+
+
+@needs_bash
+@needs_flock
+@pytest.mark.parametrize("cmd", ["on", "off"])
+def test_a_held_deploy_lock_stops_on_and_off_and_changes_nothing(box: Box, cmd: str) -> None:
+    if cmd == "off":
+        assert box.run("on").returncode == 0
+    box.lock.touch()
+    box.lock.with_name("acb-deploy.lock.holder").write_text(
+        f"{os.getpid()} 2026-10-09T10:00:00Z acb\n", encoding="utf-8")
+    box.clear_calls()
+    before = box.tree()
+    holder = _Holder(box.lock)
+    try:
+        r = box.run(cmd, BH2_LOCK_WAIT="1")
+    finally:
+        holder.release()
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "still holds" in r.stderr and "Nothing changed" in r.stderr, r.stderr
+    assert f"pid {os.getpid()}" in r.stderr, "the refusal must name the holder"
+    assert box.tree() == before
+    assert box.calls("systemctl") == []
+    assert not [c for c in box.calls("sudo") if c.startswith(("install", "rm", "mkdir"))]
+
+
+@needs_bash
+@needs_flock
+@pytest.mark.parametrize("cmd", ["on", "off"])
+def test_on_and_off_hold_the_deploy_lock_while_they_restart(box: Box, cmd: str) -> None:
+    if cmd == "off":
+        assert box.run("on").returncode == 0
+    stub = box.bin / "systemctl"
+    stub.write_text(STUB_SYSTEMCTL_LOCKCHECK, encoding="utf-8", newline="\n")
+    stub.chmod(0o755)
+    r = box.run(cmd)
+    assert r.returncode == 0, r.stdout + r.stderr
+    state = Path(f"{box.log.as_posix()}.lockstate").read_text(encoding="utf-8").split()
+    assert state == ["restart-locked"], state
+    # The lock is released when the script ends.
+    assert subprocess.run([REAL_FLOCK, "-n", box.lock.as_posix(), "true"]).returncode == 0
+
+
+@needs_bash
+@needs_flock
+def test_status_takes_no_lock(box: Box) -> None:
+    """The strict check runs `status` while the deploy holds the lock. A lock
+    here would wait on the deploy that asked."""
+    box.lock.touch()
+    holder = _Holder(box.lock)
+    try:
+        t0 = time.monotonic()
+        r = box.run("status", BH2_LOCK_WAIT="30")
+        took = time.monotonic() - t0
+    finally:
+        holder.release()
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert took < 20, f"status waited {took:.1f}s on the deploy lock"
+    assert not box.calls("flock")
+
+
+@needs_bash
+def test_on_and_off_take_the_lock_before_any_change(box: Box) -> None:
+    """`on` takes the lock on fd 9, also with the stub flock of a Windows
+    box. The held-lock test above proves that it comes before any change."""
+    r = box.run("on")
+    assert r.returncode == 0, r.stdout + r.stderr
+    flock_calls = box.calls("flock")
+    assert flock_calls and flock_calls[0] == "-n 9", flock_calls
+    assert "took the deploy lock" in r.stdout
+
+
+def test_the_lock_is_the_lock_of_vps_apply() -> None:
+    """One lock, one path: both scripts derive it from APP_DIR the same way."""
+    apply = (ROOT / "scripts" / "vps_apply.sh").read_text(encoding="utf-8")
+    body = SCRIPT.read_text(encoding="utf-8")
+    want = 'DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"'
+    assert want in apply
+    assert want in body
+    assert "exec 9<\"$DEPLOY_LOCK\"" in body
+
+
+def test_only_on_and_off_take_the_lock() -> None:
+    body = SCRIPT.read_text(encoding="utf-8")
+    fns = {}
+    for name in ("cmd_on", "cmd_off", "cmd_status"):
+        start = body.index(f"{name}() {{")
+        fns[name] = body[start: body.index("\n}\n", start)]
+    assert "take_deploy_lock" in fns["cmd_on"]
+    assert "take_deploy_lock" in fns["cmd_off"]
+    assert "take_deploy_lock" not in fns["cmd_status"]
 
 
 # ── static ───────────────────────────────────────────────────────────────

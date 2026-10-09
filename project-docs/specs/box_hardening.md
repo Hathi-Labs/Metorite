@@ -1,6 +1,8 @@
 # Box hardening — an app compromise must not become root
 
-**Status: ACTIVE, specified 2026-10-08, built in part. Next: BH-2 full.**
+**Status: ACTIVE, specified 2026-10-08, built in part. BH-2 full BUILT, not
+merged, 2026-10-09** (branch `sec-bh2-gateway`). The owner stages it on the
+box before the merge (§5 BH-2, "The staged rollout").
 Board row **WS-49**. The owner ruled on 2026-10-08 to close this gap first,
 before the data of the beta customers arrives. This spec owns H-270 and H-271
 in `HANDOFF.md`.
@@ -25,10 +27,10 @@ commit's own copy. The script also refuses to record a sha whose own copy did
 not run the steps. The first deploy after the merge logged `(re-exec)`, and
 the marker recorded `7e9844a4`. The fence is `tests/unit/test_deploy_reexec.py`.
 
-**Next: BH-2 full.** That is `50-hardening.conf`, the strict check, the
-watchdog WARN, the deploy lock of the rollback script and the Operator Console
-unit. BH-1 and BH-7 are deployed, so the wait of the GO-NARROWED split is
-over. The fix round of 2026-10-09 (below) makes the slice dispatchable.
+**BH-2 full, BUILT on `sec-bh2-gateway`.** That is `50-hardening.conf`, the
+strict check, the watchdog WARN, the deploy lock of the rollback script and
+the Operator Console unit. BH-1 and BH-7 are deployed, so the wait of the
+GO-NARROWED split is over. Fix round 4 (below) made the slice dispatchable.
 
 **Fix round 4, 2026-10-09.** The spec audit of BH-2 full returned NO-GO until
 five edits. This round applies B1 to B5. B1 adds the drain flag to the
@@ -1011,6 +1013,9 @@ GO-NARROWED. This version applies W1 to W3 and S1 to S4.
 **Part 1 MERGED as `8b12ba75e` (#748):** the probe, the rollback script and
 conf, BH-F3 part 1. The other-unit drop-ins landed with BH-7 (#756).
 
+**The full slice is BUILT, not merged, 2026-10-09** (branch
+`sec-bh2-gateway`). The staging on the box comes before the merge.
+
 **The GO-NARROWED split is over (2026-10-09).** Part 1 is merged. BH-1 and
 BH-7 are on the box. Fix round 4 applies B1 to B5. So the full slice is
 dispatchable: `50-hardening.conf`, the strict check, the watchdog WARN, the
@@ -1078,6 +1083,7 @@ ExecStart=
 ExecStart=/opt/acb/app/.venv/bin/uvicorn gateway.main:app --host 0.0.0.0 --port 8080 --timeout-graceful-shutdown 5
 Environment=PATH=/opt/acb/app/.venv/bin:/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=VIRTUAL_ENV=/opt/acb/app/.venv
+Environment=MEM0_DIR=/var/lib/acb-gateway/mem0
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
@@ -1114,8 +1120,44 @@ RestrictRealtime=yes
      a restart shows "Metorite is updating". `tests/unit/test_gateway_drain.py`
      reads the EFFECTIVE `ExecStart`: the last one across the base unit and
      its drop-ins, in name order, after each empty reset.
+   - **`MEM0_DIR` (found at build, 2026-10-09).** `mem0/memory/setup.py:11-12`
+     runs `os.makedirs(~/.mem0)` at import, and `setup_config` writes
+     `~/.mem0/config.json`. `ProtectHome=read-only` refuses a new dir under
+     `/home/acb`. The import sits in the `try` of `mem0_client.py:103-195`,
+     so a refusal turns memory off with one `mem0.init_failed` line and no
+     error. `MEM0_DIR` moves that dir into the `StateDirectory`.
    - A file in `ReadWritePaths` must exist, or the unit fails to start. The
-     deploy creates each listed file before it restarts the gateway.
+     deploy makes `data/`. A missing tracked file or `.env` stops the deploy
+     BEFORE the gateway restart (`ensure_gateway_rw_paths`), so the gateway
+     that runs keeps serving.
+
+   **The write locations, read from the code at build (2026-10-09).** Each
+   one is on `ReadWritePaths`, or in the state, cache or temp dirs:
+
+   | Where | What writes it | How BH-2 allows it |
+   |---|---|---|
+   | `/opt/acb/app/.env` | `routes/integrations.py:534`, `routes/settings.py:214` (`write_bytes`, same inode) | a file on `ReadWritePaths` |
+   | `infra/provider_models_cache.json` | `routes/settings.py:1250-1256` (`write_text`) | a file on `ReadWritePaths` |
+   | `apps/services/gateway/agents.json` | `routes/agent.py:875-876` (`write_text`) | a file on `ReadWritePaths` |
+   | `data/` | `notes/core.py:215` (`NOTES_MEDIA_DIR`), `notes/meeting_bot.py:486-488`, `notes/recordings.py:102,186`, `tasks/attachments.py:36`, `projects/imports.py:71,766` | a dir on `ReadWritePaths` |
+   | `~/.acb/agents` (`AGENTS_CLONE_DIR`) | `settings.py:589`, `agent_paths.py:667`, `loader.py:130,703,795,1325`, `routes/apps/*`, `workspace.py:1536,2158`, `email/transport/send.py:320`, `write_artifact.py:769`, `note_tools.py:148`, `skill_index.py:296`, `blob_store.py:561`, `sandbox_broker.py:1203,1237`, `copilot_sandbox.py:84-88` | `-/home/acb/.acb` |
+   | `~/.copilot`, `~/.cache/copilot` | the Copilot CLI state, logs and sessions | `ReadWritePaths` with `-` |
+   | `~/.cache/github-copilot-sdk` | the CLI binary. `vps_apply.sh` ("Fetching the Copilot CLI") writes it as `acb` with `copilot download-runtime`. The gateway execs it | `ReadWritePaths` with `-`, so the read and the exec work |
+   | `/var/lib/acb-gateway/agent-site` | `acb_skills/agent_site.py:197` (BH-7) | `StateDirectory` |
+   | `/var/cache/acb-gateway/uv` | `uv pip install` (`UV_CACHE_DIR`, `40-agent-site.conf`) | `CacheDirectory` |
+   | `/var/lib/acb-gateway/mem0` | mem0 at import (`MEM0_DIR`) | `StateDirectory` |
+   | `/tmp` | `local_diarization.py:80` (`NamedTemporaryFile` for ffmpeg), `monorepo_pr.py:236` (`mkdtemp`) | `PrivateTmp` |
+
+   Read only, with no write: `~/.local/bin/uv` (`agent_site.py:111`, an exec
+   through `ProtectHome=read-only`), the sherpa-onnx models under
+   `/opt/acb/app/models/sherpa` (`local_diarization.py:39-44`, which the
+   deploy writes at `vps_apply.sh` "Local diarization"), and ffmpeg, which
+   writes its output to a pipe. `~/.config/uv/` holds only the deploy's
+   `uv-receipt.json`. No code runs `git config --global`.
+
+   Python cannot write `__pycache__` under `/opt/acb/app` or `.venv`. It
+   skips that write with no error, so a module that changed in a deploy
+   compiles again at each start. The staging reads the start time.
 3. **The other units.**
    - acb-workbench, acb-customer-console, acb-smoke-chat and
      acb-whatsapp-bridge get `NoNewPrivileges=yes`, `PrivateTmp=yes` and
@@ -1350,6 +1392,12 @@ fences the drain flag on the effective `ExecStart` (B1).
   the box. If one appears, the function returns the path of the old name.
 - `ProtectProc=invisible` hides the processes of other users only.
   Same-user processes stay visible.
+- `ProtectClock=yes` also limits the devices that the unit can open. The
+  Copilot shell needs a pseudo-terminal. The Copilot run of the staging
+  shows if it still gets one.
+- A file in `ReadWritePaths` that the gateway replaces, not rewrites, needs
+  a write to its dir. The gateway rewrites all three in place (item 1
+  table). A future write by `os.replace` fails with EROFS.
 - The startup sweeps of `main.py:152-171` log one line when Docker is absent,
   and the gateway starts. That is the documented behaviour.
 - A rollback that nobody removes expires after 72 hours, and then the deploy

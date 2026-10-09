@@ -174,11 +174,11 @@ def test_the_probed_routes_are_DERIVED_from_the_source_tree() -> None:
 
 
 def test_the_unit_name_is_overridable() -> None:
-    """⚠️ The unit file is NOT in this repo — the console was stood up by hand,
-    so unlike every other service here there is no `deploy/hostinger/*.service`
-    to copy and no single name we can assert. Until that gap closes (H-75), the
-    name must be settable rather than guessed."""
+    """The unit file is `deploy/hostinger/acb-operator-console.service` since
+    WS-49 BH-2 (2026-10-09), so the default name is a repo fact. The name stays
+    settable for a box that runs the console under another name."""
     lines = _executable_lines(_APPLY)
     assert any(
         "OPERATOR_CONSOLE_UNIT" in ln for ln in lines
-    ), "allow the box to name its own unit while the unit file lives off-repo"
+    ), "allow the box to name its own unit"
+    assert (_ROOT / "deploy" / "hostinger" / "acb-operator-console.service").is_file()

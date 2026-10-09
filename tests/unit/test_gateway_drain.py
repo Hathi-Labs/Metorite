@@ -57,8 +57,25 @@ def _unit() -> dict[str, list[str]]:
     return out
 
 
+def _effective_exec_start() -> list[str]:
+    """The ExecStart list that systemd runs: the base unit, then each drop-in
+    of ``acb-gateway.service.d`` in name order. An empty ``ExecStart=`` resets
+    the list (WS-49 BH-2, B1). ``50-hardening.conf`` resets it and runs the
+    venv binary, so a flag on the base line alone is not a flag that runs."""
+    files = [UNIT, *sorted((UNIT.parent / f"{UNIT.name}.d").glob("*.conf"))]
+    starts: list[str] = []
+    for f in files:
+        for ln in f.read_text(encoding="utf-8").splitlines():
+            s = ln.strip()
+            if s.startswith(("#", ";")) or not s.startswith("ExecStart="):
+                continue
+            value = s.split("=", 1)[1].strip()
+            starts = [] if value == "" else [*starts, value]
+    return starts
+
+
 def _drain_bound_s() -> int:
-    (start,) = _unit()["ExecStart"]
+    (start,) = _effective_exec_start()
     m = re.search(r"--timeout-graceful-shutdown[ =](\d+)", start)
     assert m, "ExecStart has no --timeout-graceful-shutdown, so the drain has no bound"
     return int(m.group(1))
@@ -80,6 +97,19 @@ def _script_wait_s() -> int:
 class TestTheRestartGapFitsTheHolds:
     def test_the_drain_has_a_bound(self) -> None:
         assert 1 <= _drain_bound_s()
+
+    def test_the_effective_exec_start_is_the_one_that_runs(self) -> None:
+        """WS-49 BH-2 B1. The drain bound must be on the ExecStart that systemd
+        runs. The base unit and the hardening drop-in each carry the flag."""
+        (start,) = _effective_exec_start()
+        assert "--timeout-graceful-shutdown" in start
+        if (UNIT.parent / f"{UNIT.name}.d" / "50-hardening.conf").is_file():
+            assert start.startswith("/opt/acb/app/.venv/bin/uvicorn "), start
+        (base,) = _unit()["ExecStart"]
+        assert "--timeout-graceful-shutdown" in base, (
+            "the base unit lost the flag. A rollback that drops the drop-in "
+            "would run a drain with no bound"
+        )
 
     def test_the_drain_plus_the_start_fits_the_workbench_retry(self) -> None:
         # The workbench calls the gateway on localhost, so Caddy's hold does not

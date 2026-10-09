@@ -14,8 +14,11 @@ units (spec B2-5): every `User=acb` unit except acb-pull has
 checks here: `40-agent-site.conf`, and that the drop-in installer of
 `vps_apply.sh` never deletes or writes a `90-*` file.
 
-Part 2 (the full slice) adds the `50-hardening.conf` assertions, the write
-allowlist and the strict check of `vps_apply.sh`. Not here.
+Part 2 (the full slice, fix round 4) is at the end of this file. It holds
+the `50-hardening.conf` assertions, the write allowlist, the rollback that
+resets each sandbox line, the place of the strict check in `vps_apply.sh`,
+and the Operator Console unit. `tests/unit/test_bh2_strict_check.py` runs
+the strict check itself.
 
 The probe tests run the real script against a stub `systemctl`,
 `systemd-run`, `sudo`, `docker`, `crontab`, `touch`, `ls` and `id` on PATH.
@@ -506,13 +509,14 @@ def test_the_new_scripts_start_with_a_bash_shebang() -> None:
 
 #: The four other units of BH-2 item 3. Each gets these three lines and no
 #: more in this slice.
-OTHER_UNITS = ("acb-workbench", "acb-customer-console", "acb-smoke-chat", "acb-whatsapp-bridge")
+OTHER_UNITS = ("acb-workbench", "acb-customer-console", "acb-smoke-chat", "acb-whatsapp-bridge",
+               "acb-operator-console")
 THREE_LINES = ["[Service]", "NoNewPrivileges=yes", "PrivateTmp=yes", "RestrictSUIDSGID=yes"]
 
-#: The User=acb units that part 1 exempts, each with its reason.
+#: The User=acb units with no NoNewPrivileges, each with its reason. The
+#: gateway left this list with BH-F3 part 2: its 50-hardening.conf sets it.
 NNP_EXEMPT = {
     "acb-pull.service": "it runs vps_apply.sh, which needs sudo until BH-5",
-    "acb-gateway.service": "its NoNewPrivileges is in 50-hardening.conf, BH-F3 part 2",
 }
 
 
@@ -787,3 +791,167 @@ def test_a_zone_that_date_cannot_parse_restarts_nothing(tmp_path: Path) -> None:
     assert "--timestamp=unix" in log
     assert "restart " not in log
     assert "acb-a.service started after its newest drop-in" in r.stdout
+
+
+# ── BH-F3 part 2: the gateway sandbox (the full slice, fix round 4) ──────
+#
+# Spec: project-docs/specs/box_hardening.md §5 BH-2 items 2, 3, 5 and 6, and
+# "Part 2, in the full slice". These read the repo, never the box.
+
+HARDENING_CONF = UNITS / "acb-gateway.service.d" / "50-hardening.conf"
+
+#: Each line of the spec block, in order. A change here is a reviewed change.
+HARDENING_LINES = [
+    "[Service]",
+    "ExecStart=",
+    "ExecStart=/opt/acb/app/.venv/bin/uvicorn gateway.main:app --host 0.0.0.0 --port 8080"
+    " --timeout-graceful-shutdown 5",
+    "Environment=PATH=/opt/acb/app/.venv/bin:/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "Environment=VIRTUAL_ENV=/opt/acb/app/.venv",
+    "Environment=MEM0_DIR=/var/lib/acb-gateway/mem0",
+    "NoNewPrivileges=yes",
+    "PrivateTmp=yes",
+    "ProtectSystem=strict",
+    "ReadWritePaths=/opt/acb/app/.env /opt/acb/app/data",
+    "ReadWritePaths=/opt/acb/app/infra/provider_models_cache.json",
+    "ReadWritePaths=/opt/acb/app/apps/services/gateway/agents.json",
+    "ProtectHome=read-only",
+    "ReadWritePaths=-/home/acb/.acb -/home/acb/.copilot -/home/acb/.cache/copilot"
+    " -/home/acb/.cache/github-copilot-sdk",
+    "InaccessiblePaths=-/run/user -/run/docker.sock -/var/run/docker.sock -/etc/acb -/etc/sudoers.d",
+    "ProtectProc=invisible",
+    "RestrictSUIDSGID=yes",
+    "CapabilityBoundingSet=",
+    "AmbientCapabilities=",
+    "LockPersonality=yes",
+    "ProtectKernelTunables=yes",
+    "ProtectKernelModules=yes",
+    "ProtectKernelLogs=yes",
+    "ProtectControlGroups=yes",
+    "ProtectClock=yes",
+    "ProtectHostname=yes",
+    "RestrictRealtime=yes",
+]
+
+#: The write list of the gateway (spec §2.1 and BH-2 item 1). One constant.
+#: A new write path is a reviewed change to this set AND to the conf.
+RW_ALLOWLIST = frozenset({
+    "/opt/acb/app/.env",
+    "/opt/acb/app/data",
+    "/opt/acb/app/infra/provider_models_cache.json",
+    "/opt/acb/app/apps/services/gateway/agents.json",
+    "-/home/acb/.acb",
+    "-/home/acb/.copilot",
+    "-/home/acb/.cache/copilot",
+    "-/home/acb/.cache/github-copilot-sdk",
+})
+
+#: Never writable by the gateway: the deploy runs or installs each one.
+NEVER_WRITABLE = (".venv", "/opt/acb/t2-vendor", "infra/enabled_models.json",
+                  "/opt/acb/app/scripts", "/opt/acb/app/deploy", "/opt/acb/app/.git")
+
+#: The lines of the sandbox that can each stop the start (spec item 6).
+START_BLOCKING = ("ReadWritePaths", "InaccessiblePaths", "ProtectSystem", "ProtectHome",
+                  "NoNewPrivileges", "PrivateTmp")
+
+
+def _rw_paths() -> list[str]:
+    out: list[str] = []
+    for ln in _conf_lines(HARDENING_CONF):
+        if ln.startswith("ReadWritePaths="):
+            out.extend(ln.split("=", 1)[1].split())
+    return out
+
+
+def test_the_hardening_conf_holds_each_line_of_the_spec_block() -> None:
+    assert _conf_lines(HARDENING_CONF) == HARDENING_LINES
+
+
+def test_the_write_list_is_the_allowlist() -> None:
+    paths = _rw_paths()
+    assert len(paths) == len(set(paths)), paths
+    assert set(paths) == RW_ALLOWLIST
+
+
+def test_the_write_list_never_holds_a_path_that_the_deploy_runs() -> None:
+    for p in _rw_paths():
+        bare = p.lstrip("-")
+        for bad in NEVER_WRITABLE:
+            assert bad not in bare, f"{p} is on the write list of the gateway"
+        # A parent of the checkout would give the gateway the whole tree.
+        assert bare not in ("/opt/acb/app", "/opt/acb", "/home/acb", "/"), p
+
+
+def test_the_socket_the_user_manager_and_the_root_files_are_hidden() -> None:
+    (line,) = [ln for ln in _conf_lines(HARDENING_CONF) if ln.startswith("InaccessiblePaths=")]
+    hidden = {p.lstrip("-") for p in line.split("=", 1)[1].split()}
+    assert {"/run/user", "/run/docker.sock", "/var/run/docker.sock", "/etc/acb",
+            "/etc/sudoers.d"} <= hidden
+
+
+def test_the_rollback_resets_each_sandbox_line_of_the_hardening_conf() -> None:
+    """The rollback must give the unit of today. A new sandbox line in
+    50-hardening.conf with no reset in the rollback would survive `on`."""
+    rollback_keys = {ln.split("=", 1)[0] for ln in _conf_lines(ROLLBACK_CONF) if "=" in ln}
+    conf_keys = {ln.split("=", 1)[0] for ln in _conf_lines(HARDENING_CONF) if "=" in ln}
+    sandbox_keys = {k for k in conf_keys if not k.startswith(("Exec", "Environment"))}
+    assert sandbox_keys - rollback_keys == set()
+    for key in START_BLOCKING:
+        assert key in conf_keys and key in rollback_keys, key
+
+
+def test_the_hardening_conf_changes_no_user_and_no_python_path() -> None:
+    for ln in _conf_lines(HARDENING_CONF):
+        key = ln.split("=", 1)[0]
+        assert key not in ("User", "Group", "SupplementaryGroups", "EnvironmentFile"), ln
+        assert "PYTHONPATH" not in ln, ln
+
+
+def _code_lines(p: Path) -> list[str]:
+    return [ln for ln in _read(p).splitlines() if not ln.lstrip().startswith("#")]
+
+
+def test_the_strict_check_runs_after_the_last_restart_and_before_the_marker() -> None:
+    lines = _code_lines(APPLY)
+    check = next(i for i, ln in enumerate(lines) if ln.strip() == "if ! bh2_strict_check; then")
+    marker = next(i for i, ln in enumerate(lines)
+                  if ln.startswith('record_applied_sha "$(git -C "$APP_DIR" rev-parse HEAD)"'))
+    stale = next(i for i, ln in enumerate(lines)
+                 if ln.startswith('restart_stale_dropin_units "$APP_DIR'))
+    restarts = [i for i, ln in enumerate(lines)
+                if "systemctl restart" in ln or ln.startswith("restart_stale_dropin_units ")]
+    assert stale < check < marker
+    assert max(restarts) < check, "a restart after the strict check is a unit it never read"
+    after = "\n".join(lines[check:marker])
+    assert "exit 1" in after
+
+
+def test_the_rw_paths_step_runs_before_the_gateway_restart() -> None:
+    lines = _code_lines(APPLY)
+    install = next(i for i, ln in enumerate(lines)
+                   if ln.startswith('install_dropins "$APP_DIR/deploy/hostinger"'))
+    ensure = next(i for i, ln in enumerate(lines)
+                  if ln.startswith('ensure_gateway_rw_paths "$APP_DIR"'))
+    restart = next(i for i, ln in enumerate(lines) if ln == "sudo systemctl restart acb-gateway")
+    assert install < ensure < restart
+
+
+def test_the_rw_paths_step_covers_each_path_with_no_dash() -> None:
+    """A ReadWritePaths entry with no "-" must exist, or the unit does not
+    start. ensure_gateway_rw_paths checks exactly that list."""
+    must = {p.removeprefix("/opt/acb/app/") for p in _rw_paths() if not p.startswith("-")}
+    block = "\n".join(_apply_block("# >>> bh2 helpers", "# <<< bh2 helpers"))
+    start = block.index("ensure_gateway_rw_paths() {")
+    fn = block[start: block.index("\n}\n", start)]
+    named = set(re.findall(r'"\$app/([^"]+)"', fn))
+    assert named == must, (named, must)
+
+
+def test_the_operator_console_unit_is_a_repo_file() -> None:
+    unit = UNITS / "acb-operator-console.service"
+    assert unit.is_file()
+    keys = _conf_lines(unit)
+    assert "User=acb" in keys
+    assert "ExecStart=/usr/bin/npm start" in keys
+    assert "EnvironmentFile=/opt/acb/app/workbench/operator_console/.env.local" in keys
+    assert _last_value(unit, "NoNewPrivileges") == "yes"
