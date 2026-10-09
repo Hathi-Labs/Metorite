@@ -543,7 +543,8 @@ class TestNoEgress:
         monkeypatch.setenv("DECIDE_IN_NO_EGRESS", "true")
         get_settings.cache_clear()
         _bind(no_egress=True)
-        await _tool(Adapter(5))(QUERY)
+        # One short summary fits the 500-character bound (owner, 2026-10-09).
+        await _tool(Adapter(1))(QUERY)
         assert len(door.bodies) == 1, "the switch on must reach the door"
         assert s1.sizes == []
         for body in door.bodies:

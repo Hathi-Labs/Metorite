@@ -136,30 +136,43 @@ test.describe("phone", () => {
     await page.goto("/settings/appearance");
   }
 
-  test("the menu names the organization and the account at its top", async ({ page }) => {
+  // The header is the account surface: the mark and the organization, the
+  // signed-in address under it, and a tap opens the rest (owner, 2026-10-09).
+  const header = (page: Page) => page.getByTestId("drawer-org").getByRole("button", { name: /^Account, / });
+
+  test("the menu header names the organization and the account, and stays one line", async ({ page }) => {
     await phone(page);
     await page.getByRole("button", { name: "Menu" }).click();
     const top = page.getByTestId("drawer-org");
-    await expect(top).toContainText("Organization");
     await expect(top).toContainText("Hathi Labs LLP");
-    await expect(top).toContainText("Signed in as vjvarada@hathilabs.com");
+    await expect(top).toContainText("vjvarada@hathilabs.com");
+    await expect(header(page)).toHaveAccessibleName(
+      "Account, signed in as vjvarada@hathilabs.com, in Hathi Labs LLP, 2 more",
+    );
+    // Folded until tapped: no switch list, no actions, no second account row.
+    await expect(header(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(top.getByRole("list", { name: "Switch organization" })).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Other accounts" })).toHaveCount(0);
+    await expect(page.getByTestId("account-tab")).toHaveCount(0);
+  });
+
+  test("a tap on the header opens the other accounts and the actions", async ({ page }) => {
+    await phone(page);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await header(page).click();
+    const top = page.getByTestId("drawer-org");
     const list = top.getByRole("list", { name: "Switch organization" });
     await expect(list.getByRole("listitem")).toHaveCount(2);
     await expect(list).toContainText("Fracktal Works");
-    // It is ABOVE the search, the first thing under the menu's header.
-    const search = page.getByRole("button", { name: "Search or ask anything" });
-    if (await search.count()) {
-      const [a, b] = [await top.boundingBox(), await search.boundingBox()];
-      expect(a!.y).toBeLessThan(b!.y);
-    }
-    // The foot keeps the actions and no second list.
-    await expect(page.getByRole("list", { name: "Other accounts" })).toHaveCount(0);
+    await expect(top.getByRole("button", { name: "Add account" })).toBeVisible();
+    await expect(top.getByRole("button", { name: "Sign out of all" })).toBeVisible();
   });
 
-  test("one tap in the menu switches to that account", async ({ page }) => {
+  test("one tap in the open header switches to that account", async ({ page }) => {
     const calls: string[] = [];
     await phone(page, calls);
     await page.getByRole("button", { name: "Menu" }).click();
+    await header(page).click();
     await page.getByTestId("drawer-org").getByRole("button", { name: /Fracktal Works/ }).click();
     await page.waitForURL((u) => u.pathname === "/");
     expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
@@ -169,23 +182,11 @@ test.describe("phone", () => {
     const calls: string[] = [];
     await phone(page, calls);
     await page.getByRole("button", { name: "Menu" }).click();
+    await header(page).click();
     await page
       .getByTestId("drawer-org")
       .getByRole("button", { name: "Remove vjvarada@fracktal.in from this browser" })
       .click();
     await expect.poll(() => calls).toEqual(['/api/accounts/remove {"slot":2}']);
-  });
-
-  test("the bottom bar's account tab says who and where, and opens the account sheet", async ({ page }) => {
-    await phone(page);
-    const tab = page.getByTestId("account-tab");
-    await expect(tab).toHaveAccessibleName(
-      "Account: vjvarada@hathilabs.com, in Hathi Labs LLP, 2 more",
-    );
-    await expect(tab).toContainText("Hathi Labs LLP");
-    await tab.click();
-    await expect(page.getByTestId("drawer-org")).toContainText("Signed in as vjvarada@hathilabs.com");
-    await expect(page.getByRole("list", { name: "Switch organization" }).getByRole("listitem")).toHaveCount(2);
-    await expect(page.getByRole("button", { name: "Add another account" })).toBeVisible();
   });
 });

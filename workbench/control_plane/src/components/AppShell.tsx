@@ -15,7 +15,6 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import OrgBrandLockup from "@/components/OrgBrandLockup";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -26,7 +25,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useSession, signOut } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { useChatScope, useChatSignOutClear } from "@/hooks/useChatSessions";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -38,7 +37,7 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
-import { AccountTab, DrawerAccountSection, DrawerOrgSwitch } from "@/components/AccountSwitcher";
+import { DrawerAccountHeader } from "@/components/AccountSwitcher";
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
@@ -294,7 +293,6 @@ function MobileBottomNavInner({
   toggleView: () => void;
 }) {
   const { isOpen, open, close } = useMobileDrawer();
-  const { data: session } = useSession();
   const activeRunIds = useActiveSessions();
   const activeCount = activeRunIds.size;
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
@@ -312,22 +310,10 @@ function MobileBottomNavInner({
 
   const menuContent = (
     <>
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        {/* Branding doubles as the way home — the mobile shell has no top bar.
-            Same component as the desktop sidebar on purpose: a brand mark that
-            differs by window width is worse than no brand mark. */}
-        <OrgBrandLockup fallbackCaption="Home" onNavigate={close} maxWidth={180} />
-        <button
-          onClick={close}
-          className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary"
-          aria-label="Close"
-        >
-          <AppIcon name="X" size={16} />
-        </button>
-      </div>
-      {/* Which organization is open, which account is signed in, and one tap
-          to another (owner request, 2026-10-09). First, under the header. */}
-      <DrawerOrgSwitch />
+      {/* The header is the account surface (owner, 2026-10-09): the mark and
+          the organization, the signed-in address under it, and a tap opens
+          the other accounts and the account actions. */}
+      <DrawerAccountHeader onClose={close} you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close} />
       {/* NS-1 on the phone: the one search. */}
       {shellBarOn() ? (
         <div className="border-b border-border px-3 py-2">
@@ -437,64 +423,9 @@ function MobileBottomNavInner({
           <AppIcon name="Monitor" size={16} className="shrink-0" />
           Desktop view
         </Button>
-        {/* The account switcher (MT-1k A2). While its flag is off, it draws
-            the Sign out row and the name, as before. */}
-        <DrawerAccountSection
-          you={shellNav ? accountLinks(navSections) : undefined}
-          onNavigate={close}
-          othersAtTop
-          fallback={
-            session?.user && (
-              <>
-                <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
-                  <AppIcon name="LogOut" size={16} className="shrink-0" />
-                  Sign out
-                </Button>
-                <div className="px-3 pt-1">
-                  <div className="truncate text-[11px] font-medium text-muted-foreground">
-                    {session.user.name ?? session.user.email}
-                  </div>
-                </div>
-              </>
-            )
-          }
-        />
       </div>
     </>
   );
-
-  // The account sheet (owner request, 2026-10-09), opened from the bottom
-  // bar's account tab: who is signed in, which organization is open, one tap
-  // to another account, and the account actions.
-  const [accountSheet, setAccountSheet] = useState(false);
-  const accountContent = (
-    <>
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <span className="text-sm font-semibold text-foreground">Account</span>
-        <button onClick={close} className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary" aria-label="Close">
-          <AppIcon name="X" size={16} />
-        </button>
-      </div>
-      <DrawerOrgSwitch />
-      <div className="p-3">
-        <DrawerAccountSection
-          you={shellNav ? accountLinks(navSections) : undefined}
-          onNavigate={close}
-          othersAtTop
-          actionsOnly
-          fallback={
-            <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
-              <AppIcon name="LogOut" size={16} className="shrink-0" />
-              Sign out
-            </Button>
-          }
-        />
-      </div>
-    </>
-  );
-  useEffect(() => {
-    if (!isOpen) setAccountSheet(false);
-  }, [isOpen]);
 
   const isChatPage = pathname?.startsWith("/chat") ?? false;
   const isEmailPage = pathname?.startsWith("/email") ?? false;
@@ -548,9 +479,9 @@ function MobileBottomNavInner({
     <>
     <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
         <button
-          onClick={() => { setAccountSheet(false); open(menuContent); }}
+          onClick={() => { open(menuContent); }}
           className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-            isOpen && !accountSheet ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
           }`}
         >
           <AppIcon name="Menu" size={20} />
@@ -699,14 +630,6 @@ function MobileBottomNavInner({
             />
           </>
         )}
-        {/* Last, on every screen: who is signed in, and where. */}
-        <AccountTab
-          open={isOpen && accountSheet}
-          onOpen={() => {
-            setAccountSheet(true);
-            open(accountContent);
-          }}
-        />
     </nav>
     {shellNav && (
       <AppLauncher

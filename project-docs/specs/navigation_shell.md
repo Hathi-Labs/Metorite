@@ -2,7 +2,8 @@
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slice 1,
 NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production since
-2026-10-08. NS-2 is dark behind `NEXT_PUBLIC_SHELL_NAV`. Board row **WS-44**.
+2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
+(`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -237,6 +238,14 @@ The foot's menu holds these rows, in order:
 The colour-mode toggle stays beside the foot's button. With the switcher flag
 off, the foot still shows. It reads the session then, and it lists no other
 accounts.
+
+**On a phone, the menu's header is the account menu** (owner, 2026-10-09). It
+shows the brand mark, the organization that is open, and under it the address
+that is signed in. A tap unfolds the other accounts, each one tap away with
+its own remove control, then the rows above, then "Add account" and sign-out.
+The phone has no account tab in the bottom bar and no second account row at
+the menu's foot. `DrawerAccountHeader` in `AccountSwitcher.tsx` is the one
+component, and `e2e/account-switcher.spec.ts` fences it.
 
 **My Access moved first, on 2026-10-05.** The owner moved it into the People
 app, as the ungated "My access" tab at `/people/access`, beside My profile. When
@@ -871,7 +880,7 @@ Done when:
 6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
    a changed accent, and the neighbouring app.
 
-### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slice 1 BUILT 2026-10-09, dark
+### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slice 1 BUILT 2026-10-09, ON in production since 2026-10-09
 
 **Built in slice 1:**
 
