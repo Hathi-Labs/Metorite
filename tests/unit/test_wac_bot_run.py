@@ -470,6 +470,33 @@ async def test_a_claimed_row_is_not_run_again(world: _World) -> None:
 
 
 
+
+async def test_two_copies_at_once_write_the_thread_one_after_the_other(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-process lock: the second copy's thread write starts only after
+    the first copy's insert, so it never meets a half-made thread."""
+    real = world.store.write_turn
+    inside = 0
+    most = 0
+
+    async def _slow(org, email, wamid, body):
+        nonlocal inside, most
+        inside += 1
+        most = max(most, inside)
+        await asyncio.sleep(0.05)
+        try:
+            return await real(org, email, wamid, body)
+        finally:
+            inside -= 1
+
+    monkeypatch.setattr(bot_run, "_write_turn", _slow)
+    change = _message(wamid="wamid.LOCK")
+    await asyncio.gather(_post(change), _post(change))
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    assert most == 1, "two thread writes of one member ran at once"
+    assert len(world.agent.calls) == 1
+
 async def test_a_thread_opened_by_another_process_at_once_is_retried_once(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
