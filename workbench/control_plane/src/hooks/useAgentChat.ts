@@ -21,6 +21,8 @@ import {
   claimStreamOwnership,
   ownsStream,
   releaseStreamOwnership,
+  releaseLoading,
+  setSessionAgent,
 } from "@/lib/chatStore";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
@@ -672,6 +674,8 @@ export function useAgentChat({
 
   // The held sends of an app update go out through the latest sender.
   useEffect(() => { registerSender(threadId, sendMessage); }, [threadId, sendMessage]);
+  // The nav's run badge names the app of a run by its agent (WS-51 S1).
+  useEffect(() => { setSessionAgent(threadId, agentName); }, [threadId, agentName]);
   const retryHeld = useCallback(() => { void retryHeldNow(threadId); }, [threadId]);
 
   const clearMessages = useCallback(() => {
@@ -829,8 +833,11 @@ export function useAgentChat({
         // A reconnect that got steered (someone else's run took the thread
         // while we were away) has nothing to replay into — the running turn
         // owns the answer and polling will pick it up. §4.6.
-        if (res.status === 202) { return; }
-        if (!res.ok || !res.body) { return; }  // Fall back to polling.
+        // Either way this loop streams nothing, so it gives up the loading
+        // state it took above. Polling merges only while no controller is
+        // set, so a kept controller froze the chat and the run badge (WS-51).
+        if (res.status === 202) { releaseLoading(threadId, abortCtrl); return; }
+        if (!res.ok || !res.body) { releaseLoading(threadId, abortCtrl); return; }  // Fall back to polling.
 
         // Take exclusive ownership of the replay target before resetting it.
         // Any live loop still writing this message now loses ownership and
@@ -1021,6 +1028,9 @@ export function useAgentChat({
     return () => {
       cancelled = true;
       abortCtrl.abort();
+      // The catch and finally above write nothing once cancelled, so the
+      // loading state this loop took would outlive it (WS-51 S1).
+      releaseLoading(threadId, abortCtrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);

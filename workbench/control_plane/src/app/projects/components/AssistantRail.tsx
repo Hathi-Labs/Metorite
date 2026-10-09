@@ -300,7 +300,7 @@ export function AssistantRail({
               >
                 {activeRunIds.has(s.id) ? (
                   <span
-                    className="w-1.5 h-1.5 rounded-full bg-success animate-pulse flex-shrink-0"
+                    className="w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse flex-shrink-0"
                     title="Active — agent is working"
                   />
                 ) : (

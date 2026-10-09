@@ -22,6 +22,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
@@ -29,7 +30,9 @@ import { useSession } from "next-auth/react";
 import { useChatScope, useChatSignOutClear } from "@/hooks/useChatSessions";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { useRunActivity } from "@/hooks/useActiveSessions";
+import NavBadge from "@/components/NavBadge";
+import { runningLabel } from "@/lib/runActivity";
 import { bindIdentity } from "@/lib/dataCache";
 import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
@@ -358,8 +361,6 @@ function MobileBottomNavInner({
   toggleView: () => void;
 }) {
   const { isOpen, open, close } = useMobileDrawer();
-  const activeRunIds = useActiveSessions();
-  const activeCount = activeRunIds.size;
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
   // pane hidden on desktop reappears in the phone drawer. Same unresolved rule
   // too: `null` yields nothing and the skeleton below holds the space.
@@ -379,6 +380,16 @@ function MobileBottomNavInner({
   const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
   const drawerSections = shellNav ? shellSidebar(navSections) : navSections;
+  // The run badge (WS-51 S1), from the one shared poller. Each drawer link
+  // shows its app's count. The bottom bar shows the total on every page: on
+  // the Chats tab on /chat, and on the Menu tab everywhere else, because the
+  // Chats tab exists on /chat only.
+  const drawerKey = drawerSections.map((s) => s.items.map((p) => p.href).join(",")).join("|");
+  const drawerHrefs = useMemo(
+    () => new Set(drawerKey.split(/[|,]/).filter(Boolean)),
+    [drawerKey],
+  );
+  const { total: activeCount, byApp: runCounts } = useRunActivity(drawerHrefs);
 
   const menuContent = (
     <>
@@ -463,6 +474,11 @@ function MobileBottomNavInner({
                       <AppIcon name={p.icon} size={15} strokeWidth={active ? 2.5 : 2} />
                     </span>
                     <span className="text-sm font-medium">{p.label}</span>
+                    <NavBadge
+                      count={runCounts[p.href] ?? 0}
+                      tone="success"
+                      label={runningLabel(runCounts[p.href] ?? 0)}
+                    />
                   </Link>
                 );
               })}
@@ -504,6 +520,7 @@ function MobileBottomNavInner({
   );
 
   const isChatPage = pathname?.startsWith("/chat") ?? false;
+  const runningName = runningLabel(activeCount);
   const isEmailPage = pathname?.startsWith("/email") ?? false;
   const isTasksPage = pathname?.startsWith("/tasks") ?? false;
   // Notes actions live on the library page; the meeting/session sub-pages have
@@ -556,11 +573,16 @@ function MobileBottomNavInner({
     <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
         <button
           onClick={() => { open(menuContent); }}
-          className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
+          className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
             isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
           }`}
         >
-          <AppIcon name="Menu" size={20} />
+          <span className="relative">
+            <AppIcon name="Menu" size={20} />
+            {!isChatPage && (
+              <NavBadge count={activeCount} tone="success" label={runningName} placement="tab" />
+            )}
+          </span>
           <span className="text-[10px] font-medium leading-none">Menu</span>
         </button>
         {isEmailPage && !emailEmpty && (
@@ -582,12 +604,10 @@ function MobileBottomNavInner({
         {isChatPage && (
           <>
             <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("chats")} className="relative flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="MessageCircle" size={20} />
-              {activeCount > 0 && (
-                <span className="absolute -top-0.5 right-2 flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-success text-success-foreground text-[9px] font-bold animate-pulse">
-                  {activeCount}
-                </span>
-              )}
+              <span className="relative">
+                <AppIcon name="MessageCircle" size={20} />
+                <NavBadge count={activeCount} tone="success" label={runningName} placement="tab" />
+              </span>
               <span className="text-[10px] font-medium leading-none">Chats</span>
             </Button>
             <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("files")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">

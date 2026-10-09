@@ -1819,7 +1819,7 @@ export default function AgentChat({
             <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] text-primary/90 flex items-center gap-2">
               <span className={[
                 "w-2.5 h-2.5 rounded-full shrink-0",
-                runStatus === "running" ? "bg-green-500 animate-pulse" : "bg-primary animate-pulse",
+                runStatus === "running" ? "bg-success motion-safe:animate-pulse" : "bg-primary motion-safe:animate-pulse",
               ].join(" ")} />
               <span className="font-medium">
                 {runStatus === "running" ? "Agent running…" : "Reconnecting…"}
