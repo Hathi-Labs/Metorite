@@ -596,9 +596,12 @@ export function orderedStatusRows(
     const row = bySource.get(status.name);
     return row ? [{ status, row }] : [];
   });
+  // ⚠️ On the PLAN's `guessed`, which never changes while the step is open.
+  // On the live mark, a row jumped away the moment the admin picked its
+  // stage, and the next click landed on another row (PR #803, P2-2).
   return pairs
     .map((pair, i) => ({ pair, i }))
-    .sort((a, b) => Number(b.pair.row.guessed) - Number(a.pair.row.guessed) || a.i - b.i)
+    .sort((a, b) => Number(Boolean(b.pair.status.guessed)) - Number(Boolean(a.pair.status.guessed)) || a.i - b.i)
     .map(({ pair }) => pair);
 }
 

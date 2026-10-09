@@ -347,6 +347,17 @@ describe("I-10: the Statuses section opens on a summary (§7.7)", () => {
     expect(pairs.find((p) => p.status.name === "review")?.row.target).toBe("Doing it");
   });
 
+  it("keeps a row in place when the admin picks its stage (PR #803 P2-2)", () => {
+    const guessed = [...FRACKTAL, { ...row("Fancy lane", "in_progress", "Fancy lane", false), guessed: true }];
+    const before = orderedStatusRows(guessed, resolveStatuses(guessed, SEED, {}, {}));
+    const afterPick = resolveStatuses(guessed, SEED, {}, { "Fancy lane": "todo" }, [], { "Fancy lane": true });
+    const after = orderedStatusRows(guessed, afterPick);
+    // The mark clears, and the row stays first: the next click lands where it was aimed.
+    expect(after.find((p) => p.status.name === "Fancy lane")?.row.guessed).toBe(false);
+    expect(after.map((p) => p.status.name)).toEqual(before.map((p) => p.status.name));
+    expect(after[0].status.name).toBe("Fancy lane");
+  });
+
   it("writes one line per merge", () => {
     const summary = statusSummary(resolveStatuses(FRACKTAL, SEED, {}, {}), SEED, null);
     expect(summary.merges).toEqual([
