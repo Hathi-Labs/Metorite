@@ -1513,6 +1513,17 @@ function ProjectsWorkspace() {
     if (!drawerOpen) setSheet(null);
   }, [drawerOpen]);
 
+  // True once the page's own mount effects have run. ⚠️ The command bar's
+  // "New space" waits for it. A child's effect runs BEFORE its parent's, so
+  // on a cached load the job set the tree sheet and the reset above closed it
+  // again in the same commit: on a phone the draft opened out of sight
+  // (verifier, 2026-10-09). This effect is declared after that reset.
+  const [mountSettled, setMountSettled] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMountSettled(true);
+  }, []);
+
   /**
    * The saved view whose hand-arranged order the board reads and writes.
    *
@@ -4109,7 +4120,7 @@ function ProjectsWorkspace() {
           sheet on a phone. In `overlays`, so both layouts mount it. */}
       <ShellJob
         id="new-project"
-        ready={!loading}
+        ready={!loading && mountSettled}
         onOpen={() => {
           setCreating({ parent: null, kind: "project", label: "New space", level: "space" });
           if (isMobile) setSheet("tree");
