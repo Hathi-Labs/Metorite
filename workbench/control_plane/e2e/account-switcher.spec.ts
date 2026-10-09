@@ -116,16 +116,65 @@ test.describe("two tabs", () => {
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test("the drawer's account row unfolds the other accounts", async ({ page }) => {
-    await stub(page, ACCOUNTS);
+  // The organization the active account is in. Owner request, 2026-10-09: the
+  // phone must say which organization is open and which account is signed in,
+  // and switch in two taps.
+  const ME = {
+    authenticated: true,
+    email: "vjvarada@hathilabs.com",
+    is_admin: false,
+    features: ["tasks", "email", "chat"],
+    permissions: [],
+    roles: ["employee"],
+    organization: { id: "org1", slug: "hathi", display_name: "Hathi Labs LLP" },
+  };
+  async function phone(page: Page, calls: string[] = []) {
+    await stub(page, ACCOUNTS, calls);
+    await page.route("**/api/auth/me", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ME) }),
+    );
     await page.goto("/settings/appearance");
+  }
+
+  test("the menu names the organization and the account at its top", async ({ page }) => {
+    await phone(page);
     await page.getByRole("button", { name: "Menu" }).click();
-    const row = page.getByRole("button", { name: /Vijay Varada/ });
-    await expect(row).toBeVisible();
-    await expect(row).toContainText("2 more");
-    await row.click();
-    const list = page.getByRole("list", { name: "Other accounts" });
+    const top = page.getByTestId("drawer-org");
+    await expect(top).toContainText("Organization");
+    await expect(top).toContainText("Hathi Labs LLP");
+    await expect(top).toContainText("Signed in as vjvarada@hathilabs.com");
+    const list = top.getByRole("list", { name: "Switch organization" });
     await expect(list.getByRole("listitem")).toHaveCount(2);
+    await expect(list).toContainText("Fracktal Works");
+    // It is ABOVE the search, the first thing under the menu's header.
+    const search = page.getByRole("button", { name: "Search or ask anything" });
+    if (await search.count()) {
+      const [a, b] = [await top.boundingBox(), await search.boundingBox()];
+      expect(a!.y).toBeLessThan(b!.y);
+    }
+    // The foot keeps the actions and no second list.
+    await expect(page.getByRole("list", { name: "Other accounts" })).toHaveCount(0);
+  });
+
+  test("one tap in the menu switches to that account", async ({ page }) => {
+    const calls: string[] = [];
+    await phone(page, calls);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await page.getByTestId("drawer-org").getByRole("button", { name: /Fracktal Works/ }).click();
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
+  });
+
+  test("the bottom bar's account tab says who and where, and opens the account sheet", async ({ page }) => {
+    await phone(page);
+    const tab = page.getByTestId("account-tab");
+    await expect(tab).toHaveAccessibleName(
+      "Account: vjvarada@hathilabs.com, in Hathi Labs LLP, 2 more",
+    );
+    await expect(tab).toContainText("Hathi Labs LLP");
+    await tab.click();
+    await expect(page.getByTestId("drawer-org")).toContainText("Signed in as vjvarada@hathilabs.com");
+    await expect(page.getByRole("list", { name: "Switch organization" }).getByRole("listitem")).toHaveCount(2);
     await expect(page.getByRole("button", { name: "Add another account" })).toBeVisible();
   });
 });
