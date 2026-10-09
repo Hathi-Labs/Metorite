@@ -109,16 +109,21 @@ export function InfoTip({ label, title, children, defaultOpen = false }: InfoTip
         type: "outside",
         dismiss: shouldDismiss(event.target as Element | null, domClickWalk(root.current)),
       });
+    // ⚠️ In the CAPTURE phase on `window`, and stopped there. A tip inside a
+    // `Modal` (the import wizard) otherwise lets Escape reach the dialog too,
+    // and one key closed the whole wizard (measured in the I-10b walk).
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.preventDefault();
       dispatch({ type: "key", key: "Escape" });
       root.current?.querySelector("button")?.focus();
     };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
 
