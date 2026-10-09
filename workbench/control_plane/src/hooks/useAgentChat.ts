@@ -32,7 +32,9 @@ import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
 import { chatModelField } from "@/lib/tierRouting";
-import { editedMarker, isSuperseded, supersedeLocal } from "@/lib/chatEdit";
+import {
+  editedMarker, isSuperseded, settleEditAnswer, EDIT_UNSENT, type EditOutcome,
+} from "@/lib/chatEdit";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -134,8 +136,13 @@ interface UseAgentChatReturn {
   isLoading: boolean;
   error: string | null;
   /** `supersedes`: the id of the last user message this turn EDITS. The
-   *  edit replaces that message and every reply after it (`lib/chatEdit.ts`). */
-  sendMessage: (content: string, opts?: { supersedes?: string }) => Promise<void>;
+   *  edit replaces that message and every reply after it, and only once the
+   *  server has accepted it. `onEditOutcome` hears that answer, once
+   *  (`lib/chatEdit.ts`). */
+  sendMessage: (
+    content: string,
+    opts?: { supersedes?: string; onEditOutcome?: (o: EditOutcome) => void },
+  ) => Promise<void>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
    *  for the old run to stop before it starts the new one. */
@@ -220,9 +227,29 @@ export function useAgentChat({
   );
 
   const sendMessage = useCallback(
-    async (content: string, opts?: { supersedes?: string }) => {
-      if (!content.trim() || getSessionState(threadId).isLoading) return;
+    async (
+      content: string,
+      opts?: { supersedes?: string; onEditOutcome?: (o: EditOutcome) => void },
+    ) => {
       const supersedes = opts?.supersedes;
+      // An edit hears its answer exactly once: accepted, or the reason why not.
+      let editAnswered = false;
+      const answerEdit = (o: EditOutcome) => {
+        if (editAnswered) return;
+        editAnswered = true;
+        opts?.onEditOutcome?.(o);
+      };
+      if (!content.trim() || getSessionState(threadId).isLoading) {
+        answerEdit({ ok: false, reason: EDIT_UNSENT });
+        return;
+      }
+      // An edit sends the history BEFORE the superseded turn.
+      const editBase = supersedes ? getSessionState(threadId).messages : null;
+      const editIdx = editBase ? editBase.findIndex((m) => m.id === supersedes) : -1;
+      if (supersedes && editIdx < 0) {
+        answerEdit({ ok: false, reason: EDIT_UNSENT });
+        return;
+      }
 
       const controller = new AbortController();
       // Stamp the assistant 1ms after the user so the pair never shares a
@@ -250,14 +277,12 @@ export function useAgentChat({
       const streamToken = nanoid();
       claimStreamOwnership(threadId, assistantId, streamToken);
 
-      // An edit REPLACES the superseded turn and every reply after it, in
-      // this one state change. It never appends, so the thread never shows
-      // the old message beside the new one.
+      // An edit changes NO message until the server accepts it (review of
+      // #795): a refused edit must leave the thread, and the rows the save
+      // effect writes, exactly as they were. Only the loading state moves.
       setSessionState(threadId, (prev) => ({
         ...prev,
-        messages:
-          (supersedes ? supersedeLocal(prev.messages, supersedes, [userMsg, assistantMsg]) : null)
-          ?? [...prev.messages, userMsg, assistantMsg],
+        messages: supersedes ? prev.messages : [...prev.messages, userMsg, assistantMsg],
         isLoading: true, error: null, abortController: controller,
       }));
 
@@ -277,7 +302,9 @@ export function useAgentChat({
         // the current turn travels separately as `message`, and leaving it in the
         // history sent the user's prompt to the model twice on the copilot and
         // executor paths (only litellm deduped server-side).
-        const prior = getSessionState(threadId).messages.slice(0, -2);
+        const prior = editBase
+          ? editBase.slice(0, editIdx)
+          : getSessionState(threadId).messages.slice(0, -2);
         const active = activeContextSlice(prior);
         const history = active
           .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
@@ -317,6 +344,30 @@ export function useAgentChat({
         // exact bug qm hit and warned about.
         //
         // Note 202 IS `res.ok`, so this check has to come first.
+        // ── An edit: the server's answer decides the thread ────────────────
+        // The gateway answers only after its checks passed and the old rows
+        // went, so a stream means accepted. Anything else is a refusal, and
+        // the thread stays as it was.
+        if (supersedes) {
+          const accepted = res.status !== 202 && res.ok && !!res.body;
+          const body = accepted ? "" : await res.text().catch(() => "");
+          let outcome: EditOutcome = { ok: false, reason: EDIT_UNSENT };
+          setSessionState(threadId, (prev) => {
+            const r = settleEditAnswer(
+              threadId, prev.messages, supersedes, res.status, accepted, body,
+              [userMsg, assistantMsg],
+            );
+            outcome = r.outcome;
+            const idle = !accepted && prev.abortController === controller;
+            return {
+              ...prev,
+              messages: r.messages,
+              ...(idle ? { isLoading: false, abortController: null } : {}),
+            };
+          });
+          answerEdit(outcome);
+          if (!accepted) return;
+        }
         if (res.status === 202) {
           const outcome = (await res.json().catch(() => ({}))) as {
             steered?: boolean;
@@ -427,6 +478,14 @@ export function useAgentChat({
         // answer inside the folded thinking timeline).
         upd((m) => applyStreamEvent(m, { type: "done" }, fold));
       } catch (err) {
+        // An edit that failed before the server accepted it changed nothing.
+        if (supersedes && !editAnswered) {
+          if (getSessionState(threadId).abortController === controller) {
+            setSessionState(threadId, (prev) => ({ ...prev, isLoading: false, abortController: null }));
+          }
+          answerEdit({ ok: false, reason: EDIT_UNSENT });
+          return;
+        }
         // Browser-disconnect errors: the user refreshed, navigated away, or
         // the network dropped.  Don't surface these as agent errors — the
         // backend continues running and polling will recover the output.

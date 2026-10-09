@@ -132,7 +132,7 @@ function MessageBubble({
   /** Present on the member's LAST user message only (`lib/chatEdit.ts`).
    *  The edit replaces that message and every reply after it. An earlier
    *  message offers no Edit, because editing it would fork the thread. */
-  onEditLast?: (messageId: string, content: string) => void;
+  onEditLast?: (messageId: string, content: string) => Promise<string | null>;
   onRetryMessage?: (m: ChatMessage) => void;
   emailContext?: { accountId?: string | null; emailId?: string | null };
   /** Who is reading. Absent in a solo thread, where every human turn is yours. */
@@ -178,6 +178,10 @@ function MessageBubble({
       ? message.authorEmail !== sessionAgentName
       : otherVoices > 0);
   const [editing, setEditing] = useState(false);
+  // The server's answer to an edit: pending while it decides, then the
+  // reason it refused. A refusal keeps the composer open with the text.
+  const [editPending, setEditPending] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [editText, setEditText] = useState(message.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
 
@@ -358,20 +362,30 @@ function MessageBubble({
     );
   }
 
-  const handleEditSubmit = () => {
+  const handleEditSubmit = async () => {
+    if (editPending) return;
     const trimmed = editText.trim();
     // An unchanged text is no edit: close the composer and keep the reply.
-    if (trimmed && onEditLast && trimmed !== message.content.trim()) {
-      onEditLast(message.id, trimmed);
+    if (!trimmed || !onEditLast || trimmed === message.content.trim()) {
+      setEditing(false);
+      return;
     }
-    setEditing(false);
+    setEditPending(true);
+    setEditError(null);
+    const refused = await onEditLast(message.id, trimmed);
+    setEditPending(false);
+    // Accepted: the edited turn replaces this bubble. Refused: the thread is
+    // as it was, and the member keeps the text and reads why.
+    if (refused) setEditError(refused);
+    else setEditing(false);
   };
   const cancelEdit = () => {
     setEditing(false);
+    setEditError(null);
     setEditText(message.content);
   };
   const startEdit = onEditLast
-    ? () => { setEditText(message.content); setEditing(true); }
+    ? () => { setEditText(message.content); setEditError(null); setEditing(true); }
     : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -379,7 +393,7 @@ function MessageBubble({
     // Enter (or the Send button) submits the edited message.
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      handleEditSubmit();
+      void handleEditSubmit();
     } else if (e.key === "Escape") {
       cancelEdit();
     }
@@ -463,12 +477,19 @@ function MessageBubble({
                 />
                 <ChatSendButton
                   type="button"
-                  onClick={handleEditSubmit}
+                  onClick={() => void handleEditSubmit()}
                   disabled={!editText.trim()}
+                  loading={editPending}
                   label="Send edited message"
                   title="Send edited message"
                 />
               </div>
+              {editError && (
+                <p role="alert" className="flex items-start gap-1.5 px-3 pb-2 text-[11px] text-destructive">
+                  <Icon name="AlertCircle" size={12} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0">{editError}</span>
+                </p>
+              )}
             </div>
           </div>
         ) : (

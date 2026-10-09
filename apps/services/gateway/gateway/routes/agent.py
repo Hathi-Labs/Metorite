@@ -2134,35 +2134,35 @@ async def run_agent_stream_endpoint(
     await _prepare_if_new_thread(room, req.thread_id, _room_org)
 
     # ── An edited message SUPERSEDES the last one (owner, 2026-10-09) ────────
-    # Before the steer decision: the member's own run stops first, so the
-    # edit starts a run of its own and never folds into the old one as a
-    # steer. The old turn and its replies go, and the note composed from
-    # their stored tool events rides on the new run's message, below.
+    # Step 1 of 3, and it changes no row. Refuse an edit the rules forbid,
+    # then stop the member's OWN run, so the edit starts a run of its own and
+    # never folds into the old one as a steer. Steps 2 and 3 are below: the
+    # route refuses an edit it would steer, and the rows go only after
+    # `_refuse_if_another_run_is_active`, so a refusal deletes nothing.
     # gateway/chat_supersede.py holds the rules.
     _supersede_note = ""
     _superseded_ids: list[str] = []
     _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
     _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
         from gateway.chat_supersede import (  # noqa: PLC0415
             SupersedeRefused as _EditRefused,
-            compose_supersede_note,
-            supersede_turn,
+            check_supersede,
+            settle_active_run,
         )
         try:
-            _plan = await supersede_turn(
-                req.thread_id, _supersedes,
-                actor=actor_email,
-                keep_ids=[_new_user_id, req.assistant_message_id or ""],
-                shared=bool(room is not None and room.is_shared),
+            await asyncio.to_thread(
+                check_supersede, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
                 organization_id=_room_org,
             )
+            await settle_active_run(req.thread_id, actor_email)
         except _EditRefused as _refused:
             raise HTTPException(
                 status_code=_refused.status, detail=_refused.detail(),
             ) from None
-        _supersede_note = compose_supersede_note(_plan)
-        _superseded_ids = _plan.removed_ids
 
     # The other people in the room find out what was asked, and by whom, the
     # moment it is asked — the run stream carries only the agent's side.
@@ -2184,6 +2184,17 @@ async def run_agent_stream_endpoint(
     _decision = await _route_incoming_turn(
         req.thread_id or "", actor_email, _incoming_text,
     )
+    # Edit, step 2: an edit is never a steer. A run that started since step 1
+    # (another member's) refuses the edit, and no row has gone yet.
+    if _supersedes and _decision.route.name != "ENGAGE":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "run_in_progress",
+                "message": "A run is in progress on this conversation. "
+                           "Wait for it to end, then edit your message.",
+            },
+        )
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -2458,6 +2469,28 @@ async def run_agent_stream_endpoint(
 
     _actor = (getattr(user, "email", "") or "").strip()
     await _refuse_if_another_run_is_active(thread_id, _actor)
+
+    # Edit, step 3: every refusal is behind us, so the old turn and its
+    # replies go now, in one locked transaction that decides again. The note
+    # is composed from their stored tool events.
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            compose_supersede_note,
+            supersede_rows,
+        )
+        try:
+            _plan = await asyncio.to_thread(
+                supersede_rows, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+        _supersede_note = compose_supersede_note(_plan)
+        _superseded_ids = _plan.removed_ids
 
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a

@@ -46,7 +46,7 @@ import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
 import ChatSendButton from "@/components/ChatSendButton";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
-import { lastUserMessageId, submitEdit, withoutSuperseded } from "@/lib/chatEdit";
+import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
@@ -1419,22 +1419,25 @@ export default function AgentChat({
   // has no fork (`lib/chatEdit.ts`, `gateway/chat_supersede.py`).
   const runActiveRef = useRef(isRunActive);
   useEffect(() => { runActiveRef.current = isRunActive; }, [isRunActive]);
-  const handleEditLast = useCallback((messageId: string, content: string) => {
-    if (loadingHistory) return;
-    void submitEdit(
+  // Resolves with null when the server accepted the edit, or the reason it
+  // refused. The composer stays open with the text on a refusal.
+  const handleEditLast = useCallback(async (messageId: string, content: string): Promise<string | null> => {
+    if (loadingHistory) return null;
+    const out = await submitEdit(
       {
         threadId: sessionId,
         getMessages: () => messagesRef.current,
         isRunning: () => runActiveRef.current,
         stop: stopGeneration,
-        send: (text, opts) => sendMessage(text, opts),
+        send: (text, opts) => new Promise<EditOutcome>((resolve) => {
+          void sendMessage(text, { ...opts, onEditOutcome: resolve });
+        }),
       },
       messageId,
       content,
     );
+    return out.ok ? null : out.reason;
   }, [loadingHistory, sessionId, stopGeneration, sendMessage]);
-  // Only the last user message offers Edit. An earlier one would fork.
-  const lastUserId = useMemo(() => lastUserMessageId(messages), [messages]);
   // The ONE retry path (`lib/chatRetry.ts`): an answer's "Retry" and a failed
   // turn's error-card "Retry" both land here.
   const handleRetryMessage = useCallback((m: ChatMessage) => {
@@ -1663,6 +1666,12 @@ export default function AgentChat({
     useRoom(sessionId, viewerEmail, { enabled: !compact });
   const [railOpen, setRailOpen] = useState(false);
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
+  // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
+  // An earlier one would fork, and another person's is not theirs to edit.
+  const lastUserId = useMemo(
+    () => editableLastUserId(messages, viewerEmail || undefined, isRoom),
+    [messages, viewerEmail, isRoom],
+  );
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.
   const canSend = room ? room.you.canSend : true;

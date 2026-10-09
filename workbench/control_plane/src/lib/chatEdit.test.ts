@@ -5,26 +5,32 @@
  * - `submitEdit` sends before the stop settled, or sends without stopping
  *   a run in flight;
  * - an edit APPENDS (the thread shows the old message and the new one);
- * - an edit of an earlier message is sent;
- * - `sendMessage` stops using `supersedeLocal`, or stops sending the id;
- * - a stale poll brings back a row the edit removed.
+ * - an edit of an earlier message, or of another person's, is offered or sent;
+ * - the browser removes the old turn, or tombstones it, before the server
+ *   accepts the edit, so a refusal leaves a fork on reload (review of #795);
+ * - a stale poll brings back a row an accepted edit removed.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "@/lib/chatStore";
 import {
+  EDIT_NOT_LAST,
+  EDIT_NOT_YOURS,
+  EDIT_RUN_BUSY,
+  editableLastUserId,
   editedMarker,
   isEdited,
   isSuperseded,
   lastUserMessageId,
+  settleEditAnswer,
   submitEdit,
   supersedeLocal,
   withoutSuperseded,
 } from "@/lib/chatEdit";
 
-const msg = (id: string, role: ChatMessage["role"], content = id): ChatMessage => ({
-  id, role, content, timestamp: 0,
+const msg = (id: string, role: ChatMessage["role"], content = id, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+  id, role, content, timestamp: 0, ...extra,
 });
 
 const thread = (): ChatMessage[] => [
@@ -34,11 +40,29 @@ const thread = (): ChatMessage[] => [
   { ...msg("a2", "assistant", "working"), streaming: true },
 ];
 
-describe("only the last user message is editable", () => {
+const pair = (text: string): ChatMessage[] => [
+  msg("u2b", "user", text, { customEvents: [editedMarker("u2")] }),
+  msg("a2b", "assistant", "", { streaming: true }),
+];
+
+describe("only the member's own last user message is editable", () => {
   it("names the last user turn, whoever wrote it", () => {
     expect(lastUserMessageId(thread())).toBe("u2");
     expect(lastUserMessageId([...thread(), msg("u3", "user")])).toBe("u3");
     expect(lastUserMessageId([msg("a", "assistant")])).toBeNull();
+  });
+
+  it("offers Edit only when that turn is the viewer's", () => {
+    const me = "alice@x.test";
+    const mine = [...thread().slice(0, 2), msg("u2", "user", "x", { authorEmail: me, authorKind: "human" })];
+    const theirs = [...thread().slice(0, 2), msg("u2", "user", "x", { authorEmail: "bob@x.test", authorKind: "human" })];
+    const unattributed = thread().slice(0, 3);
+    expect(editableLastUserId(mine, "ALICE@x.test", true)).toBe("u2");
+    expect(editableLastUserId(theirs, me, true)).toBeNull();
+    expect(editableLastUserId(theirs, me, false)).toBeNull();
+    // A row with no author is the reader's in a solo thread, nobody's in a room.
+    expect(editableLastUserId(unattributed, me, false)).toBe("u2");
+    expect(editableLastUserId(unattributed, me, true)).toBeNull();
   });
 
   it("refuses an edit of an earlier message, and sends nothing", async () => {
@@ -48,16 +72,16 @@ describe("only the last user message is editable", () => {
       getMessages: thread,
       isRunning: () => false,
       stop: async () => { calls.push("stop"); },
-      send: async () => { calls.push("send"); },
+      send: async () => { calls.push("send"); return { ok: true }; },
     }, "u1", "list open tasks");
-    expect(out).toBe("refused");
+    expect(out).toEqual({ ok: false, reason: EDIT_NOT_LAST });
     expect(calls).toEqual([]);
   });
 
-  it("AgentChat offers Edit to the last user message only", () => {
+  it("AgentChat offers Edit to the member's own last user message only", () => {
     const src = readFileSync(join(__dirname, "..", "components", "AgentChat.tsx"), "utf8");
     expect(src).toMatch(/onEditLast=\{msg\.id === lastUserId \? handleEditLast : undefined\}/);
-    expect(src).toMatch(/const lastUserId = useMemo\(\(\) => lastUserMessageId\(messages\), \[messages\]\)/);
+    expect(src).toMatch(/editableLastUserId\(messages, viewerEmail \|\| undefined, isRoom\)/);
     // The old path re-sent the text as a new turn. It must not come back.
     expect(src).not.toMatch(/onResend=/);
   });
@@ -81,16 +105,12 @@ describe("an edit during a run stops it first, then replaces", () => {
         calls.push(`send:${opts.supersedes}`);
         // The send started only after the server answered the cancel.
         expect(stopSettled).toBe(true);
-        // What `sendMessage` does with `supersedes` (useAgentChat.ts).
-        const next = supersedeLocal(state, opts.supersedes, [
-          { ...msg("u2b", "user", text), customEvents: [editedMarker(opts.supersedes)] },
-          { ...msg("a2b", "assistant", ""), streaming: true },
-        ]);
-        expect(next).not.toBeNull();
-        state = next!;
+        const r = settleEditAnswer("t-run", state, opts.supersedes, 200, true, "", pair(text));
+        state = r.messages;
+        return r.outcome;
       },
     }, "u2", "  create two tasks  ");
-    expect(out).toBe("sent");
+    expect(out).toEqual({ ok: true });
     expect(calls).toEqual(["stop", "send:u2"]);
     expect(state.map((m) => m.id)).toEqual(["u1", "a1", "u2b", "a2b"]);
     expect(state.filter((m) => m.role === "user").map((m) => m.content))
@@ -109,7 +129,7 @@ describe("an edit during a run stops it first, then replaces", () => {
       getMessages: () => thread().slice(0, 3),
       isRunning: () => false,
       stop: async () => { calls.push("stop"); },
-      send: async () => { calls.push("send"); },
+      send: async () => { calls.push("send"); return { ok: true }; },
     }, "u2", "x");
     expect(calls).toEqual(["send"]);
   });
@@ -117,13 +137,34 @@ describe("an edit during a run stops it first, then replaces", () => {
   it("supersedeLocal refuses an unknown id rather than appending", () => {
     expect(supersedeLocal(thread(), "nope", [msg("x", "user")])).toBeNull();
   });
+});
 
-  it("sendMessage replaces through supersedeLocal and sends the id, and waits on Stop", () => {
+describe("a refused edit changes nothing (review of #795)", () => {
+  it.each([
+    [409, '{"detail":{"error":"not_last"}}', EDIT_NOT_LAST],
+    [403, '{"detail":{"error":"not_yours"}}', EDIT_NOT_YOURS],
+    [403, "forbidden", EDIT_NOT_YOURS],
+    [409, '{"detail":{"error":"run_in_progress"}}', EDIT_RUN_BUSY],
+  ])("status %i keeps the old turn, tombstones nothing, and says why", (status, body, reason) => {
+    const before = thread();
+    const tid = `t-refused-${status}-${body.length}`;
+    const r = settleEditAnswer(tid, before, "u2", status, false, body, pair("edited"));
+    expect(r.messages).toBe(before);           // same array: nothing to save
+    expect(r.outcome).toEqual({ ok: false, reason });
+    expect(isSuperseded(tid, "u2")).toBe(false);
+    expect(isSuperseded(tid, "a2")).toBe(false);
+  });
+
+  it("sendMessage leaves the thread alone until the server answers, then settles it once", () => {
     const src = readFileSync(join(__dirname, "..", "hooks", "useAgentChat.ts"), "utf8");
-    expect(src).toMatch(/supersedes \? supersedeLocal\(prev\.messages, supersedes, \[userMsg, assistantMsg\]\)/);
+    // The first state change of an edit moves only the loading state.
+    expect(src).toMatch(/messages: supersedes \? prev\.messages : \[\.\.\.prev\.messages, userMsg, assistantMsg\]/);
+    // The answer decides the thread, through the one pure helper.
+    expect(src).toMatch(/const accepted = res\.status !== 202 && res\.ok && !!res\.body;/);
+    expect(src).toMatch(/settleEditAnswer\(\s*threadId, prev\.messages, supersedes, res\.status, accepted, body,/);
+    expect(src).not.toMatch(/supersedeLocal\(prev\.messages/);
     expect(src).toMatch(/\.\.\.\(supersedes \? \{ supersedes, userMessageId: userMsg\.id \} : \{\}\)/);
     expect(src).toMatch(/stopGeneration = useCallback\(\(\): Promise<void> =>/);
-    expect(src).toMatch(/return settled;/);
     // A stale poll must not resurrect a superseded row.
     expect(src).toMatch(/if \(isSuperseded\(threadId, rm\.id\)\) continue;/);
   });

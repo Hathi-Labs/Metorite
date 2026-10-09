@@ -136,7 +136,7 @@ def test_the_author_supersedes_the_last_turn_and_its_reply(graph_as_app):
     assert plan.old_text == "Create three bootloader tasks"
     # The completed write comes from the STORED row, and the read does not.
     note = compose_supersede_note(plan)
-    assert '- create_task: Created "Review bootloader" (#41)' in note
+    assert 'step: "create_task" (done) result: "Created \\"Review bootloader\\" (#41)"' in note
     assert "list_projects" not in note
     assert _ids(graph_as_app, sid) == ["u1", "a1", "u2-edit"]
 
@@ -209,6 +209,50 @@ def test_the_route_supersedes_for_the_author(graph_as_app):
     assert again.status_code == 200, again.text
     assert _ids(graph_as_app, sid) == []
     assert _admin_one(graph_as_app, "SELECT 1 FROM chat_session WHERE id = :s", s=sid)
+
+
+def test_keep_ids_cannot_delete_another_members_turn_in_a_shared_room(graph_as_app):
+    """🔴 Review of #795, the attack, end to end. Alice A1 → R1, then Bob
+    B1 → RB in the same room. Alice edits A1 and names Bob's rows as her
+    own new turn in ``keep_ids``. The stored rows prove they are Bob's, so
+    the edit answers 409 and nothing is deleted."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    _new_session(alice, sid)
+    with graph_as_app.admin_engine.begin() as c:
+        for who, role in ((_ALICE, "owner"), (_BOB, "member")):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, "
+                "organization_id) VALUES (:s, :u, :r, :o) ON CONFLICT DO NOTHING"),
+                {"s": sid, "u": who, "r": role, "o": a})
+    assert alice.post(f"/chat/sessions/{sid}/messages",
+                      json=[_user_row("A1", _T0, "Alice asks")]).json()["saved"] == 1
+    _upsert_messages(sid, [MessageRecord(id="R1", role="assistant", content="to Alice",
+                                         timestamp=_T0 + 1, author_kind="agent")],
+                     actor_email=_ALICE, agent_name="orchestrator", mint=True, organization_id=a)
+    bob = _client(_user(_BOB, a))
+    assert bob.post(f"/chat/sessions/{sid}/messages",
+                    json=[_user_row("B1", _T0 + 10, "Bob asks")]).json()["saved"] == 1
+    _upsert_messages(sid, [MessageRecord(id="RB", role="assistant", content="to Bob",
+                                         timestamp=_T0 + 11, author_kind="agent",
+                                         tool_events=[{"id": "t", "name": "create_deal",
+                                                       "status": "done", "result": "deal #9"}])],
+                     actor_email=_BOB, agent_name="orchestrator", mint=True, organization_id=a)
+
+    for keep in (["B1"], ["B1", "RB"], ["RB"]):
+        refused = alice.post(f"/chat/sessions/{sid}/supersede",
+                             json={"superseded_id": "A1", "keep_ids": keep})
+        assert refused.status_code == 409, (keep, refused.text)
+        assert refused.json()["detail"]["error"] == "not_last"
+    assert _ids(graph_as_app, sid) == ["A1", "R1", "B1", "RB"]
+
+    # Bob's own message IS the last one, and Bob may edit it.
+    ok = bob.post(f"/chat/sessions/{sid}/supersede", json={"superseded_id": "B1"})
+    assert ok.status_code == 200, ok.text
+    assert _ids(graph_as_app, sid) == ["A1", "R1"]
 
 
 def test_the_redelete_removes_a_late_fold(graph_as_app):

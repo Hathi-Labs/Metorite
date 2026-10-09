@@ -12,9 +12,11 @@
  *    gateway checks the same rule (`gateway/chat_supersede.py`).
  * 2. A run in flight stops first, and the edit waits for the stop to settle
  *    (`submitEdit`). It never steers into the old run.
- * 3. The old message and every reply after it leave the thread in one state
- *    change, and the edited message takes their place (`supersedeLocal`).
- *    The gateway deletes the same rows from `chat_message`.
+ * 3. Once the server ACCEPTS the edit, the old message and every reply
+ *    after it leave the thread in one state change, and the edited message
+ *    takes their place (`supersedeLocal`). The gateway deletes the same rows
+ *    from `chat_message`. A refused edit changes nothing, and the member
+ *    keeps the edited text and reads the reason (`editRefusalReason`).
  * 4. The gateway composes the note that tells the model about the edit. The
  *    browser sends only the id of the message it replaces.
  *
@@ -34,6 +36,46 @@ export function lastUserMessageId(messages: readonly ChatMessage[]): string | nu
     if (messages[i].role === "user") return messages[i].id;
   }
   return null;
+}
+
+/**
+ * The id of the user turn that offers Edit, or null.
+ *
+ * It is the last user turn, and only when it is the member's own. A turn
+ * with no author predates rooms: it is the reader's in a solo thread, and
+ * nobody's in a shared room, which is the gateway's rule too
+ * (`chat_supersede.plan_supersede`).
+ */
+export function editableLastUserId(
+  messages: readonly ChatMessage[],
+  viewerEmail: string | undefined,
+  shared: boolean,
+): string | null {
+  const id = lastUserMessageId(messages);
+  if (!id) return null;
+  const m = messages.find((x) => x.id === id)!;
+  if (m.authorKind && m.authorKind !== "human") return null;
+  if (!m.authorEmail) return shared ? null : id;
+  if (!viewerEmail) return shared ? null : id;
+  return m.authorEmail.toLowerCase() === viewerEmail.toLowerCase() ? id : null;
+}
+
+/** The server's answer to an edit. */
+export type EditOutcome = { ok: true } | { ok: false; reason: string };
+
+/** The reasons an edit can be refused, in the member's words. */
+export const EDIT_NOT_LAST = "Someone replied after your message, so it can no longer be edited.";
+export const EDIT_NOT_YOURS = "You can only edit your own message.";
+export const EDIT_RUN_BUSY = "The assistant is still working. Stop it first.";
+export const EDIT_UNSENT = "Your edit was not sent. Try again.";
+
+/** The reason for a refused edit, from the status and the body the chat
+ *  route returned (the gateway's `{"detail": {"error": <code>}}` inside). */
+export function editRefusalReason(status: number, body: string): string {
+  if (/not_last/.test(body)) return EDIT_NOT_LAST;
+  if (/not_yours/.test(body) || status === 403) return EDIT_NOT_YOURS;
+  if (/run_in_progress/.test(body) || status === 202 || status === 409) return EDIT_RUN_BUSY;
+  return EDIT_UNSENT;
 }
 
 /** True when this user turn replaced an earlier one. */
@@ -104,6 +146,33 @@ export function withoutSuperseded<T extends { id: string }>(
   return kept.length === messages.length ? messages : kept;
 }
 
+/**
+ * The thread after the server answered an edit, and the answer.
+ *
+ * Accepted: the superseded turn and its replies give way to `pair` (the
+ * edited turn and its reply), and their ids are tombstoned. Refused: the
+ * SAME messages come back untouched and nothing is tombstoned, so the save
+ * effect writes nothing new and a reload shows no fork (review of #795).
+ */
+export function settleEditAnswer(
+  threadId: string,
+  messages: ChatMessage[],
+  supersededId: string,
+  status: number,
+  accepted: boolean,
+  body: string,
+  pair: readonly ChatMessage[],
+): { messages: ChatMessage[]; outcome: EditOutcome } {
+  if (!accepted) {
+    return { messages, outcome: { ok: false, reason: editRefusalReason(status, body) } };
+  }
+  markSuperseded(threadId, supersededIds(messages, supersededId));
+  return {
+    messages: supersedeLocal(messages, supersededId, pair) ?? [...messages, ...pair],
+    outcome: { ok: true },
+  };
+}
+
 // ── The order of an edit ────────────────────────────────────────────────────
 
 export interface EditDeps {
@@ -114,28 +183,30 @@ export interface EditDeps {
   isRunning: () => boolean;
   /** Stop the run and resolve when the stop has settled on the server. */
   stop: () => Promise<void>;
-  /** Start the new run. It replaces the superseded turn in the thread. */
-  send: (text: string, opts: { supersedes: string }) => Promise<void>;
+  /** Start the new run, and resolve with the server's answer to the edit.
+   *  It replaces the superseded turn only when the answer is yes. */
+  send: (text: string, opts: { supersedes: string }) => Promise<EditOutcome>;
 }
 
 /**
  * Edit the last user message: stop a run in flight, wait for the stop, then
  * send the edited text as the replacement.
  *
- * `"refused"` when the message is not the last user turn, or the text is
- * empty. Nothing is sent then, so an edit can never add a turn.
+ * A message that is not the last user turn, or an empty text, is refused
+ * here and nothing is sent, so an edit can never add a turn. Otherwise the
+ * answer is the server's. The tombstones (`markSuperseded`) are written
+ * where the server accepts the edit, in `useAgentChat.sendMessage`.
  */
 export async function submitEdit(
   deps: EditDeps,
   messageId: string,
   text: string,
-): Promise<"sent" | "refused"> {
+): Promise<EditOutcome> {
   const trimmed = text.trim();
   const before = deps.getMessages();
-  if (!trimmed || lastUserMessageId(before) !== messageId) return "refused";
+  if (!trimmed || lastUserMessageId(before) !== messageId) {
+    return { ok: false, reason: EDIT_NOT_LAST };
+  }
   if (deps.isRunning()) await deps.stop();
-  // Read again: the stop may have changed the thread.
-  markSuperseded(deps.threadId, supersededIds(deps.getMessages(), messageId));
-  await deps.send(trimmed, { supersedes: messageId });
-  return "sent";
+  return deps.send(trimmed, { supersedes: messageId });
 }

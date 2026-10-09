@@ -1,6 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 
 /**
  * The chat composer's Send button: one control, used by the composer and by
@@ -8,31 +9,40 @@ import Icon from "@/components/Icon";
  * identical to the normal composer's"). Before this file the edit drew its
  * own coral "↑ Send" pill, which no other surface used.
  *
+ * It is the `Button` primitive, so the control tokens (focus ring, state
+ * layer) apply. `radius="keep"` keeps the composer's `rounded-xl` corner.
+ *
  * Fence: `components/chatEditComposer.test.ts`.
  */
 export default function ChatSendButton({
   disabled,
+  loading,
   onClick,
   type = "submit",
   label = "Send",
   title = "Send message",
 }: {
   disabled?: boolean;
+  loading?: boolean;
   onClick?: () => void;
   type?: "submit" | "button";
   label?: string;
   title?: string;
 }) {
   return (
-    <button
+    <Button
       type={type}
+      variant="primary"
+      size="none"
+      radius="keep"
       onClick={onClick}
       disabled={disabled}
-      className="shrink-0 self-end h-9 w-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-25 disabled:cursor-not-allowed hover:opacity-90 tech-transition"
+      loading={loading}
       aria-label={label}
       title={title}
+      className="shrink-0 self-end h-9 w-9 rounded-xl"
     >
-      <Icon name="ArrowUp" size={16} strokeWidth={2.5} />
-    </button>
+      {loading ? null : <Icon name="ArrowUp" size={16} strokeWidth={2.5} />}
+    </Button>
   );
 }
