@@ -718,6 +718,7 @@ def _decide_attribution() -> dict[str, Any]:
     The run binding names this run's own agent, where a delegated run's log
     context can still name its parent (§6.5, as ``system_one`` does).
     """
+    from acb_common import chat_agent_label
     from acb_llm.routed import run_attribution
 
     from acb_skills.system_one import _calling_agent
@@ -725,7 +726,8 @@ def _decide_attribution() -> dict[str, Any]:
     out = dict(run_attribution())
     calling = _calling_agent()
     if calling:
-        out["agent"] = calling
+        # A chat agent never passes as an automation name (§4.3a).
+        out["agent"] = chat_agent_label(calling)
     return out
 
 

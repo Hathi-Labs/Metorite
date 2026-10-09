@@ -239,6 +239,26 @@ def automation_agent_scope(name: str | None) -> Iterator[None]:
                 _AUTOMATION_AGENT.set(held)
 
 
+def chat_agent_label(name: str | None) -> str:
+    """The name a CHAT agent reports. The ONE rule against a claimed name.
+
+    An agent name may hold a dot (``agent_paths.AGENT_NAME_RE``, and a MAF
+    manifest slug), so a member could name an agent ``email.rule_match``. A
+    name of the shape :data:`AUTOMATION_AGENT_RE` comes back as
+    ``agent:<name>``, the grant grammar's spelling of an agent. Every other
+    name comes back unchanged, so ``email-assistant`` stays as it is. It is
+    idempotent, because ``agent:`` holds a colon.
+
+    Callers: :func:`attributed_agent`, ``acb_llm.attribution.attributed_openai``
+    (the fixed ``X-CC-Agent`` of every MAF client), ``acb_skills.system_one``
+    and ``acb_skills.decide_tools``.
+    """
+    label = str(name or "").strip()
+    if AUTOMATION_AGENT_RE.fullmatch(label):
+        return f"agent:{label}"
+    return label
+
+
 def attributed_agent(ctx: Mapping[str, str], module: str | None) -> str | None:
     """The agent name that a model call reports. The ONE rule for both readers.
 
@@ -250,17 +270,17 @@ def attributed_agent(ctx: Mapping[str, str], module: str | None) -> str | None:
     2. 🔴 **A chat agent cannot claim an automation name.** An agent name may
        hold a dot (``agent_paths.AGENT_NAME_RE``), so a member could name an
        agent ``email.rule_match``. A bound name of that shape that
-       :func:`automation_agent_scope` did not bind is reported as
-       ``agent:<name>``, the grant grammar's spelling of an agent.
+       :func:`automation_agent_scope` did not bind goes through
+       :func:`chat_agent_label`, and so reports ``agent:<name>``.
     3. **The backstop.** With no agent bound and a module known, the call
        reports ``<module>.automation``. With no module it reports None. It
        never invents an app.
     """
     bound = str(ctx.get("agent") or "").strip()
     if bound:
-        if AUTOMATION_AGENT_RE.fullmatch(bound) and bound != _AUTOMATION_AGENT.get():
-            return f"agent:{bound}"
-        return bound
+        if bound == _AUTOMATION_AGENT.get():
+            return bound
+        return chat_agent_label(bound)
     app = str(module or "").strip()
     return f"{app}.automation" if app else None
 

@@ -918,3 +918,75 @@ class TestEveryEmailCallNamesItsFeature:
         seen = {(rel, fn, callee) for rel, fn, callee, _l, _n in _email_model_calls()}
         stale = set(FEATURE_ALLOWLIST) - seen
         assert not stale, f"remove the stale allowlist entries: {stale}"
+
+
+# ── The fixed X-CC-Agent of a MAF client (review P2, 2026-10-10) ────────────
+#
+# 🔴 Native MAF is the default runtime. `_make_openai_client` stamps a FIXED
+# `X-CC-Agent` from the manifest slug, a slug may hold a dot, and `_stamp`
+# never overwrites a header that is set. So a member agent with the slug
+# `email.rule_match` wrote that name into the platform's usage rows.
+
+
+@pytest.mark.usefixtures("_no_vouch")
+class TestAFixedAgentHeaderCannotClaimAnAutomationName:
+    def test_a_MAF_agent_with_a_dotted_slug_sends_agent_prefix_ON_THE_WIRE(
+        self, monkeypatch,
+    ):
+        """``declarative.py`` builds the client with
+        ``_make_openai_client(agent_name=manifest.slug)``. Only the network is
+        replaced, so the header asserted is the one that leaves the process."""
+        import openai
+        from agent_framework import Message
+        from orchestrator.agents import _make_openai_client
+
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update({k.lower(): v for k, v in request.headers.items()})
+            return _response()
+
+        real = openai.DefaultAsyncHttpxClient
+        monkeypatch.setattr(
+            openai, "DefaultAsyncHttpxClient",
+            lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+        )
+        client = _make_openai_client(agent_name="email.rule_match", source="chat")
+        asyncio.run(client.get_response([Message(role="user", contents=["hi"])]))
+        assert seen["x-cc-agent"] == "agent:email.rule_match"
+
+    def test_it_holds_INSIDE_an_automation_scope_of_the_same_name(self):
+        """A fixed header is a chat agent's by construction. The vouch of a
+        scope that binds the same name does not reach it."""
+        from acb_common import automation_agent_scope
+        from orchestrator.agents import _make_openai_client
+
+        with automation_agent_scope("email.rule_match"):
+            client = _make_openai_client(agent_name="email.rule_match")
+        assert client.client.default_headers["X-CC-Agent"] == "agent:email.rule_match"
+
+    @pytest.mark.parametrize("name", [
+        "orchestrator", "email-assistant", "whatsapp-assistant", "crm-assistant",
+        "projects-assistant", "apis-config", "code-task",
+    ])
+    def test_every_existing_agent_name_is_UNCHANGED(self, name):
+        from acb_common import chat_agent_label
+        from orchestrator.agents import _make_openai_client
+
+        assert chat_agent_label(name) == name
+        assert _make_openai_client(agent_name=name).client.default_headers[
+            "X-CC-Agent"] == name
+
+    def test_the_label_is_idempotent(self):
+        from acb_common import chat_agent_label
+
+        once = chat_agent_label("email.rule_match")
+        assert chat_agent_label(once) == once == "agent:email.rule_match"
+
+    def test_the_CALLING_agent_of_decide_and_system_one_is_labelled(self, monkeypatch):
+        """``decide_tools`` and ``system_one`` send the run binding's agent,
+        not the log context's. The same rule applies to it."""
+        from acb_skills import decide_tools, system_one
+
+        monkeypatch.setattr(system_one, "_calling_agent", lambda: "email.rule_match")
+        assert decide_tools._decide_attribution()["agent"] == "agent:email.rule_match"
