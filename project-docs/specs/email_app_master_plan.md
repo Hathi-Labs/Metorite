@@ -6195,7 +6195,7 @@ The line numbers are those of PR-B3 (`64e9f9bb0`).
   accepts it.
 - **The webhook overlap.** A `process_new_mail` that the webhook starts can
   classify at the same time as the classify of the scheduler. PR-A does not
-  change that. `HANDOFF.md` H-283 holds the follow-up.
+  change that. `HANDOFF.md` H-285 holds the follow-up.
 - **The reclassify count.** In `on`, `_count_reply_zero_backlog` also counts
   marked threads. So `TestNoReAskStorm::test_the_count_agrees_with_the_selection`
   cannot hold in `on`. The test stays true outside `on`. In `on`, the drain of
@@ -6229,6 +6229,8 @@ SHA-256 after each one.
   fails.
 - The selection keeps marked rows. `test_a_marked_thread_takes_no_slot_of_the_cap`
   fails.
+- `_status_backoff_on` loses its `on` test (verifier, 2026-10-09). Both cases
+  of `test_outside_on_the_flag_keeps_no_mark` fail.
 
 ##### PR-B — no rule match when the conversation status decides
 

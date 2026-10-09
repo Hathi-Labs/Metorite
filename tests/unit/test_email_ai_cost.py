@@ -758,6 +758,30 @@ class TestTheOnBackoff:
         await _cycles(p, acc, 2)
         assert len(spent) == 2 and env.redis.store == {}
 
+    @pytest.mark.parametrize("modes", ["email.thread_status=shadow", ""])
+    async def test_outside_on_the_flag_keeps_no_mark(
+        self, modes, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The back-off is for ``on`` only. With the flag on in ``shadow`` or
+        ``off``, a sent thread whose ask is undecided keeps no mark, and the
+        backfill reads no mark. ``_PROVISIONAL_RECHECK_HOURS`` does this job
+        outside ``on``."""
+        p = promoted
+        env = _backoff_env(monkeypatch, modes=modes)
+        acc, tid, _sent = _sent_last(p, label=f"outside-{modes or 'off'}")
+        _patch_providers(monkeypatch, _FakeProvider())
+        replied: list[str] = []
+
+        async def _undecided(account_id, thread_id, *_a, **_kw):
+            replied.append(thread_id)
+            return rz.UNDECIDED
+
+        monkeypatch.setattr(rz, "_mark_thread_replied", _undecided)
+        await _cycles(p, acc, 2)
+
+        assert replied == [tid, tid], replied
+        assert env.redis.store == {} and env.redis.reads == [] and env.got == []
+
     async def test_flag_off_asks_in_each_cycle_and_touches_no_redis(
         self, promoted, app_engine, monkeypatch,  # noqa: F811
     ):
