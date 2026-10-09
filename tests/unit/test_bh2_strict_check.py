@@ -364,6 +364,10 @@ def test_the_check_comment_names_the_retry_cost() -> None:
 # ── ensure_gateway_rw_paths ──────────────────────────────────────────────
 
 
+#: A .env that holds a DATABASE_URL, so the step does not refuse it.
+GOOD_ENV = "A=1\nDATABASE_URL=postgresql://x/y\n"
+
+
 def _ensure(box: Box, app: Path, home: Path) -> subprocess.CompletedProcess:
     helpers = _helpers(box.tmp).as_posix()
     return box.bash(f'set -e; source "{helpers}"; '
@@ -377,7 +381,7 @@ def test_the_rw_paths_step_makes_each_path_but_env(box: Box) -> None:
     they bind on a fresh box. A present file is never touched."""
     app, home = box.tmp / "app", box.tmp / "home"
     (app / "infra").mkdir(parents=True)
-    (app / ".env").write_text("A=1\n", encoding="utf-8")
+    (app / ".env").write_text(GOOD_ENV, encoding="utf-8")
     (app / "infra/provider_models_cache.json").write_text('{"kept": 1}\n', encoding="utf-8")
     home.mkdir()
     r = _ensure(box, app, home)
@@ -404,6 +408,38 @@ def test_the_rw_paths_step_refuses_a_missing_env(box: Box) -> None:
     r = _ensure(box, app, home)
     assert r.returncode == 1, r.stdout + r.stderr
     assert ".env is missing" in r.stdout
+
+
+@needs_bash
+@pytest.mark.parametrize("body", ["A=1\n", "A=1\nDATABASE_URL=\n", "A=1\n# DATABASE_URL=x\n", "DATAB"])
+def test_a_short_env_stops_the_restart(box: Box, body: str) -> None:
+    """Fix round 2, P2. A write that a failure cut short has lost its later
+    lines. With no DATABASE_URL the restart would bring up a gateway that
+    serves nothing, so the step refuses it, whatever the writer was."""
+    app, home = box.tmp / "app", box.tmp / "home"
+    app.mkdir()
+    home.mkdir()
+    (app / ".env").write_text(body, encoding="utf-8")
+    r = _ensure(box, app, home)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "holds no DATABASE_URL" in r.stdout
+    assert not (app / "data").exists(), "the step went on after the refusal"
+
+
+@needs_bash
+def test_a_write_list_path_that_cannot_be_made_stops_the_restart(box: Box) -> None:
+    """Fix round 2, P3. The step runs under `|| {…}`, so `set -e` is off in
+    it. A mkdir that fails must still return 1."""
+    app, home = box.tmp / "app", box.tmp / "home"
+    app.mkdir()
+    home.mkdir()
+    (app / ".env").write_text(GOOD_ENV, encoding="utf-8")
+    (app / "data").write_text("a file where a dir must be\n", encoding="utf-8")
+    helpers = _helpers(box.tmp).as_posix()
+    r = box.bash(f'source "{helpers}"; ensure_gateway_rw_paths "{app.as_posix()}" '
+                 f'"{home.as_posix()}" || exit 1; echo REACHED-THE-END')
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "REACHED-THE-END" not in r.stdout
 
 
 # ── compile_bytecode (fix round 1, P2-3) ─────────────────────────────────

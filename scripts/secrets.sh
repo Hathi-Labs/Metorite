@@ -207,7 +207,7 @@ r_put() {
   local src="$1" path="$2"
   if [ -f "$path" ] && [ ! -L "$path" ] \
      && [ "$(stat -c '%U:%G %a' "$src")" = "$(stat -c '%U:%G %a' "$path")" ]; then
-    dd if="$src" of="$path" oflag=nofollow conv=fsync status=none
+    dd if="$src" of="$path" oflag=nofollow conv=fsync,nocreat status=none
     rm -f -- "$src"
     echo "R put in-place"
   else

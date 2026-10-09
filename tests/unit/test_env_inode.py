@@ -175,3 +175,67 @@ def test_a_failed_edit_changes_nothing(tmp_path: Path) -> None:
     assert env.read_text(encoding="utf-8") == "A=1\n"
     assert "It is unchanged" in r.stdout
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".env-edit.")] == []
+
+
+# ── fix round 2, P2: a write that fails or stops short ───────────────────
+
+#: A `cat` that writes the first 5 bytes and then fails (ENOSPC), or that
+#: writes them and exits 0 (a kill that the shell did not see).
+STUB_CAT = """#!/usr/bin/env bash
+head -c 5 "$1"
+exit "${STUB_CAT_RC:-1}"
+"""
+
+
+@needs_bash
+@pytest.mark.parametrize("rc", ["1", "0"])
+def test_a_short_write_returns_1_and_keeps_the_full_copy(tmp_path: Path, rc: str) -> None:
+    box = tmp_path / "box"
+    box.mkdir()
+    env = box / "dot.env"
+    full = "A=1\nDATABASE_URL=postgresql://x/y\nC=3\n"
+    env.write_text(full, encoding="utf-8", newline="\n")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "cat").write_text(STUB_CAT, encoding="utf-8", newline="\n")
+    (stubs / "cat").chmod(0o755)
+    script = (f'set -e; source "{_helpers(tmp_path).as_posix()}"; '
+              f'env_edit_in_place "{env.as_posix()}" sed "s/^A=1/A=2/"')
+    r = subprocess.run(
+        [_bash(), "-c", script], capture_output=True, text=True, encoding="utf-8",
+        timeout=60, stdin=subprocess.DEVNULL,
+        env=dict(os.environ, PATH=f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+                 STUB_CAT_RC=rc),
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert ".env write failed, the full copy is at" in r.stdout
+    kept = [p for p in box.iterdir() if p.name.startswith(".env-edit.")]
+    assert len(kept) == 1, "the full copy must stay when the write fails"
+    assert kept[0].read_text(encoding="utf-8") == full.replace("A=1", "A=2")
+
+
+def test_r_put_never_creates_and_syncs() -> None:
+    """Fix round 2, P3. `nocreat`: the in-place branch only writes a file
+    that exists, and `fsync` makes the bytes durable before the restart."""
+    body = SECRETS.read_text(encoding="utf-8")
+    assert 'dd if="$src" of="$path" oflag=nofollow conv=fsync,nocreat status=none' in body
+
+
+def test_a_leftover_temp_file_is_never_committed() -> None:
+    """Fix round 2. A leftover temp file of an in-place writer holds every
+    secret of .env. git must ignore both names."""
+    lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    for pat in (".env-edit.*", ".secrets-drop.*"):
+        assert pat in lines, pat
+    assert "mktemp" in APPLY.read_text(encoding="utf-8")
+    assert ".env-edit.XXXXXX" in APPLY.read_text(encoding="utf-8")
+    assert ".secrets-drop.XXXXXX" in SECRETS.read_text(encoding="utf-8")
+
+
+def test_setup_secrets_checks_its_write() -> None:
+    """Fix round 2, P2. setup_secrets.sh writes .env in place too, so it
+    compares after the write and keeps the full copy on a mismatch."""
+    body = (ROOT / "scripts" / "setup_secrets.sh").read_text(encoding="utf-8")
+    assert 'if ! cat "$tmp" > .env || ! cmp -s "$tmp" .env; then' in body
+    guard = body[body.index('if ! cat "$tmp" > .env'):]
+    assert guard.index("exit 1") < guard.index('rm -f "$tmp"')

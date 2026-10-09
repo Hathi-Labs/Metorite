@@ -1206,8 +1206,17 @@ RestrictRealtime=yes
      (`WHATSAPP_BRIDGE_SECRET`, `MEETING_BOT_TOKEN`) and the BH-7 strip.
      `scripts/setup_secrets.sh` does the same. The apply holds the deploy
      lock, so no other deploy writes `.env` at the same time.
+   - **A short write fails loudly (fix round 2, P2).** The write truncates
+     first, so ENOSPC or a kill can leave a short `.env`. Each in-place
+     writer runs `cmp` on the temp file and `.env` after the write. When
+     they differ, it returns 1 and keeps the temp file, which is the full
+     copy. Also, `ensure_gateway_rw_paths` refuses the gateway restart when
+     `.env` holds no `DATABASE_URL=` with a value. That catches a short file
+     from any writer, and the gateway that runs keeps serving.
+     `.gitignore` holds `.env-edit.*` and `.secrets-drop.*`, because a
+     leftover temp file holds every secret of `.env`.
    - **`scripts/secrets.sh push app-env`** merges through `r_put`. It writes
-     into the file with `dd oflag=nofollow` when the file has the meta that
+     into the file with `dd oflag=nofollow conv=fsync,nocreat` when the file has the meta that
      the push needs, so a link that appears after the link check fails the
      write. Else it renames, and the `restart` list then gives the units the
      new inode. A rollback goes through `r_put` too. **`secrets.sh` takes NO

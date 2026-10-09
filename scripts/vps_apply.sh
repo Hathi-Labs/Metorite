@@ -601,7 +601,15 @@ env_edit_in_place() {
     echo "    !! could not edit $f (exit $rc). It is unchanged."
     return 1
   fi
-  cat "$tmp" > "$f"
+  # 🔴 The write truncates first. ENOSPC or a kill in the middle leaves a
+  # short .env, and the next restart then starts the gateway with no
+  # DATABASE_URL. So compare, and keep the full copy when they differ.
+  # ensure_gateway_rw_paths also refuses a restart on a .env with no
+  # DATABASE_URL, which catches a short file from any writer.
+  if ! cat "$tmp" > "$f" || ! cmp -s "$tmp" "$f"; then
+    echo "    !! .env write failed, the full copy is at $tmp"
+    return 1
+  fi
   rm -f "$tmp"
 }
 # <<< env helpers
@@ -1086,25 +1094,36 @@ ensure_gateway_rw_paths() {  # <app dir> [<home of the service user>]
     echo "       so the sandboxed gateway cannot start without it."
     return 1
   fi
+  # A .env that a failed write cut short has lost its later lines. With no
+  # DATABASE_URL the gateway starts and serves nothing, so refuse the restart
+  # and keep the gateway that runs now. This catches a short file from any
+  # writer. No value is printed.
+  if ! grep -q '^DATABASE_URL=.' "$app/.env"; then
+    echo "    !! $app/.env holds no DATABASE_URL. A write may have cut it short."
+    echo "       Restore it (a .env-edit.* or .env.bak-* file beside it holds a full copy)."
+    return 1
+  fi
+  # This function runs under `|| {…}`, so `set -e` is off here. Each write
+  # checks itself.
   if [ ! -d "$app/data" ]; then
-    mkdir -p "$app/data"
-    if [ "$(id -u)" = "0" ]; then chown "$owner" "$app/data"; fi
+    mkdir -p "$app/data" || return 1
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$app/data" || return 1; fi
     echo "    made $app/data, a ReadWritePaths dir of the gateway"
   fi
   for f in "$app/infra/provider_models_cache.json" "$app/apps/services/gateway/agents.json"; do
     [ -f "$f" ] && continue
     case "$f" in */agents.json) body='[]' ;; *) body='{}' ;; esac
-    mkdir -p "$(dirname "$f")"
-    printf '%s\n' "$body" > "$f"
-    if [ "$(id -u)" = "0" ]; then chown "$owner" "$f"; fi
+    mkdir -p "$(dirname "$f")" || return 1
+    printf '%s\n' "$body" > "$f" || return 1
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$f" || return 1; fi
     echo "    made $f as $body: it is on the ReadWritePaths of the gateway"
   done
   for d in "$home/.acb/agents" "$home/.copilot" "$home/.cache/copilot"; do
     [ -d "$d" ] && continue
     if [ "$(id -un)" = "$user" ]; then
-      mkdir -p "$d"
+      mkdir -p "$d" || return 1
     else
-      sudo -u "$user" mkdir -p "$d"
+      sudo -u "$user" mkdir -p "$d" || return 1
     fi
     echo "    made $d as $user, so its ReadWritePaths entry binds"
   done
@@ -1433,8 +1452,8 @@ echo "==> Restarting gateway (systemd)"
 echo "==> WS-49 BH-2: compile the Python bytecode (best-effort)"
 compile_bytecode "$APP_DIR"
 ensure_gateway_rw_paths "$APP_DIR" || {
-  echo "GATEWAY NOT RESTARTED: .env is missing, and the sandboxed gateway cannot start without it."
-  echo "    The gateway that runs now keeps serving. Restore .env, then deploy again."
+  echo "GATEWAY NOT RESTARTED: .env is missing or holds no DATABASE_URL, or a write-list path could not be made."
+  echo "    The gateway that runs now keeps serving. Fix the cause above, then deploy again."
   exit 1
 }
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service

@@ -17,7 +17,12 @@ edit_env() {
   local tmp
   tmp="$(mktemp ./.env-edit.XXXXXX)"
   sed "$1" .env > "$tmp"
-  cat "$tmp" > .env
+  # The write truncates first. A failure in the middle leaves a short .env,
+  # so compare, and keep the full copy when they differ.
+  if ! cat "$tmp" > .env || ! cmp -s "$tmp" .env; then
+    echo "!! .env write failed, the full copy is at $tmp" >&2
+    exit 1
+  fi
   rm -f "$tmp"
 }
 
