@@ -2536,6 +2536,76 @@ async def test_the_on_status_ask_runs_with_no_session_open(
     assert state["open"] == 0
 
 
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_a_conversation_match_on_a_conversation_asks_once(
+    job, monkeypatch, decide_env,
+):
+    """``email-decision-core-no-session-across-the-on-status-ask``, the
+    cost half (verifier F1).
+
+    The thread is a conversation AND the match is the conversation rule
+    Reply. ``ask_status_first`` asks before the match, so the job must not
+    ask again in Block S. Exactly ONE status ask, read in Block R, and
+    Block W follows Block R."""
+    state, tagged, calls = _b3_env(monkeypatch, decide_env, job=job,
+                                   path="first")
+    monkeypatch.setattr(engine_mod, "_load_rules",
+                        AsyncMock(return_value=[_B2_REPLY_RULE]))
+
+    await _B1_JOBS[job]()
+
+    asks = _status_asks(tagged)
+    assert [(leaf, n) for leaf, _t, n in asks] == [("decide", 0)], (
+        f"the job asked the status more than once: {tagged}")
+    reads = [(n, o) for name, n, o, _a in calls if name == "read_job_status"]
+    blocks = _blocks(calls)
+    assert reads == [blocks["read_classification"]], (
+        f"a second status read ran outside Block R: {calls}")
+    assert blocks["resolve_classification"][0] == reads[0][0] + 1, blocks
+    assert _applied(job, calls) == [("r-done", None)]
+    assert state["open"] == 0
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+@pytest.mark.parametrize("job", ["runner", "runner-multi"])
+async def test_each_row_of_a_thread_asks_in_on(job, mode, monkeypatch, decide_env):
+    """Verifier F2. Two new rows of ONE thread in one run. In ``on``, each
+    row asks the late status, as before PR-B3: the per-run memo of #753
+    stays out of the decide path. ``off`` is the control, and there the
+    memo gives one ask for the thread."""
+    if mode == "on":
+        state, tagged, calls = _b3_env(monkeypatch, decide_env, job=job,
+                                       path="late")
+    else:
+        state, tagged, calls = _b2_env(monkeypatch, decide_env, "off", job=job,
+                                       conversation=False)
+        monkeypatch.setattr(engine_mod, "_load_rules",
+                            AsyncMock(return_value=[_B2_REPLY_RULE]))
+    db = _b1_db(multi=job == "runner-multi")
+    first_row, second_row = _b1_row(), SimpleNamespace(
+        **{**vars(_b1_row()), "id": "m-b1-2", "provider_message_id": "pm-b1-2"})
+    phase0 = db.execute.side_effect
+
+    async def execute(stmt, params=None):
+        result = await phase0(stmt, params)
+        if "rules_processed_at IS NULL" in str(stmt):
+            result.fetchall.return_value = [first_row, second_row]
+        return result
+
+    db.execute = AsyncMock(side_effect=execute)
+    _watch_sessions(monkeypatch, state, db)
+
+    await _B1_JOBS[job]()
+
+    asks = _status_asks(tagged)
+    want = 2 if mode == "on" else 1
+    assert [n for _l, _t, n in asks] == [0] * want, (
+        f"the status asks of two rows of one thread: {tagged}")
+    reads = [name for name, *_rest in calls if name == "read_job_status"]
+    assert len(reads) == want, calls
+    assert state["open"] == 0
+
+
 async def test_the_on_status_fence_can_fail(monkeypatch, decide_env):
     """The companion of
     ``email-decision-core-no-session-across-the-on-status-ask``. The plant
