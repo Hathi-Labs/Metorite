@@ -468,6 +468,11 @@ async def _write_nodes(
         # Every List reads the union of the earlier maps, so a List this run
         # creates follows a renamed lane too (the I-10 review, P1-a).
         earlier_ids = status_ids_by_name(earlier_status)
+        # Per List: a target name the writer placed beside an intake lane,
+        # name → the "(imported)" lane. Kept OUT of `statuses`, because a later
+        # run reads those entries as the lanes each name had, and would take
+        # the alias for a member's rename (the PR #784 review, P1).
+        aliases: dict[str, dict[str, str]] = {}
 
         async def statuses_for(ref: str) -> list[list[str]]:
             return await _reuse_statuses(
@@ -478,6 +483,7 @@ async def _write_nodes(
                 added=lanes_added,
                 fresh=set(created_nodes),
                 done_sets=done_sets,
+                aliases=aliases.setdefault(ref, {}),
             )
 
         grant_checked = False
@@ -553,6 +559,7 @@ async def _write_nodes(
             "roots": {ref: root_of[node] for ref, node in home.items()},
             "node_ids": node_ids,
             "statuses": status_ids,
+            "status_aliases": {ref: found for ref, found in aliases.items() if found},
             # I-10: the status each source name became. A later run that
             # continues this tree keeps these names (§6.3, continuity).
             "status_names": {name: list(target) for name, target in final.items()},
@@ -737,6 +744,7 @@ async def _reuse_statuses(
     added: list[str] | None = None,
     fresh: set[str] | None = None,
     done_sets: set[str] | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> list[list[str]]:
     """The status set a project uses, plus any name this run needs that it
     lacks. The set is the one its status OWNER holds (migration 196): the
@@ -806,20 +814,25 @@ async def _reuse_statuses(
             # THIS set holds an intake lane with this name. The plan cannot
             # see every such set: a List that owns its set, or one space of
             # several with one name. So the writer applies the plan's rule in
-            # this set: the tasks go to "<name> (imported)" here, and the
-            # target's name stays an alias of it, for `_status_for`. A run
-            # never stops on it, and no task reaches the pen (§6.3).
-            alias = imported_name(name)
+            # this set: the tasks go to "<name> (imported)" here. A run never
+            # stops on it, and no task reaches the pen (§6.3).
+            # The alias goes to `aliases`, never into `have`: `have` is saved
+            # as the lanes each name had, and a later run would read the
+            # alias as a member's rename (the PR #784 review, P1). And the
+            # "(imported)" name steps on while it is a pen too, because a
+            # member can recategorise that lane (the review's P2).
+            alias = imported_name(name, taken=reserved)
             lane = next((e for e in have if e[0] == alias.lower()), None)
             if lane is None:
                 await add(alias, category)
                 lane = have[-1]
-            have.append([name.lower(), lane[1], lane[2]])
+            if aliases is not None:
+                aliases[name.lower()] = lane[1]
             continue
         await add(name, category)
     if not any(c == "done" for _, _, c in have):
         taken = {n for n, _, _ in have} | reserved
-        await add("Done" if "done" not in taken else "Done (imported)", "done")
+        await add("Done" if "done" not in taken else imported_name("Done", taken=taken), "done")
         if done_sets is not None:
             done_sets.add(owner)
     # A task with no status takes `have[0]` (`_status_for`). That is the lane
@@ -1074,7 +1087,12 @@ async def _incoming(
     now = dt.datetime.now(dt.UTC)
     source = bundle.source
     root = progress["roots"][task.container_ref]
-    status_id, stage = _status_for(task, progress["statuses"][task.container_ref], final)
+    status_id, stage = _status_for(
+        task,
+        progress["statuses"][task.container_ref],
+        final,
+        (progress.get("status_aliases") or {}).get(task.container_ref),
+    )
 
     parent_id = None
     if task.parent_ref:
@@ -1417,13 +1435,24 @@ async def _fit_tags(db: Any, root: str, raw: list[str]) -> tuple[list[str], int]
     return clean, len(distinct) - len(clean)
 
 
-def _status_for(task: Task, statuses: list[list[str]], final: dict[str, Any]) -> tuple[str, str]:
+def _status_for(
+    task: Task,
+    statuses: list[list[str]],
+    final: dict[str, Any],
+    aliases: dict[str, str] | None = None,
+) -> tuple[str, str]:
     """The exact status (D79 rule 1) and ITS stage: the task's mapped name in
-    its project's set, else the set's first status."""
+    its project's set, else the "(imported)" lane the writer placed it in
+    beside an intake lane of that name (``aliases``), else the set's first
+    status."""
     if task.status_name is not None:
         wanted = final[task.status_name][0].lower()
         for name, status_id, category in statuses:
             if name == wanted:
+                return status_id, category
+        lane = (aliases or {}).get(wanted)
+        for _name, status_id, category in statuses:
+            if status_id == lane:
                 return status_id, category
     return statuses[0][1], statuses[0][2]
 

@@ -12,8 +12,10 @@ touches the database by never giving it one.
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from gateway.routes.projects.importer.bundle import ImportBundle
@@ -77,11 +79,22 @@ MAX_CHOICE = 500
 IMPORTED = " (imported)"
 
 
-def imported_name(name: str) -> str:
+def imported_name(name: str, taken: Iterable[str] = ()) -> str:
     """The name a target takes beside an intake lane of the same name. The
     plan proposes it, and the writer places into it in each set that holds
-    such a lane, so both spell it one way (§6.3)."""
-    return f"{name[: MAX_STATUS - len(IMPORTED)]}{IMPORTED}"
+    such a lane, so both spell it one way (§6.3).
+
+    ``taken`` holds names (lower case) the result must not be: the intake
+    lanes of the set. A member may recategorise "Triage (imported)" into an
+    intake lane too, so the name then steps on to "Triage (imported 2)"
+    (the PR #784 review). Each step is a new name, so the loop ends."""
+    blocked = {_fold(n) for n in taken}
+    for step in itertools.count(1):
+        suffix = IMPORTED if step == 1 else f" (imported {step})"
+        candidate = f"{name[: MAX_STATUS - len(suffix)]}{suffix}"
+        if _fold(candidate) not in blocked:
+            return candidate
+    raise AssertionError("unreachable")
 
 
 #: One status of a target set: its name and its stage.
@@ -501,7 +514,7 @@ def _statuses(
     def off_the_pen(name: str) -> str:
         name = moved.get(_fold(name), name)
         if _fold(name) in pen and _fold(name) not in held:
-            return imported_name(name)
+            return imported_name(name, taken=pen)
         return name
 
     tasks: Counter[str] = Counter()
