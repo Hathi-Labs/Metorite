@@ -41,7 +41,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from acb_common.pg_text import storable
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -1157,6 +1157,98 @@ async def record_message_feedback(
     return {"ok": True}
 
 
+async def _my_waiting_asks(org: str, me: str) -> dict[str, dict]:
+    """The caller's questions that still wait, by thread. ``{}`` when OFF.
+
+    WS-51 S2. Read under the caller's tenant (``acb_graph.tenant_session``),
+    so another org's rows never reach this list. A database error answers
+    ``{}``: the badge then shows the runs as running, the old answer.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not me or not pending_ask.durable_asks_enabled():
+        return {}
+    try:
+        rows = await asyncio.to_thread(
+            pending_ask.waiting_asks, org, actor_email=me,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.pending_asks_read_failed", exc_info=True)
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        out.setdefault(str(row["thread_id"]), row)
+    return out
+
+
+@router.get(
+    "/pending-asks",
+    summary="The questions of one chat that still wait for an answer",
+)
+async def list_pending_asks(
+    thread_id: str = Query(..., min_length=1, max_length=200),
+    user: UserContext = Depends(get_current_user),
+) -> list[dict]:
+    """The cards a chat must show again: WS-51 S2.
+
+    A card lives in the run's stream. When the run parked, or its process
+    died, the open chat lost the card. This lists the thread's questions that
+    still wait, so the chat draws each card again, from the server, after a
+    reload or a restart.
+
+    Only a member who may SEND in the room gets the list, because only that
+    member may answer (``POST /agent/respond-input`` checks the same). The
+    read is under the caller's tenant. Each row is ``requestId``, ``kind``,
+    ``event`` (the card's event name), ``payload`` (the card's own event
+    value), ``askedAt`` and ``answerBy``: ``run`` while the run that asked
+    still waits on it live, ``new_run`` when an answer starts a new run.
+
+    ``[]`` with ``CHAT_DURABLE_ASKS`` OFF. Fence (R7):
+    ``tests/unit/test_pending_ask_flow.py``.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return []
+    org = (getattr(user, "organization_id", None) or "").strip()
+    email = (user.email or "").strip()
+    if not org or not email:
+        return []
+
+    from gateway.routes.agent import _resolve_room  # noqa: PLC0415
+
+    room = await asyncio.to_thread(_resolve_room, thread_id, email, org)
+    if room is None or not room.can_send:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot answer a question in this conversation.",
+        )
+    try:
+        rows = await asyncio.to_thread(
+            pending_ask.waiting_asks, org, thread_id=thread_id,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.pending_asks_read_failed", exc_info=True)
+        return []
+    if not rows:
+        return []
+    from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+    liveness = await run_liveness(thread_id)
+    out: list[dict] = []
+    for row in rows:
+        live = row.get("state") == "open" and liveness == "live"
+        out.append({
+            "requestId": row["request_id"],
+            "kind": row["kind"],
+            "event": pending_ask.EVENT_BY_KIND.get(str(row["kind"]), ""),
+            "payload": row.get("payload") or {},
+            "askedAt": row.get("asked_at"),
+            "answerBy": "run" if live else "new_run",
+        })
+    return out
+
+
 @router.get(
     "/active-sessions",
     summary="List session IDs that currently have an active (running) agent",
@@ -1191,7 +1283,16 @@ async def list_active_sessions(
     A run that started before this code has no index entry, so it is not
     listed. The relay lives in this process, so a deploy restart ends it.
 
-    Fence (R7): ``tests/unit/test_active_sessions_tenant.py``.
+    **WS-51 S2: ``state``.** Each row carries ``state``, ``running`` or
+    ``needs_input`` (``chat_run_continuity.md`` §4 S2). ``needs_input`` comes
+    from the ``chat_pending_ask`` rows of the CALLER (their ``actor_email``),
+    read under the caller's tenant. A thread whose run parked, or died with a
+    question open, has no live run, and is still listed, as ``needs_input``,
+    when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
+    is ``running``. ``askKind`` names the card.
+
+    Fences (R7): ``tests/unit/test_active_sessions_tenant.py`` and
+    ``tests/unit/test_pending_ask_flow.py``.
     """
     org = (getattr(user, "organization_id", None) or "").strip()
     if not org:
@@ -1208,21 +1309,34 @@ async def list_active_sessions(
         _log.warning("chat.active_sessions_redis_failed", exc_info=True)
         return []  # Redis unavailable — frontend falls back to local store
 
-    if not live:
+    # ── The caller's own questions that still wait (WS-51 S2) ──────────
+    asks = await _my_waiting_asks(org, me)
+
+    if not live and not asks:
         return []
     by_tid = {run["threadId"]: run for run in live}
-    ids = list(by_tid)
+    ids = list(dict.fromkeys([*by_tid, *asks]))
+
+    def _state(tid: str) -> dict:
+        ask = asks.get(tid)
+        if ask is None:
+            return {"state": "running", "askKind": None}
+        return {"state": "needs_input", "askKind": ask.get("kind")}
 
     def _own_unknown(tid: str) -> dict:
         return {
             "threadId": tid,
             "agentName": "unknown",
             "title": None,
-            "startedAt": by_tid[tid].get("startedAt") or None,
+            "startedAt": by_tid.get(tid, {}).get("startedAt") or None,
+            **_state(tid),
         }
 
     def _is_mine(tid: str) -> bool:
-        return bool(me) and by_tid[tid].get("actor") == me
+        # A live run the caller started, or a question the caller was asked.
+        return bool(me) and (
+            by_tid.get(tid, {}).get("actor") == me or tid in asks
+        )
 
     # ── Cross-reference with Postgres for visibility, name and title ───
     try:
@@ -1258,6 +1372,7 @@ async def list_active_sessions(
             "agentName": r.agent_name,
             "title": r.title,
             "startedAt": by_tid.get(r.id, {}).get("startedAt") or None,
+            **_state(r.id),
         }
         for r in rows
     ]

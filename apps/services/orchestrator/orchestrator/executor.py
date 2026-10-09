@@ -633,12 +633,48 @@ _active_run_model: contextvars.ContextVar[str | None] = (
 )
 
 
+#: The card events (``orchestrator.pending_ask.KIND_BY_EVENT``), as they
+#: appear in an SSE line. A plain substring test, so a token delta costs no
+#: JSON parse.
+_CARD_MARKERS = (
+    '"user_input_requested"', '"elicitation_requested"',
+    '"confirmation_requested"', '"generative_ui"',
+)
+
+
+def _may_hold_card(sse_line: str) -> bool:
+    return '"CUSTOM"' in sse_line and any(m in sse_line for m in _CARD_MARKERS)
+
+
+def _card_payload(sse_line: str) -> Any:
+    for part in sse_line.split("\n"):
+        part = part.strip()
+        if part.startswith("data:"):
+            try:
+                return json.loads(part[5:].strip())
+            except ValueError:
+                return None
+    return None
+
+
 async def _push_sse_to_stream(thread_id: str, sse_line: str) -> None:
     """Push an SSE line to the Redis stream for reconnection support.
 
     Best-effort: failures are silently swallowed so the SSE stream is never
     interrupted by Redis issues.
+
+    WS-51 S2: every card reaches the member through here, so this is where
+    its durable row starts (:func:`orchestrator.pending_ask.note_event`). The
+    call is sync and runs before the push. Only a line that can hold a card
+    is parsed.
     """
+    if _may_hold_card(sse_line):
+        try:
+            from orchestrator.pending_ask import note_event
+
+            note_event(thread_id, _card_payload(sse_line))
+        except Exception:
+            pass
     try:
         from orchestrator.stream_relay import push_sse_event
         await push_sse_event(thread_id, sse_line)
@@ -831,29 +867,67 @@ async def wait_user_future(
     whole HITL budget. Raises ``asyncio.TimeoutError`` when *timeout*
     elapses, like the ``asyncio.wait_for`` it replaces; the future itself is
     left to the caller to clean up.
+
+    WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF). This is the one wait of
+    every parking site, so it settles the card's durable row when the wait
+    ends (:func:`orchestrator.pending_ask.settle`). After
+    ``CHAT_ASK_PARK_SECONDS`` with no answer it PARKS the run: the row stays
+    open as ``parked``, the run ends, and this raises ``CancelledError``.
+    Fence: ``tests/unit/test_pending_ask_flow.py``.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     tid = thread_id or resolve_relay_thread_id() or ""
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        try:
-            # Shield: a slice timeout must not cancel the shared future —
-            # the next slice keeps waiting on it.
-            return await asyncio.wait_for(
-                asyncio.shield(fut), timeout=min(slice_seconds, remaining)
-            )
-        except asyncio.TimeoutError:
-            if fut.done():
-                return fut.result()
-            if tid:
-                try:
-                    from orchestrator.stream_relay import touch_active
-                    await touch_active(tid)
-                except Exception:
-                    pass
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    durable = pending_ask.durable_asks_enabled()
+    rid = _request_id_of(fut) if durable else None
+    park_at = loop.time() + pending_ask.park_after_seconds() if rid else None
+    answer: str | None = None
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            wait = min(slice_seconds, remaining)
+            if park_at is not None:
+                wait = max(0.0, min(wait, park_at - loop.time()))
+            try:
+                # Shield: a slice timeout must not cancel the shared future —
+                # the next slice keeps waiting on it.
+                result = await asyncio.wait_for(asyncio.shield(fut), timeout=wait)
+                answer = str((result or {}).get("answer", "") or "")
+                return result
+            except asyncio.TimeoutError:
+                if fut.done():
+                    result = fut.result()
+                    answer = str((result or {}).get("answer", "") or "")
+                    return result
+                if (
+                    park_at is not None and rid and tid
+                    and loop.time() >= park_at
+                ):
+                    park_at = None  # one attempt; a refusal keeps waiting
+                    if await pending_ask.park(rid, tid):
+                        raise asyncio.CancelledError
+                if tid:
+                    try:
+                        from orchestrator.stream_relay import touch_active
+                        await touch_active(tid)
+                    except Exception:
+                        pass
+    finally:
+        if rid:
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(pending_ask.settle(rid, answer=answer))
+
+
+def _request_id_of(fut: Any) -> str | None:
+    """The request id a parked Future is registered under, if any."""
+    for request_id, parked in list(_pending_user_input.items()):
+        if parked is fut:
+            return request_id
+    return None
 
 
 def _make_user_input_handler(thread_id: str) -> Any:

@@ -436,6 +436,15 @@ def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
     return ticked
 
 
+def _was_parked(request_id: str) -> bool:
+    """True when the run parked this card (WS-51 S2). It must stay open."""
+    try:
+        from orchestrator.pending_ask import was_parked  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return False
+    return was_parked(request_id)
+
+
 def _resolved_event(request_id: str, answer: str) -> dict:
     return {
         "type": "CUSTOM",
@@ -564,9 +573,12 @@ async def request_confirmation(
             _answer = "TIMEOUT"
         finally:
             _pending.pop(_rid, None)
-            # Best effort: the run's end clears a blocking card too.
+            # Best effort: the run's end clears a blocking card too. A PARKED
+            # card (WS-51 S2) is not closed: it stays open for a late answer,
+            # which a new run takes (``orchestrator.pending_ask``).
             with _contextlib.suppress(Exception):
-                await _publish(_resolved_event(_rid, _answer))
+                if not _was_parked(_rid):
+                    await _publish(_resolved_event(_rid, _answer))
         if _rows is not None:
             return _ticked or frozenset()
         return _answer == "APPROVE"

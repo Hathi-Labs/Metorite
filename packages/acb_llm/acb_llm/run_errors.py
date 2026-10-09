@@ -77,6 +77,10 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     "updating",
     "interrupted",
     "run_restarted",
+    # WS-51 S2, the browser's own: a card answer from a tab whose account is
+    # no longer the signed-in one. The route refuses it before the gateway,
+    # so the answer never reaches the other account's org.
+    "answer_in_other_account",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.

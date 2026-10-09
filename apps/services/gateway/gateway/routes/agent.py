@@ -2721,6 +2721,62 @@ async def run_agent_stream_endpoint(
     )
 
 
+async def _late_answer_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> tuple[str | None, bool]:
+    """``(message to resend, the card has a row)`` for an answer no run took.
+
+    WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF; OFF returns
+    ``(None, False)`` and the route keeps its old path). The row is read under
+    the CALLER's tenant, which ``get_current_user`` bound from the session,
+    never from the request (R5e). A row of another org is invisible under
+    FORCE row level security, so a member of a second org finds no row and
+    answers nothing.
+
+    The row moves to ``answered`` in one statement, so two late answers to
+    one card resend once. The loser gets ``(None, True)``, the old 409.
+    Fence: ``tests/unit/test_pending_ask_flow.py``.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return None, False
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return None, False
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+    except Exception:  # noqa: BLE001 — the old path still answers
+        _log.warning("agent.pending_ask_read_failed", exc_info=True)
+        return None, False
+    if row is None:
+        return None, False
+
+    from gateway.chat_recovery import card_answer_from_ask  # noqa: PLC0415
+
+    resend = await card_answer_from_ask(req.thread_id, row, req.answer)
+    if resend is None:
+        return None, True
+    try:
+        moved = await asyncio.to_thread(
+            pending_ask.move_ask, org, req.request_id,
+            to="answered", from_states=pending_ask.WAITING, answer=req.answer,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.pending_ask_answer_failed", exc_info=True)
+        return None, True
+    if moved is None:
+        return None, True
+    _log.info(
+        "agent.pending_ask_answered_late",
+        request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+        state=str(row.get("state") or ""),
+    )
+    return resend, True
+
+
 @router.post(
     "/respond-input",
     summary="Answer a native ask_user prompt for a running agent",
@@ -2790,10 +2846,15 @@ async def respond_user_input(
 
         from gateway.chat_recovery import card_answer_after_restart  # noqa: PLC0415
 
-        resend = await card_answer_after_restart(
-            req.thread_id, req.request_id, req.answer,
-            delivery=delivery_of(_command),
-        )
+        # WS-51 S2: the card's durable row, when it has one. A PARKED run
+        # ended on purpose, so its answer always starts a new run, and the
+        # question comes from the row, which outlives the stream.
+        resend, has_row = await _late_answer_from_row(req, user)
+        if not has_row:
+            resend = await card_answer_after_restart(
+                req.thread_id, req.request_id, req.answer,
+                delivery=delivery_of(_command),
+            )
         if resend is not None:
             _log.info(
                 "agent.user_input_after_restart",

@@ -1,0 +1,486 @@
+"""WS-51 S2 — a durable "needs input": the flow, hermetic.
+
+Spec: ``project-docs/specs/chat_run_continuity.md`` §4 S2. Flag
+``CHAT_DURABLE_ASKS`` (default OFF).
+
+What this file holds (R7), with the database calls of
+``orchestrator.pending_ask`` replaced by an in-memory table keyed by
+``(organization_id, request_id)``. It holds no SQL, so it proves no SQL. The
+SQL and the row level security are ``test_pending_ask_store.py`` (R8).
+
+1. A card that waits in this process writes ONE row, and its answer closes
+   the row with the answer in it. A replay, an answered card and a card with
+   the flag OFF write nothing.
+2. Park, then end: after the park window the row is ``parked``, the stream
+   ends with ``RUN_FINISHED parked``, the run's task is cancelled, and the
+   confirmation card is NOT closed (no ``confirmation_resolved``).
+3. A late answer to a parked card starts a new run: ``POST
+   /agent/respond-input`` answers 409 ``run_restarted`` with the question and
+   the answer (the shape of #797). The row keeps the answer, so it is not
+   lost. A second late answer resends nothing.
+4. ``GET /chat/active-sessions`` reports ``needs_input`` after a simulated
+   restart: no live run, and the row still waits.
+5. An answer from another org finds no row and resumes nothing.
+6. ``GET /chat/pending-asks`` lists the card to draw again, only for a member
+   who may send in the room.
+
+Run::
+
+    uv run pytest tests/unit/test_pending_ask_flow.py -q
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from typing import Any
+
+import pytest
+
+stream_relay = pytest.importorskip(
+    "orchestrator.stream_relay", reason="orchestrator not installed",
+)
+pending_ask = pytest.importorskip("orchestrator.pending_ask")
+executor = pytest.importorskip("orchestrator.executor")
+
+# Fixtures, resolved by name. The imports are load-bearing.
+from tests.unit.test_chat_deploy_recovery import (  # noqa: E402, F401
+    _DEAD,
+    _seed_run,
+    fake_redis,
+    liveness,
+    no_persist,
+)
+
+_ALICE = "alice@ask-a.test"
+_CAROL = "carol@ask-b.test"
+_ORG_A = "aaaaaaaa-1111-4111-8111-111111111111"
+_ORG_B = "bbbbbbbb-2222-4222-8222-222222222222"
+_QUESTION = "Send the invoice to Acme?"
+
+
+class _AskDb:
+    """``chat_pending_ask`` in memory. One org never sees another's rows."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def insert_ask(self, org: str, row: dict[str, Any]) -> bool:
+        key = (org, row["request_id"])
+        if key in self.rows:
+            return False
+        self.rows[key] = {
+            **row, "actor_email": (row.get("actor_email") or "").lower(),
+            "state": "open", "answer": None, "asked_at": "2026-10-10T00:00:00+00:00",
+        }
+        return True
+
+    def move_ask(self, org, rid, *, to, from_states, answer=None):
+        row = self.rows.get((org, rid))
+        if row is None or row["state"] not in from_states:
+            return None
+        row["state"] = to
+        if to == "answered":
+            row["answer"] = answer or ""
+        return dict(row)
+
+    def read_ask(self, org, rid):
+        row = self.rows.get((org, rid))
+        return dict(row) if row and row["state"] in pending_ask.WAITING else None
+
+    def waiting_asks(self, org, *, thread_id=None, actor_email=None):
+        out = []
+        for (o, _rid), row in self.rows.items():
+            if o != org or row["state"] not in pending_ask.WAITING:
+                continue
+            if thread_id and row["thread_id"] != thread_id:
+                continue
+            if actor_email and row["actor_email"] != actor_email.lower():
+                continue
+            out.append(dict(row))
+        return out
+
+
+@pytest.fixture
+def ask_db(monkeypatch):
+    db = _AskDb()
+    for name in ("insert_ask", "move_ask", "read_ask", "waiting_asks"):
+        monkeypatch.setattr(pending_ask, name, getattr(db, name))
+    pending_ask._reset_for_tests()
+    executor._pending_user_input.clear()
+    yield db
+    pending_ask._reset_for_tests()
+    executor._pending_user_input.clear()
+
+
+@pytest.fixture
+def flag_on(monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_durable_asks", True)
+    # A short park window, so a test waits a moment, not ten minutes.
+    monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 0.05)
+
+
+def _card(rid: str, *, name: str = "user_input_requested") -> dict[str, Any]:
+    return {"type": "CUSTOM", "name": name, "value": {
+        "request_id": rid, "question": _QUESTION, "choices": ["Yes", "No"],
+    }}
+
+
+def _line(evt: dict[str, Any]) -> str:
+    return f"data: {json.dumps(evt)}\n\n"
+
+
+def _events(r, tid: str) -> list[dict[str, Any]]:
+    return [json.loads(f["event"]) for _eid, f in r.store.get(f"cc:stream:{tid}", [])]
+
+
+def _bind(org: str):
+    from acb_common.db import bind_tenant
+
+    return bind_tenant(org)
+
+
+async def _settled() -> None:
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+# ---------------------------------------------------------------------------
+# 1. One row per waiting card, and its answer closes it
+# ---------------------------------------------------------------------------
+
+def test_a_waiting_card_writes_one_row_and_its_answer_closes_it(
+    flag_on, ask_db, fake_redis,
+):
+    tid, rid = "t-one", uuid.uuid4().hex
+    fake_redis.store[f"cc:runactor:{tid}"] = "Alice@Ask-A.test"
+
+    async def go() -> None:
+        _bind(_ORG_A)
+        fut = asyncio.get_running_loop().create_future()
+        executor._pending_user_input.park(rid, fut, tid)
+        waiter = asyncio.create_task(executor.wait_user_future(fut, 30, thread_id=tid))
+        await executor._push_sse_to_stream(tid, _line(_card(rid)))
+        # A replay of the same card writes no second row.
+        await executor._push_sse_to_stream(tid, _line(_card(rid)))
+        await _settled()
+        assert ask_db.rows[(_ORG_A, rid)]["state"] == "open"
+        fut.set_result({"answer": "Yes", "wasFreeform": False})
+        await waiter
+
+    asyncio.run(go())
+    assert list(ask_db.rows) == [(_ORG_A, rid)]
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "answered" and row["answer"] == "Yes"
+    assert row["actor_email"] == _ALICE and row["kind"] == "ask_user"
+    assert row["question"] == _QUESTION and row["thread_id"] == tid
+
+
+def test_a_card_nobody_waits_on_writes_nothing(flag_on, ask_db, fake_redis):
+    """An answered card, a non-blocking card, and a card from no run."""
+    async def go() -> None:
+        _bind(_ORG_A)
+        done = asyncio.get_running_loop().create_future()
+        done.set_result({"answer": "x"})
+        rid_done = uuid.uuid4().hex
+        executor._pending_user_input.park(rid_done, done, "t-x")
+        await executor._push_sse_to_stream("t-x", _line(_card(rid_done)))
+        # No request id: the answer arrives as a chat message.
+        await executor._push_sse_to_stream("t-x", _line({
+            "type": "CUSTOM", "name": "elicitation_requested",
+            "value": {"questions": [{"question": "Which?"}]},
+        }))
+        # A request id with no Future in this process.
+        await executor._push_sse_to_stream("t-x", _line(_card(uuid.uuid4().hex)))
+        await _settled()
+
+    asyncio.run(go())
+    assert ask_db.rows == {}
+
+
+def test_with_the_flag_off_nothing_is_written_and_nothing_parks(ask_db, fake_redis, monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_durable_asks", False)
+    monkeypatch.setattr(pending_ask, "park_after_seconds", lambda: 0.01)
+    tid, rid = "t-off", uuid.uuid4().hex
+
+    async def go() -> None:
+        _bind(_ORG_A)
+        fut = asyncio.get_running_loop().create_future()
+        executor._pending_user_input.park(rid, fut, tid)
+        await executor._push_sse_to_stream(tid, _line(_card(rid)))
+        with pytest.raises(asyncio.TimeoutError):
+            await executor.wait_user_future(fut, 0.2, thread_id=tid, slice_seconds=0.05)
+
+    asyncio.run(go())
+    assert ask_db.rows == {}
+    assert not any(e.get("parked") for e in _events(fake_redis, tid))
+
+
+# ---------------------------------------------------------------------------
+# 2 and 3. Park, end, and a late answer that starts a new run
+# ---------------------------------------------------------------------------
+
+def _park_a_confirmation(r, tid: str) -> str:
+    """A run on *tid* asks a confirmation and waits past the park window.
+
+    Returns the card's request id. The run is a real ``request_confirmation``
+    on path C (the relay), in a task registered as the thread's detached run.
+    """
+    from acb_skills.ask_tools import request_confirmation
+
+    r.store[f"cc:runactor:{tid}"] = _ALICE
+    out: dict[str, Any] = {}
+
+    async def _the_run() -> None:
+        executor._stream_relay_thread_id.set(tid)
+        _bind(_ORG_A)
+        out["approved"] = await request_confirmation(_QUESTION, "To billing@acme.test")
+
+    async def go() -> None:
+        run = asyncio.create_task(_the_run())
+        stream_relay._DETACHED_TASKS[tid] = run
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=5)
+
+    asyncio.run(go())
+    assert "approved" not in out, "a parked card approves nothing"
+    cards = [e for e in _events(r, tid) if e.get("name") == "confirmation_requested"]
+    assert len(cards) == 1
+    return cards[0]["value"]["request_id"]
+
+
+def test_the_run_parks_saves_and_ends_and_the_card_stays_open(
+    flag_on, ask_db, liveness,
+):
+    tid = "t-park"
+    rid = _park_a_confirmation(liveness, tid)
+
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "parked", row
+    assert row["kind"] == "confirmation" and row["question"] == _QUESTION
+    events = _events(liveness, tid)
+    assert events[-1] == {"type": "RUN_FINISHED", "threadId": tid, "parked": True}
+    # The card is NOT closed: a closed card never comes back in the chat.
+    assert not [e for e in events if e.get("name") == "confirmation_resolved"]
+    assert pending_ask.was_parked(rid)
+
+
+def _answer_client(monkeypatch, email: str, org: str):
+    from acb_auth import UserContext, UserRole, get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import agent as agent_routes
+
+    class _Room:
+        can_send = True
+
+    monkeypatch.setattr(agent_routes, "_resolve_room", lambda *_a, **_k: _Room())
+    app = FastAPI()
+    app.post("/agent/respond-input")(agent_routes.respond_user_input)
+    app.dependency_overrides[get_current_user] = lambda: UserContext(
+        email=email, role=UserRole.EMPLOYEE, organization_id=org,
+    )
+    return TestClient(app)
+
+
+def test_a_late_answer_resumes_as_a_new_run_and_is_not_lost(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    tid = "t-late"
+    rid = _park_a_confirmation(liveness, tid)
+    client = _answer_client(monkeypatch, _ALICE, _ORG_A)
+
+    res = client.post("/agent/respond-input", json={
+        "request_id": rid, "answer": "APPROVE", "thread_id": tid,
+    })
+    assert res.status_code == 409, res.text
+    detail = res.json()["detail"]
+    assert detail["error"] == "run_restarted"
+    assert detail["resumeMessage"] == f'You asked me: "{_QUESTION}"\n\nMy answer: APPROVE'
+    row = ask_db.rows[(_ORG_A, rid)]
+    assert row["state"] == "answered" and row["answer"] == "APPROVE"
+
+    # A second answer to the same card resends nothing.
+    again = client.post("/agent/respond-input", json={
+        "request_id": rid, "answer": "APPROVE", "thread_id": tid,
+    })
+    assert again.status_code == 409
+    assert isinstance(again.json()["detail"], str), again.json()
+
+
+def test_a_late_answer_needs_the_thread_that_asked(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    tid = "t-own"
+    rid = _park_a_confirmation(liveness, tid)
+    res = _answer_client(monkeypatch, _ALICE, _ORG_A).post("/agent/respond-input", json={
+        "request_id": rid, "answer": "APPROVE", "thread_id": "t-some-other-room",
+    })
+    assert res.status_code == 409
+    assert isinstance(res.json()["detail"], str)
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked"
+
+
+# ---------------------------------------------------------------------------
+# 5. Another org finds no row
+# ---------------------------------------------------------------------------
+
+def test_an_answer_from_another_org_resumes_nothing(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Carol is in org B. Even past the room check, org B holds no such row."""
+    tid = "t-cross"
+    rid = _park_a_confirmation(liveness, tid)
+    res = _answer_client(monkeypatch, _CAROL, _ORG_B).post("/agent/respond-input", json={
+        "request_id": rid, "answer": "APPROVE", "thread_id": tid,
+    })
+    assert res.status_code == 409
+    assert isinstance(res.json()["detail"], str), "no resend for another org"
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "parked"
+    assert ask_db.rows[(_ORG_A, rid)]["answer"] is None
+
+
+# ---------------------------------------------------------------------------
+# 4. active-sessions reports needs_input after a restart
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def db_down(monkeypatch):
+    import acb_graph
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("postgres is down")
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _boom)
+
+
+def _user(email: str, org: str):
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+
+    return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=org)
+
+
+def _list(user) -> list[dict]:
+    from gateway.routes.chat import list_active_sessions
+
+    return asyncio.run(list_active_sessions(user=user))
+
+
+def _seed_open_row(db: _AskDb, org: str, tid: str, actor: str) -> str:
+    rid = uuid.uuid4().hex
+    db.insert_ask(org, {
+        "request_id": rid, "thread_id": tid, "actor_email": actor,
+        "kind": "questions", "question": _QUESTION, "payload": {"request_id": rid},
+    })
+    return rid
+
+
+def test_needs_input_survives_a_restart(flag_on, ask_db, liveness, db_down):
+    """The process died: no live run, no Future. The row still waits."""
+    _seed_open_row(ask_db, _ORG_A, "t-restart", _ALICE)
+    _seed_open_row(ask_db, _ORG_B, "t-carol", _CAROL)
+
+    rows = _list(_user(_ALICE, _ORG_A))
+    assert rows == [{
+        "threadId": "t-restart", "agentName": "unknown", "title": None,
+        "startedAt": None, "state": "needs_input", "askKind": "questions",
+    }]
+    assert [r["threadId"] for r in _list(_user(_CAROL, _ORG_B))] == ["t-carol"]
+
+
+def test_a_live_run_that_asks_is_needs_input_and_others_run(
+    flag_on, ask_db, liveness, db_down,
+):
+    for tid in ("t-asks", "t-works"):
+        asyncio.run(stream_relay.mark_active(tid, reset=True, actor=_ALICE))
+        asyncio.run(stream_relay.register_live_run(
+            tid, organization_id=_ORG_A, actor=_ALICE, token=f"tok-{tid}",
+        ))
+    _seed_open_row(ask_db, _ORG_A, "t-asks", _ALICE)
+
+    states = {r["threadId"]: r["state"] for r in _list(_user(_ALICE, _ORG_A))}
+    assert states == {"t-asks": "needs_input", "t-works": "running"}
+
+
+def test_with_the_flag_off_no_row_is_read(ask_db, liveness, db_down, monkeypatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_durable_asks", False)
+    _seed_open_row(ask_db, _ORG_A, "t-restart", _ALICE)
+    assert _list(_user(_ALICE, _ORG_A)) == []
+
+
+# ---------------------------------------------------------------------------
+# 6. The chat draws the card again, from the server
+# ---------------------------------------------------------------------------
+
+def _pending(monkeypatch, *, can_send: bool, thread_id: str):
+    from acb_auth import UserContext, UserRole, get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import agent as agent_routes
+    from gateway.routes import chat as chat_routes
+
+    class _Room:
+        pass
+
+    room = _Room()
+    room.can_send = can_send
+    monkeypatch.setattr(agent_routes, "_resolve_room", lambda *_a, **_k: room)
+    app = FastAPI()
+    app.get("/chat/pending-asks")(chat_routes.list_pending_asks)
+    app.dependency_overrides[get_current_user] = lambda: UserContext(
+        email=_ALICE, role=UserRole.EMPLOYEE, organization_id=_ORG_A,
+    )
+    return TestClient(app).get("/chat/pending-asks", params={"thread_id": thread_id})
+
+
+def test_the_chat_gets_its_parked_card_back(flag_on, ask_db, liveness, monkeypatch):
+    rid = _seed_open_row(ask_db, _ORG_A, "t-card", _ALICE)
+    ask_db.rows[(_ORG_A, rid)]["state"] = "parked"
+    res = _pending(monkeypatch, can_send=True, thread_id="t-card")
+    assert res.status_code == 200
+    assert res.json() == [{
+        "requestId": rid, "kind": "questions", "event": "elicitation_requested",
+        "payload": {"request_id": rid}, "askedAt": "2026-10-10T00:00:00+00:00",
+        "answerBy": "new_run",
+    }]
+
+
+def test_an_open_card_of_a_live_run_is_answered_by_that_run(flag_on, ask_db, liveness, monkeypatch):
+    from orchestrator import run_liveness
+
+    asyncio.run(stream_relay.mark_active("t-livecard", reset=True, actor=_ALICE))
+    monkeypatch.setattr(run_liveness, "_LOCAL_RUNS", {"t-livecard"})
+    _seed_open_row(ask_db, _ORG_A, "t-livecard", _ALICE)
+    res = _pending(monkeypatch, can_send=True, thread_id="t-livecard")
+    assert [a["answerBy"] for a in res.json()] == ["run"]
+
+
+def test_a_viewer_gets_no_card(flag_on, ask_db, liveness, monkeypatch):
+    _seed_open_row(ask_db, _ORG_A, "t-view", _ALICE)
+    assert _pending(monkeypatch, can_send=False, thread_id="t-view").status_code == 403
+
+
+def test_a_dead_run_s_open_card_is_answered_by_a_new_run(
+    flag_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """A restart killed the run while its card was open (no park)."""
+    tid = "t-died"
+    _seed_run(liveness, tid, _DEAD, record={
+        "org": _ORG_A, "messageId": f"asst-{tid}", "agent": "orchestrator",
+        "runId": f"run-{tid}", "tokens": [],
+    })
+    rid = _seed_open_row(ask_db, _ORG_A, tid, _ALICE)
+    res = _answer_client(monkeypatch, _ALICE, _ORG_A).post("/agent/respond-input", json={
+        "request_id": rid, "answer": "Apollo", "thread_id": tid,
+    })
+    assert res.status_code == 409
+    assert res.json()["detail"]["resumeMessage"].endswith("My answer: Apollo")
+    assert ask_db.rows[(_ORG_A, rid)]["state"] == "answered"
+    assert f"cc:active:{tid}" not in liveness.store, "the dead run is closed first"
