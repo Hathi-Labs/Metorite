@@ -21,6 +21,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useAccess } from "@/components/AccessProvider";
+import { BrandMark, useOrgBranding } from "@/components/OrgBrandLockup";
 import { categoricalAccent } from "@/lib/categorical";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import {
@@ -379,139 +380,169 @@ export function SidebarAccountFooter({
 }
 
 /**
- * The phone menu's organization block, at its TOP (owner request, 2026-10-09).
+ * The phone menu's header, and its ONE account surface (owner, 2026-10-09).
  *
- * Before, switching organization on a phone took four steps: open the menu,
- * scroll to its foot, unfold the account row, tap. And nothing at the top said
- * which organization was open. Now the first thing under the menu's header
- * names the organization that is open and the account signed in, each with
- * its label. Every other account is one tap below it. So a switch is two taps:
- * Menu, then the organization.
+ * Collapsed, it is the brand mark that was always here, the organization that
+ * is open (the mark's caption), and under it the address that is signed in.
+ * One line of account, so the search and the apps move up. A "+N" and a
+ * chevron say that more accounts wait behind it.
  *
- * ⚠️ It is the ONE place for accounts on a phone (owner, later the same day).
- * A second account row at the menu's foot read as the switcher, and an
- * account tab in the bottom bar crowded the app's own tabs. Both went. So
- * this block also holds "Add another account" and sign-out.
+ * Tapped, it unfolds: each other account as a one-tap switch with its own ✕,
+ * then the member's pages (NS-2), then Add account and Sign out.
  *
- * With the switcher off, it still names the organization and the account,
- * and it offers sign-out.
+ * Why not a card. An earlier version put a large "Organization · Signed in
+ * as" card and an open "Switch to" list under the header. It said the
+ * organization twice, once in the mark and once in the card, and it pushed
+ * the apps off the first screen. The owner asked for the switcher behind the
+ * logo instead.
+ *
+ * The mark no longer links Home, because a tap now opens the accounts. Home
+ * is the first item of the shell nav, below.
  */
-export function DrawerOrgSwitch({
+export function DrawerAccountHeader({
+  onClose,
   you,
   onNavigate,
 }: {
+  onClose: () => void;
   /** The shell nav's account rows (NS-2): My Profile, My access, Appearance. */
   you?: readonly AccountLink[];
   /** Called when a row opens a page, so the menu can close. */
   onNavigate?: () => void;
-} = {}) {
+}) {
   // Its own hooks, never props: the drawer captures its content once.
   const { accounts, reload } = useAccounts(true);
   const { access } = useAccess();
   const { data: session } = useSession();
+  const branding = useOrgBranding();
   const { switching, error, pick } = useSwitchAccount(() => void reload(true));
-  // ⚠️ The organization and the address from ONE answer, `/api/auth/me`, so
-  // the block can never pair one account's organization with another's email.
-  // A tab that missed a switch broadcast holds the older identity for up to
-  // two minutes, and a separate `/api/accounts` read could already name the
-  // newer one (review of #765).
-  const orgName = access.organization?.display_name || access.organization?.slug || null;
-  const email = access.email || session?.user?.email || null;
-  const name = session?.user?.name ?? accounts.active?.name ?? null;
-  if (!orgName && !email) return null;
-  // Never offer the account that is open now.
+  const [open, setOpen] = useState(false);
+  // The organization and the address from ONE answer, `/api/auth/me`, so they
+  // can never belong to two different accounts (review of #765).
+  const orgName = access.organization?.display_name?.trim() || access.organization?.slug?.trim() || "";
+  const email = access.email || session?.user?.email || "";
   const others = accounts.enabled ? accounts.others.filter((o) => o.email !== email) : [];
+  const label = [
+    "Account",
+    email && `signed in as ${email}`,
+    orgName && `in ${orgName}`,
+    others.length > 0 && `${others.length} more`,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
-    <section aria-label="Organization and account" className="border-b border-border px-3 py-3" data-testid="drawer-org">
-      <div className="flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
-        {email && <Avatar email={email} name={name} />}
-        <div className="min-w-0 flex-1">
-          {orgName && (
-            <>
-              <div className="text-xs text-muted-foreground">Organization</div>
-              <div className="truncate text-sm font-semibold text-foreground">{orgName}</div>
-            </>
+    <div className="border-b border-border px-3 py-2" data-testid="drawer-org">
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-controls="drawer-accounts"
+          aria-label={label}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-secondary tech-transition"
+        >
+          <span className="min-w-0 flex-1">
+            <BrandMark branding={branding} fallbackCaption="Home" orgName={orgName} maxWidth={180} />
+            {/* Under the organization's name. Our square mark puts the name
+                beside it, so the address takes the same indent. A customer's
+                wordmark stacks, so the address stays at its left edge. */}
+            {email && (
+              <span className={`mt-1 block truncate text-xs text-muted-foreground ${branding?.logo ? "" : "pl-[38px]"}`}>
+                {email}
+              </span>
+            )}
+          </span>
+          {others.length > 0 && (
+            <span className="shrink-0 rounded-full border border-border px-1.5 text-[10px] font-medium text-muted-foreground">
+              +{others.length}
+            </span>
           )}
-          {email && (
-            <div className="mt-0.5 truncate text-xs text-muted-foreground">
-              Signed in as <span className="font-medium text-foreground">{email}</span>
-            </div>
-          )}
-        </div>
-        <Icon name="Check" size={15} className="shrink-0 text-primary" aria-label="Open now" />
+          <Icon
+            name="ChevronDown"
+            size={16}
+            className={`shrink-0 text-muted-foreground tech-transition ${open ? "rotate-180" : ""}`}
+          />
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-secondary"
+          aria-label="Close"
+        >
+          <Icon name="X" size={16} />
+        </button>
       </div>
 
-      {others.length > 0 && (
-        <div className="mt-2">
-          <div className="px-1 pb-1 text-xs font-medium text-muted-foreground">Switch to</div>
-          <div role="list" aria-label="Switch organization" className="flex flex-col gap-1">
-            {others.map((o) => (
-              <div key={o.slot} role="listitem" className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => void pick(o)}
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-left hover:bg-secondary tech-transition"
-                >
-                  <Avatar email={o.email} name={o.name} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-foreground">
-                      {o.organization ?? o.name ?? o.email}
+      {open && (
+        <div id="drawer-accounts" className="mt-2 flex flex-col gap-1 pb-1">
+          {others.length > 0 && (
+            <div role="list" aria-label="Switch organization" className="flex flex-col gap-1">
+              {others.map((o) => (
+                <div key={o.slot} role="listitem" className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => void pick(o)}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-secondary tech-transition"
+                  >
+                    <Avatar email={o.email} name={o.name} size="sm" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-foreground">
+                        {o.organization ?? o.name ?? o.email}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">{o.email}</span>
                     </span>
-                    <span className="block truncate text-xs text-muted-foreground">{o.email}</span>
-                  </span>
-                  <Icon name="ArrowRight" size={15} className="shrink-0 text-muted-foreground" />
-                </button>
-                {/* The one place on a phone to drop ONE account from this
-                    browser (review of #765, P1). Always shown, as on desktop:
-                    a hover-only control never appears on touch. */}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  icon="X"
-                  aria-label={`Remove ${o.email} from this browser`}
-                  title="Remove from this browser"
-                  onClick={async () => {
-                    await removeAccount(o.slot);
-                    void reload(true);
-                  }}
-                  className="shrink-0 text-muted-foreground"
-                />
-              </div>
-            ))}
+                  </button>
+                  {/* The one place on a phone to drop ONE account from this
+                      browser. Always shown: a hover-only control never
+                      appears on touch. */}
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    icon="X"
+                    aria-label={`Remove ${o.email} from this browser`}
+                    title="Remove from this browser"
+                    onClick={async () => {
+                      await removeAccount(o.slot);
+                      void reload(true);
+                    }}
+                    className="shrink-0 text-muted-foreground"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          {error && <p className="px-2 text-xs text-destructive">{error}</p>}
+
+          {you && you.length > 0 && (
+            <nav aria-label="Your account" className="flex flex-col">
+              {you.map((l) => (
+                <Link
+                  key={l.href}
+                  href={l.href}
+                  onClick={onNavigate}
+                  className="flex items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground hover:bg-secondary tech-transition"
+                >
+                  <Icon name={l.icon} size={15} className="shrink-0 text-muted-foreground" />
+                  {l.label}
+                </Link>
+              ))}
+            </nav>
+          )}
+
+          <div className={`mt-1 grid gap-2 ${accounts.enabled ? "grid-cols-2" : "grid-cols-1"}`}>
+            {accounts.enabled && (
+              <Button variant="secondary" size="sm" icon="UserPlus" onClick={() => void addAccount()}>
+                Add account
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" icon="LogOut" onClick={() => void signOutAll()}>
+              {others.length > 0 ? "Sign out of all" : "Sign out"}
+            </Button>
           </div>
         </div>
       )}
-      {error && <p className="px-1 pt-2 text-xs text-destructive">{error}</p>}
-
-      {you && you.length > 0 && (
-        <nav aria-label="Your account" className="mt-2 flex flex-col">
-          {you.map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              onClick={onNavigate}
-              className="flex items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground hover:bg-secondary tech-transition"
-            >
-              <Icon name={l.icon} size={15} className="shrink-0 text-muted-foreground" />
-              {l.label}
-            </Link>
-          ))}
-        </nav>
-      )}
-
-      {/* The two account actions, side by side, so the block stays short. */}
-      <div className={`mt-2 grid gap-2 ${accounts.enabled ? "grid-cols-2" : "grid-cols-1"}`}>
-        {accounts.enabled && (
-          <Button variant="secondary" size="sm" icon="UserPlus" onClick={() => void addAccount()}>
-            Add account
-          </Button>
-        )}
-        <Button variant="secondary" size="sm" icon="LogOut" onClick={() => void signOutAll()}>
-          {others.length > 0 ? "Sign out of all" : "Sign out"}
-        </Button>
-      </div>
       {switching && <SwitchingCover email={switching} />}
-    </section>
+    </div>
   );
 }
