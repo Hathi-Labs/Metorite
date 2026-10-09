@@ -33,7 +33,7 @@ export interface AssistantCheckpoint {
   progressLines?: string[];
   messageId?: string;
   todos?: Array<{ id: string; title: string; status: string }>;
-  customEvents?: Array<{ name: string; value: unknown }>;
+  customEvents?: Array<{ name: string; value: unknown; segmentCutoff?: number }>;
   segments?: Array<{ id: string; text: string }>;
   /** The agent that produced this turn. Absent on the reconnect path. */
   agentName?: string;

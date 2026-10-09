@@ -156,6 +156,18 @@ Seven rules on top of the three above. Each one exists because it was broken:
      at most, after the text.
    - Fences: `chatPlacement.test.ts`, `askPin.test.ts`,
      `datasetTable.test.ts` and `tests/unit/test_chat_placement_classes.py`.
+   - A card keeps its place in the stream (`projects_ai_chat.md` §24.9).
+     Each `generative_ui` event carries `segmentCutoff`, and `genUiFlow`
+     draws the text that came after a card below it. The live hook, the
+     chat proxy and `chat_fold.py` stamp it the same way.
+   - `components/RecommendedBadge.tsx` is the one mark of a recommended
+     option. Do not draw a star for it. Fences: `genUITemplates.test.ts`
+     and `elicitationCard.test.ts`.
+   - `src/lib/askAnswers.ts` is the one reader of the answer a blocking card
+     already got. A card that has one draws as sent after any remount.
+   - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
+     click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
+     host. Fence: `inAppLink.test.ts`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).

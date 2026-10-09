@@ -46,6 +46,9 @@ import {
   waitsOnName,
   withAfter,
 } from "@/app/projects/lib/planCard";
+import Badge from "@/components/ui/Badge";
+import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
+import { pickedFromAnswer } from "@/lib/askAnswers";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -524,11 +527,15 @@ function Comparison({ data }: { data: Data }) {
         {options.map((o, i) => (
           <div key={i} style={{
             padding: "8px 10px", fontSize: TYPE.xs, fontWeight: 600, textAlign: "center",
-            color: o.recommended ? "var(--success)" : "var(--foreground)",
-            background: o.recommended ? "color-mix(in srgb, var(--success) 12%, var(--card))" : "var(--card)",
+            color: "var(--foreground)",
+            // The highlight family of the Recommended badge, so the column
+            // and its mark read as one thing (owner report, 2026-10-09).
+            background: o.recommended ? "color-mix(in srgb, var(--warning) 10%, var(--card))" : "var(--card)",
             borderLeft: "1px solid var(--border)",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
           }}>
-            {str(o.name)}{o.recommended ? " ★" : ""}
+            <span>{str(o.name)}</span>
+            {o.recommended ? <RecommendedBadge /> : null}
           </div>
         ))}
         {rowLabels.map((label, ri) => (
@@ -542,7 +549,7 @@ function Comparison({ data }: { data: Data }) {
               return (
                 <div key={ci} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
                   color: "var(--foreground)", borderTop: "1px solid var(--border)", borderLeft: "1px solid var(--border)",
-                  background: o.recommended ? "color-mix(in srgb, var(--success) 6%, transparent)" : (ri % 2 ? "var(--secondary)" : "transparent") }}>
+                  background: o.recommended ? "color-mix(in srgb, var(--warning) 6%, transparent)" : (ri % 2 ? "var(--secondary)" : "transparent") }}>
                   {row ? str(row.value) : "—"}
                 </div>
               );
@@ -954,11 +961,29 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+/** The words under a picker once its answer went, or when it cannot send. */
+export const PICKER_SENT = "Sent";
+export const PICKER_SENT_NOTE = "Your answer went to the assistant.";
+export const PICKER_INERT_NOTE = "This card cannot send an answer here.";
+
 function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const options = arr(data.options).map((o) => (o ?? {}) as Data);
   const multi = !!data.multi;
-  const [picked, setPicked] = useState<string[]>([]);
-  const [submitted, setSubmitted] = useState(false);
+  const [clicked, setPicked] = useState<string[]>([]);
+  const [clickedSend, setSubmitted] = useState(false);
+  // An answer the run already got survives a remount: a reload, or a move of
+  // the card in the tree. Without it an answered picker drew as new, and a
+  // second click sent the answer again (review round 1, P2-c).
+  const answered = ctx?.answered ?? "";
+  const submitted = clickedSend || !!answered;
+  const picked = clicked.length > 0
+    ? clicked
+    : pickedFromAnswer(answered, options.map((o, i) => ({
+        id: str(o.id, str(o.label, String(i))), label: str(o.label) })));
+  // No handler means no way to answer: say so, and take no click. A click
+  // that does nothing reads as a broken card (owner report, 2026-10-09).
+  const inert = !ctx?.onAction && !submitted;
+  const locked = submitted || inert;
   const submit = (ids: string[]) => {
     if (!ctx?.onAction || submitted || !ids.length) return;
     setSubmitted(true);
@@ -967,7 +992,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     ctx.onAction(`Selected: ${labels.join(", ")}`);
   };
   const toggle = (id: string) => {
-    if (submitted) return;
+    if (locked) return;
     if (!multi) {
       setPicked([id]);
       submit([id]);
@@ -987,18 +1012,23 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         {options.map((o, i) => {
           const id = str(o.id, str(o.label, String(i)));
           const active = picked.includes(id);
+          const recommended = !!o.recommended;
           return (
-            <button key={id} type="button" onClick={() => toggle(id)} disabled={submitted}
-              style={{ textAlign: "left", borderRadius: 12, padding: "10px 12px", cursor: submitted ? "default" : "pointer",
-                border: `1px solid ${active ? "var(--primary)" : "var(--border)"}`,
+            <button key={id} type="button" onClick={() => toggle(id)} disabled={locked}
+              aria-pressed={active}
+              style={{ textAlign: "left", borderRadius: 12, padding: "10px 12px", cursor: locked ? "default" : "pointer",
+                border: `1px solid ${active ? "var(--primary)" : recommended ? RECOMMENDED_RING : "var(--border)"}`,
                 background: active ? "color-mix(in srgb, var(--primary) 10%, var(--card))" : "var(--card)",
                 boxShadow: active ? "0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent)" : "none",
-                transition: "all 0.15s var(--cc-ease, ease)", animation: `ccFadeUp .3s ease ${i * 0.05}s both`,
-                opacity: submitted && !active ? 0.5 : 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <TIcon name={o.icon} size={14} color="var(--primary)" />
+                // `backwards`, never `both`: a `both` fill holds the last
+                // frame's opacity after the motion, and an animation value
+                // beats the inline opacity below. So the lock never showed.
+                transition: "all 0.15s var(--cc-ease, ease)", animation: `ccFadeUp .3s ease ${i * 0.05}s backwards`,
+                opacity: locked && !active ? 0.5 : 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <TIcon name={active ? "check" : o.icon} size={14} color="var(--primary)" />
                 <span style={{ fontSize: TYPE.xs, fontWeight: 600, color: "var(--foreground)" }}>{str(o.label)}</span>
-                {o.recommended ? <span style={{ color: "var(--accent)", fontSize: TYPE.caption }}>★</span> : null}
+                {recommended ? <RecommendedBadge /> : null}
               </div>
               {o.description != null && (
                 <div style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)", marginTop: 3, lineHeight: 1.45 }}>
@@ -1006,23 +1036,32 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 </div>
               )}
               {o.badge != null && (
-                <span style={{ display: "inline-block", marginTop: 5, fontSize: TYPE.micro, fontWeight: 600,
-                  color: "var(--primary)", background: "color-mix(in srgb, var(--primary) 12%, transparent)",
-                  borderRadius: 999, padding: "2px 7px" }}>{str(o.badge)}</span>
+                <div style={{ marginTop: 5 }}>
+                  <Badge tone="primary" size="xs">{str(o.badge)}</Badge>
+                </div>
               )}
             </button>
           );
         })}
       </div>
-      {multi && (
+      {multi && !submitted && (
         <button type="button" onClick={() => submit(picked)}
-          disabled={!ctx?.onAction || submitted || !picked.length}
+          disabled={inert || !picked.length}
           style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
-            border: "none", cursor: "pointer", color: "var(--primary-foreground)",
-            background: submitted ? "var(--success)" : "var(--primary)",
-            opacity: !ctx?.onAction || !picked.length ? 0.5 : 1 }}>
-          {submitted ? "✓ Submitted" : "Confirm selection"}
+            border: "none", cursor: inert || !picked.length ? "default" : "pointer", color: "var(--primary-foreground)",
+            background: "var(--primary)",
+            opacity: inert || !picked.length ? 0.5 : 1 }}>
+          Confirm selection
         </button>
+      )}
+      {submitted && (
+        <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+          <Badge tone="success" icon="Check">{PICKER_SENT}</Badge>
+          <span style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{PICKER_SENT_NOTE}</span>
+        </div>
+      )}
+      {inert && (
+        <div style={{ marginTop: 12, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{PICKER_INERT_NOTE}</div>
       )}
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
@@ -1598,6 +1637,9 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
  *  spec carried a request_id, else as the user's next chat message. */
 export interface TemplateCtx {
   onAction?: (message: string) => void;
+  /** The answer a blocking card already got (`lib/askAnswers.ts`). A card
+   *  that has one draws as sent and takes no click, after any remount. */
+  answered?: string;
 }
 
 export type TemplateRenderer = (data: Data, ctx?: TemplateCtx) => React.ReactElement;

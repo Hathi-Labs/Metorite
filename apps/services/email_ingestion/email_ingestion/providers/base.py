@@ -52,7 +52,8 @@ class ProviderMailTooLarge(Exception):
     subclasses ``httpx.HTTPStatusError``, whose text holds the URL. A typed
     error of a provider adds this class, as ``GmailMailTooLarge`` does. The
     send and the draft routes answer 413 (``email_app_master_plan.md``
-    §12.3.3b items 6 and 7). Outlook and IMAP never raise it.
+    §12.3.3b items 6 and 7). Outlook raises ``OutlookMailTooLarge`` on a
+    413 of Graph (``email_app_master_plan.md`` §15). IMAP never raises it.
 
     ``limit`` is ``None`` when the provider refused the mail (a 413) under
     the local limit, so the text never names a limit that did not apply."""
@@ -482,6 +483,12 @@ class BaseEmailProvider(ABC):
     #: False)``, because some test fakes do not subclass this class.
     REKEYS_MESSAGE_IDS: bool = False
 
+    #: True when :meth:`forward_message` forwards a message at the provider,
+    #: so its files never pass through Metorite (``email_app_master_plan.md``
+    #: §15). Only Outlook does. The forward route reads it with ``getattr``,
+    #: because some test fakes do not subclass this class.
+    forwards_natively: bool = False
+
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
 
@@ -563,6 +570,23 @@ class BaseEmailProvider(ABC):
         whichever is given) — callers should pass both when replying and let the
         provider use what it needs."""
         ...
+
+    async def forward_message(
+        self,
+        provider_message_id: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        comment: str = "",
+        subject: str | None = None,
+    ) -> str | None:
+        """Forward a message at the provider, with ALL of its files.
+
+        Only a provider with :attr:`forwards_natively` implements it. The
+        provider keeps the files, so a forward of any size sends no byte
+        through Metorite. Returns the provider id of the sent mail, or None.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no native forward")
 
     @abstractmethod
     async def modify_message(

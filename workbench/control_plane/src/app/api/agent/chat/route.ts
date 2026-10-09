@@ -105,7 +105,7 @@ async function persistAssistantMessage(
   progressLines: string[] = [],
   messageId?: string,
   todos: Array<{ id: string; title: string; status: string }> = [],
-  customEvents: Array<{ name: string; value: unknown }> = [],
+  customEvents: Array<{ name: string; value: unknown; segmentCutoff?: number }> = [],
   segments: Array<{ id: string; text: string }> = [],
   agentName?: string,
   // Only the FINAL persist retries through a gateway restart (H-194). All
@@ -193,7 +193,7 @@ async function translateAndPersistStream(
   const progressLines: string[] = [];
   /** Artifact and other custom events (artifact_created, etc.) — persisted
    *  so ArtifactCard components survive page refresh. */
-  const customEvents: Array<{ name: string; value: unknown }> = [];
+  const customEvents: Array<{ name: string; value: unknown; segmentCutoff?: number }> = [];
   /** Latest structured todo-list snapshot (persisted via agent_state). */
   let latestTodos: Array<{ id: string; title: string; status: string }> = [];
   /** Sub-agent (delegation) activity accumulated since the last delegate tool
@@ -393,7 +393,12 @@ async function translateAndPersistStream(
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
           // A dispatched browser action (H-164) is a side effect, not part
           // of the answer: forwarded to the page, never saved on the message.
-          if (cev.name !== "frontend_tool") customEvents.push(cev);
+          // The count of segments now, 0 before the first text, so the
+          // saved card keeps its place in the turn (`genUiFlow`,
+          // lib/chatPlacement.ts). The live hook stamps it the same way.
+          if (cev.name !== "frontend_tool") {
+            customEvents.push({ ...cev, segmentCutoff: segments.length });
+          }
           out = { type: "custom", name: cev.name, value: cev.value };
         } else if (t === "SUB_AGENT_TEXT_DELTA") {
           const agent = String(ev.agentName ?? "");

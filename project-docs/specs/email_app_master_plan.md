@@ -27,6 +27,7 @@
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
+> 🔨 **§15 is BUILT on a branch, not merged (2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -14688,3 +14689,124 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
   show calls until AI credit metering lands (D-EM-43), then read the price from the console.
 - **Q-ST-2. The bound of 24 months** (D-EM-56). The proposal holds 24 months because the meter,
   Process past emails and the Insights throttle each bound a longer window first.
+
+## 15. Forward with files, and links to an email (2026-10-09)
+
+**Status: 🔨 BUILT on branch `email-chat-forward-links`, not merged (2026-10-09).** No
+migration, and no flag.
+
+The owner chatted with the orchestrator, which called the email assistant. The owner asked it
+to forward a BQ email and its PDF to a colleague. The assistant gave two answers. Its send tool
+could not forward the original PDF. And it had "no shareable link to the original email, only
+an internal id". Nothing in the backend forwarded a mail. The app opened `/email?email=<id>`,
+and no tool used it.
+
+### 15.1 Forward an email with its files
+
+`POST /email/forward` (`gateway/routes/email/transport/forward.py`) sends a new mail from the
+mailbox that holds the original. The body names the source by its id, the recipients, an
+optional note, and `include_attachments` (true by default) or `attachment_ids`.
+
+1. **Owner read first.** A mail of another member, or of another organization, answers 404
+   before any other read. A named `account_id` that does not hold the mail answers 404, as for
+   a reply (D-EM-19).
+2. **The files.** The route takes each file of the mail, or the named files only. A named file
+   of another mail answers 404.
+3. **The size cap.** The files of one forward carry 25 MB at most (`MAX_FORWARD_BYTES`), the
+   limit of Gmail. The route checks the stored sizes before any fetch, and the fetched bytes
+   after it. Above the cap it answers 413 and sends nothing.
+4. **The bytes.** Each file comes through `_fetch_owned_attachment`, the one owned fetch of a
+   file. A file with no bytes (an attached mail, a cloud link) answers 422 and sends nothing.
+   An IMAP mailbox forwards no file (422).
+5. **The body.** The note and the signature of the mailbox come first. Then a forwarded header
+   (From, Date, Subject, To, Cc), then the original. The original HTML is kept. The route reads
+   it from the row, then from the cache of the reading pane, then once from the provider.
+6. **The subject** is `Fwd: <subject>`. The route removes each `Re:`, `Fw:`, `Fwd:` and
+   `Subject:` mark that led the original, so the owner's "Re: Subject:" goes.
+7. **The send** uses `provider_session`, by one of two paths. A forward threads into no
+   conversation.
+   - **Outlook with every file** uses Graph's own `POST /me/messages/{id}/forward`
+     (`forward_message`, `forwards_natively`). Graph copies the files at the server, so
+     a forward of any size sends no file through Metorite and meets no size cap of ours.
+     Graph's `/me/sendMail` takes files inline and refuses a body over about 4 MB. The
+     first build sent an Outlook forward that way, so a real PDF failed after the
+     approval (review round 1, P1-b). The recipients, the bcc and the subject ride in
+     the `message` parameter of the forward.
+   - **A subset of the files on Outlook answers 422** (`OUTLOOK_SUBSET`). Graph's
+     forward carries every file or none. A rebuild with some files would meet the
+     inline limit again. A forward with no files rebuilds the mail with no files.
+   - **Every other forward rebuilds the mail** through `send_message`, with the cap of
+     step 3.
+8. **A provider failure gets a reason, never a bare 500** (`_provider_refusal`). A
+   mail that is too large is 413 on both providers (`OutlookMailTooLarge` for Graph).
+   The provider's own 401, 404 and 429 pass through. Any other refusal of the
+   provider is 422, and it names the status and the provider's error code. A provider
+   that is down is 502, because a 4xx would tell the caller to change a right request.
+   No detail holds a URL.
+
+The agent tool `forward_email` shows a confirmation card before it posts. Each target is in
+`context`: the From mailbox, then each To, Cc and Bcc address, one line each
+(`_card_targets`). The card keeps 4,000 characters of `context` and 500 of `detail`, so
+no subject and no file name can push a recipient off the card (verifier F1). A list over
+ten addresses ends with "+N more". `detail` starts with From and the first To, then the
+subject, and the files come last, with "+N more" when they do not fit (`_card_detail`).
+`send_email` builds its card the same way. A "no" sends nothing. `instructions.md` says
+to forward, not to send, when the user asks to pass an email to a new person.
+
+⚠️ `POST /email/send` writes no audit row, and it checks no send right beyond the `email`
+feature and the mailbox owner. The forward has the same two guards. It logs
+`email.forwarded` with ids and counts, and never an address or a word of the mail.
+
+### 15.2 Links to an email in chat
+
+The link to one email is `/email?email=<id>&account=<account id>`.
+
+- `emailLink` in `workbench/control_plane/src/app/email/lib/emailLink.ts` builds it, and
+  `_email_link` in the agent prints the same shape. Each answers nothing for an id that is
+  not a UUID.
+- The list tools of the agent print the whole Markdown link as `link_md=` after each
+  `id=`. `read_email` prints it as a `Link:` line. The model copies it and never builds
+  a link.
+- The tool escapes the subject in the words of the link (`_md_link_text`). A sender
+  chooses the subject, so a subject such as `[Open](https://evil.example)` would
+  otherwise plant a link (review round 1, P2-a).
+- The chat draws a link to another site with an external-link icon and its host, so the
+  member sees where it goes (`MarkdownLink`, `lib/inAppLink.ts`).
+- The orchestrator keeps an in-app link of a sub-agent as it is. It does not keep a link
+  to another site that the text of an email gives. A bare UUID in text is not a
+  citation, and the orchestrator does not show it.
+- `components/EmailDeepLink.tsx` opens the email of a link two ways. It reads `?email=`
+  each time it changes. It also hears each click on a chat link (`IN_APP_LINK_EVENT`),
+  so a second click on the same link opens the email again (review round 1, P2-b). An
+  open always brings the mail forward, also when that mail is already selected.
+- "Open in inbox" on a chat card pushes the link, so a refresh opens the same email.
+
+The link opens the email inside the app only. It is not a link to share with another person.
+
+### 15.3 Fences
+
+- `tests/unit/test_email_forward.py`: the route (hermetic), the subject, the tool and the
+  links.
+- `tests/unit/test_email_forward_r8.py` (R8): the route's SQL as a non-privileged role under
+  FORCE row level security.
+- `src/app/email/lib/emailLink.test.ts`: the link, `isInAppPath`, and the two callers.
+- `src/lib/inAppLink.test.ts`: the external mark, the escaped subject, and the click event.
+- `e2e/email-deep-link.spec.ts`: a fresh link, a second link while the page is open, and
+  the same chat link clicked twice.
+
+### 15.4 Not done here
+
+- **The reading pane's Forward still drops the files** (`EmailDetail.tsx`). It can call the
+  new route. That is a UI ticket.
+- **The rule action FORWARD still writes a text-quoted draft** (`automation/actions.py`).
+- **No link leaves the app.** A link that a colleague can open needs a share model.
+- **A slow forward can go out after the tool reports a failure.** The route does not stop
+  when its caller goes away, and the agent waits 60 seconds for it. A forward that takes
+  longer can be sent while the model reads a failure, and the model can then ask again.
+  An idempotency key for each confirmation does not close this, because a second
+  approval is a new card with a new key. A key over the mail and its recipients for a
+  short window would, and it can also refuse a forward that the member wants twice. That
+  choice is the owner's.
+- **Outlook cannot forward a subset of the files.** `createForward`, a delete of the files
+  not chosen, and a send would do it. Graph names the copied files with new ids, so the
+  match would be by name and size, which two files can share.

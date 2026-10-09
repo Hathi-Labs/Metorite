@@ -27,6 +27,7 @@ import SuggestionPills from "@/components/SuggestionPills";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import AskPin from "@/components/AskPin";
 import { HITL_TARGET, pendingAsk } from "@/lib/askPin";
+import { segmentsForCache } from "@/lib/chatPlacement";
 import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
@@ -245,6 +246,9 @@ interface AgentChatProps {
    */
   onSessionRefused?: (pendingText: string) => boolean;
 }
+
+/** The `answer` of a resolved card that closed with no answer. */
+const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELLED"]);
 
 export default function AgentChat({
   agentName,
@@ -608,6 +612,8 @@ export default function AgentChat({
       agentState: m.agentState,
       customEvents: m.customEvents,
       todos: m.todos,
+      // The cards of the turn draw in stream order from these (P1-a).
+      segments: segmentsForCache(m.segments, m.customEvents),
       // Carried so a run this browser watched is attributed to the agent that
       // produced it. The server owns human attribution — it stamps the
       // authenticated caller — so a human author sent here would be ignored.
@@ -850,6 +856,11 @@ export default function AgentChat({
     allowFreeform: boolean;
   } | null>(null);
 
+  // The words of each answer this session sent to a blocking generative-UI
+  // card, by `request_id`, so a card that remounts keeps its choice and stays
+  // locked (`lib/askAnswers.ts`, review round 1 P2-c).
+  const [askAnswers, setAskAnswers] = useState<ReadonlyMap<string, string>>(() => new Map());
+
   // Subscribe to agent events for HITL detection
   useAgentEvents({
     onCustomEvent: ({ name, value, threadId }) => {
@@ -865,6 +876,13 @@ export default function AgentChat({
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
         if (rid) dispatchConfirmation({ type: "resolved", requestId: String(rid) });
+        // An answer from anywhere (another tab, another member of a room)
+        // locks the blocking card too. A timeout or a cancel is no answer:
+        // that card stays open, and a click on it goes out as a message.
+        const answer = (value as Record<string, unknown>).answer;
+        if (rid && typeof answer === "string" && answer && !CARD_CLOSED_UNANSWERED.has(answer)) {
+          setAskAnswers((prev) => new Map(prev).set(String(rid), answer));
+        }
       }
       if (name === "elicitation_requested" && value && typeof value === "object") {
         const v = value as Record<string, unknown>;
@@ -984,6 +1002,7 @@ export default function AgentChat({
     setElicitation(null);
     setUserInput(null);
     setAnsweredAsks(new Set());
+    setAskAnswers(new Map());
   }
 
   // POST a blocking-HITL answer to /api/agent/respond-input.
@@ -1042,6 +1061,7 @@ export default function AgentChat({
         agentState: m.agentState,
         customEvents: m.customEvents,
         todos: m.todos,
+        segments: segmentsForCache(m.segments, m.customEvents),
       }));
       // Use sendBeacon for reliable delivery during page unload
       const payload = toSave.map((m) => ({
@@ -1374,6 +1394,7 @@ export default function AgentChat({
         next.add(requestId);
         return next;
       });
+      setAskAnswers((prev) => new Map(prev).set(requestId, answer));
       postRespondInput(
         { request_id: requestId, answer, was_freeform: true },
         () => submitText(answer),
@@ -1528,6 +1549,10 @@ export default function AgentChat({
                 postRespondInput(
                   { request_id: reqId, answer, was_freeform: wasFreeform },
                   () => setElicitation(card),
+                  // A 4xx says no question waits on this id (a stale card).
+                  // The answer goes out as a message, as the genUI path
+                  // does, so it is never lost (2026-10-09).
+                  (outcome) => { if (outcome === "drop") submitText(answer); },
                 );
               } else {
                 const formatted = Object.entries(answers)
@@ -1571,6 +1596,7 @@ export default function AgentChat({
               postRespondInput(
                 { request_id: card.requestId, answer, was_freeform: wasFreeform },
                 () => setUserInput(card),
+                (outcome) => { if (outcome === "drop" && answer) submitText(answer); },
               );
             }}
           />
@@ -1787,6 +1813,7 @@ export default function AgentChat({
                 )}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
+                  askAnswers={askAnswers}
                   emailContext={emailContext}
                   onFileOpen={handleFileOpen}
                   onResend={handleResend}

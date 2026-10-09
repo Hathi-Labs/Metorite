@@ -244,6 +244,7 @@ const WRITE: readonly string[] = [
   "move_to_folder",
   "create_label",
   "send_email",
+  "forward_email",
   "send_reply",
   "send_draft",
   "delete_rule",
@@ -362,4 +363,102 @@ export function genUiTitle(spec: unknown): string {
     if (typeof v === "string" && v.trim()) return v.trim();
   }
   return "";
+}
+
+// ── Generative UI: its place in the order the turn streamed ─────────────────
+//
+// The owner's report of 2026-10-09: an orchestrator turn wrote its answer,
+// then parked on an option picker. The owner clicked an option, the run went
+// on, and its next words drew ABOVE the picker, between the old answer and
+// the card. The eye was on the card, and the card did not change, so the
+// click "did not seem to do anything".
+//
+// So each `generative_ui` event carries `segmentCutoff`: how many text
+// segments the turn held when the card arrived, the stamp a tool row already
+// carries. Three writers stamp it the same way: the live hook
+// (`hooks/useAgentChat.ts`), the chat proxy's checkpoint
+// (`app/api/agent/chat/route.ts`) and the gateway fold (`chat_fold.py`). A
+// segment at or past the stamp draws AFTER the card.
+
+/** The most characters of segment text that the local cache keeps for one
+ *  turn. The cache has no byte budget of its own, and a quota error skips the
+ *  WHOLE write (`sessions.ts`), so a big copy would cost every turn. */
+export const CACHED_SEGMENTS_MAX_CHARS = 32_000;
+
+/**
+ * The segments a cached copy of a turn keeps: only when a generative-UI card
+ * of the turn carries a stamp, because only `genUiFlow` needs them, and only under
+ * {@link CACHED_SEGMENTS_MAX_CHARS}. Else `undefined`, and the turn draws in
+ * the old layout from its `content` (review round 1, P1-a).
+ */
+export function segmentsForCache<E extends { name?: string; segmentCutoff?: number }>(
+  segments: readonly { id: string; text: string }[] | undefined,
+  customEvents: readonly E[] | undefined,
+): { id: string; text: string }[] | undefined {
+  if (!segments?.length) return undefined;
+  // Every CUSTOM event carries a stamp since round 1, so the stamp alone is
+  // no test. Only a generative-UI card places itself by it (round 2, P3).
+  const placed = (customEvents ?? []).some(
+    (e) => e.name === "generative_ui" && typeof e.segmentCutoff === "number");
+  if (!placed) return undefined;
+  const chars = segments.reduce((n, s) => n + s.text.length, 0);
+  return chars <= CACHED_SEGMENTS_MAX_CHARS ? [...segments] : undefined;
+}
+
+/** One block of the body of a turn, in the order it streamed. */
+export type FlowBlock =
+  | { kind: "text"; text: string }
+  | { kind: "cards"; indexes: number[] };
+
+/**
+ * The body of a turn as text and card blocks, in stream order, or `null`
+ * when no card carries a stamp, or when the turn holds no segment. `null`
+ * means "draw as before": all the text (`content`), then all the cards.
+ *
+ * ⚠️ A turn with stamps and NO segments is the local cache of an older build
+ * (review round 1, P1-a). Its stamps point into segments it does not hold,
+ * so a flow from them would draw the cards and drop the answer.
+ *
+ * ⚠️ A stamped card is in the flow from the moment it arrives, also before
+ * any text follows it. If the layout changed only when the follow-up began,
+ * React would remount the card at that moment, and an option picker would
+ * lose the choice it shows (`chatPlacement.test.ts` holds the block keys).
+ *
+ * `cutoffs[i]` is the stamp of the i-th card, or `undefined` for a card that
+ * has none (a row saved before the stamp, or a run with no segment ids).
+ * Such a card draws after all the text, as it always did. Empty segments
+ * make no block.
+ */
+export function genUiFlow(
+  segments: readonly { text: string }[] | undefined,
+  cutoffs: readonly (number | undefined)[],
+): FlowBlock[] | null {
+  const segs = segments ?? [];
+  const stamped = (c: number | undefined): c is number =>
+    typeof c === "number" && Number.isInteger(c) && c >= 0;
+  if (!cutoffs.some(stamped) || segs.length === 0) return null;
+
+  const blocks: FlowBlock[] = [];
+  const pushText = (text: string) => {
+    if (!text.trim()) return;
+    const last = blocks[blocks.length - 1];
+    if (last?.kind === "text") last.text = `${last.text}\n\n${text}`;
+    else blocks.push({ kind: "text", text });
+  };
+  const pushCards = (indexes: number[]) => {
+    if (indexes.length) blocks.push({ kind: "cards", indexes });
+  };
+  for (let j = 0; j <= segs.length; j++) {
+    // The cards that arrived when the turn held `j` segments come before
+    // segment `j`. A stamp past the end draws after the last segment.
+    pushCards(
+      cutoffs
+        .map((c, i) => [c, i] as const)
+        .filter(([c]) => stamped(c) && (j === segs.length ? c >= j : c === j))
+        .map(([, i]) => i),
+    );
+    if (j < segs.length) pushText(segs[j].text);
+  }
+  pushCards(cutoffs.map((c, i) => [c, i] as const).filter(([c]) => !stamped(c)).map(([, i]) => i));
+  return blocks;
 }

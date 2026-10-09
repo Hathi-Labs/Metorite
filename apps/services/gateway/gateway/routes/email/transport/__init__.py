@@ -11,6 +11,7 @@ from gateway.routes.email.transport import (
     attachments,
     contacts,
     folders,
+    forward,
     messages,
     oauth,
     search,
@@ -19,8 +20,8 @@ from gateway.routes.email.transport import (
     sync,
 )  # noqa: F401
 
-for _mod in (accounts, attachments, contacts, folders, messages, oauth, search,
-             send, storage, sync):
+for _mod in (accounts, attachments, contacts, folders, forward, messages, oauth,
+             search, send, storage, sync):
     for _k, _v in vars(_mod).items():
         if not _k.startswith("__"):
             globals()[_k] = _v

@@ -27,7 +27,7 @@ import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
-import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
+import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
@@ -394,7 +394,7 @@ export function useAgentChat({
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
                 if (!HITL_CONTROL_EVENTS.has(evtName)) {
-                  upd((m) => ({ ...m, customEvents: [...(m.customEvents ?? []), { name: evtName, value: evt.value ?? evt.data }] }));
+                  upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
               }
@@ -732,7 +732,7 @@ export function useAgentChat({
                   });
                 }
                 if (!HITL_CONTROL_EVENTS.has(evtName)) {
-                  updLast((m) => ({ ...m, customEvents: [...(m.customEvents ?? []), { name: evtName, value: evt.value ?? evt.data }] }));
+                  updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
               }

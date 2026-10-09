@@ -31,7 +31,9 @@ attached `.docx`, PDF or text file again, and no code runs. The security
 fix of §14.8 (a remote image in agent Markdown loads only on a click) was
 built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
 2026-10-04, in review: the uploads and the S8 documents of the chat are
-private to their thread.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+private to their thread. §24.9 (a card keeps its place in the stream, and
+a recommended option says so) was built 2026-10-09 on a branch, not
+merged.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -5434,6 +5436,71 @@ label stays text, because a label carries no link.
 
 **Advisory.** No test reads the "More columns to the right" cue, because it
 needs a real layout. The visual review looked at it.
+
+### 24.9 A card keeps its place in the stream (2026-10-09)
+
+**Status: 🔨 BUILT on branch `email-chat-forward-links`, not merged.**
+
+The owner clicked an option of an orchestrator picker, and "it doesn't seem
+to do anything". The production log showed that `respond-input` answered 200
+and that the run finished 6 s later. A browser replay
+(`e2e/genui-option-picker.spec.ts`) found two causes in what the chat drew.
+
+1. **The lock did not show.** Each option of `optionPicker` had the motion
+   `ccFadeUp … both`. A `both` fill keeps the last frame, `opacity: 1`, and an
+   animation value wins over the inline `opacity: 0.5`. So no option dimmed,
+   and no word said that the answer went.
+2. **The follow-up drew above the card.** `MessageBubble.tsx` drew all the
+   text of the turn first and the generative-UI cards after it. The words
+   that the run wrote after the click went between the old answer and the
+   card, out of the member's view.
+
+The rule, which this section adds beside §24.2 rule 1 and which leaves the
+text of §24.2 as it is: **an element that needs the member stays in the order
+the turn streamed, and text that came after it draws below it.**
+
+- Each `generative_ui` event carries `segmentCutoff`, the count of text
+  segments when it arrived. The live hook, the chat proxy and the gateway
+  fold (`chat_fold.py`) stamp it the same way, so a reload keeps the order.
+- `genUiFlow` in `lib/chatPlacement.ts` turns the stamps into text and card
+  blocks. A stamped card is in the flow from the moment it arrives, so the
+  follow-up never remounts it and its choice stays on screen.
+- A picked option shows at once: `aria-pressed`, a check mark, the other
+  options dimmed, and a "Sent" badge. A picker with no handler takes no click
+  and says why.
+- The `ask_questions` card sends the answer as a message on a 4xx, as the
+  picker does. The bubble memo compares `onHitlRespond`, so a bubble never
+  keeps a stale handler.
+- A recommended option shows the word **Recommended** on the shared `Badge`,
+  in the `warning` tone, in the picker, the comparison and the question card.
+
+Fences: `chatPlacement.test.ts` (the blocks, the order, the memo),
+`genUITemplates.test.ts` and `elicitationCard.test.ts` (the word, the toggle,
+the motion), and `e2e/genui-option-picker.spec.ts` (each click path in a real
+browser, with 200 and with 409).
+
+**Review round 1 (2026-10-09).**
+
+- **A cached turn keeps its text** (P1-a). The local cache kept the stamps and
+  not the segments, so the flow drew the cards and dropped the answer. Now
+  `genUiFlow` answers `null` (the old layout) for a turn with no segment, and
+  the cache keeps the segments of a turn whose card is stamped, under 32,000
+  characters (`segmentsForCache`). The cache has no byte budget, and a quota
+  error skips the whole write.
+- **A card before the first text is stamped `0`** (P2-c). It had no stamp, and
+  drew after all the text. All three writers stamp it now.
+- **One slot for the cards** in both layouts, so a card keeps its place in the
+  tree when the first text arrives after it.
+- **An answered picker stays answered** (P2-c). `emit_generative_ui` returns
+  its `request_id` with the answer, and the chat reads the turn's tool results
+  (`lib/askAnswers.ts`). This session's own answers, and an answer that a
+  `confirmation_resolved` event names, count too. A card with an answer draws
+  as sent and takes no click after any remount or reload. A timed-out or
+  cancelled card stays open, and a click on it goes out as a message.
+
+⚠️ **Not done here.** `AgentChat`'s history read compares the server rows with
+the messages of its first render, so a slow read can replace a live turn. The
+replay hit that race on a cold compile.
 
 ## 25. The fixed prefix of each request (2026-10-09)
 

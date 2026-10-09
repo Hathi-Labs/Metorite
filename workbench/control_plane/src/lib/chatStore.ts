@@ -72,7 +72,10 @@ export interface ChatMessage {
   /** Agent's structured todo list (VS Code Todos panel parity). */
   todos?: { id: string; title: string; status: string }[];
   agentState?: Record<string, unknown>;
-  customEvents?: { name: string; value: unknown }[];
+  /** `segmentCutoff`: the count of text segments when the event arrived, so a
+   *  card draws before the text that streamed after it (`genUiFlow` in
+   *  `lib/chatPlacement.ts`). Absent on a run with no segment ids. */
+  customEvents?: { name: string; value: unknown; segmentCutoff?: number }[];
   /** Who authored this turn: a person's email, or an agent's registered name. */
   authorEmail?: string;
   /** Whose FACE to render — deliberately separate from `role`.
