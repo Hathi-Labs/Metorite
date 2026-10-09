@@ -631,7 +631,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
-| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). 🔨 **PR-A BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-pra`), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
+| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). 🔨 **PR-A BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-pra`), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** 🔨 **PR-B BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-prb`), dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -6078,8 +6078,11 @@ new schema.
 feature starts `off`. ✅ PR-0 MERGED (#783, 2026-10-09). 🔨 PR-A BUILT, NOT
 MERGED (2026-10-09, branch `email-em-t16-pra`). It is dark behind
 `EMAIL_TRIAGE_ONCE_PER_CYCLE`, and a value of `true` on a box is gate
-`enforcement-flip`. 📝 PR-B audited GO-NARROWED (2026-10-09), and its
-decisions B1 to B7 are in PR-B below. PR-C and PR-D are not built.
+`enforcement-flip`. 🔨 PR-B BUILT, NOT MERGED (2026-10-09, branch
+`email-em-t16-prb`). It is dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`, and a
+value of `true` on a box is gate `enforcement-flip`. The audit returned
+GO-NARROWED, and its decisions B1 to B7 are in PR-B below. PR-C and PR-D are
+not built.
 
 **Why this section exists.** The spec audit of 2026-10-09 found four places
 where email triage asks a model more often than it must. No section owned that
@@ -6323,6 +6326,26 @@ a Receipt?". This is the recommendation of the audit, and this spec takes it.
   `_maybe_block_cold`.
 - **D3.** In `on`, History shows one synthetic line in place of N
   suppressed lines.
+
+**PR-B as built (2026-10-09, branch `email-em-t16-prb`).**
+
+- `replyzero.skip_rule_match` holds the skip test and the flag test. It
+  takes no `db`, and it logs `email.rule_match_skipped` with the account id,
+  the status and the job.
+- The runner passes `log_no_match=False` to `_apply_matches` on a skip. Then
+  `runner._log_status_decided` writes the synthetic line in Block W.
+- The backfill sets `asked = []` and writes no line.
+
+**Mutations of PR-B.** Each one ran red, and the file came back to the same
+SHA-256 after each one.
+
+- The skip loses the reaches_bar test. The three `under-the-bar` cases of
+  `test_these_cases_never_skip` fail.
+- The skip loses the target test. The three `no-target-rule` cases fail.
+- The skip loses the flag test. Twelve flag-off cases fail.
+- The composed `classify_matches` skips too.
+  `test_the_composed_path_asks_the_rule_match_with_the_skip_flag` fails.
+- The backfill writes the synthetic line. Two backfill cases fail.
 
 ##### PR-C — keep the "no" verdicts
 
