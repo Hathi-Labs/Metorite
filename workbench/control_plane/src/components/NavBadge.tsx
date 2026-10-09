@@ -24,11 +24,16 @@ const TONE: Record<NavBadgeTone, string> = {
   warning: "bg-warning text-warning-foreground",
 };
 
-/** `corner` sits on an icon. `inline` ends a row of text. */
-export type NavBadgePlacement = "corner" | "inline";
+/**
+ * `corner` sits on a sidebar icon. `tab` sits on a bottom-bar icon, which is
+ * wrapped in its own `relative` box: a tab is `flex-1`, so a badge placed on
+ * the tab drifts to the edge of the screen. `inline` ends a row of text.
+ */
+export type NavBadgePlacement = "corner" | "tab" | "inline";
 
 const PLACE: Record<NavBadgePlacement, string> = {
   corner: "absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1",
+  tab: "absolute -top-1.5 -right-3 h-4 min-w-4 px-1",
   inline: "ml-auto h-4 min-w-4 px-1.5",
 };
 
@@ -44,7 +49,7 @@ export default function NavBadge({
   /** The spoken name of the count, e.g. "2 assistants running". */
   label: string;
   placement?: NavBadgePlacement;
-  /** Position only. Never a colour. */
+  /** Layout only, never a colour or a position that `placement` sets. */
   className?: string;
 }) {
   if (!(count > 0)) return null;

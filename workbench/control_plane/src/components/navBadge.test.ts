@@ -107,10 +107,10 @@ describe("the phone nav wears the run badge on every page", () => {
 
   it("the Menu tab carries the total off /chat, and the Chats tab on it", () => {
     expect(shell).toMatch(
-      /<AppIcon name="Menu" size=\{20\} \/>\s*\{!isChatPage && \(\s*<NavBadge count=\{activeCount\} tone="success"/,
+      /<AppIcon name="Menu" size=\{20\} \/>\s*\{!isChatPage && \(\s*<NavBadge count=\{activeCount\} tone="success" label=\{runningName\} placement="tab"/,
     );
     expect(shell).toMatch(
-      /<AppIcon name="MessageCircle" size=\{20\} \/>\s*<NavBadge count=\{activeCount\} tone="success"/,
+      /<AppIcon name="MessageCircle" size=\{20\} \/>\s*<NavBadge count=\{activeCount\} tone="success" label=\{runningName\} placement="tab"/,
     );
   });
 

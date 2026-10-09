@@ -577,10 +577,12 @@ function MobileBottomNavInner({
             isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
           }`}
         >
-          <AppIcon name="Menu" size={20} />
-          {!isChatPage && (
-            <NavBadge count={activeCount} tone="success" label={runningName} placement="corner" className="right-2" />
-          )}
+          <span className="relative">
+            <AppIcon name="Menu" size={20} />
+            {!isChatPage && (
+              <NavBadge count={activeCount} tone="success" label={runningName} placement="tab" />
+            )}
+          </span>
           <span className="text-[10px] font-medium leading-none">Menu</span>
         </button>
         {isEmailPage && !emailEmpty && (
@@ -602,8 +604,10 @@ function MobileBottomNavInner({
         {isChatPage && (
           <>
             <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("chats")} className="relative flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="MessageCircle" size={20} />
-              <NavBadge count={activeCount} tone="success" label={runningName} placement="corner" className="right-2" />
+              <span className="relative">
+                <AppIcon name="MessageCircle" size={20} />
+                <NavBadge count={activeCount} tone="success" label={runningName} placement="tab" />
+              </span>
               <span className="text-[10px] font-medium leading-none">Chats</span>
             </Button>
             <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("files")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
