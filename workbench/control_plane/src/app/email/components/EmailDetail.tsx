@@ -14,9 +14,14 @@ import { FromRow } from "./FromRow";
 import { MailboxChip, mailboxLabel } from "./MailboxChip";
 import {
   fetchFullBody, getEmail, listThread, createRule,
-  fileToSendAttachment,
+  fileToSendAttachment, forwardEmail,
   type SendAttachment, type ArtifactAttachmentRef,
 } from "../lib/api";
+import {
+  OUTLOOK_ALL_OR_NONE, forwardFailure, forwardFilesOf, forwardRequest, outlookSubset,
+  type ForwardFile,
+} from "../lib/forward";
+import { ForwardFileChips } from "./ForwardFileChips";
 import { useDraftSession } from "../lib/useDraftSession";
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
@@ -120,6 +125,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
   }, [fromId]);
   const [replyAttachments, setReplyAttachments] = useState<SendAttachment[]>([]);
   const [replyArtifacts, setReplyArtifacts] = useState<ArtifactAttachmentRef[]>([]);
+  // The files of the email in a forward, each kept by default. The forward
+  // sends through POST /email/forward, which carries them (follow-up 4 of #766).
+  const [forwardFiles, setForwardFiles] = useState<ForwardFile[]>([]);
+  // A refused forward that a forward without files can fix (413, Outlook, IMAP).
+  const [offerNoFiles, setOfferNoFiles] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
   // One inline send at a time (EM-T10 item 7, EM-G3c-2-f10). The ref is the
   // guard, because a second click or Ctrl+Enter can come before a render.
@@ -539,6 +549,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
     (replyTargetId ? thread?.find((m) => m.id === replyTargetId) : undefined) ??
     view;
   replyTargetRef.current = replyTarget;
+  // The files of the email can arrive after the forward opened (the detail
+  // loads lazily). The chips take them once, while the forward has none.
+  if (replyMode === "forward" && forwardFiles.length === 0 && (replyTarget.attachments?.length ?? 0) > 0) {
+    setForwardFiles(forwardFilesOf(replyTarget.attachments));
+  }
 
   // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
   const saveFailure = saveFailureText(draftStatus);
@@ -581,6 +596,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setReplyBcc("");
     setReplyAttachments([]);
     setReplyArtifacts([]);
+    setForwardFiles(mode === "forward" ? forwardFilesOf(src.attachments) : []);
+    setOfferNoFiles(false);
     setAiOpen(false);
     setAiInstruction("");
     // HTML-only mail (e.g. Outlook) has no bodyText — fall back to the snippet.
@@ -664,6 +681,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setShowReplyCc(false);
     setReplyAttachments([]);
     setReplyArtifacts([]);
+    setForwardFiles([]);
+    setOfferNoFiles(false);
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new reply starts a fresh drafting session
@@ -727,9 +746,71 @@ export function EmailDetail({ email }: EmailDetailProps) {
     if (draft) setAiInstruction("");
   };
 
+  /** Send the forward through POST /email/forward, with the files the member
+   *  kept (follow-up 4 of #766). The route builds the subject, the forwarded
+   *  header and the original, and it carries the files. The pane sends the
+   *  note only. The draft that the autosave kept goes after the send. */
+  const sendForward = async (
+    to: string[], cc: string[], bcc: string[], target: Email, files: readonly ForwardFile[],
+  ) => {
+    // The route sends from the mailbox that holds the email, and refuses any
+    // other one with a 404. So a changed From stops here, with its reason.
+    if (!mailboxId || fromId !== mailboxId) {
+      const box = accounts.find((a) => a.id === mailboxId);
+      setSendErr(
+        `A forward goes out from the mailbox that holds the email. Pick ${box ? mailboxLabel(box) : "that mailbox"} in From.`,
+      );
+      return;
+    }
+    if (outlookSubset(mailboxAccount?.provider, files)) {
+      setSendErr(`${OUTLOOK_ALL_OR_NONE} Nothing was sent.`);
+      setOfferNoFiles(true);
+      return;
+    }
+    const session = replySessionRef.current;
+    const stale = staleDraftsRef.current;
+    sendingRef.current = true;
+    setSending(true);
+    setOfferNoFiles(false);
+    try {
+      // A queued autosave goes, and a save that runs settles first, so its
+      // draft id is known and the draft can go after the send.
+      await autosave.drain(session);
+      await forwardEmail(forwardRequest({
+        messageId: target.id,
+        accountId: mailboxId,
+        to,
+        cc,
+        bcc,
+        note: replyBody,
+        files,
+      }));
+    } catch (e) {
+      const failure = forwardFailure(e);
+      setSendErr(failure.text);
+      setOfferNoFiles(failure.offerNoFiles && files.some((f) => f.checked));
+      return;
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+    // The forward is a new mail in Sent. The copy that the autosave kept in
+    // Drafts goes, as a discard takes it.
+    resetReplySession();
+    const ids = draftsToDiscard(
+      session,
+      { session: replySessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+      stale.splice(0),
+    );
+    for (const id of ids) void deleteEmail(id);
+    refreshThreadAfterSend();
+  };
+
   /** Send the reply/forward. If it was auto-saved as a draft we send that draft
-   *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message. */
-  const handleInlineSend = async () => {
+   *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message.
+   *  A forward goes through `sendForward`, with the files of the email. */
+  const handleInlineSend = async (filesOverride?: readonly ForwardFile[]) => {
     // A send runs already: the click or the Ctrl+Enter does nothing (f10).
     if (sendingRef.current) return;
     if (!email) return;
@@ -753,6 +834,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
+    if (isForward) {
+      await sendForward(toArr, ccArr, bccArr, target, filesOverride ?? forwardFiles);
+      return;
+    }
     // The send starts here, after the early returns and before the drain, so
     // the Send button shows it while the drain waits (EM-T10 item 7).
     sendingRef.current = true;
@@ -869,6 +954,22 @@ export function EmailDetail({ email }: EmailDetailProps) {
     replyDirty.current = true;
     setReplyBody((prev) => swapSignature(prev, oldSig, newSig));
     setFromPick({ mail: email.id, id: next });
+  };
+
+  /** Keep or take out one file of the forward. */
+  const toggleForwardFile = (id: string, checked: boolean) => {
+    setForwardFiles((prev) => prev.map((f) => (f.id === id ? { ...f, checked } : f)));
+    setOfferNoFiles(false);
+  };
+
+  /** Take every file out of the forward. With `send`, forward at once: the
+   *  member already pressed Send, and the files were the refusal. */
+  const forwardWithoutFiles = (send: boolean) => {
+    const none = forwardFiles.map((f) => ({ ...f, checked: false }));
+    setForwardFiles(none);
+    setOfferNoFiles(false);
+    setSendErr(null);
+    if (send) void handleInlineSend(none);
   };
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
@@ -1327,12 +1428,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
           >
             <div className="px-4 py-2 bg-secondary text-xs text-muted-foreground border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span>
-                  Replying to{" "}
-                  <span className="text-foreground">
-                    {replyMode === "forward" ? "…" : replyTarget.from.name}
+                {replyMode === "forward" ? (
+                  <span>Forwarding with the files of the email</span>
+                ) : (
+                  <span>
+                    Replying to{" "}
+                    <span className="text-foreground">{replyTarget.from.name}</span>
                   </span>
-                </span>
+                )}
                 {/* Reply / Reply All mode toggle (hidden for forward) */}
                 {replyMode !== "forward" && (
                   <div className="flex items-center bg-background rounded-md p-0.5 ml-2">
@@ -1448,6 +1551,20 @@ export function EmailDetail({ email }: EmailDetailProps) {
               autoFocus
               className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none"
             />
+            {replyMode === "forward" && (
+              <ForwardFileChips
+                files={forwardFiles}
+                onToggle={toggleForwardFile}
+                outlookSubset={outlookSubset(mailboxAccount?.provider, forwardFiles)}
+                onKeepAll={() => {
+                  setForwardFiles((prev) => prev.map((f) => ({ ...f, checked: true })));
+                  setOfferNoFiles(false);
+                  setSendErr(null);
+                }}
+                onWithoutFiles={() => forwardWithoutFiles(false)}
+                disabled={sending}
+              />
+            )}
             {(replyAttachments.length > 0 || replyArtifacts.length > 0) && (
               <div className="px-4 pb-2 flex flex-wrap gap-1.5">
                 {replyAttachments.map((a, i) => (
@@ -1517,9 +1634,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 10, 13 and 14). It takes its own line: the footer holds six
                 controls, and its status text truncates at 1440 px. */}
             {(sendErr || saveFailure) && (
-              <p role="alert" className="px-4 py-1.5 text-[10px] text-destructive">
-                {sendErr ?? saveFailure}
-              </p>
+              <div role="alert" className="px-4 py-1.5 flex flex-wrap items-center gap-2">
+                <p className="min-w-0 flex-1 text-[10px] text-destructive">{sendErr ?? saveFailure}</p>
+                {/* A forward that its files stopped (413, Outlook, IMAP). */}
+                {replyMode === "forward" && offerNoFiles && sendErr && (
+                  <Button variant="secondary" size="sm" onClick={() => forwardWithoutFiles(true)} disabled={sending}>
+                    Forward without files
+                  </Button>
+                )}
+              </div>
             )}
             {/* Footer — on phones the labels compress to icons so the full
                 action row (incl. Send) always fits inside the card. */}
@@ -1535,6 +1658,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
               </span>
               <div className="flex gap-1 sm:gap-2 flex-shrink-0 items-center">
                 <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
+                {/* POST /email/forward carries the files of the email, and no
+                    file of the member's own. Pop out for a forward with more. */}
+                {replyMode !== "forward" && (<>
                 <label
                   className="px-2 py-1 text-xs rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer flex items-center"
                   title="Attach files"
@@ -1558,6 +1684,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                       prev.some((a) => a.path === ref.path) ? prev : [...prev, ref]);
                   }}
                 />
+                </>)}
                 <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void popOutToComposer()} title="Open in the full composer (Bcc, attachments)" aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
                   <AppIcon name="ExternalLink" size={13} />
                   <span className="hidden sm:inline">Pop out</span>
@@ -1566,7 +1693,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <AppIcon name="Trash2" size={13} />
                   <span className="hidden sm:inline">Discard</span>
                 </Button>
-                <Button size="none" radius="keep" layout="flex items-center" icon="Send" loading={sending} disabled={!replyTo.trim() || !replyBody.trim()} onClick={() => void handleInlineSend()} className="px-4 py-1 text-xs rounded-md gap-1.5">
+                <Button size="none" radius="keep" layout="flex items-center" icon="Send" loading={sending} disabled={!replyTo.trim() || (replyMode !== "forward" && !replyBody.trim())} onClick={() => void handleInlineSend()} className="px-4 py-1 text-xs rounded-md gap-1.5">
                   Send
                 </Button>
               </div>

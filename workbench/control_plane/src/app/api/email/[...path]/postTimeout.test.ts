@@ -14,6 +14,7 @@ import {
   AI_SLOW_POST_PATHS,
   AI_SLOW_TIMEOUT_MS,
   DEFAULT_POST_TIMEOUT_MS,
+  FILE_SEND_POST_PATHS,
   isStorageRemoval,
   postTimeoutMs,
 } from "./postTimeout";
@@ -48,6 +49,15 @@ describe("email-storage-proxy-budget (A12)", () => {
       expect(isStorageRemoval(path), path.join("/")).toBe(false);
       expect(postTimeoutMs(path), path.join("/")).toBe(30_000);
     }
+  });
+
+  // Follow-up 4 of #766: a forward fetches its files, then sends. At 30 s
+  // the proxy answered 502 while the gateway still sent the mail.
+  it("gives a forward 120,000 ms, and a send keeps its budget", () => {
+    expect([...FILE_SEND_POST_PATHS]).toEqual(["forward"]);
+    expect(postTimeoutMs(["forward"])).toBe(120_000);
+    expect(postTimeoutMs(["send"])).toBe(30_000);
+    expect(postTimeoutMs(["forward", "x"])).toBe(30_000);
   });
 
   it("keeps the AI and agent paths at 120,000 ms", () => {
