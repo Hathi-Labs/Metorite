@@ -354,6 +354,15 @@ pg_user_matches() {
 }
 if [ "$env_guard" = "1" ]; then
   target_refused=0
+  # ONE host (fix round 2), pinned or not. libpq takes a comma list in PGHOST
+  # and fails over to the next host, so a list could pass the pin compare
+  # below and then dump another server. A root run refuses it: no dump.
+  case "${PGHOST:-}" in
+    *,*)
+      warn "PGHOST names more than one host. libpq would fail over to the next one."
+      echo "ERROR: PGHOST must name ONE server for a root backup." >&2
+      target_refused=1 ;;
+  esac
   if [ -n "${BACKUP_PG_HOST:-}${BACKUP_PG_USER_SUFFIX:-}" ] && [ "$PG_MODE" != "local" ]; then
     echo "ERROR: $offbox_key_file pins the database server, and PG_MODE is not local." >&2
     target_refused=1
@@ -942,9 +951,18 @@ fi
 # its only options may be sslmode, connect_timeout and application_name. Any
 # other shape is a failed Console dump, and the run exits 1 at the end.
 cc_dsn_ok() {
-  local dsn="$1" query kv
+  local dsn="$1" query kv auth
   local -a kvs
   [[ "$dsn" =~ ^postgres(ql)?(\+psycopg|\+asyncpg)?://[^[:space:]]+$ ]] || return 1
+  # ONE host (fix round 2). libpq takes a comma list of hosts in the authority
+  # and fails over to the next one, so `@cc.example:1,evil.example:5432` would
+  # pass the host pin below and then dump evil.example. A `host=` or
+  # `hostaddr=` option is refused by the option list below.
+  auth="${dsn#*://}"
+  auth="${auth%%[/?]*}"
+  case "$auth" in
+    *,*) return 1 ;;
+  esac
   case "$dsn" in
     *\?*) query="${dsn#*\?}" ;;
     *) return 0 ;;
@@ -961,9 +979,9 @@ cc_dsn_ok() {
 }
 if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ] && ! cc_dsn_ok "$CUSTOMER_CONSOLE_DATABASE_URL"; then
   say "Customer Console cluster (separate project)"
-  warn "CUSTOMER_CONSOLE_DATABASE_URL is not a postgresql:// URL with only the options"
-  warn "sslmode, connect_timeout and application_name. The Console database is NOT"
-  warn "in this backup. The run goes on, and exits 1 at the end."
+  warn "CUSTOMER_CONSOLE_DATABASE_URL is not a postgresql:// URL with ONE host and only"
+  warn "the options sslmode, connect_timeout and application_name."
+  warn "The Console database is NOT in this backup. The run goes on, and exits 1 at the end."
   console_failed=1
 fi
 # The Console's own server pins (see "The server that the dump reads" above).

@@ -364,7 +364,15 @@ def test_the_app_database_from_the_env_file_has_a_safe_shape() -> None:
         ("postgresql://cc:pw@cc.example:5432/postgres?passfile=/root/.pgpass", False),
         ("postgresql://cc:pw@cc.example:5432/postgres?sslmode=require&service=x", False),
         ("host=cc.example passfile=/root/.pgpass", False),
+        # Fix round 2: libpq fails over along a host LIST, so a second host
+        # (in the authority, or as an option) could reach another server.
+        ("postgresql+psycopg://cc:pw@cc.example:1,evil.example:5432/postgres?sslmode=require", False),
+        ("postgresql://cc:pw@cc.example,evil.example/postgres", False),
+        ("postgresql://cc:pw@cc.example:5432/postgres?host=evil.example", False),
+        ("postgresql://cc:pw@cc.example:5432/postgres?hostaddr=203.0.113.9", False),
         ("postgresql+psycopg://cc:pw@cc.example:5432/postgres?sslmode=require", True),
+        # A comma AFTER the authority is not a host list: it stays allowed.
+        ("postgresql://cc:pw@cc.example:5432/post,gres", True),
     ],
 )
 def test_the_console_dsn_cannot_carry_a_file_option(dsn: str, dumped: bool) -> None:
@@ -995,6 +1003,25 @@ def test_a_pinned_server_that_does_not_match_is_refused_with_no_prune(command: s
     r = _run(command=f"KEEP_DAILY=3 {command}", setup=setup, root=True, offbox=True, after=_COUNT_R)
     assert r["rc"] == 1, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
     assert why in str(r["err"]), r["err"]
+    assert "The backup REFUSED this server" in str(r["err"])
+    assert not _lines(r, "pg_dump") and not _lines(r, "pg_dumpall"), r["calls"]
+    assert "NIGHTS=20" in str(r["err"]), "a refused night pruned the old ones"
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids=["no-pin", "pinned"])
+def test_a_pghost_list_is_refused_before_any_dump(pinned: bool) -> None:
+    """🔴 Fix round 2. PGHOST="db.example,evil.example" would pass a pin of
+    db.example on its first host, and libpq would then fail over to the
+    second. A root run refuses ANY host list, pinned or not: exit 1, no
+    dump, no prune. Mutation: drop the comma check, and the no-pin case
+    dumps."""
+    setup = (_PIN_FILE if pinned else "") + _PLANT_R
+    r = _run(
+        "KEEP_DAILY=3 PGHOST=db.example,evil.example", setup=setup, root=True, offbox=True,
+        after=_COUNT_R,
+    )
+    assert r["rc"] == 1, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert "PGHOST names more than one host" in str(r["err"]), r["err"]
     assert "The backup REFUSED this server" in str(r["err"])
     assert not _lines(r, "pg_dump") and not _lines(r, "pg_dumpall"), r["calls"]
     assert "NIGHTS=20" in str(r["err"]), "a refused night pruned the old ones"
