@@ -39,6 +39,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
+from acb_common.pg_text import storable
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
@@ -297,8 +298,9 @@ def _upsert_session(
                 "id": req.id,
                 "uid": user_id,
                 "agent_name": req.agent_name,
-                "title": req.title,
-                "last_preview": req.last_preview,
+                # The preview is the last reply, so it can hold a NUL too.
+                "title": storable(req.title),
+                "last_preview": storable(req.last_preview),
                 "message_count": req.message_count,
             },
         )
@@ -393,10 +395,10 @@ def _patch_session(
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")
-        params["title"] = req.title
+        params["title"] = storable(req.title)
     if req.last_preview is not None:
         sets.append("last_preview = :last_preview")
-        params["last_preview"] = req.last_preview
+        params["last_preview"] = storable(req.last_preview)
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
@@ -802,6 +804,13 @@ def _upsert_messages(
     is in the return value. A client may still update an agent row that the
     server created, under the S13 rules.
 
+    🔴 **Every value passes through ``acb_common.pg_text.storable`` before
+    the bind** (incident 2026-10-09). A tool result can hold the raw bytes of
+    a file, and Postgres refuses a NUL in ``text`` and ``\\u0000`` in
+    ``jsonb``. One such row failed the whole save with a 500. Each NUL and
+    each lone surrogate becomes U+FFFD. The route and the fold both write
+    here, so this is the one place. Fence: ``test_chat_nul_persist.py``.
+
     Returns the ids whose write the SQL declined, in request order.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
@@ -828,20 +837,27 @@ def _upsert_messages(
             # S14: a client inserts a human row only. The fold and the mint
             # are the server, and they may insert an agent row.
             may_insert = kind == "human" or bool(author_from_run) or bool(mint)
+            # The ids stay as sent: the client matches its rows by them.
+            body = storable({
+                "content": m.content, "tool_events": m.tool_events,
+                "progress_lines": m.progress_lines, "reasoning": m.reasoning,
+                "agent_state": m.agent_state, "custom_events": m.custom_events,
+            })
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
                 {
                     "id": m.id,
                     "sid": session_id,
                     "role": m.role,
-                    "content": m.content,
+                    "content": body["content"],
                     "ts": m.timestamp,
-                    "tool_events": json.dumps(m.tool_events),
-                    "progress_lines": json.dumps(m.progress_lines),
-                    "reasoning": m.reasoning,
-                    "agent_state": json.dumps(m.agent_state) if m.agent_state is not None else None,
-                    "custom_events": json.dumps(m.custom_events),
-                    "author_email": author,
+                    "tool_events": json.dumps(body["tool_events"]),
+                    "progress_lines": json.dumps(body["progress_lines"]),
+                    "reasoning": body["reasoning"],
+                    "agent_state": (json.dumps(body["agent_state"])
+                                    if body["agent_state"] is not None else None),
+                    "custom_events": json.dumps(body["custom_events"]),
+                    "author_email": storable(author),
                     "author_kind": kind,
                     # Only agent output carries a clearance — a human's own
                     # words are theirs regardless of what the run could reach.
