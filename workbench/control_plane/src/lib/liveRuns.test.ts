@@ -72,6 +72,37 @@ describe("one poller for the whole app", () => {
     offs.forEach((off) => off());
   });
 
+  it("a late subscriber reads the last list and starts no request", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator" }];
+    const a = subscribeLiveRuns(() => {});
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const b = subscribeLiveRuns(() => {});
+    const c = subscribeLiveRuns(() => {});
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getLiveRuns().map((r) => r.threadId)).toEqual(["t1"]);
+    [a, b, c].forEach((off) => off());
+  });
+
+  it("starts no second request while one is in flight", async () => {
+    let release: (v: unknown) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The tab hides and shows again while the first request hangs.
+    setHidden(true);
+    setHidden(false);
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    release({ ok: true, json: async () => [] });
+    await flush();
+    off();
+  });
+
   it("tells every subscriber, and keeps one list reference while unchanged", async () => {
     payload = [{ threadId: "t1", agentName: "orchestrator", title: "A" }];
     const seen: number[] = [0, 0, 0];
