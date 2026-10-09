@@ -1080,6 +1080,52 @@ first.
   its filter. The rows sit in a `CollapsibleSection`. Both live in
   `src/components/ui/`.
 
+**Status and stage, made plain (I-10b). Owner directive, 2026-10-09.** The
+owner found that a new member cannot tell a status from a stage. The owner
+also found that the rules put "on hold" in Backlog, though a task on hold
+has started. The owner asked for help text wherever a member meets the two
+words, so that nobody is confused.
+
+- **Two words, one meaning each, on every surface.** A **status** is the
+  name of a lane on the board, for example "Review" or "On hold". The
+  member chooses it. A **stage** is one of five fixed groups: Backlog, To
+  do, In progress, Done and Cancelled. Every status sits in one stage.
+  Progress, reports and closing a task read the stage, never the name. The
+  import, Settings and the board use these two words and no other word,
+  such as "category", for the same idea.
+- **One source for the meanings.** `CATEGORY_HINT` in
+  `src/lib/statusCategory.ts` holds the meaning of each stage. Every help
+  text reads it, and no surface keeps its own copy. The In progress meaning
+  changes to say that it includes work that waits, is blocked or is in
+  review.
+- **One help control.** A new primitive, `InfoTip`, goes in
+  `src/components/ui/`. It is a small button with the Info icon. A click, a
+  tap, Enter or Space opens an `AnchoredPanel` with the text. Escape and a
+  click outside close it. It replaces the bare Info icon in `StatusManager`,
+  whose native `title` shows nothing on a phone or to a keyboard.
+- **Where the help goes.**
+  1. The Statuses heading of Map, and the Statuses heading in Settings: an
+     `InfoTip` titled "Status and stage". It says what each word means, in
+     the words of the first bullet, and lists the five stages with their
+     meanings.
+  2. Each stage heading in Settings: an `InfoTip` with that stage's meaning.
+  3. The stage picker in Map: each option shows its meaning under its name.
+- **The summary is a small board.** It groups the target statuses by
+  stage, in the order and with the dots of the Settings screen. So the
+  admin approves exactly what Settings shows later. An empty stage shows a
+  dash.
+- **The rows read as one sentence.** The rows have two labelled columns,
+  "Metorite status" and "Stage". A new status ALWAYS shows its stage
+  picker, so nobody can make a status without choosing its stage. An
+  existing status shows its stage as fixed text, with "set by this status".
+- **A weak guess is marked.** A name that no stage rule matched shows
+  "Guessed — check the stage". Those rows go first, and the summary says
+  how many need a check. A row that a rule matched stays quiet.
+- **Better stage rules (`plan._PROPOSALS`).** Hold, on hold, waiting,
+  blocked, paused and stuck go to In progress. Review, QA and testing go to
+  In progress by a rule, not by the default, so they are not marked as
+  guesses. Backlog, someday, later, parked and icebox stay in Backlog.
+
 **The Tags and types section of Map (I-11)** follows the same shape: a
 summary, one button, and rows with one "Becomes" picker. Its groups are
 "Shared in your organization", "In this space", "New shared tag" and
@@ -1139,6 +1185,7 @@ Every slice is **AGENT-SAFE** unless it says otherwise. Each one is one PR.
 | **I-8** ✅ built 2026-09-30 | The mapping step, made complete (owner, 2026-09-30: "sort out the unknown fields"). A **Spaces** step between Review and Map shows every ClickUp Space, Folder and List. The admin unticks one to leave it out with everything under it, or renames it. The same step sets **who can see** a new space: the organization, or one group (§5.3). On **Map**, a status takes a new name, and two statuses given one name merge (§6.3). The columns the importer does not read are listed with their counts and examples, and each is left out or kept as a line in the task's description (§6.5b) | `plan.choose` is the ONE place the choices apply: the dry run and the writer both read through it (`test_import_choices.py`). A subtask of a skipped task stays out, wherever it lives. **Review fixes:** a later export that keeps OTHER lists still continues the earlier space, because "same export" is judged on every task in the file (`file_task_refs`). A choice for a container the file no longer holds is dropped, never an error. A rename in an existing space keeps the folder a re-run reuses (`source_name`). The Map step never changes a stage by itself, and marks a merge whose stages differ. **Met:** `live_ws41_choices.py` passes 14/14 on Postgres. A skipped list creates no node and no task, a renamed list lands under its new name, a kept column reaches the description, and a second run that keeps everything adds the rest into the same space. The writer, import and discard live suites still pass (58, 21, 33). A browser walk against a real gateway ran the five steps on a fixture with two unknown columns |
 | **I-9** ✅ built 2026-09-30 | People added AFTER an import get their tasks (§6.2, §6.9). A production dry run of the real export (read only, counts only, 2026-09-30) found the organization's People directory holds 1 person, so 50 of 51 ClickUp people had no member and 2,024 assignments would land unassigned. The three-way rule moved nothing on a mapping change, so adding the team later and importing again did not help. Now the unchanged-source branch FILLS A GAP: when no member edited the field, a re-run adds newly matched people to the assignees and rewrites the description's "Assigned in ClickUp to" line (`layout._fills_a_gap`). It never takes anybody off (4c.3 still holds). The Map step and the report say how to close the gap | `tests/live/live_ws41_people_later.py` passes 10/10 on Postgres, through the upload route's own inheritance: an unassigned task is assigned on the next run once the person is in People, the name line goes, and a member's own assignment is kept. `live_ws41_writer.py` still passes 58/58. Unit: `test_import_layout.py` pins the fill, the member-edit guard and the add-only rule |
 | **I-10** ✅ built 2026-10-09 | Statuses: one set per space, a target for each ClickUp status, and a Map section that opens on a summary (§6.3, §7.7). Owner decisions, 2026-10-09 | **Plan:** the plan carries the target set and the proposed target of each ClickUp status. On the fixture, the ten statuses propose six targets, and the plan holds no error. A choice that names an existing status takes that status's stage. **Writer:** `live_ws41_writer.py` gains checks. A new space holds one set, and every List that the run creates sets `owns_statuses = false`. Each task's status comes from the space's set, and a task with no status is in Backlog. An existing-space target gains only the missing names, through `_reuse_statuses`, and keeps them after a discard. A re-upload of a pre-I-10 tree adds 0 lanes. **Checks that change by design, with their new values:** writer 3.5, `done_status_added` goes from 7 to 0. Writer 4c.4 finds its lane as the space's "Backlog", on a node with no parent. Discard 4.5b matches the lane name case-blind. Every other check of the live writer, choices, discard and people-later suites passes unchanged. **Ships under the live flag.** `PROJECTS_IMPORT` is on in production (I-7), so the merge is the release. Production held no applied import on 2026-10-09, only one planned run and two discarded ones. **Surface:** `importFlow.test.ts` pins the summary text, the merge lines and the picker groups. The `visual-review` walk covers the summary and the open rows in light mode, at compact density, under a changed accent, and at 390 px. **Met:** `live_ws41_writer.py` passes 82 of 82 on a fresh private ladder database, with the fixes of the I-10 review (checks 4.2b, 8.1, 8.2 and 9.1 to 9.3). A mutation of each fix fails its check. A new space holds one set of six names, and no List or Folder that the run makes owns one. Each task takes a status of its space's set. A task with no status lands in Backlog. Review lands after In progress, and On hold after Backlog. The hand-made space keeps its "To do", gains the five names it lacks, and keeps them after a discard. A re-upload of a pre-I-10 tree, rebuilt by hand, adds 0 lanes and moves no task. Choices passes 14 of 14, discard 33 of 33, people-later 10 of 10 and import 21 of 21. Two mutations prove the continuation fences. Without `progress.status_names`, check 4.2 fails. A run that continues and still takes the proposals adds 39 lanes, and check 7.2 fails. `importFlow.test.ts` passes 65 of 65. The rig walked Upload, Review, Spaces and Map against the fixture's plan, with the API stubbed, and showed no console error. The chip paint did not move under two accents |
+| **I-10b** 🟢 next | Status and stage, made plain: the two words and their help text on Map and in Settings, the `InfoTip` primitive, a summary grouped by stage, labelled row columns, the "Guessed" mark, and better stage rules (§7.7). Owner directive, 2026-10-09 | **Plan:** on the fixture, "on hold" proposes the In progress stage, and "review" is not marked as a guess. A name that no rule matches is marked. **Surface:** `importFlow.test.ts` pins the summary groups, the guess count and the order of the rows. A test pins that no file under `src/app/projects/` keeps a copy of a stage meaning: every one reads `CATEGORY_HINT`. `InfoTip` has a test for open and close by click, Enter and Escape. The `visual-review` walk covers the Map summary, the open rows and both help panels, and the Settings Statuses screen, in light mode, at compact density, under a changed accent, and at 390 px. The help panel must stay readable at 390 px |
 | **I-11** | Tags and task types land in the shared vocabulary, with the same summary-first section (§6.5, §7.7). Owner directive, 2026-10-09 | A ClickUp tag that matches an existing org-wide or space tag, case-blind, uses it. A new tag lands org-wide (`project_id IS NULL`). A type follows the same rule. Without `admin:settings:manage` or the flag, both land on the target space, and the step says so before the import. The caps count the effective set. R8: a live check finds the org-wide rows, and finds no tag row on any List that the run creates. The update rule's handling of a tag that moved from a List to the organization is stated in §6.5 and has a test |
 | **I-12** ⏸ waits for a file | A column the importer does not read can become a shared custom field, with the §6.5 type guess. It is a third choice beside "Leave out" and "Keep in the description" (§6.5b) | Build this when a customer's file carries such columns. The Fracktal workspace export carries none, because ClickUp puts custom fields only in a per-view export (I-5) |
 | **I-13** later | Jev proposes a target status, tag or type for a name that the I-10 and I-11 rules cannot place. The admin confirms each one (owner, 2026-10-09: "rules now, Jev later") | Every proposal shows as a proposal, and nothing applies without the admin's choice. The spend goes through the metered path, so H-171 does not grow |
