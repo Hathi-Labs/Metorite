@@ -862,7 +862,8 @@ def draws_by_org(
             FROM credit_draw d
             JOIN organization o ON o.id = d.organization_id
             LEFT JOIN credit_lot l ON l.id = d.lot_id
-            WHERE d.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND d.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+            WHERE d.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND d.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             GROUP BY o.slug
             """
         ),
@@ -1293,7 +1294,8 @@ def usage_by_activity(
                    COALESCE(SUM(billed_credits), 0)            AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Without
               -- this the call count inflates while the credit sum stays
               -- right, because a refusal bills 0 — so the two columns
@@ -1363,7 +1365,8 @@ def usage_by_member(
                    COALESCE(SUM(billed_credits), 0)               AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Same
               -- argument as `usage_by_activity`: the count inflates and the
               -- credits do not, so the admin reads two numbers that disagree.
@@ -1428,7 +1431,8 @@ def usage_by_app(
                    COALESCE(SUM(billed_credits), 0)     AS credits
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). The same
               -- filter `usage_by_activity` carries, for the same reason.
               AND refusal_reason IS NULL
@@ -1512,7 +1516,8 @@ def usage_cost_by(
                    COALESCE(SUM(provider_cost_usd), 0) AS cost
             FROM usage_event
             WHERE organization_id = :org
-              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
               AND refusal_reason IS NULL
             GROUP BY {group}
             """  # every fragment is a literal from _COST_DIMENSIONS
@@ -1624,7 +1629,8 @@ def unbilled_fleet_total(
                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
             FROM usage_event
             WHERE metering_fault IS NOT NULL
-              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+              AND created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             """
         ),
         {"days": days, "start": start, "end": end},
@@ -1785,7 +1791,8 @@ def usage_by_org(
             FROM organization o
             LEFT JOIN usage_event u
                    ON u.organization_id = o.id
-                  AND u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+                  AND u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
             -- 🔴 **A WHERE on `o`, and it does NOT undo the LEFT JOIN.** The
             -- rule this file repeats is about the RIGHT-hand table: a WHERE on
             -- `u` drops the rows the join exists to keep. `o.slug` is the LEFT
@@ -4021,7 +4028,8 @@ def spend_by_provider(
                            WHERE u.cost_source = 'vendor'
                        ), 0) AS measured_usd
                 FROM usage_event u
-                WHERE u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))\n              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
+                WHERE u.created_at >= COALESCE(CAST(:start AS timestamptz), now() - make_interval(days => :days))
+              AND u.created_at < COALESCE(CAST(:end AS timestamptz), 'infinity'::timestamptz)
                   AND u.refusal_reason IS NULL
                   AND u.metering_fault IS NULL
                   AND u.byok_served = false

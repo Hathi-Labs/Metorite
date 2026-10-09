@@ -9648,7 +9648,10 @@ def _usage_window(
         return max(1, min(int(days), store.USAGE_MAX_DAYS)), None, None
     last = end or datetime.now(ZoneInfo(store.RANGE_TZ)).date()
     if last < start:
-        raise HTTPException(status_code=422, detail="'to' is before 'from'")
+        raise HTTPException(
+            status_code=422,
+            detail="'to' is before 'from'" if end is not None else "'from' is after today",
+        )
     span = (last - start).days + 1
     if span > store.USAGE_MAX_DAYS:
         raise HTTPException(

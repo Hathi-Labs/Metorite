@@ -107,11 +107,16 @@ D1 = datetime(2026, 8, 1, tzinfo=IST).date()
 D31 = datetime(2026, 8, 31, tzinfo=IST).date()
 
 
+# Millions of credits, so the org sorts onto the capped page (H-76) however
+# many other orgs the shared scratch database holds for August 2026.
+M = Decimal(1_000_000)
+
+
 def _seed(slug: str) -> None:
-    _call(slug, datetime(2026, 7, 31, 23, 50, tzinfo=IST), "1", "0.01")  # before
-    _call(slug, datetime(2026, 8, 1, 0, 10, tzinfo=IST), "10", "0.10")  # first minutes
-    _call(slug, datetime(2026, 8, 31, 23, 30, tzinfo=IST), "100", "1.00")  # last hour
-    _call(slug, datetime(2026, 9, 1, 0, 10, tzinfo=IST), "1000", "10.0")  # after
+    _call(slug, datetime(2026, 7, 31, 23, 50, tzinfo=IST), "1000000", "0.01")  # before
+    _call(slug, datetime(2026, 8, 1, 0, 10, tzinfo=IST), "10000000", "0.10")  # first minutes
+    _call(slug, datetime(2026, 8, 31, 23, 30, tzinfo=IST), "100000000", "1.00")  # last hour
+    _call(slug, datetime(2026, 9, 1, 0, 10, tzinfo=IST), "1000000000", "10.0")  # after
 
 
 class TestTheEdges:
@@ -119,7 +124,7 @@ class TestTheEdges:
         _seed(org)
         body, row = _row(client, org, **{"from": D1.isoformat(), "to": D31.isoformat()})
         assert row is not None
-        assert Decimal(row["credits"]) == Decimal("110")
+        assert Decimal(row["credits"]) == 110 * M
         assert Decimal(row["costUsd"]) == Decimal("1.10")
         assert body["windowDays"] == 31
         assert body["rangeFrom"] == "2026-08-01"
@@ -128,7 +133,7 @@ class TestTheEdges:
     def test_a_one_day_range(self, client, org):
         _seed(org)
         _, row = _row(client, org, **{"from": "2026-08-31", "to": "2026-08-31"})
-        assert Decimal(row["credits"]) == Decimal("100")
+        assert Decimal(row["credits"]) == 100 * M
 
     def test_the_daily_series_spans_exactly_the_range(self, client, org):
         _seed(org)
@@ -143,8 +148,8 @@ class TestTheEdges:
         assert days[0]["day"] == "2026-08-01"
         assert days[-1]["day"] == "2026-08-31"
         # Bucketed in India: the 23:30 call is on the 31st, not the 1st of Sept.
-        assert Decimal(days[-1]["credits"]) == Decimal("100")
-        assert Decimal(days[0]["credits"]) == Decimal("10")
+        assert Decimal(days[-1]["credits"]) == 100 * M
+        assert Decimal(days[0]["credits"]) == 10 * M
 
     def test_the_breakdown_takes_the_same_range(self, client, org):
         _seed(org)
@@ -155,7 +160,7 @@ class TestTheEdges:
         )
         assert r.status_code == 200, r.text
         total = sum(Decimal(a["credits"]) for a in r.json()["apps"])
-        assert total == Decimal("110")
+        assert total == 110 * M
 
 
 class TestTheDefaultIsUnchanged:
@@ -175,6 +180,7 @@ class TestRefusals:
         [
             {"from": "2026-08-31", "to": "2026-08-01"},  # backwards
             {"to": "2026-08-31"},  # an end with no start
+            {"from": "2099-01-01"},  # a start after today, no end
             {"from": "2024-01-01", "to": "2026-08-31"},  # over a year
         ],
     )
