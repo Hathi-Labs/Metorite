@@ -12,12 +12,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   FORWARD_DETAIL_MARKERS,
+  FORWARD_UNSURE,
   OUTLOOK_ALL_OR_NONE,
   fileSizeText,
   forwardFailure,
   forwardFilesOf,
   forwardRequest,
   outlookSubset,
+  visibleFileName,
   type ForwardFile,
 } from "./forward";
 
@@ -84,6 +86,18 @@ describe("the request the pane builds", () => {
     expect(body).not.toHaveProperty("bcc");
   });
 
+  // Review round 1: a right-to-left override cannot turn a name around.
+  it("a chip name holds no bidi control", () => {
+    expect(visibleFileName("invoice\u202Efdp.exe")).toBe("invoicefdp.exe");
+    expect(visibleFileName("a\u2066b\u2069\u200Ec\u061C")).toBe("abc");
+    expect(visibleFileName("quote.pdf")).toBe("quote.pdf");
+    // The chip draws the cleaned name, in the text and in the title, in <bdi>.
+    const chip = readFileSync(join(__dirname, "../components/ForwardFileChips.tsx"), { encoding: "utf-8" });
+    expect(chip).toContain("const name = visibleFileName(f.filename);");
+    expect(chip).toMatch(/<bdi [^>]*>\{name\}<\/bdi>/);
+    expect(chip).not.toMatch(/\$\{f\.filename\}|\{f\.filename\}/);
+  });
+
   it("the chips start with every file kept, and show a size", () => {
     const chips = forwardFilesOf([
       { id: PDF, filename: "quote.pdf", mimeType: "application/pdf", sizeBytes: 2 * 1024 * 1024 },
@@ -131,10 +145,25 @@ describe("the words of each refusal", () => {
     expect(f.offerNoFiles).toBe(false);
   });
 
-  it("502 says the provider failed and to try again", () => {
+  it("the gateway's own 502 says nothing was sent, and to try again", () => {
     const f = forwardFailure(refusal(502, "The mail provider did not answer, so nothing was sent."));
     expect(f.text).toBe("The mail provider did not answer, so nothing was sent. Try again in a moment.");
-    expect(forwardFailure(refusal(502)).text).toBe("The mail provider did not answer, so nothing was sent. Try again in a moment.");
+    expect(f.unsure).toBe(false);
+  });
+
+  // Review round 1, P2. Mutation caught: a 502 with no detail read "nothing
+  // was sent". Only the Next proxy answers it (its wait ended), and the
+  // gateway can still send the mail, so a member who tried again sent twice.
+  it("a 502 with no detail, a 5xx with no detail and a lost request are unsure", () => {
+    for (const err of [refusal(502), refusal(504), refusal(500), new Error("socket hang up"), null]) {
+      const f = forwardFailure(err);
+      expect(f.unsure).toBe(true);
+      expect(f.text).toBe(FORWARD_UNSURE);
+      expect(f.text).not.toMatch(/nothing was sent/i);
+      expect(f.offerNoFiles).toBe(false);
+    }
+    // The BFF's own body: `{ error }`, so the message is "Gateway error 502".
+    expect(forwardFailure(refusal(502, "Gateway error 502")).unsure).toBe(true);
   });
 
   it("401, 404 and 429 each say what to do", () => {
@@ -146,11 +175,10 @@ describe("the words of each refusal", () => {
       .toContain("Try again later");
   });
 
-  it("a validation list or an unknown error never shows as an object", () => {
+  it("a validation list never shows as an object", () => {
     const err = refusal(422, "[object Object]");
     expect(forwardFailure(err).text).toBe("The mail provider refused the forward. Nothing was sent.");
-    expect(forwardFailure(new Error("socket hang up")).text).toBe("socket hang up");
-    expect(forwardFailure(null).text).toBe("The forward failed. Nothing was sent.");
+    expect(forwardFailure(err).unsure).toBe(false);
   });
 });
 
@@ -174,7 +202,32 @@ describe("the pane sends the forward through the route", () => {
     expect(pane).toMatch(/if \(isForward\) \{\s*await forwardEmail\(forwardRequest\(\{/);
     expect(pane).toContain("if (isForward && forwardBlocked(files)) return;");
     // A sent forward never reaches the optimistic reply of the thread.
-    expect(pane).toMatch(/if \(isForward\) \{\s*finishForward\(session, stale\);\s*return;\s*\}/);
+    expect(pane).toMatch(/if \(isForward\) \{\s*await finishForward\(session, stale\);\s*return;\s*\}/);
+  });
+
+  // Review round 1, P3-a. Mutation caught: a finish with no drain left a
+  // late debounced save as a stray "Fwd:" draft.
+  it("a sent forward drains its saves, then deletes each draft", () => {
+    const finish = pane.slice(pane.indexOf("const finishForward = async"), pane.indexOf("const handleInlineSend"));
+    expect(finish).toMatch(
+      /const drained = autosave\.drain\(session\);\s*resetReplySession\(\);\s*await drained;\s*const ids = draftsToDiscard\(/,
+    );
+    // While it is in flight, its fields are read-only and no save starts.
+    expect(pane).toContain('const forwarding = sending && replyMode === "forward";');
+    expect(pane.match(/readOnly=\{forwarding\}/g)?.length).toBe(4);
+    expect(pane).toMatch(/if \(replyMode === "forward" && sendingRef\.current\) \{\s*autosave\.cancel\(\);\s*return;/);
+  });
+
+  // Review round 1, P2: an unsure answer offers Sent, never a send.
+  it("an unsure forward offers Open Sent", () => {
+    expect(pane).toContain("setForwardUnsure(failure.unsure);");
+    expect(pane).toMatch(/forwardUnsure && sendErr && \([\s\S]{0,200}selectFolder\("sent"\)/);
+  });
+
+  // Review round 1: the full composer drops the files of the email.
+  it("Pop out is off while the forward keeps a file", () => {
+    expect(pane).toContain('const popOutLosesFiles = replyMode === "forward" && forwardFiles.some((f) => f.checked);');
+    expect(pane).toContain("disabled={popOutLosesFiles || forwarding}");
     expect(pane).toContain("setForwardFiles(mode === \"forward\" ? forwardFilesOf(src.attachments) : []);");
   });
 });

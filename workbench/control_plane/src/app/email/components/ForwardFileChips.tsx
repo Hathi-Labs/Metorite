@@ -16,7 +16,7 @@
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import AppIcon from "@/components/Icon";
-import { OUTLOOK_ALL_OR_NONE, fileSizeText, type ForwardFile } from "../lib/forward";
+import { OUTLOOK_ALL_OR_NONE, fileSizeText, visibleFileName, type ForwardFile } from "../lib/forward";
 
 interface ForwardFileChipsProps {
   files: readonly ForwardFile[];
@@ -50,6 +50,9 @@ export function ForwardFileChips({
       <ul className="flex flex-wrap gap-1.5" aria-label="Files of the email">
         {files.map((f) => {
           const size = fileSizeText(f.sizeBytes);
+          // No bidi control reaches the text or the title, and <bdi> keeps
+          // the name from turning the words around it (review round 1).
+          const name = visibleFileName(f.filename);
           return (
             <li key={f.id}>
               <label
@@ -58,7 +61,7 @@ export function ForwardFileChips({
                     ? "border-primary/40 bg-primary/5 text-foreground"
                     : "border-border bg-secondary text-muted-foreground"
                 }`}
-                title={f.checked ? `Forward ${f.filename}` : `${f.filename} is not forwarded`}
+                title={f.checked ? `Forward ${name}` : `${name} is not forwarded`}
                 data-forward-file={f.id}
               >
                 <Checkbox
@@ -66,10 +69,10 @@ export function ForwardFileChips({
                   checked={f.checked}
                   disabled={disabled}
                   onChange={(e) => onToggle(f.id, e.target.checked)}
-                  aria-label={`Forward ${f.filename}`}
+                  aria-label={`Forward ${name}`}
                 />
                 <AppIcon name="Paperclip" size={10} />
-                <span className={`max-w-[160px] truncate ${f.checked ? "" : "line-through"}`}>{f.filename}</span>
+                <bdi className={`max-w-[160px] truncate ${f.checked ? "" : "line-through"}`}>{name}</bdi>
                 {size && <span className="shrink-0 text-muted-foreground">{size}</span>}
               </label>
             </li>

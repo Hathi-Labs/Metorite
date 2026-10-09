@@ -14824,10 +14824,11 @@ The link opens the email inside the app only. It is not a link to share with ano
   carries the files of the email only. The pane hides its two attach controls on a
   forward. "Pop out" opens the full composer, which sends a new mail without the files
   of the email. A forward with both kinds of file needs `artifacts` on the route.
-- **The pane's forward can also go out after a failure shows.** The proxy now waits 120
-  seconds for `POST /email/forward` (§15.5 item 4). A forward that takes longer still
-  goes out while the pane shows a 502. The bullet on a slow forward above holds the
-  choice.
+- **The pane's forward can still go out after its wait ends.** The proxy waits 120
+  seconds for `POST /email/forward` (§15.5 item 4). A forward that takes longer can
+  still go out. The pane then says that the mail can still go out, and it offers
+  "Open Sent", never a retry (§15.5, review round 1). The bullet on a slow forward
+  above holds the choice of a real fix.
 - **The draft card lists To, Cc, then Bcc** (`_draft_card`). It draws rows, not a box
   that scrolls, so the order of §15.5 item 1 does not bind it.
 
@@ -14842,7 +14843,7 @@ migration, and no flag.
    cap of ten for each list, "+N more" and the budget of 3,000 characters are as before.
 2. **The card names each file.** `_card_head` adds an `Attachments:` block to `context`,
    after the targets and before the note or the body. The block has one line for each
-   file, with its name and its size. It names 20 files at most and ends with "+N more".
+   file, `- file "<name>" (<size>)`. It names 20 files at most and ends with "+N more".
    The targets and the files share the budget of 3,000 characters. The targets take
    what they need first, and the block always keeps room for its count. A forward with
    no file says "none". `detail` keeps its short form.
@@ -14896,3 +14897,27 @@ migration, and no flag.
 - `src/app/api/email/[...path]/postTimeout.test.ts`: the budget of a forward.
 - Advisory: the hint of a box that scrolls measures the DOM, so no unit test reaches it.
   The screenshots are its only check.
+
+**Review round 1 (2026-10-09).** Four findings, each fixed in this slice.
+
+- **P2. A proxy 502 said "nothing was sent".** A 502 with no `detail` comes from the Next
+  proxy when its wait ends, and the gateway can still send the mail. `forwardFailure`
+  now marks that answer, a 5xx with no detail and a lost request as `unsure`. The pane
+  says that the mail can still go out, and it offers "Open Sent". It offers no retry.
+  The gateway's own 502 has a detail, and it still says that nothing was sent.
+- **P3-a. A late save left a "Fwd:" draft.** A sent forward drains the autosave again,
+  as `discardReply` does, and then deletes each draft. While the forward is in flight,
+  its fields are read-only, and no save starts.
+- **P3-b. A file name could pass for a target line.** Each file line is
+  `- file "<name>" (<size>)`, and a quote in the name is escaped. So a file named
+  `Bcc: ceo@corp.test` cannot read as a target, and a file named `none` reads
+  `- file "none"`, not as the empty marker `- none`. A long workspace path of
+  `send_email` keeps its extension too (`_CARD_PATH_LIMIT`, 120 characters).
+- **Two small ones.** A chip name loses each bidi control, in its text and in its
+  `title`, and it draws in `<bdi>` (`visibleFileName`). "Pop out" is off while the
+  forward keeps a file of the email, because the full composer cannot send those files.
+  Its title says so.
+- **Fences.** `forward.test.ts` holds the unsure answer, the drain, the read-only
+  fields, Open Sent, Pop out and the chip name. `test_email_forward.py` holds the file
+  line, the empty marker and the long path. `e2e/email-forward.spec.ts` holds a 502
+  with no detail, and typing during the send.

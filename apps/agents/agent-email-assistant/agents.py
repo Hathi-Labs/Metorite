@@ -2400,17 +2400,30 @@ def _card_targets(
     return block
 
 
-def _card_files(files: list[str], budget: int) -> str:
+def _card_file_line(name: str, size: str = "") -> str:
+    """One file of the ``Attachments:`` block: ``file "<name>" (<size>)``.
+
+    A sender chooses the name, so the name is data. The fixed head and the
+    quotes keep a name such as ``Bcc: ceo@corp.test`` from reading as a target
+    line, and a file named ``none`` from reading as the empty marker (review
+    round 1, P3-b). A quote or a backslash in the name is escaped.
+    """
+    quoted = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'file "{quoted}" ({size})' if size else f'file "{quoted}"'
+
+
+def _card_files(files: list[tuple[str, str]], budget: int) -> str:
     """The ``Attachments:`` block of ``context``: one line for each file.
 
-    The cut of ``detail`` names only the first files and then "+N more", so a
-    member could not see the name of each file that leaves (follow-up 2 of
-    #766). This block names up to :data:`_CARD_FILE_CAP` files. If it is
-    longer than *budget*, the cap goes down, one file at a time. A name is
-    never cut in half, and the count of the files left out always shows. A
-    send with no file says "none".
+    *files* holds ``(name, size)`` pairs. The cut of ``detail`` names only
+    the first files and then "+N more", so a member could not see the name of
+    each file that leaves (follow-up 2 of #766). This block names up to
+    :data:`_CARD_FILE_CAP` files. If it is longer than *budget*, the cap goes
+    down, one file at a time. A name is never cut in half, and the count of
+    the files left out always shows. A send with no file says ``- none``,
+    which no file line can be (:func:`_card_file_line`).
     """
-    items = [_card_text(f, 200) for f in files if str(f).strip()]
+    items = [_card_file_line(_card_text(n, 1000), z) for n, z in files if str(n).strip()]
     if not items:
         return "Attachments:\n- none"
     block = ""
@@ -2435,7 +2448,7 @@ def _card_head(
     to: list[str],
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
-    files: list[str] | None = None,
+    files: list[tuple[str, str]] | None = None,
 ) -> str:
     """The targets, then the files when *files* is not None, inside
     :data:`_CARD_TARGET_BUDGET`. The targets come first and take what they
@@ -2636,7 +2649,9 @@ async def send_email(
         context=_card_context(
             _card_head(
                 sender, to=to, cc=cc, bcc=bcc,
-                files=[r.get("path", "") for r in refs] if refs else None,
+                # A workspace path keeps its extension when it is long.
+                files=[(_card_file_name(r.get("path", ""), _CARD_PATH_LIMIT), "")
+                       for r in refs] if refs else None,
             ),
             body,
         ),
@@ -2676,8 +2691,18 @@ _CARD_FILE_NAME_LIMIT = 60
 _CARD_FILE_NAME_TAIL = 16
 
 
-def _card_file_name(value: Any) -> str:
-    """A file name for a card, at most :data:`_CARD_FILE_NAME_LIMIT` long.
+#: The longest workspace path that the card of ``send_email`` shows whole.
+_CARD_PATH_LIMIT = 120
+
+
+def _forward_file_pairs(files: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The files of a forward as ``(name, size)`` pairs, for ``context``."""
+    return [(_card_file_name(a.get("filename") or "file"), _size_text(a.get("size_bytes")))
+            for a in files]
+
+
+def _card_file_name(value: Any, limit: int = _CARD_FILE_NAME_LIMIT) -> str:
+    """A file name for a card, at most *limit* characters long.
 
     ``_card_text`` drops a format character too, so a right-to-left mark
     cannot turn "invoice<RLO>fdp.exe" into "invoiceexe.pdf". A long name
@@ -2686,9 +2711,9 @@ def _card_file_name(value: Any) -> str:
     at 60 showed "revision.pd" (follow-up 5 of #766, the screenshots).
     """
     name = _card_text(value, 1000)
-    if len(name) <= _CARD_FILE_NAME_LIMIT:
+    if len(name) <= limit:
         return name
-    head = _CARD_FILE_NAME_LIMIT - _CARD_FILE_NAME_TAIL - 1
+    head = limit - _CARD_FILE_NAME_TAIL - 1
     return f"{name[:head]}…{name[-_CARD_FILE_NAME_TAIL:]}"
 
 
@@ -2758,7 +2783,8 @@ async def forward_email(
         # files last (verifier F1).
         detail=_card_detail(sender, to=to, files=shown_files, subject=subject),
         context=_card_context(
-            _card_head(sender, to=to, cc=cc, bcc=bcc, files=shown_files), note),
+            _card_head(sender, to=to, cc=cc, bcc=bcc, files=_forward_file_pairs(carried)),
+            note),
     ):
         return "Forward cancelled. The email was not forwarded."
     payload: dict[str, Any] = {

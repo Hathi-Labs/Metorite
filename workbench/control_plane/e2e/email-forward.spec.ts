@@ -58,7 +58,17 @@ function message(accountId: string) {
 
 type Forwarded = Array<Record<string, unknown>>;
 
-async function installMocks(page: Page, account: typeof OUTLOOK, answer: (n: number) => { status: number; body: unknown }) {
+/** The drafts the pane saved and deleted, and when the forward answered. */
+type DraftLog = { saved: Array<{ id: string; at: number }>; deleted: string[]; answeredAt: number };
+
+type Answer = { status: number; body: unknown; delayMs?: number };
+
+async function installMocks(
+  page: Page,
+  account: typeof OUTLOOK,
+  answer: (n: number) => Answer,
+  log: DraftLog = { saved: [], deleted: [], answeredAt: 0 },
+) {
   const forwarded: Forwarded = [];
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -76,11 +86,23 @@ async function installMocks(page: Page, account: typeof OUTLOOK, answer: (n: num
     json(r, { emails: [message(account.id)], total: 1, page: 1, page_size: 50 }));
   await page.route(new RegExp(`.*/api/email/messages/${MAIL}(\\?.*)?$`), (r) => json(r, message(account.id)));
   await page.route(/.*\/api\/email\/sent-from.*/, (r) => json(r, {}));
-  await page.route("**/api/email/drafts", (r) => json(r, { ...message(account.id), id: "draft-1", folder: "drafts" }));
+  await page.route(/.*\/api\/email\/contacts\/suggest.*/, (r) => json(r, []));
+  await page.route("**/api/email/drafts", (r) => {
+    const sent = JSON.parse(r.request().postData() ?? "{}");
+    const id = String(sent.draft_id ?? `draft-${log.saved.length + 1}`);
+    log.saved.push({ id, at: Date.now() });
+    return json(r, { ...message(account.id), id, folder: "drafts" });
+  });
+  await page.route(/.*\/api\/email\/messages\/draft-\d+$/, (r) => {
+    if (r.request().method() === "DELETE") log.deleted.push(r.request().url().split("/").pop() ?? "");
+    return json(r, {});
+  });
   await page.route("**/api/email/send", (r) => json(r, { detail: "the pane must not send a forward here" }, 500));
-  await page.route("**/api/email/forward", (r) => {
+  await page.route("**/api/email/forward", async (r) => {
     forwarded.push(JSON.parse(r.request().postData() ?? "{}"));
-    const { status, body } = answer(forwarded.length);
+    const { status, body, delayMs } = answer(forwarded.length);
+    if (delayMs) await new Promise((done) => setTimeout(done, delayMs));
+    log.answeredAt = Date.now();
     return json(r, body, status);
   });
   return forwarded;
@@ -167,5 +189,45 @@ test.describe("The reading-pane Forward", () => {
     await expect.poll(() => forwarded.length).toBe(2);
     expect(forwarded[1]).toMatchObject({ include_attachments: false });
     expect(forwarded[1]).not.toHaveProperty("attachment_ids");
+  });
+
+  // Review round 1, P2. The Next proxy answers 502 with no detail when its
+  // wait ends, and the gateway can still send the mail. Mutation caught:
+  // the pane said "nothing was sent", and the member sent it twice.
+  test("a 502 with no detail says the mail can still go out, and offers Sent, not a retry", async ({ page }) => {
+    const forwarded = await installMocks(page, GMAIL, () => ({ status: 502, body: { error: "aborted" } }));
+    await openForward(page, GMAIL);
+    await page.getByRole("combobox", { name: "To recipients" }).fill("geo@fracktal.test");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const alert = page.getByRole("alert").filter({ hasText: "The mail can still go out" });
+    await expect(alert).toBeVisible();
+    await expect(alert).not.toContainText(/nothing was sent/i);
+    await expect(page.locator("[data-forward-unsure]").getByRole("button", { name: "Open Sent" })).toBeVisible();
+    await expect(page.locator("[data-forward-offer]")).toHaveCount(0);
+    expect(forwarded).toHaveLength(1);
+  });
+
+  // Review round 1, P3-a. Mutation caught: a finish with no drain, or a
+  // field that took an edit in flight, left a stray "Fwd:" draft.
+  test("typing during the send leaves no stray draft", async ({ page }) => {
+    const log: DraftLog = { saved: [], deleted: [], answeredAt: 0 };
+    await installMocks(page, GMAIL, () => ({ ...SENT, delayMs: 3000 }), log);
+    await openForward(page, GMAIL);
+    const note = page.getByRole("textbox", { name: /Write your forward/ });
+    await note.fill("See the quote.");
+    await page.getByRole("combobox", { name: "To recipients" }).fill("geo@fracktal.test");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    // In flight: the fields are read-only, so the typing changes nothing.
+    await expect(note).toHaveAttribute("readonly", "");
+    await note.press("End");
+    await page.keyboard.type(" More words.");
+    await expect(note).toHaveValue(/See the quote\.\s*$/);
+    // Pop out is off while the forward keeps the files of the email.
+    await expect(page.getByRole("button", { name: "Pop out to full composer" })).toBeDisabled();
+    await expect(page.locator("[data-forward-files]")).toBeHidden({ timeout: 15_000 });
+    // Longer than the autosave wait, so a late save would have landed.
+    await page.waitForTimeout(3000);
+    expect(log.saved.filter((s) => s.at > log.answeredAt)).toEqual([]);
+    for (const { id } of log.saved) expect(log.deleted).toContain(id);
   });
 });

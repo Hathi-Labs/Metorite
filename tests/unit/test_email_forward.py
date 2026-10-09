@@ -552,7 +552,8 @@ class TestTheForwardTool:
         assert context == (
             "The mailbox and each recipient:\n- From: Fracktal · dana@fracktal.in\n"
             "- To: geo@fracktal.test\n- Bcc: boss@fracktal.test\n\n"
-            "Attachments:\n- quote.pdf (2.0 MB)\n- rates.xlsx (29 KB)\n\nSee the quote."
+            'Attachments:\n- file "quote.pdf" (2.0 MB)\n- file "rates.xlsx" (29 KB)\n\n'
+            "See the quote."
         )
         [(path, body)] = chat.posts
         assert path == "/email/forward"
@@ -594,7 +595,7 @@ class TestTheForwardTool:
         lines = files.splitlines()
         assert len(lines) == 8 and "more" not in files
         for i, line in enumerate(lines):
-            assert line.startswith(f"- invoice-{i}-") and line.endswith("(1 KB)")
+            assert line.startswith(f'- file "invoice-{i}-') and line.endswith('" (1 KB)')
 
     def test_a_bcc_comes_before_a_long_cc_list(self) -> None:
         """Follow-up 1 of #766: the card draws a ``context`` with a note in a
@@ -616,17 +617,18 @@ class TestTheForwardTool:
         assert context.endswith("\n\nSee the quote.")
 
     def test_the_files_block_caps_at_twenty_and_says_how_many_more(self) -> None:
-        files = [f"file-{i:02d}.pdf (1 KB)" for i in range(23)]
+        files = [(f"file-{i:02d}.pdf", "1 KB") for i in range(23)]
         head = agents._card_head("Box", to=["a@b.test"], files=files)
         block = head.split("\n\nAttachments:\n", 1)[1].splitlines()
-        assert block == [f"- {f}" for f in files[:agents._CARD_FILE_CAP]] + ["- +3 more"]
+        assert block == [f'- file "{n}" ({z})' for n, z in files[:agents._CARD_FILE_CAP]] + [
+            "- +3 more"]
 
     def test_long_targets_and_long_files_fit_the_budget_together(self) -> None:
         """The targets take what they need, and the files keep their count."""
         long_addrs = [("a" * 60) + f"{i}@" + ("b" * 180) + ".test" for i in range(10)]
-        files = [f"report-{i}-" + "z" * 180 + ".pdf" for i in range(20)]
+        names = [f"report-{i}-" + "z" * 180 + ".pdf" for i in range(20)]
         head = agents._card_head("Box", to=long_addrs, cc=long_addrs, bcc=long_addrs,
-                                 files=files)
+                                 files=[(n, "") for n in names])
         assert len(head) <= agents._CARD_TARGET_BUDGET
         targets, block = head.split("\n\nAttachments:\n", 1)
         for line in targets.splitlines()[2:]:
@@ -635,7 +637,7 @@ class TestTheForwardTool:
         lines = block.splitlines()
         assert lines[-1].startswith("- +") and lines[-1].endswith(" more")
         for line in lines[:-1]:
-            assert line[2:] in files, "a file name was cut"
+            assert line.startswith('- file "') and line[8:-1] in names, "a file name was cut"
 
     def test_a_hidden_mark_in_a_file_name_does_not_reach_the_card(self) -> None:
         shown = agents._forward_files([{"filename": "invoice‮fdp.exe", "size_bytes": 2048}])
@@ -650,6 +652,34 @@ class TestTheForwardTool:
         assert len(shown.removesuffix(" (2 KB)")) == agents._CARD_FILE_NAME_LIMIT
         assert "…" in shown
 
+    def test_a_file_name_cannot_pass_for_a_target_or_the_empty_marker(self) -> None:
+        """Review round 1, P3-b: a sender names the file. A name such as
+        "Bcc: ceo@corp.test" read like a target line, and "none" read like
+        the marker of a send with no file."""
+        block = agents._card_files(
+            [("Bcc: ceo@corp.test", "2 KB"), ("none", ""), ('a" (1 KB)', "")], 1000)
+        assert block.splitlines() == [
+            "Attachments:",
+            '- file "Bcc: ceo@corp.test" (2 KB)',
+            '- file "none"',
+            '- file "a\\" (1 KB)"',
+        ]
+        assert agents._card_files([], 1000) == "Attachments:\n- none"
+        # No line of the block starts the way a target line does.
+        for line in block.splitlines()[1:]:
+            assert not line.startswith(("- To:", "- Cc:", "- Bcc:", "- From:"))
+
+    async def test_a_long_workspace_path_keeps_its_extension(self, chat) -> None:
+        """Review round 1, P3-b: a path was cut plainly at 200 characters."""
+        path = "outputs/" + "q" * 300 + "-final-report.pdf"
+        await agents.send_email(BOX, body="See attached.", to=["kim@contoso.test"],
+                                subject="Report", attachments=[path])
+        context = chat.cards[0]["context"]
+        [line] = [ln for ln in context.splitlines() if ln.startswith('- file "')]
+        assert line.endswith('…final-report.pdf"')
+        assert "…" in line
+        assert len(line) == len('- file ""') + agents._CARD_PATH_LIMIT
+
     async def test_six_workspace_files_cannot_hide_the_to_of_a_send(self, chat) -> None:
         paths = [f"outputs/report-{i}-" + "y" * 80 + ".pdf" for i in range(6)]
         await agents.send_email(BOX, body="See attached.", to=["kim@contoso.test"],
@@ -659,7 +689,7 @@ class TestTheForwardTool:
         assert context.endswith("\n\nSee attached.")
         # Each workspace file is named in ``context`` too.
         for p in paths:
-            assert f"\n- {p}" in context
+            assert f'\n- file "{p}"' in context
         assert detail.startswith("From Fracktal · dana@fracktal.in · To kim@contoso.test")
         assert "more" in detail
 

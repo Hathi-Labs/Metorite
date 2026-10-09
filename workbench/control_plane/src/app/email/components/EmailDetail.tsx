@@ -22,6 +22,10 @@ import {
   type ForwardFile,
 } from "../lib/forward";
 import { ForwardFileChips } from "./ForwardFileChips";
+
+/** Why Pop out is off on a forward that keeps a file of the email. */
+const POP_OUT_LOSES_FILES =
+  "The full composer cannot send the files of the email. Take the files out to open it.";
 import { useDraftSession } from "../lib/useDraftSession";
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
@@ -53,7 +57,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     updateEmail, deleteEmail, openCompose, hydrateEmail, folders,
     accounts, selectedAccountId, sendEmail, saveDraft, sendDraft,
     viewerCommand, setViewerCommand, triggerSync, softRefresh,
-    captureEmailToTasks, authErrors, viewAll,
+    captureEmailToTasks, authErrors, viewAll, selectFolder,
   } = useEmailStore();
   // The mailbox of the open mail. Every act on it runs there: the signature,
   // the thread, the drafts, the AI draft and the send. The selected view never
@@ -133,6 +137,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   forwardFilesRef.current = forwardFiles;
   // A refused forward that a forward without files can fix (413, Outlook, IMAP).
   const [offerNoFiles, setOfferNoFiles] = useState(false);
+  // The pane got no answer about a forward, so the mail can still go out
+  // (review round 1, P2). The pane offers "Open Sent", never a retry.
+  const [forwardUnsure, setForwardUnsure] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
   // One inline send at a time (EM-T10 item 7, EM-G3c-2-f10). The ref is the
   // guard, because a second click or Ctrl+Enter can come before a render.
@@ -359,6 +366,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
       autosave.cancel();
       return;
     }
+    // A forward in flight freezes its draft: the inputs are read-only, and no
+    // save starts until the send ends (review round 1, P3-a).
+    if (replyMode === "forward" && sendingRef.current) {
+      autosave.cancel();
+      return;
+    }
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
     if (!replyBody.trim() && toArr.length === 0) {
       autosave.cancel();
@@ -562,6 +575,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
   const saveFailure = saveFailureText(draftStatus);
 
+  // A forward in flight: its inputs are read-only (review round 1, P3-a).
+  const forwarding = sending && replyMode === "forward";
+  // The full composer sends a new mail with none of the files of the email.
+  // So Pop out is off while the forward keeps a file (review round 1).
+  const popOutLosesFiles = replyMode === "forward" && forwardFiles.some((f) => f.checked);
+
   const replyLabel =
     replyMode === "forward"
       ? "Forward"
@@ -602,6 +621,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setReplyArtifacts([]);
     setForwardFiles(mode === "forward" ? forwardFilesOf(src.attachments) : []);
     setOfferNoFiles(false);
+    setForwardUnsure(false);
     setAiOpen(false);
     setAiInstruction("");
     // HTML-only mail (e.g. Outlook) has no bodyText — fall back to the snippet.
@@ -687,6 +707,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setReplyArtifacts([]);
     setForwardFiles([]);
     setOfferNoFiles(false);
+    setForwardUnsure(false);
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new reply starts a fresh drafting session
@@ -773,8 +794,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
   /** After a sent forward: the forward is a new mail in Sent, so the copy
    *  that the autosave kept in Drafts goes, as a discard takes it. */
-  const finishForward = (session: number, stale: string[]) => {
+  const finishForward = async (session: number, stale: string[]) => {
+    // A save that an edit scheduled after the first drain goes, and a save
+    // that runs settles first, so its draft id is known. Then the reset ends
+    // the session, as in `discardReply` (review round 1, P3-a).
+    const drained = autosave.drain(session);
     resetReplySession();
+    await drained;
     const ids = draftsToDiscard(
       session,
       { session: replySessionRef.current, draftId: draftIdRef.current },
@@ -825,6 +851,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     sendingRef.current = true;
     setSending(true);
     setOfferNoFiles(false);
+    setForwardUnsure(false);
     try {
       // The send carries the last edit, so each queued autosave goes. A save
       // that runs settles first: a first save gives its draft id, and no older
@@ -885,6 +912,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         const failure = forwardFailure(e);
         setSendErr(failure.text);
         setOfferNoFiles(failure.offerNoFiles && files.some((f) => f.checked));
+        setForwardUnsure(failure.unsure);
         return;
       }
       // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
@@ -895,7 +923,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
       setSending(false);
     }
     if (isForward) {
-      finishForward(session, stale);
+      await finishForward(session, stale);
       return;
     }
     // Show the reply in the conversation at once, then pull the real synced copy.
@@ -1504,6 +1532,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
               <RecipientInput
                 value={replyTo}
                 onChange={(v) => { replyDirty.current = true; setReplyTo(v); }}
+                readOnly={forwarding}
                 accountId={fromId}
                 ariaLabel="To recipients"
                 placeholder="Recipients (comma-separated)…"
@@ -1523,6 +1552,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyCc}
                     onChange={(v) => { replyDirty.current = true; setReplyCc(v); }}
+                    readOnly={forwarding}
                     accountId={fromId}
                     ariaLabel="Cc recipients"
                     placeholder="Cc…"
@@ -1534,6 +1564,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <RecipientInput
                     value={replyBcc}
                     onChange={(v) => { replyDirty.current = true; setReplyBcc(v); }}
+                    readOnly={forwarding}
                     accountId={fromId}
                     ariaLabel="Bcc recipients"
                     placeholder="Bcc…"
@@ -1544,6 +1575,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             )}
             <textarea
               value={replyBody}
+              readOnly={forwarding}
               onChange={(e) => { replyDirty.current = true; setReplyBody(e.target.value); }}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -1651,6 +1683,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 </Button>
               </div>
             )}
+            {/* No answer about the forward: look in Sent, never send again. */}
+            {replyMode === "forward" && forwardUnsure && sendErr && (
+              <div className="px-4 pb-1.5" data-forward-unsure="">
+                <Button variant="secondary" size="sm" icon="Send" onClick={() => selectFolder("sent")}>
+                  Open Sent
+                </Button>
+              </div>
+            )}
             {/* Footer — on phones the labels compress to icons so the full
                 action row (incl. Send) always fits inside the card. */}
             <div className="px-3 sm:px-4 py-2 bg-secondary/50 border-t border-border flex items-center justify-between gap-2">
@@ -1692,7 +1732,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   }}
                 />
                 </>)}
-                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void popOutToComposer()} title="Open in the full composer (Bcc, attachments)" aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
+                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void popOutToComposer()} disabled={popOutLosesFiles || forwarding} title={popOutLosesFiles ? POP_OUT_LOSES_FILES : "Open in the full composer (Bcc, attachments)"} aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
                   <AppIcon name="ExternalLink" size={13} />
                   <span className="hidden sm:inline">Pop out</span>
                 </Button>

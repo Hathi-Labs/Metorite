@@ -29,6 +29,19 @@ export function forwardFilesOf(attachments: readonly Attachment[] | undefined): 
     .map((a) => ({ id: a.id, filename: a.filename || "file", sizeBytes: a.sizeBytes || 0, checked: true }));
 }
 
+/** Each bidi control: the marks, the embeddings, the overrides, the isolates. */
+const BIDI_CONTROLS = /[؜‎‏‪-‮⁦-⁩]/g;
+
+/**
+ * A file name as the chip shows it. A sender chooses the name, and a
+ * right-to-left override can make "invoice<RLO>fdp.exe" read as
+ * "invoiceexe.pdf". So each bidi control goes, in the text and in the
+ * `title` (review round 1). The chip also draws the name inside `<bdi>`.
+ */
+export function visibleFileName(name: string): string {
+  return name.replace(BIDI_CONTROLS, "");
+}
+
 /** "29 KB", "2.0 MB": the size on a chip. "" when the size is not known. */
 export function fileSizeText(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
@@ -116,7 +129,21 @@ export interface ForwardFailure {
   text: string;
   /** Show "Forward without files": the files are the cause. */
   offerNoFiles: boolean;
+  /**
+   * The pane does not know if the mail went out. Show "Open Sent", and
+   * never a retry: a second send can send the mail twice.
+   */
+  unsure: boolean;
 }
+
+/**
+ * The words of a forward whose outcome the pane does not know (review
+ * round 1, P2). The Next proxy answers 502 with no `detail` when its wait
+ * ends, and the gateway can still send the mail after that. A network
+ * failure is the same case. So the pane never says "nothing was sent" there.
+ */
+export const FORWARD_UNSURE =
+  "The pane got no answer about this forward. The mail can still go out. Look in Sent before you send it again.";
 
 /**
  * Markers of the route's own 422 details (`forward.py`). The fence in
@@ -147,8 +174,17 @@ function detailOf(err: unknown): string {
 
 /** The words that the pane shows for each answer of the route that is not 200. */
 export function forwardFailure(err: unknown): ForwardFailure {
+  const f = knownFailure(err);
+  return f ? { ...f, unsure: false } : { text: FORWARD_UNSURE, offerNoFiles: false, unsure: true };
+}
+
+/** The words of an answer that says what happened, or null when it does not. */
+function knownFailure(err: unknown): Omit<ForwardFailure, "unsure"> | null {
   const status = statusOf(err);
   const detail = detailOf(err);
+  // No status (the request did not end) or a server error with no detail
+  // (the proxy, not the gateway): the mail can still have gone out.
+  if (status === undefined || (status >= 500 && !detail)) return null;
   if (status === 413) {
     return {
       text: detail || "This email and its files are too large to forward. Nothing was sent.",
@@ -179,8 +215,9 @@ export function forwardFailure(err: unknown): ForwardFailure {
     return { text: detail || "The mail provider asked for a pause. Nothing was sent. Try again later.", offerNoFiles: false };
   }
   if (status === 502) {
-    const base = detail || "The mail provider did not answer, so nothing was sent.";
-    return { text: `${base} Try again in a moment.`, offerNoFiles: false };
+    // The gateway's own 502 (`_provider_refusal`) carries a detail that says
+    // nothing was sent. A 502 with no detail returned above as unsure.
+    return { text: `${detail} Try again in a moment.`, offerNoFiles: false };
   }
   return { text: detail || "The forward failed. Nothing was sent.", offerNoFiles: false };
 }
