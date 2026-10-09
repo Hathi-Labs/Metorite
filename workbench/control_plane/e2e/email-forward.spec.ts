@@ -100,7 +100,9 @@ async function installMocks(
     const id = String(sent.draft_id ?? `draft-${log.saved.length + 1}`);
     if (log.putDelayMs) await new Promise((done) => setTimeout(done, log.putDelayMs));
     log.saved.push({ id, at: Date.now() });
-    return json(r, { ...message(account.id), id, folder: "drafts" });
+    // A forward draft holds no file (the route carries the files), so the
+    // autosave keeps its short wait and never the Gmail wait for files.
+    return json(r, { ...message(account.id), id, folder: "drafts", has_attachments: false, attachments: [] });
   });
   await page.route(/.*\/api\/email\/messages\/draft-\d+$/, (r) => {
     if (r.request().method() === "DELETE") {
