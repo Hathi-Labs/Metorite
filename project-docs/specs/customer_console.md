@@ -10226,9 +10226,9 @@ add a second one.
 
 | Call | File | Shape | Why it is a separate slice |
 |---|---|---|---|
-| Commitment gate | `tasks/capture_email.py:1006` | boolean | It runs while the user waits after a send. Split the gate from the draft: `decide` asks "is there a commitment", and the LLM drafts only on yes |
+| Commitment gate | `tasks/capture_email.py:1005` | boolean | It runs while the user waits after a send. Split the gate from the draft: `decide` asks "is there a commitment", and the LLM drafts only on yes. It stays a WS-18/WS-39 slice, and EM-T16 does not take it |
 | Meeting copilot "act or stay silent" | `notes/copilot.py:191` | boolean with a 0.6 threshold today | It runs on every transcript window of a live meeting. The Router hop adds latency, so measure the full round trip first |
-| Draft consult plan | `email/automation/drafting.py:1049` | choice of 7, plus 2 booleans | The question text stays with the LLM |
+| Draft consult plan | `email/automation/drafting.py:1125` | choice of 7, plus 2 booleans | The question text stays with the LLM. WS-17 EM-T16 PR-D owns this row as `email.draft_consult` (`email_app_master_plan.md` §10.4.17) |
 
 **CP-13g · The Tasks decisions.** `tasks/ai.py:1320` (context and energy) and
 `tasks/ai.py:661` (clarify). Both mix decisions with drafted text, so the
