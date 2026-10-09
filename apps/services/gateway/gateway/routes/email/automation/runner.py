@@ -1277,13 +1277,18 @@ async def _apply_and_log_match(
 
 
 async def _log_status_decided(
-    db: Any, r: Any, frm: dict[str, Any], account_id: str, status: str,
+    db: Any, r: Any, frm: dict[str, Any], account_id: str, status: Any,
 ) -> None:
     """The ONE History line of a row whose rule match was not asked (WS-17
     EM-T16 PR-B). The conversation status decided the thread, so History
     still answers "why was this not filed as a Receipt?". SKIPPED, with no
     rule, and no model call. The suppressed line of
-    :func:`_apply_and_log_match` keeps its own text."""
+    :func:`_apply_and_log_match` keeps its own text.
+
+    ``status`` is the ``replyzero.JobStatus`` of a skip. None (no skip)
+    writes nothing."""
+    if status is None:
+        return
     await db.execute(text(
         """INSERT INTO email_executed_rules
              (account_id, rule_id, rule_name, message_id,
@@ -1294,7 +1299,7 @@ async def _log_status_decided(
     ), {"aid": account_id, "mid": str(r.id),
         "pmid": r.provider_message_id, "tid": r.thread_id,
         "subj": r.subject or "", "frm": frm.get("email", ""),
-        "reason": (f"Thread status: {status} decided this thread. "
+        "reason": (f"Thread status: {status.verdict[0]} decided this thread. "
                    "No rule match was asked.")})
 
 
@@ -1873,9 +1878,8 @@ async def _run_rules_job(
                         account_id=account_id, cold_blocker=cold_blocker,
                         log_no_match=not skipped,
                     )
-                    if skipped:
-                        await _log_status_decided(
-                            db, r, frm, account_id, status.verdict[0])
+                    await _log_status_decided(
+                        db, r, frm, account_id, status if skipped else None)
                     # Reply Zero: project this thread's status from the matched
                     # rule (latest message per thread only). Read-only of the
                     # mailbox — runs even when the provider failed to
