@@ -522,7 +522,7 @@ export default async function CustomerDetailPage({
                   Free credits burn before paid ones. */}
               <p>
                 What the balance of {formatCr(Number(org.credit_balance) || 0)} credits is
-                made of, in the order it is spent. Free credits are spent first, so a
+                made of, in the order it is spent. Free credits burn first, so a
                 customer never loses credits they bought. Credits do not expire.
               </p>
             </div>
