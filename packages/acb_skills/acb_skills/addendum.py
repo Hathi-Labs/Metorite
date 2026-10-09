@@ -290,7 +290,7 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
 - **run_diagnostics(filePaths?)** (alias **get_errors**) — Run code diagnostics: check Python files for syntax, type, and lint errors.  Call after editing or creating files, before committing, or to diagnose a failed run.  Pass a JSON array of file paths (e.g. ``'["executor.py"]'``) or ``'[]'`` to auto-discover recently changed files.  Runs ``py_compile`` (syntax) and ``ruff`` (lint, if installed).  Returns structured errors or ``"No errors found."``.  Both names call the same tool.
 """),
     Section("coding", ("install_dependency",), """### Runtime dependencies
-- **install_dependency(packages)** — Install Python package(s) into the agent runtime so your imports/tools work.  Use this when you hit a ``ModuleNotFoundError`` or know a task needs a package that isn't installed.  Pass space- or comma-separated specs, e.g. ``"pandas openpyxl"`` or ``"requests==2.31.0"`` (plain names + optional version; no flags/URLs).  Installs into the shared agent venv via ``uv``; the package is importable immediately.  Prefer this over shell ``pip install`` (the venv has no pip).
+- **install_dependency(packages)** — Install Python package(s) into the agent runtime so your imports/tools work.  Use this when you hit a ``ModuleNotFoundError`` or know a task needs a package that isn't installed.  Pass space- or comma-separated specs, e.g. ``"pandas openpyxl"`` or ``"requests==2.31.0"`` (plain names + optional version; no flags/URLs).  Installs into the agent package dir (agent-site) via ``uv``, never into the venv; the package is importable immediately.  Prefer this over shell ``pip install`` or ``uv pip install`` (the venv is read-only to agents).
 """),
     Section("core", ("run_script", "code_task"), """### Coding skill (durable scripts)
 When your built-in tools can't do something, WRITE A PROGRAM for it — and keep it, so next time is instant.
@@ -415,7 +415,7 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
         "run_diagnostics(filePaths?) — run code diagnostics: check Python files for syntax/lint errors (alias: get_errors)"
     )),
     Section("coding", ("install_dependency",), (
-        "install_dependency(packages) — install Python package(s) into the agent venv at runtime"
+        "install_dependency(packages) — install Python package(s) into the agent package dir at runtime"
     )),
     Section("core", ("run_script", "code_task"), (
         "run_script(path,args?) — run a saved workspace script "

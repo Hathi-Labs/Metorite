@@ -42,6 +42,8 @@ import { DrawerAccountSection } from "@/components/AccountSwitcher";
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
+import AppLauncher from "@/lib/shell/AppLauncher";
+import { HOME_PANE, accountLinks, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -303,6 +305,10 @@ function MobileBottomNavInner({
     accessLoading ? null : access.features,
     access.is_admin,
   );
+  // The shell nav (NS-2): the drawer takes the sidebar's shape (§9).
+  const [shellNav] = useState(() => shellNavOn());
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const drawerSections = shellNav ? shellSidebar(navSections) : navSections;
 
   const menuContent = (
     <>
@@ -349,7 +355,25 @@ function MobileBottomNavInner({
             ))}
           </div>
         ) : null}
-        {navSections.map((section) => (
+        {shellNav && !accessLoading && (
+          <div className="px-2 pt-2">
+            <Link
+              href={HOME_PANE.href}
+              onClick={close}
+              className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
+                isActive(pathname, HOME_PANE.href)
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+                <AppIcon name={HOME_PANE.icon} size={15} />
+              </span>
+              <span className="text-sm font-medium">{HOME_PANE.label}</span>
+            </Link>
+          </div>
+        )}
+        {drawerSections.map((section) => (
           <div key={section.id} className="px-2 pt-1 pb-1.5">
             <div
               className={
@@ -362,7 +386,7 @@ function MobileBottomNavInner({
             </div>
             <div className="flex flex-col gap-0.5">
               {section.items.map((p) => {
-                const active = pathname?.startsWith(p.href);
+                const active = shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href);
                 return (
                   <Link
                     key={p.href}
@@ -384,6 +408,25 @@ function MobileBottomNavInner({
             </div>
           </div>
         ))}
+        {/* All apps (NS-2), only when it would list something. The drawer
+            closes first, so one overlay shows. */}
+        {shellNav && !accessLoading && launcherGroups(navSections).length > 0 && (
+          <div className="px-2 pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                close();
+                setLauncherOpen(true);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
+                <AppIcon name="LayoutGrid" size={15} />
+              </span>
+              <span className="text-sm font-medium">All apps</span>
+            </button>
+          </div>
+        )}
       </nav>
       <div className="mt-auto border-t border-border p-3 space-y-2">
         <ThemeToggleMenuItem onClick={close} />
@@ -394,6 +437,8 @@ function MobileBottomNavInner({
         {/* The account switcher (MT-1k A2). While its flag is off, it draws
             the Sign out row and the name, as before. */}
         <DrawerAccountSection
+          you={shellNav ? accountLinks(navSections) : undefined}
+          onNavigate={close}
           fallback={
             session?.user && (
               <>
@@ -463,6 +508,7 @@ function MobileBottomNavInner({
   };
 
   return (
+    <>
     <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
         <button
           onClick={() => { open(menuContent); }}
@@ -617,6 +663,15 @@ function MobileBottomNavInner({
           </>
         )}
     </nav>
+    {shellNav && (
+      <AppLauncher
+        open={launcherOpen}
+        onClose={() => setLauncherOpen(false)}
+        sections={navSections}
+        pathname={pathname}
+      />
+    )}
+    </>
   );
 }
 

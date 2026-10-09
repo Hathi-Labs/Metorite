@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext
+from acb_common.child_env import child_env
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
     MAX_SOURCE_FILE_BYTES,
@@ -294,6 +295,7 @@ def _git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str] | None
         return subprocess.run(
             ["git", *args], cwd=str(workspace), capture_output=True,
             text=True, timeout=_GIT_TIMEOUT_S, check=False,
+            env=child_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

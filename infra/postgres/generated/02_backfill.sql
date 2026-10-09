@@ -236,6 +236,9 @@ UPDATE calendar_rollover_log SET organization_id = (SELECT id FROM organization 
 UPDATE pm_import_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE maf_agent_session SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 

@@ -19,7 +19,9 @@ tool by identity, keeps only the platform's own delegation tools, and lets
 the chat save to memory on unmount only the default agent's turns. H-227
 (the uploads and the S8 documents of a shared agent are thread-scoped,
 §16.3) is built (2026-10-04, in review), and WS-43w waits on its deploy.
-Every other slice is spec only.**
+WS-43t2 (the session store, migration 228) is built and dark
+(2026-10-08). D86 paused it and D92 restarted it. Every other slice is
+spec only.**
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -1785,7 +1787,7 @@ until its PR merges.
 | WS-43b | The sandbox image and the Docker test workflow | Nothing | AGENT-SAFE. The box build is WS43-G2 |
 | WS-43c | The sandbox broker and the scope setting | WS-43b | AGENT-SAFE |
 | WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, merged in PR #603 | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
-| WS-43e | `code_task` on a MAF harness session, and no host git | WS-43d | AGENT-SAFE |
+| WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
 | WS-43h | app-builder on the MAF harness | WS-43d, WS-43e | AGENT-SAFE. ⏸ Parked by D86 |
@@ -2392,7 +2394,7 @@ These facts change or add to the text above:
   outlives the host dir. So only CI shows that the run data is gone from a
   fresh container.
 
-### WS-43e — `code_task` on a MAF harness session, and no host git 🔲
+### WS-43e — `code_task` on a MAF harness session, and no host git 🔲 ▶ **Built 2026-10-08, dark, in review**
 
 **Scope.** `run_maf_code_session` in `code_session.py`, the scope switch in
 `code_tools.code_task`, the two middlewares, the guard
@@ -2432,6 +2434,59 @@ uv run pytest tests/unit/test_sandbox_exec_hygiene.py -q -rs -m sandbox_docker
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**Built 2026-10-08, dark, on branch `ws43e-code-task-harness`.** The audit
+gave GO-NARROWED. These facts change or add to the text above:
+
+- **Two parts move out.** The Custom Apps clauses of WS43-F13 and the `_git`
+  flags of `apps/durability.py` go to WS-43h, because its scope names both.
+  Middleware 2 (the Gemini 3 thought signature) waits on a WS-43a finding,
+  and it belongs in the Router adapter.
+- **Who reaches the MAF path.** D85 withholds `code_task` from a shared agent
+  until `covers()` is true, and `covers()` stays false for this target until
+  WS-43f. So today the MAF path reaches a personal agent only. A run with no
+  store key, such as the root `metorite` agent, gets the clear error of
+  done-when 3. The session also refuses a tenant dir (`o:<org>`) by itself.
+  The `code_task` container mounts its dir whole and read-write, and a tenant
+  dir holds every thread's files and every member's skills. WS-43f must give
+  this target the thread and skill covers of `projects` before it lifts that
+  refusal.
+- **The container comes first.** `run_maf_code_session` acquires the
+  container before the first model call, and holds its lease to the end. So
+  a broker refusal costs no model call, and no eviction stops a session
+  between two commands.
+- **The store is flat.** `WorkspaceFileStore` maps `agent-data/`, `inputs/`
+  and `outputs/` to themselves, because the `code_task` container mounts the
+  whole working dir read-write with no nested folder. It refuses `.run/`, a
+  root file and any name that starts with a dot. A write shows no card, as on
+  the Copilot path.
+- **The session keeps to its own tools.** It holds `run_command`,
+  `request_network_access`, the eight file tools and the three skill tools
+  (`sandbox_tools.CODE_TASK_SESSION_TOOLS`). A per-session pair of
+  `tool_guard` withholds any other tool from each request and refuses a call
+  to one. `code_task` itself keeps `open_world=True`, so a `no_egress` run
+  never holds it (H-236).
+- **The host git guard.** `sandbox_broker.host_git_allowed` is the one
+  check, and it calls `refuse_if_sandbox_dir`. An empty path answers no.
+  When the dir list cannot be read, the answer depends on the scope. With a
+  target in the scope, it answers no, so the check fails closed. With an
+  empty scope, no container can start. Then it answers yes and logs an error,
+  so a bad `sandbox_state_dir` never stops the push guard (review P2-1).
+  `executor._repair_dir` replaces `git_dir or effective_dir` at the
+  self-anneal and the self-mutation. That fallback gave them the sandbox dir
+  when `_git_dir_for` returned nothing. A self-mutation of a sandbox dir
+  costs the run none of its tries.
+- **The tier stays `tier-balanced`.** D90 sends code to `tier-powerful`, and
+  WS43-Q4 says `tier-balanced`. This slice keeps WS43-Q4 and does not decide
+  between them.
+- **A carry-over for WS-43f.** The sweep after a command does not skip a
+  name that starts with a dot. So a container can write
+  `agent-data/skills/<name>/.metorite-author`, and the sweep mirrors it. A
+  personal agent has one member, so no harm follows today. Before WS-43f
+  covers a shared agent, the sweep must refuse that marker (review P2-4).
+- **The `code_task` docstring is not changed.** It says that the session can
+  edit and commit a built-in skill. That is true only on the Copilot path.
+  The MAF path has no clone and no host commit.
 
 ### WS-43f — `run_script` and `install_dependency` in the broker 🔲
 
@@ -2977,7 +3032,7 @@ provider, MAF 1.19 appends an `InMemoryHistoryProvider` to
 `self.context_providers`. Call `run` on the per-run copy, and that append
 stays inside the run.
 
-### WS-43t2 — The session store 🔲 ⏸ **Parked by D86, 2026-10-03, paused mid-build** (branch `ws43t2-sessions` kept)
+### WS-43t2 — The session store ✅ **BUILT 2026-10-08, dark** (D86 paused it on 2026-10-03, and D92 restarted it on 2026-10-07)
 
 **It comes early.** WS-8i (the task-manager move) and WS-43q wait on it.
 ⚠️ They wait on its **production soak**, not on its merge (§15.9.8). No agent
@@ -3046,6 +3101,116 @@ instead.
 
 **Gate.** AGENT-SAFE. It ships dark. The table is an expand step (R6). The
 production flip of `MAF_NATIVE_SESSIONS` is WS43-G13.
+
+**As built (2026-10-03, finished 2026-10-08).** It is off by default, behind
+`MAF_NATIVE_SESSIONS`.
+
+- **Migration 228** (`infra/postgres/228_maf_agent_session.sql`) creates the
+  table of §15.9.2 and copies the guarded block of 219. Like 219, it adds a
+  foreign key to `organization`. An index on `thread_id` serves the cascade.
+- The files in `generated/` add `maf_agent_session` and nothing else. A
+  full run of `gen_tenant_migration.py` also renames the policy and
+  constraint names of the old `gtd_*` tables. So the change keeps only the
+  blocks of the new table, byte-equal to the generator's output. WS-41 I-2
+  found the same thing.
+- `orchestrator/native_session_store.py` is the one module that touches the
+  table. `read_state` and `write_row` each open
+  `tenant_session(organization_id)`, and the organization is a required
+  argument.
+- `_begin_native_session` in `executor.py` reads `_current_run_org()` on the
+  event loop. The store gets that value and then goes to a worker thread.
+- A run gets its session only from `_native_session_run_kwargs`. The per-run
+  copy of `_agent_for_run` carries the session history. So MAF never adds a
+  history provider to the shared agent.
+- Tier 1 loads the session. Tier 2 uses it again when Tier 1 fails before
+  any output. Each run saves only after it finishes, and Tier 1 saves before
+  `RUN_FINISHED`.
+- `maf_session_max_bytes` (`MAF_SESSION_MAX_BYTES`, 2 MiB) is the byte
+  backstop.
+
+**Decisions this slice took.**
+
+1. **The digest boundary.** The fold writes the final answer row after the
+   run ends, so the save cannot read it. The save hashes the server rows
+   before the run's user turn, and then that turn. The load hashes the
+   server rows through the last user row before the new turn. The rows after
+   that row are the answer of the saved run. The fold seals that row, and no
+   route changes it.
+2. **The browser view check.** A regenerate in `AgentChat.tsx` drops the last
+   turn and its prompt in the browser only. The server keeps both rows, and
+   no route deletes one message. So the server digest cannot see a
+   regenerate. The store also compares the newest user turns of the browser
+   history with the server rows. A user turn holds the same bytes in both
+   copies, because the browser saves the string that it sends. The check can
+   only change a hit into a `digest_drop`.
+3. **The fingerprint of the load.** The save records the fingerprint that
+   the load read, which is the room that the run ran in. When a member joins
+   during a run, the next load drops the session.
+4. **A fit at the load.** The store compacts a loaded session again. The
+   cap is that of the run's model, less the context block and the current
+   turn. So the session still fits a model with a smaller window. The
+   Copilot path dropped its session on a model switch for the same reason.
+5. **An append with no dedup.** MAF's `InMemoryHistoryProvider` drops an
+   incoming message that has no id when a stored message has the same role
+   and content. A second "yes" would then be lost. `SessionHistoryProvider`
+   appends each message of the run.
+6. **The save keeps only the turns.** It writes a new session that holds
+   only `state["metorite-native-session"]["messages"]`. It keeps no other
+   state key of the run.
+7. **Odd runs.** A thread with no `chat_session` row loads as `no_row`,
+   with the reason `no_chat`, and runs with no session. An email chat thread
+   is such a thread. An agent that has its own history provider keeps it, and gets no
+   session. A delegated run is a run that starts inside the artifact context
+   of another run.
+8. **The sliding window.** §15.9.6 names no group count. The window keeps
+   200 groups, near the text path's bound of 400 messages. The token budget
+   is the bound that binds.
+9. **Only the actor's own thread** (review, 2026-10-08). A session loads and
+   saves only when the verified member of the run made the chat and no
+   participant row names another subject (§15.9.5). A room keeps the text
+   history of `main`. The reason: a session gives the model raw tool
+   results, and only the transcript can filter a turn for each reader.
+   This also stops a forged history of one member from reaching another
+   member's run.
+10. **The verified member.** `_verified_run_member()` reads `user` and
+   `member_verified` of the run binding, which come from the session's
+   member (H-73). A run with no verified member skips with `no_member`. A
+   claim in the request body never counts.
+11. **A fresh session takes only user and assistant turns** of the browser
+   history. A `system` or `tool` turn in a request body never goes into a
+   stored session.
+12. **A second lock.** The chat read, the stored read and the save's
+   `EXISTS` each name the bound organization. RLS is the first lock.
+
+**The outcome line.** Each load logs `native_session.load` with `outcome`,
+`agent`, `thread_id` and `reason`. A load that fails logs `no_row` with the
+reason `load_failed` or `restore_failed`, and the run uses the text history.
+A run that never loads logs `native_session.skip` with its reason.
+
+**Fence.** `tests/unit/test_native_session_persistence.py` has 76 cases now.
+Nineteen are R8 on the H3 phase-4 catalog, as the NOBYPASSRLS role
+`acb_app_h3rls`. The probe of §15.9.7 runs through the real executor and the
+real fold. `test_rooms.py::test_no_chat_or_room_path_opens_an_unbound_session`
+scans the store. The deploy never replays `generated/`, so in production the
+guarded block of migration 228 is the only lock on the table.
+`test_r8_the_migration_alone_forces_and_scopes_the_table` takes FORCE and the
+policy away, runs 228 again, and reads across tenants as the table owner. On
+2026-10-08, after the merge of `main`, 24 mutations each turned the fence
+red, and the PR lists them.
+
+**Known limits.**
+
+- A browser clock that runs behind the server clock can sort the next prompt
+  above the last answer. The load then gives `digest_drop`, and the run uses
+  the text history. The hit rate of the soak shows it.
+- Each load reads every text row of the thread for the digest. So a very long
+  thread costs one read of its transcript on each turn.
+- A room gets no session, so a confirm turn in a room still loses the tool
+  output of the turn before, as on `main`. A safe room session needs the
+  model context filtered for each reader, as the transcript is.
+- The R8 suites build `<db>_h3rls` on the shared scratch server. Two sessions
+  that run them at the same time drop the database of the other one. A
+  private database for `TENANT_LADDER_DATABASE_URL` prevents it.
 
 ### WS-43u — Projects track step 2: the instructions 🔲 ▶ **Built 2026-10-04, dark, in review (D86)**
 
@@ -4525,6 +4690,10 @@ table. WS-43t2 adds it to the source scan of
   - an agent switch in the thread, because the other agent's turns are not
     in this agent's session,
   - an edited message, or a deleted message.
+- ⚠️ **As built (WS-43t2).** The answer row of the saved run is the
+  boundary, and the digest does not hash it. The store also checks the
+  newest user turns of the browser, because the server keeps both rows of a
+  regenerate. Decisions 1 and 2 of WS-43t2 give the reasons.
 - **One outcome line per load.** Each load logs exactly one of `hit`,
   `no_row`, `digest_drop` and `fingerprint_drop`, with the agent and the
   thread. Without that line, the soak cannot tell a working store from one
@@ -4548,6 +4717,21 @@ table. WS-43t2 adds it to the source scan of
     memory cache uses at `gateway/routes/agent.py:1987-2104`),
   - the instance key of a personal agent. A load with a different fingerprint drops the session. So tool
   output never reaches further than the room's intersection allows.
+- ⚠️ **As built (WS-43t2 review, 2026-10-08): a session loads only in the
+  actor's own thread.** The fingerprint alone did not hold. A stored session
+  holds raw tool results. The transcript filters each turn for each reader,
+  by the waterline of a `since_join` room and by the redaction of a turn made
+  with access the reader does not hold (`routes/chat.py` `_render_message`).
+  A session cannot filter the model context. The fingerprint also did not
+  see a member who joins through a `group:` subject. So the store loads and
+  saves a session only when two facts hold:
+  - the verified member of the run (the run binding, never the payload)
+    made the chat, and
+  - no participant row names another subject.
+
+  Any room logs `no_row` with the reason `shared_room`, and the run keeps the
+  text history of `main`. The fingerprint now also hashes the acting member
+  (v2). Decision 9 of WS-43t2 gives the reason.
 - **Deletes.** The foreign key of §15.9.2 removes the rows of a deleted chat,
   for every agent of that thread. A WS43-F20 case saves after the delete and
   finds no row.
@@ -4600,7 +4784,7 @@ off, nothing changes.
 
 ⚠️ **The soak gates the moves.** No agent with a confirm turn moves to MAF
 for every organization, and WS-43q does not merge, before the soak ends. A
-merge of WS-43t2 is not enough. The soak (WS43-G13) has two parts:
+merge of WS-43t2 is not enough. The soak (WS43-G13) has these parts:
 
 1. The flag stays ON in production for one week, with no regression, for
    every native agent. The outcome lines of §15.9.4 show the hit rate.

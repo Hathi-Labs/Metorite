@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common.child_env import docker_env
 
 _log = get_logger("orchestrator.sandbox_broker")
 
@@ -896,6 +897,7 @@ class DockerCLI:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=docker_env(),
         )
 
     @staticmethod
@@ -1334,12 +1336,30 @@ class SandboxBroker:
         return len(kept)
 
     def is_sandbox_dir(self, path: str | os.PathLike[str]) -> bool:
-        """True when *path* lies in a dir that a container mounts now, or did."""
+        """True when *path* lies in a dir that a container mounts now, or did.
+
+        A path that does not resolve answers ``True``, so host git skips it.
+
+        A dir list that cannot be read (WS-43e, review P2-1) answers ``True``
+        while ``MAF_CODING_SCOPE`` names any target, so host git fails closed
+        when a container may run. With an empty scope, no container can start
+        (``acquire()`` refuses), so it answers ``False`` with an error line. A
+        bad ``sandbox_state_dir`` then never stops the push guard and the
+        commit scan of every run on a box that runs no sandbox.
+        """
         try:
             real = Path(path).resolve()
         except (OSError, RuntimeError):
             return True
-        return any(real == d or real.is_relative_to(d) for d in self._sandbox_dirs())
+        try:
+            dirs = self._sandbox_dirs()
+        except (OSError, SandboxError) as exc:
+            scoped = bool(str(getattr(self._settings(), "maf_coding_scope", "") or "").strip())
+            _log.error(
+                "sandbox_broker.dir_list_unreadable", error=str(exc)[:300], fail_closed=scoped,
+            )
+            return scoped
+        return any(real == d or real.is_relative_to(d) for d in dirs)
 
     def refuse_if_sandbox_dir(self, path: str | os.PathLike[str]) -> None:
         """Raise when host git would run on a dir that a container could write."""
@@ -2203,6 +2223,26 @@ def is_sandbox_dir(path: str | os.PathLike[str]) -> bool:
 def refuse_if_sandbox_dir(path: str | os.PathLike[str]) -> None:
     """Each host git site calls this first (§7.5 rule A, WS-43e)."""
     get_broker().refuse_if_sandbox_dir(path)
+
+
+def host_git_allowed(path: str | os.PathLike[str] | None) -> bool:
+    """True when host git may run in *path* (§7.5 rule A, WS-43e).
+
+    Each host git site asks this, and it asks :func:`refuse_if_sandbox_dir`.
+    An empty path answers ``False``, so a helper with no dir runs nothing. A
+    dir that a container mounts now, or mounted, answers ``False``, and the
+    site skips with one log line. A container could have written a
+    ``.git/config`` or a hook in that dir, and host git would run it.
+    Fence WS43-F13, ``tests/unit/test_no_host_git_on_sandbox_dir.py``.
+    """
+    if not path:
+        return False
+    try:
+        refuse_if_sandbox_dir(path)
+    except SandboxRefused:
+        _log.info("sandbox_broker.host_git_skipped", path=str(path)[:200])
+        return False
+    return True
 
 
 @contextlib.asynccontextmanager

@@ -8,6 +8,7 @@
  */
 import { NextRequest } from "next/server";
 import { proxyToGateway } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,8 @@ async function forward(
   params: Promise<{ path: string[] }>
 ): Promise<Response> {
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const body =
     method === "GET" || method === "DELETE" ? undefined : await req.text();
   try {

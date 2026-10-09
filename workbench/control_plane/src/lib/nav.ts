@@ -96,7 +96,41 @@ export type NavPane = {
    * plus a test update, which is what makes it a deliberate act.
    */
   launch: LaunchStatus;
+
+  // ── The shell manifest (D89, `navigation_shell.md` §5.1, NS-2) ──────────
+  // The shell reads these fields. An app never edits the sidebar, the
+  // launcher or the account menu by hand. `nav.test.ts` fails on a live pane
+  // with no `team` or no `blurb`.
+
+  /** The group the pane belongs to, in the sidebar and in All apps. */
+  team: PaneTeam;
+  /**
+   * What the app is for, in one sentence of job words, 60 characters at
+   * most. The launcher prints it under the name, and the command bar prints
+   * it beside "Open …". Required for a live pane. `note` is the older line,
+   * written for operators, and the home grid still reads it.
+   */
+  blurb?: string;
+  /**
+   * Where the pane's door is, with the shell nav on (`shellNavOn`).
+   * `sidebar`, the default, puts it in its team's group. `account` puts it in
+   * the account menu at the sidebar's foot, for a page about the member or
+   * the organization rather than a place to work.
+   */
+  door?: "sidebar" | "account";
+  /**
+   * A preference about the member, not an app: My Profile, Appearance. It
+   * opens from the account menu and never shows in All apps.
+   */
+  setting?: true;
 };
+
+/**
+ * A pane's team. `personal` is the member's own work, `across` is shared
+ * with their teams, `studio` makes things with AI, and `admin` runs the
+ * organization. A Center's slug may also stand here (§5.1).
+ */
+export type PaneTeam = "personal" | "across" | "studio" | "admin" | (string & {});
 
 export type NavSection = {
   id: string;
@@ -141,6 +175,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/tasks",
+        team: "personal",
+        blurb: "Your to-do list, and the work given to you",
         label: "My Tasks",
         icon: "CheckSquare",
         note: "Your tasks, and your view of the company's",
@@ -163,6 +199,8 @@ export const NAV_SECTIONS: NavSection[] = [
       // That is why `launch_surface.md` §2's live set is nine and not eight.
       {
         href: "/calendar",
+        team: "personal",
+        blurb: "Plan your day and block time to focus",
         label: "Calendar",
         icon: "Calendar",
         note: "When your work happens — timeboxing, day plan, focus",
@@ -176,6 +214,10 @@ export const NAV_SECTIONS: NavSection[] = [
       // their own profile" from everybody who had not been granted the roster.
       {
         href: "/people/me",
+        team: "personal",
+        blurb: "Your skills, CV and working hours",
+        door: "account",
+        setting: true,
         label: "My Profile",
         icon: "User",
         note: "Your skills, CV, working hours — what the assignment AI reads",
@@ -190,6 +232,7 @@ export const NAV_SECTIONS: NavSection[] = [
       // `feature:people`, so that member still has a door to it.
       {
         href: "/dashboard",
+        team: "personal",
         label: "Dashboard",
         icon: "LayoutDashboard",
         note: "Your day across your apps · company view today",
@@ -200,6 +243,8 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/email",
+        team: "personal",
+        blurb: "Read, sort and answer your email, with AI help",
         // "My Email" since 2026-10-08 (owner): the member's own mailbox,
         // apart from any shared team inbox a later app may add.
         label: "My Email",
@@ -213,6 +258,8 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/whatsapp",
+        team: "personal",
+        blurb: "Your WhatsApp Business chats, with AI help",
         // "My WhatsApp", and `live`, since 2026-10-08 by owner decision (WS-20
         // WA-C6). A member connects a WhatsApp Business account through Meta's
         // Embedded Signup, the one official way in. `launch_surface.md` §2
@@ -225,6 +272,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/notes",
+        team: "personal",
         label: "Notes",
         icon: "StickyNote",
         note: "AI note taker",
@@ -233,6 +281,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/memory",
+        team: "personal",
         label: "Memories",
         icon: "Brain",
         note: "Facts · episodic · knowledge graph",
@@ -243,6 +292,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/artifacts",
+        team: "personal",
         label: "Artifacts",
         icon: "FolderOpen",
         note: "All agent files · inputs · outputs · data",
@@ -264,6 +314,8 @@ export const NAV_SECTIONS: NavSection[] = [
       // grants are what actually scope the data.
       {
         href: "/projects",
+        team: "across",
+        blurb: "Plan and track your teams' projects and tasks",
         label: "Projects",
         icon: "FolderKanban",
         note: "Departments, projects and team tasks",
@@ -272,6 +324,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/crm",
+        team: "across",
         label: "CRM",
         icon: "KanbanSquare",
         note: "Pipeline, leads and customers",
@@ -280,6 +333,8 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/people",
+        team: "across",
+        blurb: "Find a colleague, their skills and who is out",
         label: "People",
         icon: "Users",
         note: "Directory, skills and org chart",
@@ -310,6 +365,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: c.tagline,
         feature: c.feature,
         launch: "preview",
+        team: "across",
       })),
     ],
   },
@@ -322,6 +378,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/chat",
+        team: "studio",
+        blurb: "Ask the AI assistant, or have it do the work",
         label: "Chat",
         icon: "MessageCircle",
         note: "AI conversations · sessions · rooms",
@@ -330,6 +388,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/workflows",
+        team: "studio",
         label: "Workflows",
         icon: "Workflow",
         note: "Visual automation across agents · tools · integrations",
@@ -338,6 +397,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/build/apps",
+        team: "studio",
         label: "App Workshop",
         icon: "PlusSquare",
         note: "User-created applications",
@@ -346,6 +406,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/build/agents",
+        team: "studio",
         label: "Agent Workshop",
         icon: "Wrench",
         note: "MAF agents & skills",
@@ -363,6 +424,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/approvals",
+        team: "admin",
+        blurb: "Check what the AI will send before it goes out",
         label: "Approvals",
         icon: "ShieldCheck",
         note: "Action Broker · outward writes awaiting review",
@@ -374,6 +437,9 @@ export const NAV_SECTIONS: NavSection[] = [
         // seat assignments and branding as tabs (launch_surface.md §6.2).
         // `/settings/members` redirects here. British spelling is the owner's.
         href: "/settings/organization",
+        team: "admin",
+        blurb: "Members, roles, seats and your brand",
+        door: "account",
         label: "Organisation",
         icon: "Building2",
         note: "Members & roles · seat assignments · branding",
@@ -385,6 +451,10 @@ export const NAV_SECTIONS: NavSection[] = [
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
+        team: "personal",
+        blurb: "Light or dark, spacing and accent colour",
+        door: "account",
+        setting: true,
         label: "Appearance",
         icon: "Palette",
         // "Themes ·" led this line until 2026-08-31. The theming engine is
@@ -400,6 +470,7 @@ export const NAV_SECTIONS: NavSection[] = [
       // a surface that should not exist in this product at all.
       {
         href: "/agents",
+        team: "admin",
         label: "Agent Registry",
         icon: "Bot",
         note: "Register · manage · commits · remove",
@@ -408,6 +479,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/integrations",
+        team: "admin",
         label: "Integrations",
         icon: "Plug",
         note: "APIs · MCP servers · plugins",
@@ -416,6 +488,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/observability",
+        team: "admin",
         label: "Live Activity",
         icon: "Activity",
         note: "Agent & model activations in real time",
