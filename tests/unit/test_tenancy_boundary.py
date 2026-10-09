@@ -1,6 +1,6 @@
 """The tenant boundary, as a ratchet (WS-29).
 
-⚠️ **114 of Metorite's 147 tables still carry no tenant key.** That is not
+⚠️ **113 of Metorite's 147 tables still carry no tenant key.** That is not
 a bug list — it is the honest state of a system built for one organisation. The
 bug would be adding the 147th.
 
@@ -98,6 +98,9 @@ def _generator():
 #: Tables that carry a tenant key today. Not a baseline — the goal state.
 EXPECTED_SCOPED = {
     "app_user",
+    # Migration 234: the logo and the default look, keyed per organization
+    # after two uploads failed on an unbound connection (2026-10-08).
+    "org_settings",
     "org_group",
     "org_role",
     # WS-29a — the whole Projects app, keyed while it was empty (17 tables,
@@ -202,7 +205,7 @@ BASELINE_UNSCOPED = {
 # notes_*
     "notes_glossary",
 # org_*
-    "org_group_member", "org_role_permission", "org_settings",
+    "org_group_member", "org_role_permission",
 # pending_*
     "pending_actions", "pending_commit",
 # person_*
@@ -435,4 +438,6 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    assert len(BASELINE_UNSCOPED) == 106
+    # 105 since 2026-10-09: `org_settings` left with migration 234 (the logo
+    # and the default look, keyed per organization).
+    assert len(BASELINE_UNSCOPED) == 105
