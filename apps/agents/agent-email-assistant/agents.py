@@ -1981,8 +1981,6 @@ async def update_assistant_settings(
     digest_send_to_email: bool | None = None,
     multi_rule_execution: bool | None = None,
     sensitive_data_protection: bool | None = None,
-    draft_model: str | None = None,
-    chat_model: str | None = None,
 ) -> str:
     """Update assistant settings. Only the fields you pass change; every other
     setting is preserved.
@@ -2010,10 +2008,8 @@ async def update_assistant_settings(
         digest_send_to_email: email the digest to the account address.
         multi_rule_execution: allow more than one rule per email.
         sensitive_data_protection: skip auto-drafting on sensitive-looking mail.
-        draft_model / chat_model: LiteLLM tier or model id for draft writing /
-            the chat panel (e.g. "tier-fast", "tier-balanced", "tier-powerful").
-            There is no rules model: the rules run on `decide`, and no member
-            can change it (D-EM-7).
+
+    No model or tier is a setting. The platform picks it (D-EM-7, D-EM-61).
 
     Mailbox: the settings belong to one mailbox. Leave ``account_id`` out when
     the user named no mailbox. One mailbox then acts. With two or more, the
@@ -2050,8 +2046,6 @@ async def update_assistant_settings(
     setif("digest_send_to_email", digest_send_to_email)
     setif("multi_rule_execution", multi_rule_execution)
     setif("sensitive_data_protection", sensitive_data_protection)
-    setif("draft_model", draft_model)
-    setif("chat_model", chat_model)
     await _patch_settings(body)
     return f"Assistant settings updated for {await _named(account_id)}."
 

@@ -21,6 +21,7 @@ import {
   type PersonaAccountSettings,
 } from "@/app/email/lib/emailAssistantPersona";
 import { getAssistantSettings } from "@/app/email/lib/api";
+import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { carriedText, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
@@ -44,7 +45,6 @@ import {
   governedModelProps,
   initialChatOpen,
   newChatAction,
-  readsChatModel,
   tierRoutingUiOn,
 } from "@/lib/tierRouting";
 import type { AgentEntry } from "@/app/api/agent/list/route";
@@ -653,16 +653,11 @@ function ChatPageInner() {
       })),
     [emailAccounts],
   );
-  // Default to the documented email-chat default (tier-powerful) so a send during
-  // the brief settings-fetch window uses a sensible model instead of "auto"
-  // (which the backend would coerce to a different tier). Refined to the
-  // account's saved chat_model once the fetch resolves; kept on lookup failure.
-  const [emailChatModel, setEmailChatModel] = useState<string | undefined>("tier-powerful");
-  // WS-45 S4 (D90): for a covered email-assistant the platform picks the
-  // tier, so the chat neither reads nor passes `chat_model`. With the UI flag
-  // off it is known and not covered, so the read and the props are as before.
+  // No setting picks the email chat's tier (D-EM-61). A covered
+  // email-assistant runs on the platform's tier, so the chat passes no model
+  // (WS-45 S4, D90). Every other case runs on EMAIL_CHAT_TIER, which our code
+  // chooses, as in the email app.
   const emailTier = useTierRouted("email-assistant");
-  const emailReadsModel = readsChatModel(emailTier);
   // The account's standing configuration, fed into the persona below — same
   // fetch, so the assistant behaves the same here as in the email app.
   const [emailAcctSettings, setEmailAcctSettings] =
@@ -673,7 +668,6 @@ function ChatPageInner() {
     getAssistantSettings(emailChatAccountId)
       .then((s) => {
         if (cancelled) return;
-        if (emailReadsModel) setEmailChatModel(s.chat_model || "tier-powerful");
         setEmailAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -681,9 +675,9 @@ function ChatPageInner() {
           learned_writing_style: s.learned_writing_style,
         });
       })
-      .catch(() => { /* keep the tier-powerful default on lookup failure */ });
+      .catch(() => { /* no standing orders on lookup failure */ });
     return () => { cancelled = true; };
-  }, [activeAgentName, emailChatAccountId, emailReadsModel]);
+  }, [activeAgentName, emailChatAccountId]);
   // Declared after the settings it reads (the persona carries the active
   // account's standing configuration, not just the account list).
   const emailAssistantPersona = useMemo(
@@ -1235,11 +1229,11 @@ function ChatPageInner() {
                 }
                 activeMailboxId={emailChatAccountId}
                 onMailboxChange={setEmailMailboxId}
-                // Email-assistant locks to the account chat_model (parity with
-                // the email app); all other agents keep the generic picker.
-                // WS-45 S4: a covered email-assistant gets neither prop.
+                // Email-assistant locks to EMAIL_CHAT_TIER (parity with the
+                // email app, D-EM-61); all other agents keep the generic
+                // picker. WS-45 S4: a covered email-assistant gets neither prop.
                 {...(activeSession.agentName === "email-assistant"
-                  ? governedModelProps(emailTier.covered, emailChatModel)
+                  ? governedModelProps(emailTier.covered, EMAIL_CHAT_TIER)
                   : { model: undefined, lockModel: false })}
                 memories={memories.map((m) => m.memory)}
                 memoryUserId={userId}

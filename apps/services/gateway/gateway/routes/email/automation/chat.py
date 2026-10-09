@@ -201,29 +201,19 @@ async def ai_chat(
         "source": "email",
     }
 
-    # ── Resolve which LiteLLM tier the email CHAT should use (per-account) ──
-    # The chat panel uses its own chat_model setting (default tier-powerful — a
-    # strong tool-caller, matching _DEFAULT_TASK_MODELS["chat"]), independent of
-    # rule evaluation and draft writing.  This fallback only applies when there
-    # is no account_id or the per-account lookup fails. It reads the RESOLVED id,
-    # never req.account_id: the body may name a mailbox of another member
-    # (D-EM-4, EM-T2c item 2).
-    #
+    # ── The tier of the email CHAT ──
     # WS-45 S4 (D90, §8): for an email-assistant that AI_TIER_ROUTING covers,
-    # the platform picks the tier of each step. So the route reads no
-    # `chat_model` and sends no model. The column stays (R6). An uncovered
-    # agent reads it exactly as before.
+    # the platform picks the tier of each step, so the route sends no model.
+    # Every other case runs on the chat tier that our code chooses. No member
+    # chooses it, and the route reads no stored chat model (D-EM-61). The
+    # column stays (R6).
     from acb_skills.tier_policy import tier_routing_on  # noqa: PLC0415
+    from gateway.routes.email.automation.assistant import (  # noqa: PLC0415
+        EMAIL_TASK_TIERS,
+    )
 
     covered = tier_routing_on("email-assistant")
-    chat_model: str | None = None if covered else "tier-powerful"
-    if account_id and not covered:
-        try:
-            from gateway.routes.email.automation.assistant import _account_models  # noqa: PLC0415
-            async with _tenant_session() as _mdb:
-                chat_model = (await _account_models(_mdb, account_id))["chat"]
-        except Exception:  # noqa: BLE001
-            pass
+    chat_tier: str | None = None if covered else EMAIL_TASK_TIERS["chat"]
 
     # ── Run the agent through the orchestrator ──
     from orchestrator.executor import run_agent_stream  # noqa: PLC0415
@@ -236,7 +226,7 @@ async def ai_chat(
         payload,
         run_id=run_id,
         thread_id=f"email-chat:{user_id}:{thread_key}",
-        model=chat_model,
+        model=chat_tier,
     )
 
     async def event_stream():

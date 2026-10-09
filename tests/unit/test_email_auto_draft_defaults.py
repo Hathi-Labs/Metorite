@@ -107,7 +107,7 @@ def _settings_row(**over) -> SimpleNamespace:
     """A stored settings row, with every column the GET reads."""
     base = dict(
         about="", signature="", auto_run=True, cold_email_blocker="OFF",
-        rule_model=None, draft_model=None, compose_model=None, chat_model=None,
+        rule_model=None,
         digest_frequency="OFF", personal_instructions="", writing_style="",
         learned_writing_style="", draft_replies=False, follow_up_days=0,
         draft_confidence="ALL_EMAILS", follow_up_awaiting_days=0,

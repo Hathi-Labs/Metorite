@@ -4,6 +4,8 @@ generation, learned-pattern listing, and the shared about-context loader."""
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
@@ -142,42 +144,45 @@ async def _load_assistant_about(
     return "\n\n".join(parts), signature
 
 
-# Per-task default tiers when no account preference is saved (or lookup fails).
-# ⚠️ No `rule` key (D-EM-7, EM-T5b-2): no member chooses the rules model. The
-# rule match runs on `decide` (`tier-decide`), and the old rule call that still
-# runs outside `on` uses its fixed tier, `tier-fast`.
-_DEFAULT_TASK_MODELS = {
-    "draft": "tier-powerful",  # BACKGROUND draft writing (rules, follow-ups)
-    "compose": "tier-fast",    # MANUAL "Draft with AI" (user waits on it)
-    "chat": "tier-powerful",   # email chat panel (strong tool-caller)
-}
+# The tier of each email AI task (D-EM-61, owner, 2026-10-09). Our code
+# chooses it, and no member does. "It is hard-coded depending on our best
+# process for email." The settings once let a member pick these three, and the
+# three columns stay until the contract step of R6 (HANDOFF). Nothing reads
+# them. Fence: tests/unit/test_email_no_tier_choice.py.
+#
+# The triage decisions are not here. They run on `decide` (`tier-decide`)
+# through decide_features (D-EM-7). The other email AI calls name their tier at
+# the call site. The email chat sends no model at all when AI_TIER_ROUTING
+# covers email-assistant, because the tier policy then picks each step (D90).
+EMAIL_TASK_TIERS: Mapping[str, str] = MappingProxyType({
+    # BACKGROUND draft writing: a rule draft action and a follow-up nudge.
+    # Nobody waits on these, so the strong tier writes them.
+    "draft": "tier-powerful",
+    # MANUAL "Draft with AI" in the composer. The member waits on it, so the
+    # fast tier answers. A reasoning tier here costs 20 to 60 s for each click.
+    "compose": "tier-fast",
+    # The email chat when the tier policy does not cover it. A strong
+    # tool-caller keeps the chat actions reliable.
+    "chat": "tier-powerful",
+})
+
+# The request fields that once chose a tier (D-EM-61). A PUT still accepts
+# them for one release, so an old client does not get a 422. The route ignores
+# each value and logs one line for each field, once in each process. The
+# contract step removes them (HANDOFF).
+RETIRED_MODEL_FIELDS = ("draft_model", "compose_model", "chat_model")
+_retired_fields_logged: set[str] = set()
 
 
-async def _account_models(db: Any, account_id: str) -> dict[str, str]:
-    """The three task-specific models an account uses, as a dict with keys
-    ``draft`` (background draft writing), ``compose`` (manual "Draft with
-    AI"), and ``chat`` (the email chat panel).
-
-    Each falls back to its per-task default (draft→tier-powerful,
-    compose→tier-fast, chat→tier-powerful) so automation works before the user
-    saves a preference or if the lookup fails. The stored ``rule_model``
-    column is not read (D-EM-7)."""
-    out = dict(_DEFAULT_TASK_MODELS)
-    if not account_id:
-        return out
-    try:
-        row = (await db.execute(text(
-            "SELECT draft_model, compose_model, chat_model "
-            "FROM email_assistant_settings WHERE account_id = :aid"
-        ), {"aid": account_id})).fetchone()
-        if row:
-            out["draft"] = (getattr(row, "draft_model", None) or out["draft"])
-            out["compose"] = (
-                getattr(row, "compose_model", None) or out["compose"])
-            out["chat"] = (getattr(row, "chat_model", None) or out["chat"])
-    except Exception as exc:  # noqa: BLE001 — fall back to the per-task defaults
-        _log.warning("email.account_models_failed", error=str(exc)[:160])
-    return out
+def _log_retired_model_fields(req: AssistantSettingsModel) -> None:
+    """Log once, for each process and field, that a client sent a retired
+    tier field. The line is the signal for the contract step: when no line
+    shows for one release, the fields can go."""
+    for name in RETIRED_MODEL_FIELDS:
+        if getattr(req, name, None) is None or name in _retired_fields_logged:
+            continue
+        _retired_fields_logged.add(name)
+        _log.info("email.assistant_settings.model_field_ignored", field=name)
 
 
 class AssistantSettingsModel(BaseModel):
@@ -189,18 +194,15 @@ class AssistantSettingsModel(BaseModel):
     # account auto-runs once it has rules. An explicit OFF stops auto-run.
     auto_run: bool = True
     cold_email_blocker: str = "OFF"  # OFF | LABEL | ARCHIVE
-    # Three task-specific models (tier-fast | tier-balanced | tier-powerful, or
-    # any enabled model id). There is no rules model (D-EM-7): the rule match
-    # runs on `decide`, and no member can change it. The `rule_model` column
-    # stays (R6), and nothing reads or writes it.
-    # BACKGROUND draft writing (follow-ups, rule DRAFT_EMAIL actions):
-    draft_model: str = "tier-powerful"
-    # MANUAL drafting — the composer's "Draft with AI" button, where the user
-    # is waiting on a spinner. Defaults to the fast tier: a reasoning-tier
-    # model here means a 20-60s wait per click.
-    compose_model: str = "tier-fast"
-    # The interactive email chat panel (strong tool-caller for reliability):
-    chat_model: str = "tier-powerful"
+    # No member chooses a model or a tier (D-EM-7 for the rules, D-EM-61 for
+    # the rest). EMAIL_TASK_TIERS holds the tier of each task. These three
+    # fields stay for one release so an old client does not get a 422. The
+    # PUT ignores them and logs once (_log_retired_model_fields). The GET and
+    # PUT answers leave them out. The columns stay (R6), and nothing reads or
+    # writes them, as with `rule_model`.
+    draft_model: str | None = None
+    compose_model: str | None = None
+    chat_model: str | None = None
     digest_frequency: str = "OFF"  # OFF | DAILY | WEEKLY
     personal_instructions: str | None = None
     writing_style: str | None = None
@@ -257,7 +259,6 @@ async def get_assistant_settings(
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         row = (await db.execute(text(
             """SELECT about, signature, auto_run, cold_email_blocker,
-                      draft_model, compose_model, chat_model,
                       digest_frequency, personal_instructions, writing_style,
                       learned_writing_style,
                       draft_replies, follow_up_days, draft_confidence,
@@ -306,18 +307,6 @@ async def get_assistant_settings(
             "signature_text": signature_text((row.signature if row else "") or ""),
             "auto_run": bool(row.auto_run) if row else True,
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
-            "draft_model": (getattr(row, "draft_model", None) if row else None)
-            or "tier-powerful",
-            # Default must match _DEFAULT_TASK_MODELS["compose"] — manual
-            # "Draft with AI" runs while the user watches, so it defaults fast.
-            "compose_model": (getattr(row, "compose_model", None) if row else None)
-            or "tier-fast",
-            # Default must match _DEFAULT_TASK_MODELS["chat"] and
-            # AssistantSettingsModel.chat_model (tier-powerful — a strong
-            # tool-caller). A divergent default here previously made the email
-            # chat lock to tier-balanced while automation used tier-powerful.
-            "chat_model": (getattr(row, "chat_model", None) if row else None)
-            or "tier-powerful",
             "digest_frequency": (row.digest_frequency if row else "OFF") or "OFF",
             "personal_instructions": (
                 getattr(row, "personal_instructions", None) if row else ""
@@ -397,6 +386,7 @@ async def put_assistant_settings(
     """Upsert the assistant settings for an account."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        _log_retired_model_fields(req)
         # `follow_up_awaiting_days` is canonical; accept the legacy `follow_up_days`
         # as a fallback so older clients keep working.
         awaiting = req.follow_up_awaiting_days or req.follow_up_days or 0
@@ -409,7 +399,6 @@ async def put_assistant_settings(
         saved = (await db.execute(text(
             """INSERT INTO email_assistant_settings
                  (account_id, about, signature, auto_run, cold_email_blocker,
-                  draft_model, compose_model, chat_model,
                   digest_frequency,
                   personal_instructions,
                   writing_style, draft_replies, follow_up_days, draft_confidence,
@@ -419,7 +408,6 @@ async def put_assistant_settings(
                   multi_rule_execution, sensitive_data_protection, org_domains,
                   insights_enabled, updated_at)
                VALUES (:aid, :about, :sig, :auto, :cold,
-                       :draft_model, :compose_model, :chat_model,
                        :digest,
                        :pi, :ws, :dr, :fu, :dc, :fua, :funr, :fuad, :dcat,
                        :ddow, :dtod, :dste, :mbe, :mre, :sdp, :orgd, :ins,
@@ -429,9 +417,6 @@ async def put_assistant_settings(
                  signature = EXCLUDED.signature,
                  auto_run = EXCLUDED.auto_run,
                  cold_email_blocker = EXCLUDED.cold_email_blocker,
-                 draft_model = EXCLUDED.draft_model,
-                 compose_model = EXCLUDED.compose_model,
-                 chat_model = EXCLUDED.chat_model,
                  digest_frequency = EXCLUDED.digest_frequency,
                  personal_instructions = EXCLUDED.personal_instructions,
                  writing_style = EXCLUDED.writing_style,
@@ -454,9 +439,6 @@ async def put_assistant_settings(
                RETURNING learned_writing_style"""
         ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
             "auto": req.auto_run, "cold": req.cold_email_blocker or "OFF",
-            "draft_model": req.draft_model or "tier-powerful",
-            "compose_model": req.compose_model or "tier-fast",
-            "chat_model": req.chat_model or "tier-powerful",
             "digest": req.digest_frequency or "OFF",
             "pi": req.personal_instructions, "ws": req.writing_style,
             "dr": req.draft_replies, "fu": awaiting,
@@ -501,9 +483,6 @@ async def put_assistant_settings(
             "signature_text": signature_text(req.signature or ""),
             "auto_run": req.auto_run,
             "cold_email_blocker": req.cold_email_blocker or "OFF",
-            "draft_model": req.draft_model or "tier-powerful",
-            "compose_model": req.compose_model or "tier-fast",
-            "chat_model": req.chat_model or "tier-powerful",
             "digest_frequency": req.digest_frequency or "OFF",
             "personal_instructions": req.personal_instructions or "",
             "writing_style": req.writing_style or "",
