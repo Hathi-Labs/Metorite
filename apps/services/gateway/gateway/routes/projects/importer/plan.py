@@ -12,8 +12,10 @@ touches the database by never giving it one.
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from gateway.routes.projects.importer.bundle import ImportBundle
@@ -75,6 +77,25 @@ MAX_STATUS = 64
 MAX_CHOICE = 500
 #: What a target takes when an intake lane holds its name (§6.3, P1-b).
 IMPORTED = " (imported)"
+
+
+def imported_name(name: str, taken: Iterable[str] = ()) -> str:
+    """The name a target takes beside an intake lane of the same name. The
+    plan proposes it, and the writer places into it in each set that holds
+    such a lane, so both spell it one way (§6.3).
+
+    ``taken`` holds names (lower case) the result must not be: the intake
+    lanes of the set. A member may recategorise "Triage (imported)" into an
+    intake lane too, so the name then steps on to "Triage (imported 2)"
+    (the PR #784 review). Each step is a new name, so the loop ends."""
+    blocked = {_fold(n) for n in taken}
+    for step in itertools.count(1):
+        suffix = IMPORTED if step == 1 else f" (imported {step})"
+        candidate = f"{name[: MAX_STATUS - len(suffix)]}{suffix}"
+        if _fold(candidate) not in blocked:
+            return candidate
+    raise AssertionError("unreachable")
+
 
 #: One status of a target set: its name and its stage.
 StatusTarget = tuple[str, Category]
@@ -488,12 +509,15 @@ def _statuses(
     earlier = earlier or {}
     held = {_fold(n): (n, c) for n, c in target}
     pen = {_fold(n) for n in reserved or []}
+    # The names the runs this one continues recorded (`status_names`). A long
+    # one is not new, so the 64-character limit does not apply to it.
+    recorded = {_fold(target_name) for target_name, _category in earlier.values()}
     moved = {_fold(old): new for old, new in (renamed or {}).items()} if continues else {}
 
     def off_the_pen(name: str) -> str:
         name = moved.get(_fold(name), name)
         if _fold(name) in pen and _fold(name) not in held:
-            return f"{name[: MAX_STATUS - len(IMPORTED)]}{IMPORTED}"
+            return imported_name(name, taken=pen)
         return name
 
     tasks: Counter[str] = Counter()
@@ -524,9 +548,13 @@ def _statuses(
         if existing:
             # The status exists: it keeps its own stage and spelling.
             target_name, category = held[_fold(target_name)]
-        elif len(target_name) > MAX_STATUS and not continues:
+        elif len(target_name) > MAX_STATUS and not (
+            continues and _fold(target_name) in {_fold(name), *recorded}
+        ):
             # Only a NEW status has the limit. A run that continues keeps the
-            # names of the earlier tree, as before I-10.
+            # earlier tree's names: the source name, and every name an
+            # earlier run recorded. The wizard sends a name on EVERY row, so
+            # "no choice" cannot be the test (the PR #784 review).
             errors.append(f"A new status name holds 1 to {MAX_STATUS} characters: {name}.")
         final[name] = (target_name, category)
         rows.append(

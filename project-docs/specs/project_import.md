@@ -526,8 +526,19 @@ The owner chose three things:
   to one. The name is still taken, because `UNIQUE (project_id, name)` holds
   it. Decision: a target with the name of an intake lane, proposed or
   chosen, becomes a new status "<name> (imported)". The plan and the Map
-  step show that name. If an intake lane appears after the plan's read, the
-  writer stops the run with the reason. Live check 8.2 holds it.
+  step show that name. Live check 8.2 holds it.
+- **The writer applies the same rule in each set it writes into** (the
+  fix-round follow-up). The plan cannot see every intake lane, for example
+  in a List that owns its set. So the writer puts the tasks into
+  "<name> (imported)" in any set that holds an intake lane with that name,
+  and it never stops the run for it. Live checks 10.1 to 10.3 hold it.
+  The writer keeps that placement in `progress.status_aliases`, apart from
+  the lanes it records, so a later run never reads it as a member's rename.
+  If an intake lane also holds the "(imported)" name, the name steps on to
+  "<name> (imported 2)". Live checks 11.1 and 11.2 hold both.
+- **The 64-character limit applies to a new status only.** On a run that
+  continues, the source name and each name an earlier run recorded are not
+  new. A unit test gives every row a name, as the wizard does.
 - **A seed status that no ClickUp status maps to stays.** It holds no task.
 - **The proposal.** The screen proposes a target for each name. The table
   is case-blind and folds runs of spaces:
