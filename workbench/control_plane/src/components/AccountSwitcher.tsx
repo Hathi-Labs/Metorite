@@ -35,15 +35,57 @@ import {
 } from "@/lib/accountSwitch";
 import type { AccountLink } from "@/lib/shell/shellNav";
 
-export function useAccounts() {
+/**
+ * The accounts this browser holds. `withOrgs` asks for each account's
+ * organization name on the first read too, for a surface that shows them at
+ * once (the phone menu's organization block).
+ */
+export function useAccounts(withOrgs = false) {
   const [accounts, setAccounts] = useState<Accounts>(NO_ACCOUNTS);
-  const reload = useCallback(async (withOrgs: boolean) => {
-    setAccounts(await fetchAccounts(withOrgs));
+  const reload = useCallback(async (orgs: boolean) => {
+    setAccounts(await fetchAccounts(orgs));
   }, []);
   useEffect(() => {
-    void reload(false);
-  }, [reload]);
+    let alive = true;
+    void (async () => {
+      // ⚠️ The plain read FIRST, then the names, in that order. The names
+      // need one gateway call per account (up to 3 s), and rows that appear
+      // only then push the menu down under a thumb that is already moving, so
+      // a tap meant for the nav lands on "switch" (review of #765). The plain
+      // read touches no gateway, so the rows take their place at once. In
+      // sequence, so a late plain answer can never erase the names.
+      const plain = await fetchAccounts(false);
+      if (!alive) return;
+      setAccounts(plain);
+      if (!withOrgs || plain.others.length === 0) return;
+      const full = await fetchAccounts(true);
+      if (alive) setAccounts(full);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [withOrgs]);
   return { accounts, reload };
+}
+
+/**
+ * One tap to another account: the cover while the page reloads, and the
+ * error when the account is no longer signed in. The menu and the phone's
+ * organization block share it, so the two switch the same way.
+ */
+function useSwitchAccount(onChanged: () => void) {
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pick = async (o: OtherAccount) => {
+    setError(null);
+    setSwitching(o.email);
+    if (!(await switchTo(o.slot))) {
+      setSwitching(null);
+      setError(`${o.email} is no longer signed in here. Add it again.`);
+      onChanged();
+    }
+  };
+  return { switching, error, pick };
 }
 
 function initial(name: string | null | undefined, email: string): string {
@@ -51,8 +93,12 @@ function initial(name: string | null | undefined, email: string): string {
 }
 
 /** A round initial, in the account's own stable hue, as Gmail does. */
-function Avatar({ email, name, size = "md" }: { email: string; name?: string | null; size?: "sm" | "md" | "lg" }) {
-  const box = size === "lg" ? "h-10 w-10 text-base" : size === "sm" ? "h-7 w-7 text-xs" : "h-8 w-8 text-sm";
+function Avatar({ email, name, size = "md" }: { email: string; name?: string | null; size?: "xs" | "sm" | "md" | "lg" }) {
+  const box =
+    size === "lg" ? "h-10 w-10 text-base"
+    : size === "sm" ? "h-7 w-7 text-xs"
+    : size === "xs" ? "h-5 w-5 text-[10px]"
+    : "h-8 w-8 text-sm";
   return (
     <span
       aria-hidden
@@ -87,6 +133,7 @@ function AccountMenu({
   accounts,
   onChanged,
   showActive = true,
+  showOthers = true,
   you,
   onNavigate,
 }: {
@@ -94,6 +141,8 @@ function AccountMenu({
   onChanged: () => void;
   /** False in the phone drawer, whose row above already shows it. */
   showActive?: boolean;
+  /** False in the phone drawer, whose organization block at the top lists them. */
+  showOthers?: boolean;
   /**
    * The shell nav's account rows (NS-2): My Profile, My access, Appearance,
    * and Organisation for an admin. Absent, the menu is the switcher alone.
@@ -104,20 +153,9 @@ function AccountMenu({
 }) {
   const { access } = useAccess();
   const orgName = access.organization?.display_name || access.organization?.slug || null;
-  const [switching, setSwitching] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { switching, error, pick } = useSwitchAccount(onChanged);
   const active = accounts.active;
   if (!active) return null;
-
-  const pick = async (o: OtherAccount) => {
-    setError(null);
-    setSwitching(o.email);
-    if (!(await switchTo(o.slot))) {
-      setSwitching(null);
-      setError(`${o.email} is no longer signed in here. Add it again.`);
-      onChanged();
-    }
-  };
 
   return (
     <div className="text-sm">
@@ -154,7 +192,7 @@ function AccountMenu({
         </nav>
       )}
 
-      {accounts.others.length > 0 && (
+      {showOthers && accounts.others.length > 0 && (
         <div className={`${showActive || you?.length ? "border-t border-border" : ""} py-1`} role="list" aria-label="Other accounts">
           {accounts.others.map((o) => (
             <div key={o.slot} role="listitem" className="group flex items-center gap-1 px-1">
@@ -355,11 +393,23 @@ export function DrawerAccountSection({
   fallback,
   you,
   onNavigate,
+  othersAtTop = false,
+  actionsOnly = false,
 }: {
   fallback: React.ReactNode;
+  /**
+   * The account sheet: the actions alone. Its organization block above it
+   * already shows the account, so a row naming it again is noise.
+   */
+  actionsOnly?: boolean;
   /** The shell nav's account rows (NS-2). With them, the section always shows. */
   you?: readonly AccountLink[];
   onNavigate?: () => void;
+  /**
+   * The organization block at the top of the drawer lists the other accounts
+   * (`DrawerOrgSwitch`), so this foot keeps only the actions.
+   */
+  othersAtTop?: boolean;
 }) {
   // ⚠️ Its own hook, never props. The drawer captures its content once, when
   // it opens (`useMobileDrawer().open(node)`), so props from the shell would
@@ -371,6 +421,21 @@ export function DrawerAccountSection({
   const active = accounts.active;
   if ((!accounts.enabled && !you) || !active || !session?.user) return <>{fallback}</>;
   const count = accounts.others.length;
+
+  if (actionsOnly) {
+    return (
+      <div className="rounded-lg border border-border">
+        <AccountMenu
+          accounts={accounts}
+          onChanged={() => void reload(true)}
+          showActive={false}
+          showOthers={!othersAtTop}
+          you={you}
+          onNavigate={onNavigate}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-border">
@@ -387,7 +452,7 @@ export function DrawerAccountSection({
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-foreground">{active.name ?? active.email}</span>
           <span className="block truncate text-xs text-muted-foreground">
-            {count > 0 ? `${active.email} · ${count} more` : active.email}
+            {count > 0 && !othersAtTop ? `${active.email} · ${count} more` : active.email}
           </span>
         </span>
         <Icon
@@ -402,11 +467,152 @@ export function DrawerAccountSection({
             accounts={accounts}
             onChanged={() => void reload(true)}
             showActive={false}
+            showOthers={!othersAtTop}
             you={you}
             onNavigate={onNavigate}
           />
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The phone menu's organization block, at its TOP (owner request, 2026-10-09).
+ *
+ * Before, switching organization on a phone took four steps: open the menu,
+ * scroll to its foot, unfold the account row, tap. And nothing at the top said
+ * which organization was open. Now the first thing under the menu's header
+ * names the organization that is open and the account signed in, each with
+ * its label. Every other account is one tap below it. So a switch is two taps:
+ * Menu, then the organization.
+ *
+ * With the switcher off, it still names the organization and the account.
+ */
+export function DrawerOrgSwitch() {
+  // Its own hooks, never props: the drawer captures its content once.
+  const { accounts, reload } = useAccounts(true);
+  const { access } = useAccess();
+  const { data: session } = useSession();
+  const { switching, error, pick } = useSwitchAccount(() => void reload(true));
+  // ⚠️ The organization and the address from ONE answer, `/api/auth/me`, so
+  // the block can never pair one account's organization with another's email.
+  // A tab that missed a switch broadcast holds the older identity for up to
+  // two minutes, and a separate `/api/accounts` read could already name the
+  // newer one (review of #765).
+  const orgName = access.organization?.display_name || access.organization?.slug || null;
+  const email = access.email || session?.user?.email || null;
+  const name = session?.user?.name ?? accounts.active?.name ?? null;
+  if (!orgName && !email) return null;
+  // Never offer the account that is open now.
+  const others = accounts.enabled ? accounts.others.filter((o) => o.email !== email) : [];
+
+  return (
+    <section aria-label="Organization and account" className="border-b border-border px-3 py-3" data-testid="drawer-org">
+      <div className="flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+        {email && <Avatar email={email} name={name} />}
+        <div className="min-w-0 flex-1">
+          {orgName && (
+            <>
+              <div className="text-xs text-muted-foreground">Organization</div>
+              <div className="truncate text-sm font-semibold text-foreground">{orgName}</div>
+            </>
+          )}
+          {email && (
+            <div className="mt-0.5 truncate text-xs text-muted-foreground">
+              Signed in as <span className="font-medium text-foreground">{email}</span>
+            </div>
+          )}
+        </div>
+        <Icon name="Check" size={15} className="shrink-0 text-primary" aria-label="Open now" />
+      </div>
+
+      {others.length > 0 && (
+        <div className="mt-2">
+          <div className="px-1 pb-1 text-xs font-medium text-muted-foreground">Switch to</div>
+          <div role="list" aria-label="Switch organization" className="flex flex-col gap-1">
+            {others.map((o) => (
+              <div key={o.slot} role="listitem" className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => void pick(o)}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-left hover:bg-secondary tech-transition"
+                >
+                  <Avatar email={o.email} name={o.name} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-foreground">
+                      {o.organization ?? o.name ?? o.email}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">{o.email}</span>
+                  </span>
+                  <Icon name="ArrowRight" size={15} className="shrink-0 text-muted-foreground" />
+                </button>
+                {/* The one place on a phone to drop ONE account from this
+                    browser (review of #765, P1). Always shown, as on desktop:
+                    a hover-only control never appears on touch. */}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  aria-label={`Remove ${o.email} from this browser`}
+                  title="Remove from this browser"
+                  onClick={async () => {
+                    await removeAccount(o.slot);
+                    void reload(true);
+                  }}
+                  className="shrink-0 text-muted-foreground"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {error && <p className="px-1 pt-2 text-xs text-destructive">{error}</p>}
+      {switching && <SwitchingCover email={switching} />}
+    </section>
+  );
+}
+
+/**
+ * The account tab, at the right end of the phone's bottom bar (owner request,
+ * 2026-10-09: "a separate button for the account switcher, so that there's no
+ * confusion"). It is on every screen, so the member always sees who they are:
+ * the account's avatar, in that account's own hue, and the organization's
+ * name under it. A "+N" says how many other accounts are one tap away. It
+ * opens the account sheet (`onOpen`).
+ */
+export function AccountTab({ onOpen, open }: { onOpen: () => void; open: boolean }) {
+  const { accounts } = useAccounts();
+  const { access } = useAccess();
+  const { data: session } = useSession();
+  // From ONE answer, as in the organization block: the address and its
+  // organization both come from `/api/auth/me`, which the shell polls.
+  const orgName = access.organization?.display_name || access.organization?.slug || null;
+  const email = access.email || session?.user?.email || null;
+  const name = session?.user?.name ?? accounts.active?.name ?? null;
+  if (!email) return null;
+  const count = accounts.enabled ? accounts.others.filter((o) => o.email !== email).length : 0;
+  const label = `Account: ${email}${orgName ? `, in ${orgName}` : ""}${count ? `, ${count} more` : ""}`;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={label}
+      aria-expanded={open}
+      data-testid="account-tab"
+      className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
+        open ? "text-primary" : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      <span className="relative">
+        <Avatar email={email} name={name} size="xs" />
+        {count > 0 && (
+          <span className="absolute -bottom-1 -right-2 rounded-full border border-background bg-muted px-0.5 text-[8px] font-semibold leading-tight text-muted-foreground">
+            +{count}
+          </span>
+        )}
+      </span>
+      <span className="max-w-full truncate text-[10px] font-medium leading-none">{orgName ?? "Account"}</span>
+    </button>
   );
 }

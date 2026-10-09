@@ -38,7 +38,7 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
-import { DrawerAccountSection } from "@/components/AccountSwitcher";
+import { AccountTab, DrawerAccountSection, DrawerOrgSwitch } from "@/components/AccountSwitcher";
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
@@ -325,7 +325,10 @@ function MobileBottomNavInner({
           <AppIcon name="X" size={16} />
         </button>
       </div>
-      {/* NS-1 on the phone: the first thing in the menu is the one search. */}
+      {/* Which organization is open, which account is signed in, and one tap
+          to another (owner request, 2026-10-09). First, under the header. */}
+      <DrawerOrgSwitch />
+      {/* NS-1 on the phone: the one search. */}
       {shellBarOn() ? (
         <div className="border-b border-border px-3 py-2">
           <button
@@ -439,6 +442,7 @@ function MobileBottomNavInner({
         <DrawerAccountSection
           you={shellNav ? accountLinks(navSections) : undefined}
           onNavigate={close}
+          othersAtTop
           fallback={
             session?.user && (
               <>
@@ -458,6 +462,39 @@ function MobileBottomNavInner({
       </div>
     </>
   );
+
+  // The account sheet (owner request, 2026-10-09), opened from the bottom
+  // bar's account tab: who is signed in, which organization is open, one tap
+  // to another account, and the account actions.
+  const [accountSheet, setAccountSheet] = useState(false);
+  const accountContent = (
+    <>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <span className="text-sm font-semibold text-foreground">Account</span>
+        <button onClick={close} className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary" aria-label="Close">
+          <AppIcon name="X" size={16} />
+        </button>
+      </div>
+      <DrawerOrgSwitch />
+      <div className="p-3">
+        <DrawerAccountSection
+          you={shellNav ? accountLinks(navSections) : undefined}
+          onNavigate={close}
+          othersAtTop
+          actionsOnly
+          fallback={
+            <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
+              <AppIcon name="LogOut" size={16} className="shrink-0" />
+              Sign out
+            </Button>
+          }
+        />
+      </div>
+    </>
+  );
+  useEffect(() => {
+    if (!isOpen) setAccountSheet(false);
+  }, [isOpen]);
 
   const isChatPage = pathname?.startsWith("/chat") ?? false;
   const isEmailPage = pathname?.startsWith("/email") ?? false;
@@ -511,9 +548,9 @@ function MobileBottomNavInner({
     <>
     <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
         <button
-          onClick={() => { open(menuContent); }}
+          onClick={() => { setAccountSheet(false); open(menuContent); }}
           className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-            isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            isOpen && !accountSheet ? "text-primary" : "text-muted-foreground hover:text-foreground"
           }`}
         >
           <AppIcon name="Menu" size={20} />
@@ -662,6 +699,14 @@ function MobileBottomNavInner({
             />
           </>
         )}
+        {/* Last, on every screen: who is signed in, and where. */}
+        <AccountTab
+          open={isOpen && accountSheet}
+          onOpen={() => {
+            setAccountSheet(true);
+            open(accountContent);
+          }}
+        />
     </nav>
     {shellNav && (
       <AppLauncher
