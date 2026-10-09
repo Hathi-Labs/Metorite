@@ -1,46 +1,53 @@
-// What this customer SPENT — H-133.
+// Money for one customer: what we charged, what their AI cost us, what is
+// left. WS-50 slices 1 and 2, decision D94. It replaces H-133's "What they
+// spent" panel.
 //
-// 🔴 **The page where the question gets asked, and it could not answer.** A
-// customer writes in saying their credits went faster than they expected. The
-// operator opens that customer and sees the balance, the lots and the ledger.
-// The ledger says `usage -1.29` eight hundred times. It cannot say which tier,
-// which app or which person, so the operator cannot answer and the exchange
-// becomes a support thread.
+// 🔴 **The answer comes first.** The owner opens a customer to learn two
+// things: what we charge them, and what they cost us. The old panel showed
+// credits beside dollars beside a "2.5× cost" ratio, and a reader had to know
+// three units to compare them. Every figure here is in rupees, and each one
+// has an ⓘ that shows its formula with this customer's own numbers.
 //
-// ⚠️ **The read already existed and nothing called it.** `GET
-// /admin/usage/daily?org_slug=` serves this series, and `/usage` has computed
-// calls, credits, cost, margin, runway and the silent flag per organization
-// all along. This page read none of it.
+// 🔴 **Every number comes from `lib/money.ts`, every judgement from
+// `lib/usage.ts`.** This file only arranges them. The fleet page and this
+// panel must never disagree about one customer.
 //
-// 🔴 **Every judgement here comes from `lib/usage.ts`.** Not one verdict is
-// re-derived. The fleet board and this panel must never disagree about one
-// row — `golive.ts` and `fallback.ts` both record what that costs — so a
-// margin, a runway and a flag are decided in exactly one place, and this file
-// only arranges them.
-//
-// ⚠️ **A server component.** It renders numbers the page already fetched with
-// the caller's own session, and it writes nothing.
+// ⚠️ **A server component.** `Explain` is the only client part, and it
+// receives finished strings.
 
 import Spark from "../../Spark";
-import { formatCredits, formatUsd } from "@/lib/format";
+import Explain from "../../Explain";
+import {
+  daysLeftLabel,
+  formatCr,
+  formatInr,
+  formatPct,
+  formatUsdPlain,
+  type CustomerMoney,
+  type Price,
+} from "@/lib/money";
 import { chipClass } from "@/lib/tone";
 import {
   customerUsageState,
   hasUnbilled,
-  marginLabel,
-  marginTone,
   orgFlags,
-  rowRunwayLabel,
   runwayTone,
   type OrgUsageRow,
   type UsageDay,
 } from "@/lib/usage";
+
+function Est({ on }: { on: boolean }) {
+  return on ? <span className="est">estimated</span> : null;
+}
 
 export default function CustomerUsage({
   row,
   days,
   windowDays,
   error,
+  money,
+  price,
+  priceReported = true,
 }: {
   /** This organization's row from the fleet read. ⚠️ `null` can mean EITHER
    *  "no traffic" or "the capped fleet page did not include them" — H-76.
@@ -51,48 +58,63 @@ export default function CustomerUsage({
   /** The Console refused or did not answer. Say so — an empty panel and a
    *  failed read must not look alike. */
   error: string | null;
+  /** `lib/money.ts`'s figures for this row, or null when there is no row. */
+  money: CustomerMoney | null;
+  price: Price | null;
+  /** False when the Console sent no credit-price field at all (a build that
+   *  predates it), which is not the same as "no price saved". */
+  priceReported?: boolean;
 }) {
-  // ⚠️ The judgement is `lib/usage.ts`'s, with its own test. This file only
-  // arranges what it returns.
   const state = customerUsageState(row, days);
 
   return (
     <section className="panel">
       <div className="panel-head">
-        <h2>What they spent</h2>
+        <h2>Money — last {windowDays} days</h2>
         <p>
-          The last {windowDays} days, the same numbers the fleet board reads.
-          The ledger above says <i>when</i> credits left. This says what for.
+          What we charged this customer, what their AI cost us, and what is
+          left. All figures are in rupees. Select ⓘ beside a figure to see how
+          it is worked out.
         </p>
       </div>
 
       {error && <p className="result err">{error}</p>}
 
+      {!error && !price && priceReported && (
+        <div className="banner">
+          <strong>No credit price is saved,</strong> so credits and the
+          vendor&apos;s dollar bill cannot be shown in rupees.{" "}
+          <a href="/pricing">Set the credit price →</a>
+        </div>
+      )}
+      {!error && !price && !priceReported && (
+        <div className="banner">
+          <strong>This Console build does not send the credit price yet,</strong>{" "}
+          so the figures below cannot be shown in rupees. They appear after
+          the next Console deploy.
+        </div>
+      )}
+
       {!error && state.kind === "quiet" && (
-        // ⚠️ An empty state that NAMES what is absent (DESIGN.md §7 rule 3).
-        // A blank panel here reads as a quiet month, and right now the true
-        // reason is almost always that the Router is not serving yet.
         <div className="empty">
-          <h3>No AI calls in the last {windowDays} days</h3>
+          <h3>No AI use in the last {windowDays} days</h3>
           <p className="muted">
-            Nothing was metered for this customer in the window. That is a
-            quiet month if the Router is serving, and it is everything if it
-            is not — <code>ROUTER_SERVING_ENABLED</code> gates that, and while
-            it is off no call reaches the meter for anybody.
+            This customer made no AI calls in this period, so there is no AI
+            cost and no credit use to show. Seat revenue, if any, is on the
+            Subscription figure above.
           </p>
         </div>
       )}
 
-      {/* 🔴 H-76, said out loud instead of mis-reported. The fleet read is a
-          capped page sorted by spend and takes no org filter, so a quiet
-          customer with real traffic is simply not in it. Printing "no calls"
-          here would put that truncation on their page as a fact. */}
+      {/* H-76: the fleet read is a capped page sorted by spend, so a quiet
+          customer with real traffic can be missing from it. Say that, and
+          never print "no calls" over a truncation. */}
       {!error && state.kind === "truncated" && (
         <div className="banner">
-          <strong>Calls served, and no fleet row to judge them by.</strong> The
-          per-organization read is a capped page ordered by spend, so this
-          customer is below the cut. The daily series below is theirs and is
-          complete. <a href="/usage">Open the fleet board →</a>
+          <strong>This customer made AI calls, but the money figures did not
+          load.</strong> The fleet read lists the biggest spenders first and
+          stops at a page limit, and this customer is below it. The daily
+          chart below is complete. <a href="/usage">Open the fleet view →</a>
         </div>
       )}
 
@@ -100,11 +122,8 @@ export default function CustomerUsage({
         <Spark days={days} label="Credits per day" />
       )}
 
-      {!error && state.kind === "full" && (
+      {!error && state.kind === "full" && money && (
         <>
-          {/* 🔴 The flags FIRST. Whether this customer hit a wall, went
-              silent or ran calls we could not bill is the answer to "why did
-              my credits go fast" more often than any number below it. */}
           {orgFlags(state.row).length > 0 && (
             <p className="rowline">
               {orgFlags(state.row).map((f) => (
@@ -115,48 +134,124 @@ export default function CustomerUsage({
             </p>
           )}
 
+          <div className="stats">
+            <div className="stat">
+              <div className="lbl">
+                We charged
+                <Explain term="weCharged" detail={money.charged.how} notes={money.estimateNotes} />
+                <Est on={money.charged.estimated} />
+              </div>
+              <div className="num">{formatInr(money.charged.value)}</div>
+              <div className="sub">
+                Seats {formatInr(money.seats.value)} · Credits{" "}
+                {formatInr(money.paidCredits.value)}
+                <Explain term="paidCredits" detail={money.paidCredits.how} />
+              </div>
+            </div>
+
+            <div className="stat">
+              <div className="lbl">
+                AI cost
+                <Explain term="aiCost" detail={money.aiCost.how} />
+                <Est on={money.aiCost.estimated} />
+              </div>
+              <div className="num">{formatInr(money.aiCost.value)}</div>
+              <div className="sub">
+                {formatUsdPlain(Number(state.row.costUsd) || 0)} billed by vendors
+                {money.givenAway.value !== null && money.givenAway.value > 0 && (
+                  <>
+                    {" · "}given away {formatInr(money.givenAway.value)}
+                    <Explain term="givenAway" detail={money.givenAway.how} />
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div
+              className={`stat${
+                money.profit.value !== null && money.profit.value < 0 ? " loss" : ""
+              }`}
+            >
+              <div className="lbl">
+                Profit
+                <Explain term="profit" detail={money.profit.how} notes={money.estimateNotes} />
+                <Est on={money.profit.estimated} />
+              </div>
+              <div className="num">{formatInr(money.profit.value)}</div>
+              <div className="sub">
+                Margin {formatPct(money.margin.value)}
+                <Explain term="margin" detail={money.margin.how} />
+              </div>
+            </div>
+
+            <div className={`stat${money.creditsLeft < 0 ? " loss" : ""}`}>
+              <div className="lbl">
+                Credits left
+                <Explain term="creditsLeft" />
+              </div>
+              <div className="num">{formatCr(money.creditsLeft)}</div>
+              <div className="sub">
+                {money.owed.value !== null && money.owed.value > 0 ? (
+                  <>
+                    Owed {formatInr(money.owed.value)}
+                    <Explain term="owed" detail={money.owed.how} />
+                  </>
+                ) : price ? (
+                  <>worth {formatInr(money.creditsLeft * price.inrPerCredit)}</>
+                ) : (
+                  "credits"
+                )}
+              </div>
+            </div>
+
+            <div className="stat">
+              <div className="lbl">
+                Days left
+                <Explain term="daysLeft" detail={money.daysLeft.how} />
+              </div>
+              <div className="num">
+                <span className={chipClass(runwayTone(money.daysLeft.days))}>
+                  {daysLeftLabel(money.daysLeft)}
+                </span>
+              </div>
+              <div className="sub">
+                {money.daysLeft.perDay !== null
+                  ? `using ${formatCr(money.daysLeft.perDay)} credits a day`
+                  : "at the last 7 days' rate"}
+              </div>
+            </div>
+          </div>
+
+          {money.estimateNotes.length > 0 && (
+            <ul className="moneynotes">
+              {money.estimateNotes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          )}
+
           <dl className="modelfacts">
             <div>
-              <dt>Calls</dt>
+              <dt>
+                AI calls
+                <Explain term="calls" />
+              </dt>
               <dd>{state.row.calls.toLocaleString("en-IN")}</dd>
             </div>
             <div>
-              <dt>Credits spent</dt>
-              <dd>{formatCredits(state.row.credits)}</dd>
+              <dt>
+                Credits used
+                <Explain term="creditsUsed" />
+              </dt>
+              <dd>{formatCr(money.creditsUsed)}</dd>
             </div>
             <div>
-              {/* ⚠️ OUR cost, not theirs. Two numbers on one panel and
-                  reading one as the other inverts a margin. */}
-              <dt>Cost to us</dt>
-              <dd>{formatUsd(state.row.costUsd)}</dd>
-            </div>
-            <div>
-              <dt>Margin</dt>
-              <dd>
-                <span className={chipClass(marginTone(state.row.marginRatio))}>
-                  {marginLabel(state.row.marginRatio)}
-                </span>
-              </dd>
-            </div>
-            <div>
-              <dt>Runway</dt>
-              <dd>
-                <span className={chipClass(runwayTone(state.row.runwayDays))}>
-                  {rowRunwayLabel(state.row)}
-                </span>
-              </dd>
-            </div>
-            <div>
-              {/* 🔴 A refusal cost us nothing. An unbilled call cost us the
-                  vendor's bill — we said yes and did not charge. The fleet
-                  board keeps these in two columns for that reason. */}
-              <dt>Refused</dt>
-              {/* ⚠️ A tone CHIP, not a coloured `dd`. `.modelfacts dd` sets
-                  `color: var(--text)` and out-specifies `.danger-t`, so the
-                  alarm colour silently lost — the number rendered in plain
-                  body text. Measured 2026-09-21. `tone.ts` is the one status
-                  vocabulary (DESIGN.md §4) and a chip cannot be overridden
-                  by the container it sits in. */}
+              <dt>
+                Refused
+                <Explain term="refused" />
+              </dt>
+              {/* A tone CHIP, not a coloured `dd`: `.modelfacts dd` sets the
+                  colour and out-specifies a text tone (measured 2026-09-21). */}
               <dd>
                 {state.row.refusals > 0 ? (
                   <span className={chipClass("warn")}>{state.row.refusals}</span>
@@ -166,23 +261,22 @@ export default function CustomerUsage({
               </dd>
             </div>
             <div>
-              <dt>Served, not billed</dt>
-              <dd
-                title={
-                  hasUnbilled(state.row)
-                    ? `${state.row.unbilledCalls} served call(s) we could not meter, about ` +
-                      `${state.row.unbilledTokens.toLocaleString("en-IN")} tokens. Absorbed, not charged.`
-                    : undefined
-                }
-              >
-                {/* 🔴 The loudest number on this panel when it is not zero.
-                    A refusal cost us nothing. This is a call we said YES to
-                    and did not charge for — they hold the completion and we
-                    hold the vendor's bill. */}
+              <dt>
+                Served, not billed
+                <Explain
+                  term="servedNotBilled"
+                  detail={
+                    hasUnbilled(state.row)
+                      ? `${state.row.unbilledCalls} answered calls, about ` +
+                        `${state.row.unbilledTokens.toLocaleString("en-IN")} tokens, ` +
+                        "that we paid the vendor for and did not charge."
+                      : null
+                  }
+                />
+              </dt>
+              <dd>
                 {hasUnbilled(state.row) ? (
-                  <span className={chipClass("danger")}>
-                    {state.row.unbilledCalls}
-                  </span>
+                  <span className={chipClass("danger")}>{state.row.unbilledCalls}</span>
                 ) : (
                   state.row.unbilledCalls
                 )}
@@ -190,19 +284,9 @@ export default function CustomerUsage({
             </div>
           </dl>
 
-          {/* ⚠️ No line for a series with no calls. `sparklinePath` draws a
-              flat series through the MIDDLE on purpose — "steady" is the
-              honest picture of steady — but a mid-height line over thirty
-              days of nothing reads as steady USAGE. The numbers above already
-              say zero. */}
-          {days.some((d) => d.calls > 0) && (
-            <Spark days={days} label="Credits per day" />
-          )}
-
-          <p className="note">
-            Per-activity and per-person breakdowns are not on this page yet.{" "}
-            <a href="/usage">Open the fleet board →</a>
-          </p>
+          {/* No line for a series with no calls: a flat line through the
+              middle reads as steady use. */}
+          {days.some((d) => d.calls > 0) && <Spark days={days} label="Credits per day" />}
         </>
       )}
     </section>

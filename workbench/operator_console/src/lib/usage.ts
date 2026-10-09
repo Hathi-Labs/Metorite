@@ -53,6 +53,35 @@ export type OrgUsageRow = {
    *  token total is itself the signal that the provider's SHAPE broke, not
    *  our arithmetic. */
   unbilledTokens: number;
+  /** Migration 036 (WS-50 S0): of the credits spent in the window, what came
+   *  from a BOUGHT lot and what it was sold at, what came free, and what no
+   *  lot covered. Optional: a Console before 036 sends none of them, and
+   *  `lib/money.ts` then treats the whole window as untraced. */
+  paidCredits?: string;
+  paidValueInr?: string;
+  unpricedPaidCredits?: string;
+  freeCredits?: string;
+  unbackedCredits?: string;
+  lifePaidUsed?: string;
+  lifePaidValueInr?: string;
+  lifeUnpricedPaidUsed?: string;
+  lifeFreeUsed?: string;
+  /** The share of calls (0..1) that carry a vendor cost. Below 1, `costUsd`
+   *  is the cost of SOME calls only. NULL when there are no calls. */
+  costedShare?: string | null;
+  /** Credits billed in the last 7 days: the numerator of `runwayDays`. */
+  creditsLast7Days?: string | null;
+};
+
+/** The fleet read's envelope. Only the fields the money model needs. */
+export type OrgUsageView = {
+  windowDays: number;
+  rows: OrgUsageRow[];
+  /** When draws began to be recorded (migration 036), or null. */
+  drawsSince?: string | null;
+  /** The saved credit price. Null until the owner saves one. */
+  inrPerCredit?: string | null;
+  usdToInr?: string | null;
 };
 
 export type UsageDay = { day: string; calls: number; credits: string };

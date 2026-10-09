@@ -61,6 +61,35 @@ const byPath = new Map([
     low_usd_default: "5",
     probe_minutes: 30,
   }],
+  // WS-50: the fleet usage read with the migration 036 split. Shaped so the
+  // customer page draws every case at once: bought and free credits, a part
+  // spent before draws began (an ESTIMATE), and a saved credit price.
+  ["/admin/usage/orgs", {
+    windowDays: 30, total: 1, shown: 1, silentSlugs: [],
+    unbilledOrgs: 0, unbilledCallsTotal: 0, unbilledTokensTotal: 0,
+    drawsSince: "2026-10-09T06:00:00+00:00",
+    inrPerCredit: "1.00", usdToInr: "85.00",
+    rows: [
+      { slug: "hathi-labs-llp", name: "Hathi Labs LLP", calls: 4261,
+        credits: "8583.34", members: 3, costUsd: "9.9700", balance: "4022.81",
+        lastSeen: "2026-10-09T05:00:00+00:00", marginRatio: "860.92",
+        costedShare: "1", runwayDays: 12, silent: false, refusals: 2,
+        unbilledCalls: 1, unbilledTokens: 1840,
+        paidCredits: "1200.0000", paidValueInr: "1440.00",
+        unpricedPaidCredits: "0", freeCredits: "300.0000",
+        unbackedCredits: "0", lifePaidUsed: "6000.0000",
+        lifePaidValueInr: "7200.00", lifeFreeUsed: "2000.0000",
+        creditsLast7Days: "2346.50" },
+    ],
+  }],
+  ["/admin/usage/daily", {
+    windowDays: 30,
+    days: Array.from({ length: 30 }, (_, i) => ({
+      day: new Date(Date.UTC(2026, 8, 10 + i)).toISOString().slice(0, 10),
+      calls: 100 + ((i * 37) % 90),
+      credits: String(200 + ((i * 53) % 160)),
+    })),
+  }],
   // Usage slice 3: one customer's breakdown. Shaped on production's first
   // five metered calls (2026-09-24), plus the cases the panel must draw: an
   // app with two agents, a gap named "unattributed", a LOSS, a margin with no
