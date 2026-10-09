@@ -1276,33 +1276,6 @@ async def _apply_and_log_match(
         "msrc": match.get("source"), "aerr": json.dumps(action_errors)})
 
 
-async def _log_status_decided(
-    db: Any, r: Any, frm: dict[str, Any], account_id: str, status: Any,
-) -> None:
-    """The ONE History line of a row whose rule match was not asked (WS-17
-    EM-T16 PR-B). The conversation status decided the thread, so History
-    still answers "why was this not filed as a Receipt?". SKIPPED, with no
-    rule, and no model call. The suppressed line of
-    :func:`_apply_and_log_match` keeps its own text.
-
-    ``status`` is the ``replyzero.JobStatus`` of a skip. None (no skip)
-    writes nothing."""
-    if status is None:
-        return
-    await db.execute(text(
-        """INSERT INTO email_executed_rules
-             (account_id, rule_id, rule_name, message_id,
-              provider_message_id, thread_id, subject, from_address,
-              status, automated, actions_taken, reason)
-           VALUES (:aid, NULL, NULL, :mid, :pmid, :tid, :subj, :frm,
-                   'SKIPPED', true, '[]', :reason)"""
-    ), {"aid": account_id, "mid": str(r.id),
-        "pmid": r.provider_message_id, "tid": r.thread_id,
-        "subj": r.subject or "", "frm": frm.get("email", ""),
-        "reason": (f"Thread status: {status.verdict[0]} decided this thread. "
-                   "No rule match was asked.")})
-
-
 async def _apply_matches(
     db: Any, provider: Any, r: Any, frm: dict[str, Any], email: dict[str, str],
     matches: list[dict[str, Any]], *, apply: bool, dry_run: bool,
@@ -1839,7 +1812,8 @@ async def _run_rules_job(
                 # open, before the rule match. "Undecided" raises here.
                 status = await rz.ask_status_first(plan.first)
                 # EM-T16 PR-B: when the status decides the thread, the rule
-                # match is not asked. Block W writes one History line for it.
+                # match is not asked. The APPLIED line of the status rule is
+                # its History, and the skip writes no line of its own.
                 skipped = rz.skip_rule_match(
                     plan.first, status, account_id=account_id, job="runner")
                 # Multi-rule applies every match; otherwise the single best.
@@ -1870,7 +1844,8 @@ async def _run_rules_job(
                         status=status)
                     apply = (not dry_run) and provider is not None
                     # A skip has no per-message match, so it logs no "No
-                    # rule matched" line and never runs the cold blocker.
+                    # rule matched" line and never runs the cold blocker
+                    # (D2, also when `_determined_matches` raised).
                     await _apply_matches(
                         db, provider, r, frm, email, matches,
                         apply=apply, dry_run=dry_run, about=about,
@@ -1878,8 +1853,6 @@ async def _run_rules_job(
                         account_id=account_id, cold_blocker=cold_blocker,
                         log_no_match=not skipped,
                     )
-                    await _log_status_decided(
-                        db, r, frm, account_id, status if skipped else None)
                     # Reply Zero: project this thread's status from the matched
                     # rule (latest message per thread only). Read-only of the
                     # mailbox — runs even when the provider failed to

@@ -434,8 +434,8 @@ class Settings(BaseSettings):
     # True: in `on` of `email.thread_status`, the rules job and the Reply
     # Zero backfill ask no rule match for a known conversation whose status
     # reaches the bar and has an enabled rule. That rule is then the one live
-    # match, as it is today, and the runner writes one SKIPPED History line
-    # in place of the suppressed lines. False is the default, and then each
+    # match, as it is today, and its APPLIED line is the History. No line
+    # records the skip. False is the default, and then each
     # mode is the same as before PR-B. Its own flag, not the flag of PR-A.
     # The one reader is `email_ingestion.post_sync.status_skips_rule_match`.
     #

@@ -3040,11 +3040,9 @@ class TestTheSplitJobsWriteTheirOwnTenant:
 # Spec: ``email_app_master_plan.md`` §10.4.17 PR-B, acceptance A3, D-EM-62.
 # In ``on`` of ``email.thread_status``, with ``EMAIL_STATUS_SKIPS_RULE_MATCH``,
 # each job asks no rule match for a known conversation whose status reaches
-# the bar and has an enabled rule. The runner writes ONE synthetic History
-# line, and the backfill writes none. With the flag off, nothing changes.
-
-#: The reason of the synthetic line, for the status DONE.
-_PB_REASON = "Thread status: DONE decided this thread. No rule match was asked."
+# the bar and has an enabled rule. A skip writes no History line of its
+# own: the APPLIED line of the status rule is the History (coordinator
+# amendment of B6, 2026-10-10). With the flag off, nothing changes.
 
 #: The job name that ``email.rule_match_skipped`` logs.
 _PB_JOB_NAME = {"runner": "runner", "runner-multi": "runner",
@@ -3127,8 +3125,9 @@ async def test_the_skip_changes_only_the_history(
 ):
     """F2. The same fixture with the flag off and on: the same live action,
     the same projected status and the same reconciled label. Only the rule
-    match asks and the History differ. ``_apply_matches`` is a spy, so the
-    History here holds the synthetic line only."""
+    match asks differ. With the flag off, the comparison holds a
+    suppressed match (P3). ``_apply_matches`` is a spy, so no History line
+    reaches the database here, and the skip adds none."""
     real_project = replyzero_mod.project_reply_status_from_matches
     _state, tagged, calls, db = _pb_env(
         monkeypatch, decide_env, job=job, flag=flag)
@@ -3144,15 +3143,17 @@ async def test_the_skip_changes_only_the_history(
 
     await _B1_JOBS[job]()
 
-    live = [rid for rid, suppressed in _applied(job, calls) if suppressed is None]
+    applied = _applied(job, calls)
+    if not flag:
+        assert applied == [("r-done", None), ("r-receipt", "conversation")]
+    live = [rid for rid, suppressed in applied if suppressed is None]
     assert live == ["r-done"]
     assert [c.args[3] for c in upsert.await_args_list] == ["DONE"]
     labels = [a[4] for name, _n, _o, a in calls
               if name == "_reconcile_thread_labels"]
     assert labels == ["Done"]
     assert len(_match_asks(tagged)) == (0 if flag else 1), tagged
-    want = [_PB_REASON] if flag and job != "backfill" else []
-    assert [line["reason"] for line in _history(db)] == want
+    assert _history(db) == []
 
 
 def _pb_low_status(monkeypatch) -> None:
@@ -3199,8 +3200,8 @@ _PB_NEVER_CASES = [(job, case) for job in sorted(_B1_JOBS)
 
 @pytest.mark.parametrize(("job", "case"), _PB_NEVER_CASES)
 async def test_these_cases_never_skip(job, case, monkeypatch, decide_env):
-    """F3. Each case asks the rule match once, as today, and writes no
-    synthetic line: a status under the bar of a moving rule (0.7), a status
+    """F3. Each case asks the rule match once, as today, and logs no
+    skip: a status under the bar of a moving rule (0.7), a status
     with no enabled rule, ``NOT_ASKED`` (a new thread), ``off`` and
     ``shadow`` of ``email.thread_status``, a ``dry_run``, and the flag off."""
     _state, tagged, calls, db = _pb_env(
@@ -3281,34 +3282,35 @@ async def test_a_conversation_match_on_a_conversation_asks_once_with_the_skip(
 
 
 @pytest.mark.parametrize("job", sorted(_B1_JOBS))
-async def test_the_runner_writes_one_synthetic_line_in_block_w(
+async def test_a_skip_writes_only_the_applied_line_of_the_target(
     job, monkeypatch, decide_env,
 ):
-    """F5. The runner writes exactly ONE SKIPPED line, in Block W, with a
-    NULL rule and the reason of B6, in the one-rule and the multi-rule mode.
-    The backfill writes none, because it writes no History today."""
-    state, _tagged, calls, db = _pb_env(monkeypatch, decide_env, job=job)
-    real_line = runner_mod._log_status_decided
+    """F5 (B6 as amended 2026-10-10). On a skip, the runner writes exactly
+    ONE History line, the APPLIED line of the Done rule, through the real
+    ``_apply_matches``. It writes no SKIPPED line, in the one-rule and the
+    multi-rule mode. The backfill writes no line, because it writes no
+    History today."""
+    real_apply = runner_mod._apply_matches
+    _state, tagged, calls, db = _pb_env(monkeypatch, decide_env, job=job)
+    monkeypatch.setattr(runner_mod, "_apply_rule_actions",
+                        AsyncMock(return_value=["LABEL"]))
 
-    async def _line(*a, **kw):
-        calls.append(("_log_status_decided", state["opens"], state["open"], a))
-        return await real_line(*a, **kw)
+    async def _apply(*a, **kw):
+        calls.append(("_apply_matches", 0, 0, a))
+        return await real_apply(*a, **kw)
 
-    monkeypatch.setattr(runner_mod, "_log_status_decided", _line)
+    monkeypatch.setattr(runner_mod, "_apply_matches", _apply)
 
     await _B1_JOBS[job]()
 
+    assert _match_asks(tagged) == [], tagged
     lines = _history(db)
     if job == "backfill":
         assert lines == [], lines
         return
-    (line,) = lines
-    assert "'SKIPPED'" in line["sql"] and "NULL, NULL" in line["sql"], line
-    assert "rid" not in line and "rname" not in line, line
-    assert (line["mid"], line["tid"], line["reason"]) == (
-        "m-b1", "t-b1", _PB_REASON)
-    blocks = _blocks(calls)
-    assert blocks["_log_status_decided"] == blocks["resolve_classification"]
+    assert [(line.get("status"), line.get("rid"), line.get("rname"))
+            for line in lines] == [("APPLIED", "r-done", "Done")], lines
+    assert not [line for line in lines if "SKIPPED" in line["sql"]], lines
 
 
 @pytest.mark.parametrize("job", ["runner", "runner-multi"])
@@ -3319,7 +3321,7 @@ async def test_a_failed_determined_match_runs_no_per_message_action(
     the per-message matches, and on a skip those are none. The real
     ``_apply_matches`` then runs no action, writes no "No rule matched"
     line, and never calls ``_maybe_block_cold``, with the cold blocker on.
-    The synthetic line stays, and the row is stamped."""
+    The skip writes no line of its own, and the row is stamped."""
     real_apply = runner_mod._apply_matches
     _state, tagged, calls, db = _pb_env(
         monkeypatch, decide_env, job=job, cold="LABEL")
@@ -3339,7 +3341,7 @@ async def test_a_failed_determined_match_runs_no_per_message_action(
     assert _match_asks(tagged) == [], tagged
     assert _applied(job, calls) == []
     cold.assert_not_awaited()
-    assert [line["reason"] for line in _history(db)] == [_PB_REASON]
+    assert _history(db) == []
     assert "_stamp_processed_watermark" in [name for name, *_r in calls]
 
 
@@ -3404,8 +3406,8 @@ class TestTheStatusSkipWritesItsOwnTenant:
         self, job, promoted, app_engine, monkeypatch, decide_env,  # noqa: F811
     ):
         """In ``on`` with the flag, the job asks the status once and no rule
-        match. The runner writes APPLIED for Done, ONE synthetic SKIPPED
-        line and the stamp, in org B only. The backfill writes the status
+        match. The runner writes APPLIED for Done and the stamp, and no
+        other row, in org B only. The backfill writes the status
         and no History. Org A reads none of it."""
         _dc_mode(monkeypatch, decide_env, "on")
         _pb_flag(monkeypatch, decide_env, True)
@@ -3439,11 +3441,9 @@ class TestTheStatusSkipWritesItsOwnTenant:
             _isolated(p, "email_executed_rules", acc, expect_b=0)
             return
         assert [(r["mid"], r["status"], r["rule_name"], r["org"])
-                for r in logs] == [(mid, "APPLIED", "Done", p.org_b),
-                                   (mid, "SKIPPED", None, p.org_b)], logs
-        assert (logs[1]["rid"], logs[1]["reason"]) == (None, _PB_REASON)
+                for r in logs] == [(mid, "APPLIED", "Done", p.org_b)], logs
         stamped = ("SELECT count(*) FROM email_messages "
                    f"{_BY_ACCOUNT} AND rules_processed_at IS NOT NULL")
         assert _count_as(p.app_url, p.org_b, stamped, {"a": acc}) == 1
         assert _count_as(p.app_url, p.org_a, stamped, {"a": acc}) == 0
-        _isolated(p, "email_executed_rules", acc, expect_b=2)
+        _isolated(p, "email_executed_rules", acc, expect_b=1)
