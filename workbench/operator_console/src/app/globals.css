@@ -2952,3 +2952,41 @@ th .explain { margin-left: 4px; }
   right: 0;
   height: 8px;
 }
+
+/* ── The customer's life (WS-50 slice 3) ────────────────────────────────
+   Where the customer is on the path, and the one next act. */
+.panel.lifecycle { padding-top: 14px; padding-bottom: 12px; }
+.lifebar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lifestep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--faint);
+}
+.lifestep + .lifestep::before {
+  content: "";
+  width: 28px;
+  height: 1px;
+  margin: 0 10px 0 4px;
+  background: var(--border-strong);
+}
+.lifedot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--r-pill);
+  border: 2px solid var(--border-strong);
+}
+.lifestep.done { color: var(--muted); }
+.lifestep.done .lifedot { background: var(--muted); border-color: var(--muted); }
+.lifestep.current { color: var(--text); font-weight: 600; }
+.lifestep.current .lifedot { background: var(--accent); border-color: var(--accent); box-shadow: var(--ring); }
+.lifenext { margin: 10px 0 0; font-size: 13.5px; }
+.pagetabs { margin: 14px 0 6px; }

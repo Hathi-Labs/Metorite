@@ -185,7 +185,7 @@ describe("lifecycleHint", () => {
   it("nudges when a paid subscription sits under a trial lifecycle", () => {
     const hint = lifecycleHint("trial", "active");
     expect(hint).not.toBeNull();
-    expect(hint).toContain("Activate account");
+    expect(hint).toContain("End the trial");
   });
 
   it("stays silent when the two statuses agree, or when unpaid", () => {
@@ -252,9 +252,10 @@ describe("statusHelp", () => {
     // one people get wrong. Three surfaces said the opposite once.
     expect(statusHelp("suspended")).toContain("Sign-in still works");
     expect(statusHelp("suspended")).not.toContain("refused");
-    const page = readFileSync(
-      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
-    expect(page).toContain("Sign-in still works so they can pay");
+    // WS-50 slice 3: the customer page says it through the life bar's next
+    // step, which `lib/lifecycle.ts` owns.
+    const life = readFileSync(join(__dirname, "lifecycle.ts"), "utf8");
+    expect(life).toContain("they can sign in to pay, but AI and seat changes are locked");
     const actions = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
     expect(actions).toContain("Sign-in KEEPS working so they can pay");
@@ -476,7 +477,7 @@ describe("the credit ledger read (manual payments)", () => {
     const page = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
     expect(page).toContain("creditLedger");
-    expect(page).toContain("Credit ledger");
+    expect(page).toContain("Credit history");
     const actions = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
     expect(actions).toContain('reason === "manual" && !ref.trim()');

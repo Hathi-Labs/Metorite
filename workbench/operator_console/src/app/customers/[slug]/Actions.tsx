@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { formatInr, type Price } from "@/lib/money";
 import {
   canActivate,
   isSeated,
@@ -59,27 +60,75 @@ function ResultLine({ result }: { result: Result }) {
   );
 }
 
-export default function Actions({
+// WS-50 slice 3: the management acts, split by the customer page's tabs. One
+// section per tab, so each act sits beside the figures it changes: the paid
+// plan and the credits beside the money, the seats beside the people, and
+// access, keys and the purge together at the end.
+
+/** "Billing & credits": start the paid plan, add credits. */
+export function BillingActions({
   slug,
   status,
   subscriptionStatus,
   plans,
+  price,
+}: {
+  slug: string;
+  status: string;
+  subscriptionStatus: string | null;
+  plans: CatalogPlan[];
+  /** The saved credit price, for the rupee value of a grant. */
+  price: Price | null;
+}) {
+  return (
+    <div className="row">
+      {canActivate(subscriptionStatus) && (
+        <StartPaidPlanPanel slug={slug} plans={plans} status={status} />
+      )}
+      <CreditsPanel slug={slug} price={price} />
+    </div>
+  );
+}
+
+/** "People & seats": who is seated, how many seats they hold. */
+export function PeopleActions({
+  slug,
+  plans,
   members,
   membersError,
-  keys,
-  keysError,
   seats = [],
 }: {
   slug: string;
-  /** Purchased and assigned seats per plan, from the org row. */
-  seats?: SeatRow[];
-  status: string;
-  subscriptionStatus: string | null;
   plans: CatalogPlan[];
   /** The customer's roster with seat state (LS-9). Empty = none arrived. */
   members: MemberRow[];
   /** Why the roster is empty, or null when it arrived. */
   membersError: string | null;
+  /** Purchased and assigned seats per plan, from the org row. */
+  seats?: SeatRow[];
+}) {
+  return (
+    <>
+      {/* The roster comes FIRST. An operator should see who is unseated and
+          click, rather than type an address (launch_surface.md §7). */}
+      <MembersPanel slug={slug} plans={plans} members={members} membersError={membersError} />
+      <div className="row">
+        <SeatCountPanel slug={slug} plans={plans} seats={seats} />
+        <SeatsPanel slug={slug} plans={plans} />
+      </div>
+    </>
+  );
+}
+
+/** "Access & keys": account state, API keys, and the purge. */
+export function AccessActions({
+  slug,
+  status,
+  keys,
+  keysError,
+}: {
+  slug: string;
+  status: string;
   /** The org's `cc_live_` keys, metadata only (CP-11 s1). */
   keys: KeyRow[];
   /** Why the key list is empty, or null when it arrived. */
@@ -87,29 +136,9 @@ export default function Actions({
 }) {
   return (
     <>
-      <h2>Manage this customer</h2>
-      {/* The roster comes FIRST, above the by-email form. An operator should be
-          able to see who is unseated and click, rather than being asked for an
-          address they have to be told (launch_surface.md §7). */}
-      <MembersPanel
-        slug={slug}
-        plans={plans}
-        members={members}
-        membersError={membersError}
-      />
-      <div className="row">
-        {canActivate(subscriptionStatus) && (
-          <ActivatePanel slug={slug} plans={plans} />
-        )}
-        <SeatCountPanel slug={slug} plans={plans} seats={seats} />
-        <SeatsPanel slug={slug} plans={plans} />
-        <CreditsPanel slug={slug} />
-        <LifecyclePanel slug={slug} status={status} />
-      </div>
+      <LifecyclePanel slug={slug} status={status} />
       <KeysPanel slug={slug} keys={keys} keysError={keysError} />
-      {status === "deleted" && !TOMBSTONE_RE.test(slug) && (
-        <DangerPanel slug={slug} />
-      )}
+      {status === "deleted" && !TOMBSTONE_RE.test(slug) && <DangerPanel slug={slug} />}
     </>
   );
 }
@@ -278,7 +307,23 @@ function reload() {
   window.location.reload();
 }
 
-function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
+/**
+ * Start the paid plan — WS-50 slice 3. It replaced "Activate subscription".
+ *
+ * 🔴 **One act, not two.** Recording the payment used to leave the account
+ * marked "trial", and a second button with almost the same name ("Activate
+ * account") ended the trial. Operators did the first and not the second. Now,
+ * when the account is on trial, a successful start also ends the trial.
+ */
+function StartPaidPlanPanel({
+  slug,
+  plans,
+  status,
+}: {
+  slug: string;
+  plans: CatalogPlan[];
+  status: string;
+}) {
   const [plan, setPlan] = useState(plans[0]?.slug ?? "");
   const [seats, setSeats] = useState("5");
   const [credits, setCredits] = useState("");
@@ -297,6 +342,24 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
     if (credits.trim()) body.credits = credits.trim();
     if (reference.trim()) body.reference = reference.trim();
     const r = await post("/api/operator/activate", body);
+    if (r?.ok && status === "trial") {
+      // The second half of the same act: end the trial on the account.
+      const life = await post("/api/operator/lifecycle", {
+        org_slug: slug,
+        target: "active",
+        reason: "paid plan started",
+      });
+      if (!life?.ok) {
+        setResult({
+          ok: false,
+          text:
+            "The paid plan started, but the account is still marked trial. " +
+            "Use End the trial on the Access & keys tab.\n" + (life?.text ?? ""),
+        });
+        setBusy(false);
+        return;
+      }
+    }
     setResult(r);
     setBusy(false);
     if (r?.ok) reload();
@@ -304,10 +367,10 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
 
   return (
     <form className="panel" onSubmit={submit}>
-      <h2 style={{ marginTop: 0 }}>Activate subscription</h2>
+      <h2 style={{ marginTop: 0 }}>Start paid plan</h2>
       <p className="muted">
-        The customer has paid you (e.g. bank transfer) — record it and switch
-        them from trial to their paid plan.
+        The customer has paid you, for example by bank transfer. Record the
+        payment and their seats here. This also ends the trial.
       </p>
       <label>Plan</label>
       <PlanPicker plans={plans} value={plan} onChange={setPlan} showPrice />
@@ -336,11 +399,11 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
         title={
           !plan
             ? "Choose a plan first."
-            : "End the trial and start charging for this plan."
+            : "Record the payment, set the seats and end the trial."
         }
         disabled={busy || !plan}
       >
-        {busy ? "Activating…" : "Activate"}
+        {busy ? "Starting…" : "Start paid plan"}
       </button>
       <ResultLine result={result} />
     </form>
@@ -462,11 +525,11 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
 
   return (
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
-      <h2 style={{ marginTop: 0 }}>Seats</h2>
+      <h2 style={{ marginTop: 0 }}>Seat a person by email</h2>
       <p className="muted">
-        Assign a seat so a specific person can sign in; release it to free the
-        seat for someone else. The customer&apos;s own admin can also do this
-        inside the app.
+        For a member who is not in the list above. Assign a seat so they can
+        sign in, or release it to free the seat. The customer&apos;s own admin
+        can also do this in the app.
       </p>
       <label>Plan</label>
       <PlanPicker plans={plans} value={plan} onChange={setPlan} />
@@ -509,10 +572,17 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
   );
 }
 
-function CreditsPanel({ slug }: { slug: string }) {
+function CreditsPanel({ slug, price }: { slug: string; price: Price | null }) {
   const [credits, setCredits] = useState("");
   const [reason, setReason] = useState("grant");
   const [ref, setRef] = useState("");
+  // WS-50 slice 3: what the customer paid, so the lot records it. Without it
+  // the console can only guess what those credits earned.
+  const [paid, setPaid] = useState("");
+  const n = Number(credits);
+  const worth = price && Number.isFinite(n) && n > 0 ? n * price.inrPerCredit : null;
+  const paidN = Number(paid);
+  const paidValid = paid.trim() === "" || (Number.isFinite(paidN) && paidN >= 0);
   const [result, setResult] = useState<Result>(null);
   const [busy, setBusy] = useState(false);
 
@@ -525,6 +595,7 @@ function CreditsPanel({ slug }: { slug: string }) {
       reason,
     };
     if (ref.trim()) body.ref = ref.trim();
+    if (reason === "manual" && paid.trim()) body.price_paid_inr = paid.trim();
     const r = await post("/api/operator/credits", body);
     setResult(r);
     setBusy(false);
@@ -535,8 +606,8 @@ function CreditsPanel({ slug }: { slug: string }) {
     <form className="panel" onSubmit={submit}>
       <h2 style={{ marginTop: 0 }}>Add AI credits</h2>
       <p className="muted">
-        Top up the balance the customer&apos;s AI usage draws from. Additions
-        are logged; a correction is another entry, never an edit.
+        Top up the balance the customer&apos;s AI calls spend. Every addition
+        is logged. A correction is another entry, never an edit.
       </p>
       <label>Credits to add</label>
       <input
@@ -544,12 +615,41 @@ function CreditsPanel({ slug }: { slug: string }) {
         placeholder="e.g. 100"
         onChange={(e) => setCredits(e.target.value)}
       />
-      <label>Reason</label>
+      <div className="field-hint">
+        {worth !== null
+          ? `Worth ${formatInr(worth)} at the current price of ${formatInr(price!.inrPerCredit)} a credit.`
+          : price
+            ? "Type a number of credits to see what they are worth."
+            : "No credit price is saved, so their rupee value is unknown."}
+      </div>
+      <label>Is this paid or free?</label>
       <select value={reason} onChange={(e) => setReason(e.target.value)}>
-        <option value="grant">grant — included with their plan</option>
-        <option value="manual">manual — they paid (bank transfer / offline)</option>
-        <option value="adjustment">adjustment — correcting a mistake</option>
+        <option value="grant">Free: included with their plan, or a goodwill top-up</option>
+        <option value="manual">Paid: they paid us (bank transfer or offline)</option>
+        <option value="adjustment">Correction: fixing an earlier mistake</option>
       </select>
+      <div className="field-hint">
+        {reason === "grant"
+          ? "Free credits earn nothing. Their AI cost shows as Given away on the Money page."
+          : reason === "manual"
+            ? "Paid credits count toward We charged when the customer uses them."
+            : "A correction moves the balance. It is neither revenue nor a free grant."}
+      </div>
+      {reason === "manual" && (
+        <>
+          <label>Amount they paid (₹)</label>
+          <input
+            inputMode="decimal"
+            value={paid}
+            placeholder={worth !== null ? `e.g. ${Math.round(worth)}` : "e.g. 5000"}
+            onChange={(e) => setPaid(e.target.value)}
+          />
+          <div className="field-hint">
+            Recorded on the credits, so the Money page shows what they really
+            earned. Leave it empty only if you do not know.
+          </div>
+        </>
+      )}
       <label>
         {reason === "manual"
           ? "Payment reference (required)"
@@ -589,6 +689,8 @@ function CreditsPanel({ slug }: { slug: string }) {
         title={
           !credits.trim()
             ? "Type how many credits to add."
+            : !paidValid
+              ? "Type the amount they paid as a number of rupees."
             : reason === "manual" && !ref.trim()
               ? "A manual payment needs its bank reference. It is what stops " +
                 "the same transfer being credited twice."
@@ -596,7 +698,7 @@ function CreditsPanel({ slug }: { slug: string }) {
                 "a correction is another entry rather than an edit."
         }
         disabled={
-          busy || !credits.trim() || (reason === "manual" && !ref.trim())
+          busy || !credits.trim() || (reason === "manual" && !ref.trim()) || !paidValid
         }
       >
         {busy ? "Adding…" : "Add credits"}
@@ -647,16 +749,12 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
 
   return (
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
-      <h2 style={{ marginTop: 0 }}>Access</h2>
+      <h2 style={{ marginTop: 0 }}>Account access</h2>
       <p className="muted">
-        Whether this customer&apos;s account is live. Activating takes them off
-        trial. Suspending (e.g. non-payment) locks AI and seat changes while
-        sign-in keeps working, so they can still pay. Their data is kept
-        either way, and resuming restores access instantly.
-      </p>
-      <p className="muted">
-        Separate from their subscription — activating a plan records the money
-        and leaves the account where it is.
+        Whether this customer can use Metorite. Suspending (for example, for
+        non-payment) locks AI and seat changes, and sign-in keeps working so
+        they can still pay. Their data is kept either way, and resuming
+        restores access at once.
       </p>
       <label>Reason (optional, kept in the log)</label>
       <input
