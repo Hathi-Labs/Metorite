@@ -365,7 +365,13 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     // One row: the bar is its own height, nothing wraps under it.
     expect(Math.round(b.height)).toBe(44);
     const brand = bar(page).locator("[data-shell-brand]");
-    await expect(brand.getByRole("button", { name: "Collapse sidebar" })).toHaveAttribute("aria-expanded", "true");
+    const fold = brand.getByRole("button", { name: "Collapse sidebar" });
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    // The Menu glyph, never a panel glyph: an app's own rail toggle in this
+    // bar wears PanelLeftOpen/Close, and two look-alike controls with two
+    // jobs make a member guess (review, 2026-10-09).
+    await expect(fold.locator("svg.lucide-menu")).toHaveCount(1);
+    await expect(fold.locator("svg[class*='lucide-panel-left']")).toHaveCount(0);
     await expect(brand.locator("a[href='/']")).toContainText("Acme");
     // The rail has no head of its own now: no second logo, no second control.
     // (Its Home link also goes to "/", so the logo is found by its name.)
@@ -391,6 +397,8 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     await expect(logo).toBeVisible();
     expect(await box(logo)).toEqual(before);
     expect(Math.round((await box(bar(page))).width)).toBe(1440);
+    // One glyph for both states. `aria-expanded` carries the state.
+    await expect(brand.getByRole("button", { name: "Expand sidebar" }).locator("svg.lucide-menu")).toHaveCount(1);
     // The state survives a reload, under the same key as before.
     expect(await page.evaluate(() => localStorage.getItem("cc-sidebar-collapsed"))).toBe("1");
 

@@ -172,8 +172,9 @@ export function SidebarFoldProvider({
  * The fold control, and its tip. One component for both places.
  *
  * In the rail it is the chevron the sidebar head always had, with the same
- * markup. In the bar it is a panel icon, because a chevron at the top of the
- * window points at nothing.
+ * markup. In the bar it is the `Menu` glyph (Gmail's pattern), because a
+ * chevron at the top of the window points at nothing, and a panel glyph
+ * would copy the apps' own rail toggles beside it.
  */
 export function SidebarFoldButton() {
   const fold = useSidebarFold();
@@ -191,7 +192,12 @@ export function SidebarFoldButton() {
           <Button
             variant="ghost"
             size="icon-sm"
-            icon={fold.collapsed ? "PanelLeftOpen" : "PanelLeftClose"}
+            // ⚠️ `Menu`, not a panel glyph (coordinator review, 2026-10-09).
+            // An app's own rail toggle (Projects' tree, My Tasks' lists) sits
+            // in the same bar with PanelLeftOpen/Close. Two look-alike
+            // controls that do different jobs make a member stop and guess.
+            // One glyph for both states. `aria-expanded` carries the state.
+            icon="Menu"
             onClick={fold.toggle}
             className={beaconClass}
             title={label}
@@ -281,7 +287,8 @@ function FoldTip({
         }
       />
       <div className="flex items-start gap-2">
-        <Icon name="PanelLeftClose" size={15} className="mt-0.5 shrink-0 text-primary" />
+        {/* The glyph of the control the tip names, so the member knows it. */}
+        <Icon name={below ? "Menu" : "PanelLeftClose"} size={15} className="mt-0.5 shrink-0 text-primary" />
         <div className="min-w-0">
           <div className="text-[13px] font-semibold">Sidebar folded</div>
           <p className="mt-0.5 text-xs text-muted-foreground">
