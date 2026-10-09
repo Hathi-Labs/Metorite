@@ -231,6 +231,30 @@ def test_no_target_takes_the_name_of_an_intake_lane() -> None:
     assert {r["name"]: r["becomes"] for r in held["statuses"]}["triage"] == "triage"
 
 
+def test_a_run_that_continues_follows_a_renamed_lane() -> None:
+    """The I-10 review, P2-b. The target set is the continued space's REAL
+    set, and a lane a member renamed since keeps its tasks under the new
+    name. A new tree ignores the rename map."""
+    b = _small(_row("a", status="review"), _row("b", status="to do"))
+    real = [("Backlog", "backlog"), ("To do", "todo"), ("In review", "in_progress")]
+    p = build_plan(
+        b,
+        ImportMapping(),
+        {},
+        target_statuses=real,
+        continues=True,
+        earlier_names={"review": ("Review", "in_progress"), "to do": ("To do", "todo")},
+        renamed_statuses={"review": "In review"},
+    )
+    rows = {r["name"]: r for r in p["statuses"]}
+    assert (rows["review"]["becomes"], rows["review"]["existing"]) == ("In review", True)
+    assert rows["to do"]["existing"]
+    fresh = build_plan(
+        b, ImportMapping(), {}, target_statuses=real, renamed_statuses={"review": "In review"}
+    )
+    assert {r["name"]: r["becomes"] for r in fresh["statuses"]}["review"] == "Review"
+
+
 def test_d79_counts_the_sets_that_gain_a_done() -> None:
     """D79, per set: an existing space with no done-stage status gains one,
     unless the mapping already makes one. A new space has the seed's Done."""
