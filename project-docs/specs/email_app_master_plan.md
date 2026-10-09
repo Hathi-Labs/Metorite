@@ -558,6 +558,7 @@ or API client to create a pattern by hand.
 | **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
 | **D-EM-15** | **After the import, Metorite asks the member to set up AI rules.** The rules then run over the imported mail and give insights. The step offers no model choice, because EM-T5b moves the rules to the `decide` tier. Reply drafting is a separate step that the member turns on (D-EM-6). (Owner, 2026-10-02.) |
 | **D-EM-16** | **A short guided setup takes the member through each stage.** The stages are connect, the range, the import, the storage notice when it applies, AI rules, and done. The import shows real progress: the count of messages, an estimate of the total and the phase. A spinner alone is not progress. (Owner, 2026-10-02.) |
+| **D-EM-62** | **Build the cheaper triage decisions of EM-T16, dark, in the order PR-0 to PR-D** (owner, 2026-10-09). After PR-C merges, `email.cold_check` and `email.sender_pin` go to `on`. Two questions stay open for the owner. The record follows this table, and §10.4.17 holds the build. |
 
 **The owner answers to the three checks of EM-T6c (2026-10-02).** Each answer adds to D-EM-14. §10.4.7 gives the reason for each check.
 
@@ -572,6 +573,16 @@ or API client to create a pattern by hand.
 - **(b) (owner, 2026-10-02).** Jev decides the rule match for ALL organizations, with no shadow window ("Do jev for all").
 - **(c) (owner, 2026-10-02).** The demo scope is the rule match only (`email.rule_match`). The thread status, the cold check and the sender pin keep the old path, and shadow stays allowed for them.
 - **(d) (owner, 2026-10-02).** The AUTOMATIC run touches new mail only: mail that arrived after the member made the first enabled rule of the mailbox. Older synced mail changes only through "Process past emails".
+
+**D-EM-62 in full (owner, 2026-10-09).** §10.4.17 holds the build.
+
+- **What the owner said.** The owner asked a question: do the triage, the categorization and the decisions use the `decide` style to keep the app affordable? The owner then said: "let's go ahead with your recommendations about what to do next."
+- **The recommendations.** Build gaps 1 to 4 dark, which are PR-A to PR-D of §10.4.17. Batch the decisions across emails next. Move the cold check and the sender pin to `decide`.
+- **What this approves.** The build of EM-T16 PR-0 to PR-D. After PR-C merges, the orchestrator sets `email.cold_check` and `email.sender_pin` to `on`. D-EM-9 covers both, because both are D-EM-7 decisions.
+- **It also approves the back-off of PR-A.** In `on`, the backfill waits 30 minutes after an undecided ask of the status, and then asks again. D-EM-8 said "the next cycle asks again". The back-off stores no verdict, so the email stays undecided as D-EM-8 requires.
+- **Open (a), for the owner.** Does D-EM-9 residency (Jev, TypeSafe, System One) extend to `email.draft_gate` and `email.draft_consult`? Until the owner says yes, both stay `off` on each live box.
+- **Open (b), for the owner.** D-EM-7 is not amended for the `{{choose}}` template fill. So that item stays out of EM-T16.
+- **The drift found.** Production runs `email.thread_status=on`. The box values, measured 2026-10-09, are `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on` and `DECIDE_FEATURE_ORGS=*`. The spec says that `on` waits for PR-B3 of EM-T4a-2, and PR-B3 is not built. EM-T16 PR-0 is PR-B3, and its merge closes the drift.
 
 ### 10.3 The customer flow (the acceptance target for EM-T3)
 
@@ -619,7 +630,8 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
-| **EM-T15** | 🟢 AGENT-SAFE | 🔨 **BUILT, NOT MERGED (2026-10-09, branch `email-no-tier-settings`).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
+| **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
+| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09, not built (D-EM-62).** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -5996,8 +6008,8 @@ One more mutation removed the `sni_hostname` extension. The real TLS test failed
 **D-EM-61.** No member chooses the model or the tier of an email AI task. Our
 code chooses each tier. This amends D-EM-7, which took the rules model only.
 
-**Status.** 🔨 BUILT, NOT MERGED (2026-10-09, branch `email-no-tier-settings`).
-No migration and no flag. The slice is AGENT-SAFE.
+**Status.** ✅ MERGED #759 (`cc0e5ba4d`, 2026-10-09). No migration and no
+flag. The slice is AGENT-SAFE.
 
 **What leaves.** Three rows of AI settings → Advanced, and each API field behind
 it:
@@ -6054,6 +6066,273 @@ new schema.
 | The agent tool takes no tier argument | `tests/unit/test_email_no_tier_choice.py` |
 | A PUT writes no model column, and the GET answers none (R8) | `tests/unit/test_email_assistant_settings.py` |
 | A stored `chat_model` does not change the chat tier (R8) | `tests/unit/test_email_chat_context_owner.py` |
+
+#### 10.4.17 EM-T16 — cheaper triage decisions
+
+> **Owner decision, 2026-10-09 (D-EM-62, §10.2).** The owner asked whether
+> triage, categorization and decisions use the `decide` style to keep the app
+> affordable. The answer: "let's go ahead with your recommendations about what
+> to do next."
+
+**Status.** 📝 SPECIFIED 2026-10-09, not built. No migration. Each new
+`decide` feature starts `off`.
+
+**Why this section exists.** The spec audit of 2026-10-09 found four places
+where email triage asks a model more often than it must. No section owned that
+work, so the audit returned NO-GO. This section owns it.
+
+**Five PRs, in this order:** PR-0, PR-A, PR-B, PR-C, then PR-D. Each PR gets
+its own audit, its own review and its own merge.
+
+##### PR-0 — EM-T4a-2 PR-B3, the prerequisite
+
+PR-0 is PR-B3 of EM-T4a-2. §10.4.6 owns its scope, and this section does not
+change it. An agent builds it in parallel on branch `email-pr-b3`.
+
+PR-0 also closes a drift. Production runs `email.thread_status=on` (measured
+2026-10-09), but §10.4.6 says that `on` waits for PR-B3. D-EM-62 records the
+drift.
+
+##### PR-A — one classify in each sync cycle, and a back-off in `on`
+
+**Today.** A sync cycle with new mail calls `_maybe_classify_threads`
+(`replyzero.py:2307`) two times for each account:
+
+1. `scheduler.py:1726` runs the `on_new_mail` hook. That hook is
+   `process_new_mail`, and it calls the classify at `scheduler_hooks.py:183`.
+2. `scheduler.py:1740` runs the `classify_threads` hook. That hook calls the
+   classify at `scheduler_hooks.py:300`.
+
+**The change.**
+
+- The scheduler calls the classify once in each cycle for each account.
+- When the cycle ran `on_new_mail`, the scheduler does not run the
+  `classify_threads` hook. When the cycle did not run it, the scheduler runs
+  the hook as today.
+- So the classify keeps its place in `process_new_mail`, before the
+  auto-archive.
+- The manual-sync route and the Graph webhook call `process_new_mail`
+  directly. Their classify does not change.
+
+**The trade-off.** Each call also works the backlog. It asks about up to 25
+inbound threads (`_BACKFILL_INBOUND_CAP`, `replyzero.py:2218`) and up to 40
+sent threads (`_REPLY_DETERMINE_CAP`, `:2216`). Today a cycle with new mail can
+work two batches. After PR-A, it works one batch.
+
+**How the drain keeps its rate.**
+
+- One call runs in EACH cycle, with new mail or without it. So a quiet mailbox
+  still works 25 inbound and 40 sent threads in each cycle, about every 5
+  minutes. That is the steady rate of today.
+- The two caps do not change.
+- Do NOT keep only the classify of `process_new_mail`. Then a quiet mailbox
+  stops its drain. The comment at `scheduler.py:1732-1738` records that
+  defect.
+
+**The back-off in `on`.** In `on` of `email.thread_status`, an undecided
+status ask writes nothing (D-EM-8). Today the next cycle selects the same
+thread and asks again.
+
+- After PR-A, an undecided ask in `on` stores a back-off mark for 30 minutes.
+  The mark is a `tenant_redis` `setex` key for each account, thread and last
+  message id. PR-C uses the same idiom.
+- The backfill selection skips a thread with a mark, before the cap. So a
+  thread with a mark takes no slot from the next thread.
+- A new message changes the last message id of the thread. Then the mark does
+  not match, and the selection takes the thread at once.
+- The mark holds no verdict, and it expires. A Redis failure reads as no
+  mark, and the backfill asks about the thread as today.
+- Outside `on`, `_PROVISIONAL_RECHECK_HOURS` (`replyzero.py:2230`) does this
+  job. PR-A does not change it.
+- The rule runner selects an undecided row again in the next cycle. PR-A does
+  not change that path.
+
+##### PR-B — no rule match when the conversation status decides
+
+**Today.** In `on`, `status_before_match` (`replyzero.py:1257`) asks the
+thread status first for a known conversation (`_thread_is_conversation`,
+`:990`). The runner then calls `ask_rule_match` (`engine.py:1383`) all the
+same. When the status reaches the bar and the mailbox has an enabled rule for it,
+`_determined_matches` (`:1225`) makes that rule the one live match. The other
+matches only become "suppressed" SKIPPED lines in History (`:1236-1237`). So
+the rule match pays for History text only.
+
+**The change.** In `on` of `email.thread_status`, the runner makes zero
+`ask_rule_match` calls for a thread that meets all three conditions:
+
+1. The thread is a known conversation.
+2. Its status verdict reaches the bar (`StatusFirst.verdict`, `:1242`).
+3. The mailbox has an enabled target rule for that status.
+
+The runner reads the status at `engine.py:1520` and `:1585`.
+
+**The History lines.** The suppressed lines stay, as ONE synthetic SKIPPED
+line. The line names the status, and it says that the status decided the
+thread. It costs no model call. So History still answers "why was this not
+filed as a Receipt?". This is the recommendation of the audit, and this spec
+takes it.
+
+##### PR-C — keep the "no" verdicts
+
+**Today.** A cold check or a sender pin that decides "no" stores nothing. So
+the next mail from the same sender asks again.
+
+**The change.**
+
+- Keep a decided "not cold" for each account and sender, for 7 days.
+- Keep a decided sender-pin "no" for each account, sender and rule id, for
+  7 days.
+- Write each one with `acb_common.tenant_redis` `setex`, as the brief cache
+  does at `digest.py:542-566` (#753). Use no table and no migration.
+- A kept "no" skips the ask, and gives the same result as a fresh "no".
+- A Redis failure reads as a miss, and the check asks as today.
+- An undecided or failed check stores nothing (D-EM-8).
+- 🔴 NEVER write a "not cold" row to `email_cold_senders`. Three readers take
+  any row there as a sender that is known. These are `_maybe_block_cold`
+  (`senders.py:1475-1480`), the CRM auto-lead (`routes/crm/auto_lead.py:670-675`)
+  and the `GET /cold-senders` list (`senders.py:1538`). Such a row stops the
+  cold check for good, and the auto-lead then makes no lead for that sender.
+  The list also shows the sender as a cold sender.
+
+**The pre-filter.** Many cold-outreach tools add a `List-Unsubscribe` header.
+So that header does not prove that a mail is not cold.
+
+- A no-reply sender skips the cold check. A no-reply address takes no reply,
+  so cold outreach does not use it.
+- A `List-Unsubscribe` header does NOT skip the check. So the cold label holds
+  for a cold-outreach tool that adds the header.
+
+This is the recommendation of the audit, and this spec takes it.
+
+##### PR-D — two draft features, both `off`
+
+`email.draft_gate` and `email.draft_consult` join `decide_features.FEATURES`
+(`decide_features.py:105`) and `ON_FEATURES` (`:122`). `DEFAULT_MODES`
+(`:134`) makes each one `off`.
+
+**`email.draft_gate`.** A `decide` boolean that asks whether a reply needs a
+draft.
+
+- It runs before `_orchestrate_draft` (`drafting.py:1442`). That call runs the
+  consult plan, up to two agent consults, the Mem0 recalls and the draft.
+- So the gate runs before ALL of them. It sits on the rule action path, before
+  `_agent_draft_reply` (`actions.py:587`).
+- It does NOT sit at `drafting.py:1557`, the draft call. There, the paid steps
+  before the draft have already run.
+- It applies only to the AI draft of a rule action (REPLY or DRAFT_EMAIL).
+  The draft confidence must be STANDARD or HIGH_CONFIDENCE.
+- At those two levels the drafter can already answer NO_DRAFT
+  (`_is_no_draft`, `drafting.py:1323`). So a "no" from the gate gives the same
+  result, before the cost. ALL_EMAILS asks for a draft of each email, so the
+  gate has nothing to do there.
+- It NEVER applies to `draft_reply_smart` (`drafting.py:1714`), compose, a
+  follow-up nudge (`followups.py:238`) or the interactive "Draft with AI".
+
+**The modes of `email.draft_gate`.**
+
+- `off` makes the same calls as today.
+- `shadow` always drafts. It logs the gate answer beside `_is_no_draft(body)`
+  of the real draft.
+- In `on`, a "no" skips the consult plan, the consults, the Mem0 recall and
+  the draft. It takes the skip path of a NO_DRAFT body (`actions.py:593-596`).
+- In `on`, a "yes" drafts as today.
+- With no answer, the gate fails open, and the rule drafts as today. A gate that
+  fails closed would drop a reply that the member asked for. The draft is
+  text work, not a D-EM-7 decision, so D-EM-8 does not bind it.
+
+**`email.draft_consult`.** It moves the decision part of `_draft_consult_plan`
+(`drafting.py:1125-1200`) onto `decide`.
+
+- Today one `tier-fast` call picks the email kind (7 kinds) and the agents to
+  consult (2 agents). The same call writes the question for each agent.
+- In `on`, `decide` picks the kind, and asks one boolean for each agent.
+- The question text stays with the LLM (`customer_console.md` §6A.14 CP-13f).
+  The LLM writes a question only for an agent that `decide` picked.
+- Most mail needs no consult. Then the plan makes no LLM call.
+- A missing answer gives no consult, as a failed plan does today.
+- This feature applies to each caller of `_orchestrate_draft`, the
+  interactive draft too.
+
+**Non-goals.** Each one has its reason.
+
+| Not in EM-T16 | Why |
+|---|---|
+| The commitment gate in `capture_email.py:1005` | WS-18 and WS-39 own it, under CP-13f (`customer_console.md` §6A.14). |
+| The `{{choose}}` template fill | D-EM-7 names template fill as text work on the LLM tiers. No decision amends D-EM-7 for it (D-EM-62, open (b)). |
+| The move of the reply memories to a cheaper tier | The seed binds `tier-balanced` and `tier-powerful` to the same model, so a tier move saves nothing. The real defect is `max_tokens=1000` on a reasoning model (`drafting.py:495`), which returns empty content. That is its own follow-up. |
+| Batching across emails | One state goes in each request today, and a failed request leaves only its own email undecided. A batch changes that failure unit, so it needs its own section. |
+
+**Acceptance.** Each clause is a done-when clause with a fence (R7).
+
+| # | Done when | Fence |
+|---|---|---|
+| A1 | One scheduler cycle with new mail calls `_maybe_classify_threads` once for each account. A cycle with no new mail also calls it once. The manual-sync route and the webhook still classify. | A scheduler call-count test |
+| A2 | In `on`, the selection does not take an undecided status ask again for 30 minutes. A new message on the thread makes the selection take it at once. | R8, like `test_email_ai_cost.py::TestNoReAskStorm` |
+| A3 | In `on` of `email.thread_status`, the runner makes zero `ask_rule_match` calls for a thread of a known conversation when its status verdict reaches the bar and it has an enabled target rule. History shows one synthetic SKIPPED line, with no model call. Outside `on`, the path does not change by one byte: the same calls, the same order and the same History lines. | A call-count test in `test_email_decide_on.py` |
+| A4 | A decided "not cold" and a decided pin "no" make one ask for each key in the TTL. No "not cold" row reaches `email_cold_senders`. An undecided or failed check stores nothing. A no-reply sender skips the cold check, and a `List-Unsubscribe` header does not. `test_crm_auto_lead.py` stays green. | R8 tests for each rule |
+| A5 | `email.draft_gate`: `off` makes the same calls as today. `shadow` always drafts and logs the gate answer. In `on`, a "no" skips the consult plan, the consults, the Mem0 recall and the draft, and a "yes" drafts as today. No answer fails open. The gate never runs outside the scope of PR-D. | A call-count test for each mode and each excluded caller |
+| A6 | `DEFAULT_MODES` is `off` for each new feature. `test_email_decide_shadow.py` updates its feature set (`:235`). | `test_email_decide_shadow.py` |
+| A7 | No new `decide` call runs outside `decide_features.ask` (`decide_features.py:613`) or `shadow` (`:695`). So each one stays inside `llm_slot` (`_ask_all`, `:534`). | The slot fence of `test_email_llm_cap.py` |
+
+**Gates.**
+
+- 🟢 The build of each PR is AGENT-SAFE.
+- 🔴 `shadow` or `on` of `email.draft_gate` or `email.draft_consult` on a live
+  box is OWNER-GATE. It waits for the owner answer to D-EM-62 open (a).
+- `on` of `email.cold_check` and `email.sender_pin` after PR-C merges is
+  covered. D-EM-9 covers their residency, and the owner approved the step on
+  2026-10-09 (D-EM-62).
+
+**Hazards.**
+
+- **Budget.** `llm_slot` counts one `decide` request as one call, the same as
+  one `tier-powerful` call. A "yes" from the gate adds one count to each draft.
+  The default of `EMAIL_LLM_DAILY_CALLS` is 2000 (`settings.py:414`). In
+  `shadow`, the old path and `decide` both run, so each email counts double.
+- **No price (H-42).** Measure the count of calls for each tier and each
+  feature, not credits.
+- **Latency.** The `decide` trip of the consult plan adds time on the SSE path
+  of the member, while the member waits for "Draft with AI".
+
+**Verify with.** The R8 classes must show 0 SKIPPED. A skip means that no
+database ran, and then the run proves nothing.
+
+```
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_ai_cost.py tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_on.py tests/unit/test_email_llm_cap.py tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_single_classification.py tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_cold_gate_case.py tests/unit/test_crm_auto_lead.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_draft_fallback.py tests/unit/test_email_draft_context.py tests/unit/test_email_no_tier_choice.py tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_rules_engine.py tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_insights_screen.py -q -rs
+```
+
+**Anchors, at origin/main `5405a0b7f` (2026-10-09).** The paths are under
+`apps/services/gateway/gateway/` unless the row names another root.
+
+| Anchor | What it holds |
+|---|---|
+| `apps/services/email_ingestion/email_ingestion/scheduler.py:1726` | The `on_new_mail` hook of the cycle |
+| `apps/services/email_ingestion/email_ingestion/scheduler.py:1740` | The `classify_threads` hook of the cycle |
+| `routes/email/scheduler_hooks.py:183` | The classify in `process_new_mail` |
+| `routes/email/scheduler_hooks.py:300` | The classify in the `classify_threads` hook |
+| `routes/email/automation/replyzero.py:2307` | `_maybe_classify_threads` |
+| `routes/email/automation/replyzero.py:2216-2218` | The caps of 40 sent and 25 inbound threads |
+| `routes/email/automation/replyzero.py:2230` | `_PROVISIONAL_RECHECK_HOURS` |
+| `routes/email/automation/replyzero.py:1225-1239` | `_determined_matches`, and the suppressed lines at `:1236-1237` |
+| `routes/email/automation/replyzero.py:1257` | `status_before_match` |
+| `routes/email/automation/engine.py:1383` | `ask_rule_match` |
+| `routes/email/automation/engine.py:1520`, `:1585` | The runner reads the status first |
+| `routes/email/digest.py:542-566` | The `tenant_redis` `setex` idiom (#753) |
+| `routes/email/automation/senders.py:1475-1480` | `_maybe_block_cold` reads `email_cold_senders` |
+| `routes/crm/auto_lead.py:670-675` | The auto-lead reads `email_cold_senders` |
+| `routes/email/automation/senders.py:1538` | `GET /cold-senders` |
+| `routes/email/automation/actions.py:587` | The rule draft calls `_agent_draft_reply` |
+| `routes/email/automation/drafting.py:1125-1200` | `_draft_consult_plan` |
+| `routes/email/automation/drafting.py:1442` | `_orchestrate_draft` |
+| `routes/email/automation/drafting.py:1557` | The draft call, NOT the gate site |
+| `routes/tasks/capture_email.py:1005` | The commitment gate, a non-goal |
+| `decide_features.py:105`, `:122`, `:134` | `FEATURES`, `ON_FEATURES` and `DEFAULT_MODES` |
+| `decide_features.py:613`, `:695` | `ask` and `shadow` |
+| `packages/acb_common/acb_common/settings.py:414` | `email_llm_daily_calls = 2000` |
+
+**Migration.** EM-T16 needs no migration. If a later change needs one, the
+next free number is 235 today (R1). Check the number again at merge.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

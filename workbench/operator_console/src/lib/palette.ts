@@ -26,7 +26,7 @@ type NavLike = {
 /** Search words a label alone does not carry, keyed by href. */
 const EXTRA_KEYWORDS: Record<string, string> = {
   "/": "customers organizations orgs home roster",
-  "/usage": "spend calls tokens",
+  "/money": "revenue profit margin cost spend usage calls vendor bill",
   "/models": "catalog declare feed vendor browse",
   "/providers": "vendor keys credentials byok anthropic openai",
   "/tiers": "chains bindings backups failover outage",

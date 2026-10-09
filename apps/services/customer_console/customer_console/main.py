@@ -643,6 +643,16 @@ class CreditGrantRequest(BaseModel):
     credits: Decimal = Field(ge=Decimal("-9999999999"), le=Decimal("9999999999"))
     reason: str = LEDGER_REASON_PURCHASE
     ref: str | None = None
+    #: 🔴 WS-50 slice 3: what the customer PAID for these credits, in rupees.
+    #: Before this field a manual grant made a purchase lot with no price, so
+    #: the operator console could not say what those credits earned and had
+    #: to guess at the current credit price. Optional, so an old caller stays
+    #: legal (R6), and legal only on a reason that SELLS credits.
+    #: ⚠️ Two decimal places, the precision of `credit_lot.price_paid_inr`
+    #: (NUMERIC(12,2)), so the lot and the audit row cannot disagree.
+    price_paid_inr: Decimal | None = Field(
+        default=None, ge=Decimal(0), le=Decimal("9999999999"), decimal_places=2
+    )
 
     @field_validator("reason")
     @classmethod
@@ -653,6 +663,20 @@ class CreditGrantRequest(BaseModel):
                 f"{sorted(LEDGER_REASONS)} (subscription_console.md SC-4g (v))"
             )
         return value
+
+    @model_validator(mode="after")
+    def _price_only_on_a_sale(self) -> CreditGrantRequest:
+        # A price on a free grant would make a free lot read as bought, and a
+        # price on a negative row has no lot to sit on.
+        if self.price_paid_inr is not None:
+            if self.reason not in (LEDGER_REASON_MANUAL, LEDGER_REASON_PURCHASE):
+                raise ValueError(
+                    "price_paid_inr is only for credits the customer paid for "
+                    f"(reason 'manual' or 'purchase'), not {self.reason!r}"
+                )
+            if self.credits <= 0:
+                raise ValueError("price_paid_inr needs a positive credit amount")
+        return self
 
 
 class ManualActivationRequest(BaseModel):
@@ -4661,6 +4685,9 @@ _ORG_PURGE_KEEPS_TABLES: tuple[str, ...] = (
     # account is gone. It holds no personal data — a source, an amount, a
     # price and a date.
     "credit_lot",
+    # Migration 036. Which lots each charge spent: financial history, no
+    # personal data, and its `lot_id` references the kept `credit_lot`.
+    "credit_draw",
     "payment_order",
     "usage_event",
     "usage_rollup",
@@ -4674,6 +4701,7 @@ _ORG_PURGE_KEEPS: tuple[str, ...] = (
     "seat_grant",
     "credit_ledger",
     "credit_lot (what the credits cost, for a later refund argument)",
+    "credit_draw (which lots each charge spent)",
     "payment_order",
     "usage_event (user_email scrubbed)",
     "usage_rollup",
@@ -6393,6 +6421,7 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 delta=req.credits,
                 reason=req.reason,
                 ref=ref,
+                price_paid_inr=req.price_paid_inr,
             )
         except IntegrityError:
             # The SELECT above cannot hold under concurrency: two grants
@@ -6411,11 +6440,19 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 ),
             ) from None
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
+        # Quantized to paise, the precision the lot stores, so the two agree.
+        paid_inr = (
+            None if req.price_paid_inr is None else str(req.price_paid_inr.quantize(Decimal("0.01")))
+        )
         _audit(
             conn,
             org_id,
             "credits.grant",
-            {"delta": str(req.credits), "reason": req.reason},
+            {
+                "delta": str(req.credits),
+                "reason": req.reason,
+                "price_paid_inr": paid_inr,
+            },
             actor=staff.actor,
         )
 
@@ -9505,6 +9542,30 @@ class OrgUsageRow(BaseModel):
     #: BY DEFINITION, so a large count beside a small token total is itself
     #: the signal that the provider's SHAPE broke and not our arithmetic.
     unbilledTokens: int = 0
+    #: 🔴 **What the customer PAID for, of the credits they spent** (migration
+    #: 036, `operator_console_money.md` §3). Credits drawn from a purchase lot
+    #: in the window, and their value at the price each lot was SOLD at.
+    paidCredits: str = "0"
+    paidValueInr: str = "0"
+    #: Drawn from a purchase lot with no price on record. The console values
+    #: them at the current credit price and labels the figure an estimate.
+    unpricedPaidCredits: str = "0"
+    #: Drawn from a trial, promo, grant or refund lot. Given away: we pay the
+    #: vendor for these calls and receive nothing.
+    freeCredits: str = "0"
+    #: No lot covered these credits, so the balance went below zero.
+    unbackedCredits: str = "0"
+    #: Lifetime figures from `credit_lot`. The console uses them to estimate
+    #: the part of the window that predates `credit_draw` (see `drawsSince`).
+    lifePaidUsed: str = "0"
+    lifePaidValueInr: str = "0"
+    #: Of `lifePaidUsed`, the credits from a purchase lot with no price.
+    #: `lifePaidValueInr` excludes them, so an average must too.
+    lifeUnpricedPaidUsed: str = "0"
+    lifeFreeUsed: str = "0"
+    #: Credits billed over the last `analytics.BURN_WINDOW_DAYS` days: the
+    #: numerator of `runwayDays`, so the console can show the arithmetic.
+    creditsLast7Days: str = "0"
 
 
 class OrgUsageView(BaseModel):
@@ -9531,6 +9592,14 @@ class OrgUsageView(BaseModel):
     unbilledOrgs: int = 0
     unbilledCallsTotal: int = 0
     unbilledTokensTotal: int = 0
+    #: When `credit_draw` got its first row, fleet-wide (migration 036). A
+    #: window that starts earlier is partly ESTIMATED from the lifetime lot
+    #: mix, and the console says so. NULL means no draw is recorded yet.
+    drawsSince: str | None = None
+    #: The saved credit price in force now, so the console can state money
+    #: in rupees (D94). NULL until the owner saves one on /pricing.
+    inrPerCredit: str | None = None
+    usdToInr: str | None = None
 
 
 class UsageDayRow(BaseModel):
@@ -9580,9 +9649,18 @@ def admin_usage_by_org(
         # by definition, so the leaking organization sorts last and falls off
         # the page — the worse the leak, the more certainly it hides.
         unbilled = store.unbilled_fleet_total(conn, days=days)
+        draws = store.draws_by_org(conn, days=days)
+        # The same row `/catalog/tiers` and the breakdown read.
+        price = conn.execute(
+            text(
+                "SELECT inr_per_credit, usd_to_inr FROM credit_price "
+                "WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
+            )
+        ).fetchone()
 
     now = datetime.now(UTC)
     annotated = analytics.annotate_orgs(rows, balances, burn, now)
+    no_draws: dict[str, Decimal] = {}
     # A3 over EVERYBODY. The per-row flag survives for the visible page;
     # this list is what stops the cap from hiding the quiet-but-funded.
     silent_slugs = sorted(
@@ -9599,6 +9677,9 @@ def admin_usage_by_org(
         unbilledOrgs=unbilled["orgs"],
         unbilledCallsTotal=unbilled["calls"],
         unbilledTokensTotal=unbilled["tokens"],
+        drawsSince=draws["since"],
+        inrPerCredit=None if price is None else str(price[0]),
+        usdToInr=None if price is None else str(price[1]),
         rows=[
             OrgUsageRow(
                 slug=r["slug"],
@@ -9616,10 +9697,28 @@ def admin_usage_by_org(
                 refusals=r["refusals"],
                 unbilledCalls=r["unbilled_calls"],
                 unbilledTokens=r["unbilled_tokens"],
+                **_draw_fields(draws["rows"].get(r["slug"], no_draws)),
+                creditsLast7Days=str(burn.get(r["slug"], Decimal(0))),
             )
             for r in annotated
         ],
     )
+
+
+def _draw_fields(d: dict[str, Decimal]) -> dict[str, str]:
+    """`store.draws_by_org`'s row, as the strings `OrgUsageRow` carries."""
+    names = {
+        "paidCredits": "paid_credits",
+        "paidValueInr": "paid_value_inr",
+        "unpricedPaidCredits": "unpriced_paid_credits",
+        "freeCredits": "free_credits",
+        "unbackedCredits": "unbacked_credits",
+        "lifePaidUsed": "life_paid_used",
+        "lifePaidValueInr": "life_paid_value_inr",
+        "lifeUnpricedPaidUsed": "life_unpriced_paid_used",
+        "lifeFreeUsed": "life_free_used",
+    }
+    return {out: str(d.get(key, Decimal(0))) for out, key in names.items()}
 
 
 @app.get("/admin/usage/daily")

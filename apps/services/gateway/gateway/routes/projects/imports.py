@@ -270,7 +270,17 @@ async def create_import_run(
             vis = await resolve_visibility(db, user)
             organization_id = require_organization(vis)
             mapping, inherited = await _inherited_mapping(db, organization_id, bundle)
-            facts = await _facts(db, bundle, mapping, vis, organization_id)
+            # The facts ask the writer whether this run continues (I-4), so
+            # the plan's `continues` and its status names agree (I-10).
+            facts = await _facts(
+                db,
+                bundle,
+                mapping,
+                vis,
+                organization_id,
+                run_id=run_id,
+                file_hashes=[_sha256(raw) for _, raw in uploads],
+            )
             # A person mapped last time who has left since falls back to the
             # proposal; the plan must not open with an error the admin did
             # not cause.
@@ -278,14 +288,6 @@ async def create_import_run(
             mapping = usable_choices(bundle, mapping)
             plan = build_plan(bundle, mapping, **facts)
             plan["inherited_from"] = inherited
-            plan["continues"] = await _continues(
-                db,
-                organization_id,
-                run_id,
-                choose(bundle, mapping),
-                mapping,
-                [_sha256(raw) for _, raw in uploads],
-            )
 
             stored = _store(organization_id, run_id, uploads)
             superseded = [
@@ -392,18 +394,17 @@ async def save_import_mapping(
     bundle = await _parse(row.source, _read_files(organization_id, run_id, _json(row.files)))
 
     async with _tenant_session() as db:
-        facts = await _facts(db, bundle, mapping, vis, organization_id)
+        facts = await _facts(
+            db,
+            bundle,
+            mapping,
+            vis,
+            organization_id,
+            run_id=run_id,
+            file_hashes=[str(f.get("sha256")) for f in (_json(row.files) or [])],
+        )
         plan = build_plan(bundle, mapping, **facts)
         plan["inherited_from"] = (_json(row.plan) or {}).get("inherited_from")
-        plan["continues"] = await _continues(
-            db,
-            organization_id,
-            run_id,
-            # The writer asks with the CHOSEN bundle (I-8), so the note does too.
-            choose(bundle, mapping),
-            mapping,
-            [str(f.get("sha256")) for f in (_json(row.files) or [])],
-        )
         saved = (
             await db.execute(
                 text(SAVE_MAPPING_SQL),
@@ -683,7 +684,21 @@ async def _facts(
     mapping: ImportMapping,
     vis: Any,
     organization_id: str,
+    *,
+    run_id: str | None = None,
+    file_hashes: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Everything the pure plan needs from the database.
+
+    I-10 (§6.3) adds three facts: the target status set, whether the run
+    continues an earlier import, and the names that import gave each source
+    status. The continuation needs the run's id and file hashes, which every
+    route and the writer pass. Without them the plan reads as a new tree."""
+    from gateway.routes.projects.import_writer import (
+        continuation_facts,
+        target_statuses,
+    )
+
     refs = [t.ref for t in bundle.tasks]
     directory = {
         str(r.email): str(r.name)
@@ -712,11 +727,36 @@ async def _facts(
     target_ok = True
     if mapping.target.kind == "existing" and mapping.target.project_id:
         target_ok = await _may_import_into(db, vis, mapping.target.project_id)
+    continues = False
+    earlier: dict[str, tuple[str, str]] = {}
+    spaces: list[str] = []
+    new_space_too = True
+    renamed: dict[str, str] = {}
+    if run_id is not None:
+        # The writer asks with the CHOSEN bundle (I-8), so the plan does too.
+        chosen = choose(bundle, mapping)
+        hashes = list(file_hashes or [])
+        continues = await _continues(db, organization_id, run_id, chosen, mapping, hashes)
+        if continues:
+            earlier, spaces, new_space_too, renamed = await continuation_facts(
+                db, organization_id, run_id, chosen, mapping, hashes
+            )
+    # A run that continues reads the sets of the spaces it goes into again,
+    # never the seed alone (the I-10 review, P2-b).
+    statuses, reserved = await target_statuses(db, mapping, target_ok, spaces, new_space_too)
     return {
         "directory": directory,
         "existing_refs": existing,
         "legacy_refs": legacy,
         "target_ok": target_ok,
+        "target_statuses": statuses,
+        "continues": continues,
+        "earlier_names": earlier,
+        # The intake lanes of the target set: no import target takes their
+        # names (the I-10 review, P1-b).
+        "reserved_statuses": reserved,
+        # A lane a member renamed since the earlier run, old name → name now.
+        "renamed_statuses": renamed,
     }
 
 

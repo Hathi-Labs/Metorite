@@ -26,6 +26,7 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
 | # | Item | Gate | State |
 |---|---|---|---|
 | **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo; it replaces our mark top-left in every member's shell, above "powered by Metorite". | 🟢 AGENT-SAFE | ◐ built, unmerged |
+| **OI-1b** | **The logo editor and dark mode.** Any image opens in an editor that trims and crops it and draws the stored PNG. One logo covers both colour modes. | 🟢 AGENT-SAFE | ✅ built 2026-10-09 |
 | **OI-2** | **Tenant-scope the store.** `org_settings` must carry `organization_id`, widen its PK, and bind through the seam before a second customer shares a database. | 🟢 AGENT-SAFE | ✅ built 2026-10-09, migration 234 |
 | **OI-3a** | **No network wait.** The customer's mark renders from a local cache, revalidated behind it. | 🟢 AGENT-SAFE | ✅ built 2026-08-14 |
 | **OI-3b** | **True SSR branding.** The server-rendered HTML itself carries the mark. | 🟢 AGENT-SAFE | 🔴 |
@@ -89,15 +90,67 @@ customer (seats, credits, placement), not the customer's own content.
 
 ---
 
+## 2a. OI-1b and OI-2 — what changed on 2026-10-09, and why
+
+**The owner reported that uploads "always" failed.** Two causes, both real.
+
+1. **The save itself crashed.** Two `PUT /settings/branding` answered 500 on
+   2026-10-08 with `invalid input syntax for type uuid: ""`. The generated
+   tenancy phases had put `org_settings` under FORCED row-level security.
+   `acb_common/org_settings.py` wrote through a raw connection that bound no
+   tenant. Every read came back empty too. **OI-2 fixes it.** The module binds
+   the request's tenant (`set_config(..., true)`) and names `organization_id`
+   in both statements. Migration 234 re-keys the table to
+   `(organization_id, key)`. Fence: `tests/unit/test_org_settings_tenancy_r8.py`
+   (R8, as the non-privileged role, two organizations).
+2. **The rules met the person.** A file was refused for its size, its
+   shape or its format before the save was even tried. **OI-1b moves that work
+   into the uploader's browser.** `LogoEditor.tsx` opens PNG, JPEG, WebP, GIF
+   or SVG of any size up to 20 MB. It finds the logo's edges, removes a solid
+   background, and lets the admin adjust the crop. Then `logoCanvas.ts` draws
+   a PNG 84px tall (3x the 28px slot) and pads its shape to fit 1:2 to 8:1. A
+   person no longer meets the server's bounds. The server still checks every
+   one.
+
+**Dark mode, from one upload.** `logoImage.ts` finds the share of the logo's
+ink that is too dark for the dark sidebar (under 3:1). It then suggests one of
+three styles, and the admin can change it:
+
+| Style | When it is suggested | What dark mode shows |
+|---|---|---|
+| As it is | Under 15% of the ink is too dark | The logo |
+| White version | The dark ink is black or grey | `logoDark`: every dark, neutral pixel turned white, colours kept |
+| On a light card | The dark ink is itself a colour (navy, maroon) | The logo, on a small white card |
+| My dark version | Never: only the admin knows the file exists | `logoDark`: the organization's own dark-background logo, trimmed, its solid background removed |
+
+The logo for a light background is always required. The dark version is
+optional (owner direction, 2026-10-09). "Change dark mode" on the Branding
+tab reopens the saved logo, so an admin can add a dark version later. It
+sends the saved logo back unchanged, so the trim and the background removal
+never run on it twice (`savePayload`, fence `logoEditor.test.ts`). The style
+`own` passes the same server checks as `white`, and both need their image.
+
+⚠️ The advice is NOT an average of the whole logo. A bright orange mark lifted
+the average while navy text beside it vanished (measured 2026-10-09).
+
+The branding row stores `logo`, `logoDark` (white and own styles only) and
+`darkStyle`. The server refuses a pair that disagrees. `BrandMark` renders
+both images, and CSS shows one per colour mode (`.light` on the root), so a
+mode switch waits on no fetch. Fence:
+`src/components/orgBrandLockup.mode.test.ts` ties the `.light` class to
+next-themes and to BrandMark. The logo shows at the top of the desktop
+sidebar and at the top of the phone menu.
+
 ## 3. The format rules, and why each one
 
 Authority is the gateway. The frontend copy in `src/lib/orgBranding.ts` is
 **advisory** — immediate feedback on an obviously-wrong file — and says so.
+Since OI-1b the editor makes every file fit these rules before it is sent.
 
 | Rule | Value | Why |
 |---|---|---|
 | Formats | PNG, JPEG, WebP | Raster only. |
-| **SVG** | **refused, by name** | An SVG is a document that can carry script and external references, stored by one tenant and rendered in every colleague's shell. A 28px header slot does not need vector art enough to take that on. The refusal message says "export a PNG", because SVG is what a designer hands over and it is the likeliest rejection. |
+| **SVG** | **refused by the server, opened by the editor** | An SVG is a document that can carry script and external references, so the STORED file must never be one. Since OI-1b the uploader's browser draws an SVG as a PNG through an `<img>`, where it runs no script, and only the PNG is sent. The server still refuses SVG bytes. |
 | Max bytes | 128 KiB raw | Keeps the row a row rather than a file in a column — which is what §2's placement argument depends on. Also bounds what every member downloads on load. |
 | Edge | 32–2048 px, longer side | Below is a favicon; above is a print asset. |
 | Aspect | 0.5–8.0 (w/h) | Size alone does not stop a 1:20 sliver that renders as a 2px smear. |

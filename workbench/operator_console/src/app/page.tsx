@@ -1,5 +1,9 @@
 import { redirect } from "next/navigation";
-import { listOrganizations, ConsoleUnconfigured } from "@/lib/console";
+import { listOrganizations, orgUsage, ConsoleUnconfigured } from "@/lib/console";
+import { fleetMoney } from "@/lib/fleet";
+import { formatInr, formatPct } from "@/lib/money";
+import type { OrgUsageView } from "@/lib/usage";
+import Explain from "./Explain";
 import { staffSession } from "@/lib/session";
 import {
   formatPaise,
@@ -47,6 +51,19 @@ export default async function CustomersPage() {
 
   let all: OrgRow[] = [];
   let error: string | null = null;
+  // WS-50: the usage read, so each row can say what the customer paid us and
+  // cost us. A failure here blanks only the money columns, never the list.
+  let usageView: Partial<OrgUsageView> | null = null;
+  let usageError: string | null = null;
+  try {
+    const u = await orgUsage(30, { authToken: gate.authToken });
+    if (u.status === 200) usageView = JSON.parse(u.body) as Partial<OrgUsageView>;
+    else usageError = `the Console answered ${u.status}`;
+  } catch (e) {
+    usageView = null;
+    usageError =
+      e instanceof ConsoleUnconfigured ? "the Console is not configured" : "the Console did not answer";
+  }
   try {
     // ⚠️ The CALLER's session, not the shared token. Without it this read
     // reaches the Console as `breakglass`, which bypasses the role matrix
@@ -75,6 +92,8 @@ export default async function CustomersPage() {
   const aiCatalog = await readAiCatalog({ authToken: gate.authToken });
 
   const totals = rosterTotals(rows, new Date());
+  const fleet = fleetMoney(rows, usageView, new Date());
+  const moneyBySlug = Object.fromEntries(fleet.rows.map((r) => [r.org.slug, r.money]));
 
   return (
     <main className="wrap">
@@ -99,12 +118,28 @@ export default async function CustomersPage() {
 
       {!error && rows.length > 0 && (
         <div className="stats">
-          {/* 🔴 MRR leads. It is the number the owner opens this page for and
-              it was not on it — four lifecycle counts said how many customers
-              exist and nothing said what they are worth. */}
+          {/* 🔴 Money leads: what the seats bring in each month, and what the
+              business kept over the last 30 days. WS-50 replaced the bare
+              "MRR", which nobody had defined on the page. */}
           <div className="stat good">
+            <div className="lbl">
+              Seats a month
+              <Explain term="seats" detail="Every active paid subscription: seats bought × plan price." scope="Across customers" />
+            </div>
             <div className="num">{formatPaise(totals.mrrPaise)}</div>
-            <div className="lbl">MRR</div>
+          </div>
+          <div className={`stat${fleet.totals.profit !== null && fleet.totals.profit < 0 ? " loss" : ""}`}>
+            <div className="lbl">
+              Profit, 30 days
+              <Explain term="profit" scope="Across customers" detail={
+                fleet.totals.profit === null
+                  ? "Save the credit price on the Pricing page to see this in rupees."
+                  : `${formatInr(fleet.totals.charged)} we charged − ${formatInr(fleet.totals.aiCost)} AI cost = ${formatInr(fleet.totals.profit)}. Open Money for every customer.`
+              } />
+              {fleet.totals.estimated && <span className="est">estimated</span>}
+            </div>
+            <div className="num">{formatInr(fleet.totals.profit)}</div>
+            <div className="sub">Margin {formatPct(fleet.totals.margin)} · <a href="/money">Money →</a></div>
           </div>
           {/* Attention is a JOIN of facts the Console has no column for, so it
               cannot be a lifecycle count. See `lib/roster.ts`. */}
@@ -115,14 +150,9 @@ export default async function CustomersPage() {
           <div className="stat">
             <div className="num">{totals.customers}</div>
             <div className="lbl">customers</div>
-          </div>
-          <div className="stat">
-            <div className="num">{totals.active}</div>
-            <div className="lbl">active</div>
-          </div>
-          <div className="stat">
-            <div className="num">{totals.trial}</div>
-            <div className="lbl">on trial</div>
+            <div className="sub">
+              {totals.active} active · {totals.trial} on trial
+            </div>
           </div>
         </div>
       )}
@@ -148,7 +178,12 @@ export default async function CustomersPage() {
         </div>
       )}
 
-      {!error && rows.length > 0 && <CustomerTable rows={rows} />}
+      {!error && usageError && (
+        <p className="field-hint warn">
+          The money columns are empty because the usage figures did not load: {usageError}.
+        </p>
+      )}
+      {!error && rows.length > 0 && <CustomerTable rows={rows} money={moneyBySlug} />}
 
       {!error && purged.length > 0 && (
         <details style={{ marginTop: 24 }}>

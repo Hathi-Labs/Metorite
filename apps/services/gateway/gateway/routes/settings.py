@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import yaml
@@ -2107,11 +2107,25 @@ class OrgLogo(BaseModel):
     byteSize: int
 
 
+#: How the logo looks in dark mode (owner request, 2026-10-09). `same` shows
+#: the logo as it is. `white` shows `logoDark`, a white version the uploader's
+#: browser drew. `plate` shows the logo on a small light card, for a dark,
+#: colourful logo that recolouring would spoil. `own` shows `logoDark`, a
+#: dark-background version the organisation already has and uploaded itself.
+#: The main logo, for a light background, is always required.
+DarkStyle = Literal["same", "white", "plate", "own"]
+#: The styles that show a second image, `logoDark`.
+_DARK_IMAGE_STYLES = ("white", "own")
+
+
 class BrandingResponse(BaseModel):
     #: `None` means "no logo uploaded" — the shell falls back to our own mark.
     #: It is a distinct state from "the gateway is unreachable", which the BFF
     #: reports separately, because the two want different UI.
     logo: OrgLogo | None = None
+    #: The dark-mode version, present only with `darkStyle` "white" or "own".
+    logoDark: OrgLogo | None = None
+    darkStyle: DarkStyle = "same"
     updatedBy: str = ""
     updatedAt: str = ""
 
@@ -2122,9 +2136,15 @@ class BrandingUpload(BaseModel):
     Deliberately not a multipart form and deliberately not a data URI. A data
     URI carries a caller-declared MIME type, and every historical mistake in
     this area starts with trusting one.
+
+    `logoDarkBase64` is the optional dark-mode image. It passes every check
+    the main one does. It is required with `darkStyle` "white" or "own" and
+    refused with any other style, so the stored pair can never disagree.
     """
 
     logoBase64: str
+    logoDarkBase64: str | None = None
+    darkStyle: DarkStyle = "same"
 
 
 def _coerce_branding(raw: Any) -> BrandingResponse:
@@ -2134,15 +2154,26 @@ def _coerce_branding(raw: Any) -> BrandingResponse:
     branding wholesale; a logo that fails to parse simply reads as "no logo".
     """
     blob = raw if isinstance(raw, dict) else {}
-    logo_raw = blob.get("logo")
-    logo: OrgLogo | None = None
-    if isinstance(logo_raw, dict):
+    def _logo(raw_logo: Any) -> OrgLogo | None:
+        if not isinstance(raw_logo, dict):
+            return None
         try:
-            logo = OrgLogo(**logo_raw)
+            return OrgLogo(**raw_logo)
         except (TypeError, ValueError):
-            logo = None
+            return None
+
+    logo = _logo(blob.get("logo"))
+    logo_dark = _logo(blob.get("logoDark"))
+    style = blob.get("darkStyle")
+    if style not in ("same", "white", "plate", "own"):
+        style = "same"
+    # A style whose image failed to parse degrades to the logo as is.
+    if style in _DARK_IMAGE_STYLES and logo_dark is None:
+        style = "same"
     return BrandingResponse(
         logo=logo,
+        logoDark=logo_dark if (logo and style in _DARK_IMAGE_STYLES) else None,
+        darkStyle=style if logo else "same",
         updatedBy=str(blob.get("updatedBy") or ""),
         updatedAt=str(blob.get("updatedAt") or ""),
     )
@@ -2176,15 +2207,61 @@ def put_branding(
     user: UserContext = Depends(get_current_user),
 ) -> BrandingResponse:
     """Replace the org's logo. Admin-gated — this changes everyone's shell."""
-    import base64  # noqa: PLC0415
-    import binascii  # noqa: PLC0415
     from datetime import datetime, timezone  # noqa: PLC0415
 
     from acb_common import save_org_setting  # noqa: PLC0415
 
+    needs_image = body.darkStyle in _DARK_IMAGE_STYLES
+    if needs_image and not body.logoDarkBase64:
+        raise HTTPException(status_code=400, detail="This dark-mode choice needs its image.")
+    if not needs_image and body.logoDarkBase64:
+        raise HTTPException(status_code=400, detail="A dark-mode image goes with the white or own style only.")
+
+    logo = _accept_logo(body.logoBase64)
+    logo_dark = _accept_logo(body.logoDarkBase64) if body.logoDarkBase64 else None
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    save_org_setting(
+        _BRANDING_KEY,
+        {
+            "logo": logo.model_dump(),
+            "logoDark": logo_dark.model_dump() if logo_dark else None,
+            "darkStyle": body.darkStyle,
+            "updatedBy": user.email or "",
+            "updatedAt": updated_at,
+        },
+        updated_by=user.email or "",
+    )
+    _log.info(
+        "settings.branding.updated",
+        mime=logo.mime,
+        width=logo.width,
+        height=logo.height,
+        bytes=logo.byteSize,
+        dark_style=body.darkStyle,
+        by=user.email,
+    )
+    return BrandingResponse(
+        logo=logo,
+        logoDark=logo_dark,
+        darkStyle=body.darkStyle,
+        updatedBy=user.email or "",
+        updatedAt=updated_at,
+    )
+
+
+def _accept_logo(raw: str) -> OrgLogo:
+    """Decode and check one uploaded image, and build what the shell stores.
+
+    Raises `HTTPException` with words for the person who picked the file.
+    The same checks for the logo and for its dark-mode version.
+    """
+    import base64  # noqa: PLC0415
+    import binascii  # noqa: PLC0415
+
     from gateway.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
 
-    payload = body.logoBase64.strip()
+    payload = raw.strip()
     # Accept a data URI prefix so a caller that pasted one is not stuck, but
     # discard it: only the bytes after the comma are ever looked at, and the
     # MIME type it declared is not read at all.
@@ -2247,34 +2324,12 @@ def put_branding(
     # Rebuilt from the DERIVED type and the DECODED bytes. Nothing the caller
     # sent is echoed into what browsers will later be handed.
     data_uri = f"data:{info.mime};base64,{base64.b64encode(data).decode('ascii')}"
-
-    updated_at = datetime.now(timezone.utc).isoformat()
-    logo = OrgLogo(
+    return OrgLogo(
         dataUri=data_uri,
         mime=info.mime,
         width=info.width,
         height=info.height,
         byteSize=len(data),
-    )
-    save_org_setting(
-        _BRANDING_KEY,
-        {
-            "logo": logo.model_dump(),
-            "updatedBy": user.email or "",
-            "updatedAt": updated_at,
-        },
-        updated_by=user.email or "",
-    )
-    _log.info(
-        "settings.branding.updated",
-        mime=info.mime,
-        width=info.width,
-        height=info.height,
-        bytes=len(data),
-        by=user.email,
-    )
-    return BrandingResponse(
-        logo=logo, updatedBy=user.email or "", updatedAt=updated_at
     )
 
 
@@ -2297,7 +2352,7 @@ def delete_branding(
     # author for, and the one asked first when a company's shell changes.
     save_org_setting(
         _BRANDING_KEY,
-        {"logo": None, "updatedBy": user.email or "", "updatedAt": updated_at},
+        {"logo": None, "logoDark": None, "darkStyle": "same", "updatedBy": user.email or "", "updatedAt": updated_at},
         updated_by=user.email or "",
     )
     _log.info("settings.branding.cleared", by=user.email)
