@@ -74,9 +74,17 @@ class _FakeRedis:
         self.subscribers: dict[str, int] = {}
         self.published: list[tuple[str, dict]] = []
         self._seq = 0
+        #: Yield to the loop on each call, as a real client does, so two
+        #: requests interleave at every Redis round trip.
+        self.yield_io = False
+
+    async def _io(self):
+        if self.yield_io:
+            await asyncio.sleep(0)
 
     # strings
     async def set(self, key, value, ex=None, xx=False, nx=False, **_kw):
+        await self._io()
         if xx and key not in self.store:
             return None
         if nx and key in self.store:
@@ -85,6 +93,7 @@ class _FakeRedis:
         return True
 
     async def get(self, key):
+        await self._io()
         v = self.store.get(key)
         return v if isinstance(v, str) else None
 
@@ -98,6 +107,7 @@ class _FakeRedis:
         return True
 
     async def exists(self, *keys):
+        await self._io()
         return sum(1 for k in keys if k in self.store)
 
     async def rename(self, src, dst):
@@ -980,6 +990,7 @@ def test_two_requests_on_a_dead_run_recover_it_once(liveness, no_persist):
 
     tid = "t-twice"
     _seed_run(liveness, tid, _DEAD, record=_record(tid))
+    liveness.yield_io = True  # both requests pass the pre-check together
 
     async def _go():
         loop = asyncio.get_running_loop()
@@ -1027,3 +1038,18 @@ def test_the_instance_record_holds_no_member_email(fake_redis, monkeypatch):
 
 async def _noop_forget(_tid):
     return None
+
+
+def test_the_recovery_claim_is_taken_once(liveness):
+    """P2. SET NX: the second party gets no token until the first lets go."""
+    async def _go():
+        first = await run_liveness.claim_recovery("t-claim")
+        second = await run_liveness.claim_recovery("t-claim")
+        await run_liveness.release_recovery("t-claim", "not-the-token")
+        still = await run_liveness.recovery_in_progress("t-claim")
+        await run_liveness.release_recovery("t-claim", first)
+        third = await run_liveness.claim_recovery("t-claim")
+        return first, second, still, third
+
+    first, second, still, third = _run(_go())
+    assert first and second is None and still is True and third
