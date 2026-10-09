@@ -148,8 +148,13 @@ def _persist_row(row: dict[str, Any], organization_id: str | None) -> None:
     import json
     from datetime import datetime
 
+    from acb_common.pg_text import pg_safe
     from acb_graph import tenant_session
     from sqlalchemy import text
+
+    # No NUL and no lone surrogate reaches a text or jsonb column. A tool
+    # result that held raw file bytes failed this write on 2026-10-09.
+    row = pg_safe(row)
 
     ended_at = None
     if row.get("ended_ms"):

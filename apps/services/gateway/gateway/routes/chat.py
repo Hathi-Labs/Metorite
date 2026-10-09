@@ -39,6 +39,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
+from acb_common.pg_text import pg_json, pg_safe
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
@@ -810,7 +811,7 @@ def _upsert_messages(
     if not messages:
         return []
 
-    authority_json = json.dumps(authority) if authority else None
+    authority_json = pg_json(authority) if authority else None
     # An empty member is no member: store NULL, so only the fold may update.
     run_member = (actor_email or "").strip().lower() or None
     declined: list[str] = []
@@ -834,13 +835,15 @@ def _upsert_messages(
                     "id": m.id,
                     "sid": session_id,
                     "role": m.role,
-                    "content": m.content,
+                    # pg_safe/pg_json: no NUL and no lone surrogate reaches
+                    # a text or jsonb column (the 2026-10-09 incident).
+                    "content": pg_safe(m.content),
                     "ts": m.timestamp,
-                    "tool_events": json.dumps(m.tool_events),
-                    "progress_lines": json.dumps(m.progress_lines),
-                    "reasoning": m.reasoning,
-                    "agent_state": json.dumps(m.agent_state) if m.agent_state is not None else None,
-                    "custom_events": json.dumps(m.custom_events),
+                    "tool_events": pg_json(m.tool_events),
+                    "progress_lines": pg_json(m.progress_lines),
+                    "reasoning": pg_safe(m.reasoning),
+                    "agent_state": pg_json(m.agent_state) if m.agent_state is not None else None,
+                    "custom_events": pg_json(m.custom_events),
                     "author_email": author,
                     "author_kind": kind,
                     # Only agent output carries a clearance — a human's own
