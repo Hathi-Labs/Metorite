@@ -74,6 +74,7 @@ MEMBER = f"member.{TAG}@acme.test"
 ADMIN2 = f"admin2.{TAG}@acme.test"
 ADMIN3 = f"admin3.{TAG}@acme.test"
 ADMIN4 = f"admin4.{TAG}@acme.test"
+ADMIN5 = f"admin5.{TAG}@acme.test"
 #: I-10 — what the ten ClickUp statuses of the fixture become (§6.3).
 SIX = {"Backlog", "To do", "In progress", "Review", "On hold", "Done"}
 
@@ -204,16 +205,19 @@ async def main() -> None:
     org2 = await seed("b", [ADMIN2])
     org3 = await seed("c", [ADMIN3])
     org4 = await seed("d", [ADMIN4])
+    org5 = await seed("e", [ADMIN5])
     try:
         await first_org(org, bundle, raw, person1)
         await second_org(org2, bundle, raw)
         await third_org(org3, raw)
         await fourth_org(org4, raw)
+        await fifth_org(org5, bundle, raw)
     finally:
         await drop(org)
         await drop(org2)
         await drop(org3)
         await drop(org4)
+        await drop(org5)
 
 
 async def first_org(org: str, bundle: object, raw: bytes, person1: int) -> None:
@@ -1075,6 +1079,121 @@ async def fourth_org(org: str, raw: bytes) -> None:
         "8.1 a task with no status takes the first lane by position, not is_default",
         landed == first and landed != "Doing",
         f"landed={landed} first={first}",
+    )
+
+
+async def fifth_org(org: str, bundle: object, raw: bytes) -> None:
+    """The I-10 review, P1-a. Run A leaves one List out, and a member renames
+    the space's "Backlog". Run B continues and creates that List. Its tasks
+    must land in the renamed lane, with no second "Backlog" in the ONE set."""
+    from gateway.routes.projects.importer.layout import status_ids_by_name
+    from gateway.routes.projects.importer.plan import ContainerChoice
+
+    by_ref = {c.ref: c for c in bundle.containers}
+
+    def space_of(ref: str) -> str:
+        while by_ref[ref].parent_ref:
+            ref = by_ref[ref].parent_ref
+        return ref
+
+    lists = [c.ref for c in bundle.containers if c.kind == "project"]
+    left_out = next(
+        ref
+        for ref in lists
+        if any(t.container_ref == ref and t.status_name == "backlog" for t in bundle.tasks)
+        and sum(1 for other in lists if space_of(other) == space_of(ref)) > 1
+    )
+    in_list = sum(
+        1 for t in bundle.tasks if t.container_ref == left_out and t.status_name == "backlog"
+    )
+    first, lease = await new_run(
+        org,
+        ADMIN5,
+        bundle,
+        raw,
+        ImportMapping(containers={left_out: ContainerChoice(skip=True)}),
+    )
+    await import_writer.apply_run(org, first, lease)
+    progress = as_dict(
+        await one(org, "SELECT progress FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=first)
+    )
+    space = progress["node_ids"][space_of(left_out)]
+    lane = await one(
+        org,
+        "SELECT id::text FROM pm_task_statuses WHERE project_id = CAST(:s AS uuid) "
+        "   AND name = 'Backlog'",
+        s=space,
+    )
+    async with tenant_session(org) as db:
+        await db.execute(
+            text("UPDATE pm_task_statuses SET name = 'Someday' WHERE id = CAST(:s AS uuid)"),
+            {"s": lane},
+        )
+    later, lease = await new_run(org, ADMIN5, bundle, raw, ImportMapping())
+    await import_writer.apply_run(org, later, lease)
+    report = as_dict(
+        await one(org, "SELECT report FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=later)
+    )
+    after = as_dict(
+        await one(org, "SELECT progress FROM pm_import_runs WHERE id = CAST(:id AS uuid)", id=later)
+    )
+    new_list = after["nodes"][left_out]
+    again = await one(
+        org,
+        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:s AS uuid) "
+        "   AND lower(name) = 'backlog'",
+        s=space,
+    )
+    landed = await one(
+        org,
+        "SELECT count(*) FROM pm_tasks WHERE project_id = CAST(:p AS uuid) "
+        "   AND status_id = CAST(:s AS uuid)",
+        p=new_list,
+        s=lane,
+    )
+    check(
+        "9.1 a List made under a continued space follows a renamed lane, with no duplicate",
+        report.get("created", {}).get("projects") == 1
+        and again == 0
+        and landed == in_list
+        and report.get("lanes_added") == 0,
+        f"projects={report.get('created')} backlog lanes={again} "
+        f"landed={landed}/{in_list} lanes_added={report.get('lanes_added')}",
+    )
+    # The writer path itself, with no plan in front of it: a List with no
+    # earlier map of its own still finds the lane through the union.
+    earlier = {
+        ref: {str(e[0]): str(e[1]) for e in entries}
+        for ref, entries in progress["statuses"].items()
+    }
+    async with tenant_session(org) as db:
+        lanes_before = int(
+            (
+                await db.execute(
+                    text(
+                        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:s AS uuid)"
+                    ),
+                    {"s": space},
+                )
+            ).scalar()
+        )
+        have = await import_writer._reuse_statuses(
+            db, new_list, [("Backlog", "backlog")], status_ids_by_name(earlier)
+        )
+        lanes_after = int(
+            (
+                await db.execute(
+                    text(
+                        "SELECT count(*) FROM pm_task_statuses WHERE project_id = CAST(:s AS uuid)"
+                    ),
+                    {"s": space},
+                )
+            ).scalar()
+        )
+    check(
+        "9.2 the writer finds the renamed lane by id, for a List with no map of its own",
+        ["backlog", lane, "backlog"] in have and lanes_after == lanes_before,
+        f"lanes {lanes_before}->{lanes_after}",
     )
 
 

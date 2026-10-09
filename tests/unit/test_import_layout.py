@@ -20,6 +20,7 @@ from gateway.routes.projects.importer.layout import (
     order_tasks,
     origin,
     project_statuses,
+    status_ids_by_name,
 )
 from gateway.routes.projects.importer.plan import ImportMapping, Target, resolve_statuses
 
@@ -118,6 +119,18 @@ def test_merged_spellings_become_one_status() -> None:
     )
     final = {"to do": ("To do", "todo"), "todo": ("To do", "todo")}
     assert project_statuses(b, final)["p"] == [("To do", "todo")]
+
+
+def test_every_list_reads_the_union_of_the_earlier_status_maps() -> None:
+    """The I-10 review, P1-a: a List this run creates has no earlier map of
+    its own, so it reads every List's. A name keeps each id it had: before
+    I-10 each List held a set of its own."""
+    earlier = {
+        "list-a": {"review": "s1", "backlog": "s2"},
+        "list-b": {"review": "s3"},
+    }
+    assert status_ids_by_name(earlier) == {"review": {"s1", "s3"}, "backlog": {"s2"}}
+    assert status_ids_by_name({}) == {}
 
 
 # ── ordering and fields ─────────────────────────────────────────────────────
