@@ -2,9 +2,8 @@
 
 Spec: ``project-docs/specs/whatsapp_assistant_channel.md`` §5.1 and §7.
 
-This module is the ONE reader of the three settings below. A later slice (the
-webhook branch of WAC-2, the run of WAC-3) asks it too, and never reads the
-settings itself.
+This module is the ONE reader of the five settings below. The webhook branch
+of WAC-2 and the run of WAC-3 ask it, and never read the settings themselves.
 
 * ``WHATSAPP_ASSISTANT_ENABLED`` — the kill switch, default OFF.
 * ``WHATSAPP_ASSISTANT_ORGS`` — the organization ids that may link, with a
@@ -13,6 +12,12 @@ settings itself.
   with the country code and no ``+``. Any other value reads as unset, and the
   module logs it once, so a typo on the box closes the channel rather than
   printing a broken ``wa.me`` link.
+* ``WHATSAPP_ASSISTANT_PHONE_NUMBER_ID`` — Meta's id for the bot number
+  (WAC-2). The webhook sends the batch for this id to the bot path. A value
+  that is not ASCII digits reads as unset.
+* ``WHATSAPP_ASSISTANT_ACCESS_TOKEN`` — the System User token the bot replies
+  with (WAC-2). 🔴 A secret: nothing here logs it, and no function returns it
+  except :func:`bot_credentials`, whose one caller builds the provider.
 
 The organization always comes from the caller, who takes it from
 ``current_tenant()``. It never comes from request input (R5, R11).
@@ -82,3 +87,42 @@ def wa_me_link(code: str, number: str) -> str:
     ``Link me: <code>``.
     """
     return f"https://wa.me/{number}?text=Link%20me%3A%20{code}"
+
+
+#: Meta's phone number ids are ASCII digits only (``cloud_api.is_phone_number_id``).
+_PHONE_NUMBER_ID = re.compile(r"[0-9]{1,32}")
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_phone_number_id(raw: str) -> str | None:
+    value = raw.strip()
+    if not value:
+        return None
+    if not _PHONE_NUMBER_ID.fullmatch(value):
+        _log.warning("whatsapp_channel.phone_number_id_invalid", length=len(value))
+        return None
+    return value
+
+
+def bot_phone_number_id() -> str | None:
+    """Meta's id for the bot number, or None when it is unset (WAC-2).
+
+    The webhook compares each group of a batch with this id. With None, no
+    group is the bot's, so every group stays on the WS-20 path.
+    """
+    return _parse_phone_number_id(
+        str(get_settings().whatsapp_assistant_phone_number_id or "")
+    )
+
+
+def bot_credentials() -> dict[str, str] | None:
+    """The credentials dict for the bot's Cloud API provider, or None.
+
+    None when the id or the token is unset. The dict holds the token, so its
+    one caller passes it straight to ``build_provider`` and logs none of it.
+    """
+    number_id = bot_phone_number_id()
+    token = str(get_settings().whatsapp_assistant_access_token or "").strip()
+    if number_id is None or not token:
+        return None
+    return {"access_token": token, "phone_number_id": number_id}
