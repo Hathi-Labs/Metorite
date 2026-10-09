@@ -347,7 +347,7 @@ altitudes it supports.
 |---|---|---|---|
 | Today | Personal | Calendar | The lens, `scheduledStart` and `scheduledEnd` |
 | Next actions | Personal | My Tasks | The lens, `/projects/my/*` |
-| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2554`. It reads `GET /email/digest` (`routes/email/digest.py:737`) |
+| Needs reply | Personal | Email | `getDigest`, `app/email/lib/api.ts:2554`. It reads `GET /email/digest`, the route `get_digest` in `routes/email/digest.py` |
 | Needs you | Personal | Every app | `GET /shell/needs` (§7.2) |
 | Team pulse | Team, all my teams | Projects | Report template T1, "Team pulse" (`projects_reports.md`) |
 | At-risk work | Team, all my teams | Projects | The analytics reads under `projects_ai_chat.md` §13 |
@@ -675,6 +675,10 @@ routes are on the Projects router, and that router demands `projects`.
 **A Someday task never shows in the feed, also with a due date, but a Waiting
 task does.** The lens read leaves out each task that is not the member's to
 do now, and the provider checks the disposition of each row again.
+
+**A Reference task never shows in the feed either.** It is information, not an
+action. `NOT_NOW_DISPOSITIONS` in `routes/projects/personal.py` holds the two
+values, and the lens read and the feed both take them from it.
 
 **A snoozed or archived thread never shows in the feed.** The email read takes
 the rows that the Needs-reply count of the email app counts. So the feed

@@ -127,11 +127,13 @@ async def _digest_top_senders(
 # moved). It reappears — here and in the inbox — the moment snoozed_until
 # passes, with no scheduler involved.
 # An ARCHIVED last message is out too: archive is the member saying "dealt
-# with", and Reply Zero (`replyzero.reply_zero`) already hides an archived
-# thread from its active buckets, so this count, that list and the shell's
-# needs feed (`needs_reply_threads`) now agree. Every user of this predicate
-# reads an ACTIVE bucket (NEEDS_REPLY, AWAITING). A read of DONE, where an
-# archived thread belongs, must not reuse it.
+# with", and Reply Zero (`replyzero.reply_zero`) also hides an archived thread
+# from its active buckets. So the digest and the shell's needs feed
+# (`needs_reply_threads`) agree on every rule here. ⚠️ Reply Zero's list does
+# NOT agree on two: it hides only trash and archive, so it still lists a junk
+# thread and a snoozed thread as needing a reply (HANDOFF H-286). Every user
+# of this predicate reads an ACTIVE bucket (NEEDS_REPLY, AWAITING). A read of
+# DONE, where an archived thread belongs, must not reuse it.
 _LIVE_THREAD = ("NOT EXISTS (SELECT 1 FROM email_messages tem "
                 "WHERE tem.id = ts.last_message_id "
                 "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk', 'archive') "
@@ -241,8 +243,8 @@ async def needs_reply_threads(
     §7.2, the shell's needs feed).
 
     The same rows the digest's Needs-reply count counts: ``_LIVE_THREAD``
-    leaves out a thread whose last message is in trash or junk, or is
-    snoozed. The owner check runs first, so a mailbox of another member is
+    leaves out a thread whose last message is in trash, junk or the archive,
+    or is snoozed. The owner check runs first, so a mailbox of another member is
     404 before any read. It writes nothing and starts no backfill. Not a
     route: the shell calls it after its own ``feature:email`` check."""
     async with _tenant_session() as db:

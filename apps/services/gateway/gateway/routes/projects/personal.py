@@ -1656,12 +1656,23 @@ async def _attach_assigned_by(
         row["assigned_by"] = by_task.get(str(row["id"]))
 
 
+#: The dispositions that say "not for now", so a due date does not make the
+#: task a need. SOMEDAY is the member's deliberate "not now". REFERENCE is
+#: information, not an action. WAITING is NOT here: an overdue waiting-for is
+#: a cue to chase someone. ⚠️ **This tuple is the one owner of that rule.**
+#: :data:`ACTIONABLE_CLAUSE` is built from it, :func:`my_due_tasks` filters
+#: by it, and the shell's needs feed imports it as ``HIDDEN_DISPOSITIONS``.
+NOT_NOW_DISPOSITIONS: tuple[str, ...] = ("SOMEDAY", "REFERENCE")
+
+#: The effective dispositions that :func:`my_due_tasks` never returns.
+NOT_DUE_WORK: frozenset[str] = frozenset({"DONE", "TRASH", *NOT_NOW_DISPOSITIONS})
+
 #: "Still mine to act on": the lens rows whose EFFECTIVE disposition is not
-#: DONE, TRASH or SOMEDAY. It is :func:`effective_disposition`, in SQL, for
-#: exactly those three answers:
+#: in :data:`NOT_DUE_WORK`. It is :func:`effective_disposition`, in SQL, for
+#: exactly those answers:
 #:
 #: * a closing lane is DONE (or TRASH when I stated TRASH), whatever I stated;
-#: * a stated TRASH or SOMEDAY stays so on an open lane;
+#: * a stated TRASH, SOMEDAY or REFERENCE stays so on an open lane;
 #: * with nothing stated, a ``backlog`` lane derives SOMEDAY.
 #:
 #: A stated DONE on an open lane reads NEXT, so it stays in. ``my_due_tasks``
@@ -1672,8 +1683,8 @@ async def _attach_assigned_by(
 ACTIONABLE_CLAUSE = (
     "(s.category IS NULL OR s.category NOT IN (" + _CLOSED_LITERAL + "))"
     " AND p.disposition IS DISTINCT FROM 'TRASH'"
-    " AND p.disposition IS DISTINCT FROM 'SOMEDAY'"
-    " AND NOT (p.disposition IS NULL AND s.category = 'backlog')"
+    + "".join(f" AND p.disposition IS DISTINCT FROM '{d}'" for d in NOT_NOW_DISPOSITIONS)
+    + " AND NOT (p.disposition IS NULL AND s.category = 'backlog')"
 )
 
 #: Due before the start of the member's tomorrow, in the member's zone.
@@ -1728,7 +1739,7 @@ async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
         )
         for row in (await db.execute(text(sql), params)).fetchall():
             task, effective = _project_task(row)
-            if effective in ("DONE", "TRASH", "SOMEDAY"):
+            if effective in NOT_DUE_WORK:
                 continue
             items.append(task)
     return {"rows": items, "today": today.isoformat(), "timezone": zone}

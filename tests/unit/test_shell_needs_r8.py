@@ -64,6 +64,10 @@ TAG = uuid.uuid4().hex[:8]
 ME = f"needs-me-{TAG}@ns3.test"
 OTHER = f"needs-other-{TAG}@ns3.test"
 BUSY = f"needs-busy-{TAG}@ns3.test"
+ZONED = f"needs-zoned-{TAG}@ns3.test"
+#: Fourteen hours ahead of UTC, so the member's date and the UTC date
+#: differ for ten hours of every day, and their midnights always differ.
+ZONE = "Pacific/Kiritimati"
 
 
 def _member(email: str) -> UserContext:
@@ -255,6 +259,8 @@ def busy(promoted):  # noqa: F811
         _stated(c, org=org, task=someday, email=BUSY, disposition="SOMEDAY")
         trash = make("Stated trash", 39, todo, 101)
         _stated(c, org=org, task=trash, email=BUSY, disposition="TRASH")
+        reference = make("Stated reference", 41, todo, 106)
+        _stated(c, org=org, task=reference, email=BUSY, disposition="REFERENCE")
         make("Unstated in backlog", 38, backlog, 102)
         closed = make("Closed lane", 37, done, 103)
         _stated(c, org=org, task=closed, email=BUSY, disposition="NEXT")
@@ -288,6 +294,7 @@ async def _needs(p, monkeypatch, user: UserContext) -> dict:
     # Room for a cold database. The `sources` check proves each provider ran.
     monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 30.0)
     monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 90.0)
+    monkeypatch.setattr(shell, "MAILBOX_TIMEOUT_S", 30.0)
     async with _as_member(p, p.org_b):
         return await shell.shell_needs(limit=50, user=user)
 
@@ -365,3 +372,48 @@ class TestTheLensDueRead:
         answer = await _needs(promoted, monkeypatch, _member(BUSY))
         mail = [i["id"] for i in answer["items"] if i["app"] == "email"]
         assert mail == busy["expected_mail"]
+
+
+@pytest.fixture(scope="module")
+def zoned(promoted):  # noqa: F811
+    """A member with a stored zone of +14, and one task each side of the
+    start of their tomorrow, 30 minutes away from it."""
+    from zoneinfo import ZoneInfo
+
+    p = promoted
+    org = p.org_b
+    local_today = datetime.now(ZoneInfo(ZONE)).date()
+    bound = datetime.combine(local_today + timedelta(days=1), datetime.min.time(),
+                             tzinfo=ZoneInfo(ZONE))
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, "
+            "organization_id) VALUES (:e, :e, 'employee', 'active', "
+            "CAST(:o AS uuid))"), {"e": ZONED, "o": org})
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, timezone, organization_id) "
+            "VALUES (:e, :z, CAST(:o AS uuid))"), {"e": ZONED, "z": ZONE, "o": org})
+        project, lane = _project(c, org=org, name=f"Zoned {TAG}", grant_org=True)
+        late_today = _task(c, org=org, project=project, lane=lane,
+                           title="Due late on my today", due=bound - timedelta(minutes=30),
+                           assignee=ZONED, number=300)
+        early_tomorrow = _task(c, org=org, project=project, lane=lane,
+                               title="Due early on my tomorrow",
+                               due=bound + timedelta(minutes=30),
+                               assignee=ZONED, number=301)
+    return {"today": local_today.isoformat(), "in": late_today, "out": early_tomorrow}
+
+
+class TestTheMembersZone:
+    async def test_today_is_the_members_today_not_utcs(self, promoted, zoned):  # noqa: F811
+        # Whatever the hour of the run, the UTC midnight is 10 hours from the
+        # member's, so one of the two tasks would change sides under UTC.
+        from gateway.routes.projects.personal import my_due_tasks
+
+        async with _as_member(promoted, promoted.org_b):
+            answer = await my_due_tasks(_member(ZONED), limit=15)
+        assert answer["timezone"] == ZONE
+        assert answer["today"] == zoned["today"]
+        got = [r["id"] for r in answer["rows"]]
+        assert zoned["in"] in got
+        assert zoned["out"] not in got

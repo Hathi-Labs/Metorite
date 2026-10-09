@@ -287,6 +287,20 @@ class TestTheAnswer:
         assert "tasks:t-someday" not in got
         assert "tasks:t-waiting" in got
 
+    def test_a_reference_task_is_not_a_need(self, fakes):
+        # Reference is information, not an action, so a due date on it is
+        # no reason to ask the member for anything.
+        fakes.tasks[ME].append(_task("t-reference", "Supplier price list",
+                                     NOW - timedelta(days=2), disposition="REFERENCE"))
+        assert "tasks:t-reference" not in ids(run(member(*ALL)))
+
+    def test_the_feed_takes_its_hidden_set_from_the_lens(self):
+        # One owner: the lens's NOT_NOW_DISPOSITIONS. The feed's check and
+        # the lens's SQL both come from it, so they cannot disagree.
+        assert frozenset(personal.NOT_NOW_DISPOSITIONS) == shell.HIDDEN_DISPOSITIONS
+        assert {"SOMEDAY", "REFERENCE"} <= shell.HIDDEN_DISPOSITIONS
+        assert "WAITING" not in shell.HIDDEN_DISPOSITIONS
+
     def test_the_shape_of_each_kind(self, fakes):
         rows = {i["id"]: i for i in run(member(*ALL))["items"]}
         assert rows["tasks:t-old"] == {
@@ -427,21 +441,23 @@ class TestTheCallsStayInStep:
 
 
 class _RecordingDB:
-    """Answers every statement with one row and no rows, and keeps the SQL."""
+    """Answers every statement with one row and no rows, and keeps the SQL.
+    ``zone`` is the member's stored zone, ``user_settings.timezone``."""
 
-    def __init__(self) -> None:
+    def __init__(self, zone: str = "UTC") -> None:
         self.sql: list[str] = []
         self.params: list[dict] = []
+        self.zone = zone
 
     async def execute(self, stmt, params=None):
         self.sql.append(" ".join(str(stmt).split()))
         self.params.append(dict(params or {}))
         return SimpleNamespace(fetchone=lambda: SimpleNamespace(
-            organization_id="org-1", timezone="UTC"), fetchall=list, scalar=lambda: 0)
+            organization_id="org-1", timezone=self.zone), fetchall=list, scalar=lambda: 0)
 
 
-def _recording(monkeypatch, module) -> _RecordingDB:
-    db = _RecordingDB()
+def _recording(monkeypatch, module, zone: str = "UTC") -> _RecordingDB:
+    db = _RecordingDB(zone)
 
     @asynccontextmanager
     async def _session(*_a, **_k):
@@ -476,9 +492,37 @@ class TestTheLensRead:
             today + timedelta(days=1), datetime.min.time(), tzinfo=bind["due_before"].tzinfo)
         assert bind["due_before"].utcoffset() is not None
 
+    def test_the_bound_is_the_members_tomorrow_not_utcs(self, monkeypatch):
+        # 11:30 UTC on 9 October is 01:30 on 10 October on Kiritimati (+14).
+        # The member's today is the 10th, and their tomorrow starts at 10:00
+        # UTC on the 10th. UTC would say the 9th, and a bound of midnight.
+        frozen = datetime(2026, 10, 9, 11, 30, tzinfo=UTC)
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        monkeypatch.setattr(personal, "datetime", _Clock)
+        db = _recording(monkeypatch, personal, zone="Pacific/Kiritimati")
+        answer = asyncio.run(personal.my_due_tasks(member("projects"), limit=15))
+        bind = next(p for s, p in zip(db.sql, db.params, strict=True) if "FROM pm_tasks t" in s)
+        assert answer["timezone"] == "Pacific/Kiritimati"
+        assert answer["today"] == "2026-10-10"
+        assert str(bind["today"]) == "2026-10-10", "the deferral clause uses the member's date"
+        assert bind["due_before"] == datetime(2026, 10, 10, 10, 0, tzinfo=UTC)
+        # 23:59 on the member's 10th is due today, and is in. 00:01 on the
+        # member's 11th is due tomorrow, and is out.
+        due_today = datetime(2026, 10, 10, 9, 59, tzinfo=UTC)
+        due_tomorrow = datetime(2026, 10, 10, 10, 1, tzinfo=UTC)
+        assert due_today < bind["due_before"] <= due_tomorrow
+
     def test_the_sql_leaves_out_what_the_python_rule_calls_not_mine_to_act_on(self):
         clause = personal.ACTIONABLE_CLAUSE
         assert "'SOMEDAY'" in clause and "'TRASH'" in clause
+        for disposition in personal.NOT_NOW_DISPOSITIONS:
+            assert f"p.disposition IS DISTINCT FROM '{disposition}'" in clause
+        assert {"DONE", "TRASH", "SOMEDAY", "REFERENCE"} == personal.NOT_DUE_WORK
         assert "s.category = 'backlog'" in clause
         for category in personal.CLOSING_CATEGORIES:
             assert f"'{category}'" in clause

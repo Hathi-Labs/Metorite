@@ -36,9 +36,10 @@ email      ``feature:email``     ``email.transport.accounts.list_accounts``,
 routes live on the Projects router, and that router demands ``projects``.
 The ``tasks`` feature only shows the pane.
 
-⚠️ **A Someday task is left out, even with a due date.** The lens read
-leaves it out (``personal.ACTIONABLE_CLAUSE``), and the provider checks the
-row's ``disposition`` again (``HIDDEN_DISPOSITIONS``). A WAITING task stays.
+⚠️ **A Someday or Reference task is left out, even with a due date.** The
+lens read leaves it out (``personal.ACTIONABLE_CLAUSE``), and the provider
+checks the row's ``disposition`` again (``HIDDEN_DISPOSITIONS``). A WAITING
+task stays.
 
 ⚠️ **A separate mailbox is left out** (D-EM-30). The feed reads more than one
 mailbox, and a mailbox that the member keeps separate leaves every such read.
@@ -87,6 +88,7 @@ from urllib.parse import quote, urlencode
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.personal import NOT_NOW_DISPOSITIONS
 from gateway.routes.shell.search import router
 
 logger = logging.getLogger(__name__)
@@ -104,13 +106,14 @@ MAILBOX_TIMEOUT_S = 1.0
 #: Seconds for the whole answer, all providers together. Each provider gets
 #: what is left, the rule of ``search.TOTAL_BUDGET_S``.
 TOTAL_BUDGET_S = 4.0
-#: The lens dispositions that never reach the feed, even with a due date.
-#: Someday is the member's deliberate "not now", and a nag about it teaches
-#: people to stop using Someday. WAITING stays: an overdue waiting-for is a
-#: cue to chase someone. ``my_due_tasks`` leaves these out in its SQL. The
-#: provider checks the effective ``disposition`` of each row again, so a
-#: change to the lens can only narrow the feed.
-HIDDEN_DISPOSITIONS = frozenset({"SOMEDAY"})
+#: The lens dispositions that never reach the feed, even with a due date:
+#: SOMEDAY ("not now") and REFERENCE (information, not an action). WAITING
+#: stays, because an overdue waiting-for is a cue to chase someone.
+#: ⚠️ The Projects lens OWNS this set (``personal.NOT_NOW_DISPOSITIONS``).
+#: ``my_due_tasks`` leaves these out in its SQL, and the provider checks the
+#: effective ``disposition`` of each row again, so a change to the lens can
+#: only narrow the feed.
+HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 
 #: The order of the feed, by kind (§7.2 contract).
 KIND_ORDER = {"overdue": 0, "due_today": 1, "notification": 2, "needs_reply": 3}
