@@ -86,9 +86,10 @@ class TestTheReexecIsWired:
 
     def test_the_reexeced_copy_skips_the_fetch_the_skip_and_the_watcher(self) -> None:
         lines = _executable_lines(_APPLY)
-        branch = _first(lines, 'if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then')
+        pull = _first(lines, 'echo "==> Pulling latest')
+        branch = _first(lines, 'if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then', pull)
         other = next(i for i in range(branch, len(lines)) if lines[i].strip() == "else")
-        assert branch == _first(lines, 'echo "==> Pulling latest') + 1
+        assert branch == pull + 1
         for needle in (
             "git fetch origin main",
             'deploy_already_applied "$DEPLOY_TARGET_SHA"',
@@ -98,6 +99,13 @@ class TestTheReexecIsWired:
             assert _first(lines, needle) > other, f"{needle} must sit in the first copy's branch"
         tether = next(i for i, ln in enumerate(lines) if ln.strip() == "tether_to_session")
         assert 'VPS_APPLY_REEXECED:-0}" != "1"' in lines[tether - 1]
+
+    def test_the_temp_copy_is_removed_before_any_step_can_exit(self) -> None:
+        lines = _executable_lines(_APPLY)
+        rm = _first(lines, 'acb-vps-apply-reexec.*) rm -f "$VPS_APPLY_REEXEC_FILE"')
+        assert _first(lines, 'VPS_APPLY_SELF_SUM="$(sha256sum') < rm, "hash first, then remove"
+        assert rm < _first(lines, "if deploy_session_ended; then")
+        assert rm < _first(lines, 'echo "==> Taking the deploy lock')
 
     def test_the_marker_names_the_script_that_ran(self) -> None:
         lines = _executable_lines(_APPLY)
@@ -124,12 +132,12 @@ def _step(tag: str) -> str:
     )
 
 
-def _script(tag: str) -> str:
+def _script(tag: str, extra: str = "") -> str:
     """The REAL prologue and final lines of vps_apply.sh, with one stand-in step."""
     body = _APPLY.read_text(encoding="utf-8")
     head = body[: body.index(_FIRST_STEP)]
     tail = body[body.index(_RECORD_CALL) :]
-    return head + _step(tag) + tail
+    return head + _step(tag) + extra + tail
 
 
 def _git(*args: str, cwd: pathlib.Path) -> str:
@@ -307,6 +315,7 @@ class TestNoLoopAndNoFalseMarker:
              f'bash "{copy}"'],
             env=box.env(
                 VPS_APPLY_REEXECED="1", DEPLOY_LOCK_HELD="1", DEPLOY_TARGET_SHA=box.sha_b,
+                VPS_APPLY_REEXEC_FILE=str(copy),
             ),
             cwd=tmp_path, capture_output=True, text=True, timeout=120,
         )
@@ -318,6 +327,7 @@ class TestNoLoopAndNoFalseMarker:
         assert not box.marker.exists(), "a marker for steps that B does not hold"
         assert box.read(box.writes) == [], out
         assert out.count("==> Deployment complete") == 1, out
+        assert copy.exists(), "a file without the temp name must never be removed"
 
     def test_the_helper_alone_still_records_without_a_hash(self, tmp_path: pathlib.Path) -> None:
         """`record_applied_sha <sha>` with one argument keeps its old meaning.
@@ -333,3 +343,66 @@ class TestNoLoopAndNoFalseMarker:
             env=box.env(), check=True, timeout=30,
         )
         assert box.marker.read_text().split()[0] == box.sha_a
+
+
+@linux_only
+class TestTheSessionAcrossTheReexec:
+    def test_one_watcher_before_and_after_the_exec(self, tmp_path: pathlib.Path) -> None:
+        """The watcher of the first copy watches the pid, and `exec` keeps the
+        pid. So the re-executed copy starts no second watcher, and the one
+        watcher is still there when the new steps run."""
+        if shutil.which("ps") is None:
+            pytest.skip("needs ps")
+        children = tmp_path / "children.log"
+        # `ps` runs as a direct child of the apply, so it lists itself too.
+        extra = f'ps -o comm= --ppid $$ > "{children}"\n'
+        old, new = _script("OLD"), _script("NEW", extra)
+        box = _Box(tmp_path, old, new)
+        anchor = subprocess.Popen(["sleep", "300"])
+        try:
+            res = subprocess.run(
+                ["bash", "-s"], input=old, cwd=tmp_path,
+                env=box.env(DEPLOY_TETHER="1", DEPLOY_TETHER_ANCHOR=str(anchor.pid),
+                            DEPLOY_TETHER_POLL="0.2"),
+                capture_output=True, text=True, timeout=120,
+            )
+        finally:
+            anchor.kill()
+            anchor.wait()
+        out = res.stdout + res.stderr
+        assert res.returncode == 0, out
+        assert out.count("(re-exec)") == 1, out
+        assert out.count("tethered to deploy session") == 1, out
+        assert box.read(box.steps) == ["NEW"], out
+        watchers = [c.strip() for c in box.read(children) if c.strip() != "ps"]
+        assert watchers == ["bash"], f"one watcher child after the exec, found {watchers}"
+
+    def test_a_session_end_before_the_new_steps_says_what_is_true(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """The first copy already reset the checkout. So the message must not
+        say "did NOTHING", and the temp copy must not stay behind."""
+        box = _Box(tmp_path, _script("OLD"), _script("NEW"))
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        copy = box.tmpdir / "acb-vps-apply-reexec.TEST01"
+        copy.write_text(_script("NEW"), encoding="utf-8", newline="\n")
+        res = subprocess.run(
+            ["bash", "-c",
+             'exec 8<"$DEPLOY_LOCK"; flock -n 8 || exit 9; '
+             f'bash "{copy}"'],
+            env=box.env(
+                VPS_APPLY_REEXECED="1", VPS_APPLY_REEXEC_FILE=str(copy),
+                DEPLOY_LOCK_HELD="1", DEPLOY_TARGET_SHA=box.sha_b,
+                DEPLOY_TETHER="1", DEPLOY_TETHER_ANCHOR=str(gone.pid),
+            ),
+            cwd=tmp_path, capture_output=True, text=True, timeout=120,
+        )
+        out = res.stdout + res.stderr
+        assert res.returncode == 1, out
+        assert "ended before the re-executed copy began its steps" in out, out
+        assert "already reset to" in out and "No marker was written" in out, out
+        assert "did NOTHING" not in out, out
+        assert box.read(box.steps) == [], out
+        assert not box.marker.exists(), out
+        assert not copy.exists(), "an early exit left the temp copy behind"

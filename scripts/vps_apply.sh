@@ -41,8 +41,10 @@
 # — and run THAT. This is what vps_pull.sh does, and why.
 #
 # ⚠️ A copy taken out first is still the WRONG copy when a merge lands during
-# the apply. So after the pull, this script runs the pulled commit's own copy
-# of itself ("Run the pulled commit's own copy" below).
+# the apply. So every step AFTER the pull runs from the pulled commit's own
+# copy of this file ("Run the pulled commit's own copy" below). The pull block
+# itself (ownership repair, agents.json backup, fetch, reset) runs from the
+# copy that started. A change to the pull block takes effect on the next apply.
 set -e
 
 # The sha256 of the copy that bash runs now, read before anything can rewrite
@@ -51,6 +53,16 @@ set -e
 VPS_APPLY_SELF_SUM=""
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
   VPS_APPLY_SELF_SUM="$(sha256sum < "${BASH_SOURCE[0]}" | cut -d' ' -f1)" || VPS_APPLY_SELF_SUM=""
+fi
+# A re-executed copy runs from a temp file that the first copy wrote. Remove
+# it now, after the hash and before any step can exit, so no exit path leaves
+# it behind. bash keeps its fd open, so it reads on. The name must match, so
+# this never removes a file that a person ran by hand. Limit: a revert to a
+# target older than this code has no such line, and its temp copy stays.
+if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]   && [ "${VPS_APPLY_REEXEC_FILE:-}" = "${BASH_SOURCE[0]:-}" ]; then
+  case "$VPS_APPLY_REEXEC_FILE" in
+    "${TMPDIR:-/tmp}"/acb-vps-apply-reexec.*) rm -f "$VPS_APPLY_REEXEC_FILE" ;;
+  esac
 fi
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
@@ -420,8 +432,16 @@ fi
 # before a tether can read it.
 rm -f "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
 if deploy_session_ended; then
-  echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended while this apply waited."
-  echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
+  if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then
+    # The first copy already did the fetch and the reset, so "did NOTHING"
+    # would be false here.
+    echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended before the re-executed copy began its steps."
+    echo "       The checkout is already reset to ${DEPLOY_TARGET_SHA:0:12}, but no service was restarted."
+    echo "       No marker was written, so the next deploy applies ${DEPLOY_TARGET_SHA:0:12} again."
+  else
+    echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended while this apply waited."
+    echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
+  fi
   exit 1
 fi
 # After a re-exec, the watcher of the first copy still watches this pid,
@@ -435,9 +455,6 @@ if [ "${VPS_APPLY_REEXECED:-0}" = "1" ]; then
   # The first copy did the fetch, the skip check and the reset, and then ran
   # this copy. Do not fetch again: a newer origin/main is the next deploy's job.
   echo "    the first copy pulled ${DEPLOY_TARGET_SHA:0:12}. This is that commit's own copy of the script"
-  if [ -n "${VPS_APPLY_REEXEC_FILE:-}" ] && [ "$VPS_APPLY_REEXEC_FILE" = "${BASH_SOURCE[0]:-}" ]; then
-    rm -f "$VPS_APPLY_REEXEC_FILE"   # bash keeps its fd open, so it reads on
-  fi
 else
   # 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
   # one below, one directory over — and this one is worse, because it blocks the
@@ -514,11 +531,13 @@ else
   # So read the target's own copy out of the object database, as vps_pull.sh
   # does, and compare it with the copy that runs now. When they differ, or
   # when this copy came from stdin and has no hash, `exec` the target's copy
-  # ONE time. `exec` keeps the pid, so the deploy lock on fd 8 and the watcher
+  # ONE time. Every step after this point then runs from the target's copy.
+  # This pull block does not: it ran from the copy that started, and a change
+  # to it takes effect on the next apply. `exec` keeps the pid, so the deploy lock on fd 8 and the watcher
   # of the deploy session stay. VPS_APPLY_REEXECED=1 makes the new copy skip
   # the lock, the watcher and this pull step, so it cannot exec again. stdin
   # becomes /dev/null, because on the push path it holds the rest of the OLD
-  # script.
+  # script. The new copy removes its temp file as its first act.
   #
   # Fence: `tests/unit/test_deploy_reexec.py`. It runs an old copy against a
   # merge that adds a step, and it fails unless that step runs exactly once.
