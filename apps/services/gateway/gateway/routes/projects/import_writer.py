@@ -82,6 +82,7 @@ from gateway.routes.projects.importer.plan import (
     ImportMapping,
     build_plan,
     choose,
+    imported_name,
     resolve_people,
     resolve_statuses,
 )
@@ -802,12 +803,19 @@ async def _reuse_statuses(
             have.append([name.lower(), renamed, by_id[renamed][1]])
             continue
         if name.lower() in reserved:
-            # The plan renames such a target, so only a lane made since the
-            # plan's read reaches here. Stop with the reason, before any task.
-            raise ImportRefused(
-                f'"{name}" is now the name of the intake lane in this space. '
-                "Upload the file again to plan the import with it."
-            )
+            # THIS set holds an intake lane with this name. The plan cannot
+            # see every such set: a List that owns its set, or one space of
+            # several with one name. So the writer applies the plan's rule in
+            # this set: the tasks go to "<name> (imported)" here, and the
+            # target's name stays an alias of it, for `_status_for`. A run
+            # never stops on it, and no task reaches the pen (§6.3).
+            alias = imported_name(name)
+            lane = next((e for e in have if e[0] == alias.lower()), None)
+            if lane is None:
+                await add(alias, category)
+                lane = have[-1]
+            have.append([name.lower(), lane[1], lane[2]])
+            continue
         await add(name, category)
     if not any(c == "done" for _, _, c in have):
         taken = {n for n, _, _ in have} | reserved

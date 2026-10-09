@@ -76,6 +76,14 @@ MAX_CHOICE = 500
 #: What a target takes when an intake lane holds its name (§6.3, P1-b).
 IMPORTED = " (imported)"
 
+
+def imported_name(name: str) -> str:
+    """The name a target takes beside an intake lane of the same name. The
+    plan proposes it, and the writer places into it in each set that holds
+    such a lane, so both spell it one way (§6.3)."""
+    return f"{name[: MAX_STATUS - len(IMPORTED)]}{IMPORTED}"
+
+
 #: One status of a target set: its name and its stage.
 StatusTarget = tuple[str, Category]
 
@@ -493,7 +501,7 @@ def _statuses(
     def off_the_pen(name: str) -> str:
         name = moved.get(_fold(name), name)
         if _fold(name) in pen and _fold(name) not in held:
-            return f"{name[: MAX_STATUS - len(IMPORTED)]}{IMPORTED}"
+            return imported_name(name)
         return name
 
     tasks: Counter[str] = Counter()
