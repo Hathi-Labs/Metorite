@@ -140,6 +140,11 @@ export interface ImportPlan {
   warnings: PlanWarning[];
   losses: PlanLoss[];
   people: PlanPerson[];
+  /**
+   * Every member the people step may choose, in full (`plan._members`).
+   * Absent on a run planned before 2026-10-09.
+   */
+  members?: { email: string; name: string }[];
   statuses: PlanStatus[];
   closed_tasks: number;
   completed_at_estimated: number;
@@ -549,6 +554,29 @@ export function unmatchedPeopleNote(people: readonly PlanPerson[], chosen: Recor
     `${tasks === 1 ? "assignment waits" : "assignments wait"}. Add them in People, then upload the same export ` +
     "again: their tasks are assigned, unless a member has changed them."
   );
+}
+
+/**
+ * The choices for one person on the people step: "Leave unassigned", then
+ * every member. The list comes from the plan, which holds the same set the
+ * server accepts. `fallback` serves a run planned before the plan carried it.
+ * A member chosen earlier who has left the list stays visible, so the
+ * control never shows a value it cannot name.
+ */
+export function memberOptions(
+  plan: Pick<ImportPlan, "members"> | null | undefined,
+  fallback: readonly SelectOption[],
+  person: Pick<PlanPerson, "member">,
+  unassigned: string,
+): SelectOption[] {
+  const listed: SelectOption[] = plan?.members
+    ? plan.members.map((m) => ({ value: m.email, label: m.name || m.email, hint: m.email }))
+    : [...fallback];
+  const options: SelectOption[] = [{ value: unassigned, label: "Leave unassigned" }, ...listed];
+  if (person.member && !options.some((o) => o.value === person.member)) {
+    options.push({ value: person.member, label: person.member });
+  }
+  return options;
 }
 
 /** How the people step says where a proposal came from. */

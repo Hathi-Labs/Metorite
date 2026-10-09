@@ -144,6 +144,23 @@ def test_people_match_by_email_first_then_by_one_exact_name() -> None:
     assert people["dee@acme.test"]["match"] == "email"
 
 
+def test_the_plan_offers_EVERY_member_to_the_picker() -> None:
+    """Owner report, 2026-10-08: the picker offered 8 of 20 members.
+
+    It read the assignee search, which caps at 8. The plan now carries the
+    whole directory, which is the same set ``_people`` accepts as a choice.
+    """
+    b = _small(_row("a", assignees="[Nobody Here]"))
+    directory = {f"m{i:02d}@acme.test": f"Member {i:02d}" for i in range(20)}
+    directory["noname@acme.test"] = ""
+    members = build_plan(b, ImportMapping(), directory)["members"]
+    assert len(members) == 21
+    assert {m["email"] for m in members} == set(directory)
+    # By name. A member with no name shows the address, and sorts by it.
+    assert [m["name"] for m in members[:2]] == ["Member 00", "Member 01"]
+    assert {"email": "noname@acme.test", "name": "noname@acme.test"} in members
+
+
 def test_the_admin_can_clear_or_change_a_match() -> None:
     b = _small(_row("a", assignees="[Ann Lee]"))
     directory = {"ann@acme.test": "Ann Lee", "zed@acme.test": "Zed"}

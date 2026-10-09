@@ -278,6 +278,11 @@ def build_plan(
         "warnings": [w.model_dump() for w in bundle.warnings],
         "losses": [loss.model_dump() for loss in bundle.losses],
         "people": people,
+        # Every member the people step may choose, IN FULL. It is the same
+        # set `_people` accepts, so the picker cannot offer a member the plan
+        # then refuses. The assignee search caps at 8 (`assignees.MAX_PEOPLE`)
+        # and was the picker's source until 2026-10-09.
+        "members": _members(directory),
         "statuses": statuses,
         "tree": tree,
         "columns": columns,
@@ -308,6 +313,13 @@ def build_plan(
         "errors": errors,
         "ready": not errors,
     }
+
+
+def _members(directory: dict[str, str]) -> list[dict[str, str]]:
+    """The directory as picker rows, by name and then by address."""
+    rows = [{"email": email, "name": name or email} for email, name in directory.items()]
+    rows.sort(key=lambda r: (r["name"].lower(), r["email"]))
+    return rows
 
 
 def _people(
