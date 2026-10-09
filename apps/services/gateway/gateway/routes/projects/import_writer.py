@@ -91,7 +91,7 @@ from gateway.routes.projects.tags import (
     load_registry,
     normalise_tag,
 )
-from gateway.routes.projects.tree import _seed_root
+from gateway.routes.projects.tree import _SEED_STATUSES, _seed_root
 from gateway.routes.projects.watchers import ensure_watchers
 from sqlalchemy import text
 
@@ -200,7 +200,8 @@ REMOVE_ASSIGNEES_SQL = (
 #: them (see :func:`_earlier_nodes`).
 EARLIER_NODES_SQL = (
     "SELECT id, files, mapping->'target' AS target, mapping->>'grant' AS grant_subject, "
-    "       progress->'node_ids' AS node_ids, progress->'statuses' AS statuses "
+    "       progress->'node_ids' AS node_ids, progress->'statuses' AS statuses, "
+    "       progress->'status_names' AS status_names "
     "  FROM pm_import_runs "
     " WHERE organization_id = CAST(:org AS uuid) AND source = :source "
     "   AND id <> CAST(:id AS uuid) AND progress ? 'node_ids' "
@@ -222,9 +223,13 @@ LIVE_NODES_SQL = (
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:ids AS uuid[])) "
     "   AND archived_at IS NULL"
 )
+#: The default status first (I-10, §6.3): a task with no status lands in the
+#: first status of the set, and that must be the set's default, Backlog in
+#: the seed.
 STATUSES_OF_SQL = (
     "SELECT id, name, category, position FROM pm_task_statuses "
-    " WHERE project_id = CAST(:project AS uuid) ORDER BY position"
+    " WHERE project_id = CAST(:project AS uuid) "
+    " ORDER BY coalesce(is_default, false) DESC, position"
 )
 TYPES_SQL = (
     "SELECT id, name, coalesce(is_epic, false) AS is_epic FROM pm_task_types "
@@ -307,12 +312,18 @@ async def apply_run(
         row.source, imports._read_files(organization_id, run_id, imports._json(row.files))
     )
 
+    hashes = [str(f.get("sha256")) for f in (imports._json(row.files) or [])]
+
     # Re-check the plan against the database as it is NOW. A member mapped at
     # the dry run may have left since, and a target space may have moved.
+    # I-10: the facts also hold the target set and the continuation, read
+    # with this run's own id, so a resume reads them the same way.
     async def read_facts() -> dict[str, Any]:
         async with _tenant_session(organization_id) as db:
             vis = await resolve_visibility_for(db, admin)
-            return await imports._facts(db, bundle, mapping, vis, organization_id)
+            return await imports._facts(
+                db, bundle, mapping, vis, organization_id, run_id=run_id, file_hashes=hashes
+            )
 
     facts = await _retrying("facts", run_id, read_facts)
     plan = build_plan(bundle, mapping, **facts)
@@ -322,10 +333,15 @@ async def apply_run(
     # read it through the same `choose`, so the write matches what it showed.
     bundle = choose(bundle, mapping)
     people = resolve_people(bundle, mapping, facts["directory"])
-    final = resolve_statuses(bundle, mapping)
+    final = resolve_statuses(
+        bundle,
+        mapping,
+        facts["target_statuses"],
+        facts["continues"],
+        facts["earlier_names"],
+    )
 
     if not progress.get("nodes"):
-        hashes = [str(f.get("sha256")) for f in (imports._json(row.files) or [])]
         progress = await _retrying(
             "nodes",
             run_id,
@@ -410,28 +426,46 @@ async def _write_nodes(
     base: dict[str, Any],
     file_hashes: list[str],
 ) -> dict[str, Any]:
-    """Batch 0 — the node tree and each project's status set, in ONE
-    transaction with the progress row. A node an earlier run of THIS export
-    wrote, for the same target and grant, is reused (§6.9)."""
+    """Batch 0 — the node tree and the status sets, in ONE transaction with
+    the progress row. A node an earlier run of THIS export wrote, for the
+    same target and grant, is reused (§6.9).
+
+    I-10 (§6.3): ONE status set per space. A space owns its set, and every
+    folder and List this run creates sets ``owns_statuses = false``, so it
+    uses the set of the space above it. A List an earlier run made keeps the
+    set it has. Each List's needs go into the set it uses through
+    :func:`_reuse_statuses`, the ONLY insert path for a status here."""
     specs, home = build_nodes(bundle, mapping.target)
-    statuses, done_refs = project_statuses(bundle, final)
-    # Only a project this run CREATES gains the Done. A reused one got it from
-    # the run that made it; a lane added there shows in `lanes_added`.
-    done_added = 0
+    wanted = project_statuses(bundle, final)
     node_ids: dict[str, str] = {}
     root_of: dict[str, str] = {}
     status_ids: dict[str, list[list[str]]] = {}
     counts = {"spaces": 0, "folders": 0, "projects": 0, "reused": 0}
+    # Lanes added to a set this run did not create, and the sets that gained
+    # a Done by D79. The names a run adds to its own new space count in neither.
     lanes_added: list[str] = []
+    done_sets: set[str] = set()
     # The nodes THIS run makes, parents first. Discard (I-6) deletes these and
     # never a reused one, so the list is the whole of what it may remove.
     created_nodes: list[str] = []
     label = SOURCE_LABEL.get(bundle.source, bundle.source)
 
     async with _tenant_session(organization_id) as db:
-        reusable, continued, earlier_status = await _earlier_nodes(
+        reusable, continued, earlier_status, _names = await _earlier_nodes(
             db, organization_id, run_id, bundle, mapping, file_hashes
         )
+
+        async def statuses_for(ref: str) -> list[list[str]]:
+            return await _reuse_statuses(
+                db,
+                node_ids[ref],
+                wanted.get(ref, []),
+                earlier_status.get(ref),
+                added=lanes_added,
+                fresh=set(created_nodes),
+                done_sets=done_sets,
+            )
+
         grant_checked = False
         for spec in specs:
             if spec.existing_id:
@@ -448,13 +482,7 @@ async def _write_nodes(
                 root_of[spec.ref] = root_of[spec.parent_ref] if spec.parent_ref else candidate[0]
                 counts["reused"] += 1
                 if spec.kind == "project":
-                    status_ids[spec.ref] = await _reuse_statuses(
-                        db,
-                        node_ids[spec.ref],
-                        statuses.get(spec.ref, []),
-                        earlier_status.get(spec.ref),
-                        added=lanes_added,
-                    )
+                    status_ids[spec.ref] = await statuses_for(spec.ref)
                 continue
             if spec.kind == "space" and not grant_checked:
                 await _check_grant(db, organization_id, mapping.grant)
@@ -467,9 +495,10 @@ async def _write_nodes(
                     "organization_id": organization_id,
                     "parent_project_id": parent,
                     "kind": "folder" if spec.kind == "folder" else "project",
-                    # A space and a project own a status set; a folder never holds
-                    # tasks, so it inherits (migration 196).
-                    "owns_statuses": spec.kind != "folder",
+                    # I-10: only a space owns a status set (a root must, by
+                    # migration 196's CHECK). A folder and a List use the
+                    # space's set, so one space has one set.
+                    "owns_statuses": spec.kind == "space",
                     "source": "import",
                     "created_by": admin,
                 },
@@ -502,32 +531,20 @@ async def _write_nodes(
                 counts["folders"] += 1
             else:
                 counts["projects"] += 1
-                done_added += spec.ref in done_refs
-                ids = []
-                for position, (name, category) in enumerate(statuses.get(spec.ref, []), start=1):
-                    status = await insert_row(
-                        db,
-                        "pm_task_statuses",
-                        {
-                            "project_id": node_id,
-                            "name": name,
-                            "color": STAGE_COLOR[category],
-                            "position": position * 10,
-                            "category": category,
-                            "is_default": position == 1,
-                        },
-                    )
-                    ids.append([name.lower(), str(status.id), category])
-                status_ids[spec.ref] = ids
+                # Each List's entry is the set it uses: the space's.
+                status_ids[spec.ref] = await statuses_for(spec.ref)
         progress = {
             **base,
             "nodes": {ref: node_ids[node] for ref, node in home.items()},
             "roots": {ref: root_of[node] for ref, node in home.items()},
             "node_ids": node_ids,
             "statuses": status_ids,
+            # I-10: the status each source name became. A later run that
+            # continues this tree keeps these names (§6.3, continuity).
+            "status_names": {name: list(target) for name, target in final.items()},
             "created": counts,
             "continued_from": sorted(continued),
-            "done_status_added": done_added,
+            "done_status_added": len(done_sets),
             "lanes_added": len(lanes_added),
             "created_nodes": created_nodes,
             "cursor": 0,
@@ -547,10 +564,28 @@ async def continues_earlier(
     """Will this run go into an earlier import's tree? The plan asks, so the
     wizard can say so before any write (I-4). It is the writer's OWN rule,
     read-only: a second copy of the rule is how the note would start to lie."""
-    nodes, _continued, _statuses = await _earlier_nodes(
+    nodes, _continued, _statuses, _names = await _earlier_nodes(
         db, organization_id, run_id, bundle, mapping, file_hashes
     )
     return bool(nodes)
+
+
+async def earlier_status_names(
+    db: Any,
+    organization_id: str,
+    run_id: str,
+    bundle: ImportBundle,
+    mapping: ImportMapping,
+    file_hashes: list[str],
+) -> dict[str, tuple[str, str]]:
+    """``source status name → (Metorite name, stage)``, as the runs this one
+    continues recorded it (I-10, §6.3). A run that continues keeps those
+    names. A run written before I-10 recorded none, and its names were the
+    source names, so the plan then keeps the source name."""
+    _nodes, _continued, _statuses, names = await _earlier_nodes(
+        db, organization_id, run_id, bundle, mapping, file_hashes
+    )
+    return names
 
 
 async def _earlier_nodes(
@@ -560,11 +595,18 @@ async def _earlier_nodes(
     bundle: ImportBundle,
     mapping: ImportMapping,
     file_hashes: list[str],
-) -> tuple[dict[str, tuple[str, str | None]], set[str], dict[str, dict[str, str]]]:
+) -> tuple[
+    dict[str, tuple[str, str | None]],
+    set[str],
+    dict[str, dict[str, str]],
+    dict[str, tuple[str, str]],
+]:
     """``spec ref → (node id, its parent now)`` for the nodes this run may
     reuse, the ids of the runs it continues, and ``project ref → {status name
-    → status id}`` as those runs recorded it. The last lets a status a member
-    RENAMED since keep its tasks, instead of coming back as a new lane.
+    → status id}`` as those runs recorded it. The third lets a status a member
+    RENAMED since keep its tasks, instead of coming back as a new lane. The
+    fourth is ``source status name → (Metorite name, stage)`` from the newest
+    of those runs that recorded it (I-10).
 
     A run CONTINUES an earlier one only when all of these hold:
 
@@ -602,6 +644,7 @@ async def _earlier_nodes(
     found: dict[str, str] = {}
     continued: set[str] = set()
     earlier_status: dict[str, dict[str, str]] = {}
+    earlier_names: dict[str, tuple[str, str]] = {}
     for row in (
         await db.execute(
             text(EARLIER_NODES_SQL),
@@ -628,8 +671,12 @@ async def _earlier_nodes(
             names = earlier_status.setdefault(ref, {})
             for entry in entries:
                 names.setdefault(str(entry[0]), str(entry[1]))
+        # Newest first, so the newest run that recorded a name wins.
+        for source_name, target in (_json(row.status_names) or {}).items():
+            if isinstance(target, list) and len(target) == 2 and target[1] in STAGE_ORDER:
+                earlier_names.setdefault(str(source_name), (str(target[0]), str(target[1])))
     if not found:
-        return {}, continued, earlier_status
+        return {}, continued, earlier_status, earlier_names
     alive = {
         str(r.id): (str(r.parent_project_id) if r.parent_project_id else None)
         for r in (
@@ -640,7 +687,7 @@ async def _earlier_nodes(
         ).fetchall()
     }
     reusable = {ref: (node, alive[node]) for ref, node in found.items() if node in alive}
-    return reusable, continued, earlier_status
+    return reusable, continued, earlier_status, earlier_names
 
 
 async def _reuse_statuses(
@@ -649,28 +696,34 @@ async def _reuse_statuses(
     wanted: list[tuple[str, Any]],
     earlier: dict[str, str] | None = None,
     added: list[str] | None = None,
+    fresh: set[str] | None = None,
+    done_sets: set[str] | None = None,
 ) -> list[list[str]]:
-    """The status set a reused project uses, plus any name this run needs that
-    it lacks. The set is the one its status OWNER holds (migration 196), which
-    is the project itself unless somebody set it to inherit.
+    """The status set a project uses, plus any name this run needs that it
+    lacks. The set is the one its status OWNER holds (migration 196): the
+    space above a List this run creates (I-10), or the List itself when an
+    earlier run made it with a set of its own.
+
+    ⚠️ **The ONE way the writer adds a status to a set** (I-10, §6.3). It
+    matches names case-blind and reads the set again on every call.
+    ``pm_task_statuses`` holds ``UNIQUE (project_id, name)`` WITH case, so a
+    second insert loop after ``_seed_root`` would collide with the seed's
+    "Done", and a constraint error is not retried.
 
     A name the set already holds keeps ITS stage. The task then takes that
     stage, and so does its completion date, so the lane and the date agree.
-    A new name goes in after the last status of its own stage or an earlier one."""
+    A new name goes in after the last status of its own stage or an earlier
+    one. **D79, per set:** a set that then holds no done-stage status gains
+    "Done", and ``done_sets`` records its owner. A lane added to a set whose
+    owner is not in ``fresh`` (the nodes this run created) joins ``added``."""
     owner = await status_owner_id(db, project_id)
     rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
     have = [[str(r.name).lower(), str(r.id), str(r.category)] for r in rows]
     positions = [(STAGE_ORDER.get(str(r.category), 2), int(r.position or 0)) for r in rows]
     by_id = {status_id: (n, c) for n, status_id, c in have}
-    for name, category in sorted(wanted, key=lambda nc: STAGE_ORDER[nc[1]]):
-        if name.lower() in {n for n, _, _ in have}:
-            continue
-        # A member renamed the lane an earlier run made for this name: keep
-        # using that lane, under the source's name, with its own stage.
-        renamed = (earlier or {}).get(name.lower())
-        if renamed in by_id:
-            have.append([name.lower(), renamed, by_id[renamed][1]])
-            continue
+    needs = sorted(wanted, key=lambda nc: STAGE_ORDER[nc[1]])
+
+    async def add(name: str, category: str) -> None:
         stage = STAGE_ORDER[category]
         position = max((pos for st, pos in positions if st <= stage), default=0) + 1
         status = await insert_row(
@@ -687,10 +740,46 @@ async def _reuse_statuses(
         )
         have.append([name.lower(), str(status.id), category])
         positions.append((stage, position))
-        if added is not None:
+        if added is not None and owner not in (fresh or set()):
             # A lane in a set this run did not create: the report names it.
             added.append(name)
+
+    for name, category in needs:
+        if name.lower() in {n for n, _, _ in have}:
+            continue
+        # A member renamed the lane an earlier run made for this name: keep
+        # using that lane, under the source's name, with its own stage.
+        renamed = (earlier or {}).get(name.lower())
+        if renamed in by_id:
+            have.append([name.lower(), renamed, by_id[renamed][1]])
+            continue
+        await add(name, category)
+    if not any(c == "done" for _, _, c in have):
+        await add("Done" if "done" not in {n for n, _, _ in have} else "Done (imported)", "done")
+        if done_sets is not None:
+            done_sets.add(owner)
     return have
+
+
+async def target_statuses(
+    db: Any, mapping: ImportMapping, target_ok: bool = True
+) -> list[tuple[str, str]]:
+    """The status set a run writes into, as ``(name, stage)`` in its order
+    (I-10, §6.3). A new space starts with the root seed of ``_seed_root``. An
+    existing space uses the set of its status owner. The plan reads it as a
+    fact, so a second copy of the seed cannot drift from the one written."""
+    target = mapping.target
+    if target.kind != "existing":
+        return [(name, category) for name, _color, _pos, category, _default in _SEED_STATUSES]
+    if not (target.project_id and target_ok):
+        return []
+    try:
+        owner = await status_owner_id(db, target.project_id)
+    except HTTPException:
+        return []
+    rows = (await db.execute(text(STATUSES_OF_SQL), {"project": owner})).fetchall()
+    # A triage lane is no stage a source status can land in.
+    return [(str(r.name), str(r.category)) for r in rows if str(r.category) in STAGE_ORDER]
 
 
 async def _check_grant(db: Any, organization_id: str, grant: str) -> None:

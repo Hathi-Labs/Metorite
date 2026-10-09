@@ -122,39 +122,25 @@ def _file_name(container: Any) -> str:
 
 def project_statuses(
     bundle: ImportBundle, final: dict[str, tuple[str, Category]]
-) -> tuple[dict[str, list[tuple[str, Category]]], set[str]]:
-    """Each project's status set (§6.3), and the projects that got a Done
-    added (D79). A set, not a count: the writer reports only the projects it
-    creates, because a reused one already holds its Done.
+) -> dict[str, list[tuple[str, Category]]]:
+    """The statuses each project's tasks use (§6.3): the Metorite names, one
+    per name case-blind, ordered by stage and then by first sight.
 
-    The set is the Metorite names the project's tasks use, one per name
-    case-blind, ordered by stage and then by first sight. A set with no Done
-    stage gets "Done". A project with no status at all gets "To do" and "Done",
-    so it can take a task."""
+    I-10: this is what a project NEEDS from the set it uses, not a set of its
+    own. The writer adds the missing names to that set through
+    ``import_writer._reuse_statuses``, and D79 applies once per SET there. So
+    no Done is added here, and a project with no status needs nothing."""
     used: dict[str, list[tuple[str, Category]]] = {}
     for task in bundle.tasks:
+        names = used.setdefault(task.container_ref, [])
         if task.status_name is None:
-            used.setdefault(task.container_ref, [])
             continue
         name, category = final[task.status_name]
-        names = used.setdefault(task.container_ref, [])
         if name.lower() not in {n.lower() for n, _ in names}:
             names.append((name, category))
     for project in (c for c in bundle.containers if c.kind == "project"):
         used.setdefault(project.ref, [])
-
-    added: set[str] = set()
-    out: dict[str, list[tuple[str, Category]]] = {}
-    for ref, names in used.items():
-        ordered = sorted(names, key=lambda nc: STAGE_ORDER[nc[1]])
-        if not ordered:
-            ordered = [("To do", "todo")]
-        if not any(c == "done" for _, c in ordered):
-            name = "Done" if "done" not in {n.lower() for n, _ in ordered} else "Done (imported)"
-            ordered.append((name, "done"))
-            added.add(ref)
-        out[ref] = ordered
-    return out, added
+    return {ref: sorted(names, key=lambda nc: STAGE_ORDER[nc[1]]) for ref, names in used.items()}
 
 
 def order_tasks(bundle: ImportBundle) -> list[Task]:

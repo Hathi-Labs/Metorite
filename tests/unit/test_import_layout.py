@@ -86,13 +86,20 @@ def _only_space(raw: bytes, space: str) -> bytes:
 # ── §6.3 statuses ───────────────────────────────────────────────────────────
 
 
-def test_every_project_gets_a_done_status_and_seven_needed_one(bundle: ImportBundle) -> None:
-    final = resolve_statuses(bundle, ImportMapping())
-    sets, added = project_statuses(bundle, final)
-    assert len(added) == 7 and added <= set(sets)
+def test_each_project_needs_its_tasks_statuses_and_gains_no_done_of_its_own(
+    bundle: ImportBundle,
+) -> None:
+    """I-10: a List uses the space's set, so it needs only the names its
+    tasks use. D79 applies once per SET, in the writer, so no Done is added
+    here. Before I-10, 7 Lists each gained a Done of their own."""
+    seed = [("Backlog", "backlog"), ("To do", "todo"), ("In progress", "in_progress")]
+    final = resolve_statuses(bundle, ImportMapping(), [*seed, ("Done", "done")])
+    sets = project_statuses(bundle, final)
     assert len(sets) == 48
+    used = {name for names in sets.values() for name, _ in names}
+    assert used == {"Backlog", "To do", "In progress", "Review", "On hold", "Done"}
+    assert sum(1 for names in sets.values() if not any(c == "done" for _, c in names)) == 7
     for names in sets.values():
-        assert any(c == "done" for _, c in names)
         stages = [c for _, c in names]
         assert stages == sorted(
             stages, key=["backlog", "todo", "in_progress", "done", "cancelled"].index
@@ -110,8 +117,7 @@ def test_merged_spellings_become_one_status() -> None:
         ],
     )
     final = {"to do": ("To do", "todo"), "todo": ("To do", "todo")}
-    sets, _ = project_statuses(b, final)
-    assert sets["p"] == [("To do", "todo"), ("Done", "done")]
+    assert project_statuses(b, final)["p"] == [("To do", "todo")]
 
 
 # ── ordering and fields ─────────────────────────────────────────────────────
