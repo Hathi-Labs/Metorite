@@ -667,6 +667,9 @@ built. Each one checks its feature, then calls the app's own read:
 ⚠️ **My Tasks needs `feature:projects`, not `feature:tasks`.** The lens
 routes are on the Projects router, and that router demands `projects`.
 
+**A Someday task never shows in the feed, also with a due date, but a Waiting
+task does.** The provider reads the disposition that the lens sets on each row.
+
 **Approvals is slice C, and it waits on H-201.** Until then the feed has no
 `approvals` source.
 

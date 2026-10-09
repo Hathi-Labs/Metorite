@@ -35,6 +35,9 @@ email      ``feature:email``     ``email.transport.accounts.list_accounts``,
 routes live on the Projects router, and that router demands ``projects``.
 The ``tasks`` feature only shows the pane.
 
+⚠️ **A Someday task is left out, even with a due date** (``HIDDEN_DISPOSITIONS``).
+A WAITING task stays.
+
 ⚠️ **A separate mailbox is left out** (D-EM-30). The feed reads more than one
 mailbox, and a mailbox that the member keeps separate leaves every such read.
 
@@ -99,6 +102,14 @@ TASK_PAGES = 3
 #: Threads each mailbox gives. The route lists the newest first, and the
 #: feed shows the oldest first, so the provider asks for more than it shows.
 EMAIL_FETCH = 50
+
+#: The lens dispositions that never reach the feed, even with a due date.
+#: Someday is the member's deliberate "not now", and a nag about it teaches
+#: people to stop using Someday. WAITING stays: an overdue waiting-for is a
+#: cue to chase someone. `my_inbox` filters to ONE disposition and cannot
+#: leave one out, so the provider narrows the lens's own rows by the
+#: effective ``disposition`` the lens sets on each.
+HIDDEN_DISPOSITIONS = frozenset({"SOMEDAY"})
 
 #: The order of the feed, by kind (§7.2 contract).
 KIND_ORDER = {"overdue": 0, "due_today": 1, "notification": 2, "needs_reply": 3}
@@ -171,6 +182,8 @@ async def _tasks(user: UserContext) -> list[Item]:
         due = _instant(task.get("due_at"))
         if due is None or task.get("completed_at"):
             continue
+        if task.get("disposition") in HIDDEN_DISPOSITIONS:
+            continue  # Someday is "not now", see HIDDEN_DISPOSITIONS
         if due < now:
             kind, bucket = "overdue", overdue
         elif due.astimezone(zone).date() == today:

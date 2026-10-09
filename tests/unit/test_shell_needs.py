@@ -261,6 +261,17 @@ class TestTheAnswer:
         got = ids(run(member(*ALL)))
         assert "tasks:t-next" not in got and "tasks:t-none" not in got
 
+    def test_a_someday_task_is_not_a_need_and_a_waiting_one_is(self, fakes):
+        # Someday is the member's deliberate "not now". An overdue
+        # waiting-for is a cue to chase someone, so it stays.
+        someday = _task("t-someday", "Learn the cello", NOW - timedelta(days=2))
+        waiting = _task("t-waiting", "Quote from Priya", NOW - timedelta(days=2))
+        someday["disposition"], waiting["disposition"] = "SOMEDAY", "WAITING"
+        fakes.tasks[ME] += [someday, waiting]
+        got = ids(run(member(*ALL)))
+        assert "tasks:t-someday" not in got
+        assert "tasks:t-waiting" in got
+
     def test_the_shape_of_each_kind(self, fakes):
         rows = {i["id"]: i for i in run(member(*ALL))["items"]}
         assert rows["tasks:t-old"] == {
