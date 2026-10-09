@@ -474,7 +474,12 @@ ROUTE_SHORT = "short"
 #: that a ``no_egress`` run sends to ``tier-decide`` (owner, 2026-10-09).
 #: The owner allows typed questions with SHORT summaries. A longer item is
 #: free-form work, and it stays on ``tier-fast``, our own chat tier.
-NO_EGRESS_CONTEXT_MAX = 1500
+#:
+#: The context bound is 500 characters, about two sentences (owner,
+#: 2026-10-09, after the review of #760). The model writes the context of the
+#: ``decide`` tool, and the bound checks length, not content. So 500 is the
+#: most raw member text that can leave a ``no_egress`` run this way.
+NO_EGRESS_CONTEXT_MAX = 500
 NO_EGRESS_QUESTION_MAX = 400
 NO_EGRESS_OPTION_MAX = 120
 

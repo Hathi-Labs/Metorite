@@ -34,8 +34,13 @@ Mutations this file catches (R7), each run red before the change:
   ``test_a_hinted_tool_keeps_the_turn_tier_and_is_logged``;
 * the hint stops being logged -> ``test_a_hint_is_logged_as_ignored`` and
   ``test_a_hinted_tool_keeps_the_turn_tier_and_is_logged``;
-* Thinking moves the tier of a ``chat`` turn ->
-  ``test_thinking_moves_no_tier``;
+* Thinking stops starting a ``chat`` turn one rung up, Auto starts it up,
+  or Max moves (owner, 2026-10-09, after #760) ->
+  ``test_thinking_starts_a_chat_turn_one_rung_up``,
+  ``test_auto_keeps_the_default`` and
+  ``test_max_sends_every_main_request_to_powerful``;
+* Thinking lowers a turn that already starts higher ->
+  ``test_thinking_takes_the_higher_of_the_two``;
 * Max stops sending every main request to ``tier-powerful``, or moves a
   System-1 call -> ``test_max_sends_every_main_request_to_powerful_and_decide_stays_fast``;
 * the turn-kind question goes out for a short message, waits past 1.5 s, or
@@ -247,14 +252,32 @@ class TestChoose:
             c = tier_policy.choose(default="tier-fast", kind=kind, effort="max")
             assert (c.tier, c.reason) == ("tier-powerful", "effort")
 
-    def test_thinking_moves_no_tier(self) -> None:
-        """Owner, 2026-10-09. D90 gave Thinking one rung up after a hinted
-        tool. Hints no longer move a request, so Thinking keeps the kind's
-        tier for the whole turn. It still sets the reasoning effort."""
-        for kind in tier_policy.TURN_KINDS:
-            auto = tier_policy.choose(default="tier-balanced", kind=kind, effort="auto")
-            think = tier_policy.choose(default="tier-balanced", kind=kind, effort="thinking")
-            assert (think.tier, think.reason) == (auto.tier, auto.reason), kind
+    def test_thinking_starts_a_chat_turn_one_rung_up(self) -> None:
+        """Owner, 2026-10-09 (after #760). A Thinking ``chat`` turn starts
+        one rung above the agent's default, and keeps it for the turn."""
+        for default, up in (("tier-fast", "tier-balanced"),
+                            ("tier-balanced", "tier-powerful"),
+                            ("tier-powerful", "tier-powerful")):
+            c = tier_policy.choose(default=default, kind="chat", effort="thinking")
+            assert c.tier == up, default
+        c = tier_policy.choose(default="tier-fast", kind="chat", effort="thinking")
+        assert c.reason == "effort"
+        policy = tier_policy.RunTierPolicy(
+            agent=PA, run_id="r", default="tier-fast", kind="chat", effort="thinking",
+        )
+        policy.note_tool("find_conflicts")
+        assert [policy.next_choice().tier for _ in range(3)] == ["tier-balanced"] * 3
+
+    def test_auto_keeps_the_default(self) -> None:
+        for default in ("tier-fast", "tier-balanced"):
+            c = tier_policy.choose(default=default, kind="chat", effort="auto")
+            assert (c.tier, c.reason) == (default, "default")
+
+    def test_thinking_takes_the_higher_of_the_two(self) -> None:
+        """A ``plan``, ``analysis`` or ``code`` turn already starts higher."""
+        for kind in ("code", "plan", "analysis"):
+            c = tier_policy.choose(default="tier-fast", kind=kind, effort="thinking")
+            assert (c.tier, c.reason) == ("tier-powerful", "turn_kind"), kind
 
     def test_the_run_policy_keeps_one_tier_for_the_turn(self) -> None:
         """Owner, 2026-10-09: one model per turn. A hinted tool does not

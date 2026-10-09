@@ -636,9 +636,12 @@ output and writes the answer, so it is the step that needs the stronger model.
 > - `TOOL_HINTS` stays as the record of the hints. `tool_hint` is no longer a
 >   reason of `ai_route.chosen`.
 > - Max keeps `tier-powerful` for the whole turn, as before.
-> - Thinking moves no tier. Under D90 it moved a request one rung up only
->   after a hinted tool, and a hint no longer moves a request. Thinking still
->   sets `reasoning_effort` to `medium` and the System-1 threshold to 0.80.
+> - Thinking starts the turn one rung above the agent's default, and the
+>   turn keeps that tier. A `plan`, `analysis` or `code` turn may already
+>   start higher, so the turn takes the higher of the two. Thinking also sets
+>   `reasoning_effort` to `medium` and the System-1 threshold to 0.80. *(The
+>   owner chose this on 2026-10-09, after #760. #760 had moved no tier for
+>   Thinking.)*
 > - Why: a switch in the middle of a turn sends the next request to another
 >   model. That model holds no cache of the prompt, so it reads about 45k
 >   tokens again at the full price.
@@ -730,8 +733,14 @@ nudges the policy, and it sets the reasoning effort as today.
 > `src/lib/tierRoutingControls.test.ts`.
 
 > **Amended by the owner, 2026-10-09.** Two lines above change. The Thinking
-> row of the table moves no tier now, because a tool hint no longer moves a
-> request (§4.4). Thinking still sets `reasoning_effort` and the threshold.
+> row of the table now reads: a Thinking turn starts one rung above the
+> agent's default, and keeps that tier for the whole turn (§4.4). For
+> example, `tier-balanced` becomes `tier-powerful`, and `tier-fast` becomes
+> `tier-balanced`. A `plan`, `analysis` or `code` turn takes the higher of
+> the two tiers. A tool hint no longer moves a request. Auto does not change,
+> and Max stays on `tier-powerful`. Thinking still sets `reasoning_effort`
+> and the threshold. Fences: `TestChoose` in `tests/unit/test_tier_policy.py`
+> and `TestARealRun` in `tests/unit/test_tier_policy_effort_from_text.py`.
 > The D93 sentence "A `no_egress` run stays on `tier-fast` too" also changes,
 > and the box in §6.6 gives the new rule.
 
@@ -909,8 +918,8 @@ check below passes. Here is how the System-1 callable passes each one:
 >   decide vendor is already a sub-processor, for email rule matching (D75).
 >   Free-form work stays on our chat tiers.
 > - **The bound.** `decide_tools` sends an item of a `no_egress` run to
->   `tier-decide` only when the context holds at most 1500 characters, the
->   question at most 400 and each option at most 120. A longer item goes to
+>   `tier-decide` only when the context holds at most 500 characters (about
+>   two sentences), the question at most 400 and each option at most 120. A longer item goes to
 >   `tier-fast`. The tool then logs `decide_tool.system_one_fallback` with
 >   the reason `no_egress_not_short`. The turn-kind question always stays on
 >   `tier-fast`.
@@ -920,10 +929,17 @@ check below passes. Here is how the System-1 callable passes each one:
 >   is longer than the bound, so it goes to System 1 and logs
 >   `narrowing.pick_fallback` with the same reason.
 > - ⚠️ **What the bound does not do.** It measures length, not content. The
->   model writes the context of the `decide` tool, so up to 1500 characters
+>   model writes the context of the `decide` tool, so up to 500 characters
 >   of raw member text can reach `tier-decide` while `SYSTEM_ONE_ON_DECIDE`
->   is on. The owner decides whether that is a short summary before that
->   flag goes on. It ships OFF.
+>   is on. The owner accepted this on 2026-10-09: two sentences is a short
+>   summary. The bound was 1500 in #760.
+> - **The Projects choices fit the bound.** A name question sends at most
+>   about 120 characters. A twin context holds clipped titles and task
+>   numbers, so about two pairs fit. The check asks the closest pairs that
+>   fit, and leaves out the rest.
+> - Fences: `test_a_501_character_context_goes_to_tier_fast` and
+>   `test_a_500_character_context_goes_to_tier_decide` in
+>   `tests/unit/test_decide_in_no_egress.py`.
 > - **The switch.** `DECIDE_IN_NO_EGRESS` is the one switch that undoes this,
 >   and it ships ON. With it off, a `no_egress` run sends no decide request,
 >   as before. `decide_tools.decide_in_no_egress` is the one reader, and a
