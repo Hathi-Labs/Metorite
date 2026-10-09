@@ -416,7 +416,8 @@ describe("a hand-off names its agent in words, and shows its task", () => {
       },
       open: true,
     }));
-    expect(html).toContain(said);
+    // The text of the line itself, not only its tooltip.
+    expect(html).toContain(`>${said}<`);
   });
 
   it("draws the owner's step: the agent chip, the whole task once, a toggle, no raw names", () => {
