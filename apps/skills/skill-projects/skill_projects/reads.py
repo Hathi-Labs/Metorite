@@ -768,10 +768,12 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def vocabulary(project_id: str) -> str:
     """The words a project uses: its statuses (with category), task types,
-    tags (with counts) and custom fields. Read this before you set a status,
-    a type, a tag or a field by name, and relay these names to the member
-    instead of inventing one. project_id is any node in the tree; the root
-    project's vocabulary answers."""
+    tags (with counts) and custom fields. Read this before you put a tag on
+    a task, because a tag name the project lacks becomes a new tag. A write
+    finds a status, a type or a field by name itself, and refuses an unknown
+    name with the real ones. Relay these names to the member instead of
+    inventing one. project_id is any node in the tree; the root project's
+    vocabulary answers."""
     pid = uuid_of(project_id, "project_id")
     out = [legend()]
     status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}

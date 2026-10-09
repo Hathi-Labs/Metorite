@@ -1243,7 +1243,7 @@ def genui_refusal(spec: dict) -> str | None:
     """Why the renderer cannot draw ``spec``, or ``None`` when it can.
 
     The check costs no schema tokens: ``ui`` is one JSON string, so the
-    schema cannot hold an enum, and the docstring sits at its ceiling in
+    schema cannot hold an enum, and the docstring has a ceiling in
     ``test_tool_schema_diet.py``. So the refusal names the allowed kinds,
     and the model reads them in the tool result and emits again.
 
@@ -1289,6 +1289,184 @@ def genui_refusal(spec: dict) -> str | None:
     return walk(root, "ui", 0)
 
 
+#: The data shape of each template, the copy that the model reads. Each value
+#: is the ``data`` string of ``TEMPLATE_CATALOG`` in ``genUITemplates.tsx``,
+#: which is the source of truth. ``emit_generative_ui`` returns these on
+#: demand (:func:`genui_guide`), so they cost no schema tokens. Until
+#: 2026-10-09 they sat in the tool's docstring, in every model request of
+#: every run. Fence: ``test_genui_catalog_lockstep.py`` holds this map equal
+#: to the catalog, name for name and shape for shape.
+GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
+    "weatherCard": "{ location, tempC|tempF, condition('sunny'|'cloudy'|'rain'|'snow'|'storm'), highC?, lowC?, humidity?, wind?, forecast?:[{day,condition,high,low}] }",
+    "statDashboard": "{ title?, stats:[{ label, value, unit?, delta?:number, icon?(Lucide name e.g. 'trending-up') }] }",
+    "barChart": "{ title?, unit?, bars:[{ label, value, tone?('primary'|'success'|'warning'|'danger') }] }",
+    "sparkTrend": "{ label, value, unit?, delta?:number, series:number[] }",
+    "comparison": "{ title?, options:[{ name, recommended?:bool, rows:[{ label, value }] }] }",
+    "progressTracker": "{ title?, steps:[{ label, state('done'|'active'|'pending') }] }",
+    "recipeCard": "{ title, description?, servings?, prepMinutes?, cookMinutes?, calories?, ingredients:[{item,amount?}], steps:[string], tags?:[string], tip? }",
+    "flightStatus": "{ airline?, flightNo, status('scheduled'|'boarding'|'departed'|'in-air'|'landed'|'delayed'|'cancelled'), from:{code,city?,time?,terminal?,gate?}, to:{code,city?,time?,terminal?,gate?}, progressPct?, durationMin?, date?, note? }",
+    "trainStatus": "{ operator?, trainNo?, line?, status('scheduled'|'boarding'|'departed'|'arrived'|'delayed'|'cancelled'), from:{station,time?,platform?}, to:{station,time?,platform?}, stops?:[{station,time?,state?('done'|'active'|'pending')}], delayMin?, note? }",
+    "formCard": "{ title?, description?, submitLabel?, fields:[{ name, label, type('text'|'number'|'select'|'slider'|'toggle'|'checkbox'|'date'|'textarea'), placeholder?, value?, required?, options?:[string], min?, max?, step?, unit?, hint? }] }",
+    "optionPicker": "{ title?, description?, multi?:bool, options:[{ id, label, description?, icon?, badge?, recommended?:bool }] }",
+    "timeline": "{ title?, taskId?, total?, rows:[{ id?, at, type, actor, body?, field?, before?, after?, via? }] }",
+    "taskBoard": "{ title?, total?, columns:[{ id?, name, category?, tasks:[{ id, number?, title, assignees?:[string], due?, due_at?, importance?, leveraged?:bool, done?:bool }] }] }",
+    "dataGrid": "{ title?, columns:[string], rows:[{ id?, cells:[string|number] }], openBase? }",
+    "reportCard": "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }] }",
+    "planCard": "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
+})
+
+#: The templates that collect the member's input. Each one pairs with
+#: ``"hitl": true``.
+_GENUI_ASKS = frozenset({"formCard", "optionPicker", "planCard"})
+
+#: The rules of the two code modes, returned on demand (:func:`genui_guide`).
+#: Moved from the tool's docstring on 2026-10-09, word for word.
+GENUI_MODE_GUIDES: Mapping[str, str] = MappingProxyType({
+    "react": """REACT COMPONENT — a real React component for anything genuinely
+INTERACTIVE or stateful: multi-step forms, filterable/sortable tables,
+calculators, live-editable dashboards, small tools. Shape:
+{"type":"react","props":{"code":"<your component source>"}}.
+
+Write ordinary modern React and DEFAULT-EXPORT the component
+(export default function Dashboard() { … }).
+
+• Hooks all work (useState/useEffect/useMemo/useReducer/useRef/context).
+• JSX and TypeScript syntax are both fine — it is compiled for you.
+• PREFER the prebuilt components: import { Report, Stat, Bars } from
+  "@cc/ui". If you hold load_artifact_kit, call load_artifact_kit() for the
+  list and load_artifact_kit("Stat,Bars") for their props.
+• You may import ONLY from @cc/ui, react, and react-dom/client. There is NO
+  network in the sandbox, so no npm packages, no CDNs, no icon libraries.
+  Inline any helpers and seed the data in the file.
+• Anything the kit doesn't cover: fall back to the same cc-* classes and
+  --cc-* tokens as custom HTML.
+• Talk back to the agent with window.ccSubmit("Label", value) (send a value
+  the user set) or window.ccAction("message") (fire a fixed follow-up). Both
+  are available from first mount.
+• Optional props.height (px); omit to auto-size.
+
+If it compiles but the build fails, the tool result carries the compiler
+errors — fix them and emit again.""",
+    "html": """CUSTOM HTML — the escape hatch for bespoke animation/layout or genuinely
+interactive controls no template, tree, or React component covers. Shape:
+{"type":"html","props":{"code":"<div>…</div>"}}. Your HTML/CSS/JS runs in an
+ISOLATED sandbox (its own opaque origin): it cannot reach the app, cookies,
+or the network, so inline everything — NO external CDNs, fonts, or images
+(use data: URIs). Optional props.height (px); omit to auto-size.
+
+DESIGN — follow the Metorite look. The frame pre-defines CSS variables from
+the app's real design tokens; USE THEM instead of hard-coding colors:
+  --cc-primary (blue) · --cc-accent (warm orange) · --cc-fg · --cc-muted
+  · --cc-card · --cc-secondary · --cc-border · --cc-success · --cc-warning
+  · --cc-danger · --cc-radius (0.75rem) · --cc-ease (motion curve).
+Native <button>, <input>, <select>, <textarea> and input[type=range] are
+already styled on-brand (add class cc-primary to a button for the filled
+blue variant; cc-card for a panel). Prefer rem spacing, rounded corners
+(var(--cc-radius)), and subtle transitions (0.2s var(--cc-ease)).
+
+REPORT DESIGN KIT — for a substantial DOCUMENT (analysis, plan, comparison,
+briefing) prefer writing it to an .html file with write_artifact so it opens
+full-page in the side panel, wrapped in <div class="cc-report">. If you hold
+load_design_system, call load_design_system("blocks") for the pre-styled
+block reference.
+
+INTERACTIVITY — two channels back to the agent:
+• data-cc-action="<message>" on a clickable element (or ccAction("…") in
+  script) fires a FIXED follow-up message — like a button.
+• data-cc-submit="<label>" on a button harvests every named control (input,
+  select, textarea) in its enclosing <form> or [data-cc-form] and submits
+  their VALUES back as the user's next message. Or call
+  ccSubmit("Temperature", 22) / ccSubmit({temp:22,unit:"C"}) directly. Use
+  this whenever the user SETS a value, so the agent receives what they
+  chose.""",
+})
+
+
+def genui_catalog(name: str | None = None) -> str:
+    """The data shape of template *name*, or of each template.
+
+    One line per template: ``name — shape``. A template that collects the
+    member's input says that it pairs with ``"hitl": true``. A name that is
+    not a template returns every line.
+    """
+    names = [name] if name in GENUI_TEMPLATE_SHAPES else list(GENUI_TEMPLATE_SHAPES)
+    lines = []
+    for n in names:
+        tail = " — pair it with top-level \"hitl\": true." if n in _GENUI_ASKS else ""
+        lines.append(f"• {n} — {GENUI_TEMPLATE_SHAPES[n]}{tail}")
+    return "\n".join(lines)
+
+
+def _empty(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def genui_guide(spec: dict) -> dict | None:
+    """The guide that *spec* asks for, or ``None`` when it is a card to draw.
+
+    The model reads the catalog on demand, not from the tool's schema. Three
+    shapes of the ROOT node ask, and nothing is drawn for any of them:
+
+    * a template with an empty or unknown name: the shape of each template;
+    * a known template with no ``data`` key, or ``data: null``: its shape.
+      An empty ``{}`` is data and draws as it always did;
+    * a ``react`` or ``html`` node with no ``code``: the rules of that mode.
+
+    The answer is ``ok: False``, so the model never reads it as a drawn card.
+    A child node is never a request, and :func:`genui_refusal` judges it.
+    """
+    root = spec.get("root")
+    if root is None:
+        root = spec.get("view")
+    if root is None:
+        root = spec
+    if not isinstance(root, dict):
+        return None
+    kind = root.get("type")
+    props = root.get("props") if isinstance(root.get("props"), dict) else {}
+    if kind == "template":
+        name = props.get("name")
+        if _empty(name) or (isinstance(name, str) and name not in GENUI_TEMPLATES):
+            return {
+                "ok": False,
+                "drawn": False,
+                "error": (
+                    f"Nothing was drawn: the renderer has no {name!r} template. "
+                    f"Use one of: {', '.join(sorted(GENUI_TEMPLATES))}. Send "
+                    "its data in props.data, in the shape that `templates` gives."
+                ),
+                "templates": genui_catalog(),
+            }
+        if isinstance(name, str) and props.get("data") is None:
+            return {
+                "ok": False,
+                "drawn": False,
+                "error": (
+                    f"Nothing was drawn. Here is the data shape of {name}. "
+                    "Call again with props.data in this shape."
+                ),
+                "shape": genui_catalog(name),
+            }
+        return None
+    # A list or an object is unhashable, and genui_refusal answers it.
+    # The renderer draws ``props.code``, or ``props.html`` for an html node
+    # (``GenerativeUINode.tsx``), so either one is code.
+    code = props.get("code")
+    if code is None and kind == "html":
+        code = props.get("html")
+    if isinstance(kind, str) and kind in GENUI_MODE_GUIDES and _empty(code):
+        return {
+            "ok": False,
+            "drawn": False,
+            "error": (
+                f"Nothing was drawn. Here are the rules of the {kind} mode. "
+                "Call again with props.code."
+            ),
+            "guide": GENUI_MODE_GUIDES[kind],
+        }
+    return None
+
+
 def _warn_fields(warnings: list[str]) -> dict:
     """Lint warnings as result fields — empty dict when the markup is clean."""
     if not warnings:
@@ -1303,200 +1481,48 @@ def _warn_fields(warnings: list[str]) -> dict:
 
 
 async def emit_generative_ui(ui: str) -> dict:
-    """Render a rich, interactive, animated UI element inline in the chat, on the fly.
+    """Draw a card in the chat: a template, a component tree, React or HTML.
 
-    REACH FOR THIS EAGERLY — a well-made UI card beats a paragraph almost every
-    time the answer is data, a status, a comparison, a metric, a choice, or a
-    value the user should set. Default to rendering UI whenever:
-      • you're reporting numbers/metrics/KPIs → statDashboard or barChart
-      • you're describing current state/conditions → weatherCard or a card
-      • you're comparing options → comparison
-      • you're showing progress/steps/a checklist → progressTracker
-      • the user must PICK or SET something → buttons, or a custom-HTML card with
-        a slider / input / select that submits their choice back (see mode 3).
-    Whenever there's a genuine chance to let the user interact — adjust a value,
-    pick an option, confirm a choice — prefer an interactive UI over asking in
-    prose. Do NOT be trivial about it: a one-line factual reply ("yes", "it's
-    42") or a long narrative explanation should stay as text. Use UI when it
-    genuinely clarifies or when interaction is useful — not as decoration.
+    Use it when the answer is numbers, a status, a comparison, steps, or a
+    choice the member makes. Draw at most ONE answer card, after your text.
+    A list of fewer than six items stays a Markdown list. Never draw the
+    result of a read again as a card. A one-line fact or a long narrative
+    stays text. A card stays in the transcript, so never call it temporary.
 
-    A card you emit is PART OF THE TRANSCRIPT — it is persisted with the message
-    and re-renders on later turns, on reload, and on any device. It does not
-    expire and later messages do not close it. Never tell the user inline UI is
-    temporary or offer a file as "something more durable"; if a card is missing
-    from an earlier turn, that is a bug to report, not expected behaviour.
+    ``ui`` is one JSON object. Two top-level keys are optional.
+    ``"surface":"panel"`` opens a big card in the side panel.
+    ``"hitl":true`` pauses the run until the member submits, and returns
+    their values as this call's result. Use it with formCard, optionPicker
+    and planCard. Without it, a click arrives as a new chat message.
 
-    All three modes follow the Metorite design language automatically
-    (blue primary, warm-orange accent, rounded cards, subtle motion). Templates
-    and the component tree are on-brand by construction; custom HTML inherits the
-    real design tokens as CSS variables (see mode 3), so lean on those.
+    Four modes, in this order of preference:
 
-    ``ui`` is a JSON object (string or dict). Two OPTIONAL top-level fields
-    apply to every mode:
+    1. TEMPLATE — ``{"type":"template","props":{"name":<t>,"data":{...}}}``.
+       You give the data, and the design is fixed. Names: weatherCard,
+       statDashboard, barChart, sparkTrend, comparison, progressTracker,
+       recipeCard, flightStatus, trainStatus, formCard, optionPicker,
+       timeline, taskBoard, dataGrid, reportCard, planCard. To get the data
+       shape of a template, call with its name and no ``data``. Nothing is
+       drawn. An empty or unknown name returns the shape of each template.
 
-    • ``"surface"`` — ``"inline"`` (default; a card in the chat transcript) or
-      ``"panel"`` — opens as an IMMERSIVE view in the side panel (like a
-      document), with a compact "open" chip in the transcript. Use ``panel``
-      for big/rich UI: full dashboards, detailed itineraries, long recipes,
-      multi-section forms. Inline cards should stay compact.
-    • ``"hitl": true`` — BLOCKING human-in-the-loop: this tool call PAUSES the
-      run until the user interacts (submits the form / clicks an option /
-      presses a button), and returns their values as this call's result
-      (``{"ok":true,"response":<their answer>}``). Use whenever you need the
-      user's input to continue — a form to fill, an option to pick, a value to
-      set. Without it, clicks arrive as a NEW chat message instead.
+    2. COMPONENT TREE — ``{"type":<kind>,"props":{...},"children":[...]}``.
+       Kinds: card{title?} · stack · row · heading{text} · text{text,muted?}
+       · markdown{text} · badge{text,tone?} · divider ·
+       callout{title?,text?,tone?} · keyValue{pairs:[{key,value}]} ·
+       table{columns:[string],rows:[[cell,...]]} · list{items,ordered?} ·
+       code{text} · link{href,text?} · button{label,action,tone?} ·
+       icon{name} (a Lucide name). A button's ``action`` comes back as the
+       member's next message.
 
-    It supports FOUR modes; prefer them in this order
-    (template → component tree → react → html):
+    3. REACT COMPONENT — ``{"type":"react","props":{"code":...}}``, for an
+       interactive or stateful tool.
 
-    1. NAMED TEMPLATE — pre-designed, animated, on-brand components. You supply
-       ONLY data; the design is fixed and looks great every time. Use first when
-       one fits. Shape: ``{"type":"template","props":{"name":<t>,"data":{...}}}``.
-       Available templates and their ``data`` shapes:
-         • weatherCard — {location, tempC|tempF, condition('sunny'|'cloudy'|
-             'rain'|'snow'|'storm'), highC?, lowC?, humidity?, wind?,
-             forecast?:[{day,condition,high,low}]}
-         • statDashboard — {title?, stats:[{label, value, unit?, delta?:number}]}
-         • barChart — {title?, unit?, bars:[{label, value,
-             tone?('primary'|'success'|'warning'|'danger')}]}
-         • sparkTrend — {label, value, unit?, delta?:number, series:number[]}
-         • comparison — {title?, options:[{name, recommended?:bool,
-             rows:[{label, value}]}]}
-         • progressTracker — {title?, steps:[{label,
-             state('done'|'active'|'pending')}]}
-         • recipeCard — {title, description?, servings?, prepMinutes?,
-             cookMinutes?, calories?, ingredients:[{item, amount?}],
-             steps:[string], tags?:[string], tip?}
-         • flightStatus — {airline?, flightNo, status('scheduled'|'boarding'|
-             'departed'|'in-air'|'landed'|'delayed'|'cancelled'),
-             from:{code,city?,time?,terminal?,gate?},
-             to:{code,city?,time?,terminal?,gate?}, progressPct?, durationMin?,
-             date?, note?}
-         • trainStatus — {operator?, trainNo?, line?, status('scheduled'|
-             'boarding'|'departed'|'arrived'|'delayed'|'cancelled'),
-             from:{station,time?,platform?}, to:{station,time?,platform?},
-             stops?:[{station, time?, state?('done'|'active'|'pending')}],
-             delayMin?, note?}
-         • formCard — {title?, description?, submitLabel?, fields:[{name,
-             label, type('text'|'number'|'select'|'slider'|'toggle'|
-             'checkbox'|'date'|'textarea'), placeholder?, value?, required?,
-             options?:[string], min?/max?/step?/unit? (number|slider)}]}
-             — a schema-driven form; PAIR WITH ``"hitl":true`` so the submitted
-             values come back as this call's result. Replaces hand-written
-             HTML forms.
-         • optionPicker — {title?, description?, multi?:bool, options:[{id,
-             label, description?, icon?, badge?, recommended?:bool}]} — rich
-             choice cards for decisions; PAIR WITH ``"hitl":true``.
-         • timeline — {title?, taskId?, total?, rows:[{id?, at, type, actor,
-             body?, field?, before?, after?, via?}]} — an activity feed.
-         • taskBoard — {title?, total?, columns:[{id?, name, category?,
-             tasks:[{id, number?, title, assignees?:[string], due?,
-             importance?, leveraged?, done?:bool}]}]} — a kanban.
-         • dataGrid — {title?, columns:[string], rows:[{id?,
-             cells:[string|number]}], openBase?} — a sortable table.
-         • reportCard — {title, period?, reportId?, stats?:[{label, value,
-             unit?, icon?}], tables?:[{title, columns:[string],
-             rows:[{cells:[...]}]}]} — tiles plus tables.
-         • planCard — {title?, description?, submitLabel?, project:{name,
-             parent?, description?}, tasks:[{key, title, owner, effort_mins,
-             start?, due, after?:[key], important?, leveraged?, impact?,
-             urgency?, effort?, priority?, fit?, hours?, marks?, warnings?}],
-             capacity?, warnings?, risks?:[string]} — an editable plan; PAIR
-             WITH ``"hitl":true``.
+    4. CUSTOM HTML — ``{"type":"html","props":{"code":...}}``, only when
+       nothing above fits.
 
-    2. COMPONENT TREE — a safe whitelist of typed primitives (data, not code).
-       Each node is ``{"type":<kind>,"props":{...},"children":[...]}``. Kinds:
-         card{title?} · stack · row · heading{text} · text{text,muted?} ·
-         markdown{text} · badge{text,tone?} · divider · callout{title?,text?,tone?}
-         keyValue{pairs:[{key,value}]} ·
-         table{columns:["Deal","Amount"],rows:[["OsteoForge","₹8.4L"]]} —
-             ``columns`` are HEADER STRINGS and each row is a list of cell
-             values in the same order (objects like {key,label} / row dicts also
-             render, but plain strings + positional rows are the shape to emit) ·
-         list{items:[..],ordered?} · code{text} · link{href,text?} ·
-         button{label,action,tone?} ·
-         icon{name,size?,tone?,label?}
-       ``icon`` renders any Lucide icon by ``name`` (kebab or Pascal, e.g.
-       ``"cloud-sun"``, ``"CheckCircle"``, ``"trending-up"``) — on-brand, bundled,
-       no network; unknown names fall back to a neutral glyph. Put an ``icon`` in
-       a ``row`` beside ``text`` for labelled rows. ``tone`` ∈ success|error|
-       warning|info|neutral (badges/callouts/icons) or primary|danger|default
-       (buttons). A ``button``'s ``action`` string is sent back as the user's
-       next message when clicked.
-
-    3. REACT COMPONENT — a real React component for anything genuinely
-       INTERACTIVE or stateful: multi-step forms, filterable/sortable tables,
-       calculators, live-editable dashboards, small tools. Shape:
-       ``{"type":"react","props":{"code":"<your component source>"}}``.
-
-       Write ordinary modern React and DEFAULT-EXPORT the component
-       (``export default function Dashboard() { … }``).
-
-       • Hooks all work (useState/useEffect/useMemo/useReducer/useRef/context).
-       • JSX and TypeScript syntax are both fine — it is compiled for you.
-       • PREFER the prebuilt components: ``import { Report, Stat, Bars } from
-         "@cc/ui"``. Call ``load_artifact_kit()`` for the list and
-         ``load_artifact_kit("Stat,Bars")`` for their props. They are on-brand by
-         construction and far cheaper than hand-writing the markup.
-       • You may import ONLY from ``@cc/ui``, ``react``, and ``react-dom/client``.
-         There is NO network in the sandbox, so no npm packages, no CDNs, no icon
-         libraries. Inline any helpers and seed the data in the file.
-       • Anything the kit doesn't cover: fall back to the same ``cc-*`` classes
-         and ``--cc-*`` tokens as mode 4.
-       • Talk back to the agent with ``window.ccSubmit("Label", value)`` (send a
-         value the user set) or ``window.ccAction("message")`` (fire a fixed
-         follow-up). Both are available from first mount.
-       • Optional ``props.height`` (px); omit to auto-size.
-
-       If it compiles but the build fails, the tool result carries the compiler
-       errors — fix them and emit again.
-
-    4. CUSTOM HTML — the escape hatch for bespoke animation/layout or genuinely
-       interactive controls no template, tree, or React component covers. Shape:
-       ``{"type":"html","props":{"code":"<div>…</div>"}}``. Your HTML/CSS/JS runs
-       in an ISOLATED sandbox (its own opaque origin): it cannot reach the app,
-       cookies, or the network, so inline everything — NO external CDNs, fonts, or
-       images (use data: URIs). Optional ``props.height`` (px); omit to auto-size.
-
-       DESIGN — follow the Metorite look. The frame pre-defines CSS
-       variables from the app's real design tokens; USE THEM instead of
-       hard-coding colors so your UI matches the product:
-         --cc-primary (blue) · --cc-accent (warm orange) · --cc-fg · --cc-muted
-         · --cc-card · --cc-secondary · --cc-border · --cc-success · --cc-warning
-         · --cc-danger · --cc-radius (0.75rem) · --cc-ease (motion curve).
-       Native ``<button>``, ``<input>``, ``<select>``, ``<textarea>`` and
-       ``input[type=range]`` are already styled on-brand (add class ``cc-primary``
-       to a button for the filled blue variant; ``cc-card`` for a panel). Prefer
-       rem spacing, rounded corners (var(--cc-radius)), and subtle transitions
-       (0.2s var(--cc-ease)). Keep it clean and professional — not flashy.
-
-       REPORT DESIGN KIT — for a substantial DOCUMENT (analysis, plan, comparison,
-       briefing) prefer writing it to an ``.html`` file with ``write_artifact`` so
-       it opens full-page in the side panel, wrapped in ``<div class="cc-report">``.
-       Call ``load_design_system("blocks")`` for the pre-styled block reference
-       (callouts, grids, comparison tables, step lists, …) instead of hand-rolling
-       report styling.
-
-       INTERACTIVITY — two channels back to the agent:
-         • ``data-cc-action="<message>"`` on a clickable element (or
-           ``ccAction("…")`` in script) fires a FIXED follow-up message — like a
-           button. Use for "Tell me more" / "Roll back" style actions.
-         • ``data-cc-submit="<label>"`` on a button harvests every named control
-           (``<input name=…>`` / select / textarea) in its enclosing ``<form>`` or
-           ``[data-cc-form]`` and submits their VALUES back as the user's next
-           message. Or call ``ccSubmit("Temperature", 22)`` /
-           ``ccSubmit({temp:22,unit:"C"})`` directly. Use this whenever the user
-           SETS a value — a slider, a number, a picked option — so the agent
-           actually receives what they chose. This is the key to real two-way UI.
-
-    Returns ``{"ok": true}`` on emit. Additive — also say in prose what you're
-    showing. A ``type`` not named above is refused.
-
-    Example (template — the preferred mode)::
-
-        await emit_generative_ui('{"type":"template","props":{"name":'
-          '"statDashboard","data":{"title":"Q3","stats":[{"label":"Revenue",'
-          '"value":18,"unit":"%","delta":12}]}}}')
+    For mode 3 or 4, call first with no ``code`` to get its rules. Nothing is
+    drawn. Returns ``{"ok": true}`` when the card is drawn. Also say in text
+    what the card shows. A ``type`` not named above is refused.
     """
     import json
 
@@ -1506,6 +1532,12 @@ async def emit_generative_ui(ui: str) -> dict:
         return {"ok": False, "error": f"ui must be valid JSON: {exc}"}
     if not isinstance(spec, dict):
         return {"ok": False, "error": "ui must be a JSON object (a component node)"}
+    # The catalog on demand: a template with no data, an unknown or empty
+    # template name, or a code mode with no code asks for its guide. Nothing
+    # is parked or pushed for it.
+    guide = genui_guide(spec)
+    if guide is not None:
+        return guide
     # Refuse a kind the renderer cannot draw BEFORE anything is parked or
     # pushed, so a refused HITL card never waits for an answer.
     refusal = genui_refusal(spec)

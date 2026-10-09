@@ -485,6 +485,89 @@ def _render_digest_html(
     )
 
 
+#: The tenant Redis namespace of the cached morning brief (WS-17, 2026-10-09).
+BRIEF_CACHE_NAMESPACE = "email-brief"
+#: A brief lives for one UTC day. The day is part of the key too, so a brief
+#: never crosses midnight. The TTL only frees the memory.
+BRIEF_CACHE_TTL_SECS = 26 * 3600
+#: The model and the system prompt of the brief.
+_BRIEF_MODEL = "tier-fast"
+_BRIEF_SYSTEM = (
+    "You write ONE short sentence orienting someone to their inbox "
+    "for the day — what's most pressing and who it's with. Name 1-3 "
+    "specific items (a person or subject), newest-pressing first. No "
+    "greeting, no preamble, under 25 words. "
+    'Respond ONLY JSON {"brief": "<sentence>"}.')
+
+
+def _brief_cache_key(account_id: str, user_prompt: str) -> Any:
+    """The cache key of one brief: the mailbox, the UTC day and a hash of
+    the model input.
+
+    🔴 **Why the input is in the key.** The dashboard asked the model again
+    on EACH load, with no cache. The input is the top six threads that need a
+    reply and the top six commitments, so the same input gives the same
+    sentence. New mail that changes those rows changes the hash, so the next
+    load asks again, and an unchanged inbox reads the cache. Build it inside
+    ``organization_scope``: ``key`` puts the bound organization in front.
+    """
+    import hashlib
+
+    from acb_common.tenant_redis import key
+
+    # The model and the system prompt are in the hash too, so a deploy that
+    # changes either one does not serve a brief of the old prompt (review
+    # round 1).
+    source = f"{_BRIEF_MODEL}\n{_BRIEF_SYSTEM}\n{user_prompt}"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    return key(BRIEF_CACHE_NAMESPACE, str(account_id), day, digest)
+
+
+def _brief_org() -> str | None:
+    """The organization of the brief cache: the tenant that the request or
+    the sync loop bound for ``_tenant_session``. Never a value from input
+    (R5). None means no cache, and the brief asks the model as before."""
+    from acb_common.db import current_tenant
+
+    return current_tenant()
+
+
+async def _cached_brief(account_id: str, user_prompt: str) -> str | None:
+    """The cached brief, or None for a miss. A Redis failure is a miss."""
+    org = _brief_org()
+    if not org:
+        return None
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+        with organization_scope(org):
+            raw = await get_tenant_redis().get(
+                _brief_cache_key(account_id, user_prompt))
+    except Exception:  # the cache is best effort
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    return raw if isinstance(raw, str) and raw else None
+
+
+async def _remember_brief(account_id: str, user_prompt: str, brief: str) -> None:
+    """Cache a brief for the day. Best effort. An empty brief is not cached,
+    so a failed answer is asked again on the next load."""
+    org = _brief_org()
+    if not org or not brief:
+        return
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+        with organization_scope(org):
+            await get_tenant_redis().setex(
+                _brief_cache_key(account_id, user_prompt),
+                BRIEF_CACHE_TTL_SECS, brief)
+    except Exception:  # the cache is best effort
+        pass
+
+
 async def _digest_brief(
     db: Any, account_id: str, backlog: list[dict], commitments: list[dict],
 ) -> str:
@@ -521,20 +604,22 @@ async def _digest_brief(
     user_prompt = (
         "Needs a reply:\n" + (reply_lines or "- (none)")
         + "\n\nCommitments due:\n" + (due_lines or "- (none)"))
+    # One model call for each mailbox, UTC day and input, not one for each
+    # dashboard load (WS-17, 2026-10-09). See `_brief_cache_key`.
+    cached = await _cached_brief(account_id, user_prompt)
+    if cached is not None:
+        return cached
     try:
         data, _content, _used = await _llm_json(
-            "tier-fast",
-            [{"role": "system", "content": (
-                "You write ONE short sentence orienting someone to their inbox "
-                "for the day — what's most pressing and who it's with. Name 1-3 "
-                "specific items (a person or subject), newest-pressing first. No "
-                "greeting, no preamble, under 25 words. "
-                'Respond ONLY JSON {"brief": "<sentence>"}.')},
+            _BRIEF_MODEL,
+            [{"role": "system", "content": _BRIEF_SYSTEM},
              {"role": "user", "content": user_prompt}],
             max_tokens=160,
         )
         if isinstance(data, dict):
-            return str(data.get("brief", "")).strip()[:280]
+            brief = str(data.get("brief", "")).strip()[:280]
+            await _remember_brief(account_id, user_prompt, brief)
+            return brief
         return ""
     except Exception as exc:  # noqa: BLE001
         try:

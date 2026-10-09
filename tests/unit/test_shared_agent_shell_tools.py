@@ -191,8 +191,13 @@ def test_the_registry_holds_the_agents_this_fence_names() -> None:
 def test_the_named_shared_agents_get_no_shell_tool(slug: str) -> None:
     names = _inject_native(slug)
     assert not (names & SHELL_TOOLS), f"{slug} still holds {sorted(names & SHELL_TOOLS)}"
-    # The block is narrow: the rest of the floor stays.
+    # The block is narrow: the rest of the floor stays, but for a tool that
+    # the agent opts out of itself (config.json: floor_opt_out).
+    opted_out = ti._floor_opt_out(slug, _config(slug))
     for kept in ("write_artifact", "web_search", "ask_questions", "list_integrations"):
+        if kept in opted_out:
+            assert kept not in names, f"{slug} holds {kept!r}, which it opted out of"
+            continue
         assert kept in names, f"{slug} lost {kept!r}, which D85 does not touch"
 
 
@@ -235,7 +240,9 @@ def test_a_personal_agent_keeps_its_shell_tools(slug: str) -> None:
     names = _inject_native(slug)
     expected = (ti._resolve_injected_scope(cfg.get("tool_scope")) or set()) & SHELL_TOOLS
     assert expected == {"run_script", "code_task"}, "the floor changed; re-read D85"
-    assert names & SHELL_TOOLS == expected
+    # D85 withholds nothing. An agent may still opt out of a shell tool that
+    # it never calls (email-assistant does, projects_ai_chat.md §25).
+    assert names & SHELL_TOOLS == expected - ti._floor_opt_out(slug, cfg)
     assert ti._withheld_shell_tools(slug, cfg) == frozenset()
 
 
@@ -335,12 +342,20 @@ def test_the_skill_bodies_read_the_same_withheld_scope(monkeypatch, tmp_path) ->
         tool_scope=cfg.get("tool_scope"), agent_config=cfg,
     )
     assert seen["scope"] is not None and not (seen["scope"] & SHELL_TOOLS)
+    # A personal agent that keeps its shell tools. (email-assistant opts out
+    # of both, so it no longer shows the D85 half of this rule.)
+    ti.materialize_skill_bodies_for_agent(
+        "whatsapp-assistant", str(tmp_path),
+        tool_scope=_config("whatsapp-assistant").get("tool_scope"),
+        agent_config=_config("whatsapp-assistant"),
+    )
+    assert {"run_script", "code_task"} <= seen["scope"]
     ti.materialize_skill_bodies_for_agent(
         "email-assistant", str(tmp_path),
         tool_scope=_config("email-assistant").get("tool_scope"),
         agent_config=_config("email-assistant"),
     )
-    assert {"run_script", "code_task"} <= seen["scope"]
+    assert not {"run_script", "code_task"} & seen["scope"], "the opt-out reaches the bodies"
 
 
 # ── 5. No branch puts a shell tool back ────────────────────────────────────

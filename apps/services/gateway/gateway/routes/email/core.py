@@ -107,6 +107,10 @@ class EmailMessageModel(BaseModel):
     # is always false. :func:`_html_remote` is the one rule.
     html_remote: bool = False
     body_truncated: bool = False
+    # True when ``GET /email/messages/{id}?trim=true`` cut the quoted thread,
+    # the signature or a legal footer from ``body_text`` (WS-17, 2026-10-09,
+    # ``quoting.strip_for_reading``). Without ``trim`` it is always false.
+    body_trimmed: bool = False
     snippet: str = ""
     has_attachments: bool = False
     attachments: list[AttachmentModel] = []
@@ -765,6 +769,7 @@ async def _llm_json(
     *,
     max_tokens: int,
     temperature: float = 0.0,
+    **extra: Any,
 ) -> tuple[Any, str, str]:
     """The single seam for the email package's "ask the LLM, get JSON" calls.
 
@@ -786,6 +791,11 @@ async def _llm_json(
     daily budget of the mailbox. In ``enforce`` past the limit it raises
     ``LLMBudgetExhausted`` and makes no call. Outside the scope it does
     nothing. The signature does not change: the scope carries the account.
+
+    ``extra`` holds the options of the request that the Router forwards, for
+    example ``thinking``. ``acompletion_with_fallback`` sends only the keys
+    that ``acb_llm.routed._FORWARDABLE`` names to the Router. A caller with
+    no option sends the same request as before.
     """
     from acb_llm.context import acompletion_with_fallback
     from email_ingestion.llm_cap import llm_slot
@@ -797,6 +807,7 @@ async def _llm_json(
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            **extra,
         )
     content = resp.choices[0].message.content or ""
     return _safe_json(content), content, used
