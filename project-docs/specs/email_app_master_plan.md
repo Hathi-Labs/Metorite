@@ -143,7 +143,7 @@ records only what the email app must keep true.
    |---|---|---|---|
    | 1 | Cold-email check, `senders.py:1245` `_llm_is_cold` | `tier-fast` | boolean |
    | 2 | Auto-learn sender pin, `learning.py:67` | `tier-balanced` | boolean, with a 0.9 threshold |
-   | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 3 | Thread status, `replyzero.py:334` | `tier-balanced` with no reasoning, then `tier-fast` (WS-17 AI cost, 2026-10-09) | choice of 3 or 4 |
    | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
    Amended 2026-10-02 by D-EM-7. The rule match now covers the multi-rule mode too, and `rule_model` no longer applies. §10.4.8 holds the current anchors.
@@ -1599,7 +1599,7 @@ The four triage decisions. Each one has an `on` path and an old path. The old pa
 | Decision | `on` | The old path |
 |---|---|---|
 | Rule match. `email.rule_match=on` is live for all organizations | `engine.py:761` `ask`, then `_ask_all` (`decide_features.py:526-530`). The Router path. The slot waits | `engine.py:860` and `:946`, `_llm_json` |
-| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries |
+| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries. Since 2026-10-09 each try asks for no reasoning, and the second try is a different model (`_STATUS_RETRY_MODEL`) |
 | Cold check | `senders.py:1339` `ask` | `senders.py:1353` `_llm_json` |
 | Sender pin. The caller is `runner.py:1246` | `learning.py:161` `ask` | `learning.py:183` `_llm_json` |
 | Shadow, all four | — | `shadow` (`decide_features.py:687`) starts the task at `:728`. The task tries for a slot, or it skips |
@@ -3657,7 +3657,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 5. **The sender pin.** A pin needs 0.9 or above. With no decision there is no pin. The rule still applies, and the runner stamps the message.
 6. **The member.** `engine._decide_member(db, account_id, feature)` reads the owner for each feature in `on`. Each site gives it to `ask` as a proven member.
 7. **The cool-down** of fix round 2 is for the organization, so it covers all four features. A 402 from the cold check also stops the status and the pin calls.
-8. **`· auto`.** A decided status is confident, so it never gets the tag. The backfill checks an old `· auto` row once more, and then leaves it. With no decision the row keeps the tag, and the next cycle asks again.
+8. **`· auto`.** A decided status is confident, so it never gets the tag. The backfill checks an old `· auto` row once more, and then leaves it. With no decision the row keeps the tag, and the next cycle asks again. **Amended 2026-10-09 (WS-17 AI cost):** the backfill asks about a `· auto` row only when its `classified_at` is older than 6 hours (`replyzero._PROVISIONAL_RECHECK_HOURS`). A row with no decision keeps its old `classified_at`, so the next cycle after the window asks again. A new message on the thread selects it at once.
 9. **The startup check.** `register_email_post_sync_hooks` runs `scheduler_hooks.check_decide_wiring()` once. It logs `email.decide_not_wired` at error level when a feature is `on` and `decide_enabled` or `router_is_wired()` is false. It reads the wiring through a new probe, `acb_llm.routed.router_wired()`. The dependency fence admits eight importers of `console_resolve`, and it pins the `decide` facade to two names, so the gateway may not import it here.
 10. With no organization in `DECIDE_FEATURE_ORGS`, no feature is `on`, so the check of item 9 logs nothing.
 11. The docstrings of `acb_llm/decide.py` say that email leaves an email undecided, with no LLM call.

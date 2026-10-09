@@ -35,6 +35,20 @@
     "read_attachment",
     "call_agent"
   ],
+  "floor_opt_out": [
+    "call_agent_background",
+    "call_agents_parallel",
+    "get_errors",
+    "get_workflow_run",
+    "list_integrations",
+    "list_workflows",
+    "load_artifact_kit",
+    "load_design_system",
+    "manage_todo_list",
+    "recall_notes",
+    "run_diagnostics",
+    "run_workflow"
+  ],
   "own_tool_scope": [
     "analytics_finished",
     "analytics_load",

@@ -1239,7 +1239,8 @@ async def test_off_still_tags_a_fallback_with_auto(monkeypatch, tenant) -> None:
     upsert = _status_env(monkeypatch, our_side_last=True)
     await rz.recompute_thread_status(_owner_db(), ACC, "t1", trigger="outbound")
     assert upsert.await_args.args[6].endswith("· auto")
-    assert len(llm) == 2  # the configured tier, then the escalation
+    # The configured tier, then the one retry on a different model.
+    assert llm == ["tier-balanced", "tier-fast"]
 
 
 async def test_mark_thread_replied_leaves_the_labels_with_no_decision(
@@ -1766,7 +1767,12 @@ class TestTheThreadStatusOnJev:
     def _auto_row(self, p) -> tuple[str, str, str]:
         """A sent thread whose stored status is a guess (`· auto`). The sent
         message came after the first enabled rule, so it is over the
-        new-mail floor (fix round 3)."""
+        new-mail floor (fix round 3).
+
+        The guess is OLDER than the recheck window of the backfill
+        (``replyzero._PROVISIONAL_RECHECK_HOURS``, WS-17 2026-10-09). A guess
+        inside the window waits, so the backfill asks about it only after the
+        window (``test_email_ai_cost.py``)."""
         owner = f"owner-{uuid.uuid4().hex[:8]}@decide-on.test"
         acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
         _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Receipt",
@@ -1778,11 +1784,12 @@ class TestTheThreadStatusOnJev:
         with p.admin_engine.begin() as c:
             c.execute(text(
                 "INSERT INTO email_thread_status (account_id, thread_id, status, "
-                "last_message_id, last_message_at, reason, organization_id) VALUES "
+                "last_message_id, last_message_at, reason, classified_at, "
+                "organization_id) VALUES "
                 "(CAST(:a AS uuid), :t, 'AWAITING', CAST(:m AS uuid), now(), :r, "
-                "CAST(:o AS uuid))"),
+                "now() - make_interval(hours => :h), CAST(:o AS uuid))"),
                 {"a": acc, "t": tid, "m": sent, "r": "Replied — AWAITING_REPLY · auto",
-                 "o": p.org_b})
+                 "h": rz._PROVISIONAL_RECHECK_HOURS + 1, "o": p.org_b})
         return acc, owner, tid
 
     async def test_an_auto_row_gets_one_more_check_and_then_none(

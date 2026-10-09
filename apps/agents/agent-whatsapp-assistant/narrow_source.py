@@ -47,7 +47,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_common import get_logger
 from acb_skills.narrowing import (
@@ -104,6 +104,24 @@ LINE_CLIP = 1200
 
 #: The most reads of the READ step that run at one time.
 READ_IN_FLIGHT = 5
+
+#: H-279. The filter keys that choose WHOLE chats, or a span that ends now.
+#: A search on these keys only, with no search words, finds every message of
+#: each chat that it names, since ``after``. ``from_me`` and ``has_media``
+#: choose a part of a chat, and ``before`` a span that does not end now, so
+#: they are not here. ``contact`` is here only when it names the chat itself
+#: (:func:`is_whole_chat`), because it also matches a sender's name.
+SPAN_KEYS: frozenset[str] = frozenset({"account_id", "chat_id", "contact", "group", "after"})
+#: H-279. The most messages that the read of one whole chat takes, the newest.
+#: It is the default ``limit`` of the thread route. 100 lines of about 60
+#: characters fit in one or two blocks of the body clip.
+SPAN_LIMIT = 100
+#: H-279. The messages that the next step of a cut span reads past the
+#: matches, for the messages that reach the chat between NARROW and READ.
+SPAN_SLACK = 20
+#: The highest ``limit`` of the thread route (``list_messages``, ``le=500``).
+#: The next step of a cut span names it.
+THREAD_LIMIT_MAX = 500
 
 #: The words that the ``websearch`` grammar reads as an operator. A question
 #: word "or" must not join two words, so the adapter drops these.
@@ -345,6 +363,172 @@ def _line(m: Mapping[str, Any], *, kept: bool) -> str:
     return f"{mark}[{when}] {_who(m)}: {message_text(m)[:LINE_CLIP]}"
 
 
+def is_whole_chat(
+    filters: Mapping[str, Any], params: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
+    *, more: bool = False,
+) -> bool:
+    """True when a NARROW call found every message of ONE chat since ``after``.
+
+    H-279. Then the rows are the newest messages of that chat, and READ takes
+    them in one read of the thread route, with no PICK. Each condition holds:
+
+    * the search had no words (``q``), so the filters alone chose the rows;
+    * every filter key is in :data:`SPAN_KEYS`;
+    * every row is in the same chat;
+    * with ``contact``, the name of that chat holds it. The route also matches
+      a sender's name, and then the rows are a part of the chat, not all of it;
+    * with *more* (the route found more than 200 rows), ``chat_id`` names the
+      chat. The 200 rows are the newest only, and an older match can be in a
+      second chat that ``contact`` or ``group`` also chose (review P1).
+    """
+    if params.get("q") or not rows:
+        return False
+    if more and "chat_id" not in filters:
+        return False
+    if not set(filters) - {WORDS} <= SPAN_KEYS:
+        return False
+    chats = {str(r.get("chat_id") or "") for r in rows}
+    if len(chats) != 1 or "" in chats:
+        return False
+    contact = str(params.get(PARAMS["contact"]) or "").lower()
+    if contact:
+        return all(contact in str(r.get("chat_name") or "").lower() for r in rows)
+    return True
+
+
+def span_further(chat_id: str, found: int, more: bool) -> str:
+    """The next step that reads the older messages of a cut span (H-279)."""
+    # A few messages can reach the chat between NARROW and READ, and they
+    # push the oldest matches out of the newest `found` (review P2).
+    limit = THREAD_LIMIT_MAX if more else min(THREAD_LIMIT_MAX, max(found, 1) + SPAN_SLACK)
+    return (
+        f'To read the older messages, call read_whatsapp_chat with chat_id="{chat_id}" '
+        f"and limit={limit}."
+    )
+
+
+def blocks(
+    rows: Sequence[Mapping[str, Any]], kept: Mapping[str, str], title: str,
+) -> list[FullItem]:
+    """The rows of one chat as blocks of whole lines, in reading order (H-279).
+
+    *kept* maps the message id of each kept row to its item id. A kept row
+    starts with ``>>``. Each block holds at most :data:`BODY_CLIP` characters,
+    so the tool clips no line. A block takes the item id of its first kept
+    row, and ``covers`` names the other kept rows. A block with no kept row is
+    left out. At most :data:`READ_CAP` blocks remain, the NEWEST, so a cut
+    never drops a newer message for an older one.
+    """
+    out: list[FullItem] = []
+    lines: list[str] = []
+    ids: list[str] = []
+    first: Mapping[str, Any] | None = None
+    size = 0
+
+    def close() -> None:
+        if ids and first is not None:
+            out.append(FullItem(id=ids[0], title=title, who=_who(first),
+                                when=str(first.get("sent_at") or ""),
+                                text="\n".join(lines), covers=tuple(ids[1:])))
+
+    for r in rows:
+        item = kept.get(str(r.get("id") or ""))
+        line = _line(r, kept=item is not None)
+        if lines and size + 1 + len(line) > BODY_CLIP:
+            close()
+            lines, ids, first, size = [], [], None, 0
+        size += len(line) + (1 if lines else 0)
+        lines.append(line)
+        if item is not None:
+            ids.append(item)
+            first = first or r
+    close()
+    return out[-READ_CAP:]
+
+
+# ── The windows of READ (H-279) ──────────────────────────────────────────────
+
+
+class Window(NamedTuple):
+    """The rows of one READ window: one kept message and its context. A
+    NamedTuple, not a dataclass: ``agents.py`` loads this file by path, with
+    no entry in ``sys.modules``, and a dataclass needs one."""
+
+    chat_id: str
+    message_id: str
+    rows: Sequence[Mapping[str, Any]]
+
+
+def _order(r: Mapping[str, Any]) -> tuple[str, str]:
+    """The reading order of the thread route: ``sent_at``, then ``id``. A row
+    with no ``sent_at`` is the oldest, as the route gives it."""
+    return str(r.get("sent_at") or ""), str(r.get("id") or "")
+
+
+def merge_windows(
+    windows: Sequence[Window], raw_of: Mapping[tuple[str, str], str],
+) -> list[FullItem]:
+    """The READ windows as items, with each message once (H-279).
+
+    Two windows of one chat that share a message merge into one block, in
+    reading order, and each kept message in it starts with ``>>``. The block
+    takes the item id of its kept message of the best rank, and ``covers``
+    names the other kept messages. So the tool reads each message once and
+    counts each kept item once. A merged block longer than :data:`BODY_CLIP`
+    is not merged: its windows stay apart, so the tool cuts no kept line.
+    *windows* is in rank order, and *raw_of* maps each ``(chat, message)`` to
+    the item id that the tool asked with.
+    """
+    groups: list[list[Window]] = []
+    for w in windows:
+        ids = {str(r.get("id")) for r in w.rows}
+        hits = [g for g in groups if g[0].chat_id == w.chat_id
+                and ids & {str(r.get("id")) for x in g for r in x.rows}]
+        if not hits:
+            groups.append([w])
+            continue
+        # The group of the best rank takes this window and every other group
+        # that it touches, so a window that joins two groups merges all three.
+        head = hits[0]
+        head.append(w)
+        for g in hits[1:]:
+            head.extend(g)
+            groups.remove(g)
+    rank = {(w.chat_id, w.message_id): n for n, w in enumerate(windows)}
+    out: list[FullItem] = []
+    for g in groups:
+        g.sort(key=lambda w: rank[(w.chat_id, w.message_id)])
+        out.extend(_group_items(g, raw_of))
+    return out
+
+
+def _window_item(w: Window, raw: str) -> FullItem:
+    anchor = next(r for r in w.rows if str(r.get("id")) == w.message_id)
+    body = "\n".join(_line(r, kept=r is anchor) for r in w.rows)
+    return FullItem(id=raw, title=_chat_title(anchor), who=_who(anchor),
+                    when=str(anchor.get("sent_at") or ""), text=body[:BODY_CLIP])
+
+
+def _group_items(group: Sequence[Window], raw_of: Mapping[tuple[str, str], str]) -> list[FullItem]:
+    raws = [raw_of.get((w.chat_id, w.message_id), item_id(w.chat_id, w.message_id))
+            for w in group]
+    if len(group) == 1:
+        return [_window_item(group[0], raws[0])]
+    rows: dict[str, Mapping[str, Any]] = {}
+    for w in group:
+        for r in w.rows:
+            rows.setdefault(str(r.get("id")), r)
+    kept = {w.message_id for w in group}
+    ordered = sorted(rows.values(), key=_order)
+    body = "\n".join(_line(r, kept=str(r.get("id")) in kept) for r in ordered)
+    if len(body) > BODY_CLIP:  # never cut a kept line: keep the windows apart
+        return [_window_item(w, raw) for w, raw in zip(group, raws, strict=True)]
+    anchor = rows[group[0].message_id]
+    return [FullItem(id=raws[0], title=_chat_title(anchor), who=_who(anchor),
+                     when=str(anchor.get("sent_at") or ""), text=body,
+                     covers=tuple(raws[1:]))]
+
+
 # ── The adapter (§4) ─────────────────────────────────────────────────────────
 
 
@@ -365,9 +549,40 @@ class WhatsAppNarrowSource:
         more = len(rows) > MAX_CANDIDATES  # the probe row: more matched
         rows = rows[:MAX_CANDIDATES]
         words = _search_words(str(params.get("q") or ""))
+        # H-279: the filters chose every message of one chat. READ takes the
+        # chat in one read, with no PICK and no windows.
+        span = is_whole_chat(filters, params, rows, more=more)
+        further = span_further(str(rows[0].get("chat_id")), len(rows), more) if span else ""
         # The route gives no total, so `more` says "more than", not a count.
         return Narrowed(candidates=[candidate_of(r, words) for r in rows],
-                        total=len(rows), more=more)
+                        total=len(rows), more=more, span=span, span_further=further)
+
+    async def read_span(self, candidates: Sequence[Candidate]) -> list[FullItem]:
+        """READ of one whole chat (H-279): ONE GET of the thread route, the
+        route of ``read_whatsapp_chat``, with ``limit`` and no ``around``.
+
+        The route gives the newest ``limit`` messages, oldest first (H-277).
+        The limit is the candidate count, at most :data:`SPAN_LIMIT`, so the
+        read takes the newest matches of the chat and no older message. A
+        candidate that the read does not hold is not in any block, and the
+        tool counts it as not read. A GET only: no state changes.
+        """
+        chats = {split_id(c.id)[0] if split_id(c.id) else "" for c in candidates}
+        if len(chats) != 1 or "" in chats:
+            return []
+        [chat_id] = chats
+        limit = min(len(candidates), SPAN_LIMIT)
+        rows = await self._get(THREAD_PATH.format(chat_id=chat_id), {"limit": str(limit)})
+        rows = [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, Mapping)]
+        # The message id of each candidate, to its item id as the tool gave it.
+        kept = {split_id(c.id)[1]: c.id for c in candidates}  # type: ignore[index]
+        canonical = []
+        for r in rows:
+            try:
+                canonical.append({**r, "id": str(uuid.UUID(str(r.get("id"))))})
+            except (ValueError, AttributeError, TypeError):
+                canonical.append(r)
+        return blocks(canonical, kept, candidates[0].title)
 
     async def read(self, ids: Sequence[str]) -> list[FullItem]:
         """READ: each kept message with :data:`READ_WINDOW` messages of context
@@ -384,7 +599,7 @@ class WhatsAppNarrowSource:
                 wanted.append(parts)
         gate = asyncio.Semaphore(READ_IN_FLIGHT)
 
-        async def _one(chat_id: str, message_id: str) -> FullItem | None:
+        async def _one(chat_id: str, message_id: str) -> Window | None:
             async with gate:
                 try:
                     rows = await self._get(
@@ -398,29 +613,18 @@ class WhatsAppNarrowSource:
                     )
                     return None
             rows = [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, Mapping)]
-            anchor = next((r for r in rows if str(r.get("id")) == message_id), None)
-            if anchor is None:
+            if not any(str(r.get("id")) == message_id for r in rows):
                 return None
-            body = "\n".join(_line(r, kept=r is anchor) for r in rows)
-            return FullItem(
-                id=item_id(chat_id, message_id),
-                title=_chat_title(anchor),
-                who=_who(anchor),
-                when=str(anchor.get("sent_at") or ""),
-                text=body[:BODY_CLIP],
-            )
+            return Window(chat_id, message_id, rows)
 
         got = await asyncio.gather(*(_one(c, m) for c, m in wanted))
         # The tool matches items by id. Give back the id it asked with.
-        by_canonical = {item.id: item for item in got if item is not None}
-        out: list[FullItem] = []
+        raw_of: dict[tuple[str, str], str] = {}
         for raw in list(ids)[:READ_CAP]:
             parts = split_id(raw)
-            item = by_canonical.get(item_id(*parts)) if parts else None
-            if item is not None:
-                out.append(FullItem(id=str(raw), title=item.title, who=item.who,
-                                    when=item.when, text=item.text))
-        return out
+            if parts is not None:
+                raw_of.setdefault(parts, str(raw))
+        return merge_windows([w for w in got if w is not None], raw_of)
 
 
 __all__ = [
@@ -429,15 +633,22 @@ __all__ = [
     "PARAMS",
     "READ_WINDOW",
     "SEARCH_PATH",
+    "SPAN_KEYS",
+    "SPAN_LIMIT",
     "THREAD_PATH",
     "WORDS",
     "WhatsAppNarrowSource",
+    "Window",
+    "blocks",
     "candidate_of",
     "excerpt",
+    "is_whole_chat",
     "item_id",
+    "merge_windows",
     "message_text",
     "read_size",
     "search_params",
     "search_text",
+    "span_further",
     "split_id",
 ]

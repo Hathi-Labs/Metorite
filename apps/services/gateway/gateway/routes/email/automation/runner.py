@@ -1780,6 +1780,12 @@ async def _run_rules_job(
         # thread is the latest — project only that one (older ones must not clobber
         # a newer status).
         projected_threads: set[str] = set()
+        # The thread status that this run asked, for each thread (WS-17,
+        # 2026-10-09). The ask reads the WHOLE thread, so each new row of one
+        # thread in one run gets the same answer. Before this, a thread with
+        # five new rows cost five status asks in one run. `on` asks in Block
+        # R (`status_before_match`) and never reaches this map.
+        asked_status: dict[str, Any] = {}
 
         for r in rows:
             frm = r.from_address if isinstance(r.from_address, dict) \
@@ -1807,11 +1813,14 @@ async def _run_rules_job(
                 # thread status. The ask runs with NO block open after it.
                 status = rz.NOT_ASKED
                 if rz.status_ask_needed(plan, r, asked):
-                    async with _tenant_session() as db:
-                        seen = await rz.read_job_status(db, account_id, r)
-                        # Fail closed, as at the end of Block R.
-                        await db.execute(text("SELECT 1"))
-                    status = await rz.ask_job_status(seen)
+                    status = asked_status.get(r.thread_id, rz.NOT_ASKED)
+                    if status is rz.NOT_ASKED:
+                        async with _tenant_session() as db:
+                            seen = await rz.read_job_status(db, account_id, r)
+                            # Fail closed, as at the end of Block R.
+                            await db.execute(text("SELECT 1"))
+                        status = await rz.ask_job_status(seen)
+                        asked_status[r.thread_id] = status
                 # Block W: ONE block, where the per-row commit used to land.
                 # The apply, the projection and the stamp commit together.
                 # EM-T4 owns the model and provider I/O that stays inside.
