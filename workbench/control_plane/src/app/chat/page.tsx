@@ -50,6 +50,7 @@ import {
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import { filterWord, shellBarOn } from "@/lib/shell/registry";
+import { ShellJob } from "@/lib/shell/doJob";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
@@ -753,6 +754,11 @@ function ChatPageInner() {
     [agentList],
   );
 
+  // The member and org whose sessions the effect below has loaded. The
+  // command bar's "New chat" waits for it, because that load picks the
+  // active conversation and would replace the new one.
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+
   // Load the member's sessions from localStorage once the member is known, and
   // again when the member or the org changes.
   // If ?agent=<name> is in the URL, immediately open a new session for that agent.
@@ -765,6 +771,7 @@ function ChatPageInner() {
       setSessions([]);
       setActiveSessionId("");
       setRestoredId(null);
+      setLoadedScope(null);
       return;
     }
     const existing = getSessions();
@@ -793,6 +800,7 @@ function ChatPageInner() {
       setRestoredId(null);
       setShowPicker(true);
     }
+    setLoadedScope(chatScopeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per member
   }, [chatScopeId]);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -1101,6 +1109,15 @@ function ChatPageInner() {
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="relative flex h-full overflow-hidden">
+      {/* NS-2: the command bar's "New chat" is the "+ New conversation"
+          press. `handleNewSession` waits by itself while the agent list is
+          still out. The job waits for the session load, which sets the
+          active conversation and would replace the new one. */}
+      <ShellJob
+        id="new-chat"
+        ready={!!chatScopeId && loadedScope === chatScopeId}
+        onOpen={() => handleNewSession()}
+      />
       {/* Agent picker modal */}
       {pickerShows && (
         <AgentPickerModal
