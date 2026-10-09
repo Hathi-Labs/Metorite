@@ -40,8 +40,9 @@ import {
   type ChatScopePick,
 } from "../lib/chatScope";
 import { getAssistantSettings } from "../lib/api";
+import { EMAIL_CHAT_TIER } from "../lib/assistantSettings";
 import { useTierRouted } from "@/hooks/useTierRouted";
-import { governedModelProps, readsChatModel } from "@/lib/tierRouting";
+import { governedModelProps } from "@/lib/tierRouting";
 
 const AGENT = "email-assistant";
 
@@ -108,21 +109,16 @@ export function EmailAssistantChat({
       }
     : null;
 
-  // The CHAT mailbox's assistant settings. Two things ride on this, both
-  // per-account: which chat model to run (the single source of truth is
-  // Assistant → Settings → Models, not AgentChat's generic per-agent picker),
-  // and the standing configuration (about / instructions / writing style) the
-  // persona hands the agent — so switching mailboxes switches how the assistant
-  // behaves, not just which account_id it passes to tools. Defaults to
-  // tier-powerful so a send during the fetch window uses a sensible model.
-  // All inboxes reads no settings: each mailbox has its own (D-EM-24), so the
-  // chat runs on tier-powerful there.
-  const [chatModel, setChatModel] = useState<string | undefined>("tier-powerful");
-  // WS-45 S4 (D90): a covered email-assistant runs on the platform's tier,
-  // so the chat neither reads nor passes `chat_model`. With the UI flag off
-  // it is known and not covered, so the read and the props are as before.
+  // The CHAT mailbox's assistant settings carry the standing configuration
+  // (about / instructions / writing style) that the persona hands the agent,
+  // so switching mailboxes switches how the assistant behaves, not just which
+  // account_id it passes to tools. All inboxes reads no settings: each mailbox
+  // has its own (D-EM-24).
+  //
+  // No setting picks the chat's tier (D-EM-61). A covered email-assistant
+  // runs on the platform's tier, so the chat passes no model (WS-45 S4, D90).
+  // Every other case runs on EMAIL_CHAT_TIER, which our code chooses.
   const tier = useTierRouted(AGENT);
-  const readsModel = readsChatModel(tier);
   const [acctSettings, setAcctSettings] =
     useState<PersonaAccountSettings | null>(null);
   useEffect(() => {
@@ -131,21 +127,17 @@ export function EmailAssistantChat({
       getAssistantSettings,
     );
     if (!read) {
-      setChatModel("tier-powerful");
       setAcctSettings(null);
       return;
     }
     // Clear the settings of the mailbox before, so that its standing orders
     // never stand under the name of the new one while the read is out, or
     // after the read fails (D-EM-18, D-EM-24; EM-T8e-3 review F1).
-    setChatModel("tier-powerful");
     setAcctSettings(null);
     let cancelled = false;
     read
       .then((s) => {
         if (cancelled) return;
-        // WS-45 S4: a covered email-assistant reads no `chat_model`.
-        if (readsModel) setChatModel(s.chat_model || "tier-powerful");
         setAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -154,13 +146,12 @@ export function EmailAssistantChat({
         });
       })
       .catch(() => {
-        // The default stays: tier-powerful, and no standing orders. The
-        // persona still names the mailbox.
+        // No standing orders. The persona still names the mailbox.
       });
     return () => {
       cancelled = true;
     };
-  }, [chatAllInboxes, chatAccountId, readsModel]);
+  }, [chatAllInboxes, chatAccountId]);
 
   // Inject Mem0 memories so the assistant has the SAME cross-conversation
   // continuity here as in the chat app (parity) — shared fetch + 30s poll via
@@ -339,7 +330,7 @@ export function EmailAssistantChat({
             agentName={AGENT}
             sessionId={activeSession.id}
             compact
-            {...governedModelProps(tier.covered, chatModel)}
+            {...governedModelProps(tier.covered, EMAIL_CHAT_TIER)}
             persona={emailContextStr}
             emailContext={{ accountId: chatAccountId, emailId: selectedEmailId }}
             mailboxes={mailboxOptions}

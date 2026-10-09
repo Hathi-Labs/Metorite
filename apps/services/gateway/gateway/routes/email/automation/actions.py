@@ -18,6 +18,7 @@ from typing import Any
 
 from email_ingestion.llm_cap import llm_slot
 from gateway import outbound_guard
+from gateway.routes.email.automation.assistant import EMAIL_TASK_TIERS
 from gateway.routes.email.automation.drafting import (
     _agent_draft_reply,
     _build_reply_context,
@@ -460,23 +461,21 @@ async def _apply_rule_actions(
     # Draft-confidence threshold (gates AI-written REPLY/DRAFT_EMAIL drafts).
     draft_conf = "ALL_EMAILS"
     sensitive_protection = True
-    # The draft-writing model for AI rule actions (REPLY / DRAFT_EMAIL).
-    # Defaults to the powerful tier; overridden from settings below.
-    draft_model = "tier-powerful"
+    # The tier of an AI rule draft (REPLY / DRAFT_EMAIL). Our code chooses it,
+    # and no stored choice changes it (D-EM-61).
+    draft_tier = EMAIL_TASK_TIERS["draft"]
     if account_id and any(
         a.get("type") in ("REPLY", "DRAFT_EMAIL") and not (a.get("content") or "").strip()
         for a in actions
     ):
         cr = (await db.execute(text(
-            "SELECT draft_confidence, sensitive_data_protection, draft_model "
+            "SELECT draft_confidence, sensitive_data_protection "
             "FROM email_assistant_settings WHERE account_id = :aid"
         ), {"aid": account_id})).fetchone()
         if cr and cr.draft_confidence:
             draft_conf = cr.draft_confidence
         if cr and getattr(cr, "sensitive_data_protection", None) is not None:
             sensitive_protection = bool(cr.sensitive_data_protection)
-        if cr and getattr(cr, "draft_model", None):
-            draft_model = cr.draft_model
     # Sensitive-data protection: don't auto-draft on emails that look like they
     # carry secrets (OTPs, passwords, card/account numbers) when the setting is on.
     skip_ai_drafts = sensitive_protection and _email_looks_sensitive(email)
@@ -588,7 +587,7 @@ async def _apply_rule_actions(
                     body = await _agent_draft_reply(
                         draft_email, about, signature, user_email, use_agent=True,
                         confidence=draft_conf,
-                        model=draft_model, account_id=account_id,
+                        model=draft_tier, account_id=account_id,
                     )
                 # Draft-confidence gate: the drafter returns the NO_DRAFT
                 # sentinel (or empty) when it isn't confident enough — skip.

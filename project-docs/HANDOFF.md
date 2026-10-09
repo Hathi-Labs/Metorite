@@ -95,6 +95,30 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-282 · Remove the retired email model fields, then their columns · [AGENT]
+- **Check:** run `rg -n "draft_model|compose_model|chat_model" apps/services/gateway/gateway/routes/email/automation/assistant.py`,
+  then `rg -n "^    (draft|compose|chat|rule)_model" infra/postgres/schema.generated.sql`.
+  A hit in either means this is open.
+- **Why.** D-EM-61 (2026-10-09) took the email tier choice from the member.
+  EM-T15 kept the three request fields and the columns for one release (R6).
+  The PUT ignores each value and logs once, so the log shows a client that
+  still sends one. Pydantic ignores an unknown field, so the removal causes
+  no 422.
+- **Do.**
+  1. Wait one release after EM-T15 deploys.
+  2. On the box, count `email.assistant_settings.model_field_ignored` in the
+     gateway journal for that release. Zero lines means no client sends the
+     fields.
+  3. Delete the three fields, `RETIRED_MODEL_FIELDS` and
+     `_log_retired_model_fields` from `automation/assistant.py`. Update
+     `test_email_no_tier_choice.py` and `test_email_assistant_settings.py`.
+  4. In a later release, drop `draft_model`, `compose_model`, `chat_model`
+     and `rule_model` from `email_assistant_settings` with a guarded
+     migration. Take the migration number at build time (R1).
+- **Authority:** `specs/email_app_master_plan.md` §10.4.16 (EM-T15, D-EM-61) ·
+  `specs/ai_tier_routing.md` §8
+- **Added:** 2026-10-09 · branch `email-no-tier-settings` (EM-T15).
+
 ### H-275 · Measure the WhatsApp narrowing on a real run · [OWNER]
 - **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
   No line with a measured recall and a date under §9 N4 means this is open.

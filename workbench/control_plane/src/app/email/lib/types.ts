@@ -703,14 +703,9 @@ export interface AssistantSettings {
   signature_text?: string;
   auto_run: boolean;
   cold_email_blocker: ColdBlockerMode;
-  /** Model for BACKGROUND draft writing — follow-ups, DRAFT_EMAIL rule actions
-   *  (default tier-powerful). */
-  draft_model: string;
-  /** Model for MANUAL drafting — the composer's "Draft with AI" button, where
-   *  the user is waiting (default tier-fast). */
-  compose_model: string;
-  /** Model the interactive email chat panel uses (default tier-powerful). */
-  chat_model: string;
+  // No model or tier field: our code picks the tier of each email AI task
+  // (D-EM-7, D-EM-61). The server answers none, and a fence keeps them out
+  // (noTierChoice.test.ts).
   /** Scheduled inbox-digest cadence. */
   digest_frequency: DigestFrequency;
   /** Global "always do this" guidance for the assistant. */
@@ -867,27 +862,6 @@ export interface VoiceProfileBuildStatus {
   sample_count?: number;
   suggested_knowledge?: number;
   error?: string;
-}
-
-/** A configurable LLM tier/provider, from GET /api/settings/llm. */
-export interface LLMTier {
-  tier_name: string;
-  tier_id: string;
-  model: string;
-  provider: string;
-  provider_configured: boolean;
-}
-
-export interface LLMProvider {
-  id: string;
-  label: string;
-  configured: boolean;
-  models: string[];
-}
-
-export interface LLMConfigResponse {
-  tiers: LLMTier[];
-  providers: LLMProvider[];
 }
 
 export interface RecentTestResult {

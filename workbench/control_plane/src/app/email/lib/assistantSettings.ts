@@ -15,6 +15,14 @@
 // tab for the call.
 import type { AssistantSettings } from "./types";
 
+/**
+ * The tier of the email chat when the tier policy does not cover the
+ * email-assistant (D-EM-61). Our code picks it, and no member does. The
+ * gateway's `EMAIL_TASK_TIERS["chat"]` holds the same value. A covered agent
+ * gets no model at all (`governedModelProps`, D90).
+ */
+export const EMAIL_CHAT_TIER = "tier-powerful";
+
 /** True only when the server stored `draft_replies: true` for the mailbox. */
 export function autoDraftRepliesOn(
   settings: Partial<Pick<AssistantSettings, "draft_replies">> | null | undefined,
