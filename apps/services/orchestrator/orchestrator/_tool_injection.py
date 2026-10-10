@@ -1171,6 +1171,40 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
                 )
 
 
+def _whatsapp_withheld() -> frozenset[str]:
+    """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
+
+    ``bot_run`` opens ``acb_skills.whatsapp_ui.whatsapp_run`` around the run,
+    and a nested run copies the context, so the answer holds for every agent
+    of that run.
+    """
+    try:
+        from acb_skills.whatsapp_ui import WITHHELD_TOOLS, current_run  # noqa: PLC0415
+    except ImportError:
+        return frozenset()
+    return WITHHELD_TOOLS if current_run() is not None else frozenset()
+
+
+def _whatsapp_ui_tools(agent_name: str | None) -> list[Any]:
+    """``[whatsapp_ui]`` for the WhatsApp run's own agent, else nothing."""
+    try:
+        from acb_skills.whatsapp_ui import gets_ui_tool, whatsapp_ui  # noqa: PLC0415
+    except ImportError:
+        return []
+    return [whatsapp_ui] if gets_ui_tool(agent_name) else []
+
+
+def _drop_own_tools(agents: list[Any], names: frozenset[str]) -> None:
+    """Take the tools named *names* out of each agent's OWN tool pools.
+
+    A change in place holds for this run only: ``build_agents()`` makes the
+    agents again for each run (see :func:`_own_tool_pools`).
+    """
+    for agent in agents:
+        for _attr, lst in _own_tool_pools(agent):
+            lst[:] = [t for t in lst if _tool_name(t) not in names]
+
+
 def _own_tool_pools(agent: Any) -> list[tuple[str, list[Any]]]:
     """The tool lists of ONE agent, each list once, with a label for the log.
 
@@ -1528,9 +1562,15 @@ def _inject_agent_tools(
             "executor.floor_tools_opted_out",
             agent=agent_name, tools=sorted(_opted_out),
         )
+    # WS-47 WAC-10a: a WhatsApp run (`acb_skills.whatsapp_ui`). Its web-only
+    # tools leave the SCOPE and the final list, like the opt-out above, so no
+    # prompt text offers them. The agent's own copies leave too.
+    _wa_withheld = _whatsapp_withheld()
+    if _wa_withheld:
+        _drop_own_tools(agents, _wa_withheld)
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
-        withheld=_withheld | _egress | _opted_out,
+        withheld=_withheld | _egress | _opted_out | _wa_withheld,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -1595,11 +1635,15 @@ def _inject_agent_tools(
     # chain, shell tools included. So the withheld names leave the final
     # list too, whatever branch built it. So do the opted-out names, which
     # covers the workflow trio appended above.
-    _extra_tools = _drop_withheld(_extra_tools, _withheld | _opted_out)
+    _extra_tools = _drop_withheld(_extra_tools, _withheld | _opted_out | _wa_withheld)
     # H-236, the same last word: an app or workflow tool that reaches outside
     # the platform leaves too, whatever branch added it.
     if no_egress:
         _extra_tools = [fn for fn in _extra_tools if not _is_egress(fn)]
+    # WAC-10a: the WhatsApp UI tool goes to the run's own agent only. An agent
+    # it calls answers in text.
+    if _wa_withheld:
+        _extra_tools = _extra_tools + _whatsapp_ui_tools(agent_name)
 
     # Gate every injected tool with the risk-aware permission policy (B6). This
     # closes the live gap where injected function-tools (web_search, …) executed
@@ -1826,7 +1870,8 @@ def _inject_agent_tools(
                     # addendum; native MAF agents need the same at system-prompt
                     # level so they know where files go and to load the design
                     # system before a report. Marker-guarded for idempotency.
-                    if not _has_output_discipline(_prev2):
+                    # A WhatsApp run writes no file and draws no web card.
+                    if not _wa_withheld and not _has_output_discipline(_prev2):
                         _do["instructions"] = (
                             _prev2 + "\n\n"
                             + _build_output_discipline_block(
@@ -1869,7 +1914,7 @@ def _inject_agent_tools(
                                 compact=is_sub_agent,
                             )
                             agent.instructions = _instr
-                        if not _has_output_discipline(_instr):
+                        if not _wa_withheld and not _has_output_discipline(_instr):
                             agent.instructions = (
                                 _instr + "\n\n"
                                 + _build_output_discipline_block(

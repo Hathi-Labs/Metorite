@@ -1,10 +1,13 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-3 built, dark (2026-10-10), after WAC-1 and WAC-2 on
-2026-10-09. WAC-4 is next. Board row
-**WS-47**. WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test
-number. WAC-0 (the number) is the owner's, and it gates production only. HANDOFF
-**H-251** carries it.
+**Status:** WAC-10a built, dark (2026-10-10): the WhatsApp run profile and
+its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
+two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. WAC-4 is next. The board
+row is **WS-47**.
+
+WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test number. WAC-0
+(the number) is the owner's, and it gates production only. HANDOFF **H-251**
+carries it.
 
 **WAC-1 as built (2026-10-09).** The table is `whatsapp_member_links`. The
 routes are in `gateway/routes/whatsapp_channel/`, and the section is
@@ -705,11 +708,13 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-7** | Proactive messages: the daily brief and the nudge, STOP and START (§5.8) | AGENT-SAFE to build, **OWNER-GATE** to switch on | A brief goes only to an opted-in, linked phone. STOP ends every Metorite-initiated message to that phone |
 | **WAC-8** | Org controls: the org setting, admin revoke, revoke on membership removal, link expiry | AGENT-SAFE | An org with the channel off gets no run and no new link. A removed member's link is `revoked` before their next message |
 | **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
-| **WAC-10** | Native UI, part 1 (§5.11): list messages, the link button, the typing indicator, the org switcher | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
+| **WAC-10a** ✅ built 2026-10-10, dark | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
+| **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
-**Order:** WAC-1 → WAC-2 → WAC-3 → WAC-4 → WAC-10 → WAC-8 → WAC-5 → WAC-11 →
-WAC-6 → WAC-7.
+**Order:** WAC-1 → WAC-2 → WAC-3 → WAC-10a → WAC-4 → WAC-10b → WAC-8 →
+WAC-5 → WAC-11 → WAC-6 → WAC-7. *(WAC-10a moved ahead of WAC-4 on
+2026-10-10, at the owner's ask.)*
 WAC-8 comes before any production use. WAC-9 can follow WAC-8.
 
 ---
@@ -790,3 +795,120 @@ of them.
 the organizations" is read as: the members of every Metorite org. The end
 customers of an org (for example, a café's clients) are a different product,
 and this spec does not cover them. The owner has not confirmed this reading.
+
+---
+
+## 12. Amendment of 2026-10-10: WAC-10a, the WhatsApp run profile
+
+**The owner's ask (2026-10-10).** "Start building the WhatsApp native cards and
+generative UI elements for the WhatsApp bot. Strip the other generative UI
+tools from the bot, because they are not useful there and they add context."
+
+**What WAC-10a is.** It narrows WAC-10 to the parts that need no new table.
+The org switcher stays in WAC-10, which this amendment renames WAC-10b.
+
+### 12.1 What WhatsApp can show
+
+| Element | Limit | Built in WAC-10a |
+|---|---|---|
+| Reply buttons | 3 buttons, 20 characters each | Yes |
+| List message | 10 rows, title 24 and description 72 characters | Yes |
+| Link button (`cta_url`) | 1 button | Yes, to `app.metorite.com` only |
+| Image | 5 MB | Yes: charts and tables, drawn on the server |
+| Typing indicator | Shown up to 25 seconds | Yes |
+| Text marks | `*bold*`, `_italic_`, `~strike~`, lists, a ``` block | Yes, in the scope rule |
+| Flows (forms) | 50 components a screen | No: WAC-11 |
+| Slider, rating, chart, poll | WhatsApp has none | A chart is an image. The rest has no native form |
+
+### 12.2 The profile
+
+`WHATSAPP_ASSISTANT_NATIVE_UI` (default OFF) switches the profile on. It adds
+to `WHATSAPP_ASSISTANT_ENABLED` and never replaces it. With the profile on,
+`bot_run` opens `acb_skills.whatsapp_ui.whatsapp_run` around the run, and the
+injection seam (`orchestrator._tool_injection._inject_agent_tools`) does three
+things for each agent of the run:
+
+1. **It strips the web DELIVERY tools, and only those.** The tools of
+   `whatsapp_ui.WITHHELD_TOOLS` leave the scope, the final list and each
+   agent's own tools. Each one is about HOW an answer reaches the web chat.
+   The list holds web cards, the todo panel, file cards, uploads and the web
+   design kits. The
+   web prompt blocks leave too: the generative UI directive and the output
+   discipline block.
+   ⚠️ **The rule (owner, 2026-10-10):** the channel changes delivery, never
+   function. A tool that does something (search, diagnose, build, configure,
+   delegate) stays on WhatsApp, because a member may need it there. The
+   fence asserts that `web_search`, `get_errors`, `app_builder` and
+   `spawn_copilot_agent` stay. The D85 shell block still applies on top.
+   We measured the real `orchestrator` on 2026-10-10. A web run sends 39
+   tools and 52,073 characters of prompt and tool schemas. A WhatsApp run
+   sends 31 tools (`whatsapp_ui` included) and 35,189 characters, which is
+   32% less on each model request. **Known gap:** a Copilot-shaped agent's
+   addendum keeps its fixed workspace section, which names `write_artifact`
+   and `emit_generative_ui` whatever the scope. Every in-tree agent is native
+   MAF, so no bot run carries that section today.
+2. **It adds one tool.** `whatsapp_ui(kind, data)` goes to the run's own agent
+   (`orchestrator`), and to no agent that it calls. A specialist answers in
+   text, and the main agent decides what the member sees.
+3. **It changes the scope rule.** `SCOPE_RULE_NATIVE` keeps the scope and the
+   "no change from WhatsApp" rule of §5.5 and §5.6. It adds how to write for a
+   phone, and when to call `whatsapp_ui`.
+
+### 12.3 The tool and the send
+
+- **The tool queues, and the run sends.** `whatsapp_ui` checks the element
+  against the limits of §12.1, draws an image if it needs one, and adds it to
+  the run's outbox. A broken element returns `{"ok": false, "error": ...}` and
+  queues nothing. A title over its limit is cut with "…". A reply holds 3
+  elements at most.
+- **A link opens the Metorite app only.** A `link` element must be `https`
+  with the host `app.metorite.com` exactly: no port, no user part, no
+  backslash, no `@` and no space. The URL that goes out is built again from
+  the checked parts. A phone browser and Python read a backslash or an `@`
+  differently. Without these checks, Python can read a link as Metorite
+  while the phone opens another site. *(WAC-10a review, 2026-10-10.)*
+- **An image never holds the gateway.** The tool draws in a worker thread
+  behind one lock, because `pymupdf` is not safe in two threads at once. Each
+  label and cell is cut to 160 characters before the layout measures it.
+- **The order.** The text reply goes first, then each element. All parts go
+  under the one send mark of §5.4, so the at-most-once rules hold for each.
+  An element that Meta refuses after the text went out closes the row as
+  `replied` with `send_partial`, and nothing is sent again.
+- **The thread** keeps the text, an invisible mark (U+2063), and a plain
+  rendition of each element, so the next turn knows which buttons it offered.
+  A resend of a stored reply cuts the record at the mark and sends the text
+  only. An answer of elements only has no text, so its resend sends the
+  renditions. The elements themselves are not stored.
+- **Images** are SVG, drawn in the light colours of `globals.css`, and turned
+  into a PNG by `pymupdf`, which the gateway already holds. No new dependency.
+- **The typing indicator** goes before the run, bounded to 5 seconds. A
+  failure never stops the run.
+
+### 12.4 A tap
+
+A tap on a reply button or a list row arrives as an `interactive` message.
+`inbound.tap_text` turns it into the member's text turn: the title, and for a
+row its description in brackets. It is untrusted input exactly like a typed
+text. No code reads the button or row id (§5.11).
+
+A tap never redeems a link code. A Flow reply (`nfm_reply`) still gets no
+action (WAC-11). With `WHATSAPP_ASSISTANT_NATIVE_UI` off, a tap gets no
+action, as in WAC-2.
+
+**Reads only, as in WAC-3.** A button or a row asks or narrows a question. It
+changes no data. WAC-4 brings the Confirm and Cancel buttons for writes.
+
+### 12.5 Acceptance (WAC-10a)
+
+| # | Done when |
+|---|---|
+| N1 | In a WhatsApp run, no agent holds a tool of `WITHHELD_TOOLS` and no web prompt block. A web run is unchanged |
+| N2 | `whatsapp_ui` reaches the run's own agent only |
+| N3 | An element over a limit, or a link that is not a page of `https://app.metorite.com`, is refused with a reason and queues nothing |
+| N4 | The text goes first and each element after it. The thread keeps each rendition. An answer of elements only is sent |
+| N5 | A chart or a table goes as an uploaded PNG with its caption |
+| N6 | A button tap runs as its title, and a row tap as its title and description. A Flow reply gets no action |
+| N7 | With the switch off, the run is the WAC-3 run: `SCOPE_RULE`, no profile, no typing indicator, and a tap gets no action |
+| N8 | The live check on Meta's test number: a question about tasks returns a list, and a tap on a row returns that task |
+
+Fence: `tests/unit/test_wac_native_ui.py`. N8 is the manual step of §8.

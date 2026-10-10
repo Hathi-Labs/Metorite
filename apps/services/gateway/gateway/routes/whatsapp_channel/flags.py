@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/whatsapp_assistant_channel.md`` §5.1 and §7.
 
-This module is the ONE reader of the five settings below. The webhook branch
+This module is the ONE reader of the six settings below. The webhook branch
 of WAC-2 and the run of WAC-3 ask it, and never read the settings themselves.
 
 * ``WHATSAPP_ASSISTANT_ENABLED`` — the kill switch, default OFF.
@@ -18,6 +18,8 @@ of WAC-2 and the run of WAC-3 ask it, and never read the settings themselves.
 * ``WHATSAPP_ASSISTANT_ACCESS_TOKEN`` — the System User token the bot replies
   with (WAC-2). 🔴 A secret: nothing here logs it, and no function returns it
   except :func:`bot_credentials`, whose one caller builds the provider.
+* ``WHATSAPP_ASSISTANT_NATIVE_UI`` — the WhatsApp run profile and its native
+  UI (WAC-10a), default OFF.
 
 The organization always comes from the caller, who takes it from
 ``current_tenant()``. It never comes from request input (R5, R11).
@@ -39,6 +41,15 @@ _DISPLAY_NUMBER = re.compile(r"[0-9]{8,15}")
 def assistant_enabled() -> bool:
     """True when the kill switch is on. Default OFF."""
     return get_settings().whatsapp_assistant_enabled is True
+
+
+def native_ui_enabled() -> bool:
+    """True when a bot run uses the WhatsApp profile (WAC-10a, §12).
+
+    ``WHATSAPP_ASSISTANT_NATIVE_UI``, default OFF. It adds to the kill switch
+    and never replaces it: with the channel off, no run starts at all.
+    """
+    return get_settings().whatsapp_assistant_native_ui is True
 
 
 @functools.lru_cache(maxsize=16)
