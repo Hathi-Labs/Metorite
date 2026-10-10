@@ -8,7 +8,10 @@ file sends a write verb. The one POST is the OAuth token call in
 ``zoho/auth.py``.
 
 The scan reads the AST, not the text, so a comment or a docstring that names a
-forbidden call does not trip it. The self-tests plant each forbidden form in a
+forbidden call does not trip it. It refuses the whole of ``acb_common``,
+``pydantic_settings``, ``dotenv`` and ``importlib``, and ``__import__``. It
+follows each alias of ``os``, so ``import os as _os`` does not hide
+``_os.environ``. The self-tests plant each forbidden form in a
 copy of the tree, which proves that the scan finds it.
 """
 
@@ -37,9 +40,12 @@ EXPECTED_FILES = {
 POST_ALLOWED_FILE = "zoho/auth.py"
 TOKEN_PATH_SUFFIX = "/oauth/v2/token"
 
-_SETTINGS_NAMES = frozenset({"get_settings", "Settings"})
-_SETTINGS_MODULES = ("acb_common.settings", "acb_common.config")
-_OS_ENV_NAMES = frozenset({"environ", "getenv", "putenv", "environb"})
+#: A package that holds or loads settings, or that loads a module by name.
+#: ``acb_common`` is refused WHOLE, because ``import acb_common`` reaches
+#: ``acb_common.Settings()`` through an attribute that no name rule sees.
+_BANNED_MODULES = ("acb_common", "pydantic_settings", "dotenv", "importlib")
+_BANNED_NAMES = frozenset({"get_settings", "BaseSettings", "import_module", "__import__"})
+_OS_ENV_NAMES = frozenset({"environ", "getenv", "putenv", "environb", "getenvb"})
 _FILE_ATTRS = frozenset({"read_text", "write_text", "read_bytes", "write_bytes"})
 _WRITE_VERBS = frozenset({"put", "patch", "delete"})
 #: A generic send takes the verb as data, so no file may call one.
@@ -47,33 +53,44 @@ _GENERIC_SENDS = frozenset({"request", "send", "stream"})
 _FORBIDDEN_STRINGS = (".zoho_token_cache", "ingestion.sources.zoho")
 
 
+def _is_banned(module: str) -> bool:
+    return any(module == m or module.startswith(m + ".") for m in _BANNED_MODULES)
+
+
 def _is_ingestion_zoho(module: str) -> bool:
     return module == "ingestion.sources.zoho" or module.startswith("ingestion.sources.zoho.")
+
+
+def os_aliases(tree: ast.AST) -> frozenset[str]:
+    """Every name that ``import os`` binds in the file, ``import os as _os`` included."""
+    names = {"os"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os" or alias.name.startswith("os."):
+                    names.add(alias.asname or "os")
+    return frozenset(names)
 
 
 def _check_import(node: ast.Import | ast.ImportFrom) -> list[str]:
     found: list[str] = []
     if isinstance(node, ast.Import):
         for alias in node.names:
-            if alias.name.startswith(_SETTINGS_MODULES):
+            if _is_banned(alias.name) or _is_ingestion_zoho(alias.name):
                 found.append(f"imports {alias.name}")
-            if _is_ingestion_zoho(alias.name):
-                found.append(f"imports {alias.name}")
-            if alias.name == "dotenv":
-                found.append("imports dotenv")
         return found
     module = node.module or ""
     names = {alias.name for alias in node.names}
-    if module.startswith(_SETTINGS_MODULES):
+    if _is_banned(module):
         found.append(f"imports from {module}")
-    if module.startswith("acb_common") and names & _SETTINGS_NAMES:
-        found.append(f"imports {sorted(names & _SETTINGS_NAMES)} from {module}")
     if _is_ingestion_zoho(module) or (module == "ingestion.sources" and "zoho" in names):
         found.append(f"imports from {module}")
+    if module == "os" and "*" in names:
+        found.append("imports * from os")
     if module == "os" and names & _OS_ENV_NAMES:
         found.append(f"imports {sorted(names & _OS_ENV_NAMES)} from os")
-    if module == "dotenv":
-        found.append("imports from dotenv")
+    if names & _BANNED_NAMES:
+        found.append(f"imports {sorted(names & _BANNED_NAMES)} from {module}")
     return found
 
 
@@ -95,12 +112,19 @@ def _post_target_ok(call: ast.Call) -> bool:
     return False
 
 
-def _check_call(node: ast.Call, rel: str) -> list[str]:
+def _check_call(node: ast.Call, rel: str, os_names: frozenset[str]) -> list[str]:
     func = node.func
     found: list[str] = []
     if isinstance(func, ast.Name):
-        if func.id in ("open", "Path"):
+        if func.id in ("open", "Path", "__import__"):
             found.append(f"calls {func.id}(")
+        if (
+            func.id == "getattr"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in os_names
+        ):
+            found.append("calls getattr( on os")
         return found
     if not isinstance(func, ast.Attribute):
         return found
@@ -119,26 +143,30 @@ def _check_call(node: ast.Call, rel: str) -> list[str]:
     return found
 
 
-def _check_node(node: ast.AST, rel: str) -> list[str]:
+def _check_node(node: ast.AST, rel: str, os_names: frozenset[str]) -> list[str]:
     if isinstance(node, ast.Import | ast.ImportFrom):
         return _check_import(node)
     if isinstance(node, ast.Call):
-        return _check_call(node, rel)
-    if isinstance(node, ast.Name) and node.id in ("get_settings",):
+        return _check_call(node, rel, os_names)
+    if isinstance(node, ast.Name) and node.id in _BANNED_NAMES:
         return [f"names {node.id}"]
     if isinstance(node, ast.Attribute):
-        if node.attr == "get_settings":
-            return ["names .get_settings"]
+        if node.attr in _BANNED_NAMES:
+            return [f"names .{node.attr}"]
         if (
             isinstance(node.value, ast.Name)
-            and node.value.id == "os"
+            and node.value.id in os_names
             and node.attr in _OS_ENV_NAMES
         ):
-            return [f"reads os.{node.attr}"]
+            return [f"reads os.{node.attr} (as {node.value.id})"]
         if node.attr in _FILE_ATTRS:
             return [f"names .{node.attr}"]
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return [f"holds the string {s!r}" for s in _FORBIDDEN_STRINGS if s in node.value]
+        found = [f"holds the string {s!r}" for s in _FORBIDDEN_STRINGS if s in node.value]
+        # ``getattr(x, "environ")`` after ``x = os`` has no os name in it.
+        if node.value in _OS_ENV_NAMES:
+            found.append(f"holds the string {node.value!r}")
+        return found
     return []
 
 
@@ -148,9 +176,10 @@ def scan(root: Path) -> list[str]:
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        os_names = os_aliases(tree)
         for node in ast.walk(tree):
             line = getattr(node, "lineno", 0)
-            findings.extend(f"{rel}:{line}: {what}" for what in _check_node(node, rel))
+            findings.extend(f"{rel}:{line}: {what}" for what in _check_node(node, rel, os_names))
     return findings
 
 
@@ -204,6 +233,30 @@ PLANTS = [
     ("zoho/client.py", "def f(h):\n    return h.post('https://a/oauth/v2/token')\n", ".post("),
     ("zoho/auth.py", "def f(h):\n    return h.post('https://a/crm/v2/Deals')\n", ".post("),
     ("zoho/auth.py", "def f(h, u):\n    return h.post(u)\n", ".post("),
+    # Fix round 1: each of these passed the first scan.
+    ("base.py", "import acb_common\nS = acb_common.Settings()\n", "acb_common"),
+    ("base.py", "import acb_common\nS = acb_common.get_settings()\n", "acb_common"),
+    (
+        "zoho/client.py",
+        "from acb_common import settings as cfg\nS = cfg.Settings()\n",
+        "acb_common",
+    ),
+    ("zoho/auth.py", "import os as _os\nv = _os.environ['X']\n", "os.environ"),
+    ("zoho/auth.py", "import os as _os\nv = _os.getenv('X')\n", "os.getenv"),
+    (
+        "zoho/auth.py",
+        "from pydantic_settings import BaseSettings\n\n\nclass Z(BaseSettings):\n    x: str = ''\n",
+        "pydantic_settings",
+    ),
+    ("zoho/auth.py", "import pydantic_settings\n", "pydantic_settings"),
+    ("zoho/auth.py", "from pydantic import BaseSettings\n", "BaseSettings"),
+    ("zoho/auth.py", "import os\nv = getattr(os, 'environ')\n", "getattr("),
+    ("zoho/auth.py", "import os\nx = os\nv = getattr(x, 'environ')\n", "'environ'"),
+    ("zoho/auth.py", "from os import *\n", "* from os"),
+    ("zoho/auth.py", "from os import getenv as g\n", "from os"),
+    ("zoho/client.py", "m = __import__('os')\n", "__import__"),
+    ("zoho/client.py", "import importlib\nm = importlib.import_module('os')\n", "importlib"),
+    ("zoho/client.py", "from importlib import import_module\n", "importlib"),
 ]
 
 
