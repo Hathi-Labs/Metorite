@@ -23,6 +23,12 @@ Mutations this suite catches (R7):
 * the ``can_send`` check removed from ``prompt_to_save``: the unit case goes
   red;
 * the history filter removed: the model reads the current turn twice;
+* the prompt save split from the mint again, with its own time budget: a
+  stalled database holds the first byte for two budgets, not one;
+* the steered save awaited before the 202: a stalled database holds the
+  answer to a steer;
+* the seam's kind check removed: a browser id that names an AGENT row
+  rewrites that reply as the member's turn;
 * the save moved in front of the supersede: no failure, because the keep
   list protects the new turn. That order is a choice, not a fence.
 
@@ -158,6 +164,34 @@ def _client(user):
     app.post("/chat/sessions/{session_id}/messages")(save_messages)
     app.get("/chat/sessions/{session_id}/messages")(get_messages)
     app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+def _timed_client(user, clock: dict[str, float]):
+    """``_client``, with the time of the first body byte in ``clock``.
+
+    A TestClient call returns only after the app ends, background tasks
+    included. So the wall time of the call cannot tell when the member got
+    the first byte. This wrapper records it at the ASGI ``send``.
+    """
+    import time
+
+    from fastapi.testclient import TestClient
+
+    inner = _client(user).app
+
+    async def app(scope, receive, send):
+        start = time.monotonic()
+
+        async def _send(message):
+            if (message["type"] == "http.response.body" and message.get("body")
+                    and "first_byte" not in clock):
+                clock["first_byte"] = time.monotonic() - start
+            await send(message)
+
+        await inner(scope, receive, _send)
+        clock["app_done"] = time.monotonic() - start
+
     return TestClient(app)
 
 
@@ -452,3 +486,113 @@ def test_the_history_from_the_store_leaves_out_the_current_turn(graph_as_app, wo
     history = world.payloads[0]["_history_loader"]()
     assert history == [{"role": "user", "content": "An earlier turn"}]
     assert [r.id for r in _user_rows(graph_as_app, sid)] == ["u0", "u1"]
+
+
+# ── A browser id that names an agent row ────────────────────────────────────
+
+@_DB_GATE
+def test_a_prompt_id_that_names_an_agent_row_changes_nothing(graph_as_app, world):
+    """The id comes from the browser. One that names the reply of an
+    earlier run must not turn that reply into the member's turn, on the run
+    path or on the steer path. The seam declines it, and no user row with
+    that id appears."""
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    assert _send_and_close(alice, _run_body(sid, "u1", "Plan the release"))[0] == 200
+    # The fold fills the reply that the mint created (`a-u1`).
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+    _upsert_messages(sid, [MessageRecord(
+        id="a-u1", role="assistant", content="Here is the plan.",
+        timestamp=_T0 + 5, author_kind="agent",
+    )], actor_email=_ALICE, agent_name="orchestrator", author_from_run=True,
+        organization_id=a)
+
+    def _reply():
+        (row,) = [r for r in _rows(graph_as_app, sid) if r.id == "a-u1"]
+        return (row.role, row.content, row.author_email, row.author_kind,
+                row.timestamp_ms)
+
+    before = _reply()
+    assert before[:4] == ("assistant", "Here is the plan.", "orchestrator", "agent")
+
+    assert _send_and_close(alice, _run_body(sid, "a-u1", "Forged turn"))[0] == 200
+    world.route = "STEER"
+    assert _send_and_close(alice, _run_body(sid, "a-u1", "Forged steer"))[0] == 202
+
+    assert _reply() == before
+    assert [r.id for r in _user_rows(graph_as_app, sid)] == ["u1"]
+
+
+# ── Latency: one budget before the first byte ───────────────────────────────
+
+def _slow_ensure_session(monkeypatch, seconds: float) -> list[float]:
+    """``_ensure_session`` that stalls, as a slow database does. Returns the
+    list that each call appends its start time to."""
+    import time
+
+    from gateway.routes import chat
+
+    real = chat._ensure_session
+    calls: list[float] = []
+
+    def _slow(*a, **k):
+        calls.append(time.monotonic())
+        time.sleep(seconds)
+        return real(*a, **k)
+
+    monkeypatch.setattr(chat, "_ensure_session", _slow)
+    return calls
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@_DB_GATE
+def test_a_stalled_database_holds_the_first_byte_for_one_budget(
+        graph_as_app, world, monkeypatch):
+    """The prompt save and the agent row share ONE worker call, ONE
+    ``_ensure_session`` and ONE budget. Two budgets in a row would hold the
+    first byte twice as long. The late write still lands."""
+    from gateway.routes import agent
+
+    budget = 0.5
+    monkeypatch.setattr(agent, "_MINT_TIMEOUT_S", budget)
+    calls = _slow_ensure_session(monkeypatch, 2.0)
+
+    a = graph_as_app.org_a
+    sid = _sid()
+    clock: dict[str, float] = {}
+    alice = _timed_client(_user(_ALICE, a), clock)
+    code, first = _send_and_close(alice, _run_body(sid, "u1", "Plan the release"))
+    assert code == 200, first
+    # One budget is 0.5 s. Two budgets in a row would be 1.0 s.
+    assert budget <= clock["first_byte"] < 1.6 * budget, clock
+    assert len(calls) == 1
+    # The worker goes on after the budget, and the turn still lands.
+    assert _wait_for(lambda: [r.id for r in _user_rows(graph_as_app, sid)] == ["u1"])
+
+
+@_DB_GATE
+def test_a_stalled_database_does_not_hold_the_answer_to_a_steer(
+        graph_as_app, world, monkeypatch):
+    """A steer starts no run. Its save runs after the 202 is sent."""
+    _slow_ensure_session(monkeypatch, 2.0)
+
+    a = graph_as_app.org_a
+    sid = _sid()
+    _new_session(_client(_user(_ALICE, a)), sid)
+    world.route = "STEER"
+    clock: dict[str, float] = {}
+    alice = _timed_client(_user(_ALICE, a), clock)
+    assert _send_and_close(alice, _run_body(sid, "u-steer", "Add a due date"))[0] == 202
+    assert clock["first_byte"] < 1.0, clock
+    assert _wait_for(lambda: [r.id for r in _user_rows(graph_as_app, sid)] == ["u-steer"])
