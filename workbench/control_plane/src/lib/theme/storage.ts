@@ -5,6 +5,15 @@
  * (`boot.ts`) which runs before hydration and cannot import anything. The key
  * names are therefore defined once here and interpolated into the script
  * source, so the two can never drift apart.
+ *
+ * ⚠️ **Appearance is per ACCOUNT on this device** (owner bug, 2026-10-11).
+ * The keys were fixed names, so every account signed in to one browser shared
+ * one accent, one density and one colour mode. Now each value lives under
+ * `<key>:<scope>`, and the scope is `<email>|<organizationId>`, the format of
+ * `chatScope` in `lib/sessions.ts`. `APPEARANCE_SCOPE_KEY` names the active
+ * scope. The boot script reads it before paint, because the session cookie
+ * is httpOnly. With no pointer, every read and write uses the bare key, as
+ * before. `scope.ts` moves the pointer. Fence: `scope.test.ts`.
  */
 
 import type { Density, ThemeMode } from "./types";
@@ -52,8 +61,45 @@ export const ACCENT_PROPERTIES = ["--primary", "--ring", "--sidebar-primary"] as
  */
 export const ACCENT_INK_PROPERTIES = ["--primary-foreground", "--sidebar-primary-foreground"] as const;
 
-/** localStorage key next-themes uses for the colour mode. */
+/**
+ * localStorage key next-themes uses for the colour mode. next-themes reads
+ * this bare key and no other, so it stays. The record of an account's mode is
+ * `theme:<scope>`. The boot script copies it into `theme` before next-themes
+ * reads it, and `ThemeProvider` copies each change back.
+ */
 export const MODE_STORAGE_KEY = "theme";
+
+/** The colour mode of an account that never chose one. `Providers.tsx` reads it. */
+export const DEFAULT_MODE: ThemeMode = "dark";
+
+/**
+ * The active appearance scope (`<email>|<organizationId>`). It names an
+ * account and holds no preference. Absent means this browser has never bound
+ * one, so the bare keys still hold the values (see `scope.ts`, legacy).
+ */
+export const APPEARANCE_SCOPE_KEY = "cc-appearance-scope";
+
+/**
+ * The prefix of the last full scope seen for one email. An account switch
+ * knows the email of the target and not its organization, so it reads this.
+ */
+export const APPEARANCE_LAST_SCOPE_PREFIX = "cc-appearance-last:";
+
+/** Joins a key and its scope. The boot script takes it from here. */
+export const SCOPE_SEPARATOR = ":";
+
+/** The key of `key` in `scope`, or the bare key when there is no scope. */
+export function scopedKey(key: string, scope: string | null): string {
+  return scope ? `${key}${SCOPE_SEPARATOR}${scope}` : key;
+}
+
+/** The scope the pointer names now, or null. */
+export function activeAppearanceScope(): string | null {
+  return read(APPEARANCE_SCOPE_KEY) || null;
+}
+
+/** The key of `key` in the active scope. */
+const here = (key: string) => scopedKey(key, activeAppearanceScope());
 
 function read(key: string): string | null {
   try {
@@ -73,21 +119,37 @@ function write(key: string, value: string | null): void {
   }
 }
 
+/**
+ * Every read and write goes to the ACTIVE scope, resolved at the moment of
+ * the call. So a pointer that moves takes the next read with it.
+ */
 export const themeStorage = {
-  getDensity: () => read(STORAGE_KEYS.density) as Density | null,
-  setDensity: (d: Density | null) => write(STORAGE_KEYS.density, d),
-  getAccent: () => read(STORAGE_KEYS.accent),
-  getAccentInk: () => read(STORAGE_KEYS.accentInk),
+  getDensity: () => read(here(STORAGE_KEYS.density)) as Density | null,
+  setDensity: (d: Density | null) => write(here(STORAGE_KEYS.density), d),
+  getAccent: () => read(here(STORAGE_KEYS.accent)),
+  getAccentInk: () => read(here(STORAGE_KEYS.accentInk)),
   setAccent: (c: string | null) => {
-    write(STORAGE_KEYS.accent, c);
+    write(here(STORAGE_KEYS.accent), c);
     // Written together so the two can never disagree, and cleared together so
     // removing the accent cannot leave orphaned ink behind.
-    write(STORAGE_KEYS.accentInk, c ? accentInk(c) || null : null);
+    write(here(STORAGE_KEYS.accentInk), c ? accentInk(c) || null : null);
   },
-  getOrgDensity: () => read(STORAGE_KEYS.orgDensity) as Density | null,
-  setOrgDensity: (d: Density) => write(STORAGE_KEYS.orgDensity, d),
-  getMode: () => read(MODE_STORAGE_KEY) as ThemeMode | null,
+  getOrgDensity: () => read(here(STORAGE_KEYS.orgDensity)) as Density | null,
+  setOrgDensity: (d: Density) => write(here(STORAGE_KEYS.orgDensity), d),
+  /** The colour mode of the active scope, or the bare key with no scope. */
+  getMode: () => read(here(MODE_STORAGE_KEY)) as ThemeMode | null,
+  /**
+   * Record a colour mode for the active scope. With no scope it does nothing,
+   * because next-themes already wrote the bare key.
+   */
+  mirrorMode: (mode: string) => {
+    const scope = activeAppearanceScope();
+    if (scope) write(scopedKey(MODE_STORAGE_KEY, scope), mode);
+  },
 };
+
+/** Low-level access for `scope.ts`, which moves the pointer. */
+export const rawStorage = { read, write };
 
 /** Root font-size multiplier for a density setting. */
 export function densityScale(density: Density | null | undefined): number {

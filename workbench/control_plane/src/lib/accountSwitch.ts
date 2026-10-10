@@ -19,6 +19,7 @@ import { useEffect } from "react";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
+import { pointAppearanceAt } from "@/lib/theme/scope";
 
 /**
  * The keys that belong to one organization. Each test in
@@ -28,7 +29,9 @@ import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 export const ORG_SCOPED_KEYS = [
   // lib/orgBranding.ts — the logo, painted before the network answers.
   "cc-org-branding-v1",
-  // lib/theme/storage.ts — the organization's default density.
+  // lib/theme/storage.ts — the organization's default density, in the bare
+  // key a browser with no appearance scope still reads. A scoped copy
+  // (`cc-density-org:<scope>`) belongs to one account and stays.
   "cc-density-org",
   // app/email/lib/emailStore.ts — the last mailbox, an id of one org.
   "cc.email.selectedAccountId",
@@ -110,7 +113,12 @@ export async function switchTo(
   leaving = true;
   try {
     const { email } = (await res.json()) as { email?: string };
-    if (email) announceAccount(email);
+    if (email) {
+      announceAccount(email);
+      // Paint the target's own appearance on the first frame, not this
+      // account's (lib/theme/scope.ts). The boot script reads the pointer.
+      pointAppearanceAt(email);
+    }
   } catch {
     /* no body: the backstop still runs */
   }

@@ -42,6 +42,9 @@ one look, they do not replace it:
 An admin sets org-wide defaults for the same three and can lock personal
 overrides off.
 
+The browser keeps the mode, density and accent of a member for each signed-in
+account (`src/lib/theme/scope.ts`). An account switch does not carry them across.
+
 **The consequence for you:** a hardcoded value is not "a small inconsistency."
 It will *render fine* — and it will still be wrong in light mode, at compact
 density, and under a changed accent, which is where somebody who did not write
