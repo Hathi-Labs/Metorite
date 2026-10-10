@@ -87,7 +87,7 @@ Handler = Callable[[httpx.Request], httpx.Response]
 class Fake:
     """A fake Zoho. ``script`` answers the requests in order."""
 
-    script: list[httpx.Response | Handler] = field(default_factory=list)
+    script: list[httpx.Response | Handler | Exception] = field(default_factory=list)
     requests: list[httpx.Request] = field(default_factory=list)
     sleeps: list[float] = field(default_factory=list)
 
@@ -96,6 +96,8 @@ class Fake:
         if not self.script:
             raise AssertionError(f"unexpected request {request.method} {request.url}")
         step = self.script.pop(0)
+        if isinstance(step, Exception):
+            raise step
         return step(request) if callable(step) else step
 
     async def sleep(self, seconds: float) -> None:
@@ -236,9 +238,75 @@ async def test_the_backoff_writes_a_log_line_with_no_token() -> None:
     fake = Fake([too_many(), rows("1")])
     with structlog.testing.capture_logs() as events:
         await fake.source().list_changed("deal")
-    warned = [e for e in events if e["event"] == "crm_sources.zoho.rate_limited"]
+    warned = [e for e in events if e["event"] == "crm_sources.zoho.backoff"]
     assert len(warned) == 1
+    assert warned[0]["reason"] == "rate limit"
     assert not any(s in json.dumps(warned, default=str) for s in PLANTED)
+
+
+# ── Transport errors and server errors (fix round 1) ───────────────────────
+
+
+def timeout() -> httpx.TimeoutException:
+    return httpx.ReadTimeout("timed out")
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        [ok({}, status=503), ok({}, status=504)],
+        [timeout(), timeout()],
+        [ok({}, status=502), timeout()],
+    ],
+    ids=["503-504", "two-timeouts", "502-timeout"],
+)
+async def test_a_5xx_or_a_timeout_backs_off_like_a_429(
+    leaks: list[str],
+    first: list[httpx.Response | Exception],
+) -> None:
+    fake = Fake([*first, rows("1")])
+    source = fake.source()
+    page = await source.list_changed("deal")
+    assert len(fake.requests) == 3
+    assert fake.sleeps == [1.0, 2.0]
+    assert source.credits_used == 3
+    assert [r.ext_id for r in page.records] == ["1"]
+
+
+@pytest.mark.parametrize("kind", ["502", "timeout"])
+async def test_five_5xx_or_timeouts_raise_a_source_error(leaks: list[str], kind: str) -> None:
+    def failure() -> httpx.Response | Exception:
+        return ok({}, status=502) if kind == "502" else timeout()
+
+    fake = Fake([failure() for _ in range(5)])
+    source = fake.source()
+    with pytest.raises(SourceError) as caught:
+        await source.list_changed("deal")
+    assert not isinstance(caught.value, RateLimited)
+    assert len(fake.requests) == 5
+    assert fake.sleeps == [1.0, 2.0, 4.0, 8.0]
+    assert source.credits_used == 5
+    leaks.extend(exc_texts(caught.value))
+
+
+async def test_a_connect_error_is_a_source_error_with_no_retry(leaks: list[str]) -> None:
+    fake = Fake([httpx.ConnectError("refused"), rows("1")])
+    source = fake.source()
+    with pytest.raises(SourceError) as caught:
+        await source.list_changed("deal")
+    assert len(fake.requests) == 1
+    assert fake.sleeps == []
+    assert source.credits_used == 1
+    leaks.extend(exc_texts(caught.value))
+
+
+async def test_a_transport_error_on_the_token_call_is_a_source_error(leaks: list[str]) -> None:
+    fake = Fake([httpx.ConnectError("refused")])
+    with pytest.raises(SourceError) as caught:
+        await fake.source().refresh()
+    assert not isinstance(caught.value, NeedsReconnect)
+    assert len(fake.requests) == 1
+    leaks.extend(exc_texts(caught.value))
 
 
 # ── 4. Paging ───────────────────────────────────────────────────────────────

@@ -202,8 +202,12 @@ async def _token_call(
 ) -> tuple[int, dict[str, Any]]:
     """One POST to the token endpoint. It adds no credit and never retries."""
     server = check_accounts_server(accounts_server)
-    async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT, transport=transport) as http:
-        r = await http.post(f"{server}/oauth/v2/token", data=form)
+    try:
+        async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT, transport=transport) as http:
+            r = await http.post(f"{server}/oauth/v2/token", data=form)
+    except httpx.TransportError as exc:
+        # The name of the error type only. The form holds the secret.
+        raise SourceError(f"The Zoho token request failed ({type(exc).__name__})") from exc
     try:
         body = r.json()
     except ValueError:

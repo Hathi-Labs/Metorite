@@ -162,14 +162,19 @@ def _is_rate_limited(response: httpx.Response) -> bool:
     return _error_body(response).get("code") == _RATE_LIMIT_CODE
 
 
-def _backoff_seconds(response: httpx.Response, attempt: int) -> float:
+#: A gateway error or an overloaded server. Zoho answers these when it is
+#: busy, so they take the backoff of a rate limit.
+_RETRY_STATUSES = frozenset({502, 503, 504})
+
+
+def _backoff_seconds(response: httpx.Response | None, attempt: int) -> float:
     """``Retry-After`` when it is a finite number, else 1, 2, 4, 8. Never past 60.
 
     A ``nan`` must not reach the sleep, because ``asyncio.sleep(nan)`` never
     returns. So a value that is not finite, or below zero, takes the step.
     """
     step = float(2 ** (attempt - 1))
-    header = response.headers.get("Retry-After", "")
+    header = response.headers.get("Retry-After", "") if response is not None else ""
     try:
         wait = float(header)
     except ValueError:
@@ -380,30 +385,62 @@ class ZohoSource:
             {"Authorization": f"Zoho-oauthtoken {credential.access_token}"},
             since,
         )
+        reason = ""
         for attempt in range(1, MAX_TRIES + 1):
+            # Each request that leaves costs a credit, a retry included.
             self._spend_credit()
-            async with httpx.AsyncClient(
-                timeout=_API_TIMEOUT,
-                transport=self._transport,
-            ) as http:
-                r = await http.get(f"{base}{path}", headers=headers, params=dict(params))
-            if not _is_rate_limited(r):
+            r, reason = await self._send_once(f"{base}{path}", path, headers, params)
+            if r is not None and not reason:
                 return r
             if attempt == MAX_TRIES:
                 break
             wait = _backoff_seconds(r, attempt)
             _log.warning(
-                "crm_sources.zoho.rate_limited",
+                "crm_sources.zoho.backoff",
                 path=path,
-                status=r.status_code,
+                reason=reason,
                 attempt=attempt,
                 wait=wait,
             )
             await self._sleep(wait)
-        raise RateLimited(
-            f"Zoho still refused {path} after {MAX_TRIES} tries (rate limit)",
-            tries=MAX_TRIES,
-        )
+        if reason == "rate limit":
+            raise RateLimited(
+                f"Zoho still refused {path} after {MAX_TRIES} tries (rate limit)",
+                tries=MAX_TRIES,
+            )
+        raise SourceError(f"Zoho did not answer {path} after {MAX_TRIES} tries ({reason})")
+
+    async def _send_once(
+        self,
+        url: str,
+        path: str,
+        headers: Mapping[str, str],
+        params: Mapping[str, Any],
+    ) -> tuple[httpx.Response | None, str]:
+        """One GET. The reason is empty for an answer the caller can use.
+
+        A timeout, a 502, 503 or 504, and a rate limit give a reason, and the
+        caller backs off. Any other transport error raises
+        :class:`SourceError` at once. Its message names the error type, and
+        never the request, because the request carries the token.
+        """
+        try:
+            async with httpx.AsyncClient(
+                timeout=_API_TIMEOUT,
+                transport=self._transport,
+            ) as http:
+                r = await http.get(url, headers=dict(headers), params=dict(params))
+        except httpx.TimeoutException:
+            return None, "timeout"
+        except httpx.TransportError as exc:
+            raise SourceError(
+                f"The request to Zoho for {path} failed ({type(exc).__name__})"
+            ) from exc
+        if _is_rate_limited(r):
+            return r, "rate limit"
+        if r.status_code in _RETRY_STATUSES:
+            return r, f"HTTP {r.status_code}"
+        return r, ""
 
     def _check_budget(self) -> None:
         """Refuse the next call before it leaves when it would pass the budget."""
