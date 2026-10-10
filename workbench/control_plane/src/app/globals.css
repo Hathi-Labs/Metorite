@@ -1062,12 +1062,13 @@ select optgroup {
  * chevron shows and the icon gives way. The chevron is a real button the
  * whole time, so Tab reaches it at rest, and reaching it shows it.
  *
- * ⚠️ At rest it takes NO pointer. A transparent toggle over the icon caught
- * the tap on a touch laptop with no mouse, so a tap on what looks like an
- * icon opened the row instead of selecting it. Now the first tap selects
- * the row, the sticky hover of a touch screen shows the chevron, and a tap
- * on the chevron opens the row. A phone does not use this utility at all:
- * there the chevron is always shown and always takes the tap.
+ * ⚠️ At rest it takes NO pointer, so a hidden chevron never catches a
+ * press meant for the icon. ⚠️ That is NOT enough for a finger. Chromium
+ * sets `:hover` at the start of a tap, so the tap's click lands on the
+ * chevron this rule has just switched on (measured 2026-10-10). The touch
+ * half is `togglePress` in `RailRow.tsx`: a tap on a row that is not
+ * selected selects it. A phone does not use this utility at all, because
+ * there the chevron is always shown.
  */
 @utility rail-row-chevron {
   opacity: 0;

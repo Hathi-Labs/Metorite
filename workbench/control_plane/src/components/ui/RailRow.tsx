@@ -52,6 +52,8 @@
  * Fences: `RailRow.test.ts` (markup), `src/lib/railRows.test.ts` (the rails
  * that must render this) and `e2e/rail-rows.spec.ts` (the real hover).
  */
+import { useRef } from "react";
+
 import { useViewMode } from "@/components/ViewModeProvider";
 import Button from "@/components/ui/Button";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
@@ -73,6 +75,27 @@ export interface RailRowExpand {
  * ArrowLeft closes an open one. Any other key, or a key that would change
  * nothing, returns `false`, and the row leaves the key alone.
  */
+/**
+ * What a press on the expand toggle does: switch the row, or select it.
+ *
+ * ⚠️ A TOUCH press on a row that is not selected SELECTS it. The chevron is
+ * transparent over the icon at rest, so the member taps what looks like an
+ * icon. Chromium sets `:hover` at the tap's start, and the tap's click then
+ * lands on a chevron that `rail-row-chevron` has just switched on. The CSS
+ * alone cannot stop that, so this rule does. The first tap selects the row
+ * and shows the chevron, and a tap on the selected row's chevron switches it.
+ *
+ * A mouse, a pen, a keyboard and a phone always switch. A phone shows its
+ * chevron at all times, so there the member can see what they tap.
+ */
+export function togglePress(
+  pointer: string | null,
+  selected: boolean,
+  phone: boolean,
+): "toggle" | "select" {
+  return pointer === "touch" && !selected && !phone ? "select" : "toggle";
+}
+
 export function expandKey(key: string, expanded: boolean): boolean {
   if (key === "ArrowRight") return !expanded;
   if (key === "ArrowLeft") return expanded;
@@ -163,6 +186,17 @@ export function RailRow({
   // The toggle sits over the icon's slot, so it draws only where the icon
   // does. An editor draws its own icon, and no toggle covers it.
   const toggle = expand && !editor ? expand : null;
+  // The kind of pointer that pressed the toggle last. Read only in the click
+  // handler, and cleared there, so Enter and Space always switch the row.
+  const pressedBy = useRef<string | null>(null);
+  const onTogglePress = toggle
+    ? () => {
+        const by = pressedBy.current;
+        pressedBy.current = null;
+        if (togglePress(by, selected, isMobile) === "select") onSelect?.();
+        else toggle.onToggle();
+      }
+    : undefined;
   const onKeyDown = toggle
     ? (event: React.KeyboardEvent) => {
         if (!expandKey(event.key, toggle.expanded)) return;
@@ -195,7 +229,10 @@ export function RailRow({
             aria-label={toggle.expanded ? `Collapse ${label}` : `Expand ${label}`}
             aria-expanded={toggle.expanded}
             data-rail-toggle=""
-            onClick={toggle.onToggle}
+            onPointerDown={(event: React.PointerEvent) => {
+              pressedBy.current = event.pointerType;
+            }}
+            onClick={onTogglePress}
             onKeyDown={onKeyDown}
             className={`absolute -left-0.5 top-1/2 z-10 h-5 w-5 -translate-y-1/2 rounded ${
               isMobile ? "" : "rail-row-chevron"

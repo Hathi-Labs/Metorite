@@ -11,7 +11,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { RailRow, expandKey, railRowClass, type RailRowProps } from "./RailRow";
+import { RailRow, expandKey, railRowClass, togglePress, type RailRowProps } from "./RailRow";
 
 const draw = (props: Partial<RailRowProps> = {}) =>
   renderToStaticMarkup(
@@ -144,6 +144,17 @@ describe("the chevron takes the icon's slot", () => {
       editor: createElement("input", { "aria-label": "Rename" }),
     });
     expect(editing).not.toContain("data-rail-toggle");
+  });
+
+  it("a touch press on a row that is not selected selects it, and every other press switches it", () => {
+    expect(togglePress("touch", false, false)).toBe("select");
+    expect(togglePress("touch", true, false)).toBe("toggle");
+    expect(togglePress("mouse", false, false)).toBe("toggle");
+    expect(togglePress("pen", false, false)).toBe("toggle");
+    // Enter and Space carry no pointer.
+    expect(togglePress(null, false, false)).toBe("toggle");
+    // A phone shows the chevron, so the finger sees what it taps.
+    expect(togglePress("touch", false, true)).toBe("toggle");
   });
 
   it("opens on ArrowRight and closes on ArrowLeft, and leaves other keys alone", () => {

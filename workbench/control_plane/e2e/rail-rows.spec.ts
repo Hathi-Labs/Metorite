@@ -227,6 +227,23 @@ test.describe("rail rows on a touch-capable display", () => {
   test.use({ hasTouch: true });
   test.setTimeout(90_000);
 
+  test("a tap on a parent's icon selects the row, and a tap on the chevron opens it", async ({ page }) => {
+    // ⚠️ The chevron is transparent over the icon at rest. If it took the
+    // pointer there, this first tap would toggle the row instead of selecting
+    // it, and the tree would jump under the member's finger.
+    await openProjects(page);
+    const space = row(page, "Fracktal Care");
+    const toggle = space.locator("[data-rail-toggle]");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await space.locator("[data-rail-icon]").tap();
+    await expect(space).toHaveClass(/bg-primary\/10/);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // The tap leaves the row hovered, so the chevron now shows and takes it.
+    await expect.poll(() => opacityOf(space, "[data-rail-toggle]")).toBe(1);
+    await toggle.tap();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
   test("a mouse hover still reveals the actions", async ({ page }) => {
     await openProjects(page);
     await rest(page);
@@ -234,5 +251,31 @@ test.describe("rail rows on a touch-capable display", () => {
     expect((await actionsBox(target)).width).toBe(0);
     await target.hover();
     expect((await actionsBox(target)).opacity).toBe(1);
+  });
+});
+
+test.describe("the phone drawer", () => {
+  test.setTimeout(120_000);
+
+  test("New space beside Spaces shows a focused draft row in the drawer", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/**", (route) => route.fulfill({ json: SAFE_EMPTY }));
+    await page.route("**/api/projects/tree", (route) => route.fulfill({ json: RAIL_TREE }));
+    await page.goto("/projects");
+    await page.waitForTimeout(4000);
+    await page.evaluate(() =>
+      window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail: "projects-tree" })),
+    );
+    await expect(page.getByText("Company Operations").first()).toBeVisible({ timeout: 20_000 });
+    // One heading and one door: the drawer drew a second pair before.
+    await expect(page.getByText("Spaces", { exact: true })).toHaveCount(1);
+    const plus = page.locator('button[aria-label="New space"]:visible');
+    await expect(plus).toHaveCount(1);
+    await plus.click();
+    const field = page.getByRole("textbox", { name: "New space" });
+    await expect(field).toBeVisible({ timeout: 10_000 });
+    await expect(field).toBeFocused();
+    // Still in the drawer, beside the tree it will join.
+    await expect(page.getByText("Company Operations").first()).toBeVisible();
   });
 });
