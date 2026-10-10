@@ -2055,7 +2055,7 @@ def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
 
 def _mint_run_row(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
-    organization_id: str | None,
+    organization_id: str | None, prompt: PromptToSave | None = None,
 ) -> None:
     """Create the agent row of a run before its stream opens (WS-27bm S14, §20).
 
@@ -2068,6 +2068,12 @@ def _mint_run_row(
     The mint only inserts. When a row with this id exists, the mint changes
     nothing. It is best effort. On a failure it logs ``agent.mint_failed``
     and the run goes on, because the fold still inserts the row at the end.
+
+    WS-51 S4: *prompt* is the member's turn, which goes in FIRST, in the
+    same worker call and after the same ``_ensure_session``. One call keeps
+    one time budget on the path to the first byte. A failed prompt write
+    logs ``agent.prompt_save_failed`` and the mint still runs. The browser
+    save still writes the turn.
     """
     import time
 
@@ -2081,12 +2087,25 @@ def _mint_run_row(
     try:
         # The parent session must exist before the message FK insert. It
         # takes the email as the session stores it, the same as the fold.
-        # S15 (§21): both writes bind the run's tenant, which the route
+        # S15 (§21): every write binds the run's tenant, which the route
         # resolved from the server-side identity. No tenant fails closed.
         _ensure_session(
             thread_id, (member or "").strip(), agent_name,
             organization_id=organization_id,
         )
+    except Exception as exc:  # The mint must never stop a run.
+        _log.warning(
+            "agent.mint_failed",
+            thread_id=thread_id[:12], message_id=message_id[:40],
+            error=str(exc)[:200],
+        )
+        return
+    if prompt is not None:
+        _write_prompt_row(
+            thread_id, prompt, member=member, agent_name=agent_name,
+            organization_id=organization_id,
+        )
+    try:
         _upsert_messages(
             thread_id,
             [MessageRecord(
@@ -2108,20 +2127,24 @@ def _mint_run_row(
 
 #: How long the run waits for its mint before it opens the stream (S14 fix
 #: round 1). The mint is best effort, so a slow database must not hold the
-#: first byte of the reply.
+#: first byte of the reply. WS-51 S4: the prompt save shares this budget.
 _MINT_TIMEOUT_S = 2.0
 
 
 async def _mint_run_row_bounded(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
-    organization_id: str | None,
+    organization_id: str | None, prompt: PromptToSave | None = None,
 ) -> None:
-    """``_mint_run_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
+    """``_mint_run_row`` in ONE worker thread, bounded by ``_MINT_TIMEOUT_S``.
+
+    The member's turn (*prompt*) and the agent row share the one call and
+    the one budget, so a stalled database holds the first byte for 2 s at
+    most, and holds one worker, not two.
 
     On a timeout it logs ``agent.mint_failed`` with the reason ``timeout``,
     and the run goes on. The thread can still finish later. The mint only
-    inserts, so a late mint changes no row that a checkpoint or the fold
-    wrote first.
+    inserts, and the prompt upsert is idempotent by id, so a late write
+    changes no row that a checkpoint, the browser or the fold wrote first.
     """
     import asyncio
 
@@ -2130,7 +2153,7 @@ async def _mint_run_row_bounded(
             asyncio.to_thread(
                 _mint_run_row, thread_id, message_id,
                 member=member, agent_name=agent_name,
-                organization_id=organization_id,
+                organization_id=organization_id, prompt=prompt,
             ),
             _MINT_TIMEOUT_S,
         )
@@ -2140,6 +2163,12 @@ async def _mint_run_row_bounded(
             thread_id=thread_id[:12], message_id=message_id[:40],
             reason="timeout",
         )
+        if prompt is not None:
+            _log.warning(
+                "agent.prompt_save_failed",
+                thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+                reason="timeout",
+            )
 
 
 #: The longest browser message id that the run route saves (WS-51 S4). A
@@ -2201,33 +2230,27 @@ def prompt_to_save(
     )
 
 
-def _save_prompt_row(
+def _write_prompt_row(
     thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
     organization_id: str | None,
 ) -> bool:
-    """Save the member's turn before the run starts (WS-51 S4). True on a write.
+    """Write the member's turn (WS-51 S4). True on a write. Never raises.
 
-    The write goes through the one upsert seam, ``_upsert_messages``, bound to
-    the run's tenant, which the route took from the server-side identity. The
-    seam passes the text through ``storable`` and stamps the author from
-    ``member``. The parent chat row is made first when it is missing, as the
-    mint does.
+    The caller has made the chat row (``_ensure_session``). The write goes
+    through the one upsert seam, ``_upsert_messages``, bound to the run's
+    tenant, which the route took from the server-side identity. The seam
+    passes the text through ``storable`` and stamps the author from
+    ``member``. The id comes from the browser, so the seam declines it when
+    it names a row that is not this member's own turn: an agent row, a
+    system row, or another member's turn.
 
     It is best effort, as the mint is. On a failure it logs
     ``agent.prompt_save_failed`` and the run goes on, because the browser save
     still writes the turn.
     """
-    from gateway.routes.chat import (
-        MessageRecord,
-        _ensure_session,
-        _upsert_messages,
-    )
+    from gateway.routes.chat import MessageRecord, _upsert_messages
 
     try:
-        _ensure_session(
-            thread_id, (member or "").strip(), agent_name,
-            organization_id=organization_id,
-        )
         declined = _upsert_messages(
             thread_id,
             [MessageRecord(
@@ -2248,34 +2271,34 @@ def _save_prompt_row(
         return False
 
 
-async def _save_prompt_row_bounded(
-    thread_id: str, prompt: PromptToSave | None, *, member: str,
-    agent_name: str, organization_id: str | None,
-) -> None:
-    """``_save_prompt_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
+def _save_steered_prompt(
+    thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
+    organization_id: str | None,
+) -> bool:
+    """Save a steered turn (WS-51 S4). It runs AFTER the 202 is sent.
 
-    A slow database must not hold the first byte of the reply. On a timeout
-    the thread can still finish later, and the upsert is idempotent by id.
+    The route adds it as a background task, so a slow database never holds
+    the answer to a steer. A steer starts no run, so no mint shares this
+    call. The chat row is made first when it is missing.
     """
-    import asyncio
+    from gateway.routes.chat import _ensure_session
 
-    if prompt is None:
-        return
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                _save_prompt_row, thread_id, prompt,
-                member=member, agent_name=agent_name,
-                organization_id=organization_id,
-            ),
-            _MINT_TIMEOUT_S,
+        _ensure_session(
+            thread_id, (member or "").strip(), agent_name,
+            organization_id=organization_id,
         )
-    except TimeoutError:
+    except Exception as exc:  # A background save must never raise.
         _log.warning(
             "agent.prompt_save_failed",
             thread_id=thread_id[:12], message_id=prompt.message_id[:40],
-            reason="timeout",
+            error=str(exc)[:200],
         )
+        return False
+    return _write_prompt_row(
+        thread_id, prompt, member=member, agent_name=agent_name,
+        organization_id=organization_id,
+    )
 
 
 async def _extract_run_memory(
@@ -2457,9 +2480,11 @@ async def run_agent_stream_endpoint(
         # member's words show on a reload too, as their own turn. The spec
         # is silent here, so the turn is saved with its actor. A stop and a
         # dropped turn save nothing.
-        if _decision.route.name == "STEER":
-            await _save_prompt_row_bounded(
-                req.thread_id or "", _prompt,
+        # It runs as a background task, after the 202 is sent, so a slow
+        # database never holds the answer to a steer.
+        if _decision.route.name == "STEER" and _prompt is not None:
+            background_tasks.add_task(
+                _save_steered_prompt, req.thread_id or "", _prompt,
                 member=actor_email, agent_name=agent_name,
                 organization_id=_room_org,
             )
@@ -2759,23 +2784,17 @@ async def run_agent_stream_endpoint(
         _supersede_note = compose_supersede_note(_plan)
         _superseded_ids = _plan.removed_ids
 
-    # WS-51 S4: the server saves the member's turn, under the browser's own
-    # id, before the run starts. It comes after every refusal and after the
-    # supersede above, so a refused turn saves nothing and an edit's old turn
-    # is gone first. It comes before the agent row, so the turn exists first.
-    await _save_prompt_row_bounded(
-        thread_id, _prompt,
-        member=_mem_user, agent_name=agent_name,
-        organization_id=_room_org,
-    )
-
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a
     # steered or refused turn mints nothing.
+    # WS-51 S4: the same worker call first saves the member's turn, under the
+    # browser's own id. It comes after the supersede above, so an edit's old
+    # turn is gone first. One call and one time budget, so a stalled database
+    # holds the first byte for one budget, not two.
     await _mint_run_row_bounded(
         thread_id, _persist_message_id,
         member=_mem_user, agent_name=agent_name,
-        organization_id=_room_org,
+        organization_id=_room_org, prompt=_prompt,
     )
 
     _think_mode = _resolve_think_mode(req)
