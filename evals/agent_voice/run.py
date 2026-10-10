@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/agent_writing_voice.md`` §7.
 
-Twelve fixed cases over the five surfaces (``cases.json``). The score is the
+Thirteen fixed cases over the six surfaces (``cases.json``). The score is the
 findings of :func:`acb_llm.voice.voice_lint`, by rule.
 
 ``--scripted`` scores the hand-written answers of ``scripted_answers.json``

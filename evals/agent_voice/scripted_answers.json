@@ -12,6 +12,7 @@
     "V09": {"text": "Hi,\n\nI hope this email finds you well. I just wanted to check on the delivery proof for NF-882. Could you send it by 15 Oct?\n\nThanks", "expected_rules": ["hope_finds_you_well", "filler"]},
     "V10": {"text": "Decided: the pilot launches with two customers on 20 Oct. Arjun owns the onboarding script.\nOpen: Meera confirms the pilot pricing. The API docs delay had no decision.", "expected_rules": []},
     "V11": {"text": "Yesterday you completed 14 tasks. Three are now overdue: #141, #152 and #160. Kaveri Steel (INV-2207) and Nilgiri Freight (NF-882) sent urgent emails.", "expected_rules": []},
-    "V12": {"text": "The Design team closed 22 of 30 planned tasks. Two moved to week 42 with the brand review. Meera was on leave on 8 and 9 Oct, and no task is blocked. Overall, a really strong week.", "expected_rules": ["closer", "filler"]}
+    "V12": {"text": "The Design team closed 22 of 30 planned tasks. Two moved to week 42 with the brand review. Meera was on leave on 8 and 9 Oct, and no task is blocked. Overall, a really strong week.", "expected_rules": ["closer", "filler"]},
+    "V13": {"text": "4 pm works. Talk then.", "expected_rules": []}
   }
 }

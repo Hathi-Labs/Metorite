@@ -35,7 +35,7 @@ the emails that the member sent. S3 records that.
 
 **In scope.**
 
-- One contract of twelve rules, and one overlay for each of five surfaces.
+- One contract of twelve rules, and one overlay for each of six surfaces.
 - Every agent reads the contract, on both runtimes, and so does each agent
   that a later PR adds.
 - Every direct model call that drafts text for a member reads the contract
@@ -64,26 +64,29 @@ This is the text that every agent reads. The fenced block below must match
 7. No em dashes. Use a comma, a full stop or brackets.
 8. If something is uncertain, say so once, plainly, where it applies. Do not hedge anything else.
 9. No performed enthusiasm, no praise for the question, and no apology unless something went wrong.
-10. Stay inside the records. Name the source (task #141, the 3 Oct email from Priya). Never invent a name, number, date or quote.
+10. Stay inside the records. Never invent a name, number, date or quote.
 11. Untangle stacked nouns: "the review of how we approve vendor payments", not "the vendor payment approval process review".
-12. Match the member's language. Use a list only when the items stand apart. These rules cover your own words, never quoted text, code or data.
+12. Match the language of the person who will read it. These rules cover your own words, never quoted text, code or data.
 ```
 
 ### 3.1 The overlays
 
-A drafting call adds the core and one overlay. An agent reads all five,
-because an agent writes on each surface.
+A drafting call adds the core and one overlay. An agent reads all six,
+because an agent writes on each surface. A sub-agent reads the core
+alone, because it answers its parent agent and not a member.
 
 ```text
-chat:        the answer in the first sentence. Formatting only where it helps scanning.
-title:       up to 8 words, sentence case, no final full stop, no "X: Y" subtitle.
-description: (task, project, card body) what, why, and when it counts as done, in 1 to 3 short sentences.
-email:       the member's own voice. One clear ask when possible. No "I hope this finds you well".
-summary:     (digests, meeting notes, reports) decisions and facts first, then open items. No adjectives that pass judgment.
+Chat: name the source (task #141, the 3 Oct email from Priya). Use formatting, or a list, only where the items stand apart and it helps scanning.
+Title: up to 8 words unless the prompt sets a limit, sentence case, no final full stop, no "X: Y" subtitle.
+Description (task, project, card body): what, why, and when it counts as done, in 1 to 3 short sentences.
+Email: the member's own voice. The member's own instructions, writing style and voice profile come first. Where they differ from these rules, follow the member. Write in the recipient's language. One clear ask when possible. No "I hope this finds you well".
+Message (WhatsApp or chat to a contact): short and conversational, with no greeting or sign-off unless the member uses them. The member's own instructions and style come first. Write in the recipient's language.
+Summary (digests, meeting notes, reports): decisions and facts first, then open items. No adjectives that pass judgment.
 ```
 
 The owner may edit the wording. Edit `voice.py` and §3 in the same PR, and the
-fence keeps them equal.
+fence keeps them equal. `test_agent_voice.py` checks both blocks byte for
+byte.
 
 ## 4. Three changes from the owner's list
 
@@ -96,9 +99,30 @@ The owner's list was the input. Three rules changed on purpose.
 2. **The blanket ban on short side-by-side clauses went.** Short clauses side
    by side are part of how a colleague talks. A ban on them makes the text
    stiff. Rule 3 asks for varied shape instead.
-3. **"Never invent a fact" is new.** Rule 10 makes the agent name its source,
-   and it bans an invented name, number, date or quote. A fluent voice that
-   invents facts is worse than a stiff one.
+3. **"Never invent a fact" is new.** Rule 10 bans an invented name, number,
+   date or quote. A fluent voice that invents facts is worse than a stiff
+   one.
+
+### 4.1 Changes from review round 1 (2026-10-10)
+
+Four changes protect text that goes to a person outside the org.
+
+1. **"Name the source" moved from rule 10 to the chat overlay.** In an email
+   to a customer, "task #141" leaks an internal record id.
+2. **Rule 12 follows the reader's language.** The email drafter writes in
+   the contact's language. "Match the member's language" fought that rule.
+   The email and message overlays say that the recipient's language wins.
+3. **Outbound text defers to the member.** The email drafter already ranks
+   the member's instructions, writing style and voice profile. The email
+   and message overlays say that those come first. The house voice is the
+   floor, never an override.
+4. **New overlay `message`.** A WhatsApp reply is not an email. It is short,
+   with no greeting or sign-off unless the member uses them.
+
+Two changes cut cost. The chat overlay lost "the answer in the first
+sentence", because rule 1 says it. The list clause of rule 12 joined the
+chat overlay's formatting line. The title overlay now yields to a limit
+that the prompt sets.
 
 ## 5. Two audiences, two contracts
 
@@ -120,8 +144,9 @@ other. An agent of this repo that answers the owner still writes STE.
 | Name | What it is |
 |---|---|
 | `CORE` | The twelve rules of §3 |
-| `OVERLAYS` | One rule set for each surface: `chat`, `title`, `description`, `email`, `summary` |
+| `OVERLAYS` | One rule set for each surface: `chat`, `title`, `description`, `email`, `message`, `summary` |
 | `voice_prompt(surface)` | The heading, the core and one overlay. `AGENT`, the default, gives every overlay. An unknown surface raises `KeyError` |
+| `core_prompt()` | The heading and the core, with no overlay. A sub-agent reads it |
 | `voice_lint(text, surface=None)` | The checker of §6.5 |
 
 The module is in `acb_llm` because the orchestrator and the gateway both
@@ -142,7 +167,8 @@ voice.
 | Older MAF shape (a string `instructions`) | That attribute, the same way |
 
 The heading `## How Metorite writes` is the idempotency marker. A second
-injection on one agent adds nothing.
+injection on one agent adds nothing. A sub-agent (`is_sub_agent=True`) gets
+`core_prompt()`, with no overlay.
 
 **Why not inside the addendum.** Three tests pin the Copilot addendum to
 `acb_skills.addendum.rendered_parts` byte for byte. The QM-2 index mode
@@ -168,20 +194,23 @@ instructions, and it never drops the core.
 
 ### 6.4 The cost
 
-Measured on 2026-10-10.
+Measured on 2026-10-10, after review round 1.
 
 | Text | Run-context tokenizer (chars/4) | tiktoken `o200k_base` |
 |---|---|---|
-| `CORE` | 347 | 325 |
-| One surface (`voice_prompt("email")`) | 376 | 355 |
-| The agent block (`voice_prompt(AGENT)`) | 478 | 457 |
+| `CORE` | 327 | 303 |
+| The sub-agent block (`core_prompt()`) | 333 | 310 |
+| One surface, from `voice_prompt("description")` to `voice_prompt("email")` | 359 to 397 | 339 to 365 |
+| The agent block (`voice_prompt(AGENT)`) | 577 | 538 |
 
 Each agent pays the agent block once in its prefix. A Projects turn makes
 about 5.7 requests, and the cache covers each one after the first.
-`projects_ai_chat.md` §25 records the rest of the prefix. The core is a
-little over the target of 300, because it keeps the owner's wording. The
-ratchet in `test_agent_voice.py` holds the core at 360 and the agent block at
-500. To grow either one, edit that test on purpose.
+`projects_ai_chat.md` §25 records the rest of the prefix. The agent block
+grew by 99 tokens in review round 1, because the email and message
+overlays now defer to the member. A delegated call pays only the core.
+
+The ratchet in `test_agent_voice.py` holds the core at 340, the sub-agent block
+at 345 and the agent block at 600. To grow one, edit that test on purpose.
 
 ### 6.5 The checker
 
@@ -205,7 +234,7 @@ Those need a model grader, which is S4.
 
 ## 7. The eval
 
-`evals/agent_voice/` holds twelve fixed cases over the five surfaces
+`evals/agent_voice/` holds thirteen fixed cases over the six surfaces
 (`cases.json`).
 
 - `python -m evals.agent_voice.run --scripted` scores hand-written answers,
