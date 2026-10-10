@@ -1,6 +1,7 @@
 """CRM routes — the shared kernel.
 
-The leaf module: it imports nothing from its siblings. It owns the shared
+The leaf module: it imports nothing from its siblings except ``flags``, the
+kill switch, which is a leaf too (WS-53 CRM-0). It owns the shared
 ``router``, the entity registry, the Pydantic models, the row→model mapper, the
 list contract, and the small set of SQL helpers every feature module builds on.
 Spec: ``project-docs/specs/crm_app.md`` sections 3 and 4 (WS-26a).
@@ -40,7 +41,8 @@ from uuid import UUID
 
 from acb_auth import require_feature_router
 from acb_common import get_logger
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
 # The shared seam (BO-10 / D-CRM-4 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
 # `_get_db` was: every request-handler submodule imports it from here BY NAME,
@@ -57,14 +59,18 @@ from fastapi import APIRouter, HTTPException
 # H4 forbids; they stay unbound until H4 threads an explicit tenant through.
 from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
+from gateway.routes.crm.flags import require_crm_enabled
 from pydantic import BaseModel
 from sqlalchemy import text
 
 _log = get_logger("gateway.crm")
 
+#: The kill switch goes FIRST (WS-53 CRM-0). FastAPI runs router dependencies
+#: in list order, so an organization outside ``CRM_ORGS`` gets 404 before the
+#: feature gate can answer 403. Fence: ``tests/unit/test_crm_kill_switch.py``.
 router = APIRouter(
     prefix="/crm", tags=["crm"],
-    dependencies=[require_feature_router("crm")],
+    dependencies=[Depends(require_crm_enabled), require_feature_router("crm")],
 )
 
 #: The `source` vocabulary, mirrored from the CHECK constraint in migration 144.
