@@ -583,12 +583,38 @@ dark and light at 390. In a real page, a hidden tab read "(1) New reply ·
 Metorite" with the reply favicon, and both came back when the tab showed. The
 console showed no error.
 
+**Review of #818 (2026-10-10).** One fix round closed two P1 findings and
+the P2 findings.
+
+- **An outage is not an end.** A Redis, Postgres or question read error in
+  the gateway sets `X-Runs-Partial: 1`. The BFF passes it on, and it marks
+  its own lost call the same way. The poller keeps its last list on a partial
+  answer. The mark is a header, not a 503, because every own-API 5xx raises
+  "Metorite is updating".
+- **Two misses.** A run ends only when two complete polls in a row lack it.
+  A deploy loses two polls at most (`lib/gatewayFetch.ts`).
+- **A parked question never ends.** An answer or an expiry is no reply. Its
+  identity is `ask:<thread>:<kind>`, the same in every tab.
+- **One summary toast.** Three or more runs that end in one poll show "N
+  assistants finished". Its Open shows the activity panel.
+- **Another tab.** A chat that shows in a visible tab writes a heartbeat
+  (`chatKey("open")`, 12 s). Another tab then marks nothing and shows no
+  toast.
+- **Interrupted.** A run that ends within 90 s of an outage says "<Agent>
+  was interrupted".
+- **The dock.** `AgentChat` takes `visible`. The Projects dock passes false
+  while a task hides the chat.
+- An unread entry older than 7 days does not count, before any write. A
+  finish waits until a member scope is bound.
+
+Twelve more mutants, twelve killed. One lived on the first run: the test of
+the question read used a broken Postgres, which marked the list by itself.
+The test now runs on a healthy fake.
+
 **Known limits.**
 
 - Unread does not follow the member to another device.
-- The Projects dock hides its chat under a task and keeps it mounted. That
-  chat counts as open, so a run that ends in it marks nothing.
-- A server list that drops a run for one poll reads as a finish.
+- A run ends 10 s after the fact in a visible tab, and 60 s in a hidden tab.
 
 ### S6 — the activity of the other signed-in accounts
 
