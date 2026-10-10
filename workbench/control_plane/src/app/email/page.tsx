@@ -801,8 +801,11 @@ export default function EmailPage() {
     );
   }
 
+  // `overflow-clip`, not `hidden`: a script cannot scroll a clip box, so no
+  // reveal or focus in the panes can shift the email layout (owner report,
+  // 2026-10-10).
   return (
-    <div className="flex h-full w-full bg-background overflow-hidden select-none">
+    <div className="flex h-full w-full bg-background overflow-clip select-none">
       {/* The reader of `?email=<id>`. `useSearchParams` needs a Suspense
           boundary, and this one holds only the reader, so the page still
           renders on the server. */}

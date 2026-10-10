@@ -205,8 +205,12 @@ export function DraftAssistant({
   const showHeader = busy || hasDraft || steps.length > 0;
   const runLabel = hasDraft ? "Refine" : hasText ? "Improve" : "Draft";
 
+  // `relative` holds the `sr-only` summary below. `sr-only` is
+  // `position: absolute`, and without a positioned ancestor it escaped every
+  // clip box. It sat in the long thread and made the document taller than the
+  // window, so a wheel moved the whole page (owner report, 2026-10-10).
   return (
-    <div className="border-t border-border bg-primary/[0.04]">
+    <div className="relative border-t border-border bg-primary/[0.04]">
       {showHeader && (
         <div className="flex items-center gap-2 px-4 pt-2">
           <span className="text-[10px] font-medium uppercase tracking-wide text-primary">

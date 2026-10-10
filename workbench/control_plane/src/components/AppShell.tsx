@@ -193,9 +193,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     // the owner's of 2026-10-09: one bar across the whole width, then the
     // sidebar and the page under it. The other two are exactly as before.
     const frame = desktopFrame(shellBarOn(), navOn);
+    // The shell root is `relative` and `overflow-clip` (owner report,
+    // 2026-10-10). `relative` makes it the containing block of each absolute
+    // box that no page positions, so no such box can make the document taller
+    // than the window. `clip`, not `hidden`, because a script can scroll a
+    // `hidden` box, and a reveal or a focus then shifts the whole shell.
+    // Fence: `src/lib/scrollWithin.test.ts` and `e2e/email-composer-scroll.spec.ts`.
     return (
       <SidebarFoldProvider placement={frame === "full" ? "bar" : "rail"}>
-      <div className={frame === "full" ? "flex h-screen flex-col overflow-hidden" : "flex h-screen overflow-hidden"}>
+      <div data-app-shell="" className={frame === "full" ? "relative flex h-screen flex-col overflow-clip" : "relative flex h-screen overflow-clip"}>
         {frame === "full" ? (
           <ShellFrame lead={<BarBrand />}>
             <div className="flex min-h-0 flex-1">
@@ -269,7 +275,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {/* No top app bar on mobile — every screen is reachable from the bottom
           nav, so pages get the full viewport. pt-safe on the shell keeps
           content out of the notch/status bar. */}
-      <div className="flex flex-col overflow-hidden bg-background pt-safe" style={{ height: "100dvh" }}>
+      {/* `relative overflow-clip` for the reason of the desktop root above. */}
+      <div data-app-shell="" className="relative flex flex-col overflow-clip bg-background pt-safe" style={{ height: "100dvh" }}>
         {/* Page content — pb-nav reserves the fixed bottom bar's FULL height
             (content + safe-area inset), so nothing hides under it */}
         {shellBarOn() ? (
