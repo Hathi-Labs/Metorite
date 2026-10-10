@@ -445,8 +445,13 @@ What the row does for you:
   `group`. A cut name shows whole in a dark tip after 400 ms, and only when it
   is cut.
 - **The indent.** One 12 px step per level, with an optional thin guide.
+- **The expand chevron.** A row that opens passes `expand`. Its chevron takes
+  the icon's slot on hover and on keyboard focus, and the icon gives way. So
+  no row keeps a chevron column. The toggle is a labelled button with
+  `aria-expanded` at all times, and Tab reaches it at rest. ArrowRight opens
+  the row and ArrowLeft closes it.
 - **Touch.** On a phone each row is 40 px, and the selected row keeps its
-  actions on screen.
+  actions on screen. A row that opens shows its chevron in the slot.
 
 The owner's reference was ClickUp's sidebar. Before this, every Projects row
 kept its "···" and "+" on screen. They took about 60 px from each name at a

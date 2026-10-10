@@ -370,7 +370,10 @@ Seven rules on top of the three above. Each one exists because it was broken:
    the reference.)* Both live in `src/components/ui/`.
    - A row shows its actions on hover and on keyboard focus only. At rest
      the actions take no width, and the row shows its muted count.
-   - On a phone the selected row keeps its actions on screen.
+   - A row that opens shows its chevron in the icon's slot on hover and on
+     keyboard focus. The toggle stays a labelled button, so Tab reaches it.
+   - On a phone the selected row keeps its actions on screen, and a row
+     that opens shows its chevron.
    - A cut name shows whole in a dark tip after 400 ms. A name that fits
      shows no tip, and no row adds a native `title` to its name.
    - The Projects tree, the My Tasks rail, the Email folders and the
