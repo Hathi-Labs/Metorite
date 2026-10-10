@@ -407,6 +407,39 @@ async def test_an_accounts_server_off_the_allowlist_raises_before_a_request(
     leaks.extend(exc_texts(caught.value))
 
 
+@pytest.mark.parametrize(
+    ("server", "location"),
+    [
+        ("https://accounts.zoho.eu", "xx"),
+        ("https://accounts.zoho.in", "eu"),
+        ("https://accounts.zoho.com", "evil.example.com"),
+    ],
+    ids=["unknown-location", "location-of-another-centre", "a-host-as-location"],
+)
+async def test_a_location_off_the_allowlist_raises_before_a_request(
+    leaks: list[str],
+    server: str,
+    location: str,
+) -> None:
+    fake = Fake([ok(token_body())])
+    with pytest.raises(UntrustedHost) as caught:
+        await fake.source().finish_consent(params=callback(server, location=location), scopes=["s"])
+    assert fake.requests == []
+    leaks.extend(exc_texts(caught.value))
+
+
+@pytest.mark.parametrize(("location", "stored"), [("EU", "eu"), (None, "eu")])
+async def test_the_location_is_normalised_or_derived_from_the_server(
+    leaks: list[str],
+    location: str | None,
+    stored: str,
+) -> None:
+    fake = Fake([ok(token_body())])
+    params = callback() if location is None else callback(location=location)
+    cred = await fake.source().finish_consent(params=params, scopes=["s"])
+    assert cred.provider_meta["location"] == stored
+
+
 async def test_a_token_response_off_the_allowlist_is_refused(leaks: list[str]) -> None:
     fake = Fake([ok(token_body(api_domain="https://www.zohoapis.example"))])
     with pytest.raises(UntrustedHost) as caught:

@@ -132,6 +132,28 @@ def check_api_domain(url: str) -> str:
     return _checked_origin(url, API_HOSTS, "API domain")
 
 
+def checked_location(location: str | None, accounts_server: str) -> str:
+    """The data-centre key of ``location``, checked against ``accounts_server``.
+
+    The redirect returns ``location`` as request input, so it is never trusted
+    as it is. It must be a key of :data:`ZOHO_DATA_CENTRES`, and that centre
+    must own ``accounts_server``. With no ``location``, the key comes from the
+    server. ``accounts_server`` must already be a checked origin.
+    """
+    host = accounts_server.removeprefix("https://")
+    owner = next((k for k, dc in ZOHO_DATA_CENTRES.items() if dc.accounts_host == host), None)
+    if owner is None:
+        raise UntrustedHost(f"The Zoho accounts server {host[:80]!r} is not on the allowlist")
+    if location is None:
+        return owner
+    key = location.strip().lower()
+    if key not in ZOHO_DATA_CENTRES:
+        raise UntrustedHost(f"The Zoho location {location[:20]!r} is not on the allowlist")
+    if key != owner:
+        raise UntrustedHost(f"The Zoho location {key!r} does not own the accounts server {host!r}")
+    return key
+
+
 def meta(credential: SourceCredential, key: str) -> str:
     """One key of ``provider_meta``, or ``""`` when it is not there."""
     return str(credential.provider_meta.get(key) or "")
@@ -216,6 +238,7 @@ async def exchange_code(
 ) -> SourceCredential:
     """Trade the consent code for tokens at the data centre that issued it."""
     server = check_accounts_server(accounts_server)
+    location = checked_location(location, server)
     status, body = await _token_call(
         server,
         {
@@ -233,9 +256,11 @@ async def exchange_code(
     if not body.get("refresh_token"):
         raise SourceError("Zoho sent no refresh token. Consent again with access_type=offline")
     api_domain = check_api_domain(str(body.get("api_domain") or ""))
-    provider_meta = {META_ACCOUNTS_SERVER: server, META_API_DOMAIN: api_domain}
-    if location:
-        provider_meta[META_LOCATION] = location
+    provider_meta = {
+        META_ACCOUNTS_SERVER: server,
+        META_API_DOMAIN: api_domain,
+        META_LOCATION: location,
+    }
     return SourceCredential(
         access_token=str(body["access_token"]),
         refresh_token=str(body["refresh_token"]),
@@ -305,6 +330,7 @@ __all__ = [
     "DataCentre",
     "check_accounts_server",
     "check_api_domain",
+    "checked_location",
     "consent_url",
     "exchange_code",
     "meta",
