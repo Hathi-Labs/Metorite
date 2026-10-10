@@ -89,6 +89,16 @@ export function confirmedLayout(): StoredShell | undefined {
   return confirmed;
 }
 
+/**
+ * The layout as the read cache holds it NOW, with every optimistic write in
+ * it. A toggle builds on this and not on its render's copy. Two quick
+ * clicks on two stars then save both, where the render's copy lost the
+ * first (measured in `e2e/shell-presets.spec.ts`, 2026-10-11).
+ */
+export function latestShell(): StoredShell | undefined {
+  return peek<StoredShell>(SHELL_PREFS_PATH)?.data;
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
