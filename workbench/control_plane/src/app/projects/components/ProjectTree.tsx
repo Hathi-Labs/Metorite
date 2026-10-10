@@ -226,7 +226,6 @@ function DraftRow({
         label={draft.label}
         depth={depth}
         guides
-        leadSpace
         editor={
         <form
           className="flex min-w-0 flex-1 items-center gap-2"
@@ -562,22 +561,13 @@ function Node({
               }
             : undefined,
         }}
-        lead={
-          children.length > 0 || draftHere ? (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              radius="keep"
-              className="rounded"
-              icon={expanded ? "ChevronDown" : "ChevronRight"}
-              aria-label={
-                expanded ? `Collapse ${node.name}` : `Expand ${node.name}`
-              }
-              onClick={() => setOpen((v) => !v)}
-            />
-          ) : undefined
+        // The chevron takes the icon's slot on hover (owner, 2026-10-10,
+        // ClickUp's move). `RailRow` keeps it a labelled button at rest.
+        expand={
+          children.length > 0 || draftHere
+            ? { expanded, onToggle: () => setOpen((v) => !v) }
+            : undefined
         }
-        leadSpace
         icon={
           hasRunState(level) ? (
             <StateDot

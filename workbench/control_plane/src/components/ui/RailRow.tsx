@@ -11,13 +11,17 @@
  *
  * ## The shape
  *
- *     [indent + guides][lead][icon  label ……………  meta][actions]
+ *     [indent + guides][icon  label ……………  meta][actions]
  *
  * - **indent** — one 12 px step per level, each with an optional thin
  *   vertical guide, so a nested level reads as nested.
- * - **lead** — an optional control before the icon, such as an expand
- *   chevron. `leadSpace` keeps its width when a row has none, so siblings
- *   start their icons at one x.
+ * - **icon** — the row's marker. On a row that can open (`expand`), the
+ *   expand chevron takes the SAME slot on hover and on keyboard focus, and
+ *   the icon hides. ClickUp does this, and it removes the chevron column,
+ *   which took 22 px from every name. The toggle is a real button at all
+ *   times. At rest it is transparent, but Tab reaches it, and its label and
+ *   `aria-expanded` are always there. On a phone it shows the chevron in the
+ *   slot at all times, because nothing can hover.
  * - **label** — one line, cut with an ellipsis. `OverflowTip` shows the
  *   whole of it on hover and on keyboard focus.
  * - **the trailing zone** — `meta` (a muted count) at rest, and the row's
@@ -30,7 +34,14 @@
  * The swap carries no media query (`reveal-on-hover`'s rule), so a
  * touch-capable laptop driven by a mouse behaves like any desktop. On a
  * phone (`useViewMode().isMobile`) nothing can hover, so the SELECTED row
- * pins its actions, and every row grows to 40 px for a finger.
+ * pins its actions, an expandable row shows its chevron, and every row
+ * grows to 40 px for a finger.
+ *
+ * ## Keys
+ *
+ * On a row that can open, ArrowRight opens it and ArrowLeft closes it, from
+ * the label or from the toggle. Enter and Space on the toggle switch it, as
+ * on any button.
  *
  * ## What stays with the caller
  *
@@ -42,6 +53,7 @@
  * that must render this) and `e2e/rail-rows.spec.ts` (the real hover).
  */
 import { useViewMode } from "@/components/ViewModeProvider";
+import Button from "@/components/ui/Button";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
 
 /** One indent step, in px. The tree's own step before this primitive. */
@@ -50,6 +62,23 @@ export const RAIL_INDENT_PX = 12;
 /** A level that groups (a space, a section head) or an item in it. */
 export type RailRowTier = "group" | "item";
 
+/** A row that opens and closes, such as a tree node with children. */
+export interface RailRowExpand {
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+/**
+ * What a key does to a row that can open. ArrowRight opens a closed row and
+ * ArrowLeft closes an open one. Any other key, or a key that would change
+ * nothing, returns `false`, and the row leaves the key alone.
+ */
+export function expandKey(key: string, expanded: boolean): boolean {
+  if (key === "ArrowRight") return !expanded;
+  if (key === "ArrowLeft") return expanded;
+  return false;
+}
+
 export interface RailRowProps {
   /** The name. It is the label text and the button's accessible name. */
   label: string;
@@ -57,10 +86,11 @@ export interface RailRowProps {
   depth?: number;
   /** Draw a thin vertical guide in each indent step. */
   guides?: boolean;
-  /** A control before the icon, such as the expand chevron. */
-  lead?: React.ReactNode;
-  /** Keep the lead's width when `lead` is absent, so siblings align. */
-  leadSpace?: boolean;
+  /**
+   * The row opens and closes. Its chevron takes the icon's slot on hover and
+   * on keyboard focus (on a phone, at all times).
+   */
+  expand?: RailRowExpand;
   /** The marker before the label: an icon, a dot, a state mark. */
   icon?: React.ReactNode;
   /** What the trailing zone shows at rest, such as a count. Muted. */
@@ -110,8 +140,7 @@ export function RailRow({
   label,
   depth = 0,
   guides = false,
-  lead,
-  leadSpace = false,
+  expand,
   icon,
   meta,
   actions,
@@ -131,6 +160,16 @@ export function RailRow({
     useOverflowTip(label);
   // A phone cannot hover, so the row the member chose keeps its controls.
   const held = Boolean(actions) && (pinned || (isMobile && selected));
+  // The toggle sits over the icon's slot, so it draws only where the icon
+  // does. An editor draws its own icon, and no toggle covers it.
+  const toggle = expand && !editor ? expand : null;
+  const onKeyDown = toggle
+    ? (event: React.KeyboardEvent) => {
+        if (!expandKey(event.key, toggle.expanded)) return;
+        event.preventDefault();
+        toggle.onToggle();
+      }
+    : undefined;
 
   return (
     <div
@@ -144,8 +183,25 @@ export function RailRow({
           {guides ? <span className="absolute inset-y-0 left-2 w-px bg-border" /> : null}
         </span>
       ))}
-      {lead || leadSpace ? (
-        <span className="mr-1 flex w-4.5 shrink-0 items-center justify-center">{lead}</span>
+      {toggle ? (
+        // A zero-width anchor where the icon starts. The toggle hangs from it
+        // over the icon, so the slot is one slot and costs no width.
+        <span className="relative w-0 shrink-0 self-stretch">
+          <Button
+            variant="ghost"
+            size="none"
+            radius="keep"
+            icon={toggle.expanded ? "ChevronDown" : "ChevronRight"}
+            aria-label={toggle.expanded ? `Collapse ${label}` : `Expand ${label}`}
+            aria-expanded={toggle.expanded}
+            data-rail-toggle=""
+            onClick={toggle.onToggle}
+            onKeyDown={onKeyDown}
+            className={`absolute -left-0.5 top-1/2 z-10 h-5 w-5 -translate-y-1/2 rounded ${
+              isMobile ? "" : "rail-row-chevron"
+            }`}
+          />
+        </span>
       ) : null}
       {editor ?? (
         <button
@@ -154,9 +210,21 @@ export function RailRow({
           onClick={onSelect}
           onFocus={onFocus}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
         >
-          {icon}
+          {toggle && icon ? (
+            // Stays in the button, so its name (a state mark's words) is
+            // still part of the row's name while the chevron covers it.
+            <span
+              data-rail-icon=""
+              className={`inline-flex shrink-0 ${isMobile ? "opacity-0" : "rail-row-icon"}`}
+            >
+              {icon}
+            </span>
+          ) : (
+            icon
+          )}
           <span
             ref={attachLabel}
             onPointerEnter={onPointerEnter}

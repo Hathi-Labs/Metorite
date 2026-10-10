@@ -1056,6 +1056,28 @@ select optgroup {
   }
 }
 
+/*
+ * The icon slot of a row that can open. The expand chevron sits over the
+ * icon, transparent at rest. On hover or keyboard focus in the row, the
+ * chevron shows and the icon gives way. The chevron is a real button the
+ * whole time, so Tab reaches it at rest, and reaching it shows it.
+ */
+@utility rail-row-chevron {
+  opacity: 0;
+
+  .group:hover &,
+  .group:has(:focus-visible) & {
+    opacity: 1;
+  }
+}
+
+@utility rail-row-icon {
+  .group:hover &,
+  .group:has(:focus-visible) & {
+    opacity: 0;
+  }
+}
+
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 /* Entrance/pulse animations become instant; the state they convey (a new
    step arriving, a spinner turning) is still carried by the content itself.
