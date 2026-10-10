@@ -168,6 +168,13 @@ Seven rules on top of the three above. Each one exists because it was broken:
    - `src/lib/inAppLink.ts` holds the two rules of a chat link. Each in-app
      click sends `IN_APP_LINK_EVENT`, and a link to another site shows its
      host. Fence: `inAppLink.test.ts`.
+   **A long chat card rolls up through one seam,** `components/RollupCard.tsx`
+   (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
+   card stays open. A card that waits on the member never folds. A toggle by
+   hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
+   not add a second fold. The transcript follows its bottom on each change
+   of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
+   `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).

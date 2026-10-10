@@ -15,7 +15,9 @@ import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
-import { genUiFlow, genUiPlacement, type FlowBlock } from "@/lib/chatPlacement";
+import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
+import { unfenced } from "@/lib/fencedText";
+import RollupCard from "@/components/RollupCard";
 import { answersFromTools } from "@/lib/askAnswers";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode from "@/components/GenerativeUINode";
@@ -565,14 +567,25 @@ function MessageBubble({
         </button>
       );
     }
+    // A long card rolls up when a newer card arrives (`components/RollupCard`).
+    // An ask that still waits never does: the pin's own rule says when.
+    const target = genUiTarget(message.id, i, spec);
+    const title = unfenced(genUiTitle(spec)) || "Card";
     if (ask) {
       return (
-        <div key={i} {...askAttr} className="min-w-0 outline-none">
-          <GenerativeUINode spec={spec} onAction={act} answered={answered} />
-        </div>
+        <RollupCard key={i} id={target} title={title} icon="LayoutTemplate"
+          askTarget={answered === undefined ? target : undefined}>
+          <div {...askAttr} className="min-w-0 outline-none">
+            <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+          </div>
+        </RollupCard>
       );
     }
-    return <GenerativeUINode key={i} spec={spec} onAction={act} answered={answered} />;
+    return (
+      <RollupCard key={i} id={target} title={title} icon="LayoutTemplate">
+        <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+      </RollupCard>
+    );
   };
 
   // ═══ Assistant message — no bubble, renders directly ═══

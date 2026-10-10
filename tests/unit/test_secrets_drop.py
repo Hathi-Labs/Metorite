@@ -249,6 +249,10 @@ def _merge_manifest(restart: list[str] | None = None, health: bool = True) -> di
     e["allowed_keys"] = ["FOO_TOKEN", "BAR_KEY"]
     e["required_keys"] = ["FOO_TOKEN"]
     e["validators"] = {"BAR_KEY": ["non_empty"]}
+    # These tests prove the restart loop over TWO units (order, per-unit checks,
+    # the rollback). The real app-env restarts the gateway only since
+    # 2026-10-10, so the two-unit list is set here, not read from the manifest.
+    e["restart"] = ["acb-gateway", "acb-whatsapp-bridge"]
     if restart is not None:
         e["restart"] = restart
         e["health"] = {u: v for u, v in e.get("health", {}).items() if u in restart}
@@ -404,8 +408,11 @@ def test_the_manifest_ships_the_three_entries() -> None:
 
     app = _entry(m, "app-env")
     assert (app["kind"], app["remote_path"], app["owner"]) == ("env-merge", "/opt/acb/app/.env", "acb")
-    # Both units load the app env file (deploy/hostinger/*.service).
-    assert app["restart"] == ["acb-gateway", "acb-whatsapp-bridge"]
+    # acb-gateway loads the app env file (deploy/hostinger/*.service). The
+    # whatsmeow bridge loads it too, but it is retired and disabled since
+    # 2026-10-08, and restarting a disabled unit STARTS it: on 2026-10-10 a push
+    # started it, it crash-looped (203/EXEC), and the push rolled back.
+    assert app["restart"] == ["acb-gateway"]
     assert app["health"] == {"acb-gateway": "http://127.0.0.1:8080/health"}
     # The list is a reviewed allowlist, one key at a time. WS-47 WAC-0
     # (2026-10-10) added the WhatsApp bot's System User token, and nothing else.
