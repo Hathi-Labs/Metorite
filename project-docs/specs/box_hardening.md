@@ -1631,8 +1631,8 @@ closes the value part of P3 (§0) for `acb-backup.service` and
   the deploy installs `acb-backup.service` and `acb-health-watchdog.service`
   directly after steps 1 to 3, before the first compose call. A deploy that
   fails later does not leave the old units. For one release, a root run
-  from the checkout path also runs the root copy of the same layout, when
-  that copy is a plain file. It cannot loop, because the copy passes the
+  from the checkout path also runs the root copy of the same layout. The
+  copy must be a plain file. It cannot loop, because the copy passes the
   layout check. Remove it in the release after BH-6.
 - `backup_db.sh:587` runs `git rev-parse` as root in the checkout. A root
   run reads `/usr/local/lib/acb/deployed_sha` in its place. It takes the
@@ -2010,7 +2010,7 @@ ssh metorite 'systemctl list-timers acb-backup.timer acb-health-watchdog.timer -
   (`config -q`) does NOT stop it. Measured on Compose v5.6.0 at the build:
   `config -q` exits 0 with no bind source and no build context on disk.
   It exits 0 with `--profile sandbox` too. So step 1 checks that each path
-  of the list is in the archive, and a missing path stops the deploy before
+  of the list is in the archive. A missing path stops the deploy before
   the first compose call. `test_the_copy_holds_each_path_the_compose_file_needs`
   holds the list against the compose file.
 - A failed `acb.service` takes the gateway down, through `Requires=`.
