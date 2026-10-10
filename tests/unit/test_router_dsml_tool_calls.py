@@ -255,6 +255,14 @@ class TestOnlyADeclaredToolMayRun:
         assert declared_tool_names(tools, "none") == frozenset()
         assert declared_tool_names(tools, "auto") == frozenset({"update_task"})
 
+    def test_a_FORCED_tool_choice_allows_only_that_tool(self):
+        tools = [{"type": "function", "function": {"name": n}} for n in ("a", "b")]
+        forced = {"type": "function", "function": {"name": "b"}}
+        assert declared_tool_names(tools, forced) == frozenset({"b"})
+        # A forced name the request did not offer allows nothing at all.
+        missing = {"type": "function", "function": {"name": "z"}}
+        assert declared_tool_names(tools, missing) == frozenset()
+
     def test_declared_names_ignore_junk_entries(self):
         tools = [
             {"type": "function", "function": {"name": "a"}},

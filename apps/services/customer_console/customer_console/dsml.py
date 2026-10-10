@@ -120,6 +120,8 @@ def declared_tool_names(tools: Any, tool_choice: Any = None) -> frozenset[str]:
 
     ⚠️ ``tool_choice="none"`` empties the set. The caller offered the tools to
     describe them and forbade a call, and model text must not overrule that.
+    A forced choice (``{"type": "function", "function": {"name": ...}}``)
+    narrows the set to that one tool, for the same reason.
     """
     if tool_choice == "none" or not isinstance(tools, list):
         return frozenset()
@@ -131,6 +133,9 @@ def declared_tool_names(tools: Any, tool_choice: Any = None) -> frozenset[str]:
         name = fn.get("name") if isinstance(fn, dict) else tool.get("name")
         if isinstance(name, str) and name:
             names.add(name)
+    forced = tool_choice.get("function") if isinstance(tool_choice, dict) else None
+    if isinstance(forced, dict) and isinstance(forced.get("name"), str):
+        names &= {forced["name"]}
     return frozenset(names)
 
 
