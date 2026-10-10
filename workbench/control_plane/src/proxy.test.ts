@@ -107,6 +107,28 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
     }
   });
 
+  it("passes the app icons and the manifest signed out, and nothing beside them", async () => {
+    // The sign-in page shows the icons to a person with no session, and a
+    // browser fetches the manifest with no cookie.
+    for (const path of [
+      "/favicon.ico",
+      "/icon.svg",
+      "/apple-icon.png",
+      "/manifest.webmanifest",
+      "/icon-192.png",
+      "/icon-512.png",
+      "/icon-maskable-512.png",
+      "/favicon-needs.png",
+      "/favicon-reply.png",
+    ]) {
+      const res = await proxy(request(path));
+      expect(passed(res), path).toBe(true);
+    }
+    for (const path of ["/icon.svg/x", "/icon-1024.png", "/public/icon-192.png"]) {
+      expect(passed(await proxy(request(path))), path).toBe(false);
+    }
+  });
+
   it("does not open a subpath of the public page", async () => {
     const res = await proxy(request("/oauth/approved/x"));
     expect(res.status).toBe(307);
