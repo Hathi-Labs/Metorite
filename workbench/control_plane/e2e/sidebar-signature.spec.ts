@@ -134,7 +134,15 @@ test.describe("desktop", () => {
       await page.goto("/settings/appearance");
       const brand = bar(page).locator("[data-shell-brand]");
       if (branding.logo) await expect(brand.locator("img").first()).toBeAttached();
-      else await expect(brand.locator("a[href='/']")).toContainText("Acme");
+      else {
+        await expect(brand.locator("a[href='/']")).toContainText("Acme");
+        // Our comet, the foot's own mark, in the old tile's 24px box.
+        const comet = brand.locator("svg[data-metorite-mark]");
+        await expect(comet).toBeVisible();
+        await expect(brand.locator("svg.lucide-command")).toHaveCount(0);
+        const tile = await box(brand.locator("[data-our-mark]"));
+        expect([Math.round(tile.width), Math.round(tile.height)]).toEqual([24, 24]);
+      }
       expect(await bar(page).textContent()).not.toMatch(/powered by/i);
       // The signature still shows at the foot, logo or not: one product mark
       // in one fixed place.

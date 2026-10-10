@@ -82,6 +82,43 @@ describe("the compact lockup in the full-width shell bar", () => {
 });
 
 /**
+ * Owner decision, 2026-10-11: a workspace with no logo shows OUR comet, the
+ * same mark as the sidebar's foot. Not the ⌘ glyph it showed before, and not
+ * on a `bg-primary` tile, which an accent recoloured.
+ */
+describe("with no logo, the comet", () => {
+  const NONE = { logo: null, updatedBy: "", updatedAt: "" } as OrgBranding;
+  const out = (p: Record<string, unknown>) =>
+    renderToStaticMarkup(createElement(BrandMark, { branding: NONE, fallbackCaption: "Control Plane", orgName: "Acme", ...p }));
+  const arrangements = [
+    { compact: true, height: 24, maxWidth: 176 },
+    { compact: false, height: 28, maxWidth: 152 },
+  ];
+
+  it("draws MetoriteMark in the bar and in the head, with no glyph and no accent fill", () => {
+    for (const a of arrangements) {
+      const html = out(a);
+      expect(html).toContain("data-metorite-mark");
+      expect(html).not.toMatch(/lucide-command|bg-primary|text-primary-foreground/);
+    }
+  });
+
+  it("keeps the tile's square box, so the bar does not shift", () => {
+    expect(out({ compact: true, height: 24 })).toMatch(/data-our-mark="" class="[^"]*" style="height:24px;width:24px"/);
+    expect(out({ compact: false, height: 28 })).toMatch(/data-our-mark="" class="[^"]*" style="height:28px;width:28px"/);
+  });
+
+  it("keeps the organization's name beside it", () => {
+    expect(out({ compact: true, height: 24 })).toContain("Acme");
+  });
+
+  it("follows a pinned mode, for the Settings preview", () => {
+    expect(out({ compact: true, height: 24, mode: "light" })).toContain("[stop-color:#07133c]");
+    expect(out({ compact: true, height: 24, mode: "light" })).not.toContain("[.light_&amp;]");
+  });
+});
+
+/**
  * Owner decision, 2026-10-11: our name moved to the foot of the sidebar
  * (`MetoriteSignature`). A customer's logo carries nothing of ours, in the
  * bar, in the sidebar's head or in the phone menu's head.

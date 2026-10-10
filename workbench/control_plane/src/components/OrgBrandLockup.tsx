@@ -24,7 +24,7 @@ import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
 import { useEffect, useState } from "react";
 
-import Icon from "@/components/Icon";
+import { MetoriteMark } from "@/components/MetoriteMark";
 import {
   type OrgBranding,
   lockup,
@@ -264,17 +264,18 @@ export function BrandMark({
     return <span className="flex min-w-0 items-center">{images}</span>;
   }
 
+  // ── No logo: our comet, and the organization's name (owner, 2026-10-11) ──
+  //
+  // The badge was a ⌘ glyph on a `bg-primary` tile, which is not our brand
+  // and which an accent recoloured. It is the comet now, the same mark as the
+  // sidebar's foot (`MetoriteMark`). It keeps the tile's square box, so the
+  // bar does not shift, and it has no fill: the comet carries its own colours.
   if (compact) {
     // D51: a logo-less organization still shows its OWN name, here on the
     // same line as our mark. With no organization yet, the product's name.
     return (
       <span className="flex min-w-0 items-center gap-2">
-        <span
-          className="flex shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
-          style={{ height, width: height }}
-        >
-          <Icon name="Command" size={Math.round(height * 0.54)} strokeWidth={2.5} />
-        </span>
+        <OurMark height={height} mode={mode} />
         <span className="min-w-0 truncate text-sm font-semibold tracking-tight text-foreground">
           {orgName.trim() || mark.title}
         </span>
@@ -284,12 +285,7 @@ export function BrandMark({
 
   return (
     <span className="flex min-w-0 items-center gap-2.5">
-      <span
-        className="flex shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
-        style={{ height, width: height }}
-      >
-        <Icon name="Command" size={Math.round(height * 0.54)} strokeWidth={2.5} />
-      </span>
+      <OurMark height={height} mode={mode} />
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold leading-tight tracking-tight text-sidebar-foreground">
           {mark.title}
@@ -298,6 +294,19 @@ export function BrandMark({
           {mark.caption}
         </span>
       </span>
+    </span>
+  );
+}
+
+/**
+ * Our comet in the square box the no-logo lockup has always had. No fill and
+ * no accent: the mark is the brand's, in every mode and under every accent.
+ * Fence: `orgBrandLockup.mode.test.ts` "with no logo, the comet".
+ */
+function OurMark({ height, mode }: { height: number; mode?: "light" | "dark" }) {
+  return (
+    <span data-our-mark="" className="flex shrink-0 items-center justify-center" style={{ height, width: height }}>
+      <MetoriteMark size={Math.round(height * 0.86)} mode={mode} />
     </span>
   );
 }
