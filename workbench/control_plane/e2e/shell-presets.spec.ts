@@ -624,6 +624,16 @@ test.describe("a category folds, per account", () => {
     await page.goto("/settings/appearance");
     await expect.poll(() => shape(page)).toContainEqual(["personal", ["My Tasks", "Calendar", "My Email"]]);
     await expect(heading(page, "personal")).toHaveAttribute("aria-expanded", "true");
+    // Priya folds AI Studio. Then another member signs in on this browser:
+    // Ben sees AI Studio open, because Priya's folds are hers.
+    await heading(page, "studio").click();
+    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "false");
+    await stub(page, STARRED, {
+      me: { ...MEMBER, email: "ben@beta.example", organization: { id: "org2", slug: "beta", display_name: "Beta" } },
+    });
+    await page.reload();
+    await expect.poll(() => shape(page)).toContainEqual(["studio", ["Chat"]]);
+    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "true");
   });
 
   test("the category of the current route opens, whatever was stored", async ({ page }) => {
