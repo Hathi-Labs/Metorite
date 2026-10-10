@@ -25,9 +25,15 @@ The fix, in three layers. The rule for A and B lives in
   ``acb_llm/key_store.py`` skips such a row.
 * **B** — a platform name (``env_guard.is_platform_env``) or an operator-only
   guide key (a URL, host, domain, port or path) is 403 on every tenant route.
-* **C** — THE GATE. Only ``integrations.BUILTIN_ENV_KEYS`` reaches
-  ``os.environ`` and the env file. A key that a custom integration declares
-  goes to the store of the organization only.
+* **C** — THE GATE. Only ``integrations.BUILTIN_ENV_KEYS`` is stored as an
+  ``integration`` row. A key that a custom integration declares is stored as
+  a ``custom`` row.
+
+WS-54 IN-0 (2026-10-11): no Integrations route writes ``os.environ`` or the
+env file any more. Each one writes the store of the organization only, so
+the caller cases below assert that the env stays as it was. The layers still
+refuse before the store write. ``test_integrations_in0.py`` holds the AST
+fence.
 
 Every case points the env file at a temp file and fakes the credential store.
 No test reads or writes a real ``.env`` and none needs a database.
@@ -234,7 +240,7 @@ class FakeCustomTable:
 
 @pytest.fixture(autouse=True)
 def _restore_environ():
-    """Every route here writes `os.environ` directly. Put it back."""
+    """A route once wrote `os.environ` directly (IN-0 ended it). Put it back."""
     saved = dict(os.environ)
     get_settings.cache_clear()
     yield
@@ -455,9 +461,11 @@ class TestLayerARefusesControlCharacters:
     async def test_github_connect_cli_refuses_a_token_from_the_cli(
         self, value, env_file, monkeypatch, byok_on,
     ):
+        # IN-0: connect-cli is retired. It answers 410 before it reads any
+        # token, so the CLI is never asked and nothing is written.
         _fake_gh_cli(monkeypatch, f"gho_{value}x")
         before = _snapshot(env_file)
-        await _expect(400, integrations.github_connect_cli(user=USER))
+        await _expect(410, integrations.github_connect_cli(user=USER))
         _assert_untouched(env_file, before)
 
     async def test_custom_registration_refuses_a_key_with_a_newline(self, custom):
@@ -483,8 +491,10 @@ class TestLayerARefusesControlCharacters:
     async def test_oauth_callback_answers_an_error_page_and_writes_nothing(
         self, env_file, monkeypatch,
     ):
+        # IN-0: the callback is retired. It answers the error page before it
+        # exchanges the code, so no token request goes out.
         monkeypatch.setattr(oauth_routes, "_verify_state", lambda *_: True)
-        _fake_httpx(monkeypatch, oauth_routes, {"access_token": "1000.x\nDATABASE_URL=evil"})
+        _no_httpx(monkeypatch, oauth_routes)
         before = _snapshot(env_file)
         page = await oauth_routes.oauth_callback(service="zoho-crm", code="c", state="s", error="")
         assert page.status_code == 400
@@ -531,9 +541,10 @@ class TestLayerARefusesControlCharacters:
     async def test_a_trailing_newline_is_trimmed_not_refused(self, env_file, store, custom):
         # Recorded decision: a value is written with its surrounding space
         # removed, which is what systemd reads from the file anyway.
+        # IN-0: the store holds the value, and the env stays as it was.
+        before = _snapshot(env_file)
         await _configure(("APOLLO_API_KEY", "key123\n"))
-        assert env_file.read_bytes() == ENV_BEFORE + b"APOLLO_API_KEY=key123\n"
-        assert os.environ["APOLLO_API_KEY"] == "key123"
+        _assert_untouched(env_file, before)
         assert store.puts == [("apollo:api_key", "key123")]
 
 
@@ -990,9 +1001,11 @@ class TestTheByokGateOnGithubToken:
         _assert_untouched(env_file, before)
 
     async def test_put_keys_saves_github_token_with_byok_on(self, env_file, store, byok_on):
+        before = _snapshot(env_file)
         out = await _put("github", "token", "ghp_AbCdEf0123456789")
         assert out["env_var"] == "GITHUB_TOKEN"
-        assert os.environ["GITHUB_TOKEN"] == "ghp_AbCdEf0123456789"
+        assert store.puts == [("github:token", "ghp_AbCdEf0123456789")]
+        _assert_untouched(env_file, before)  # IN-0: the store only
 
 
 # ── The completeness fence: every env name the code reads is sorted ─────────
@@ -1132,10 +1145,10 @@ def _setup_vars(pattern: Any, model_output: str) -> list[tuple[str, str]]:
 class TestEveryCallerStillWorks:
     async def test_integrations_page_credential_form_saves_a_guide_key(self, env_file, store, custom):
         # src/app/integrations/page.tsx CredentialForm (about :217).
+        before = _snapshot(env_file)
         out = await _configure(("APOLLO_API_KEY", "apollo_key_123"))
         assert out["written"] == ["APOLLO_API_KEY"]
-        assert env_file.read_bytes() == ENV_BEFORE + b"APOLLO_API_KEY=apollo_key_123\n"
-        assert os.environ["APOLLO_API_KEY"] == "apollo_key_123"
+        _assert_untouched(env_file, before)  # IN-0: the store only
         assert store.puts == [("apollo:api_key", "apollo_key_123")]
 
     async def test_integrations_page_discovery_registers_then_stores_a_custom_key(
@@ -1164,7 +1177,8 @@ class TestEveryCallerStillWorks:
             ("ZOHO_REFRESH_TOKEN", "1000.0f3b9c.4d2e8a1b"),
         )
         assert out["written"] == ["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN"]
-        assert b"ZOHO_REFRESH_TOKEN=1000.0f3b9c.4d2e8a1b\n" in env_file.read_bytes()
+        assert b"ZOHO_REFRESH_TOKEN" not in env_file.read_bytes()  # IN-0: the store only
+        assert ("zoho-crm:zoho_refresh_token", "1000.0f3b9c.4d2e8a1b") in store.puts
 
     async def test_github_device_connect_saves_the_client_id(self, env_file, store, custom):
         # src/components/GitHubDeviceConnect.tsx (about :126), Option B.
@@ -1206,45 +1220,52 @@ class TestEveryCallerStillWorks:
         _assert_untouched(env_file, before)
 
     async def test_put_keys_saves_a_guide_key(self, env_file, store):
+        before = _snapshot(env_file)
         out = await _put("apollo", "api_key", "apollo_key_123")
         assert out["env_var"] == "APOLLO_API_KEY"
-        assert os.environ["APOLLO_API_KEY"] == "apollo_key_123"
-        assert env_file.read_bytes() == ENV_BEFORE + b"APOLLO_API_KEY=apollo_key_123\n"
+        _assert_untouched(env_file, before)  # IN-0: the store only
+        assert store.puts == [("apollo:api_key", "apollo_key_123")]
 
     async def test_delete_keys_removes_a_guide_key(self, store):
         os.environ["APOLLO_API_KEY"] = "apollo_key_123"
         await _delete("apollo", "api_key")
-        assert "APOLLO_API_KEY" not in os.environ
+        # IN-0: the delete removes the row of this organization only. The
+        # env var belongs to the whole deployment, so it stays.
+        assert os.environ["APOLLO_API_KEY"] == "apollo_key_123"
         assert store.deletes == ["apollo:api_key"]
 
-    async def test_github_device_poll_saves_a_token(self, env_file, monkeypatch, byok_on):
+    async def test_github_device_poll_saves_a_token(self, env_file, store, monkeypatch, byok_on):
         monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.8a61f9b3a7aba766")
         get_settings.cache_clear()
         _fake_httpx(monkeypatch, integrations, {"access_token": "gho_AbCdEf0123456789"})
+        before = _snapshot(env_file)
         out = await integrations.github_device_poll(
             integrations.DevicePollRequest(device_code="d"), user=USER,
         )
         assert out == {"status": "authorized", "login": "octocat"}
-        assert env_file.read_bytes() == ENV_BEFORE + b"GITHUB_TOKEN=gho_AbCdEf0123456789\n"
+        _assert_untouched(env_file, before)  # IN-0: the store only
+        assert store.puts == [("github:token", "gho_AbCdEf0123456789")]
 
     async def test_github_connect_cli_saves_a_token(self, env_file, monkeypatch, byok_on):
-        # src/components/GitHubAccountBadge.tsx (about :103).
+        # src/components/GitHubAccountBadge.tsx (about :103). IN-0 retires the
+        # route: it answers 410 and imports nothing (IN-7 removes it).
         _fake_gh_cli(monkeypatch, "gho_AbCdEf0123456789\n")
-        out = await integrations.github_connect_cli(user=USER)
-        assert out["ok"] is True
-        assert os.environ["GITHUB_TOKEN"] == "gho_AbCdEf0123456789"
+        before = _snapshot(env_file)
+        await _expect(410, integrations.github_connect_cli(user=USER))
+        _assert_untouched(env_file, before)
 
     async def test_oauth_callback_saves_the_zoho_tokens(self, env_file, monkeypatch):
+        # IN-0 retires the callback. It answers the retired page and writes
+        # no token, even for a good exchange.
         monkeypatch.setattr(oauth_routes, "_verify_state", lambda *_: True)
         _fake_httpx(monkeypatch, oauth_routes, {
             "access_token": "1000.access", "refresh_token": "1000.refresh", "expires_in": 3600,
         })
+        before = _snapshot(env_file)
         page = await oauth_routes.oauth_callback(service="zoho-crm", code="c", state="s", error="")
-        assert page.status_code == 200
-        text = env_file.read_bytes().decode()
-        assert "ZOHO_ACCESS_TOKEN=1000.access\n" in text
-        assert "ZOHO_REFRESH_TOKEN=1000.refresh\n" in text
-        assert "ZOHO_TOKEN_EXPIRY=" in text
+        assert page.status_code == 400
+        assert oauth_routes.RETIRED_DETAIL in bytes(page.body).decode()
+        _assert_untouched(env_file, before)
 
 
 # ── The Models routes: the same guard on settings.py::_write_env_key ──────
