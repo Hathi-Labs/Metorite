@@ -352,10 +352,18 @@ h4 {
   letter-spacing: var(--heading-tracking);
 }
 
-/* Prevent accidental horizontal scrolling of the whole app on small screens. */
+/* The document never scrolls. Every frame of AppShell is one window tall and
+   holds its own scroller, so a scroll of `html` or `body` can only shift the
+   whole app and leave a blank band (owner report, 2026-10-10). `clip` on both
+   axes stops a wheel that reaches the end of a pane. It also keeps the old
+   rule here, no sideways scroll of the whole app on small screens. On the
+   root, the browser applies `clip` to the viewport as `hidden`, so a script
+   can still scroll the document. The `relative overflow-clip` shell roots in
+   AppShell keep the document one window tall, and that is the guard against
+   a script. Fence: `src/lib/scrollWithin.test.ts`. */
 html,
 body {
-  overflow-x: hidden;
+  overflow: clip;
 }
 
 /* ── Tech glass / glow effects ──────────────────────────────────────────

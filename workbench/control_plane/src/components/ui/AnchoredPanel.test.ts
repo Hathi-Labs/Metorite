@@ -38,6 +38,21 @@ describe("panelBox / panelStyle", () => {
     expect(tall.top).toBe(8);
   });
 
+  // A short window (fix round 1, 2026-10-10). At 1280x420 the More actions
+  // menu ran to y611, because the panel kept its full max height.
+  it("keeps the panel inside a short window, below and above", () => {
+    const short = { width: 1280, height: 420 };
+    const below = panelBox({ ...rect, top: 100, bottom: 130 }, short, 480);
+    // 420 - 130 - 2 - 8 = 280 below, and 100 above: it opens below.
+    expect(below.top).toBe(132);
+    expect(panelStyle(below, "start", 480).maxHeight).toBe(280);
+    expect(below.top + below.height).toBeLessThanOrEqual(420 - 8);
+    const above = panelBox({ ...rect, top: 300, bottom: 330 }, short, 480);
+    // 80 below and 300 above: it flips, and fits the 290px above.
+    expect(panelStyle(above, "start", 480).maxHeight).toBe(290);
+    expect(above.top).toBe(8);
+  });
+
   it("the component's own default is start", () => {
     const src = readFileSync(resolve(__dirname, "AnchoredPanel.tsx"), "utf-8");
     expect(src).toMatch(/align = "start",/);

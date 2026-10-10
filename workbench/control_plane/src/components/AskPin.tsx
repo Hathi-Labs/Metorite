@@ -20,6 +20,7 @@ import { useEffect, useState, type RefObject } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { PIN_LEAD, type PendingAsk } from "@/lib/askPin";
+import { revealWithin } from "@/lib/scrollWithin";
 
 /** The element the bar points at, or null when it is not mounted. */
 function targetIn(root: HTMLElement | null, target: string): HTMLElement | null {
@@ -86,7 +87,9 @@ export default function AskPin({
   const show = () => {
     const el = targetIn(threadRef.current, ask.target);
     if (!el) return;
-    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    // The thread only. `scrollIntoView` also scrolls each box above the
+    // thread, and so it could shift the page (owner report, 2026-10-10).
+    revealWithin(threadRef.current, el, "smooth");
     if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
     el.focus({ preventScroll: true });
   };

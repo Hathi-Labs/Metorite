@@ -27,6 +27,7 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import AskPin from "@/components/AskPin";
+import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
@@ -718,7 +719,6 @@ export default function AgentChat({
   // edge (e.g. a poll clearing a stale flag right as a steer lands) must not
   // shift+send a second queued message while the first drained send is starting.
   const drainingRef = useRef(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // ── The composer's height (owner request, 2026-10-09) ─────────────────────
@@ -1406,9 +1406,12 @@ export default function AgentChat({
   // Auto-scroll only when the user is near the bottom.  Use "auto" (instant),
   // NOT "smooth": this fires on every streamed token, and queuing a smooth-
   // scroll animation per token causes visible stutter during long responses.
+  // Each of these scrolls the thread only. `scrollIntoView` also scrolled each
+  // box above the thread, and so it could shift the page (owner report,
+  // 2026-10-10, `src/lib/scrollWithin.ts`).
   useEffect(() => {
     if (isNearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+      scrollToEnd(threadRef.current, "auto");
     }
   }, [messages]);
 
@@ -1421,11 +1424,11 @@ export default function AgentChat({
   useEffect(() => {
     if (userMessageCount === 0) return;
     isNearBottomRef.current = true;
-    bottomRef.current?.scrollIntoView({ behavior: "auto" });
+    scrollToEnd(threadRef.current, "auto");
   }, [userMessageCount]);
 
   const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    scrollToEnd(threadRef.current, "smooth");
   }, []);
 
   // ── Reveal older history (scroll-up) — expand the render window ────────────
@@ -2121,7 +2124,6 @@ export default function AgentChat({
           ) : null}
         </div>
         </RollupContext.Provider>
-        <div ref={bottomRef} />
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
