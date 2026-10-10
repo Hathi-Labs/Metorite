@@ -5,7 +5,8 @@
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
 > agent to build it. D95 is decided (§16).
 > **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-0, the
-> kill switch, default OFF (2026-10-11). The other slices are not built yet.
+> kill switch, default OFF (2026-10-11). CRM-T1, the tenant port (2026-10-11).
+> The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -686,7 +687,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **CRM-T1** | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE. After CRM-0 is merged and deployed | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
+| **CRM-T1** ✅ built 2026-10-11 | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE. After CRM-0 is merged and deployed | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
 | ~~**CRM-T2**~~ | ✅ **Already true** (audit, 2026-10-11). Every request handler uses `_tenant_session` (`test_db_engine_seam.py:359-361`). `_get_db` stays only in the three background paths, and CRM-T3 removes them | — | Moved into CRM-T3 |
 | **CRM-T3** | The three background paths bind their tenant (§4.3). The advisory lock replaces `_cycle_lock` | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: two orgs, two cycles, each sees only its own rows. `test_db_engine_seam.py` exempts no CRM file. H-201's CRM half is deleted |
 | **CRM-T4** | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
