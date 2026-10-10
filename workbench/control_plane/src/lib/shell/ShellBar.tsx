@@ -33,8 +33,8 @@
  *
  * **The activity control** (WS-51 S3) is the shell's own, at the right end of
  * the bar, after the app's tools: every live assistant run, across apps
- * (`ActivityControl.tsx`). The phone opens the same panel from its Menu drawer
- * with `OPEN_ACTIVITY`, so this frame mounts the one panel for both.
+ * (`ActivityControl.tsx`). `AppShell` mounts its one panel, in every layout,
+ * so the control works with this bar's flag off too (from the sidebar head).
  */
 
 import {
@@ -50,15 +50,13 @@ import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
-import { useActivityRows, useRunActivity } from "@/hooks/useActiveSessions";
-import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
-import { ActivityControl, ActivityPanel } from "./ActivityControl";
+import { ActivityControl } from "./ActivityControl";
 import { CommandBar } from "./CommandBar";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
-import { OPEN_ACTIVITY, OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
+import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
 
-export { FILL_PAGE_FILTER, OPEN_ACTIVITY, OPEN_COMMAND_BAR } from "./registry";
+export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
 
 export interface ShellSlots {
   left: HTMLElement | null;
@@ -148,24 +146,6 @@ export function ShellFrame({
   const here = contextPane(pathname, panes);
   const { data: session } = useSession();
 
-  // ── The activity control and its panel (WS-51 S3) ─────────────────────
-  // The S1 store only: no poll of its own, and no poll at all for a person
-  // with no workspace (`shouldPollWorkspace`, as the sidebar reads it).
-  const workspace = shouldPollWorkspace(access, loading);
-  const { total: running, needsTotal } = useRunActivity(null, workspace);
-  const activityRows = useActivityRows(workspace);
-  const heldKey = panes.map((p) => p.href).join(",");
-  const heldHrefs = useMemo(
-    () => new Set(heldKey ? heldKey.split(",") : []),
-    [heldKey],
-  );
-  const [activityOpen, setActivityOpen] = useState(false);
-  useEffect(() => {
-    const onOpen = () => setActivityOpen(true);
-    window.addEventListener(OPEN_ACTIVITY, onOpen);
-    return () => window.removeEventListener(OPEN_ACTIVITY, onOpen);
-  }, []);
-
   return (
     <SlotsContext.Provider value={slots}>
       {/* The phone draws no row: its Menu drawer opens the same bar (§9). */}
@@ -177,26 +157,10 @@ export function ShellFrame({
           setRight={setRight}
           onOpen={() => openWith("")}
           lead={lead}
-          activity={
-            workspace ? (
-              <ActivityControl
-                running={running}
-                needsInput={needsTotal}
-                open={activityOpen}
-                onOpen={() => setActivityOpen(true)}
-              />
-            ) : null
-          }
+          activity={<ActivityControl />}
         />
       ) : null}
       {children}
-      <ActivityPanel
-        open={activityOpen}
-        onClose={() => setActivityOpen(false)}
-        rows={activityRows}
-        visibleHrefs={heldHrefs}
-        placement={bar ? "end" : "sheet"}
-      />
       <CommandBar
         open={open}
         seed={seed}

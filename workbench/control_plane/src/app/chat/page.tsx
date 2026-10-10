@@ -25,7 +25,7 @@ import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { carriedText, findSession, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
-import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { CHAT_GONE_NOTICE, OPEN_CHAT_JOB } from "@/lib/runActivity";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
@@ -869,12 +869,17 @@ function ChatPageInner() {
 
   // WS-51 S3: the activity panel's link opens one chat
   // (`?do=open-chat&fill.session=<id>`). Only the member's own chat opens: the
-  // id is looked up in their list, from this browser or from the server. It
-  // opens on purpose, so a refusal shows as an error.
+  // id is looked up in their list, from this browser or from the server. A
+  // chat that is not in the list (deleted, or not the member's) opens nothing,
+  // and the page's notice says so. A chat that opens, opens on purpose, so a
+  // later refusal of it shows as an error.
   const openChatById = useCallback((id: string | undefined) => {
     if (!id) return;
     void findSession(id).then((found) => {
-      if (!found) return;
+      if (!found) {
+        setRecoveryNotice(CHAT_GONE_NOTICE);
+        return;
+      }
       setShowPicker(false);
       setSessions(getSessions());
       setActiveSessionId(found.id);
@@ -1139,6 +1144,7 @@ function ChatPageInner() {
           which would otherwise replace the chat it opens. */}
       <ShellJob
         id={OPEN_CHAT_JOB}
+        ungated
         ready={!!chatScopeId && loadedScope === chatScopeId}
         onOpen={(f) => openChatById(f.session)}
       />

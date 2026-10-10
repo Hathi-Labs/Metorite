@@ -4126,6 +4126,7 @@ function ProjectsWorkspace() {
           the chat slot off, the chat opens in Chat. */}
       <ShellJob
         id={OPEN_CHAT_JOB}
+        ungated
         ready={!loading && mountSettled}
         onOpen={(f) => {
           if (!f.session) return;

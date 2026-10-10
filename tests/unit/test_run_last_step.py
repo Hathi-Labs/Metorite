@@ -6,12 +6,15 @@ XREVRANGE with a small COUNT, never the whole stream and never a new key.
 
 What this suite holds (R7):
 
-* the step rule: a tool start, a progress line, "Writing a reply" and
-  "Thinking", newest first, with arguments and results skipped;
+* the step rule: a tool NAME, "Writing a reply" and "Thinking", newest
+  first. The text of a progress update, a result or an argument is never a
+  step, because it can be tool output (review of #815);
+* an MCP name loses its server prefix;
 * the cap: at most ``LAST_STEP_MAX_CHARS`` (60) characters;
 * plain text: tags, angle brackets and control characters never survive;
 * the read is the tail only: XREVRANGE with ``LAST_STEP_SCAN``;
 * the route adds ``lastStep`` to a running row, and None to a question;
+* without ``steps=1`` the route reads no stream at all (the badge poll);
 * a Redis error on the step never fails the list.
 
 Hermetic: a fake Redis, and Postgres down so the route lists the caller's
@@ -49,9 +52,47 @@ def test_a_tool_start_names_its_tool_in_words():
     assert stream_relay.step_from_events(events) == "Search tasks"
 
 
-def test_a_progress_line_is_a_step():
+def test_a_progress_line_is_never_a_step():
     events = [{"type": "PROGRESS_UPDATE", "message": "Reading 3 files"}]
-    assert stream_relay.step_from_events(events) == "Reading 3 files"
+    assert stream_relay.step_from_events(events) is None
+
+
+_SECRET = "OPENAI_API_KEY=sk-live-abc123"
+_SECRET_2 = "DATABASE_URL=postgres://app:hunter2@db:5432/prod"
+
+
+# Review of #815, P2. Mutation: let a PROGRESS_UPDATE message, a result or a
+# partial back into the step, and this fails.
+def test_tool_output_never_reaches_the_step():
+    events = [  # newest first, every one carrying text a shell tool printed
+        {"type": "PROGRESS_UPDATE", "message": _SECRET},
+        {"type": "TOOL_CALL_PARTIAL", "toolCallId": "c1", "delta": _SECRET_2},
+        {"type": "TOOL_CALL_RESULT", "toolCallId": "c1", "content": _SECRET},
+        {"type": "TOOL_CALL_ARGS", "toolCallId": "c1", "delta": _SECRET_2},
+        {"type": "TOOL_CALL_START", "toolCallId": "c0", "toolCallName": _SECRET_2},
+        {"type": "TOOL_CALL_START", "toolCallId": "c0", "toolCallName": "intent: cat .env " + _SECRET},
+        {"type": "TOOL_CALL_START", "toolCallId": "c1", "toolCallName": "run_shell"},
+    ]
+    step = stream_relay.step_from_events(events)
+    assert step == "Run shell"
+    for secret in ("sk-live", "hunter2", "OPENAI", "DATABASE", "postgres", ".env"):
+        assert secret not in step
+    # With no tool name at all, there is no step.
+    assert stream_relay.step_from_events(events[:-1]) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "step"),
+    [
+        ("mcp__github__list_issues", "List issues"),
+        ("mcp_github_list_issues", "List issues"),
+        ("mcp__claude-docs__read", "Read"),
+        ("search_tasks", "Search tasks"),
+        ("projects.create-task", "Projects create task"),
+    ],
+)
+def test_a_tool_name_becomes_a_short_label(name, step):
+    assert stream_relay.tool_step(name) == step
 
 
 def test_the_newest_step_wins():
@@ -84,8 +125,8 @@ def test_no_step_when_nothing_names_one():
 
 
 def test_the_step_is_capped_at_60_characters():
-    long = "word " * 40
-    step = stream_relay.step_from_events([{"type": "PROGRESS_UPDATE", "message": long}])
+    long = "search_" * 11  # an identifier of 77 characters
+    step = stream_relay.step_from_events([{"type": "TOOL_CALL_START", "toolCallName": long}])
     assert step is not None
     assert len(step) <= stream_relay.LAST_STEP_MAX_CHARS == 60
     assert step.endswith("…")
@@ -105,9 +146,8 @@ def test_the_step_is_plain_text(raw):
     assert step is not None
     assert "<" not in step and ">" not in step
     assert all(ord(c) >= 32 for c in step)
-    # A tool name gets the same fence.
-    tool = stream_relay.step_from_events([{"type": "TOOL_CALL_START", "toolCallName": raw}])
-    assert tool is not None and "<" not in tool and ">" not in tool
+    # A tool "name" that holds markup is not an identifier, so it is no step.
+    assert stream_relay.step_from_events([{"type": "TOOL_CALL_START", "toolCallName": raw}]) is None
 
 
 def test_a_value_that_is_not_text_gives_no_step():
@@ -242,25 +282,34 @@ def _start(tid: str, org: str, actor: str) -> None:
     asyncio.run(_go())
 
 
-def _list(user) -> list[dict]:
+def _list(user, steps: bool = True) -> list[dict]:
     from gateway.routes.chat import list_active_sessions
 
-    return asyncio.run(list_active_sessions(user=user))
+    return asyncio.run(list_active_sessions(user=user, steps=steps))
 
 
 def test_the_route_adds_the_step_to_a_running_row(fake_redis, db_down):
     org = str(uuid.uuid4())
     _start("t-run", org, _ALICE)
-    _push(fake_redis, "t-run", {
-        "type": "PROGRESS_UPDATE", "message": "<b>Checking</b> the calendar " + "x" * 80,
-    })
+    _push(fake_redis, "t-run",
+          {"type": "TOOL_CALL_START", "toolCallName": "check_calendar"},
+          {"type": "PROGRESS_UPDATE", "message": _SECRET})
 
     rows = _list(_user(_ALICE, org))
     assert [r["threadId"] for r in rows] == ["t-run"]
-    step = rows[0]["lastStep"]
-    assert step.startswith("Checking the calendar")
-    assert len(step) <= 60
-    assert "<" not in step
+    assert rows[0]["lastStep"] == "Check calendar"
+
+
+# Review of #815, P2. Mutation: read the step on every poll, and this fails.
+def test_the_badge_poll_reads_no_stream(fake_redis, db_down):
+    org = str(uuid.uuid4())
+    _start("t-run", org, _ALICE)
+    _push(fake_redis, "t-run", {"type": "TOOL_CALL_START", "toolCallName": "search_tasks"})
+
+    rows = _list(_user(_ALICE, org), steps=False)
+    assert [r["threadId"] for r in rows] == ["t-run"]
+    assert rows[0]["lastStep"] is None
+    assert fake_redis.xrev_calls == [], "a poll without steps=1 read the stream"
 
 
 def test_the_route_gives_none_when_there_is_no_step(fake_redis, db_down):

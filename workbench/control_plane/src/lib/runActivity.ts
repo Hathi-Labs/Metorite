@@ -243,6 +243,9 @@ export function runStatusText(row: Pick<ActivityRow, "state" | "startedAt" | "la
  */
 export const OPEN_CHAT_JOB = "open-chat";
 
+/** What Chat says when a link names a chat that is not open to the member. */
+export const CHAT_GONE_NOTICE = "That chat is no longer available.";
+
 /**
  * The apps that open a chat in their own assistant. Each one renders
  * `<ShellJob id={OPEN_CHAT_JOB}>`. Every other agent opens in Chat.

@@ -20,6 +20,10 @@
  * parameters, and `jobFields()` reads them. A filled field is a suggestion,
  * never an act (§6.4 rule 2). The form shows it, and the member saves.
  *
+ * `ungated` (WS-51 S3) is for a job whose link does not come from the command
+ * bar: `open-chat`, which the activity panel builds with the shell bar flag
+ * on or off. It opens a chat and saves nothing, so it needs no flag.
+ *
  * Fence: `doJob.test.ts`.
  */
 import { Suspense, useEffect, useRef } from "react";
@@ -50,11 +54,18 @@ export interface ShellJobProps {
   onOpen: (fields: Record<string, string>) => void;
   /** False while the app still loads what the form needs. */
   ready?: boolean;
+  /**
+   * Listen with the shell bar flag OFF too. Only for a job whose link comes
+   * from outside the command bar and that saves nothing (`open-chat`).
+   */
+  ungated?: boolean;
 }
 
 export function ShellJob(props: ShellJobProps) {
-  // Flag off: no job links, so a crafted `?do=` link opens nothing.
-  if (!shellBarOn()) return null;
+  // Flag off: no job links, so a crafted `?do=` link opens nothing. An
+  // ungated job (`open-chat`) only opens a chat, and its links are built
+  // with the flag off too.
+  if (!props.ungated && !shellBarOn()) return null;
   return (
     <Suspense fallback={null}>
       <Listen {...props} />

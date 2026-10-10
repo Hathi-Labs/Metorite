@@ -14,6 +14,8 @@ import { useRunActivity } from "@/hooks/useActiveSessions";
 import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
+import { ActivityControl } from "@/lib/shell/ActivityControl";
+import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
@@ -39,6 +41,8 @@ export default function Sidebar() {
   // `placement === "bar"`: the full-width bar carries the logo and the
   // control, so this rail draws no head.
   const head = fold.placement === "rail";
+  // The shell bar draws the activity control when it is on (WS-51 S3).
+  const [barOn] = useState(() => shellBarOn());
   const asideRef = useRef<HTMLElement>(null);
   const { data: session } = useSession();
   // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
@@ -269,7 +273,12 @@ export default function Sidebar() {
             // collapse control off the 256px rail.
             <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
           )}
-          <SidebarFoldButton />
+          {/* WS-51 S3: with the shell bar off, this head is the top of the
+              page, so the activity control sits here, beside the fold. */}
+          <div className={`flex items-center gap-1 ${collapsed ? "flex-col" : ""}`}>
+            {!barOn ? <ActivityControl /> : null}
+            <SidebarFoldButton />
+          </div>
         </div>
       )}
 

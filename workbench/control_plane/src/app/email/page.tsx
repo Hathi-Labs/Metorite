@@ -827,6 +827,7 @@ export default function EmailPage() {
           chat scene, which opens the asked chat once it has restored. */}
       <ShellJob
         id={OPEN_CHAT_JOB}
+        ungated
         ready={surface !== "loading"}
         onOpen={(f) => {
           if (!f.session) return;

@@ -69,6 +69,33 @@ let _onVisibility: (() => void) | null = null;
 /** Bumped when the member changes. A poll that started under an older
  *  generation belongs to the member who asked, and publishes nothing. */
 let _generation = 0;
+/** How many surfaces want each run's step (WS-51 S3): the open panel. */
+let _stepWanters = 0;
+
+/**
+ * The poll's address. The step costs the server a stream read per run, so the
+ * poll asks for it (`?steps=1`) only while a surface wants it. The badges need
+ * only the counts, so the 5 s poll stays as cheap as it was.
+ */
+export function pollUrl(): string {
+  return _stepWanters > 0 ? `${ENDPOINT}?steps=1` : ENDPOINT;
+}
+
+/**
+ * Ask for each run's step while a surface shows it: the activity panel, while
+ * it is open. Polls at once, so the steps show without a 5 s wait. Returns
+ * the release.
+ */
+export function wantLiveSteps(): () => void {
+  _stepWanters += 1;
+  if (_stepWanters === 1 && _listeners.size > 0) void _poll();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    _stepWanters = Math.max(0, _stepWanters - 1);
+  };
+}
 
 function _hidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -105,7 +132,7 @@ async function _poll(): Promise<void> {
   _inflight = true;
   const generation = _generation;
   try {
-    const res = await fetch(ENDPOINT, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await fetch(pollUrl(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (res.ok && generation === _generation) {
       const data = (await res.json()) as unknown;
       // Checked again after the body: the member may change while it reads.
@@ -191,6 +218,7 @@ export function _resetLiveRunsForTests(): void {
   _inflight = false;
   _runs = EMPTY;
   _key = "";
+  _stepWanters = 0;
   if (_onVisibility && typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", _onVisibility);
   }

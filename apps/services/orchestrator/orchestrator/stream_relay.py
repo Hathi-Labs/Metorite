@@ -714,10 +714,18 @@ async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
 # stream and never a new key. The caller reads it only for a thread that it has
 # already shown the member may see.
 #
-# The step is plain text. A tool name or a progress line can hold anything the
-# model wrote, so `plain_step` takes out tags, angle brackets and control
-# characters, folds whitespace and caps the length. The browser draws it as a
-# text node, never as HTML.
+# ⚠️ The step comes ONLY from a tool NAME or a fixed label (review of #815). The
+# text of a progress update, a result or an argument is never used. A Copilot
+# partial result with no tool id becomes a PROGRESS_UPDATE that carries raw
+# tool OUTPUT, for example lines of a `.env` file from a shell tool, and every
+# member of the room would see it. A tool name must also look like an
+# identifier, so a free-text "intent" name is not shown either.
+#
+# The step is plain text. `plain_step` takes out tags, angle brackets and
+# control characters, folds whitespace and caps the length. The browser draws
+# it as a text node, never as HTML. The route reads the step only when the
+# browser asks (`?steps=1`, while the panel is open), so the 5 s badge poll
+# reads no stream at all.
 #
 # Fence (R7): ``tests/unit/test_run_last_step.py``.
 
@@ -743,37 +751,54 @@ def plain_step(text: Any, limit: int = LAST_STEP_MAX_CHARS) -> str | None:
     return s
 
 
-def _tool_words(name: str) -> str:
-    """``search_tasks`` → ``Search tasks``. Free text keeps its own case."""
-    words = name.replace("_", " ").replace("-", " ").strip()
-    return words[:1].upper() + words[1:] if words else words
+#: A tool name is an identifier: letters, digits and ``_ - . :``, no spaces.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
+#: An MCP tool name carries its server: ``mcp__github__list_issues`` or
+#: ``mcp_github_list_issues``. The server is not a step.
+_MCP_PREFIX_RE = re.compile(r"^mcp(?:__[A-Za-z0-9-]+__|_[A-Za-z0-9-]+_)")
+
+#: The fixed labels. Nothing else but a tool name reaches the step.
+STEP_WRITING = "Writing a reply"
+STEP_THINKING = "Thinking"
+
+
+def tool_step(name: Any) -> str | None:
+    """A tool NAME as a short label: ``search_tasks`` → ``Search tasks``.
+
+    None for anything that is not an identifier, so free text never passes.
+    """
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    if not _TOOL_NAME_RE.match(name) or name == "tool":
+        return None
+    name = _MCP_PREFIX_RE.sub("", name) or name
+    words = " ".join(re.split(r"[_.:-]+", name)).strip()
+    if not words:
+        return None
+    return plain_step(words[:1].upper() + words[1:])
 
 
 def step_from_events(events: list[dict[str, Any]]) -> str | None:
     """The latest step in *events*, which are NEWEST FIRST.
 
-    The first event that names a step wins. A tool start names its tool, a
-    progress update its message, a text delta "Writing a reply" and a thinking
-    delta "Thinking". Arguments, results and every other event are skipped.
+    The first event that names a step wins. A tool start gives its tool name
+    as a label, a text delta gives "Writing a reply" and a thinking delta gives
+    "Thinking". A progress update, a result, an argument and every other event
+    are skipped, because their TEXT can be tool output.
     """
     for ev in events:
         if not isinstance(ev, dict):
             continue
         kind = ev.get("type")
         if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START"):
-            name = ev.get("toolCallName")
-            if isinstance(name, str) and name.strip() and name.strip() != "tool":
-                step = plain_step(_tool_words(name))
-                if step:
-                    return step
-        elif kind == "PROGRESS_UPDATE":
-            step = plain_step(ev.get("message"))
+            step = tool_step(ev.get("toolCallName"))
             if step:
                 return step
         elif kind in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"):
-            return "Writing a reply"
+            return STEP_WRITING
         elif kind == "THINKING_TEXT_MESSAGE_CONTENT":
-            return "Thinking"
+            return STEP_THINKING
     return None
 
 

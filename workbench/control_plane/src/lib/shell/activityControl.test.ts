@@ -15,8 +15,12 @@
  *    dismissal calls the caller's `onClose`.
  * 5. The empty state.
  * 6. The step is plain text, never HTML.
- * 7. The shell owns the control: the shell bar draws it, and the phone's Menu
- *    drawer opens the same panel. It reads the S1 store and polls nothing.
+ * 7. The shell owns the control, with the shell bar flag on OR off: the bar
+ *    draws it when the flag is on, the sidebar head when it is off, and the
+ *    phone's Menu drawer always. AppShell mounts the one panel in every
+ *    layout. The open-chat job listens with the flag off too.
+ * 8. The step costs a stream read, so the poll asks for it only while the
+ *    panel is open (`?steps=1`), and the BFF passes on nothing else.
  */
 
 import { readFileSync } from "node:fs";
@@ -50,8 +54,11 @@ import {
   type ActivityRow,
 } from "@/lib/runActivity";
 
+import { activeSessionsPath } from "@/lib/activeSessionsPath";
+import { _resetLiveRunsForTests, pollUrl, wantLiveSteps } from "@/lib/liveRuns";
+
 import {
-  ActivityControl,
+  ActivityButton,
   ActivityList,
   ActivityPanel,
   NO_RUNS_TEXT,
@@ -66,7 +73,7 @@ const ago = (mins: number) => new Date(NOW - mins * 60_000).toISOString();
 
 const control = (running: number, needsInput: number) =>
   renderToStaticMarkup(
-    createElement(ActivityControl, { running, needsInput, open: false, onOpen: () => {} }),
+    createElement(ActivityButton, { running, needsInput, open: false, onOpen: () => {} }),
   );
 
 const list = (rows: ActivityRow[], visibleHrefs: ReadonlySet<string> | null = null) =>
@@ -118,7 +125,7 @@ describe("the control wears the one run badge", () => {
     expect(html).toContain('aria-haspopup="dialog"');
     expect(html).toContain('aria-expanded="false"');
     const open = renderToStaticMarkup(
-      createElement(ActivityControl, { running: 1, needsInput: 0, open: true, onOpen: () => {} }),
+      createElement(ActivityButton, { running: 1, needsInput: 0, open: true, onOpen: () => {} }),
     );
     expect(open).toContain('aria-expanded="true"');
   });
@@ -240,7 +247,7 @@ describe("a row opens its chat in its app", () => {
       const file = pages[app];
       expect(file, `no page known for ${app}`).toBeTruthy();
       expect(read(file), `${file} does not open a chat from a link`).toMatch(
-        /<ShellJob\s+id=\{OPEN_CHAT_JOB\}/,
+        /<ShellJob\s+id=\{OPEN_CHAT_JOB\}\s+ungated\b/,
       );
     }
     // The three rails hand the asked chat to their own session hook.
@@ -329,35 +336,52 @@ describe("the step is plain text", () => {
 
 // ── 7. The shell owns it ────────────────────────────────────────────────────
 
-describe("the shell owns the control", () => {
-  it("the shell bar draws it after the app's tools, and mounts the one panel", () => {
+describe("the shell owns the control, with the shell bar on or off", () => {
+  it("the shell bar draws it after the app's tools", () => {
     const bar = read("lib/shell/ShellBar.tsx");
-    expect(bar).toMatch(/<ActivityControl\b/);
-    expect(bar).toMatch(/<ActivityPanel\b/);
+    expect(bar).toMatch(/activity=\{<ActivityControl \/>\}/);
     expect(bar.indexOf("ref={setRight}")).toBeLessThan(bar.indexOf("{activity}"));
-    expect(bar).toMatch(/window\.addEventListener\(OPEN_ACTIVITY/);
+    expect(bar).not.toMatch(/<ActivityPanel\b|<ActivityHost\b/);
   });
 
-  it("the phone's Menu drawer opens the same panel", () => {
+  // Review of #815. Mutation: drop the sidebar's control, and with the shell
+  // bar flag off the desktop shows nothing.
+  it("with the shell bar off, the sidebar head draws it", () => {
+    const side = read("components/Sidebar.tsx");
+    expect(side).toMatch(/\{!barOn \? <ActivityControl \/> : null\}/);
+    expect(side).toMatch(/useState\(\(\) => shellBarOn\(\)\)/);
+  });
+
+  it("AppShell mounts the one panel in every layout, with no flag around it", () => {
     const shell = read("components/AppShell.tsx");
-    expect(shell).toMatch(/<ActivityControl\b/);
-    expect(shell).toMatch(/new CustomEvent\(OPEN_ACTIVITY\)/);
-    expect(shell).not.toMatch(/<ActivityPanel\b/);
+    expect(shell.match(/<ActivityHost\b/g)?.length).toBe(2); // desktop, phone
+    expect(shell).toMatch(/<ActivityHost placement=\{frame === "classic" \? "top" : "end"\} \/>/);
+    expect(shell).toMatch(/<ActivityHost placement="sheet" \/>/);
+    // The phone drawer draws the control outside the shell bar's gate.
+    const drawer = shell.slice(shell.indexOf("NS-1 on the phone"));
+    expect(drawer.indexOf("<ActivityControl onBeforeOpen={close}")).toBeGreaterThan(-1);
+    expect(drawer.indexOf("<ActivityControl")).toBeLessThan(drawer.indexOf("<nav"));
+  });
+
+  it("the open-chat job listens with the shell bar off", () => {
+    const job = read("lib/shell/doJob.tsx");
+    expect(job).toMatch(/if \(!props\.ungated && !shellBarOn\(\)\) return null;/);
   });
 
   it("reads the S1 store and polls nothing", () => {
     for (const file of ["lib/shell/ActivityControl.tsx", "lib/shell/ShellBar.tsx"]) {
       const src = read(file);
-      expect(src).not.toMatch(/\/api\/chat\/active-sessions|fetch\(/);
-      expect(src).not.toMatch(/\bsetInterval\([^)]*fetch/);
+      expect(src).not.toMatch(/\/api\/chat\/active-sessions|fetch\(/);
     }
-    expect(read("lib/shell/ShellBar.tsx")).toMatch(/useRunActivity\(null, workspace\)/);
-    expect(read("lib/shell/ShellBar.tsx")).toMatch(/useActivityRows\(workspace\)/);
+    const src = read("lib/shell/ActivityControl.tsx");
+    expect(src).toMatch(/useRunActivity\(null, workspace\)/);
+    expect(src).toMatch(/useActivityRows\(workspace\)/);
   });
 
   it("no app draws its own copy", () => {
-    // The control is imported only by the shell bar and the phone shell.
-    const allowed = new Set(["lib/shell/ShellBar.tsx", "components/AppShell.tsx"]);
+    // The control is imported only by the shell: the bar, the sidebar head
+    // and the phone shell.
+    const allowed = new Set(["lib/shell/ShellBar.tsx", "components/AppShell.tsx", "components/Sidebar.tsx"]);
     const importers = (
       [
         "app/chat/page.tsx",
@@ -368,5 +392,38 @@ describe("the shell owns the control", () => {
       ] as const
     ).filter((f) => /from "@\/lib\/shell\/ActivityControl"/.test(read(f)));
     expect(importers.filter((f) => !allowed.has(f))).toEqual([]);
+  });
+});
+
+// ── 8. The step is asked for only while the panel is open ───────────────────
+
+describe("the step is asked for only while the panel is open", () => {
+  // Review of #815. Mutation: always send steps=1, and this fails.
+  it("the poll asks for steps only while a surface wants them", () => {
+    _resetLiveRunsForTests();
+    expect(pollUrl()).toBe("/api/chat/active-sessions");
+    const release = wantLiveSteps();
+    expect(pollUrl()).toBe("/api/chat/active-sessions?steps=1");
+    const second = wantLiveSteps();
+    release();
+    expect(pollUrl()).toBe("/api/chat/active-sessions?steps=1");
+    second();
+    second(); // a second release changes nothing
+    expect(pollUrl()).toBe("/api/chat/active-sessions");
+  });
+
+  it("the open panel asks, and lets go when it closes", () => {
+    const src = read("lib/shell/ActivityControl.tsx");
+    expect(src).toMatch(/if \(!open\) return;\s*\/\/[^\n]*\n\s*const release = wantLiveSteps\(\);/);
+    expect(src).toMatch(/return \(\) => \{\s*release\(\);/);
+  });
+
+  it("the BFF passes steps=1 on, and nothing else", () => {
+    expect(activeSessionsPath("http://x/api/chat/active-sessions")).toBe("/chat/active-sessions");
+    expect(activeSessionsPath("http://x/api/chat/active-sessions?steps=1")).toBe("/chat/active-sessions?steps=1");
+    expect(activeSessionsPath("http://x/a?steps=1&org=other")).toBe("/chat/active-sessions?steps=1");
+    expect(activeSessionsPath("http://x/a?steps=true")).toBe("/chat/active-sessions");
+    expect(activeSessionsPath(undefined)).toBe("/chat/active-sessions");
+    expect(read("app/api/chat/active-sessions/route.ts")).toMatch(/activeSessionsPath\(req\.url\)/);
   });
 });
