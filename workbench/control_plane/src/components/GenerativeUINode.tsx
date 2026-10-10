@@ -40,6 +40,7 @@ import GenUiText from "@/components/GenUiText";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import Button from "@/components/ui/Button";
+import { CollapsibleCardBody, CollapsibleCardHeader, useCardFold } from "@/components/ui/Collapsible";
 import SandboxedReact from "@/components/SandboxedReact";
 import { renderTemplate } from "@/components/genUITemplates";
 import GenUIFallback from "@/components/GenUIFallback";
@@ -125,6 +126,9 @@ function Node({
   answered?: string;
   depth?: number;
 }): React.ReactElement | null {
+  // The chat card this tree draws in, if it folds (`components/RollupCard`).
+  // Read before the guards below, so the hook runs on every render.
+  const fold = useCardFold();
   // Depth guard — a pathological/looping tree can't blow the stack.
   if (depth > 20) return null;
   if (!node || typeof node !== "object") return null;
@@ -139,15 +143,34 @@ function Node({
     kids.map((k, i) => <Node key={i} node={k} onAction={onAction} answered={answered} depth={depth + 1} />);
 
   switch (type) {
-    case "card":
+    case "card": {
+      const title = props.title != null ? <GenUiText text={s(props.title)} /> : null;
+      // The root card of a chat card: its title row is the roll-up's one
+      // toggle, inside its own border (owner feedback, 2026-10-10). A card
+      // nested deeper sees no fold state (`CollapsibleCardBody`).
+      if (depth === 0 && fold) {
+        return (
+          <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+            <CollapsibleCardHeader
+              title={title ?? undefined}
+              quiet={title === null}
+              className="text-sm font-semibold text-foreground"
+            />
+            <CollapsibleCardBody className={title !== null || fold.toggle ? "space-y-2 pt-2" : "space-y-2"}>
+              {renderKids()}
+            </CollapsibleCardBody>
+          </div>
+        );
+      }
       return (
         <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2">
-          {props.title != null && (
-            <div className="text-sm font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
+          {title !== null && (
+            <div className="text-sm font-semibold text-foreground">{title}</div>
           )}
           {renderKids()}
         </div>
       );
+    }
 
     case "stack":
       return <div className="space-y-2">{renderKids()}</div>;
@@ -398,6 +421,19 @@ function Node({
 }
 
 // ─── Public component ────────────────────────────────────────────────────
+
+/**
+ * Does the tree's root draw its own title row (a `card`)? The chat card then
+ * hands that row the roll-up toggle (`RollupCard` `header="own"`), so the
+ * title does not draw twice. Any other root has no title row, and the
+ * roll-up draws its own frame round it while it folds.
+ */
+export function genUiRootIsCard(spec: unknown): boolean {
+  if (!spec || typeof spec !== "object") return false;
+  const sp = spec as Record<string, unknown>;
+  const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
+  return !!root && typeof root === "object" && s(root.type) === "card";
+}
 
 /**
  * Render a generative-UI tree (the value of a `generative_ui` CUSTOM event).

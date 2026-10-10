@@ -20,7 +20,7 @@ import { unfenced } from "@/lib/fencedText";
 import RollupCard from "@/components/RollupCard";
 import { answersFromTools } from "@/lib/askAnswers";
 import { genUiTarget } from "@/lib/askPin";
-import GenerativeUINode from "@/components/GenerativeUINode";
+import GenerativeUINode, { genUiRootIsCard } from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
 import { DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
@@ -569,11 +569,13 @@ function MessageBubble({
     }
     // A long card rolls up when a newer card arrives (`components/RollupCard`).
     // An ask that still waits never does: the pin's own rule says when.
+    // A root `card` has its own title row, and that row is the one toggle.
     const target = genUiTarget(message.id, i, spec);
     const title = unfenced(genUiTitle(spec)) || "Card";
+    const header = genUiRootIsCard(spec) ? "own" : "frame";
     if (ask) {
       return (
-        <RollupCard key={i} id={target} title={title} icon="LayoutTemplate"
+        <RollupCard key={i} id={target} title={title} icon="LayoutTemplate" header={header}
           askTarget={answered === undefined ? target : undefined}>
           <div {...askAttr} className="min-w-0 outline-none">
             <GenerativeUINode spec={spec} onAction={act} answered={answered} />
@@ -582,7 +584,7 @@ function MessageBubble({
       );
     }
     return (
-      <RollupCard key={i} id={target} title={title} icon="LayoutTemplate">
+      <RollupCard key={i} id={target} title={title} icon="LayoutTemplate" header={header}>
         <GenerativeUINode spec={spec} onAction={act} answered={answered} />
       </RollupCard>
     );

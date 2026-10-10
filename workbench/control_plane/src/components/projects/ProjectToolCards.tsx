@@ -27,7 +27,7 @@ import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
 import EntityPill from "@/components/ui/EntityPill";
 import Readout from "@/components/Readout";
-import RollupCard from "@/components/RollupCard";
+import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -708,16 +708,12 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
           : meta.label;
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
-  // no toggle of its own.
+  // no toggle of its own. Its title row is the header (`header="own"`).
   return (
-    <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]}>
+    <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 flex-shrink-0">
-          <AppIcon name={icon} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{heading}</div>
+      <RollupHeader className="text-[11px] font-medium text-foreground" />
+      <RollupBody indent>
           {detail && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
               <FencedText text={detail} pills={false} />
@@ -736,8 +732,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
               </Button>
             </div>
           )}
-        </div>
-      </div>
+      </RollupBody>
     </div>
     </RollupCard>
   );
@@ -864,34 +859,35 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
         : outcome === "cancelled" ? "Ban"
           : outcome === "refused" ? "Info"
             : meta.icon;
+  // The header draws the count after the title ("Tasks created · 5"), in
+  // both states, so the title does not carry it too.
   const heading =
     outcome === "failed" ? `${meta.label} — failed`
       : outcome === "partial" && rows.length === 0 ? kind.maybe
-      : outcome === "partial" ? `${meta.label} — stopped part way (${rows.length})`
+      : outcome === "partial" ? `${meta.label} — stopped part way`
         : outcome === "cancelled" ? "Cancelled"
           : outcome === "refused" ? "Not done"
-            : `${meta.label} (${rows.length})`;
+            : rows.length === 0 ? `${meta.label} (0)`
+              : meta.label;
   // The owner's tall "Tasks created (5)" (2026-10-10). Five rows are long,
-  // so it rolls up when a newer card arrives, to its label, its count and
-  // the rows' names on one line.
+  // so it rolls up when a newer card arrives, to its title row: its label,
+  // its count and the rows' names on one line. That row is the card's own
+  // (`header="own"`), so there is one title and one toggle.
   const names = kind.rows === "task"
     ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`)
     : words.map((r) => r.name);
   return (
     <RollupCard
       id={`tool:${e.id}`}
-      title={outcome === "done" ? meta.label : heading}
+      title={heading}
       icon={icon}
       rows={rows.length || undefined}
       summary={names.join(" · ") || unfenced(head)}
+      header="own"
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 flex-shrink-0">
-          <AppIcon name={icon} size={13} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">{heading}</div>
+      <RollupHeader className="text-[11px] font-medium text-foreground" />
+      <RollupBody indent>
           {head && (outcome !== "done" || rows.length === 0) && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
               <FencedText text={head} pills={false} />
@@ -917,8 +913,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
               ))}
             </div>
           )}
-        </div>
-      </div>
+      </RollupBody>
     </div>
     </RollupCard>
   );
