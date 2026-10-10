@@ -36,12 +36,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from acb_skills import whatsapp_cards as cards
 from acb_skills import whatsapp_render as render
 
 #: The tools a WhatsApp run does not get: the WEB DELIVERY tools only.
@@ -104,7 +105,7 @@ class OutMessage:
     so the next turn knows which buttons it offered.
     """
 
-    kind: str  # "interactive" or "image"
+    kind: str  # "interactive", "image", or "text" (a view's own text)
     rendition: str
     interactive: dict[str, Any] | None = None
     png: bytes | None = None
@@ -117,20 +118,24 @@ class WhatsAppRun:
 
     agent: str
     outbox: list[OutMessage] = field(default_factory=list)
+    #: The view runner of ``whatsapp_channel.views`` for this member, or None.
+    #: It takes a view name and returns an object with ``text`` and ``ui``.
+    views: Callable[[str], Awaitable[Any]] | None = None
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
 
 
 @contextlib.contextmanager
-def whatsapp_run(agent: str) -> Iterator[WhatsAppRun]:
+def whatsapp_run(agent: str, *,
+                 views: Callable[[str], Awaitable[Any]] | None = None) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
     value it found.
     """
-    run = WhatsAppRun(agent=agent)
+    run = WhatsAppRun(agent=agent, views=views)
     token = _RUN.set(run)
     try:
         yield run
@@ -326,8 +331,11 @@ def _chart(data: dict[str, Any]) -> OutMessage:
     elif kind == "progress":
         svg = render.progress_svg(title, labels, values, subtitle=subtitle,
                                   totals=_list_of(data, "totals", required=False))
+    elif kind == "donut":
+        svg = cards.donut_svg(title, labels, values, subtitle=subtitle,
+                              tones=_list_of(data, "tones", required=False))
     else:
-        raise _Refused('chart "type" must be "bar", "line" or "progress"')
+        raise _Refused('chart "type" must be "bar", "line", "progress" or "donut"')
     pairs = ", ".join(f"{lab}: {val}" for lab, val in zip(labels, values, strict=True))
     rendition = f"[Chart, {kind}: {title}] {pairs}" + (f"\n{caption}" if caption else "")
     return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
@@ -347,12 +355,77 @@ def _table(data: dict[str, Any]) -> OutMessage:
     return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
 
 
+def _image(data: dict[str, Any], svg: str, rendition: str) -> OutMessage:
+    caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+    return OutMessage("image", rendition + (f"\n{caption}" if caption else ""),
+                      png=render.to_png(svg), caption=caption or None)
+
+
+def _head(data: dict[str, Any]) -> tuple[str, str | None]:
+    return (_text(data, "title", limit=80),
+            _text(data, "subtitle", limit=120, required=False) or None)
+
+
+def _stats(data: dict[str, Any]) -> OutMessage:
+    title, subtitle = _head(data)
+    tiles = _list_of(data, "tiles") or []
+    svg = cards.stats_svg(title, tiles, subtitle=subtitle)
+    pairs = "; ".join(f"{t.get('label')}: {t.get('value')}"
+                      + (f" ({t.get('delta')})" if t.get("delta") else "") for t in tiles)
+    return _image(data, svg, f"[Stats: {title}] {pairs}")
+
+
+def _board(data: dict[str, Any]) -> OutMessage:
+    title, subtitle = _head(data)
+    columns = _list_of(data, "columns") or []
+    svg = cards.board_svg(title, columns, subtitle=subtitle)
+    lines = [f"{c.get('name')} ({c.get('total', len(c.get('cards') or []))}): "
+             + ", ".join(str(k.get("title")) for k in (c.get("cards") or [])[:cards.MAX_CARDS])
+             for c in columns]
+    return _image(data, svg, f"[Board: {title}]\n" + "\n".join(lines))
+
+
+def _timeline(data: dict[str, Any]) -> OutMessage:
+    title, subtitle = _head(data)
+    events = _list_of(data, "events") or []
+    svg = cards.timeline_svg(title, events, subtitle=subtitle)
+    lines = [f"{e.get('date', '')} {e.get('title')} ({e.get('state', 'upcoming')})"
+             for e in events]
+    return _image(data, svg, f"[Timeline: {title}]\n" + "\n".join(lines))
+
+
+def _agenda(data: dict[str, Any]) -> OutMessage:
+    title, subtitle = _head(data)
+    items = _list_of(data, "items") or []
+    all_day = _list_of(data, "all_day", required=False)
+    svg = cards.agenda_svg(title, items, subtitle=subtitle, all_day=all_day)
+    lines = [f"{i.get('start')}-{i.get('end', '')} {i.get('title')}" for i in items]
+    head = f"[Agenda: {title}]" + (f" All day: {', '.join(map(str, all_day))}" if all_day else "")
+    return _image(data, svg, head + "\n" + "\n".join(lines))
+
+
+def _gantt(data: dict[str, Any]) -> OutMessage:
+    title, subtitle = _head(data)
+    rows = _list_of(data, "rows") or []
+    today = data.get("today") if isinstance(data.get("today"), str) else None
+    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
+    lines = [f"{r.get('label')}: {r.get('start')} to {r.get('end', r.get('start'))}"
+             + (f", {r.get('progress')}%" if r.get("progress") is not None else "")
+             for r in rows]
+    return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
+
+
 _BUILDERS = {
     "buttons": _buttons,
     "list": _list,
     "link": _link,
     "chart": _chart,
     "table": _table,
+    "stats": _stats,
+    "board": _board,
+    "timeline": _timeline,
+    "agenda": _agenda,
+    "gantt": _gantt,
 }
 
 
@@ -376,34 +449,52 @@ def build(kind: str, data: dict[str, Any]) -> OutMessage:
 async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     """Send a native WhatsApp element after your text reply.
 
-    kind and data:
-    - "buttons": up to 3 quick replies.
-      data={"body": str, "buttons": [str, ...]}. A title has at most 20 characters.
-    - "list": a menu of up to 10 rows. data={"body": str, "button": "View tasks",
-      "rows": [{"title": str (24), "description": str (72)}]}, or
-      "sections": [{"title": str, "rows": [...]}] in place of "rows".
-    - "link": one button that opens Metorite. data={"body": str,
-      "label": str (20), "url": "https://app.metorite.com/<page>"}.
-    - "chart": an image. data={"type": "bar" | "line" | "progress",
-      "title": str, "labels": [str], "values": [number], "unit": str,
-      "totals": [number] (progress), "subtitle": str, "caption": str}.
-    - "table": an image. data={"title": str, "columns": [str] (6 at most),
-      "rows": [[cell, ...]] (20 at most), "subtitle": str, "caption": str}.
+    Pick by the SHAPE of the answer:
+    - items the member may open (tasks, emails, people, approvals) -> "list"
+    - a short choice or the next question -> "buttons"
+    - 2 to 8 headline numbers -> "stats"; a breakdown -> "chart" donut
+    - numbers per item -> "chart" bar; a trend -> line; done/total -> progress
+    - work by status -> "board"; dates and milestones -> "timeline"
+    - one day of the calendar -> "agenda"; a project schedule -> "gantt"
+    - rows with 3+ columns -> "table"; anything else rich -> "link"
 
-    A tap on a button or a row comes back as the member's next message, with
-    the title as its text. Buttons and rows ask or narrow a question. They
-    change no data. Do not repeat in your text what the element shows.
-    At most 3 elements in one reply.
+    data per kind (every image takes "title", "subtitle", "caption"):
+    - buttons: {"body", "buttons": [str x 1-3, 20 chars]}
+    - list: {"body", "button": "View tasks", "rows": [{"title" (24),
+      "description" (72)}] x 1-10} or "sections": [{"title", "rows"}]
+    - link: {"body", "label", "url": "https://app.metorite.com/<page>"}
+    - chart: {"type": "bar"|"line"|"progress"|"donut", "labels", "values",
+      "unit", "totals" (progress), "tones" (donut)}
+    - table: {"columns" (6), "rows": [[cell]] (20)}
+    - stats: {"tiles": [{"label", "value", "delta", "good": "up"|"down",
+      "hint", "tone"}] x 1-8}
+    - board: {"columns": [{"name", "total", "cards": [{"title", "meta",
+      "tone"}]}] x 1-4}
+    - timeline: {"events": [{"date", "title", "detail",
+      "state": "done"|"current"|"upcoming"|"late"|"blocked"}] x 1-12}
+    - agenda: {"items": [{"start": "09:30", "end", "title", "detail",
+      "kind": "event"|"focus"|"task"|"free"}], "all_day": [str]}
+    - gantt: {"rows": [{"label", "start", "end" (ISO dates), "status",
+      "progress"}] x 1-15, "today"}
+    - view: {"name"}: a ready view that the server reads and builds, with no
+      rows from you. Names: my_day, due_today, overdue, calendar, approvals,
+      menu. Prefer it whenever the question is one of these.
+    A "tone" or "status" is a status word or a colour (green, amber, red,
+    blue, violet, gray).
 
-    Returns {"ok": true} when the element is queued, or {"ok": false,
-    "error": ...}. Fix the error and call again.
+    A tap on a button or a row comes back as the member's next message. They
+    change no data. Do not repeat in your text what the element shows. At
+    most 3 elements in one reply. Returns {"ok": true}, or {"ok": false,
+    "error"}: fix it and call again.
     """
     run = _RUN.get()
     if run is None:
         return {"ok": False, "error": "whatsapp_ui works only in a WhatsApp chat"}
-    if len(run.outbox) >= MAX_MESSAGES:
+    if _elements(run) >= MAX_MESSAGES:
         return {"ok": False,
                 "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
+    if str(kind or "").strip().lower() == "view":
+        return await _send_view(run, data)
     try:
         # In a worker thread: drawing an image must never hold the gateway's
         # event loop, which serves every tenant (`whatsapp_render` locks).
@@ -413,6 +504,36 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run.outbox.append(message)
     return {"ok": True, "queued": len(run.outbox),
             "note": "It goes after your text. Refer to it in one line."}
+
+
+def _elements(run: WhatsAppRun) -> int:
+    """The elements queued so far. A view's text is not an element."""
+    return sum(1 for m in run.outbox if m.kind != "text")
+
+
+async def _send_view(run: WhatsAppRun, data: Any) -> dict[str, Any]:
+    """Queue a prebuilt view: its text, then its elements (WAC-10c).
+
+    The server reads the data and builds the elements, so the model writes
+    no rows. It counts as the reply's elements, up to :data:`MAX_MESSAGES`.
+    """
+    name = data.get("name") if isinstance(data, dict) else None
+    if run.views is None:
+        return {"ok": False, "error": "no views in this chat"}
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "error": '"name" is required'}
+    try:
+        view = await run.views(name.strip().lower())
+    except KeyError:
+        return {"ok": False, "error": f'no view named "{name}"'}
+    except PermissionError:
+        return {"ok": False, "error": "this member cannot open that app"}
+    room = MAX_MESSAGES - _elements(run)
+    if view.text:
+        run.outbox.append(OutMessage("text", view.text))
+    run.outbox.extend(list(view.ui)[:max(room, 0)])
+    return {"ok": True, "sent": view.text,
+            "note": "The view is sent. Add no text, or one short line."}
 
 
 def rendition_of(messages: list[OutMessage]) -> str:

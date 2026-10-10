@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import colorsys
 import math
+import re
 import threading
 from xml.sax.saxutils import escape
 
@@ -271,6 +272,51 @@ def progress_svg(title: str, labels: list[str], values: list[float], *,
     return _svg([*parts, _footer(height)], height)
 
 
+#: A cell that reads as a number: digits with an optional sign, separators,
+#: a leading "#" (an id), or a dash that stands for "none".
+_NUMBERISH = re.compile(r"[#+-]?[0-9][0-9,.]*%?|[-–—]")
+
+
+def _is_numberish(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    return isinstance(value, str) and bool(_NUMBERISH.fullmatch(value.strip()))
+
+
+def column_widths(need: list[float], numeric: list[bool], avail: float) -> list[float]:
+    """Widths for table columns that NEED these widths, in *avail*.
+
+    A narrow column (an id, a priority, a number) keeps what it needs. When
+    the columns are too wide, only the wide ones shrink, in proportion. When
+    there is room to spare, the widest TEXT column takes it, so a task title
+    never sits far right of a short id (the owner's "Due today" image,
+    2026-10-10).
+    """
+    n = len(need)
+    floor = min(48.0, avail / n)
+    widths = [max(floor, w) for w in need]
+    if sum(widths) > avail:
+        fixed = [w <= avail / n for w in widths]
+        for _ in range(n):  # a shrink can push another column under the share
+            room = avail - sum(w for w, f in zip(widths, fixed, strict=True) if f)
+            wide = sum(w for w, f in zip(widths, fixed, strict=True) if not f)
+            if wide <= 0:
+                break
+            scaled = [w if f else w * room / wide for w, f in zip(widths, fixed, strict=True)]
+            newly = [not f and s <= floor for s, f in zip(scaled, fixed, strict=True)]
+            if not any(newly):
+                widths = [max(s, floor) for s in scaled]
+                break
+            fixed = [f or nw for f, nw in zip(fixed, newly, strict=True)]
+        return widths
+    text_cols = [j for j in range(n) if not numeric[j]] or list(range(n))
+    widest = max(text_cols, key=lambda j: need[j])
+    widths[widest] += avail - sum(widths)
+    return widths
+
+
 def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
               subtitle: str | None = None) -> str:
     """A striped table. A column of numbers aligns right."""
@@ -289,8 +335,7 @@ def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
                                              and not isinstance(c, bool) else str(c)))[:TEXT_MAX]
                       for c in r])
     columns = [str(c)[:TEXT_MAX] for c in columns]
-    numeric = [all(isinstance(r[j], (int, float)) and not isinstance(r[j], bool)
-                   for r in rows if r[j] is not None)
+    numeric = [all(_is_numberish(r[j]) for r in rows if r[j] is not None)
                for j in range(len(columns))]
 
     # Each column gets width in proportion to its longest text, with a floor.
@@ -298,13 +343,7 @@ def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
                 + [_text_width(r[j], 14) for r in cells]) + 20
             for j in range(len(columns))]
     avail = WIDTH - 2 * PAD
-    floor = min(70.0, avail / len(columns))
-    widths = [max(floor, n) for n in need]
-    total = sum(widths)
-    if total > avail:
-        widths = [w * avail / total for w in widths]
-    else:
-        widths[0] += avail - total
+    widths = column_widths(need, numeric, avail)
 
     parts, y = _header(title, subtitle)
     row_h = 34
