@@ -844,7 +844,9 @@ def test_each_statement_of_a_load_runs_on_its_own_database(
     monkeypatch.setattr(E, "_load_connection", connect)
     monkeypatch.setattr(E, "_timed", timed)
     width = 70  # Three batches of columns, so one shared database would run many statements.
-    cells = [[str(r * j % 97) + (".5" if j % 3 == 0 else "") for j in range(width)] for r in range(5)]
+    cells = [
+        [str(r * j % 97) + (".5" if j % 3 == 0 else "") for j in range(width)] for r in range(5)
+    ]
     (dirs.run / "src").mkdir(parents=True)
     if kind == "csv":
         lines = [",".join(f"h{j}" for j in range(width))] + [",".join(r) for r in cells]
@@ -1840,6 +1842,11 @@ def test_the_engine_answers_under_a_1_gib_container(
         assert attack["_peak_mb"] <= 1024, (label, attack)
     for label in ("wide 1000x2000", "names 400x1000"):
         assert out[label]["ok"] is True and out[label]["_rc"] == 0, (label, out[label])
+        # H-290: half the watch. With one database for the whole load, the
+        # names shape took 388 to 507 MB locally and 771 MB on a CI runner.
+        # With a database for each statement, names takes 186 to 204 MB and
+        # wide takes 283 to 298 MB.
+        assert out[label]["_peak_mb"] < 384, (label, out[label])
     assert out["xlsx amp"]["error"] == "too_large" and out["xlsx timer"]["error"] == "time"
     assert out["tmp after xlsx"] == [] and out["outputs after xlsx"] == []
     assert out["next verb"] == [[1]]
