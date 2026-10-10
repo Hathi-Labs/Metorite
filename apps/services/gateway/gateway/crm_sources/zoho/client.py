@@ -32,6 +32,7 @@ import structlog
 
 from gateway.crm_sources.base import (
     BudgetExhausted,
+    NeedsReconnect,
     OAuthClientConfig,
     RateLimited,
     SourceCredential,
@@ -268,6 +269,12 @@ class ZohoSource:
         self._clock = clock
         self.credit_budget = credit_budget
         self._credits_used = 0
+        # Single flight: one refresh at a time on this instance. A call that
+        # waited re-checks the expiry, so N calls at expiry send ONE token
+        # request. ``_dead`` keeps a NeedsReconnect, so the waiters do not each
+        # ask again about a dead token.
+        self._refresh_lock = asyncio.Lock()
+        self._dead: NeedsReconnect | None = None
 
     # ── State the caller reads ──────────────────────────────────────────────
 
@@ -313,18 +320,41 @@ class ZohoSource:
             transport=self._transport,
             clock=self._clock,
         )
+        self._dead = None
         return self._credential
 
     # ── 2. Refresh ──────────────────────────────────────────────────────────
 
     async def refresh(self) -> SourceCredential:
-        self._credential = await auth.refresh(
-            self._config,
-            self._connected(),
-            transport=self._transport,
-            clock=self._clock,
-        )
+        """Refresh now, inside the single-flight lock."""
+        async with self._refresh_lock:
+            return await self._refresh_locked()
+
+    async def _refresh_locked(self) -> SourceCredential:
+        if self._dead is not None:
+            raise NeedsReconnect(str(self._dead))
+        try:
+            self._credential = await auth.refresh(
+                self._config,
+                self._connected(),
+                transport=self._transport,
+                clock=self._clock,
+            )
+        except NeedsReconnect as exc:
+            self._dead = exc
+            raise
         return self._credential
+
+    async def _fresh_credential(self) -> SourceCredential:
+        """The credential, refreshed first when it expires within five minutes."""
+        credential = self._connected()
+        if self._dead is None and not auth.needs_refresh(credential, self._clock()):
+            return credential
+        async with self._refresh_lock:
+            credential = self._connected()
+            if self._dead is not None or auth.needs_refresh(credential, self._clock()):
+                credential = await self._refresh_locked()
+        return credential
 
     def _connected(self) -> SourceCredential:
         if self._credential is None:
@@ -343,10 +373,9 @@ class ZohoSource:
         """One GET to ``api_domain``, with credits, the budget and the backoff."""
         credential = self._connected()
         self._check_budget()
+        auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
+        credential = await self._fresh_credential()
         base = auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
-        if auth.needs_refresh(credential, self._clock()):
-            credential = await self.refresh()
-            base = auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
         headers = _with_modified_since(
             {"Authorization": f"Zoho-oauthtoken {credential.access_token}"},
             since,

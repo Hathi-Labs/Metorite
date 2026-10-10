@@ -18,6 +18,7 @@ The acceptance of the slice, in order:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -575,6 +576,50 @@ async def test_an_expired_token_refreshes_before_the_call(leaks: list[str]) -> N
     assert source.credential.refresh_token == REFRESH
     assert source.credential.expires_at == NOW + timedelta(seconds=3600)
     assert source.credits_used == 1
+
+
+@pytest.mark.parametrize("dead", [False, True], ids=["alive", "dead"])
+async def test_concurrent_calls_at_expiry_send_one_token_request(
+    leaks: list[str],
+    dead: bool,
+) -> None:
+    """Single flight: N calls that find the token expired share one refresh.
+
+    The token handler yields to the loop, so without the lock every call
+    starts its own refresh. A dead token is asked about once, too.
+    """
+    calls = {"token": 0, "api": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/v2/token":
+            calls["token"] += 1
+            for _ in range(3):
+                await asyncio.sleep(0)
+            if dead:
+                return ok({"error": "invalid_grant"})
+            return ok(token_body(api_domain="https://www.zohoapis.com"))
+        calls["api"] += 1
+        assert request.headers["Authorization"] == f"Zoho-oauthtoken {NEW_ACCESS}"
+        return rows("1")
+
+    source = ZohoSource(
+        CONFIG,
+        credential(expires_at=NOW - timedelta(minutes=1)),
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    results = await asyncio.gather(
+        *(source.list_changed("deal") for _ in range(5)),
+        return_exceptions=True,
+    )
+    assert calls["token"] == 1
+    if dead:
+        assert all(isinstance(r, NeedsReconnect) for r in results), results
+        assert calls["api"] == 0
+        leaks.extend(t for r in results if isinstance(r, BaseException) for t in exc_texts(r))
+    else:
+        assert not [r for r in results if isinstance(r, BaseException)], results
+        assert calls["api"] == 5
 
 
 async def test_an_expired_token_that_cannot_refresh_sends_no_api_call(
