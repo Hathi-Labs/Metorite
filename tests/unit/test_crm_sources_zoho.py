@@ -137,11 +137,17 @@ def leaks(caplog: pytest.LogCaptureFixture) -> Iterator[list[str]]:
     stdlib record (httpx logs each request URL) and every structlog event.
     """
     caplog.set_level(logging.DEBUG)
+    # Something in the test process sets the httpx logger to WARNING, and
+    # httpx logs each request URL at INFO. Lower it here, or a secret in a URL
+    # passes unseen.
+    caplog.set_level(logging.DEBUG, logger="httpx")
     texts: list[str] = []
     with structlog.testing.capture_logs() as events:
         yield texts
-    texts.extend(r.getMessage() for r in caplog.records)
+    # In teardown, ``caplog.records`` holds only the teardown records.
+    texts.extend(r.getMessage() for r in caplog.get_records("call"))
     texts.extend(json.dumps(e, default=str) for e in events)
+    assert texts, "the capture saw nothing, so the check would be vacuous"
     for text in texts:
         for secret in PLANTED:
             assert secret not in text, f"a secret leaked into: {text[:200]}"
