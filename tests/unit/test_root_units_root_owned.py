@@ -275,17 +275,24 @@ def _backup_allow_list() -> set[str]:
     return set(line.split(" -- ")[0].split()[2:])
 
 
-#: A compose interpolation: `${NAME...}` or a bare `$NAME`. `$$` is an escape,
-#: so a `$` after a `$` starts none.
-_INTERP = re.compile(r"(?<!\$)\$(?:\{([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))")
+#: A compose interpolation: `${NAME...}` or a bare `$NAME`. The scan goes left
+#: to right, and `$$` is ONE token, the escape of a `$`. So `$$${X}` holds X,
+#: and `a$$$$Z` holds none. A `$$` match gives two empty groups.
+_INTERP = re.compile(r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _interp_names(text: str) -> set[str]:
+    return {a or b for a, b in _INTERP.findall(text) if a or b}
 
 
 def test_the_interpolation_pattern_sees_both_forms_and_skips_an_escape() -> None:
     def found(text: str) -> set[str]:
-        return {a or b for a, b in _INTERP.findall(text)}
+        return _interp_names(text)
 
     assert found("x ${A:-1} $B y") == {"A", "B"}
     assert found("$${C} $$D $$@") == set()
+    assert found("$$${X} $$$Y a$$$$Z") == {"X", "Y"}
+    assert found("$$$${W} $$$$$V") == {"V"}
 
 
 def _compose_names() -> dict[str, set[str]]:
@@ -293,7 +300,7 @@ def _compose_names() -> dict[str, set[str]]:
     compose = yaml.safe_load(_read(COMPOSE))
     out = {}
     for name, svc in compose["services"].items():
-        out[name] = {a or b for a, b in _INTERP.findall(yaml.safe_dump(svc))}
+        out[name] = _interp_names(yaml.safe_dump(svc))
     return out
 
 
@@ -328,7 +335,7 @@ def test_each_interpolation_of_the_compose_file_sits_under_environment() -> None
         elif isinstance(node, list):
             for v in node:
                 walk(v, path)
-        elif (isinstance(node, str) and _INTERP.search(node)
+        elif (isinstance(node, str) and _interp_names(node)
               and "environment" not in path):
             bad.append("/".join(path))
 
@@ -432,7 +439,7 @@ def test_the_sync_reads_git_archive_of_the_target_sha_and_refuses_a_symlink() ->
     assert 'GIT_NO_REPLACE_OBJECTS=1 git show "$sha:$BH6_LIST"' in sync
     assert 'links="$(sudo find "$stage" -type l)"' in sync
     assert 'sudo mktemp -d /usr/local/lib/acb-stage.XXXXXX' in sync
-    assert ('sudo rsync -a --delete --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/'
+    assert ('sudo rsync -a --delete --delete-delay --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/'
             in sync)
     assert 'sudo chmod 0755 "$stage/copy"' in sync
     # It never reads the working tree.
@@ -728,6 +735,8 @@ def test_a_skip_with_no_copy_yet_stops_the_deploy(sync: Sync) -> None:
     r = _gate(sync, 0, copy=False)
     assert "RC=1" in r.stdout, r.stdout + r.stderr
     assert "has no root copy yet" in r.stdout
+    assert "The nightly backup stays down until a deploy passes" in r.stdout
+    assert "sudo MODE=force bash" in r.stdout and "scripts/vps_pull.sh" in r.stdout
     assert not Path(f"{sync.log}.compose").exists(), "a compose call ran"
 
 

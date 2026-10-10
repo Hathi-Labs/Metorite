@@ -794,9 +794,11 @@ bh6_sync_root_copy() {
   for i in infra/docker-compose.yml infra/postgres/00_create_databases.sql infra/postgres/01_schema.sql; do
     sudo cmp -s "$stage/copy/$i" "/usr/local/lib/acb/$i" || BH6_CORE_CHANGED=1
   done
-  # --delay-updates: each new file goes in at the end, so a root unit that
-  # starts during the sync does not see a mix of two commits.
-  if ! sudo rsync -a --delete --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/; then
+  # --delay-updates and --delete-delay put each new file in, and delete each
+  # old one, at the END of the transfer. That makes the window short, and it
+  # is NOT atomic: the renames and deletes still come one at a time. A root
+  # unit that starts in that window can see files of two commits.
+  if ! sudo rsync -a --delete --delete-delay --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/; then
     sudo rm -rf -- "$stage"
     echo "    !! BH-6: rsync to /usr/local/lib/acb/ failed"
     return 1
@@ -836,7 +838,9 @@ bh6_root_steps() {
     echo "    After bh2_rollback.sh off, run: sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
   else
     echo "    !! BH-6: the BH-2 rollback is not off (status $rb_rc), and this box has no root copy yet."
-    echo "       Turn the rollback off (sudo bash $APP_DIR/scripts/bh2_rollback.sh off), then deploy again."
+    echo "       The nightly backup stays down until a deploy passes: its unit runs the root copy."
+    echo "       Turn the rollback off (sudo bash $APP_DIR/scripts/bh2_rollback.sh off), then run:"
+    echo "       sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
     return 1
   fi
   sudo bash /usr/local/lib/acb/root_env.sh || return 1
