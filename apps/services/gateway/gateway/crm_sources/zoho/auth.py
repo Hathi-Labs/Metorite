@@ -47,8 +47,9 @@ class DataCentre:
     api_host: str
 
 
-#: The ONE allowlist of Zoho hosts (confirmed 2026-10-11, ``crm_platform.md``
-#: §5.2). Keyed by the ``location`` that the consent redirect returns.
+#: The ONE allowlist of Zoho hosts. Keyed by the ``location`` that the
+#: consent redirect returns. Source: zoho.com/developer/oauth/
+#: multi-dc-support.html, read 2026-10-11, which lists nine data centres.
 ZOHO_DATA_CENTRES: Mapping[str, DataCentre] = MappingProxyType(
     {
         "us": DataCentre("accounts.zoho.com", "www.zohoapis.com"),
@@ -58,6 +59,8 @@ ZOHO_DATA_CENTRES: Mapping[str, DataCentre] = MappingProxyType(
         "jp": DataCentre("accounts.zoho.jp", "www.zohoapis.jp"),
         "ca": DataCentre("accounts.zohocloud.ca", "www.zohoapis.ca"),
         "cn": DataCentre("accounts.zoho.com.cn", "www.zohoapis.com.cn"),
+        "sa": DataCentre("accounts.zoho.sa", "www.zohoapis.sa"),
+        "uk": DataCentre("accounts.zoho.uk", "www.zohoapis.uk"),
     }
 )
 

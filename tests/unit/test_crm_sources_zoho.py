@@ -420,7 +420,10 @@ def test_each_data_centre_is_on_the_allowlist() -> None:
             f"https://{dc.accounts_host}"
         )
         assert auth.check_api_domain(f"https://{dc.api_host}/") == f"https://{dc.api_host}"
-    assert set(auth.ZOHO_DATA_CENTRES) == {"us", "eu", "in", "au", "jp", "ca", "cn"}
+    # The nine of zoho.com/developer/oauth/multi-dc-support.html (2026-10-11).
+    assert set(auth.ZOHO_DATA_CENTRES) == {"us", "eu", "in", "au", "jp", "ca", "cn", "sa", "uk"}
+    assert auth.ZOHO_DATA_CENTRES["sa"] == auth.DataCentre("accounts.zoho.sa", "www.zohoapis.sa")
+    assert auth.ZOHO_DATA_CENTRES["uk"] == auth.DataCentre("accounts.zoho.uk", "www.zohoapis.uk")
 
 
 def test_the_consent_url_starts_at_the_us_server_and_holds_no_secret() -> None:
