@@ -34,7 +34,7 @@ index holds. Fences: `tests/unit/test_wac_bot_inbound.py` and
 `tests/unit/test_wac_bot_link_r8.py` (R8).
 
 **WAC-3 as built (2026-10-10).** The run is `whatsapp_channel/bot_run.py`.
-Migration 237 adds `whatsapp_bot_messages` and `chat_session.channel`. Before
+The migration `whatsapp_bot_messages` adds the table and `chat_session.channel`. Before
 the 200, `inbound.py` binds the org of the phone's current link. It writes the
 member's turn into the WhatsApp thread, and then a `received` row by `wamid`.
 The turn has an id made from the `wamid`, so the sweep reads the text back from

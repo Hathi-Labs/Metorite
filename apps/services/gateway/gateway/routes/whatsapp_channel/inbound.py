@@ -486,11 +486,43 @@ async def handle_bot_group(
                   failed=bool(st.error))
 
     replies: list[Reply | bot_run.RunRequest] = []
+    failed = 0
     for msg in result.messages:
-        reply = await _handle_message(msg)
+        # One message that fails must not take the others with it. A run
+        # that this batch already recorded must still start: its redelivery
+        # finds the row and records nothing new.
+        try:
+            reply = await _handle_message(msg)
+        except Exception as exc:
+            failed += 1
+            # The class only: a constraint DETAIL can hold a phone number.
+            _log.warning("whatsapp_channel.bot.message_failed",
+                         error_type=type(exc).__name__)
+            continue
         if reply is not None:
             replies.append(reply)
+    if failed:
+        raise BotGroupFailed(failed, runs_of(replies))
     return replies
+
+
+class BotGroupFailed(Exception):
+    """Some messages of the bot's group failed (WAC-3).
+
+    The route answers 500, so Meta sends the batch again. ``runs`` holds the
+    runs that this batch recorded before or after the failure. The route
+    starts them anyway, because their redelivery records nothing new.
+    """
+
+    def __init__(self, failed: int, runs: list[bot_run.RunRequest]) -> None:
+        super().__init__(f"{failed} bot message(s) failed")
+        self.failed = failed
+        self.runs = runs
+
+
+def runs_of(items: list[Any]) -> list[bot_run.RunRequest]:
+    """The runs among the work for after the 200."""
+    return [item for item in items if isinstance(item, bot_run.RunRequest)]
 
 
 async def send_replies(items: list[Reply | bot_run.RunRequest]) -> None:

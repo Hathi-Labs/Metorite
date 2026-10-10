@@ -16,35 +16,49 @@ The path of one text from a linked phone:
 2. **After the 200** (:func:`start`). The webhook's background task starts
    the run as a task of its own and returns at once. So a slow run can never
    hold the response or the connection.
-3. **The run** (:func:`run_message`). Five checks, in this order: the switch
-   and the allowlist, the link is still current, the member is active, the
-   member may chat, and ``resolve_identity`` answers the link's org. Then a
-   claim (``received`` to ``running``), then ``run_agent`` in this process,
-   with the link's org and email. The reply goes into the thread, then to
-   WhatsApp in chunks of at most 4096 characters.
+3. **The run** (:func:`run_message`). It takes the THREAD's lock first, so
+   one thread runs one message at a time. Then it works the thread's waiting
+   rows oldest first, so a second message runs right after the first, with
+   the first answer in its history. For each row: the checks (the switch and
+   the allowlist, the link is still current, the member is active, the member
+   may chat, ``resolve_identity`` answers the link's org, the thread is not a
+   shared room, no web run holds it), the claim (``received`` to
+   ``running``), then ``run_agent`` in this process with the link's org and
+   email. The reply goes into the thread, then to WhatsApp in chunks of at
+   most 4096 characters.
 4. **The sweep** (:func:`sweep_once`, every minute). It binds each org of the
-   allowlist in turn. A row that stayed ``received`` or ``running`` for 5
-   minutes runs again, at most 3 times. A row older than 24 hours becomes
-   ``expired`` and gets no reply.
+   allowlist in turn and takes the oldest waiting row of each thread. A row
+   that stayed ``received`` or ``running`` for 5 minutes runs again, at most 3
+   times. A row that used its 3 tries gets the general failure text once. A
+   row older than 24 hours becomes ``expired`` and gets no reply.
+
+**Never lost, never sent twice.** A failure after the claim, before any part
+of a reply went out, gives the row back as ``received`` with its try counted,
+so the sweep runs it again. The third failure sends the general text once.
+A failure after a part went out sends nothing more.
 
 **The text lives in the thread only.** The table holds no text (§5.9). The
 member's turn is written BEFORE the 200, with an id made from the ``wamid``
 (:func:`turn_id`). So a crash after the 200 loses nothing: the sweep reads the
 turn back from ``chat_session_id`` and that id, and runs it.
 
+**A shared room is not the WhatsApp thread.** When someone adds a participant
+to the thread on the web, the thread becomes a room. The next text opens a new
+solo thread, and no run reads the room.
+
 **WAC-3 is reads only (§5.6).** The run opens
 ``acb_skills.ask_tools.refuse_cards``. A tool that asks for a card gets a deny
 at once and writes nothing, and the scope rule tells the model to send the
 member to the web app for a change.
 
-**One process.** ``_LIVE_ROWS`` and ``_LIVE_THREADS`` live in this gateway
+**One process.** The thread locks and ``_LIVE_ROWS`` live in this gateway
 process, like the WAC-2 limiter. The row's claim is the guard that holds
-across processes. A move to several workers keeps the claim and loses only
-the in-process "is this thread busy" answer.
+across processes.
 
 Fences: ``tests/unit/test_wac_bot_run.py`` (database-free) and
 ``tests/unit/test_wac_bot_run_r8.py`` (R8, FORCE RLS as a non-privileged role).
 """
+
 
 from __future__ import annotations
 
@@ -228,20 +242,37 @@ ON CONFLICT (wamid) DO NOTHING
 RETURNING id::text AS id
 """
 
+#: The member's WhatsApp thread: their latest SOLO `whatsapp` session. A
+#: session with any participant row is a shared room, and stops being it.
 _FIND_THREAD_SQL = """
-SELECT id FROM chat_session
- WHERE channel = 'whatsapp'
-   AND user_id = :email
-   AND updated_at > now() - make_interval(secs => CAST(:idle AS double precision))
- ORDER BY updated_at DESC
+SELECT s.id FROM chat_session s
+ WHERE s.channel = 'whatsapp'
+   AND s.user_id = :email
+   AND s.updated_at > now() - make_interval(secs => CAST(:idle AS double precision))
+   AND NOT EXISTS (
+       SELECT 1 FROM chat_session_participant p WHERE p.session_id = s.id
+   )
+ ORDER BY s.updated_at DESC
  LIMIT 1
 """
 
-_COUNT_SQL = """
-SELECT count(*) FROM chat_message WHERE session_id = :sid AND id <> :mid
+#: What a write needs to know of a session: the agent the member chose (a
+#: bot write keeps it), the other turns, and whether this turn is there.
+_SESSION_STATE_SQL = """
+SELECT s.agent_name,
+       (SELECT count(*) FROM chat_message m
+         WHERE m.session_id = s.id AND m.id <> :mid) AS others,
+       EXISTS (SELECT 1 FROM chat_message m
+                WHERE m.session_id = s.id AND m.id = :mid) AS has_turn
+  FROM chat_session s
+ WHERE s.id = :sid
 """
 
-#: The fresh claim: only a row that nothing ran yet.
+_SHARED_SQL = """
+SELECT EXISTS (SELECT 1 FROM chat_session_participant WHERE session_id = :sid)
+"""
+
+#: The fresh claim: only a row that waits.
 _CLAIM_FRESH_SQL = """
 UPDATE whatsapp_bot_messages
    SET state = 'running', tries = tries + 1, updated_at = now()
@@ -280,17 +311,50 @@ UPDATE whatsapp_bot_messages
 RETURNING id
 """
 
+#: A failure before any reply went out: the row waits again, with its try
+#: counted, so the sweep runs it again.
+_RETRY_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'received', error_code = :code, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = 'running'
+RETURNING id
+"""
+
+#: The waiting rows of ONE thread, oldest first.
+_NEXT_SQL = """
+SELECT id::text AS id, organization_id::text AS organization_id,
+       member_email, wa_id, wamid, chat_session_id
+  FROM whatsapp_bot_messages
+ WHERE chat_session_id = :sid
+   AND direction = 'in'
+   AND state = 'received'
+   AND tries < :max
+   AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
+ ORDER BY received_at, id
+ LIMIT :n
+"""
+
+#: The member's own turn. A shared room gives no row: no run reads a room.
 _TURN_SQL = """
 SELECT content, timestamp_ms FROM chat_message
  WHERE session_id = :sid AND id = :mid AND role = 'user'
+   AND NOT EXISTS (
+       SELECT 1 FROM chat_session_participant p WHERE p.session_id = :sid
+   )
 """
 
+#: The prior turns. Every user turn up to this one, and every reply: a
+#: newer text's turn was written before the 200, so the reply to an older
+#: text has a LATER timestamp than this turn and still belongs to its history.
 _HISTORY_SQL = """
 SELECT role, content FROM chat_message
  WHERE session_id = :sid
    AND id <> :mid
-   AND role IN ('user', 'assistant')
-   AND timestamp_ms <= :ts
+   AND (role = 'assistant' OR (role = 'user' AND timestamp_ms <= :ts))
+   AND NOT EXISTS (
+       SELECT 1 FROM chat_session_participant p WHERE p.session_id = :sid
+   )
  ORDER BY timestamp_ms DESC, id DESC
  LIMIT :n
 """
@@ -304,6 +368,7 @@ UPDATE whatsapp_bot_messages
 RETURNING id
 """
 
+#: A row that used its tries. It gets the general text once, from the sweep.
 _EXHAUSTED_SQL = """
 UPDATE whatsapp_bot_messages
    SET state = 'failed', error_code = 'tries', updated_at = now()
@@ -311,22 +376,37 @@ UPDATE whatsapp_bot_messages
    AND state IN ('received', 'running')
    AND tries >= :max
    AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
-RETURNING id
+RETURNING id::text AS id, organization_id::text AS organization_id,
+          member_email, wa_id, wamid, chat_session_id
 """
 
+#: The OLDEST waiting row of each thread, when it waited too long. The run
+#: then works the rest of the thread in order.
 _STALE_SQL = """
-SELECT id::text AS id, organization_id::text AS organization_id,
-       member_email, wa_id, wamid, chat_session_id
-  FROM whatsapp_bot_messages
- WHERE direction = 'in'
-   AND state IN ('received', 'running')
-   AND tries < :max
-   AND chat_session_id IS NOT NULL
-   AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
-   AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
+SELECT id, organization_id, member_email, wa_id, wamid, chat_session_id
+  FROM (
+      SELECT DISTINCT ON (chat_session_id)
+             id::text AS id, organization_id::text AS organization_id,
+             member_email, wa_id, wamid, chat_session_id, updated_at,
+             received_at
+        FROM whatsapp_bot_messages
+       WHERE direction = 'in'
+         AND state IN ('received', 'running')
+         AND tries < :max
+         AND chat_session_id IS NOT NULL
+         AND received_at >= now() - make_interval(secs => CAST(:expire AS double precision))
+       ORDER BY chat_session_id, received_at, id
+  ) oldest
+ WHERE updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
  ORDER BY received_at
  LIMIT :n
 """
+
+
+def _request(row: Any) -> RunRequest:
+    return RunRequest(str(row["id"]), str(row["organization_id"]),
+                      str(row["member_email"]), str(row["wa_id"]),
+                      str(row["wamid"]), str(row["chat_session_id"]))
 
 
 async def _member_active(org: str, email: str) -> bool:
@@ -360,22 +440,38 @@ async def _find_thread(email: str) -> str | None:
     return str(row["id"]) if row else None
 
 
-async def _count_other(session_id: str, message_id: str) -> int:
+async def _session_state(
+    session_id: str, message_id: str,
+) -> tuple[str | None, int, bool]:
+    """``(agent_name, other turns, this turn is there)``. No row: a new one."""
     async with tenant_session() as db:
-        return int((await db.execute(
-            text(_COUNT_SQL), {"sid": session_id, "mid": message_id},
-        )).scalar() or 0)
+        row = (await db.execute(
+            text(_SESSION_STATE_SQL), {"sid": session_id, "mid": message_id},
+        )).mappings().first()
+    if row is None:
+        return None, 0, False
+    return (str(row["agent_name"]) if row["agent_name"] else None,
+            int(row["others"] or 0), bool(row["has_turn"]))
+
+
+async def _thread_shared(session_id: str) -> bool:
+    """True when the thread has any participant row: it is a shared room."""
+    async with tenant_session() as db:
+        return bool((await db.execute(
+            text(_SHARED_SQL), {"sid": session_id},
+        )).scalar())
 
 
 async def _write_session(
-    org: str, email: str, session_id: str, *, preview: str, count: int,
+    org: str, email: str, session_id: str, *, agent: str, preview: str,
+    count: int,
 ) -> None:
     from gateway.routes.chat import SessionUpsertRequest, _upsert_session
 
     await asyncio.to_thread(
         _upsert_session, email,
         SessionUpsertRequest(
-            id=session_id, agent_name=AGENT, title=THREAD_TITLE,
+            id=session_id, agent_name=agent, title=THREAD_TITLE,
             last_preview=preview, message_count=count,
         ),
         organization_id=org, channel=CHANNEL,
@@ -387,16 +483,21 @@ async def _write_turn(
 ) -> str:
     """Write the member's turn into the WhatsApp thread. Returns the thread id.
 
-    The thread is the member's latest ``whatsapp`` session in this org. A
-    message more than 24 hours after its last activity opens a new one (§5.5).
-    Both writes are idempotent for a redelivery.
+    The thread is the member's latest solo ``whatsapp`` session in this org.
+    A message more than 24 hours after its last activity opens a new one
+    (§5.5), and so does a thread that became a shared room. A redelivery
+    whose turn is already there writes nothing, so the preview keeps the
+    newest text. A bot write keeps the agent the member chose on the web.
     """
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
     mid = turn_id(wamid)
     sid = await _find_thread(email) or new_thread_id(org, email, wamid)
-    count = await _count_other(sid, mid)
-    await _write_session(org, email, sid, preview=_preview(body), count=count + 1)
+    agent, others, has_turn = await _session_state(sid, mid)
+    if has_turn:
+        return sid
+    await _write_session(org, email, sid, agent=agent or AGENT,
+                         preview=_preview(body), count=others + 1)
     declined = await asyncio.to_thread(
         _upsert_messages, sid,
         [MessageRecord(id=mid, role="user", content=body, timestamp=_now_ms())],
@@ -411,10 +512,10 @@ async def _write_reply(req: RunRequest, reply: str) -> None:
     from gateway.chat_fold import persist_channel_reply
 
     mid = reply_id(req.wamid)
-    count = await _count_other(req.chat_session_id, mid)
+    agent, others, _has = await _session_state(req.chat_session_id, mid)
     await _write_session(req.organization_id, req.member_email,
-                         req.chat_session_id, preview=_preview(reply),
-                         count=count + 1)
+                         req.chat_session_id, agent=agent or AGENT,
+                         preview=_preview(reply), count=others + 1)
     if not await persist_channel_reply(
         req.chat_session_id, mid, reply,
         user_id=req.member_email, agent_name=AGENT,
@@ -423,14 +524,16 @@ async def _write_reply(req: RunRequest, reply: str) -> None:
         raise RuntimeError("the reply was declined")
 
 
-async def _claim(message_id: str, *, stale: bool) -> bool:
+async def _claim(message_id: str, *, stale: bool) -> int | None:
+    """Claim one row for a run. Returns its try number, or None."""
     sql, params = (
         (_CLAIM_STALE_SQL, {"id": message_id, "max": MAX_TRIES, "stale": STALE_S})
         if stale else
         (_CLAIM_FRESH_SQL, {"id": message_id, "max": MAX_TRIES})
     )
     async with tenant_session() as db:
-        return (await db.execute(text(sql), params)).first() is not None
+        row = (await db.execute(text(sql), params)).first()
+    return int(row[0]) if row is not None else None
 
 
 async def _refuse(message_id: str, code: str) -> bool:
@@ -445,6 +548,23 @@ async def _end(message_id: str, state: str, code: str | None) -> bool:
         return (await db.execute(
             text(_END_SQL), {"id": message_id, "state": state, "code": code},
         )).first() is not None
+
+
+async def _retry(message_id: str, code: str) -> bool:
+    async with tenant_session() as db:
+        return (await db.execute(
+            text(_RETRY_SQL), {"id": message_id, "code": code},
+        )).first() is not None
+
+
+async def _waiting(session_id: str) -> list[RunRequest]:
+    """The waiting rows of one thread, oldest first."""
+    async with tenant_session() as db:
+        rows = (await db.execute(text(_NEXT_SQL), {
+            "sid": session_id, "max": MAX_TRIES, "expire": EXPIRE_S,
+            "n": SWEEP_BATCH,
+        })).mappings().all()
+    return [_request(r) for r in rows]
 
 
 async def _thread_turns(
@@ -555,8 +675,14 @@ async def record_inbound(
 _RUNS: set[asyncio.Task[None]] = set()
 #: The rows whose run is live in this process.
 _LIVE_ROWS: set[str] = set()
-#: The threads with a WhatsApp run live in this process.
-_LIVE_THREADS: set[str] = set()
+#: One lock for each THREAD with a run waiting or live in this process, and
+#: how many runs hold or wait for it. A lock leaves the map with its last
+#: user, so the map holds only the threads that are busy now.
+_RUN_LOCKS: dict[str, asyncio.Lock] = {}
+_RUN_LOCK_USERS: dict[str, int] = {}
+
+#: The refusals that tell the member something. Every other one is silent.
+_REFUSAL_REPLIES = {"identity": REPLY_NO_WORKSPACE, "shared": REPLY_FAILED}
 
 
 def _start_task(run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
@@ -635,9 +761,8 @@ async def _identity_org(email: str) -> tuple[str | None, bool]:
 
 
 async def _thread_busy(session_id: str) -> bool:
-    """True when another run is live on the thread: here, or a web run."""
-    if session_id in _LIVE_THREADS:
-        return True
+    """True when a WEB run is live on the thread. A WhatsApp run of this
+    process cannot be: the thread's lock holds it."""
     try:
         from orchestrator.stream_relay import is_active
 
@@ -670,6 +795,10 @@ async def _check(req: RunRequest) -> str | None:
         return "later"
     if org != req.organization_id:
         return "identity"
+    if await _thread_shared(req.chat_session_id):
+        # The thread became a shared room after the text arrived. No run
+        # reads a room. The member's next text opens a new solo thread.
+        return "shared"
     if await _thread_busy(req.chat_session_id):
         return "later"
     return None
@@ -686,13 +815,75 @@ def _error_code(exc: BaseException) -> str:
     return classify_run_error(exc)
 
 
+@dataclass
+class _Attempt:
+    """What one claimed try has done so far: its try number, and whether any
+    part of a reply went out. A failure reads it to never lose and never
+    send twice."""
+
+    tries: int = 0
+    sent: bool = False
+
+
 async def run_message(req: RunRequest, *, stale: bool = False) -> None:
-    """Check, claim, run, reply. Never raises, except a cancel."""
+    """Run the waiting rows of *req*'s thread, one at a time, oldest first.
+
+    The thread's lock is taken BEFORE the first await, so two runs of one
+    thread in this process can never interleave. *stale* is the sweep's: it
+    runs *req* itself first, whatever its state. Never raises, except a
+    cancel.
+    """
+    sid = req.chat_session_id
+    _RUN_LOCK_USERS[sid] = _RUN_LOCK_USERS.get(sid, 0) + 1
+    lock = _RUN_LOCKS.setdefault(sid, asyncio.Lock())
+    try:
+        async with lock:
+            token = bind_tenant(req.organization_id)
+            try:
+                await _drain(req, stale=stale)
+            finally:
+                release_tenant(token)
+    finally:
+        _RUN_LOCK_USERS[sid] -= 1
+        if _RUN_LOCK_USERS[sid] <= 0:
+            _RUN_LOCK_USERS.pop(sid, None)
+            _RUN_LOCKS.pop(sid, None)
+
+
+async def _drain(req: RunRequest, *, stale: bool) -> None:
+    """Work the thread's waiting rows in ``received_at`` order.
+
+    Each row is tried once in a drain. A row that waits again (a web run
+    holds the thread, a failure gave it back) is left for the sweep, and the
+    newer rows still run.
+    """
+    seen: set[str] = set()
+    if stale:
+        seen.add(req.message_id)
+        await _process(req, stale=True)
+    while True:
+        try:
+            waiting = await _waiting(req.chat_session_id)
+        except Exception as exc:
+            _log.warning("whatsapp_channel.run.next_failed",
+                         error_type=type(exc).__name__)
+            return
+        nxt = next((r for r in waiting
+                    if r.message_id not in seen
+                    and r.message_id not in _LIVE_ROWS), None)
+        if nxt is None:
+            return
+        seen.add(nxt.message_id)
+        await _process(nxt, stale=False)
+
+
+async def _process(req: RunRequest, *, stale: bool) -> None:
+    """Check, claim, run and reply for ONE row. Never raises, except a cancel."""
     if req.message_id in _LIVE_ROWS:
         return
     _LIVE_ROWS.add(req.message_id)
     hint = req.wa_id[-4:]
-    token = bind_tenant(req.organization_id)
+    attempt = _Attempt()
     try:
         reason = await _check(req)
         if reason == "later":
@@ -705,50 +896,83 @@ async def run_message(req: RunRequest, *, stale: bool = False) -> None:
             _log.info("whatsapp_channel.run.refused", phone_hint=hint,
                       organization_id=req.organization_id,
                       message_id=req.message_id, reason=reason)
-            if refused and reason == "identity":
-                await _send(req, [REPLY_NO_WORKSPACE], kind="no_workspace")
+            if refused and reason in _REFUSAL_REPLIES:
+                await _send(req, [_REFUSAL_REPLIES[reason]], kind=reason)
             return
-        if not await _claim(req.message_id, stale=stale):
+        tries = await _claim(req.message_id, stale=stale)
+        if tries is None:
             _log.info("whatsapp_channel.run.not_claimed", phone_hint=hint,
                       message_id=req.message_id)
             return
-        await _answer(req)
+        attempt.tries = tries
+        await _answer(req, attempt)
     except asyncio.CancelledError:
         # A restart. The row stays `running`, and the next sweep takes it.
         raise
     except Exception as exc:  # the record names the class only
         _log.warning("whatsapp_channel.run.failed_internal",
-                     message_id=req.message_id, error_type=type(exc).__name__)
-        with contextlib.suppress(Exception):
-            await _end(req.message_id, "failed", "internal")
+                     message_id=req.message_id, error_type=type(exc).__name__,
+                     tries=attempt.tries, sent=attempt.sent)
+        await _after_failure(req, attempt)
     finally:
-        release_tenant(token)
         _LIVE_ROWS.discard(req.message_id)
 
 
-async def _answer(req: RunRequest) -> None:
-    """The claimed run: read the turn, run the assistant, write, send."""
-    message, history = await _thread_turns(req.chat_session_id, turn_id(req.wamid))
-    if not message:
-        await _end(req.message_id, "failed", "no_turn")
-        await _send(req, [REPLY_FAILED], kind="failed")
-        return
+async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
+    """Close a try that raised. Never loses a message, never sends twice.
 
-    payload = {
+    * Not claimed yet: nothing changed, and the row still waits.
+    * A part of a reply went out: the row is ``replied``. Nothing more goes.
+    * Tries left: the row waits again (``received``), and the sweep runs it.
+    * The last try: the row is ``failed``, and the general text goes once.
+    """
+    if attempt.tries == 0:
+        return
+    with contextlib.suppress(Exception):
+        if attempt.sent:
+            await _end(req.message_id, "replied", "internal")
+        elif attempt.tries < MAX_TRIES:
+            await _retry(req.message_id, "internal")
+        elif await _end(req.message_id, "failed", "internal"):
+            await _send(req, [REPLY_FAILED], kind="failed")
+
+
+def build_payload(message: str, history: list[dict[str, str]],
+                  member_email: str) -> dict[str, Any]:
+    """The event payload of one run.
+
+    ``_history_loader`` makes the batch executor take its STRUCTURED path on
+    every turn, the first one too: the scope rule is then a leading system
+    message, and never text folded into the member's turn
+    (``executor._run_with_maf_agent``).
+    """
+    prior = list(history)
+    return {
         "mode": "chat",
         "message": message,
-        "messages": history,
+        "messages": prior,
+        "_history_loader": lambda: list(prior),
         "system_context": SCOPE_RULE,
         "think_mode": "auto",
         # How the tools reach the member (`executor._payload_user`). The
         # server's value, from the link row, never from the message.
-        "user_email": req.member_email,
+        "user_email": member_email,
         "source": SOURCE,
     }
+
+
+async def _answer(req: RunRequest, attempt: _Attempt) -> None:
+    """The claimed run: read the turn, run the assistant, write, send."""
+    message, history = await _thread_turns(req.chat_session_id, turn_id(req.wamid))
+    if not message:
+        if await _end(req.message_id, "failed", "no_turn"):
+            await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
+        return
+
+    payload = build_payload(message, history, req.member_email)
     run_id = str(uuid.uuid4())
     from acb_skills.ask_tools import refuse_cards
 
-    _LIVE_THREADS.add(req.chat_session_id)
     try:
         with refuse_cards():
             result = await asyncio.wait_for(
@@ -771,22 +995,20 @@ async def _answer(req: RunRequest) -> None:
         _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
                      message_id=req.message_id, code=code,
                      error_type=type(exc).__name__)
-        await _end(req.message_id, "failed", code)
-        await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
-                    kind="failed")
+        if await _end(req.message_id, "failed", code):
+            await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
+                        kind="failed", attempt=attempt)
         return
-    finally:
-        _LIVE_THREADS.discard(req.chat_session_id)
 
     from gateway.routes.projects.agent_dispatch import reply_text
 
     reply = reply_text(result).strip()
     if not reply:
-        await _end(req.message_id, "failed", "empty")
-        await _send(req, [REPLY_FAILED], kind="failed")
+        if await _end(req.message_id, "failed", "empty"):
+            await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
         return
     await _write_reply(req, reply)
-    sent = await _send(req, split_reply(reply), kind="answer")
+    sent = await _send(req, split_reply(reply), kind="answer", attempt=attempt)
     await _end(req.message_id, "replied" if sent else "failed",
                None if sent else "send")
     _log.info("whatsapp_channel.run.replied" if sent else
@@ -794,11 +1016,13 @@ async def _answer(req: RunRequest) -> None:
               run_id=run_id, message_id=req.message_id, chars=len(reply))
 
 
-async def _send(req: RunRequest, texts: list[str], *, kind: str) -> bool:
+async def _send(req: RunRequest, texts: list[str], *, kind: str,
+                attempt: _Attempt | None = None) -> bool:
     """Send each text from the bot number, and record each one sent.
 
     Logs Meta's error fields only, never the exception text, which can carry
-    a URL or a token. Returns True when every text went out.
+    a URL or a token. Returns True when every text went out. *attempt* notes
+    that a part went out, so a later failure sends nothing more.
     """
     hint = req.wa_id[-4:]
     creds = flags.bot_credentials()
@@ -822,6 +1046,8 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str) -> bool:
             _log.warning("whatsapp_channel.run.reply_failed", kind=kind,
                          phone_hint=hint, **meta_error_fields(exc))
             return False
+        if attempt is not None:
+            attempt.sent = True
         if out_id:
             try:
                 await _insert(
@@ -848,7 +1074,11 @@ def _uuid_or_none(value: str) -> str | None:
 
 
 async def _sweep_org(org: str) -> list[RunRequest]:
-    """Expire, close and collect the waiting rows of ONE org. Bound."""
+    """Expire, close and collect the waiting rows of ONE org. Bound.
+
+    A row that used its tries gets the general text once, here: the UPDATE
+    that closes it returns it only once.
+    """
     token = bind_tenant(org)
     try:
         async with tenant_session() as db:
@@ -857,23 +1087,22 @@ async def _sweep_org(org: str) -> list[RunRequest]:
             )).fetchall()
             exhausted = (await db.execute(
                 text(_EXHAUSTED_SQL), {"max": MAX_TRIES, "stale": STALE_S},
-            )).fetchall()
+            )).mappings().all()
             rows = (await db.execute(text(_STALE_SQL), {
                 "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
                 "n": SWEEP_BATCH,
             })).mappings().all()
+        for row in exhausted:
+            if row["chat_session_id"] is None:
+                continue
+            with contextlib.suppress(Exception):
+                await _send(_request(row), [REPLY_FAILED], kind="tries")
     finally:
         release_tenant(token)
     if expired or exhausted:
         _log.info("whatsapp_channel.sweep.closed", organization_id=org,
                   expired=len(expired), exhausted=len(exhausted))
-    return [
-        RunRequest(str(r["id"]), str(r["organization_id"]),
-                   str(r["member_email"]), str(r["wa_id"]), str(r["wamid"]),
-                   str(r["chat_session_id"]))
-        for r in rows
-        if str(r["id"]) not in _LIVE_ROWS
-    ]
+    return [_request(r) for r in rows if str(r["id"]) not in _LIVE_ROWS]
 
 
 async def sweep_once() -> int:

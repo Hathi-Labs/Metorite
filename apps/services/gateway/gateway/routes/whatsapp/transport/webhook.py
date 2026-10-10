@@ -171,6 +171,9 @@ async def receive_webhook(request: Request):
                 )
             except Exception as exc:
                 failed += 1
+                # WAC-3: the runs that the group recorded before or after the
+                # failure still start. Their redelivery records nothing new.
+                replies.extend(getattr(exc, "runs", None) or [])
                 # The class only: a constraint DETAIL can hold a phone number.
                 _log.warning("whatsapp.webhook.bot_group_failed",
                              error_type=type(exc).__name__)
@@ -186,6 +189,12 @@ async def receive_webhook(request: Request):
     if failed:
         # Meta sends the batch again. The bot's replies come again with it:
         # a redelivered link message gets the success reply again (§5.4).
+        # WAC-3: a recorded run does NOT come again (its row exists), so the
+        # runs start now, and no fixed reply goes out twice.
+        runs = _bot_runs(replies)
+        if runs:
+            return Response(status_code=500, content="retry",
+                            background=BackgroundTask(_send_bot_replies, runs))
         return Response(status_code=500, content="retry")
     if replies:
         return Response(status_code=200, content="ok",
@@ -205,6 +214,13 @@ async def _bot_group(sub_payload: dict[str, Any], *, signed: bool) -> list[Any]:
     from gateway.routes.whatsapp_channel import inbound
 
     return await inbound.handle_bot_group(sub_payload, signed=signed)
+
+
+def _bot_runs(items: list[Any]) -> list[Any]:
+    """The recorded runs among the bot's work (WAC-3)."""
+    from gateway.routes.whatsapp_channel import inbound
+
+    return inbound.runs_of(items)
 
 
 async def _send_bot_replies(replies: list[Any]) -> None:

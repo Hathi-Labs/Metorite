@@ -611,8 +611,9 @@ async def persist_channel_reply(
     declined = await asyncio.to_thread(
         _upsert_messages, thread_id, [record],
         actor_email=user_id, agent_name=agent_name,
-        # WS-47 WAC-3: a solo thread, so no clearance to record (`_run_authority`
-        # answers None for a run of one member).
+        # The fold's own rule: a solo thread records nothing (None), and a
+        # thread that became a room records its members and caps (§4).
+        authority=await _run_authority(thread_id, user_id),
         author_from_run=True,
         organization_id=organization_id,
     )

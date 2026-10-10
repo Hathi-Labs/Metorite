@@ -79,6 +79,9 @@ class _Store:
         self.thread_of: dict[tuple[str, str], str] = {}
         self.turn_writes = 0
         self.reply_writes = 0
+        #: The threads that became a shared room on the web.
+        self.shared: set[str] = set()
+        self._order = 0
 
     async def member_active(self, org: str, email: str) -> bool:
         assert current_tenant() == org
@@ -95,14 +98,20 @@ class _Store:
         self.rows[rid] = {"id": rid, "org": org, "email": email, "wa_id": wa_id,
                           "wamid": wamid, "direction": direction, "state": state,
                           "sid": session_id, "tries": 0, "code": code,
-                          "stale": False}
+                          "stale": False, "order": self._next()}
         return rid
+
+    def _next(self) -> int:
+        self._order += 1
+        return self._order
 
     async def write_turn(self, org: str, email: str, wamid: str, body: str) -> str:
         assert current_tenant() == org
         self.turn_writes += 1
-        sid = self.thread_of.setdefault(
-            (org, email), bot_run.new_thread_id(org, email, wamid))
+        sid = self.thread_of.get((org, email))
+        if sid is None or sid in self.shared:   # a room stops being the thread
+            sid = self.thread_of[(org, email)] = bot_run.new_thread_id(
+                org, email, wamid)
         msgs = self.threads.setdefault(sid, [])
         mid = bot_run.turn_id(wamid)
         if not any(m["id"] == mid for m in msgs):
@@ -116,17 +125,36 @@ class _Store:
             {"id": bot_run.reply_id(req.wamid), "role": "assistant",
              "content": reply})
 
-    async def claim(self, message_id: str, *, stale: bool) -> bool:
+    async def claim(self, message_id: str, *, stale: bool) -> int | None:
         row = self.rows.get(message_id)
         if row is None or row["direction"] != "in" or row["tries"] >= 3:
-            return False
+            return None
         if stale:
             ok = row["state"] in ("received", "running") and row["stale"]
         else:
             ok = row["state"] == "received"
-        if ok:
-            row.update(state="running", tries=row["tries"] + 1, stale=False)
-        return ok
+        if not ok:
+            return None
+        row.update(state="running", tries=row["tries"] + 1, stale=False)
+        return row["tries"]
+
+    async def retry(self, message_id: str, code: str) -> bool:
+        row = self.rows[message_id]
+        if row["state"] != "running":
+            return False
+        row.update(state="received", code=code)
+        return True
+
+    async def waiting(self, sid: str) -> list[bot_run.RunRequest]:
+        rows = sorted((r for r in self.rows.values()
+                       if r["sid"] == sid and r["direction"] == "in"
+                       and r["state"] == "received" and r["tries"] < 3),
+                      key=lambda r: r["order"])
+        return [bot_run.RunRequest(r["id"], r["org"], r["email"], r["wa_id"],
+                                   r["wamid"], r["sid"]) for r in rows]
+
+    async def thread_shared(self, sid: str) -> bool:
+        return sid in self.shared
 
     async def refuse(self, message_id: str, code: str) -> bool:
         row = self.rows[message_id]
@@ -143,12 +171,16 @@ class _Store:
         return True
 
     async def thread_turns(self, sid: str, mid: str):
+        if sid in self.shared:   # the SQL guard: no run reads a room
+            return None, []
         msgs = self.threads.get(sid, [])
         at = next((i for i, m in enumerate(msgs) if m["id"] == mid), None)
         if at is None:
             return None, []
+        # The SQL's rule: the user turns up to this one, and every reply.
         history = [{"role": m["role"], "content": m["content"]}
-                   for m in msgs[:at]]
+                   for i, m in enumerate(msgs)
+                   if i != at and (m["role"] == "assistant" or i < at)]
         return msgs[at]["content"], history
 
     def inbound_rows(self) -> list[dict[str, Any]]:
@@ -163,6 +195,9 @@ class _Agent:
         self.reply: Any = {"result": ANSWER}
         self.exc: BaseException | None = None
         self.gate: asyncio.Event | None = None
+        self.inside = 0
+        self.most = 0
+        self.delay = 0.0
 
     async def __call__(self, agent: str, payload: dict[str, Any],
                        **kwargs: Any) -> Any:
@@ -171,11 +206,18 @@ class _Agent:
         self.calls.append({"agent": agent, "payload": dict(payload), **kwargs,
                            "cards_refused": cards_refused(),
                            "tenant": current_tenant()})
-        if self.gate is not None:
-            await self.gate.wait()
-        if self.exc is not None:
-            raise self.exc
-        return self.reply
+        self.inside += 1
+        self.most = max(self.most, self.inside)
+        try:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            if self.gate is not None:
+                await self.gate.wait()
+            if self.exc is not None:
+                raise self.exc
+            return self.reply
+        finally:
+            self.inside -= 1
 
 
 class _World:
@@ -226,7 +268,11 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(bot_run, "_executor", lambda: w.agent)
     monkeypatch.setattr(bot_run, "_RUNS", set())
     monkeypatch.setattr(bot_run, "_LIVE_ROWS", set())
-    monkeypatch.setattr(bot_run, "_LIVE_THREADS", set())
+    monkeypatch.setattr(bot_run, "_retry", st.retry)
+    monkeypatch.setattr(bot_run, "_waiting", st.waiting)
+    monkeypatch.setattr(bot_run, "_thread_shared", st.thread_shared)
+    monkeypatch.setattr(bot_run, "_RUN_LOCKS", {})
+    monkeypatch.setattr(bot_run, "_RUN_LOCK_USERS", {})
     monkeypatch.setattr(bot_run, "_THREAD_LOCKS", {})
     monkeypatch.setattr(inbound, "_FAILED", {})
     monkeypatch.setattr(inbound, "_HANDLED", OrderedDict())
@@ -628,7 +674,29 @@ async def test_a_second_live_run_on_the_thread_waits(world: _World) -> None:
     assert row["state"] == "received", "the sweep must still find it"
 
 
-async def test_a_whatsapp_run_live_in_this_process_holds_the_thread(
+async def test_two_messages_in_one_batch_run_one_after_the_other_in_order(
+    world: _World,
+) -> None:
+    """The thread lock (review P1): the second run starts only after the first
+    one ends, it runs at once (no sweep), and its history holds the first
+    answer."""
+    world.agent.delay = 0.05
+    await _post_and_run(_message("First"), _message("Second"))
+    assert [c["payload"]["message"] for c in world.agent.calls] == [
+        "First", "Second"]
+    assert world.agent.most == 1, "two runs of one thread overlapped"
+    assert world.agent.calls[1]["payload"]["messages"] == [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": ANSWER},
+    ]
+    assert [r["state"] for r in world.store.inbound_rows()] == [
+        "replied", "replied"]
+    assert world.sent == [(PHONE, ANSWER), (PHONE, ANSWER)]
+    assert bot_run._RUN_LOCKS == {} and bot_run._RUN_LOCK_USERS == {}, (
+        "a thread lock outlived its runs")
+
+
+async def test_a_second_batch_while_the_first_runs_waits_for_it_not_the_sweep(
     world: _World,
 ) -> None:
     world.agent.gate = asyncio.Event()
@@ -639,12 +707,171 @@ async def test_a_whatsapp_run_live_in_this_process_holds_the_thread(
         await asyncio.sleep(0.01)
     await _post(_message("Second"))
     await asyncio.sleep(0.05)
+    assert len(world.agent.calls) == 1, "the second run did not wait"
     world.agent.gate.set()
     await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
-    assert [c["payload"]["message"] for c in world.agent.calls] == ["First"]
-    states = sorted(r["state"] for r in world.store.inbound_rows())
-    assert states == ["received", "replied"]
+    assert [c["payload"]["message"] for c in world.agent.calls] == [
+        "First", "Second"]
+    assert world.agent.most == 1
+    assert [r["state"] for r in world.store.inbound_rows()] == [
+        "replied", "replied"]
 
+
+# ── Fix 1: a failure after the claim is never lost, and never sent twice ───
+
+
+async def test_a_failure_after_the_claim_gives_the_row_back_for_the_sweep(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = world.store.write_reply
+    broken = [True]
+
+    async def _flaky(req, reply):
+        if broken[0]:
+            raise RuntimeError("database gone")
+        await real(req, reply)
+
+    monkeypatch.setattr(bot_run, "_write_reply", _flaky)
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert row["state"] == "received" and row["tries"] == 1
+    assert row["code"] == "internal"
+    assert world.sent == [], "a failed try sent a reply"
+
+    broken[0] = False
+    row["stale"] = True   # five minutes later, the sweep's claim
+    await bot_run.run_message(bot_run.RunRequest(
+        row["id"], ORG_A, MEMBER, PHONE, row["wamid"], row["sid"]), stale=True)
+    assert row["state"] == "replied" and row["tries"] == 2
+    assert world.sent == [(PHONE, ANSWER)]
+
+
+async def test_the_last_failed_try_sends_the_general_text_once(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _broken(sid, mid):
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(bot_run, "_thread_turns", _broken)
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    req = bot_run.RunRequest(row["id"], ORG_A, MEMBER, PHONE, row["wamid"],
+                             row["sid"])
+    for _ in range(2):
+        assert row["state"] == "received"
+        row["stale"] = True
+        await bot_run.run_message(req, stale=True)
+    assert row["tries"] == 3
+    assert row["state"] == "failed" and row["code"] == "internal"
+    assert world.sent == [(PHONE, FAILED_TEXT)]
+    row["stale"] = True
+    await bot_run.run_message(req, stale=True)
+    assert world.sent == [(PHONE, FAILED_TEXT)], "the failure text went twice"
+
+
+async def test_a_failure_after_the_reply_went_out_sends_nothing_more(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = world.store.end
+    once = [True]
+
+    async def _end(message_id, state, code):
+        if state == "replied" and once[0]:
+            once[0] = False
+            raise RuntimeError("database gone")
+        return await real(message_id, state, code)
+
+    monkeypatch.setattr(bot_run, "_end", _end)
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert world.sent == [(PHONE, ANSWER)]
+    assert row["state"] == "replied", "a sent reply was given back for a rerun"
+
+
+# ── Fix 2: a thread that became a shared room ──────────────────────────────
+
+
+async def test_a_thread_shared_before_the_run_is_refused_and_never_read(
+    world: _World,
+) -> None:
+    response = await webhook.receive_webhook(_request(_body(_message())))
+    (row,) = world.store.inbound_rows()
+    world.store.shared.add(row["sid"])   # a participant added on the web
+    await response.background()
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    assert world.agent.calls == []
+    assert row["state"] == "refused" and row["code"] == "shared"
+    assert world.sent == [(PHONE, FAILED_TEXT)]
+
+
+async def test_the_next_text_after_sharing_opens_a_new_solo_thread(
+    world: _World,
+) -> None:
+    await _post_and_run(_message("Before"))
+    room = world.agent.calls[0]["thread_id"]
+    world.store.shared.add(room)
+    await _post_and_run(_message("After"))
+    second = world.agent.calls[1]
+    assert second["thread_id"] != room
+    assert second["payload"]["messages"] == []
+
+
+# ── Fix 4: one failed message does not drop the runs of the others ─────────
+
+
+async def test_a_failed_message_keeps_the_run_of_the_one_before_it(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = world.store.write_turn
+    broken = [True]
+
+    async def _write_turn(org, email, wamid, body):
+        if body == "Boom" and broken[0]:
+            raise RuntimeError("database gone")
+        return await real(org, email, wamid, body)
+
+    monkeypatch.setattr(bot_run, "_write_turn", _write_turn)
+    batch = (_message("Fine", wamid="wamid.F1"), _message("Boom", wamid="wamid.B1"))
+    res = await _post_and_run(*batch)
+    assert res.status_code == 500, "Meta must send the batch again"
+    assert [c["payload"]["message"] for c in world.agent.calls] == ["Fine"]
+
+    broken[0] = False   # the redelivery
+    res = await _post_and_run(*batch)
+    assert res.status_code == 200
+    assert [c["payload"]["message"] for c in world.agent.calls] == [
+        "Fine", "Boom"]
+
+
+# ── Fix 5: the scope rule is a system message, on the first turn too ──────
+
+
+async def test_the_first_turn_carries_the_scope_rule_as_a_system_message() -> None:
+    """The REAL batch executor input, for the payload a first message builds."""
+    import orchestrator.executor as executor
+
+    seen: list[Any] = []
+
+    class _Agent:
+        async def run(self, run_input):
+            seen.append(run_input)
+
+            class _R:
+                text = "ok"
+
+            return _R()
+
+    payload = bot_run.build_payload(QUESTION, [], MEMBER)
+    out = await executor._run_with_maf_agent(
+        [_Agent()], agent_name="orchestrator", run_id="r1",
+        thread_id="wa-thread-1", event_payload=payload, integrations={})
+    assert out["result"] == "ok"
+    (run_input,) = seen
+    assert isinstance(run_input, list), "the first turn took the string path"
+    first, last = run_input[0], run_input[-1]
+    assert str(first.role) == "system" and bot_run.SCOPE_RULE in first.text
+    assert str(last.role) == "user" and last.text == QUESTION
+    assert all(bot_run.SCOPE_RULE not in m.text for m in run_input[1:])
 
 # ── A6: a card tool in a WhatsApp run ───────────────────────────────────────
 

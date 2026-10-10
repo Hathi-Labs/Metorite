@@ -76,6 +76,7 @@ _FUNCTIONS = ("public.whatsapp_member_links_for_phone(text)",
 _ANSWER = "Two tasks are due today."
 _NO_WORKSPACE = ("Metorite cannot open this workspace from WhatsApp yet. "
                  "Use the web app.")
+_FAILED = "Metorite could not answer just now. Try again in a few minutes."
 
 
 def _migration() -> Path:
@@ -185,12 +186,19 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
     from whatsapp_ingestion.providers import factory
 
     access.invalidate()
+    # Order-proof (review round 1): an earlier suite in the same process can
+    # leave the resolver in its degraded mode, or the legacy fallback on.
+    # Every member then reads as "no feature:chat" here. This suite's
+    # catalog has the access tables, so it sets both states itself.
+    monkeypatch.setattr(access, "_tables_missing", False)
+    monkeypatch.delenv("ACCESS_LEGACY_FALLBACK", raising=False)
     monkeypatch.setattr(acb_audit, "record", lambda _event: None)
     monkeypatch.setattr(inbound, "_FAILED", {})
     monkeypatch.setattr(inbound, "_HANDLED", OrderedDict())
     monkeypatch.setattr(bot_run, "_RUNS", set())
     monkeypatch.setattr(bot_run, "_LIVE_ROWS", set())
-    monkeypatch.setattr(bot_run, "_LIVE_THREADS", set())
+    monkeypatch.setattr(bot_run, "_RUN_LOCKS", {})
+    monkeypatch.setattr(bot_run, "_RUN_LOCK_USERS", {})
     monkeypatch.setattr(bot_run, "_THREAD_LOCKS", {})
 
     async def _not_active(_thread_id: str) -> bool:
@@ -573,12 +581,17 @@ async def test_the_sweep_runs_a_stale_row_once_from_the_thread(bot) -> None:
     assert await _in_scope(bot, bot.bot_run.sweep_once) == 1
     assert await _in_scope(bot, bot.bot_run.sweep_once) == 0
 
-    (call,) = bot.agent.calls
-    assert call["payload"]["message"] == "Lost after the 200"
-    assert call["organization_id"] == p.org_a
+    first, second = bot.agent.calls
+    assert first["payload"]["message"] == "Lost after the 200"
+    assert first["organization_id"] == p.org_a
     assert tuple(_state(bot, stale.message_id)) == ("replied", 1, None)
-    assert _state(bot, fresh.message_id).state == "received", "a fresh row ran"
-    assert bot.sent == [(phone, _ANSWER)]
+    # The rest of the thread runs right after it, in order, with no second
+    # sweep, and with the first answer in its history.
+    assert second["payload"]["message"] == "Just now"
+    assert second["payload"]["messages"][-1] == {
+        "role": "assistant", "content": _ANSWER}
+    assert tuple(_state(bot, fresh.message_id)) == ("replied", 1, None)
+    assert bot.sent == [(phone, _ANSWER), (phone, _ANSWER)]
 
 
 async def test_a_row_older_than_24_hours_expires_with_no_send(bot) -> None:
@@ -613,6 +626,10 @@ async def test_the_tries_stop_at_three(bot) -> None:
     assert call["payload"]["message"] == "Third try"
     assert tuple(_state(bot, two.message_id)) == ("replied", 3, None)
     assert tuple(_state(bot, three.message_id)) == ("failed", 3, "tries")
+    # The used-up row gets the general text once, and never again.
+    assert bot.sent == [(phone, _FAILED), (phone, _ANSWER)]
+    assert await _in_scope(bot, bot.bot_run.sweep_once) == 0
+    assert bot.sent == [(phone, _FAILED), (phone, _ANSWER)]
 
 
 async def test_the_sweep_reads_no_row_of_an_org_off_the_list(
@@ -628,3 +645,93 @@ async def test_the_sweep_reads_no_row_of_an_org_off_the_list(
                         raising=False)
     assert await _in_scope(bot, bot.bot_run.sweep_once) == 0
     assert _state(bot, stale.message_id).state == "received"
+
+
+# ── Review round 1: order, shared rooms, redelivery ─────────────────────────
+
+
+def _change_many(sender: str, *bodies: str) -> dict[str, Any]:
+    """One webhook change that carries several texts, as Meta batches them."""
+    change = _change(sender, bodies[0])
+    msgs = change["value"]["messages"]
+    for body in bodies[1:]:
+        msgs.append({**msgs[0], "id": f"wamid.{uuid.uuid4().hex[:16]}",
+                     "text": {"body": body}})
+    return change
+
+
+async def test_two_texts_in_one_batch_run_in_order_on_the_real_rows(bot) -> None:
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+
+    await _webhook(bot, (_change_many(phone, "First", "Second"),))
+    first, second = bot.agent.calls
+    assert [first["payload"]["message"], second["payload"]["message"]] == [
+        "First", "Second"]
+    assert first["thread_id"] == second["thread_id"]
+    assert second["payload"]["messages"] == [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": _ANSWER},
+    ]
+    states = [r.state for r in _bot_rows(bot, phone) if r.direction == "in"]
+    assert states == ["replied", "replied"], "the second text waited for the sweep"
+
+
+async def test_a_thread_that_became_a_room_is_left_and_never_read(bot) -> None:
+    p = bot.p
+    email, other, phone = _email(), _email("o"), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_member(p.admin_engine, org=p.org_a, email=other)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+
+    await _webhook(bot, (_change(phone, "Before"),))
+    room = bot.agent.calls[0]["thread_id"]
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session_participant (session_id, subject, role, "
+            "organization_id) VALUES (:s, :e, 'member', CAST(:o AS uuid))"),
+            {"s": room, "e": other, "o": p.org_a})
+
+    await _webhook(bot, (_change(phone, "After"),))
+    second = bot.agent.calls[1]
+    assert second["thread_id"] != room, "the bot wrote into a shared room"
+    assert second["payload"]["messages"] == [], "the run read the room"
+    in_room = _admin_rows(bot, "SELECT content FROM chat_message "
+                          "WHERE session_id = :s ORDER BY timestamp_ms", s=room)
+    assert [r.content for r in in_room] == ["Before", _ANSWER]
+    solo = _admin_rows(bot, "SELECT channel FROM chat_session WHERE id = :s",
+                       s=second["thread_id"])
+    assert [r.channel for r in solo] == ["whatsapp"]
+    # A solo reply records no clearance, the fold's rule.
+    authority = _admin_rows(
+        bot, "SELECT authority FROM chat_message WHERE session_id = :s "
+        "AND role = 'assistant'", s=second["thread_id"])
+    assert [r.authority for r in authority] == [None]
+
+
+async def test_a_redelivery_keeps_the_newest_preview_and_the_chosen_agent(
+    bot,
+) -> None:
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    old = _change(phone, "Old text", wamid=f"wamid.old.{uuid.uuid4().hex[:8]}")
+
+    await _webhook(bot, (old,))
+    await _webhook(bot, (_change(phone, "New text"),))
+    sid = bot.agent.calls[0]["thread_id"]
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE chat_session SET agent_name = 'task-manager' "
+                       "WHERE id = :s"), {"s": sid})
+
+    await _webhook(bot, (old,))   # Meta sends the old text again
+    await _webhook(bot, (_change(phone, "Third text"),))
+    (row,) = _admin_rows(bot, "SELECT last_preview, agent_name, message_count "
+                         "FROM chat_session WHERE id = :s", s=sid)
+    assert row.last_preview == _ANSWER, "a redelivery rewrote the preview"
+    assert row.agent_name == "task-manager", "a bot write reset the agent"
+    assert row.message_count == 6
+    assert len(bot.agent.calls) == 3

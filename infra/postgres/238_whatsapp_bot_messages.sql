@@ -1,5 +1,5 @@
 -- ============================================================================
--- 237_whatsapp_bot_messages.sql — the record of each message on the bot
+-- 238_whatsapp_bot_messages.sql — the record of each message on the bot
 -- number, and the channel marker of a chat thread.
 --
 -- What: `whatsapp_bot_messages`, one row for each message that a linked
