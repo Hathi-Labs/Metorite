@@ -1,6 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-10c built (2026-10-10): cards, views and quick commands
+**Status:** WAC-10e built (2026-10-11): quoted replies and reactions
+(§13.7). WAC-10c built (2026-10-10): cards, views and quick commands
 (§13), on top of WAC-10a, the run profile and its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
 two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. WAC-4 is next. The board
 row is **WS-47**.
@@ -710,6 +711,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
 | **WAC-10a** ✅ live 2026-10-10 (Meta test number) | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
 | **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
+| **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1038,3 +1040,59 @@ these. Each one is fixed, and each fix has a fence in
 **Each link names its org** (owner, 2026-10-10). A link button carries
 `org=<the link row's org id>`, which the server sets and the model cannot
 choose. The web app's switch to that org's account is WAC-10d.
+
+### 13.7 WAC-10e: reply and react like a person (owner, 2026-10-11)
+
+The owner asked for two things. The bot reacts to the member's message with
+an emoji that fits. Each answer quotes the message that it answers, as a
+swipe reply on WhatsApp does.
+
+**The quote.** With the WhatsApp profile on, the first part of each answer
+carries `context.message_id`, the member's message id. The text, the
+element or the image that goes first shows the quote. The other parts do not
+quote. Meta drops a quote that it cannot resolve and still delivers the part.
+So a quote can never cost the member the answer.
+
+**The reaction.** `whatsapp_ui` takes the kind `react`, with data
+`{"emoji"}`. The tool accepts one emoji only, and refuses text. A reaction is
+not an element. It never counts toward the cap of 3, and a later reaction
+replaces the earlier one. `bot_run` sends it first, under the send mark, as a
+best-effort call: a refused reaction is logged and never retried, and the
+answer still goes. A reaction is never a part, so a resend of a stored reply
+never sends it. `resend_text` also cuts the reaction record.
+
+**A thanks costs no AI call.** A message that is only a thanks ("thanks",
+"thank you", "🙏" and the forms in `views.THANKS`) gets a 👍 from code, with no
+text. An "ok" or a 👍 is NOT a thanks, because it can answer a question that
+the AI asked. A thanks after the AI's own buttons goes to the AI.
+
+**The scope rule** tells the model which emoji fits which message, and to
+react in the same step as its first other tool call, so a reaction adds no
+model round.
+
+**A long job says so first** (owner, 2026-10-11). A member who asks for an
+image, a calculation, code or a page must know at once that it takes time.
+The AI calls `whatsapp_ui` kind `working` FIRST, with one line: what it does
+and about how long it takes. That line goes at once, quotes the member's
+message, and shows "typing..." again. The answer follows in full.
+
+If the AI sends no such line, code sends `REPLY_WORKING` after
+`WORKING_AFTER_S` (20 seconds), with no AI call. Meta hides "typing..." after
+25 seconds, so the member hears before the indicator goes. The member never
+gets both lines, and a quick answer gets neither. The line is no part of the
+answer and goes before the send mark. So a try that runs again can send it
+again: that costs one short line, never a second answer.
+
+**Acceptance (WAC-10e).**
+
+| # | Check | Fence |
+|---|---|---|
+| E1 | With the profile on, only the first part quotes the member's message. With it off, no part quotes | `test_the_first_part_quotes_the_members_message_and_only_the_first`, `test_with_the_profile_off_no_part_quotes` |
+| E2 | A reaction goes on the member's message and is not a part. A reaction-only answer sends no text and closes as `replied` | `test_a_reaction_goes_on_the_members_message_and_is_no_part`, `test_a_reaction_only_answer_sends_no_text_and_closes_replied` |
+| E3 | A refused reaction never costs the answer | `test_a_refused_reaction_never_costs_the_answer` |
+| E4 | The tool refuses text, takes one emoji (a skin tone, a family, a flag, a keycap), and the last one wins | `test_the_tool_takes_one_emoji_and_a_later_one_replaces_it` |
+| E5 | A resend never sends a reaction as text | `test_a_resend_never_sends_a_reaction_as_text` |
+| E6 | A plain thanks gets a 👍 with no AI call and no text. An "ok" goes to the AI | `test_a_thanks_gets_a_thumbs_up_with_no_ai_call_and_no_text`, `test_only_a_plain_thanks_is_a_thanks` |
+| E7 | A long job tells the member first: the AI's line, or code's line past 20 s. Never both, and never on a quick run | `test_the_ai_says_first_that_a_long_job_takes_a_while`, `test_a_long_run_with_no_early_message_gets_one_from_code`, `test_the_timer_stays_quiet_after_the_ais_own_early_message`, `test_a_quick_run_sends_no_early_message` |
+
+All seven fences are in `tests/unit/test_wac_react.py`.

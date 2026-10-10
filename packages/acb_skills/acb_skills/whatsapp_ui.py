@@ -25,6 +25,10 @@ an ``interactive`` message, and ``inbound`` turns its title into the member's
 text turn. So a tap is untrusted input exactly like typed text, and no id from
 the phone ever selects an org or a record (§5.11 "The tap is untrusted input").
 
+**A reaction is not an element (WAC-10e).** Kind "react" queues one emoji
+for the member's own message. ``bot_run`` sends it first and best effort, so
+a refused reaction never costs the member the answer.
+
 **Reads only, as in WAC-3.** Buttons and rows ask or narrow a question. A
 write still goes to the web app until WAC-4.
 
@@ -108,11 +112,19 @@ class OutMessage:
     so the next turn knows which buttons it offered.
     """
 
-    kind: str  # "interactive", "image", or "text" (a view's own text)
+    kind: str  # "interactive", "image", "text" (a view's own text) or "reaction"
     rendition: str
     interactive: dict[str, Any] | None = None
     png: bytes | None = None
     caption: str | None = None
+    #: The emoji of a "reaction". It goes ON the member's message (WAC-10e).
+    emoji: str | None = None
+
+    @property
+    def counts(self) -> bool:
+        """True for an element that counts toward :data:`MAX_MESSAGES`. A
+        view's text and a reaction are not elements."""
+        return self.kind not in ("text", "reaction")
 
 
 @dataclass
@@ -126,6 +138,11 @@ class WhatsAppRun:
     views: Callable[[str], Awaitable[Any]] | None = None
     #: The org of the phone's link row. Each link button carries it.
     org: str | None = None
+    #: Sends one text to the member NOW, before the answer (WAC-10e, kind
+    #: "working"). ``bot_run`` gives it. It returns False when nothing went.
+    notify: Callable[[str], Awaitable[bool]] | None = None
+    #: True once the member heard that the job takes a while.
+    notified: bool = False
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -134,14 +151,16 @@ _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
 @contextlib.contextmanager
 def whatsapp_run(agent: str, *,
                  views: Callable[[str], Awaitable[Any]] | None = None,
-                 org: str | None = None) -> Iterator[WhatsAppRun]:
+                 org: str | None = None,
+                 notify: Callable[[str], Awaitable[bool]] | None = None,
+                 ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
     value it found.
     """
-    run = WhatsAppRun(agent=agent, views=views, org=org)
+    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify)
     token = _RUN.set(run)
     try:
         yield run
@@ -446,7 +465,62 @@ def _gantt(data: dict[str, Any]) -> OutMessage:
     return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
 
 
+#: A family or a flag sequence is longer than one code point, and no emoji
+#: is longer than this.
+EMOJI_MAX = 10
+_ZWJ = "‍"
+_KEYCAP = "⃣"
+_SELECTORS = frozenset({0xFE0E, 0xFE0F})
+_SKIN = range(0x1F3FB, 0x1F400)
+_REGIONAL = range(0x1F1E6, 0x1F200)
+#: The tag letters and the cancel tag of a subdivision flag (England).
+_TAGS = range(0xE0020, 0xE0080)
+#: The emoji outside the main emoji blocks (U+1F000 to U+1FAFF). A curated
+#: list, so a degree sign, a Braille blank or a box line is never an emoji.
+_BMP_EMOJI = frozenset(
+    "©®‼⁉™ℹ↔↕↖↗↘↙↩↪⌚⌛⌨⏏⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳⏸⏹⏺Ⓜ▪▫▶◀◻◼◽◾☀☁☂☃☄☎☑☔☕☘☝☠☢☣☦☪☮"
+    "☯☸☹☺♀♂♟♠♣♥♦♨♻♾♿⚒⚓⚔⚕⚖⚗⚙⚛⚜⚠⚡⚧⚪⚫⚰⚱⚽⚾⛄⛅⛈⛎⛏⛑⛓⛔⛩⛪⛰⛱⛲⛳⛴⛵⛷⛸⛹⛺⛽✂"
+    "✅✈✉✊✋✌✍✏✒✔✖✝✡✨✳✴❄❇❌❎❓❔❕❗❣❤➕➖➗➡➰➿⤴⤵⬅⬆⬇⬛⬜⭐⭕〰〽㊗㊙")
+
+
+def _emoji_part(part: str) -> bool:
+    """One emoji between two zero width joiners: a flag, a keycap, or a base
+    with its selectors, a skin tone and tag letters."""
+    first = ord(part[0])
+    if first in _REGIONAL:
+        return len(part) == 2 and ord(part[1]) in _REGIONAL
+    if part[0] in "0123456789#*":
+        return part[1:] in (_KEYCAP, "️" + _KEYCAP)
+    if not (0x1F000 <= first <= 0x1FAFF and first not in _SKIN) \
+            and part[0] not in _BMP_EMOJI:
+        return False
+    return all(ord(c) in _SELECTORS or ord(c) in _SKIN or ord(c) in _TAGS
+               for c in part[1:])
+
+
+def _emoji(raw: Any) -> str:
+    """One emoji, or :class:`ValueError`. Meta takes any emoji, and refuses
+    text, so text, a run of emoji or a hidden mark never reaches it."""
+    value = str(raw or "").strip()
+    parts = value.split(_ZWJ)
+    if not value or len(value) > EMOJI_MAX or not all(p and _emoji_part(p) for p in parts):
+        raise _Refused('"emoji" must be one emoji, such as 👍')
+    return value
+
+
+def reaction(emoji: str) -> OutMessage:
+    """A reaction on the member's message (WAC-10e). Not an element: it never
+    counts toward :data:`MAX_MESSAGES`, and a later one replaces it."""
+    value = _emoji(emoji)
+    return OutMessage("reaction", f"[Reaction: {value}]", emoji=value)
+
+
+def _react(data: dict[str, Any]) -> OutMessage:
+    return reaction(data.get("emoji"))
+
+
 _BUILDERS = {
+    "react": _react,
     "buttons": _buttons,
     "list": _list,
     "link": _link,
@@ -510,6 +584,14 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - view: {"name"}: a ready view that the server reads and builds, with no
       rows from you. Names: my_day, due_today, overdue, calendar, approvals,
       menu. Prefer it whenever the question is one of these.
+    - react: {"emoji": "👍"}: one emoji ON the member's message, as a person
+      reacts. Not an element, and a later one replaces it. Call it in the
+      same step as your first other tool call.
+    - working: {"text"}: sent NOW, before your answer, once. Use it FIRST
+      when the job takes more than about 15 seconds (an image, a
+      calculation, code, a page, a long search): one line of what you are
+      doing and about how long it takes, e.g. "Building the chart, about 30
+      seconds." Not an element.
     A "tone" or "status" is a status word or a colour (green, amber, red,
     blue, violet, gray).
 
@@ -521,6 +603,17 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run = _RUN.get()
     if run is None:
         return {"ok": False, "error": "whatsapp_ui works only in a WhatsApp chat"}
+    if str(kind or "").strip().lower() == "working":
+        return await _working(run, data)
+    if str(kind or "").strip().lower() == "react":
+        try:
+            message = reaction(data.get("emoji") if isinstance(data, dict) else None)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        run.outbox[:] = [m for m in run.outbox if m.kind != "reaction"]
+        run.outbox.append(message)
+        return {"ok": True, "note": "The reaction goes on the member's message. "
+                                    "A message that needs no answer needs no text."}
     if _elements(run) >= MAX_MESSAGES:
         return {"ok": False,
                 "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
@@ -537,9 +630,39 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
             "note": "It goes after your text. Refer to it in one line."}
 
 
+#: The longest "working" line. One line, read at a glance.
+WORKING_MAX = 300
+
+
+async def _working(run: WhatsAppRun, data: Any) -> dict[str, Any]:
+    """Tell the member NOW that the job takes a while (WAC-10e).
+
+    Sent at once through ``run.notify``, not queued, and only once a reply.
+    It is not part of the answer, so the answer still goes in full after it.
+    """
+    text = " ".join(str((data or {}).get("text") or "").split()) \
+        if isinstance(data, dict) else ""
+    if not text:
+        return {"ok": False, "error": '"text" is required: what you are doing, and how long'}
+    if len(text) > WORKING_MAX:
+        return {"ok": False, "error": f'"text" must be at most {WORKING_MAX} characters'}
+    if run.notified:
+        return {"ok": False, "error": "the member already knows. Carry on with the job"}
+    if run.notify is None:
+        return {"ok": False, "error": "no early message in this chat. Carry on"}
+    run.notified = True  # before the await, so two calls in one step send once
+    try:
+        sent = await run.notify(text)
+    except Exception:  # a nicety: never cost the member the answer
+        sent = False
+    run.notified = sent  # a failed one leaves the timer's own line free to go
+    return ({"ok": True, "note": "Sent. Now do the job, then answer in full."} if sent
+            else {"ok": False, "error": "the early message did not go. Carry on"})
+
+
 def _elements(run: WhatsAppRun) -> int:
-    """The elements queued so far. A view's text is not an element."""
-    return sum(1 for m in run.outbox if m.kind != "text")
+    """The elements queued so far. A view's text and a reaction are not."""
+    return sum(1 for m in run.outbox if m.counts)
 
 
 async def _send_view(run: WhatsAppRun, data: Any) -> dict[str, Any]:
@@ -590,7 +713,8 @@ def resend_text(stored: str | None) -> str | None:
 
     The text part, so the member never gets the renditions as text. An answer
     of elements only has no text part, and then the renditions go, because
-    some answer is better than none.
+    some answer is better than none. A reaction is never sent as text: an
+    answer that was a reaction only resends as "" (nothing goes out).
     """
     if stored is None:
         return None
@@ -598,7 +722,13 @@ def resend_text(stored: str | None) -> str | None:
     if RENDITION_MARK not in stored:
         return stored
     text, _mark, rest = stored.partition(RENDITION_MARK)
-    return text.strip() or rest.strip()
+    return text.strip() or without_reactions(rest)
+
+
+def without_reactions(records: str) -> str:
+    """The element records with each reaction record cut out."""
+    kept = [r for r in records.split("\n\n") if not r.startswith("[Reaction:")]
+    return "\n\n".join(kept).strip()
 
 
 # ── The reply guard (WAC-10c, owner screenshots of 2026-10-10) ───────────────
@@ -610,7 +740,8 @@ def resend_text(stored: str | None) -> str | None:
 # tappable becomes a list of the reply's own bullets, or loses the sentence.
 
 _RECORD_HEAD = re.compile(
-    r"^\s*\[(Table|Chart|Buttons|List|Link|Stats|Board|Timeline|Agenda|Schedule)\b",
+    r"^\s*\[(Table|Chart|Buttons|List|Link|Stats|Board|Timeline|Agenda|Schedule"
+    r"|Reaction)\b",
     re.IGNORECASE)
 _TAP_PROMISE = re.compile(r"\b(?:tap|tapping|select one|pick one)\b", re.IGNORECASE)
 _BULLET = re.compile(r"^\s*(?:[-•▪◦·]|\d+[.)])\s+(.+)$")
@@ -690,7 +821,7 @@ def polish(reply: str, messages: list[OutMessage]) -> tuple[str, list[OutMessage
 
 def _polish(reply: str, out: list[OutMessage]) -> tuple[str, list[OutMessage]]:
     def room() -> int:
-        return MAX_MESSAGES - sum(1 for m in out if m.kind != "text")
+        return MAX_MESSAGES - sum(1 for m in out if m.counts)
 
     kept: list[str] = []
     lines = reply.split("\n")

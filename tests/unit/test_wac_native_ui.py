@@ -453,27 +453,40 @@ class _UiProvider:
         self.fail = fail
         self.typing: list[str] = []
         self.uploads: list[tuple[int, str]] = []
+        #: The message each sent part quoted, in send order (WAC-10e).
+        self.quotes: list[str | None] = []
+        self.reactions: list[tuple[str, str]] = []
 
-    def _sent(self, item: Any) -> str:
+    def _sent(self, item: Any, quote: str | None = None) -> str:
         self.world.sent.append((PHONE, item))
+        self.quotes.append(quote)
         return f"wamid.out.{len(self.world.sent)}"
 
-    async def send_text(self, to: str, body: str) -> str:
-        return self._sent(body)
+    async def send_text(self, to: str, body: str, *,
+                        reply_to_wa_message_id: str | None = None) -> str:
+        return self._sent(body, reply_to_wa_message_id)
 
-    async def send_interactive(self, to: str, interactive: dict) -> str:
+    async def send_reaction(self, to: str, wamid: str, emoji: str) -> str:
+        if self.fail == "reaction":
+            raise RuntimeError("reaction broke")
+        self.reactions.append((wamid, emoji))
+        return "wamid.reaction"
+
+    async def send_interactive(self, to: str, interactive: dict, *,
+                               reply_to_wa_message_id: str | None = None) -> str:
         if self.fail == "interactive":
             req = httpx.Request("POST", "https://graph.facebook.com")
             raise httpx.HTTPStatusError("bad", request=req,
                                         response=httpx.Response(400, request=req))
-        return self._sent(("interactive", interactive["type"]))
+        return self._sent(("interactive", interactive["type"]), reply_to_wa_message_id)
 
     async def upload_media(self, data: bytes, mime: str, name: str) -> str:
         self.uploads.append((len(data), mime))
         return "media-1"
 
-    async def send_image(self, to: str, media_id: str, *, caption: str | None = None) -> str:
-        return self._sent(("image", media_id, caption))
+    async def send_image(self, to: str, media_id: str, *, caption: str | None = None,
+                         reply_to_wa_message_id: str | None = None) -> str:
+        return self._sent(("image", media_id, caption), reply_to_wa_message_id)
 
     async def show_typing(self, wamid: str) -> bool:
         self.typing.append(wamid)
@@ -669,11 +682,11 @@ async def test_a_refused_first_send_resends_the_text_without_renditions(
     refuse = [True]
     real_send = prov.send_text
 
-    async def _flaky(to: str, body: str) -> str:
+    async def _flaky(to: str, body: str, **quote: Any) -> str:
         if refuse[0]:
             refuse[0] = False
             raise _status_error(400)   # Meta refused: surely not sent
-        return await real_send(to, body)
+        return await real_send(to, body, **quote)
 
     prov.send_text = _flaky
     world.agent = _UiAgent([_BUTTONS])

@@ -4,9 +4,9 @@
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
 > agent to build it. D95 is decided (§16).
-> **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-Z1,
-> the `crm_sources` seam and the Zoho read adapter (2026-10-11). The other
-> slices are not built yet.
+> **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-0, the
+> kill switch, default OFF (2026-10-11). CRM-Z1, the `crm_sources` seam and the
+> Zoho read adapter (2026-10-11). The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -684,7 +684,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **CRM-0** | A kill switch. `CRM_ENABLED` (default OFF) makes every `/crm` route answer 404, the nav hide CRM, and `crm-assistant` refuse. An allowlist of organization ids, `CRM_ORGS` (or `*`), turns it on for named orgs only. This is the repo idiom (`whatsapp_assistant_orgs`) | 🟢 AGENT-SAFE to build. The flag stays OFF for every org until CRM-T4 merges | A member of an org outside `CRM_ORGS` gets 404 on each of the 4 entity lists, a create and the agent's `search_crm`. Fence: `tests/unit/test_crm_kill_switch.py`, measured red first |
+| **CRM-0** ✅ built 2026-10-11 | A kill switch. `CRM_ENABLED` (default OFF) makes every `/crm` route answer 404, the nav hide CRM, and `crm-assistant` refuse. An allowlist of organization ids, `CRM_ORGS` (or `*`), turns it on for named orgs only. This is the repo idiom (`whatsapp_assistant_orgs`) | 🟢 AGENT-SAFE to build. The flag stays OFF for every org until CRM-T4 merges | A member of an org outside `CRM_ORGS` gets 404 on each of the 4 entity lists, a create and the agent's `search_crm`. Fence: `tests/unit/test_crm_kill_switch.py`, measured red first |
 
 ### 13.3 Phase 1 — the tenant port (§4)
 

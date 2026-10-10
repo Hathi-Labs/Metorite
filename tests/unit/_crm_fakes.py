@@ -1022,8 +1022,18 @@ def _sortable(value: Any) -> Any:
 
 # ── Principals ──────────────────────────────────────────────────────────────
 
-def crm_user(email: str = "vjvarada@fracktal.in", *, features: str = "*") -> Any:
-    """A caller holding ``feature:crm``.
+#: The organization of every :func:`crm_user` (WS-53 CRM-0). No CRM route
+#: reads it today. The kill switch reads it, and :func:`crm_switch_on` lists it.
+CRM_TEST_ORG = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0001"
+
+
+def crm_user(
+    email: str = "vjvarada@fracktal.in",
+    *,
+    features: str = "*",
+    organization_id: str | None = CRM_TEST_ORG,
+) -> Any:
+    """A caller holding ``feature:crm``, a member of :data:`CRM_TEST_ORG`.
 
     Built with the real ``build_access`` so the permission the routes are gated
     on is the one this principal actually resolves.
@@ -1032,7 +1042,23 @@ def crm_user(email: str = "vjvarada@fracktal.in", *, features: str = "*") -> Any
 
     return UserContext(
         email=email, role=UserRole.EMPLOYEE, access=build_access([features]),
+        organization_id=organization_id,
     )
+
+
+def crm_switch_on(monkeypatch: Any, orgs: str = CRM_TEST_ORG) -> None:
+    """Turn the CRM kill switch on for *orgs* (WS-53 CRM-0).
+
+    The ONE place a test opens the switch. A suite that mounts the ``/crm``
+    router calls it once. Without it, each ``/crm`` route answers 404. The
+    suites that call a route function directly do not run the router
+    dependencies, so they do not need it.
+    """
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "crm_orgs", orgs, raising=False)
 
 
 def bind_db(monkeypatch: Any, fake: FakeCrmDB, modules: tuple[Any, ...]) -> None:
