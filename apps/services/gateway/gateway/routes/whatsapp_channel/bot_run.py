@@ -1132,7 +1132,9 @@ async def _last_word(req: RunRequest, tries: int) -> None:
     """The last try of a ``running`` row: its stored reply, else the general
     text. Each one goes once, under the row's state change."""
     stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
-    if stored:
+    # "" is a stored answer too: a reaction only (WAC-10e). It closes the row
+    # with nothing sent, never with the general text.
+    if stored is not None:
         await _deliver(req, stored, _Attempt(tries=tries), frm="running",
                        last_try=True)
     elif await _end(req.message_id, "failed", "internal"):
@@ -1147,7 +1149,7 @@ async def _close_used_up(req: RunRequest) -> None:
     same send mark. Else the general text goes, once.
     """
     stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
-    if stored:
+    if stored is not None:  # "" is a reaction-only answer (`_last_word`)
         await _deliver(req, stored, _Attempt(tries=MAX_TRIES), frm="failed",
                        last_try=True)
     else:
@@ -1351,9 +1353,13 @@ def _notifier(req: RunRequest) -> Callable[[str], Awaitable[bool]]:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            # Like the answer: an unclear error (a timeout, a 5xx) may have
+            # delivered the line, so it counts as sent, and no second line
+            # follows (review, 2026-10-11).
+            sure = send_surely_failed(exc)
             _log.info("whatsapp_channel.run.working_failed",
-                      error_type=type(exc).__name__)
-            return False
+                      error_type=type(exc).__name__, surely_not_sent=sure)
+            return not sure
         _log.info("whatsapp_channel.run.working_sent", message_id=req.message_id)
         await _show_typing(req)
         return True

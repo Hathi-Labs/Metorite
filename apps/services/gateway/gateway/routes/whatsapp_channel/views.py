@@ -111,12 +111,20 @@ THANKS_EMOJI = frozenset({"🙏", "🙏🏻", "🙏🏼", "🙏🏽", "🙏🏾"
 THANKS_REACTION = "👍"
 
 
+#: What a thanks may carry besides its words: plain closing marks and a
+#: friendly emoji. A "?" or any other emoji ("thanks 😡") goes to the AI.
+_THANKS_EXTRA = re.compile(r"[\s.!,🙏🙂😊❤️\U0001F3FB-\U0001F3FF]+")
+
+
 def thanks(text: str) -> bool:
     """True when the whole message is a thanks (:data:`THANKS`)."""
     raw = (text or "").strip()
     if not raw or len(raw) > 40:
         return False
-    return raw in THANKS_EMOJI or normalize(raw) in THANKS
+    if raw in THANKS_EMOJI:
+        return True
+    words = " ".join(_THANKS_EXTRA.sub(" ", raw).split()).replace("’", "'").lower()
+    return words in THANKS
 
 
 # ── The result ──────────────────────────────────────────────────────────────

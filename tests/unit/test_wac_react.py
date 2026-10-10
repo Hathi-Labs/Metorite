@@ -120,10 +120,13 @@ async def test_a_refused_reaction_never_costs_the_answer(
 
 async def test_the_tool_takes_one_emoji_and_a_later_one_replaces_it() -> None:
     with wui.whatsapp_run("orchestrator") as run:
-        for bad in ("yes", "", "👍 ok", "👍" * 11, None):
+        for bad in ("yes", "", "👍 ok", "👍" * 11, None, "👍👍👍", "°", "™x", "⠀",
+                    "👍^", "👍‮", "👍⁣", "🇮", "1", "🏻"):
             out = await wui.whatsapp_ui("react", {"emoji": bad})
-            assert out["ok"] is False and "one emoji" in out["error"], bad
-        for good in ("👍", "❤️", "👍🏽", "👨‍👩‍👧", "🇮🇳", "1️⃣"):
+            assert out["ok"] is False and "one emoji" in out["error"], repr(bad)
+        for good in ("👍", "❤️", "❤", "👍🏽", "👨‍👩‍👧", "🇮🇳", "‼️", "ℹ️", "↔️", "〰️",
+                     "✅", "☕", "⭐", "🏳️‍🌈", "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+                     "1️⃣"):
             assert (await wui.whatsapp_ui("react", {"emoji": good}))["ok"] is True, good
     reactions = [m for m in run.outbox if m.kind == "reaction"]
     assert [m.emoji for m in reactions] == ["1️⃣"]
@@ -169,6 +172,7 @@ def test_a_typed_reaction_record_is_cut_from_the_text() -> None:
     ("Thanks!", True), ("thank you", True), ("Thank you so much 🙏", True),
     ("🙏", True), ("🙏🏽", True), ("thx", True),
     ("ok", False), ("👍", False), ("yes", False), ("", False),
+    ("Thanks??", False), ("thanks 😡", False), ("Thanks! 😊", True),
     ("thanks, and what is due tomorrow?", False), ("thanks " * 10, False),
 ])
 def test_only_a_plain_thanks_is_a_thanks(text: str, is_thanks: bool) -> None:
@@ -320,3 +324,61 @@ async def test_a_failed_early_message_leaves_the_timer_free() -> None:
     assert run.notified is False
     with wui.whatsapp_run("orchestrator") as run:
         assert (await wui.whatsapp_ui(*_WORKING))["ok"] is False
+
+
+# ── The review round of 2026-10-11 ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("closer", ["_last_word", "_close_used_up"])
+async def test_a_stored_reaction_only_answer_never_ends_on_the_failure_text(
+    monkeypatch: pytest.MonkeyPatch, closer: str,
+) -> None:
+    record = wui.thread_record("", [wui.reaction("👍")])
+    delivered: list[str] = []
+    failed: list[Any] = []
+
+    async def _stored(_sid: str, _wamid: str) -> str:
+        return record
+
+    async def _deliver(_req: Any, reply: str, *_a: Any, **_k: Any) -> None:
+        delivered.append(reply)
+
+    async def _send(_req: Any, texts: list[Any], **_k: Any) -> int:
+        failed.append(texts)
+        return 1
+
+    async def _end(*_a: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(bot_run, "_stored_reply", _stored)
+    monkeypatch.setattr(bot_run, "_deliver", _deliver)
+    monkeypatch.setattr(bot_run, "_send", _send)
+    monkeypatch.setattr(bot_run, "_end", _end)
+    req = bot_run.RunRequest("m1", "org", "a@b.c", "9199", "wamid.in", "sid")
+    if closer == "_last_word":
+        await bot_run._last_word(req, bot_run.MAX_TRIES)
+    else:
+        await bot_run._close_used_up(req)
+    assert delivered == [""] and failed == []
+
+
+async def test_an_unclear_early_message_counts_as_sent(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, True)
+    monkeypatch.setattr(bot_run, "WORKING_AFTER_S", 0.01)
+    prov = _provider(monkeypatch, world)
+    real = prov.send_text
+    calls: list[str] = []
+
+    async def _slow_first(to: str, body: str, **quote: Any) -> str:
+        calls.append(body)
+        if body == _WORKING[1]["text"]:
+            raise TimeoutError  # Meta may have it: never send a second line
+        return await real(to, body, **quote)
+
+    prov.send_text = _slow_first
+    world.agent = _SlowAgent([_WORKING], delay=0.2)
+    await _post_and_run(_message())
+    assert bot_run.REPLY_WORKING not in calls
+    assert [s for _to, s in world.sent] == [ANSWER]

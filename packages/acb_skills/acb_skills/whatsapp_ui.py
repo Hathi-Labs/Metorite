@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-import unicodedata
 from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -466,24 +465,45 @@ def _gantt(data: dict[str, Any]) -> OutMessage:
     return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
 
 
-#: The code points an emoji may hold: symbols, a skin tone (Sk), the emoji
-#: presentation selector (Mn), the zero width joiner (Cf) and a keycap (Me).
-_EMOJI_CATEGORIES = frozenset({"So", "Sk", "Mn", "Cf", "Me"})
 #: A family or a flag sequence is longer than one code point, and no emoji
 #: is longer than this.
 EMOJI_MAX = 10
+_ZWJ = "‍"
+_KEYCAP = "⃣"
+_SELECTORS = frozenset({0xFE0E, 0xFE0F})
+_SKIN = range(0x1F3FB, 0x1F400)
+_REGIONAL = range(0x1F1E6, 0x1F200)
+#: The tag letters and the cancel tag of a subdivision flag (England).
+_TAGS = range(0xE0020, 0xE0080)
+#: The emoji outside the main emoji blocks (U+1F000 to U+1FAFF). A curated
+#: list, so a degree sign, a Braille blank or a box line is never an emoji.
+_BMP_EMOJI = frozenset(
+    "©®‼⁉™ℹ↔↕↖↗↘↙↩↪⌚⌛⌨⏏⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳⏸⏹⏺Ⓜ▪▫▶◀◻◼◽◾☀☁☂☃☄☎☑☔☕☘☝☠☢☣☦☪☮"
+    "☯☸☹☺♀♂♟♠♣♥♦♨♻♾♿⚒⚓⚔⚕⚖⚗⚙⚛⚜⚠⚡⚧⚪⚫⚰⚱⚽⚾⛄⛅⛈⛎⛏⛑⛓⛔⛩⛪⛰⛱⛲⛳⛴⛵⛷⛸⛹⛺⛽✂"
+    "✅✈✉✊✋✌✍✏✒✔✖✝✡✨✳✴❄❇❌❎❓❔❕❗❣❤➕➖➗➡➰➿⤴⤵⬅⬆⬇⬛⬜⭐⭕〰〽㊗㊙")
+
+
+def _emoji_part(part: str) -> bool:
+    """One emoji between two zero width joiners: a flag, a keycap, or a base
+    with its selectors, a skin tone and tag letters."""
+    first = ord(part[0])
+    if first in _REGIONAL:
+        return len(part) == 2 and ord(part[1]) in _REGIONAL
+    if part[0] in "0123456789#*":
+        return part[1:] in (_KEYCAP, "️" + _KEYCAP)
+    if not (0x1F000 <= first <= 0x1FAFF and first not in _SKIN) \
+            and part[0] not in _BMP_EMOJI:
+        return False
+    return all(ord(c) in _SELECTORS or ord(c) in _SKIN or ord(c) in _TAGS
+               for c in part[1:])
 
 
 def _emoji(raw: Any) -> str:
     """One emoji, or :class:`ValueError`. Meta takes any emoji, and refuses
-    text, so text never reaches it."""
+    text, so text, a run of emoji or a hidden mark never reaches it."""
     value = str(raw or "").strip()
-    # A keycap (1️⃣, #️⃣) is the only emoji that starts with a plain character.
-    keycap = len(value) >= 2 and value[0] in "0123456789#*" and value[-1] == "⃣"
-    body = value[1:] if keycap else value
-    if (not value or len(value) > EMOJI_MAX
-            or any(unicodedata.category(ch) not in _EMOJI_CATEGORIES for ch in body)
-            or not (keycap or any(unicodedata.category(ch) == "So" for ch in body))):
+    parts = value.split(_ZWJ)
+    if not value or len(value) > EMOJI_MAX or not all(p and _emoji_part(p) for p in parts):
         raise _Refused('"emoji" must be one emoji, such as 👍')
     return value
 
