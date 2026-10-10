@@ -451,6 +451,10 @@ async def test_a_dead_refresh_token_raises_needs_reconnect_with_no_retry(
         await source.refresh()
     assert len(fake.requests) == 1
     assert fake.sleeps == []
+    # The secret and the refresh token go in the form body, never in the URL.
+    assert SECRET not in str(fake.requests[0].url)
+    assert REFRESH not in str(fake.requests[0].url)
+    assert REFRESH in fake.requests[0].content.decode()
     # The old credential stays as it was. The caller decides what to store.
     assert source.credential == credential()
     leaks.extend(exc_texts(caught.value))
