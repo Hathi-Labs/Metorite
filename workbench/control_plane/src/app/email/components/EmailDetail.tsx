@@ -1663,9 +1663,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
               placeholder={`Write your ${replyLabel.toLowerCase()}…`}
               rows={6}
               autoFocus
-              // `overscroll-contain`: a wheel at the end of the draft stays in
-              // the draft (owner report, 2026-10-10).
-              className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none overscroll-contain"
+              // No `overscroll-contain` here. On a short window, a wheel at
+              // the end of the draft must go on to the thread, so the member
+              // reaches the AI bar and Send. The thread holds the wheel.
+              className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none"
             />
             {replyMode === "forward" && (
               <ForwardFileChips

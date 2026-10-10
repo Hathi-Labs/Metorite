@@ -25,8 +25,13 @@ export default function GlobalError({
   return (
     <html lang="en">
       <body className="bg-background text-foreground">
-        <div className="flex min-h-screen items-center justify-center">
-          <ErrorScreen error={error} reset={reset} retry={unstable_retry} />
+        {/* Its own scroller: `globals.css` clips `html` and `body`, so the
+            document never scrolls. On a short window this box scrolls to the
+            bottom of the card. */}
+        <div className="h-dvh overflow-auto">
+          <div className="flex min-h-full items-center justify-center">
+            <ErrorScreen error={error} reset={reset} retry={unstable_retry} />
+          </div>
         </div>
       </body>
     </html>

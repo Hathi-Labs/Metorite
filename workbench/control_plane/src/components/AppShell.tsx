@@ -150,7 +150,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // factors.
   if (isChromeless(pathname ?? "")) {
     return (
-      <main className="h-screen overflow-auto bg-background">{children}</main>
+      <main className="h-dvh overflow-auto bg-background">{children}</main>
     );
   }
 
@@ -201,7 +201,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     // Fence: `src/lib/scrollWithin.test.ts` and `e2e/email-composer-scroll.spec.ts`.
     return (
       <SidebarFoldProvider placement={frame === "full" ? "bar" : "rail"}>
-      <div data-app-shell="" className={frame === "full" ? "relative flex h-screen flex-col overflow-clip" : "relative flex h-screen overflow-clip"}>
+      <div data-app-shell="" className={frame === "full" ? "relative flex h-dvh flex-col overflow-clip" : "relative flex h-dvh overflow-clip"}>
         {frame === "full" ? (
           <ShellFrame lead={<BarBrand />}>
             <div className="flex min-h-0 flex-1">

@@ -134,6 +134,22 @@ test.describe("The reply composer", () => {
     // The finished draft adds nothing below the window.
     expect((await shifted(page)).docOverflow).toBeLessThanOrEqual(0);
 
+    // The root cause, by behaviour: the sr-only summary of the AI panel is
+    // held by the panel itself, not by the shell. The shell clip alone also
+    // keeps the document short, so the check above cannot see this layer.
+    const summary = await page.evaluate(() => {
+      const span = [...document.querySelectorAll<HTMLElement>(".sr-only")].find((s) =>
+        (s.textContent ?? "").includes("read the thread"));
+      const holder = span?.offsetParent ?? null;
+      const refine = document.querySelector('input[aria-label="Refine the draft"]');
+      return {
+        found: !!span,
+        inAssistant: !!holder && !!refine && holder.contains(refine),
+        isShell: !!holder?.hasAttribute("data-app-shell"),
+      };
+    });
+    expect(summary).toEqual({ found: true, inAssistant: true, isShell: false });
+
     // Scroll far past the end of the draft.
     await body.hover();
     for (let i = 0; i < 40; i++) {

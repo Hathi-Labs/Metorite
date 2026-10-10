@@ -76,8 +76,18 @@ describe("nearestScrollTop", () => {
     expect(nearestScrollTop(300, port, { top: 40, bottom: 200 })).toBe(240);
   });
 
-  it("aligns the top of a target that is taller than the port", () => {
+  it("aligns the top of a taller target that starts below the port", () => {
     expect(nearestScrollTop(0, port, { top: 900, bottom: 2000 })).toBe(800);
+  });
+
+  it("leaves a taller target that covers both edges of the port", () => {
+    expect(nearestScrollTop(400, port, { top: 50, bottom: 800 })).toBe(400);
+  });
+
+  it("aligns the bottom of a taller target whose top is above the port", () => {
+    // 1100px tall in a 600px port. Its bottom shows at 600, so the port moves
+    // up by 100 to align the bottom edges, as CSSOM block "nearest" does.
+    expect(nearestScrollTop(1000, port, { top: -500, bottom: 600 })).toBe(900);
   });
 });
 
@@ -127,43 +137,75 @@ describe("no ancestor of the app shell scrolls", () => {
 
   it("clips the document, so a wheel at the end of a pane cannot scroll it", () => {
     const css = read("app/globals.css");
-    expect(css).toMatch(/html,\s*body\s*\{\s*overflow:\s*clip;\s*\}/);
+    const blocks = [...css.matchAll(/(?:^|\n)html,\s*body\s*\{([^}]*)\}/g)].map((m) => m[1]);
+    expect(blocks.some((b) => /(^|[\s;])overflow:\s*clip\s*(;|$)/.test(b))).toBe(true);
   });
 
-  it("positions and clips every shell root", () => {
+  it("positions and clips every shell root, one window tall", () => {
     const shell = read("components/AppShell.tsx");
-    const roots = [...shell.matchAll(/<div data-app-shell="" className=(\{[^}]*\}|"[^"]*")/g)].map((m) => m[1]);
+    const roots = [...shell.matchAll(/data-app-shell=""\s+className=(\{[^}]*\}|"[^"]*")/g)].map((m) => m[1]);
     // The desktop root and the phone root.
     expect(roots).toHaveLength(2);
     for (const root of roots) {
-      expect(root).not.toMatch(/overflow-hidden/);
       // The class strings, not the `"full"` of the frame test.
-      const classes = (root.match(/"[^"]*"/g) ?? []).filter((s) => /\bflex\b/.test(s));
+      const classes = quoted(root).filter((c) => tokens(c).has("flex"));
       expect(classes.length).toBeGreaterThan(0);
       for (const cls of classes) {
-        expect(cls).toMatch(/\brelative\b/);
-        expect(cls).toMatch(/\boverflow-clip\b/);
+        expect([...tokens(cls)]).toEqual(expect.arrayContaining(["relative", "overflow-clip"]));
+        expect(tokens(cls).has("overflow-hidden")).toBe(false);
       }
     }
+    // The desktop root and the chromeless main follow the iOS toolbar.
+    const desktop = quoted(roots[0]).filter((c) => tokens(c).has("flex"));
+    for (const cls of desktop) expect(tokens(cls).has("h-dvh")).toBe(true);
+    const chromeless = shell.match(/<main className="([^"]*)">\{children\}<\/main>/);
+    expect(tokens(chromeless?.[1] ?? "").has("h-dvh")).toBe(true);
   });
 
   it("clips the email layout and the reading pane", () => {
-    expect(read("app/email/page.tsx")).toContain('<div className="flex h-full w-full bg-background overflow-clip select-none">');
-    expect(read("app/email/components/EmailDetail.tsx")).toContain('<div className="flex flex-col h-full overflow-clip">');
+    const page = classNames(read("app/email/page.tsx")).filter((c) =>
+      ["h-full", "w-full", "select-none"].every((t) => tokens(c).has(t)));
+    expect(page).toHaveLength(1);
+    expect(tokens(page[0]).has("overflow-clip")).toBe(true);
+    const detail = read("app/email/components/EmailDetail.tsx");
+    const root = detail.match(/<div className="([^"]*)">\s*\{\/\* ── Main toolbar/);
+    expect(tokens(root?.[1] ?? "").has("overflow-clip")).toBe(true);
   });
 
-  it("keeps a wheel in the thread and in the draft", () => {
+  it("holds a wheel in the thread, and lets the draft pass it on", () => {
     const detail = read("app/email/components/EmailDetail.tsx");
     const thread = detail.match(/data-email-thread=""\s+className="([^"]*)"/);
-    expect(thread?.[1]).toMatch(/\boverflow-y-auto\b/);
-    expect(thread?.[1]).toMatch(/\boverscroll-contain\b/);
+    expect([...tokens(thread?.[1] ?? "")]).toEqual(expect.arrayContaining(["overflow-y-auto", "overscroll-contain"]));
+    // Reviewer P2: on a short window the member scrolls past the end of the
+    // draft to the AI bar and Send, so the draft must not hold the wheel.
     const draft = detail.match(/placeholder=\{`Write your[\s\S]*?className="([^"]*)"/);
-    expect(draft?.[1]).toMatch(/\boverscroll-contain\b/);
+    expect(draft).not.toBeNull();
+    expect(tokens(draft?.[1] ?? "").has("overscroll-contain")).toBe(false);
   });
 
   it("holds the sr-only summary of DraftAssistant inside the composer", () => {
     const assistant = read("app/email/components/DraftAssistant.tsx");
-    expect(assistant).toContain('<span className="sr-only">');
-    expect(assistant).toMatch(/return \(\s*<div className="relative border-t border-border/);
+    expect(classNames(assistant)).toContain("sr-only");
+    // The panel root is the one with the top border and the primary tint.
+    const roots = [...assistant.matchAll(/return \(\s*<div className="([^"]*)"/g)]
+      .map((m) => m[1])
+      .filter((c) => tokens(c).has("border-t"));
+    expect(roots).toHaveLength(1);
+    expect(tokens(roots[0]).has("relative")).toBe(true);
   });
 });
+
+/** The class tokens of one class string. Order and spacing do not count. */
+function tokens(cls: string): Set<string> {
+  return new Set(cls.split(/\s+/).filter(Boolean));
+}
+
+/** Each double-quoted string in a JSX `className` expression. */
+function quoted(expr: string): string[] {
+  return [...expr.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+}
+
+/** Each literal `className="…"` in a source file. */
+function classNames(src: string): string[] {
+  return [...src.matchAll(/className="([^"]*)"/g)].map((m) => m[1]);
+}
