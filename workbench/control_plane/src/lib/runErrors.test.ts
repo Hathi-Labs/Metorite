@@ -18,6 +18,7 @@ import {
   ChatRunError,
   RUN_ERROR_WORDS,
   codeForStatus,
+  noticeBody,
   parseStoredRunError,
   runErrorView,
   type RunErrorCode,
@@ -57,7 +58,8 @@ describe("the code maps to the product's words", () => {
   it.each(Object.keys(RUN_ERROR_WORDS) as RunErrorCode[])("%s draws its own words", (code) => {
     const html = render(view(code));
     expect(html).toContain(RUN_ERROR_WORDS[code].title);
-    expect(html).toContain(RUN_ERROR_WORDS[code].body.slice(0, 30));
+    // The body as drawn: a placeholder such as `{limit}` is filled in.
+    expect(html).toContain(noticeBody(RUN_ERROR_WORDS[code], "").slice(0, 30));
   });
 
   it("no word names a class, a stack or a shell command", () => {

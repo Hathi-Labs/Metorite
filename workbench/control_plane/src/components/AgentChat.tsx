@@ -500,6 +500,10 @@ export default function AgentChat({
       ),
     [sessionId],
   );
+  // The composer is declared below the hook, so the run-cap restore reaches
+  // it through this ref (WS-51 D-3).
+  const restoreCappedRef = useRef<(text: string) => void>(() => {});
+  const restoreCappedText = useCallback((text: string) => restoreCappedRef.current(text), []);
   const {
     messages, isLoading, error, sendMessage, stopGeneration, setMessages, recovering, runStatus,
     outage, retryHeld,
@@ -514,6 +518,9 @@ export default function AgentChat({
     // the member's words (`tier_policy.turn_kind`).
     thinkMode: sentThinkMode(modelPlan.covered, thinkMode),
     onArtifact,
+    // WS-51 D-3: the run cap refused the send. The words come back to the
+    // composer, unless the member already typed something new.
+    onRunCapped: restoreCappedText,
     onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
@@ -619,7 +626,10 @@ export default function AgentChat({
     const settled = messages.filter(
       (m) =>
         (!m.streaming || m.content.trim().length > 0) &&
-        !(m.role === "system" && m.content.startsWith("__ERROR__")),
+        !(m.role === "system" && m.content.startsWith("__ERROR__")) &&
+        // A turn the server has not answered yet (WS-51 D-3). A send that
+        // the run cap refuses must leave no row.
+        !m.awaitingServer,
     );
     if (settled.length === 0) return;
     const toSave: PersistedMessage[] = settled.map((m) => ({
@@ -742,6 +752,14 @@ export default function AgentChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingInput]);
   /* eslint-enable react-hooks/set-state-in-effect */
+  // WS-51 D-3: a send the run cap refused gives its words back. Text the
+  // member typed since then wins, so nothing they wrote is lost.
+  useEffect(() => {
+    restoreCappedRef.current = (text: string) => {
+      setInput((prev) => (prev.trim() ? prev : text));
+      inputRef.current?.focus();
+    };
+  }, []);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [statuses, setStatuses] = useState<IntegrationStatus[]>(externalStatuses ?? []);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);

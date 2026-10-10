@@ -567,6 +567,11 @@ async def touch_active(thread_id: str) -> None:
 
 LIVE_RUNS_NAMESPACE = "liveruns"
 LIVE_RUNS_TTL_SECONDS = 2 * STREAM_TTL_SECONDS
+#: The run cap's reservations (WS-51 D-3, ``orchestrator.run_cap``):
+#: ``cc:<org>:runslots``, thread id -> ``{actor, at}``. A run that registers
+#: in the live-run index drops its reservation, because the index entry now
+#: holds its slot.
+RUN_SLOTS_NAMESPACE = "runslots"
 
 
 def _live_runs_key(organization_id: str):
@@ -605,7 +610,10 @@ async def register_live_run(
     try:
         from datetime import UTC, datetime
 
-        from acb_common.tenant_redis import organization_scope  # noqa: PLC0415
+        from acb_common.tenant_redis import (  # noqa: PLC0415
+            TenantKey,
+            organization_scope,
+        )
 
         value = json.dumps({
             "actor": (actor or "").strip().lower(),
@@ -617,9 +625,26 @@ async def register_live_run(
             k = _live_runs_key(organization_id)
             await r.hset(k, thread_id, value)
             await r.expire(k, LIVE_RUNS_TTL_SECONDS)
+            # The run cap's reservation for this thread is done: the entry
+            # above holds the slot now (orchestrator.run_cap).
+            await r.hdel(TenantKey(organization_id, RUN_SLOTS_NAMESPACE), thread_id)
     except Exception:  # noqa: BLE001 — the index is advisory, never a blocker
         _log.warning("stream_relay.register_live_run_failed",
                      thread_id=thread_id[:12])
+
+
+async def drop_run_slot(organization_id: str | None, thread_id: str) -> None:
+    """Remove the run cap's reservation for *thread_id*. Best-effort."""
+    if not organization_id or not thread_id:
+        return
+    try:
+        from acb_common.tenant_redis import TenantKey, organization_scope  # noqa: PLC0415
+
+        with organization_scope(organization_id):
+            r = await _tenant_client()
+            await r.hdel(TenantKey(organization_id, RUN_SLOTS_NAMESPACE), thread_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("stream_relay.drop_run_slot_failed", thread_id=thread_id[:12])
 
 
 async def unregister_live_run(

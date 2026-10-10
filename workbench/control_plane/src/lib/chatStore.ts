@@ -93,6 +93,11 @@ export interface ChatMessage {
    *  updates, or steered into a run that has not taken it. A repeat of the
    *  same words collapses into it (`lib/chatRecovery.ts`). Never saved. */
   pendingDelivery?: boolean;
+  /** A new turn whose send the server has not answered yet, on the path where
+   *  the gateway saves the turn itself at run start (WS-51 S4). The chat does
+   *  not save it until the answer comes, so a send that the run cap refuses
+   *  (WS-51 D-3) leaves no row. Cleared on every other answer. */
+  awaitingServer?: boolean;
 }
 
 // ── Session state ────────────────────────────────────────────────────────────

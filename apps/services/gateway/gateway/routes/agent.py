@@ -2493,6 +2493,36 @@ async def run_agent_stream_endpoint(
     run_id = req.run_id or str(uuid.uuid4())
     user_id: str = getattr(user, "email", "") or "anonymous"
 
+    # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ───────────────────
+    # At most CHAT_MAX_RUNS_PER_MEMBER live runs per member, and no org cap.
+    # A steer returned above, so it never counts. This runs before the memory
+    # read, the Graphiti episode, the supersede and the mint, so a refused run
+    # saves no prompt, files no memory, and mints no row. The member and the
+    # org come from the session. orchestrator/run_cap.py holds the rules.
+    _cap_thread = req.thread_id or f"{agent_name}:{run_id}"
+    _cap_member = _session_member(user)
+    from orchestrator.run_cap import (  # noqa: PLC0415
+        admit_member_run,
+        release_member_slot,
+    )
+    _admission = await admit_member_run(
+        organization_id=_room_org, member=_cap_member, thread_id=_cap_thread,
+    )
+    if not _admission.admitted:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": "too_many_runs",
+                "limit": _admission.limit,
+                "running": list(_admission.running),
+            },
+        )
+
+    async def _release_cap_slot() -> None:
+        await release_member_slot(
+            organization_id=_room_org, thread_id=_cap_thread,
+        )
+
     # ── Set user + agent context for memory tools ─────────────────────────
     # user_id scopes THIS user's private memory (remember/save_memory); the
     # agent name scopes the agent's cross-user memory (recall_agent/…). Org
@@ -2760,7 +2790,12 @@ async def run_agent_stream_endpoint(
         )
 
     _actor = (getattr(user, "email", "") or "").strip()
-    await _refuse_if_another_run_is_active(thread_id, _actor)
+    try:
+        await _refuse_if_another_run_is_active(thread_id, _actor)
+    except HTTPException:
+        # The run will not start, so its cap reservation goes too.
+        await _release_cap_slot()
+        raise
 
     # Edit, step 3: every refusal is behind us, so the old turn and its
     # replies go now, in one locked transaction that decides again. The note
@@ -2778,6 +2813,7 @@ async def run_agent_stream_endpoint(
                 organization_id=_room_org,
             )
         except _EditRefused as _refused:
+            await _release_cap_slot()
             raise HTTPException(
                 status_code=_refused.status, detail=_refused.detail(),
             ) from None
@@ -2873,6 +2909,7 @@ async def run_agent_stream_endpoint(
                 "agent.stream_supersede_refused",
                 agent=agent_name, thread_id=thread_id[:12],
             )
+            await _release_cap_slot()
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
                 "message": (
