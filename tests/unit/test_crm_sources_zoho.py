@@ -18,6 +18,7 @@ The acceptance of the slice, in order:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -30,6 +31,7 @@ import pytest
 import structlog
 from gateway.crm_sources import (
     BudgetExhausted,
+    CrmSource,
     NeedsReconnect,
     OAuthClientConfig,
     RateLimited,
@@ -633,6 +635,11 @@ async def test_users_become_source_records() -> None:
 
 
 # ── The seam ────────────────────────────────────────────────────────────────
+
+
+def test_the_protocol_exposes_the_current_credential() -> None:
+    """The engine reads it after a call, to store a token the adapter refreshed."""
+    assert isinstance(inspect.getattr_static(CrmSource, "credential"), property)
 
 
 def test_the_registry_has_one_line_for_zoho() -> None:

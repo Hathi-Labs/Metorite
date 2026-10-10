@@ -9,8 +9,10 @@ Two rules hold this seam:
 * **A credential comes in through the constructor.** No file under
   ``crm_sources`` reads the settings, the environment or a file on disk. The
   fence is ``tests/unit/test_crm_sources_no_global_creds.py``.
-* **An adapter returns a credential and never stores one.** A refresh gives
-  back a new :class:`SourceCredential`, and the caller decides where it goes
+* **An adapter never stores a credential.** It keeps the current one in
+  memory and exposes it as :attr:`CrmSource.credential`. An adapter can
+  refresh the token by itself in the middle of a read, so after each call the
+  caller reads ``credential`` and stores it when it changed
   (``crm_connections``, CRM-Z2).
 
 The shapes here carry raw provider fields. Mapping them to canonical columns
@@ -152,6 +154,11 @@ class CrmSource(Protocol):
     """
 
     provider: str
+
+    # The current credential. A refresh, explicit or automatic, replaces it,
+    # and the caller stores the new one. ``None`` before a consent.
+    @property
+    def credential(self) -> SourceCredential | None: ...
 
     # 1. Start the consent flow and finish it.
     def consent_url(self, *, scopes: Sequence[str], state: str) -> str: ...
