@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger
+
 from acb_skills import whatsapp_render as render
 
 _log = get_logger(__name__)
