@@ -1,47 +1,217 @@
 "use client";
 
 /**
- * WelcomeDialog — the first-run moment after creating an organization.
+ * WelcomeDialog — the first-run moment, and the first sign-in question.
  *
- * CP-2c onboarding UX (owner directive 2026-08-24): the signup flow's last
- * step is landing INSIDE the app, and that landing should say two things out
- * loud — "your organization is ready, you are its owner" and "here is where
- * you add your team" — instead of dropping the founder onto a landing page
- * with no narration.
+ * Two jobs, in ONE dialog, so a member never sees two in a row:
  *
- * Armed by `?welcome=new-org`, which `SignUpForm` appends to its post-create
- * redirect. Dismissing strips the query with `router.replace`, so a reload,
- * a share of the URL, or the back button cannot re-summon it — the flag
- * lives in the URL for exactly one render on purpose (no localStorage: a
- * second founder on a shared machine must still get their own welcome).
+ * 1. **The question** (NS-7, `navigation_shell.md` §8.4). "What will you do
+ *    most here?", with six answers and "Skip for now". The answer picks a
+ *    preset (`presets.ts`), which arranges the sidebar's "My apps", My Day's
+ *    cards and the command bar's jobs. It changes the layout and nothing else.
+ *    Every member is asked on their first visit, invited members too: the
+ *    trigger is a layout the server holds as "never asked" (`answered` null).
+ *    "Skip for now" is stored as a choice, so nobody is asked twice. "Change
+ *    my layout" in the account menu asks again (`CHANGE_LAYOUT`).
+ * 2. **The founder's welcome** (CP-2c, owner directive 2026-08-24). Armed by
+ *    `?welcome=new-org`, which `SignUpForm` appends to its post-create
+ *    redirect. It says "your organization is ready" and "here is where you
+ *    add your team". With the question on, it is the step after the answer.
  *
- * Renders through the ONE Modal primitive (`components/ui/Modal`), no local
- * chrome. `useSearchParams` requires a Suspense boundary at build; the
- * default export carries it so AppShell can mount this bare.
+ * ⚠️ A read that fails asks nothing. "Never asked" is a fact only the server
+ * knows, and asking on a fault would ask a member who already answered.
+ *
+ * With the shell nav off (`shellNavOn`), only the founder's welcome exists,
+ * exactly as before NS-7.
+ *
+ * Dismissing the welcome strips the query with `router.replace`, so a reload,
+ * a share of the URL or the back button cannot summon it again (no
+ * localStorage: a second founder on a shared machine still gets their own).
+ *
+ * Renders through the ONE Modal primitive (`components/ui/Modal`).
+ * `useSearchParams` requires a Suspense boundary at build. The default export
+ * carries it so AppShell can mount this bare.
  */
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import { useAccess } from "@/components/AccessProvider";
+import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import { visibleSections } from "@/lib/nav";
+import { ANSWERS, EMPTY_SHELL, QUESTION, pinnedPanes, presetById, type PresetId } from "@/lib/shell/presets";
+import { shellNavOn } from "@/lib/shell/shellNav";
+import { CHANGE_LAYOUT, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export const WELCOME_PARAM = "welcome";
 export const WELCOME_NEW_ORG = "new-org";
+
+/** "Projects, Approvals and Chat". */
+function listWords(words: readonly string[]): string {
+  if (words.length <= 1) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+function InviteBody({ onDone }: { onDone: () => void }) {
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <p className="text-sm text-muted-foreground">
+        Working with a team? Invite them from{" "}
+        <span className="font-medium text-foreground">Settings → Organization</span>{" "}
+        — each teammate gets an email, signs in with their own address, and lands
+        straight in your workspace.
+      </p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+        <Button variant="secondary" onClick={onDone}>
+          Explore on my own first
+        </Button>
+        <Link href="/settings/organization" onClick={onDone}>
+          <Button className="w-full">Invite my team</Button>
+        </Link>
+      </div>
+    </div>
+  );
+}
 
 function WelcomeDialogInner() {
   const router = useRouter();
   const pathname = usePathname() ?? "/";
   const params = useSearchParams();
-  const open = params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
+  const newOrg = params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
+  // Read once, as the sidebar reads it: the dev override must not flip.
+  const [navOn] = useState(() => shellNavOn());
+  const shell = useShellPrefs();
+  const { access, loading } = useAccess();
+  const sections = visibleSections(loading ? null : access.features, access.is_admin);
 
-  const dismiss = () => router.replace(pathname);
+  // ── When the question shows ─────────────────────────────────────────────
+  // `asking` latches when the server says "never asked". The latch matters:
+  // an answer shows at once (`saveShellPrefs` is optimistic), and the live
+  // value then reads "answered" while the dialog is still saying thank you.
+  const neverAsked = navOn && shell.enabled && shell.stored !== undefined && shell.stored.answered === null;
+  const [asking, setAsking] = useState(false);
+  const [reopened, setReopened] = useState(false);
+  const [handled, setHandled] = useState(false);
+  if (neverAsked && !asking && !handled) setAsking(true);
+  const [step, setStep] = useState<"ask" | "invite">("ask");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // "Change my layout" in the account menu asks again.
+  useEffect(() => {
+    const onChange = () => {
+      setError(null);
+      setStep("ask");
+      setReopened(true);
+    };
+    window.addEventListener(CHANGE_LAYOUT, onChange);
+    return () => window.removeEventListener(CHANGE_LAYOUT, onChange);
+  }, []);
+
+  const questionOpen = navOn && (asking || reopened) && step === "ask";
+  // The founder's welcome: after the question, or alone when there is none.
+  // It waits for the layout read, or it would show first and then give way
+  // to the question it should follow.
+  const inviteOpen =
+    newOrg && !questionOpen && !(navOn && shell.loading) && (step === "invite" || !(asking || reopened));
+
+  const close = () => {
+    setAsking(false);
+    setReopened(false);
+    setHandled(true);
+    setStep("ask");
+    setError(null);
+    if (newOrg) router.replace(pathname);
+  };
+  const next = () => (newOrg ? setStep("invite") : close());
+
+  const save = async (value: Parameters<typeof saveShellPrefs>[0]) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await saveShellPrefs(value);
+      next();
+    } catch {
+      setError("Your answer was not saved. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const answer = (preset: PresetId) =>
+    void save({ ...EMPTY_SHELL, preset, answered: "answered" });
+  // "Skip for now" is a choice, stored, so the member is not asked again. A
+  // pin the member set before keeps its place.
+  const skip = () => void save({ ...EMPTY_SHELL, ...shell.stored, answered: "skipped" });
+  // Asked again from the menu, the way out keeps the layout as it is.
+  const dismiss = () => (reopened && !asking ? close() : skip());
+
+  const current = reopened ? shell.layout.preset.id : null;
+
+  if (questionOpen) {
+    return (
+      <Modal
+        open
+        onClose={saving ? () => {} : dismiss}
+        title={QUESTION}
+        description={
+          newOrg
+            ? "Your organization is ready, and you are its owner. Pick the closest answer, and Metorite arranges your sidebar and My Day for it."
+            : "Pick the closest answer, and Metorite arranges your sidebar and My Day for it. It changes the layout only. You can change it later from your account menu."
+        }
+        icon="Sparkles"
+        size="md"
+      >
+        <div className="flex flex-col gap-3 p-4" data-testid="layout-question">
+          <ul className="flex flex-col gap-2">
+            {ANSWERS.map((a) => {
+              const preset = presetById(a.preset)!;
+              const names = pinnedPanes(preset.pins, sections).map((p) => p.label);
+              return (
+                <li key={a.preset}>
+                  <Button
+                    variant="secondary"
+                    size="none"
+                    layout="flex items-center"
+                    selected={current === a.preset}
+                    disabled={saving}
+                    onClick={() => answer(a.preset)}
+                    className="w-full gap-3 px-3 py-2.5 text-left"
+                    data-answer={a.preset}
+                  >
+                    <Icon name={a.icon} size={16} className="shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium text-foreground">{a.label}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {names.length > 0 ? `Pins ${listWords(names)}` : "Arranges My Day for this work"}
+                      </span>
+                    </span>
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+          {error && (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button variant="ghost" disabled={saving} onClick={dismiss}>
+              {reopened && !asking ? "Keep my layout" : "Skip for now"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
-      open={open}
-      onClose={dismiss}
+      open={inviteOpen}
+      onClose={close}
       title="Your organization is ready"
       description="You're signed in as its owner — everything you see here is yours to set up."
       icon="Sparkles"
@@ -50,24 +220,7 @@ function WelcomeDialogInner() {
       {/* The Modal primitive renders children bare — every consumer pads its
           own body (owner report 2026-08-24: this one didn't, and the text sat
           flush against the dialog edges). */}
-      <div className="flex flex-col gap-4 p-4">
-        <p className="text-sm text-muted-foreground">
-          Working with a team? Invite them from{" "}
-          <span className="font-medium text-foreground">
-            Settings → Organization
-          </span>{" "}
-          — each teammate gets an email, signs in with their own address, and
-          lands straight in your workspace.
-        </p>
-        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-          <Button variant="secondary" onClick={dismiss}>
-            Explore on my own first
-          </Button>
-          <Link href="/settings/organization" onClick={dismiss}>
-            <Button className="w-full">Invite my team</Button>
-          </Link>
-        </div>
-      </div>
+      <InviteBody onDone={close} />
     </Modal>
   );
 }

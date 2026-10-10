@@ -57,6 +57,7 @@ import {
   shellSidebar,
 } from "@/lib/shell/shellNav";
 import { shouldPollWorkspace } from "@/lib/access";
+import { useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
@@ -413,7 +414,11 @@ function MobileBottomNavInner({
   // because it swaps the whole page; a label here does not.
   const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
-  const drawerSections = shellNav ? shellSidebar(navSections) : navSections;
+  // The member's pins (NS-7), the same "My apps" as the desktop sidebar.
+  const shell = useShellPrefs();
+  const drawerSections = shellNav
+    ? shellSidebar(navSections, shell.loading ? undefined : shell.layout.pins)
+    : navSections;
   // The run badge (WS-51 S1), from the one shared poller. Each drawer link
   // shows its app's count. The bottom bar shows the total on every page: on
   // the Chats tab on /chat, and on the Menu tab everywhere else, because the

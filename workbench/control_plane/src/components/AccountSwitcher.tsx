@@ -35,6 +35,7 @@ import {
   type OtherAccount,
 } from "@/lib/accountSwitch";
 import type { AccountLink } from "@/lib/shell/shellNav";
+import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
 
 /**
  * The accounts this browser holds. `withOrgs` asks for each account's
@@ -184,6 +185,20 @@ function AccountMenu({
               {l.label}
             </Link>
           ))}
+          {/* NS-7: ask the first sign-in question again (§8.4 rule 3). */}
+          <Button
+            variant="ghost"
+            size="none"
+            layout="flex items-center"
+            icon="LayoutTemplate"
+            onClick={() => {
+              onNavigate?.();
+              window.dispatchEvent(new CustomEvent(CHANGE_LAYOUT));
+            }}
+            className="w-full gap-3 px-3 py-2 text-[13px]"
+          >
+            Change my layout
+          </Button>
         </nav>
       )}
 
@@ -559,6 +574,20 @@ export function DrawerAccountFoot({
           {l.label}
         </Link>
       ))}
+      {/* NS-7: the shell nav's rows carry "Change my layout" (§8.4 rule 3). */}
+      {you && (
+        <button
+          type="button"
+          onClick={() => {
+            onNavigate?.();
+            window.dispatchEvent(new CustomEvent(CHANGE_LAYOUT));
+          }}
+          className={row}
+        >
+          <Icon name="LayoutTemplate" size={16} className="shrink-0" />
+          Change my layout
+        </button>
+      )}
       {children}
       <button type="button" onClick={() => void signOutAll()} className={row}>
         <Icon name="LogOut" size={16} className="shrink-0" />

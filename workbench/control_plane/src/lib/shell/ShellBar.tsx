@@ -48,6 +48,7 @@ import { ActivityControl } from "./ActivityControl";
 import { CommandBar } from "./CommandBar";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
 import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
+import { useShellPrefs } from "./shellPrefs";
 
 export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
 
@@ -115,6 +116,9 @@ export function ShellFrame({
   );
   const here = contextPane(pathname, panes);
   const { data: session } = useSession();
+  // The member's preset orders the jobs of the empty bar (NS-7). Off, the
+  // shell nav reads nothing and the bar keeps its own order.
+  const shell = useShellPrefs();
 
   return (
     <>
@@ -135,6 +139,7 @@ export function ShellFrame({
         panes={panes}
         here={here}
         email={session?.user?.email ?? null}
+        jobOrder={shell.enabled ? shell.layout.jobs : undefined}
       />
     </>
   );

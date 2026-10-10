@@ -137,6 +137,22 @@ describe("Needs you", () => {
     expect(shownNeeds([row("a", "overdue")], false).hidden).toBe(0);
   });
 
+  // NS-7: the Sales manager's preset reads replies first (§8.1).
+  it("puts the preset's first group in front, and cuts the feed in that order", () => {
+    const items = [
+      ...Array.from({ length: 6 }, (_, i) => row(`o${i}`, "overdue")),
+      row("r1", "needs_reply"),
+      row("r2", "needs_reply"),
+    ];
+    const cut = shownNeeds(items, false, 7, "needs_reply");
+    expect(cut.groups.map((g) => g.kind)).toEqual(["needs_reply", "overdue"]);
+    expect(cut.groups[0].items.map((i) => i.id)).toEqual(["r1", "r2"]);
+    expect(cut.hidden).toBe(1);
+    // A kind the feed does not carry yet changes nothing.
+    expect(shownNeeds(items, false, 7, "approval").groups.map((g) => g.kind)).toEqual(["overdue", "needs_reply"]);
+    expect(groupNeeds(items, "unknown").map((g) => g.kind)).toEqual(["overdue", "needs_reply"]);
+  });
+
   it("says when a row is due, and how long ago anything else came", () => {
     const now = Date.parse("2026-10-09T12:00:00Z");
     expect(rowTime({ kind: "overdue", at: "2026-10-07T12:00:00Z" }, now)).toBe("Due 2d ago");

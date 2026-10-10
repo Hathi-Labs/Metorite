@@ -160,6 +160,30 @@ describe("score and rank", () => {
   });
 });
 
+describe("the empty bar follows the member's preset (NS-7)", () => {
+  const items = buildItems(HELD);
+  const jobs = (order?: string[], context: string | null = null) =>
+    rank({ items, query: "", context, recent: [], order }).filter((i) => i.group === "do").map((i) => i.key);
+
+  it("puts the preset's jobs first, in its order", () => {
+    const first = jobs(["find-person", "compose"]);
+    expect(first.slice(0, 2)).toEqual(["do:find-person", "do:compose"]);
+  });
+
+  it("keeps every other held job after them", () => {
+    expect([...jobs(["compose"])].sort()).toEqual([...jobs()].sort());
+  });
+
+  it("still puts the app the member is in before the preset", () => {
+    expect(jobs(["compose"], "/tasks")[0]).toBe("do:capture");
+  });
+
+  it("changes nothing once the member types", () => {
+    const typed = (order?: string[]) => rank({ items, query: "email", context: null, recent: [], order }).map((i) => i.key);
+    expect(typed(["find-person"])).toEqual(typed());
+  });
+});
+
 describe("recent items, per member", () => {
   const store = new Map<string, string>();
   beforeEach(() => {

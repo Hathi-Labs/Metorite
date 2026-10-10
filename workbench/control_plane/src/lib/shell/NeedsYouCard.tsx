@@ -117,11 +117,14 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
 export default function NeedsYouCard({
   needs,
   now,
+  first,
   className = "",
 }: {
   needs: NeedsYou;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
+  /** The group the member's preset puts first (NS-7), such as replies. */
+  first?: string;
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -145,7 +148,7 @@ export default function NeedsYouCard({
       </div>
     );
   } else {
-    const { groups, hidden } = shownNeeds(needs.items, expanded);
+    const { groups, hidden } = shownNeeds(needs.items, expanded, undefined, first);
     body = (
       <div className="flex flex-col gap-2">
         {groups.map((group) => (
