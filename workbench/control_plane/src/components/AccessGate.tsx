@@ -17,8 +17,22 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
 import { canSeePath, isOrgless } from "@/lib/access";
+import OrgLinkGate from "@/components/OrgLinkGate";
 
+/**
+ * An org-aware link (`?org=`) is settled FIRST, before the org-less arm and
+ * before the route check: the link may belong to another signed-in account,
+ * and that account may reach what this one cannot (`OrgLinkGate.tsx`).
+ */
 export default function AccessGate({ children }: { children: React.ReactNode }) {
+  return (
+    <OrgLinkGate>
+      <RouteGate>{children}</RouteGate>
+    </OrgLinkGate>
+  );
+}
+
+function RouteGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const { access, loading, refresh } = useAccess();
 

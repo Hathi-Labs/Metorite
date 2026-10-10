@@ -2396,7 +2396,7 @@ Keeping the slug in the address bar (rewrite instead of redirect) · establishin
 session on a workspace host · per-tenant branding on any surface · the multi-org
 chooser (B6) · anything under `deploy/`.
 
-#### MT-1k · The workspace choice — one email, several organizations, chosen in UI · ◐ **MINTED 2026-08-24 (D51.3) — slice A BUILT (WS-35); B/C are the owner-noted later development**
+#### MT-1k · The workspace choice — one email, several organizations, chosen in UI · ◐ **MINTED 2026-08-24 (D51.3) — slice A BUILT (WS-35), A2 BUILT 2026-10-07, org-aware links BUILT 2026-10-10. B/C are the owner-noted later development**
 
 **The ask, verbatim (owner, 2026-08-24):** *"Since a user's email may belong to
 multiple organizations, provide a way to select and switch organizations during
@@ -2499,6 +2499,51 @@ vocabulary: the chooser lists organizations, never roles (D12).
   **Flag.** `ACCOUNT_SWITCHER_ENABLED=true` on the workbench, read at request
   time. Off, `/api/accounts` answers `enabled: false`, and the footer is
   unchanged.
+
+  **Org-aware links (BUILT 2026-10-10, owner).** Owner ask, 2026-10-10: a
+  link must open in the account it belongs to. The browser switches to that
+  account when it holds a session for it. When it holds none, the page says so.
+
+  **The rule.** A copied link carries `?org=<organization id>`. `?account=`
+  is not free, because Email reads it as a mailbox id. `OrgLinkGate`, at the
+  top of `AccessGate`, reads `org` before the page mounts. Then it does one
+  of these:
+
+  | The link names | The page does |
+  |---|---|
+  | No `org` | Nothing |
+  | A value that is not a UUID | It removes `org` and shows the page |
+  | The active account's org | It removes `org` and shows the page |
+  | The org of another signed-in account | It switches, then reloads the same path and query without `org` |
+  | An org of no signed-in account | It shows a notice: "Sign in to that account" or "Stay here" |
+  | Any org, with the switcher off | The same notice, with no stash |
+  | Any org, signed out | The proxy sends the WHOLE link, query too, to `/signin` |
+
+  "Sign in to that account" keeps the active account in a slot. Then it opens
+  `/signin` with `callbackUrl` set to the original link. The copy-link actions
+  of Projects and Tasks stamp `org` (`taskDeepLink`). An in-app href does not.
+
+  **Why it is safe.**
+
+  1. A link only CHOOSES among accounts that this browser already holds. It
+     never mints a session and never names an identity. The gateway binds the
+     tenant from the active session alone, so R11 is untouched.
+  2. The switch is the same-origin `POST /api/accounts/switch` of rule 2. The
+     proxy and a GET never switch, so a page on another site cannot switch a
+     member by a link or an image.
+  3. A switch and a sign-in land only on a same-origin relative path. One
+     `/` starts it, and `//`, a backslash or a control byte refuse it. Auth.js
+     keeps the `callbackUrl` on the origin as well.
+  4. With `?orgs=1`, `GET /api/accounts` also returns `organization_id` and
+     `organization_slug` for each account, read as that account. The id is
+     not a secret, because it only matches against accounts already held.
+
+  **Fences.** `orgLink.test.ts` (`org-link-decision`, the table above and the
+  safe paths). `accountSwitch.test.ts` (`switch-target-is-local`).
+  `app/api/accounts/route.test.ts` (`accounts-orgs-shape`). `proxy.test.ts`
+  (`proxy-callback-keeps-query`). `app/projects/lib/card.test.ts`
+  (`copied-link-names-org`). **Advisory:** no test renders `OrgLinkGate`
+  itself, because vitest in this tree runs in node.
 
 #### MT-1g · Blobs out of Postgres · 🟢 AGENT-SAFE
 **Owner:** §1.6 · **Anchor:** `71_agent_blob_store.sql:30` (`content BYTEA`)

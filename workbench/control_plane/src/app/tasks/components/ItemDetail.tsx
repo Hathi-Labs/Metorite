@@ -47,6 +47,7 @@ import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
 import { PromoteDialog } from "./PromoteDialog";
+import { useAccess } from "@/components/AccessProvider";
 
 // ── Two compositions, one under the lens (WS-39 S6e) ───────────────────────
 //
@@ -312,6 +313,8 @@ export function TaskDetail({
    *  Omitted → no ✕ is drawn (the overlay has its own). */
   onClose?: () => void;
 }) {
+  // A copied link names this organization, so it opens in the right account.
+  const orgId = useAccess().access.organization?.id ?? null;
   const projects = useTaskStore((s) => s.projects);
   const contexts = useTaskStore((s) => s.contexts);
   const people = useTaskStore((s) => s.people);
@@ -858,7 +861,7 @@ export function TaskDetail({
             // The link opens the task in Projects, the deep link the bell and
             // search already use. Only a live task has one: a demo row is
             // not in any project.
-            linkFor={lens ? () => taskDeepLink(item, window.location.origin) : undefined}
+            linkFor={lens ? () => taskDeepLink(item, window.location.origin, orgId) : undefined}
             chips={
               <>
                 {/* Status is changed through the status chip (disposition)

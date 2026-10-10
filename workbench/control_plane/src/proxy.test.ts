@@ -139,3 +139,23 @@ describe("proxy — the account switcher's slots end with the session (MT-1k A2,
     expect(posture.authCalls).toBe(0);
   });
 });
+
+describe("proxy — a signed-out link keeps its query (MT-1k, org-aware links)", () => {
+  // R7 fence `proxy-callback-keeps-query`. An org-aware link carries `?org=`
+  // and a record id in its query. A callback of the path alone signed the
+  // member in and then opened the wrong page.
+  it("sends the path AND the query to /signin as the callbackUrl", async () => {
+    const link = "/projects?task=t1&org=3f2a6c1e-9b7d-4e2a-8c1f-0a1b2c3d4e5f";
+    const res = await proxy(request(link));
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/signin");
+    expect(location.searchParams.get("callbackUrl")).toBe(link);
+  });
+
+  it("sends the path alone when the link has no query", async () => {
+    const res = await proxy(request("/projects"));
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("callbackUrl")).toBe("/projects");
+  });
+});

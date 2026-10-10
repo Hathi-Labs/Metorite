@@ -90,6 +90,7 @@ import { CardInput } from "./CardInput";
 import { QuickAdd } from "./QuickAdd";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
+import { useAccess } from "@/components/AccessProvider";
 
 const NOBODY: ReadonlySet<string> = new Set();
 
@@ -213,6 +214,8 @@ export function TaskBoard({
   onDrop,
   personLabels,
 }: Props) {
+  // A copied link names this organization, so it opens in the right account.
+  const orgId = useAccess().access.organization?.id ?? null;
   const [dragging, setDragging] = useState<TaskRow | null>(null);
   const [over, setOver] = useState<{ col: string; lane: string | null } | null>(
     null
@@ -531,7 +534,7 @@ export function TaskBoard({
       void (async () => {
         try {
           await navigator.clipboard.writeText(
-            taskDeepLink(task, window.location.origin)
+            taskDeepLink(task, window.location.origin, orgId)
           );
         } catch {
           // Clipboard can be unavailable (permissions, insecure context). The
