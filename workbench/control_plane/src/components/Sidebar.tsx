@@ -492,7 +492,7 @@ function NavSectionBlock({
   const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts, unreadCounts);
   if (collapsed) {
     return (
-      <div>
+      <div data-nav-section={section.id}>
         <div className="flex flex-col gap-1 p-2">
           {section.items.map((p) => (
             <NavLink
@@ -518,7 +518,7 @@ function NavSectionBlock({
     : section.items;
 
   return (
-    <div className="px-2 py-1.5">
+    <div className="px-2 py-1.5" data-nav-section={section.id}>
       {/* Section heading — click to fold/unfold */}
       <button
         onClick={onToggle}

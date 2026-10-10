@@ -31,10 +31,23 @@ export const SHELL_PREFS_PATH = "/api/auth/me/shell";
 /** Ask the first sign-in question again ("Change my layout", rule 3). */
 export const CHANGE_LAYOUT = "shell:change-layout";
 
+/**
+ * A body is a layout only when it says whether the member was asked. Any
+ * other body is not an answer, so it must never read as "never asked": that
+ * would ask a member who already answered. A proxy that answers every path
+ * with `{}` or `[]` is the case this guards.
+ */
+export function asLayout(body: unknown): StoredShell | null {
+  if (!body || typeof body !== "object" || Array.isArray(body) || !("answered" in body)) return null;
+  return { ...EMPTY_SHELL, ...(body as Partial<StoredShell>) };
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
-  return { ...EMPTY_SHELL, ...((await res.json()) as Partial<StoredShell>) };
+  const layout = asLayout(await res.json());
+  if (!layout) throw new Error("shell layout: not a layout");
+  return layout;
 }
 
 /**
@@ -51,7 +64,7 @@ export async function saveShellPrefs(next: StoredShell | null): Promise<StoredSh
       body: JSON.stringify(next),
     });
     if (!res.ok) throw new Error(`shell layout ${res.status}`);
-    const saved = { ...EMPTY_SHELL, ...((await res.json()) as Partial<StoredShell>) };
+    const saved = asLayout(await res.json()) ?? next ?? EMPTY_SHELL;
     put(SHELL_PREFS_PATH, saved);
     return saved;
   } catch (err) {
