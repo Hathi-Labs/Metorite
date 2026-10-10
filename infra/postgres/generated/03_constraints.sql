@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 151
+-- Tables in this phase: 152
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -62,6 +62,18 @@ ALTER TABLE agent_blob ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE agent_blob ADD CONSTRAINT agent_blob_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS agent_blob_org_idx ON agent_blob (organization_id);
+
+-- agent_connection
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM agent_connection WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: agent_connection still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE agent_connection ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE agent_connection ADD CONSTRAINT agent_connection_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS agent_connection_org_idx ON agent_connection (organization_id);
 
 -- agent_file_history
 DO $$

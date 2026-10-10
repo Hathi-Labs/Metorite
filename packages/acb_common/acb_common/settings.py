@@ -1117,6 +1117,30 @@ class Settings(BaseSettings):
     whatsapp_assistant_writes: bool = False
     whatsapp_assistant_writes_orgs: str = ""
 
+    # ── External agent access (WS-55 EA-1, D97) ─────────────────────────────
+    #
+    # An outside agent reaches Metorite over MCP with an opaque token (spec
+    # project-docs/specs/external_agent_access.md §5.5). `agent_access_enabled`
+    # is the kill switch, default OFF. EA-1 adds no HTTP surface, so nothing
+    # reads it yet. EA-2 makes every new route answer 404 while it is false.
+    #
+    # The lifetimes, in seconds. The one reader is `acb_auth.agent_tokens`.
+    # An access token lives one hour, a refresh token 30 days and an
+    # authorization code 60 seconds. A connection with no use for 90 days
+    # expires. A registered client that nobody uses expires after one day.
+    # There is no grace window on a refresh: two refreshes at once revoke the
+    # connection.
+    #
+    # `env_guard` refuses each `AGENT_*` name on each Integrations write, so
+    # only the env file of the box sets them. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_agent_connection_tokens.py.
+    agent_access_enabled: bool = False
+    agent_access_token_ttl_s: int = 3600
+    agent_refresh_token_ttl_s: int = 30 * 24 * 3600
+    agent_code_ttl_s: int = 60
+    agent_connection_idle_ttl_s: int = 90 * 24 * 3600
+    agent_client_unused_ttl_s: int = 24 * 3600
+
     # ── Token accessors ────────────────────────────────────────────────────
 
     @property
