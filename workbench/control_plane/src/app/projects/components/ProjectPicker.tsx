@@ -42,6 +42,7 @@ import { accentForSlot } from "@/lib/categorical";
 import { stepCursor } from "@/lib/cursor";
 
 import {
+  type PickRule,
   type PickerNode,
   ancestorIds,
   initialExpanded,
@@ -61,6 +62,8 @@ export interface PickerLeadRow {
   icon: React.ReactNode;
   /** Drawn quieter, for "leave it loose" rows. */
   muted?: boolean;
+  /** Why this row cannot be picked, as a tree row's refusal. Null when it can. */
+  refusal?: string | null;
 }
 
 /** A group of flat rows above the tree, with an optional heading and footer. */
@@ -75,6 +78,14 @@ export interface PickerLeadGroup {
 export interface ProjectPickerProps {
   /** The company tree, as `GET /projects/nodes` serves it. */
   roots: readonly ProjectNode[];
+  /**
+   * Why a node may not take what is being placed (`pickerTree.PickRule`).
+   * Default: the task rule, where a folder is refused. Keep it stable
+   * (`useCallback`): a new rule is a new tree, and re-seeds what is open.
+   */
+  rule?: PickRule;
+  /** A quiet word after a row's name, by id — "where it is now". */
+  markers?: Readonly<Record<string, string>>;
   /** The current pick: a node id, a lead row's value, or nothing. */
   value: string | null | undefined;
   onPick: (value: string) => void;
@@ -120,6 +131,8 @@ type Item =
 
 export function ProjectPicker({
   roots,
+  rule,
+  markers,
   value,
   onPick,
   suggestedId,
@@ -133,7 +146,7 @@ export function ProjectPicker({
   label,
   onEscape,
 }: ProjectPickerProps) {
-  const nodes = useMemo(() => pickerNodes(roots), [roots]);
+  const nodes = useMemo(() => pickerNodes(roots, rule), [roots, rule]);
   const [ownQuery, setOwnQuery] = useState("");
   const external = outsideQuery !== undefined && outsideQuery !== null;
   const query = external ? outsideQuery : ownQuery;
@@ -222,9 +235,32 @@ export function ProjectPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursor]);
 
+  // ⚠️ A refused row says WHY in one place, under the list, and only for the
+  // row the member reached for (owner, 2026-10-10). The reason on every row
+  // was the wall of text. Hiding refused rows would change the tree's shape,
+  // so they stay, muted, with the reason one click or one arrow away.
+  const [tried, setTried] = useState<string | null>(null);
+  const refusalOf = (item: Item | undefined) =>
+    !item
+      ? null
+      : item.kind === "lead"
+        ? item.row.refusal
+          ? { name: item.row.label, refusal: item.row.refusal }
+          : null
+        : item.node.refusal
+          ? { name: item.node.name, refusal: item.node.refusal }
+          : null;
+  const explained =
+    refusalOf(at >= 0 ? items[at] : undefined) ??
+    refusalOf(items.find((i) => i.key === tried));
+
   const choose = (item: Item) => {
-    if (item.kind === "lead") onPick(item.row.value);
-    else if (item.node.pickable) onPick(item.node.id);
+    const refused = refusalOf(item);
+    // A good pick answers the question the last refusal raised, so it goes.
+    setTried(refused ? item.key : null);
+    if (item.kind === "lead") {
+      if (!refused) onPick(item.row.value);
+    } else if (item.node.pickable) onPick(item.node.id);
     else if (item.node.hasChildren) toggle(item.node.id);
   };
 
@@ -318,9 +354,12 @@ export function ProjectPicker({
                   active={cursor === row.value}
                   selected={value === row.value}
                   muted={row.muted}
+                  refused={Boolean(row.refusal)}
+                  title={row.refusal ?? undefined}
                   icon={row.icon}
+                  marker={markers?.[row.value]}
                   suggested={value !== row.value && suggestedId === row.value}
-                  onClick={() => onPick(row.value)}
+                  onClick={() => choose({ kind: "lead", key: row.value, row })}
                 >
                   <span className="min-w-0 flex-1 truncate">{row.label}</span>
                 </Row>
@@ -343,7 +382,8 @@ export function ProjectPicker({
               id={optionId(n.id)}
               active={cursor === n.id}
               selected={value === n.id}
-              folder={!n.pickable}
+              refused={!n.pickable}
+              marker={markers?.[n.id]}
               depth={searching ? 0 : n.depth}
               level={searching ? 1 : n.depth + 1}
               expander={
@@ -365,7 +405,7 @@ export function ProjectPicker({
                 )
               }
               ariaExpanded={!searching && n.hasChildren ? open : undefined}
-              title={n.pickable ? undefined : "A folder holds projects, not tasks. Open it to pick one."}
+              title={n.refusal ?? undefined}
               icon={<NodeIcon node={n} open={open} />}
               onClick={() => choose(item)}
               suggested={value !== n.id && suggestedId === n.id}
@@ -392,6 +432,18 @@ export function ProjectPicker({
           <p className="px-2 py-1.5 text-[11px] text-muted-foreground">{emptyTree}</p>
         ) : null}
       </div>
+
+      {/* `role="status"`, so a keyboard member hears the reason the moment
+          the cursor reaches a refused row. */}
+      <p role="status" className="min-h-4 px-1 text-[11px] text-muted-foreground">
+        {explained ? (
+          <>
+            <Icon name="Info" className="mr-1 -mt-0.5 inline h-3 w-3" />
+            <span className="font-medium text-foreground">{explained.name}</span> cannot take
+            it. {explained.refusal}
+          </>
+        ) : null}
+      </p>
     </div>
   );
 }
@@ -456,9 +508,10 @@ function Row({
   active,
   selected,
   muted,
-  folder,
+  refused,
   depth = 0,
   level = 1,
+  marker,
   expander,
   ariaExpanded,
   suggested,
@@ -471,7 +524,10 @@ function Row({
   active: boolean;
   selected: boolean;
   muted?: boolean;
-  folder?: boolean;
+  /** Not pickable: drawn muted. A folder in the task picker, any refusal in another. */
+  refused?: boolean;
+  /** A quiet word after the name. */
+  marker?: string;
   depth?: number;
   /** `aria-level`, 1-based. The browse depth, or 1 for a flat row. */
   level?: number;
@@ -501,16 +557,21 @@ function Row({
         "tech-transition flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-1 text-left text-xs",
         selected
           ? "bg-primary/10 text-primary"
-          : folder || muted
+          : refused || muted
             ? "text-muted-foreground hover:bg-muted hover:text-foreground"
             : "text-foreground hover:bg-muted",
         active && !selected ? "bg-muted" : "",
         active ? "ring-1 ring-primary/40" : "",
       ].join(" ")}
     >
-      {expander ?? <span aria-hidden className="w-1 shrink-0" />}
+      {/* A flat row keeps the chevron's column, so its icon lines up with
+          the tree's icons below it. */}
+      {expander ?? <span aria-hidden className="w-5 shrink-0" />}
       {icon}
       {children}
+      {marker ? (
+        <span className="shrink-0 text-[10px] text-muted-foreground">{marker}</span>
+      ) : null}
       {suggested ? (
         <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">
           suggested

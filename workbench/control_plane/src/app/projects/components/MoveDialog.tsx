@@ -9,8 +9,15 @@
  * keyboard, and it is the accessible path the drag will sit on top of rather
  * than replace.
  *
- * ⚠️ **An illegal target is SHOWN, disabled, with its reason.** Two rejected
- * alternatives, and why:
+ * ## Drawn by `ProjectPicker` (owner, 2026-10-10)
+ *
+ * The owner found this list as hard to read as the task Move picker: every
+ * node of every space open, and a refusal printed beside each greyed row. It
+ * now draws the same picker — a search box over a tree whose spaces start
+ * closed, with the path to where the node lives now already open.
+ *
+ * ⚠️ **An illegal target is still SHOWN, muted, and still says why.** Two
+ * rejected alternatives, and why:
  *
  * - *Hide illegal targets.* The tree then changes shape depending on what you
  *   are moving, so the picker no longer looks like the tree you know. People
@@ -18,56 +25,26 @@
  * - *Offer everything and let the 422 explain.* That teaches the rule by
  *   error, one refusal at a time, after the dialog has already closed.
  *
- * Showing the row greyed with "A folder cannot hold another folder" beside it
- * teaches the grammar in place. `moveRefusal` in `lib/tree.ts` owns the rules
- * and mirrors `assert_node_grammar`; nothing here decides anything.
+ * What changed is WHERE the reason is said: once, under the list, for the row
+ * the member clicked or reached with the arrows, and in the row's tooltip. A
+ * search offers only the targets that can take the node. `moveRefusal` in
+ * `lib/tree.ts` owns the rules and mirrors `assert_node_grammar`; nothing here
+ * decides anything.
  */
+
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
-import { useMemo, useState } from "react";
 
 import type { ProjectRow } from "../lib/api";
-import {
-  LEVEL_ICONS,
-  type ProjectNode,
-  moveRefusal,
-  nodeKind,
-  nodeLevel,
-  pathTo,
-} from "../lib/tree";
+import { pathLabel, pickerNodes } from "../lib/pickerTree";
+import { type ProjectNode, moveRefusal, pathTo } from "../lib/tree";
+import { type PickerLeadGroup, ProjectPicker } from "./ProjectPicker";
 
-interface Row {
-  node: ProjectNode | null;
-  depth: number;
-  /** Null when this target is legal. */
-  refusal: string | null;
-}
-
-/**
- * Every target, in tree order, each with its verdict.
- *
- * The ROOT comes first as a real row — "move this out to the top level" is a
- * legitimate act, and without a row for it the only way to make a space is to
- * create one.
- */
-export function moveTargets(
-  roots: readonly ProjectNode[],
-  moving: string,
-): Row[] {
-  const out: Row[] = [
-    { node: null, depth: 0, refusal: moveRefusal(roots, moving, null) },
-  ];
-  const walk = (nodes: readonly ProjectNode[], depth: number) => {
-    for (const node of nodes) {
-      out.push({ node, depth, refusal: moveRefusal(roots, moving, node.id) });
-      walk(node.children ?? [], depth + 1);
-    }
-  };
-  walk(roots, 0);
-  return out;
-}
+/** The "Top level" row's value. A node id is a UUID, so it cannot collide. */
+const TOP_LEVEL = "__top_level__";
 
 export function MoveDialog({
   open,
@@ -85,11 +62,14 @@ export function MoveDialog({
   onMove: (parentId: string | null) => void;
 }) {
   const [chosen, setChosen] = useState<string | null | undefined>(undefined);
+  const searchRef = useRef<HTMLInputElement>(null);
 
-  const rows = useMemo(
-    () => moveTargets(roots, moving.id),
+  /** Why a node cannot take this one. Stable per node moved, so the tree is too. */
+  const rule = useCallback(
+    (node: ProjectNode) => moveRefusal(roots, moving.id, node.id),
     [roots, moving.id],
   );
+  const topRefusal = moveRefusal(roots, moving.id, null);
 
   /**
    * Where it is now, so the dialog can say so and refuse a no-op.
@@ -106,63 +86,62 @@ export function MoveDialog({
   const picked = chosen === undefined ? currentParent : chosen;
   const unchanged = picked === currentParent;
 
+  // The summary over the buttons names the destination by its full path,
+  // because the row picked may since have been closed or searched away.
+  const target = useMemo(
+    () => (picked ? (pickerNodes(roots).find((n) => n.id === picked) ?? null) : null),
+    [roots, picked],
+  );
+
+  const lead: PickerLeadGroup[] = [
+    {
+      key: "top",
+      rows: [
+        {
+          value: TOP_LEVEL,
+          label: "Top level",
+          icon: <Icon name="Boxes" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+          refusal: topRefusal,
+        },
+      ],
+    },
+  ];
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title={`Move ${moving.name}`}
-      description="Pick where it should live. Greyed rows say why they cannot take it."
+      description="Search, or open a space to find where it should live."
       icon="FolderInput"
+      initialFocus={searchRef}
     >
-      <div className="max-h-80 overflow-y-auto">
-        {rows.map((row) => {
-          const id = row.node?.id ?? null;
-          const legal = row.refusal === null;
-          const isCurrent = id === currentParent;
-          const selected = id === picked;
-          const label = row.node?.name ?? "Top level";
-          const icon = row.node
-            ? LEVEL_ICONS[
-                nodeLevel(nodeKind(row.node), 0) === "folder"
-                  ? "folder"
-                  : "space"
-              ]
-            : "Boxes";
-          return (
-            <button
-              key={id ?? "__root__"}
-              type="button"
-              disabled={!legal || busy}
-              onClick={() => setChosen(id)}
-              /* `title` carries the refusal for a pointer, and the text beside
-                 it carries the same words for everybody else. A tooltip alone
-                 would put the explanation somewhere a keyboard cannot reach. */
-              title={row.refusal ?? undefined}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${
-                selected
-                  ? "bg-primary/10 text-primary"
-                  : legal
-                    ? "text-foreground hover:bg-muted"
-                    : "cursor-not-allowed text-muted-foreground"
-              }`}
-              style={{ paddingLeft: `${row.depth * 14 + 8}px` }}
-            >
-              <Icon name={icon} className="h-3.5 w-3.5 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{label}</span>
-              {isCurrent ? (
-                <span className="shrink-0 text-[10px] text-muted-foreground">
-                  where it is now
-                </span>
-              ) : null}
-              {row.refusal ? (
-                <span className="shrink-0 text-[10px]">{row.refusal}</span>
-              ) : null}
-            </button>
-          );
-        })}
+      <div className="space-y-2 p-3 text-xs">
+        <ProjectPicker
+          roots={roots}
+          rule={rule}
+          lead={lead}
+          markers={{ [currentParent ?? TOP_LEVEL]: "where it is now" }}
+          value={picked ?? TOP_LEVEL}
+          inputRef={searchRef}
+          label={`Move ${moving.name} to`}
+          onPick={(next) => setChosen(next === TOP_LEVEL ? null : next)}
+        />
+        <p className="truncate text-muted-foreground">
+          {unchanged ? (
+            "Pick a new place for it."
+          ) : (
+            <>
+              Moves into{" "}
+              <span className="font-medium text-foreground">
+                {target ? pathLabel([...target.path, target.name]) : "the top level"}
+              </span>
+            </>
+          )}
+        </p>
       </div>
 
-      <div className="mt-3 flex justify-end gap-2">
+      <div className="flex justify-end gap-2 px-3 pb-3">
         <Button variant="secondary" size="sm" onClick={onClose} disabled={busy}>
           Cancel
         </Button>

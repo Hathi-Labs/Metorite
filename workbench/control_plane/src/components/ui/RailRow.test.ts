@@ -89,7 +89,8 @@ describe("the label", () => {
 describe("the row", () => {
   it("draws one indent step per level, with a guide when asked", () => {
     const html = draw({ depth: 3, guides: true });
-    expect(html.match(/w-3 shrink-0 self-stretch/g)).toHaveLength(3);
+    // 16 px a step, so the guide stands 8 px clear of the child's icon.
+    expect(html.match(/w-4 shrink-0 self-stretch/g)).toHaveLength(3);
     expect(html.match(/w-px bg-border/g)).toHaveLength(3);
     expect(draw({ depth: 2 }).match(/w-px bg-border/g)).toBeNull();
   });

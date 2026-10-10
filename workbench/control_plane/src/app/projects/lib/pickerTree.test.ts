@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { destinations } from "./destinations";
 import {
+  FOLDER_HOLDS_NO_TASKS,
   OPEN_ALL_BELOW,
   ancestorIds,
   initialExpanded,
@@ -79,6 +80,23 @@ describe("pickerNodes", () => {
     expect(byId("printing").level).toBe("folder");
     expect(byId("fdm").level).toBe("project");
     expect(byId("booth-fw").level).toBe("subproject");
+  });
+});
+
+describe("the pick rule", () => {
+  it("refuses a folder by default, in the words the task picker shows", () => {
+    expect(byId("printing").refusal).toBe(FOLDER_HOLDS_NO_TASKS);
+    expect(byId("fdm").refusal).toBeNull();
+  });
+
+  it("takes another rule whole, so a folder can take a project", () => {
+    // The project "Move to…" dialog's shape: a reason, or null.
+    const nodes = pickerNodes(TREE, (n) => (n.id === "fdm" ? "Not here." : null));
+    const of = (id: string) => nodes.find((n) => n.id === id)!;
+    expect(of("printing").pickable).toBe(true);
+    expect(of("fdm")).toMatchObject({ pickable: false, refusal: "Not here." });
+    // A search offers only what the rule allows.
+    expect(searchRows(nodes, "prints").map((h) => h.node.id)).toEqual(["sla"]);
   });
 });
 

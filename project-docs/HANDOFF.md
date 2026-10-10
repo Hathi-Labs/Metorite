@@ -5119,21 +5119,20 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.1
 - **Added:** 2026-10-04 · PR #622
 
-### H-296 · Four more project pickers still draw the whole tree as one list · [AGENT]
-- **Check:** `grep -rln "ProjectPicker" workbench/control_plane/src/app/projects/components/AssistantRail.tsx workbench/control_plane/src/app/projects/components/ReportsView.tsx workbench/control_plane/src/app/projects/components/StatusSetControl.tsx workbench/control_plane/src/app/projects/components/MoveDialog.tsx`
-  → fewer than four files means this is open.
-- **Why:** on 2026-10-10 the owner found the task Move picker hard to read.
-  It drew every node of every space as one open list. `ProjectPicker`
-  (search, spaces closed, a path on each result) now serves the three doors
-  that put a TASK into a project: Move, Clarify and the capture chip. Four
-  other pickers still draw the old list. They are the chat focus
-  (`AssistantRail.tsx`), the report scope (`ReportsView.tsx`), "Copy
-  statuses from" (`StatusSetControl.tsx`) and the project "Move to…"
-  dialog (`MoveDialog.tsx`).
-- **Do:** give `pickerNodes` a pick rule as an argument. The chat and the
-  report may pick a space or a folder. `MoveDialog` must show the reason
-  from `moveRefusal` on a refused row. Then add a popover host for the
-  three `SelectButton` sites. Do not add a second tree model.
+### H-296 · Three more project pickers still draw the whole tree as one list · [AGENT]
+- **Check:** `grep -rln "ProjectPicker" workbench/control_plane/src/app/projects/components/AssistantRail.tsx workbench/control_plane/src/app/projects/components/ReportsView.tsx workbench/control_plane/src/app/projects/components/StatusSetControl.tsx`
+  → fewer than three files means this is open.
+- **Why:** on 2026-10-10 the owner found the Move pickers hard to read. They
+  drew every node of every space as one open list. `ProjectPicker` (search,
+  spaces closed, a path on each result) now serves the task doors (Move,
+  Clarify, the capture chip) and the project "Move to…" dialog. Three
+  pickers still draw the old list: the chat focus (`AssistantRail.tsx`),
+  the report scope (`ReportsView.tsx`) and "Copy statuses from"
+  (`StatusSetControl.tsx`).
+- **Do:** pass a `rule` to `ProjectPicker`. The chat and the report may pick
+  a space or a folder, so their rule refuses nothing. The three sites are
+  `SelectButton`s, so add a popover host around the picker (a trigger and
+  `AnchoredPanel`). Do not add a second tree model.
 - **Authority:** owner ask, 2026-10-10 · `app/projects/lib/pickerTree.ts`
 - **Added:** 2026-10-10 · the project picker session
 
