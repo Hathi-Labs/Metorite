@@ -211,7 +211,10 @@ function CrmPageInner() {
         ? "Stages, statuses and lost reasons — the pipeline is data, not a deploy"
         : view.tab === "reports"
           ? "Forecast, funnel, win rate and who is carrying what"
-          : "Pipeline, leads and customers";
+          : // A list view names itself. With the rail folded, the four
+            // lists share one layout, and this line is all that tells
+            // Deals from Contacts.
+            viewLabel(view.tab);
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {

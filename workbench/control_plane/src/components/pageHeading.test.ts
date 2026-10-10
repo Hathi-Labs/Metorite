@@ -60,7 +60,7 @@ const SRC = path.join(__dirname, "..");
  * then set this to the new count. Never raise it — a new surface takes a
  * heading component, which is the whole point.
  */
-const RAW_HEADING_BUDGET = 27;
+const RAW_HEADING_BUDGET = 26;
 
 /** The two heading components. Each holds one `<h2>`, under the app bar. */
 const HEADING_COMPONENTS = ["PageHeader.tsx", "SettingsHeader.tsx"];
