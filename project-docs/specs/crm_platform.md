@@ -422,7 +422,7 @@ later contract release removes it.
 | Connect | An org admin clicks Connect, consents at Zoho, and returns. The callback checks the signed state (the email seam, `transport/signing.py`), stores the blob and sets the mode to Mirror |
 | Import | The first import reads fields, pipelines and users, then every record. It shows a progress bar with an estimate and resumes after a pause (the D-EM-16 rule from Email) |
 | Owner map | A Zoho user maps to a member by email. An unmatched owner keeps the name and shows "Not in Metorite" |
-| Incremental | Every 10 minutes by default, per org. `If-Modified-Since` on a cursor per entity, plus the deleted list |
+| Incremental | Every 10 minutes by default, per org. `If-Modified-Since` on a cursor per entity, plus the deleted list. A tenant that hides `Modified_Time` (Fracktal's) gets offset paging, so CRM-Z5 needs a periodic reconcile for it. The deleted list pages by offset too, and needs the same reconcile |
 | Sync now | A button for an org admin. It refuses while a cycle runs for that org |
 | Health | Each cycle writes one `crm_sync_runs` row. Settings → CRM reads it |
 | Failure | A refresh failure sets `needs_reconnect`, stops the loop for that org and puts a need in the admin's bell. It never retries a dead token |
