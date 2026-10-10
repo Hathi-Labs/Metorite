@@ -140,6 +140,11 @@ from customer_console.decide import (
     decide_refusal,
     questions_of,
 )
+from customer_console.dsml import (
+    declared_tool_names,
+    normalise_response,
+    normalise_stream,
+)
 from customer_console.handlers import DECIDE_TASK, DecidePayload, ProviderResult
 from customer_console.keys import (
     ENV_DISCOUNT,
@@ -7588,6 +7593,7 @@ async def _streamed_completion(
     declared_task: str | None = None,
     started_at: datetime | None = None,
     request_id: str | None = None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> AsyncIterator[bytes]:
     """Replay the first chunk, relay the rest, and meter the result once.
 
@@ -7646,7 +7652,11 @@ async def _streamed_completion(
             yield chunk
 
     try:
-        async for frame in relay_stream(_replayed(), on_finish=_on_finish):
+        # 🔴 DSML (owner report, 2026-10-11): DeepSeek can write its native
+        # tool-call text into `content`. `normalise_stream` turns it into
+        # real `tool_calls` deltas, and passes every other chunk unchanged.
+        relayed = normalise_stream(_replayed(), declared_tools)
+        async for frame in relay_stream(relayed, on_finish=_on_finish):
             yield frame
     finally:
         # Every exit: the last frame, a client that left, a provider that
@@ -7971,6 +7981,8 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
                 declared_task=req.task,
                 started_at=started_at,
                 request_id=request_id,
+                # Only a tool the REQUEST offered may run from DSML text.
+                declared_tools=declared_tool_names(req.tools, req.tool_choice),
             ),
             media_type="text/event-stream",
             headers=headers,
@@ -8021,6 +8033,13 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
     # field and a completion is already paid for by here. The framework reads
     # `reasoning_details` and nothing else, so without this mirror there is
     # nothing for `reasoning_for_vendor` to send back one turn later.
+    #
+    # 🔴 DSML (owner report, 2026-10-11): a tool call DeepSeek wrote as text
+    # becomes a real `tool_calls` entry, and only for a tool the request
+    # offered. `customer_console.dsml` holds the rules.
+    response = normalise_response(
+        response, declared_tool_names(req.tools, req.tool_choice)
+    )
     return publish_reasoning_alias(response)
 
 
