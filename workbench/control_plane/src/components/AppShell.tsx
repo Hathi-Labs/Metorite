@@ -60,7 +60,8 @@ import {
 } from "@/lib/shell/shellNav";
 import { shouldPollWorkspace } from "@/lib/access";
 import { useShellPrefs } from "@/lib/shell/shellPrefs";
-import OrgBrandLockup from "@/components/OrgBrandLockup";
+import OrgBrandLockup, { BAR_LOCKUP } from "@/components/OrgBrandLockup";
+import { MetoriteSignature } from "@/components/MetoriteMark";
 import { SidebarFoldButton, SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
@@ -389,9 +390,11 @@ function BarBrand() {
         {workspace ? <SidebarFoldButton /> : null}
       </div>
       {/* 24px tall, one line: a 44px bar has no room for the sidebar's stack.
-          176px is the zone less the control's column, the gap and the padding. */}
+          176px is the zone less the control's column, the gap and the padding.
+          The customer's logo alone: our name is at the sidebar's foot (owner,
+          2026-10-11). The Settings previews read the same `BAR_LOCKUP`. */}
       <div className="ml-2 min-w-0">
-        <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={176} compact />
+        <OrgBrandLockup fallbackCaption="Control Plane" {...BAR_LOCKUP} />
       </div>
     </div>
   );
@@ -574,8 +577,11 @@ function MobileBottomNavInner({
         )}
       </nav>
       {/* The rare acts, after the apps: the member's pages, the settings and
-          sign-out, in one list (owner review, 2026-10-09). */}
+          sign-out, in one list (owner review, 2026-10-09). Our signature sits
+          over them, as at the foot of the desktop sidebar (owner, 2026-10-11).
+          `px-3` puts the comet on the rows' icon column. */}
       <div className="mt-auto border-t border-border px-2 py-3">
+        <MetoriteSignature className="px-3 pb-3" />
         <DrawerAccountFoot you={shellNav ? accountLinks(navSections) : undefined} onNavigate={close}>
           <ThemeToggleMenuItem onClick={close} />
           <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">

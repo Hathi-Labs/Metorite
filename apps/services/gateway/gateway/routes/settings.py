@@ -2043,8 +2043,8 @@ async def put_appearance(
 # PUT    /settings/branding — replace it (admin only)
 # DELETE /settings/branding — remove it (admin only)
 #
-# A customer's own logo sits top-left with "powered by Metorite" beneath
-# it. That is the one place in the product where the tenant's identity, rather
+# A customer's own logo sits top-left, alone. Since 2026-10-11 our own mark
+# is at the foot of the sidebar instead (owner decision). That is the one place in the product where the tenant's identity, rather
 # than ours, is the primary mark, so the rules around what may be stored there
 # are worth stating in one place.
 #

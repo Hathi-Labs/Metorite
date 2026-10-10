@@ -2,9 +2,10 @@
  * Organisation branding — the rules, the wording, and the lockup decision.
  *
  * A customer uploads their logo in Settings → Organization and it replaces our
- * mark in the top-left of the shell, with "powered by Metorite" beneath
- * it. This module owns the parts of that with a right and a wrong answer, so
- * they can be tested without a browser or a gateway.
+ * mark in the top-left of the shell. Since 2026-10-11 nothing of ours sits
+ * beside it: our name moved to the foot of the sidebar (owner decision,
+ * `MetoriteSignature`). This module owns the parts of that with a right and a
+ * wrong answer, so they can be tested without a browser or a gateway.
  *
  * ⚠️ **Nothing here is a security boundary.** The limits below are duplicated
  * from `apps/services/gateway/gateway/routes/settings.py`, which is the
@@ -108,12 +109,8 @@ export type Lockup =
       /** Dark mode shows the logo on a small light card. */
       plate: boolean;
       alt: string;
-      caption: string;
     }
   | { kind: "default"; title: string; caption: string };
-
-/** The caption under a customer's logo. One string, one place. */
-export const POWERED_BY = "powered by Metorite";
 
 export function lockup(
   branding: OrgBranding | null | undefined,
@@ -139,7 +136,7 @@ export function lockup(
     // Not "logo" alone: a screen reader reaching the top of the app should
     // hear whose product this is, and the link it sits in is the way home.
     alt: "Your organization's logo",
-    caption: POWERED_BY,
+    // No caption (owner, 2026-10-11). Our name is at the sidebar's foot.
   };
 }
 

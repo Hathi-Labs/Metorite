@@ -148,7 +148,9 @@ async function measureLockup(page: Page) {
       : [];
     const caption = leaves.find((e) => {
       const t = e.textContent?.trim() ?? "";
-      return t.startsWith("powered by Metorite") || t === "Control Plane" || t === "Home";
+      // The logo-less captions only. A customer's logo carries none since
+      // 2026-10-11: our name moved to the sidebar's foot (owner decision).
+      return t === "Control Plane" || t === "Home";
     });
 
     return {
@@ -248,12 +250,11 @@ for (const theme of THEMES) {
       // 600×160 at 28px tall wants 105px. A square mark must NOT get a
       // wordmark's width, which is what makes this an equality not a bound.
       expect(m.logo).toEqual({ w: 105, h: 28 });
-      expect(m.text).toContain("powered by Metorite");
-      // The customer's mark replaces ours; it does not sit next to it.
+      // The customer's mark replaces ours, and since 2026-10-11 it carries no
+      // words of ours either: no "powered by" under it, no fallback caption.
+      expect(m.text).not.toMatch(/powered by/i);
       expect(m.text).not.toContain("Control Plane");
-
-      expect(m.captionFound, "the attribution span must be findable").toBe(true);
-      expect(m.captionClipped, "the attribution must not truncate").toBe(false);
+      expect(m.captionFound, "a customer's logo has no caption").toBe(false);
 
       expect(m.lockupRight, "the lockup must not overrun the collapse control")
         .toBeLessThanOrEqual(m.collapseLeft);

@@ -214,8 +214,14 @@ sees whose workspace this is at all times (D51).
   when the sidebar folds, so the logo does not move.
 - The zone holds the sidebar's fold control, then the logo on one line, 24px
   tall. A logo-less organization shows our mark and its own name.
-- "powered by Metorite" follows the logo from the `lg` width up. Below `lg`
-  it hides, because a cut byline reads as a defect.
+- The customer's logo stands alone, with no words of ours beside it (owner,
+  2026-10-11). It has the whole 176px slot (`BAR_LOCKUP`).
+- Our own mark moved to the foot of the left sidebar, over the account row.
+  The phone drawer shows it over its account block. Folded, the comet sits
+  alone in the rail's icon column. `MetoriteSignature` in
+  `src/components/MetoriteMark.tsx` draws it in every frame. Fences:
+  `metoriteMark.test.ts`, `orgBrandLockup.mode.test.ts` and
+  `e2e/sidebar-signature.spec.ts`.
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
 

@@ -11,7 +11,6 @@ import { describe, expect, it } from "vitest";
 import {
   LOGO_MAX_BYTES,
   LOGO_PICK_MAX_BYTES,
-  POWERED_BY,
   formatBytes,
   lockup,
   logoBoxWidth,
@@ -119,10 +118,11 @@ describe("the lockup", () => {
     expect(l.kind).toBe("default");
   });
 
-  it("shows the customer's logo over our attribution", () => {
+  it("shows the customer's logo with no caption of ours (owner, 2026-10-11)", () => {
     const l = lockup({ logo: logo(), updatedBy: "", updatedAt: "" }, "Home");
     expect(l.kind).toBe("org");
-    expect(l.caption).toBe(POWERED_BY);
+    // Our name moved to the foot of the sidebar. Nothing rides with their logo.
+    expect(l).not.toHaveProperty("caption");
     if (l.kind === "org") expect(l.logo.dataUri).toContain("base64");
   });
 
@@ -141,11 +141,7 @@ describe("the lockup", () => {
       "Fracktal Works",
     );
     expect(branded.kind).toBe("org");
-    expect(branded.caption).toBe(POWERED_BY);
-  });
-
-  it("keeps the attribution wording in exactly one place", () => {
-    expect(POWERED_BY).toBe("powered by Metorite");
+    expect(branded).not.toHaveProperty("caption");
   });
 });
 

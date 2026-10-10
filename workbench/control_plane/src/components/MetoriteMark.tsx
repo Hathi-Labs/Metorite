@@ -1,0 +1,139 @@
+/**
+ * The Metorite comet, and the quiet signature at the foot of the sidebar.
+ *
+ * Owner decision, 2026-10-11: the product's own mark moves out of the shell
+ * bar and to the foot of the left sidebar. The bar shows the customer's logo
+ * alone. The foot shows this signature in every frame: the desktop rail,
+ * open or folded, and the phone drawer. One product mark in one fixed place.
+ *
+ * ⚠️ **This file holds the ONE copy of the comet path in the app.** The master
+ * is `brand/metorite-logo.svg` (light) and `brand/metorite-logo-dark.svg`
+ * (dark), and `brand/README.md` says a surface inlines it from there. The two
+ * masters share one path and differ only in the gradient stops, so this file
+ * draws one path and switches the stops on the page's colour mode. Do not
+ * paste the path into a second file. Import `MetoriteMark`.
+ *
+ * The stop colours are literals on purpose. A brand mark is not a theme
+ * decision: an accent of Rose must not turn our comet pink. The exception is
+ * argued in `src/lib/theme/conformance.test.ts` (`COLOR_EXCEPTIONS`).
+ *
+ * Fences: `src/components/metoriteMark.test.ts` and
+ * `e2e/sidebar-signature.spec.ts`.
+ */
+
+import { useId } from "react";
+
+/** `brand/metorite-logo.svg`'s path, verbatim. Both masters share it. */
+const COMET_PATH =
+  "M304.0 902.5L199.0 906.5L183.0 903.5L128.0 886.4L110.0 876.5L105.0 872.5L95.5 862.0L33.6 774.0L29.5 766.0L26.5 756.0L26.5 734.0L30.5 696.0L33.5 652.0L36.5 638.0L49.5 612.0L85.6 551.0L102.5 529.0L121.0 510.5L218.0 433.5L353.0 328.4L475.0 231.5L482.0 228.5L489.0 228.5L493.0 230.5L497.5 235.0L499.5 239.0L499.5 246.0L497.5 250.0L438.5 316.0L372.6 387.0L369.5 392.0L370.5 397.0L375.0 399.5L379.0 398.5L554.0 242.6L724.0 98.6L731.0 93.6L737.0 92.6L743.0 94.5L746.4 98.0L747.5 101.0L747.5 109.0L746.5 111.0L499.6 380.0L493.5 388.0L493.5 393.0L494.5 395.0L499.0 397.5L502.0 397.5L506.0 395.5L622.0 285.6L626.0 283.5L635.0 283.5L642.5 290.0L644.2 296.0L643.5 301.0L639.4 307.0L517.0 430.5L387.0 531.5L283.0 614.5L272.0 622.5L264.0 622.5L260.5 619.0L260.2 528.0L259.5 514.0L256.0 510.5L248.0 510.6L209.0 520.5L193.0 523.5L192.0 524.5L175.0 527.7L167.0 531.5L158.5 540.0L73.5 737.0L70.5 745.0L71.5 754.0L75.0 757.5L83.0 758.5L94.0 753.5L102.5 746.0L170.5 638.0L180.0 630.6L184.0 629.5L190.0 630.5L193.5 633.0L195.4 636.0L199.5 745.0L202.0 747.5L204.0 747.5L214.0 740.5L246.0 713.5L344.0 628.6L349.0 626.5L353.0 627.5L355.5 630.0L354.5 638.0L320.5 729.0L283.5 835.0L283.5 841.0L284.5 843.0L287.0 844.5L291.0 844.2L314.0 829.5L343.0 808.4L350.4 801.0L359.5 789.0L515.5 480.0L523.7 465.0L533.5 451.0L549.0 434.6L786.0 204.7L791.0 200.5L796.0 198.5L802.0 198.5L808.5 203.0L810.5 207.0L810.5 213.0L808.3 219.0L666.4 408.0L533.7 580.0L532.7 584.0L535.0 587.5L538.0 588.2L542.0 586.3L669.0 467.5L673.0 465.5L680.0 465.6L685.4 470.0L687.5 475.0L687.5 479.0L684.5 486.0L427.3 844.0L403.0 867.5L391.0 875.5L381.0 880.5L367.0 885.5L318.0 899.5L304.0 902.5ZM690.0 247.3L683.0 247.5L678.0 243.9L676.7 242.0L676.0 237.0L677.5 231.0L873.0 28.5L879.0 25.5L883.0 25.5L887.0 27.5L890.2 31.0L891.4 35.0L889.0 42.6L763.4 174.0L694.6 244.0L690.0 247.3Z";
+
+/**
+ * The gradient stops, per colour mode. Light is `metorite-logo.svg`, dark is
+ * `metorite-logo-dark.svg`. The page root carries `.light` in light mode and
+ * nothing in dark mode, which is the default (`Providers.tsx`). So the dark
+ * stop is the base and `.light` swaps it, the way `BrandMark` picks a logo.
+ *
+ * ⚠️ Literal class strings, never built from parts: Tailwind finds a class
+ * only when the source spells it whole.
+ */
+const STOPS: readonly { offset: string; auto: string; light: string; dark: string }[] = [
+  {
+    offset: "0",
+    auto: "[stop-color:#3f38a6] [.light_&]:[stop-color:#07133c]",
+    light: "[stop-color:#07133c]",
+    dark: "[stop-color:#3f38a6]",
+  },
+  {
+    offset: "0.55",
+    auto: "[stop-color:#6355e6] [.light_&]:[stop-color:#4139ae]",
+    light: "[stop-color:#4139ae]",
+    dark: "[stop-color:#6355e6]",
+  },
+  {
+    offset: "1",
+    auto: "[stop-color:#b79dfd] [.light_&]:[stop-color:#a77dfc]",
+    light: "[stop-color:#a77dfc]",
+    dark: "[stop-color:#b79dfd]",
+  },
+];
+
+/** The comet alone. Decorative unless `label` names it. */
+export function MetoriteMark({
+  size = 16,
+  mode,
+  label,
+  className = "",
+}: {
+  /** The box, in CSS px, as `<Icon size>` takes it. */
+  size?: number;
+  /** Pin one colour mode, for a preview of it. Absent, the page's mode picks. */
+  mode?: "light" | "dark";
+  /** The spoken name. Absent, the mark is hidden from assistive technology. */
+  label?: string;
+  className?: string;
+}) {
+  // One gradient id per mark. Two marks on one page with one id share the
+  // first gradient, and a first mark under `display: none` paints none.
+  const id = `metorite-comet-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  return (
+    <svg
+      viewBox="0 0 918 933"
+      width={size}
+      height={size}
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      focusable="false"
+      data-metorite-mark=""
+      className={`shrink-0 ${className}`}
+    >
+      <defs>
+        <linearGradient id={id} x1="0.16" y1="0.90" x2="0.78" y2="0.24">
+          {STOPS.map((s) => (
+            <stop key={s.offset} offset={s.offset} className={s[mode ?? "auto"]} />
+          ))}
+        </linearGradient>
+      </defs>
+      <path fill={`url(#${id})`} fillRule="evenodd" d={COMET_PATH} />
+    </svg>
+  );
+}
+
+/**
+ * The signature at the foot of the sidebar and of the phone drawer.
+ *
+ * It is not a control. It has no link, no button, no hover fill and no focus
+ * stop, so it reads as a signature and not as one more item in the nav. The
+ * words are `text-muted-foreground` at `text-[11px]`, and the comet draws at
+ * 80% opacity, so neither competes with the nav above it.
+ *
+ * Folded, the comet sits alone in the rail's icon column, centred the way the
+ * rail's icons and the bar's fold control are. Its name is a native `title`,
+ * as every other icon of the folded rail has (`NavLink`, "All apps").
+ */
+export function MetoriteSignature({
+  collapsed = false,
+  className = "",
+}: {
+  /** The folded rail: the comet alone. */
+  collapsed?: boolean;
+  /** The padding, so the signature lines up with the rows of its surface. */
+  className?: string;
+}) {
+  if (collapsed) {
+    return (
+      <div data-metorite-signature="rail" title="Metorite" className={`flex justify-center ${className}`}>
+        <MetoriteMark size={16} label="Metorite" className="opacity-80" />
+      </div>
+    );
+  }
+  return (
+    <div
+      data-metorite-signature="full"
+      className={`flex select-none items-center gap-1.5 text-[11px] font-medium leading-none text-muted-foreground ${className}`}
+    >
+      <MetoriteMark size={14} className="opacity-80" />
+      <span>Metorite</span>
+    </div>
+  );
+}
