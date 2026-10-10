@@ -338,6 +338,23 @@ Seven rules on top of the three above. Each one exists because it was broken:
    From NS-2, `src/lib/nav.test.ts` will also fail on a live pane with no
    team or purpose. Until then, the manifest half is advisory. R9 in
    `work_plan.md` §1 binds the app's spec to declare it.
+11. **The shell bar is constant. An app never renders into it. Every app
+   opens with `AppTopBar`, its one title bar: rail toggle, name, subtitle,
+   actions, tools.** *(Owner direction, 2026-10-10.)* The owner said: "I
+   don't want to have any of the individual apps' UI/UX elements be on the
+   top bar." The shell bar holds the fold control, the logo, the command bar
+   and the activity control, and nothing else.
+   The app's bar sits under it, with the app's name as its one `<h1>`. The
+   rail toggle and the tools live in that bar, never in the rail and never
+   in the shell bar. A page under the bar titles itself with an `<h2>`.
+   `DESIGN_SYSTEM.md` §6a holds the shape. `navigation_shell.md` §5.2 rule 3
+   holds the rule.
+   **Fence: `src/lib/shell/appBar.test.ts`.** It fails on a slot API, and on
+   a file outside `src/lib/shell/` that reaches into the shell bar. It fails
+   on a live pane whose route does not render `AppTopBar`. It also fails on
+   an app name in the shell bar's markup.
+   `src/components/pageHeading.test.ts` holds one `<h1>` per app. Add a new
+   live pane to `APP_BAR_HOME` in `appBar.test.ts`, in the same PR.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

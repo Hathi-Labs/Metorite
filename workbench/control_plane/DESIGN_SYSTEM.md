@@ -427,26 +427,46 @@ Naming both, because a third appears whenever the set is left implicit.
 
 | Shape | Who | What it is |
 |---|---|---|
-| **App bar** | Projects, Tasks | A slim `h-10` strip: rail toggle, a divider, the app's name in `text-xs text-muted-foreground`, then app-level actions. For an app whose content is a persistent tree or list beside a pane |
-| **`PageHeader`** | People and every document surface | Title, subtitle, actions, stacked. For a surface you read down |
+| **App bar** | Every app | `AppTopBar`, a slim `h-10` row: rail toggle, a divider, the app's icon and name, the scope line, the actions, then the tools at the right end. The name is the app's one `<h1>` |
+| **`PageHeader`** | A page inside an app, such as each People tab | Title, subtitle, actions, stacked. For a surface you read down. Its title is an `<h2>` |
 
-**A surface picks one.** An app with a rail may carry the bar from its
-layout AND a `PageHeader` inside a pane. The bar is app scope and the header
-is page scope, so they answer different questions.
+**The rule, owner direction of 2026-10-10:**
 
-**The shell bar (WS-44, D89) is the frame around both, not a third shape.**
-When NS-1 ships, the rail, the title and the actions of the app bar move
-into the shell's one row as slots. An app then draws no strip of its own. A
-`PageHeader` inside a page does not change. `navigation_shell.md` §3.1 in
-`project-docs/specs/` owns the bar.
+> **The shell bar is constant. An app never renders into it. Every app opens
+> with `AppTopBar`, its one title bar: rail toggle, name, subtitle, actions,
+> tools.**
+
+- The shell bar holds only shell things: the fold control, the logo, the
+  command bar and the activity control. It draws the same pixels on every
+  page. The command bar's "in <App>" chip is the command bar's own scope, so
+  it stays.
+- The app bar sits under the shell bar, at the top of the app's content. It
+  spans the whole app, over the app's own rail too.
+- An app's rail toggle lives in its bar, never in the rail. The Email app's
+  toggle is the model.
+- An app's tools sit at the right end of its bar: the bell, the assistant,
+  refresh and settings. No app tool goes in the shell bar.
+- On a phone the bar is the compact one: no rail, the title at body size.
+
+**A pane may keep its own header under the bar** when it titles a pane, such
+as Email's "Inbox" row with its filter. It is an `<h2>`, and it never repeats
+the bar's toggle or tools. A `PageHeader` stays only when it carries what the
+bar cannot: a sentence about the page, a count, or the page's own controls.
+
+This reverses NS-1's merged row, in which the app bar portalled into slots in
+the shell bar. `navigation_shell.md` §3.1 and §5.2 in `project-docs/specs/`
+own the rule. Fences: `src/lib/shell/appBar.test.ts` (nothing renders into
+the shell bar, and every live pane renders `AppTopBar`),
+`src/components/AppTopBar.test.ts` (the shape) and
+`src/components/pageHeading.test.ts` (one `<h1>` per app).
 
 ⚠️ **Do not take the app bar as licence for a third shape.** Measured
 2026-09-21: the Projects bar's own comment claims *"Same shape as Tasks and
 Email"*.
 
-Tasks matches. **Email does not** — it draws a `text-sm font-medium`
-heading. CRM uses the old Settings blob. Those two are drift, not a third
-legitimate shape. They are H-148.
+Tasks matches. Email's heading drift closed on 2026-10-10, when Email took
+`AppTopBar`. CRM uses the old Settings blob. That is drift, not a third
+legitimate shape. It is H-148.
 
 Layout: header → tabs/filters → `flex-1 overflow-y-auto` content, optional
 `w-[380px]` desktop side panel (bottom sheet on mobile).
@@ -521,3 +541,7 @@ pair it with an icon or a label.
    handler, palette, bell or assistant rail of its own. Its `NavPane` carries
    its team, its one-line purpose and its jobs. Run
    `npx vitest run src/lib/shell/` to check.
+5. **The app opens with `AppTopBar`** (`AGENTS.md` rule 11, §6a). Nothing of
+   the app goes in the shell bar. Look at the bar beside the neighbouring
+   app. It has the same height and place, the name at the left and the tools
+   at the right.
