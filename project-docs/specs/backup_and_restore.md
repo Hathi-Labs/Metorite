@@ -64,6 +64,17 @@ always the same major version as the server. Credentials are read from
 `/opt/acb/app/.env` exactly as `apply_migrations.sh` reads them, so the two can
 never disagree about which cluster is "the" database.
 
+⚠️ **BH-6 moves the root run (WS-49).** BH-6 is specified on 2026-10-10, and
+it is not built. `box_hardening.md` §5 BH-6 owns the change.
+
+- The nightly unit will run the root-owned copy
+  `/usr/local/lib/acb/backup_db.sh`.
+- The unit will load `/etc/acb/root.env` in place of `/opt/acb/app/.env`. A
+  root run then reads `POSTGRES_USER` and `DATABASE_URL` from that file.
+- The pre-migration backup keeps the checkout copy and `/opt/acb/app/.env`,
+  because it runs as `acb`.
+- The BH-6 PR updates each root path in this file.
+
 ### Design decisions worth not re-litigating
 
 - **`-Fc` (custom format), not plain SQL.** A plain dump can only be replayed
@@ -441,6 +452,11 @@ waiting for someone to remember. (`acb-health-watchdog.timer` was in the same
 position and is picked up by the same loop.)
 
 Kept below as the reference copy.
+
+⚠️ The copy below is older than BH-6a (#764). The unit of record is
+`deploy/hostinger/acb-backup.service`. BH-6 moves its `ExecStart` to
+`/usr/local/lib/acb/backup_db.sh`, and its env file to `/etc/acb/root.env`
+(`box_hardening.md` §5 BH-6).
 
 **`deploy/hostinger/acb-backup.service`**
 
