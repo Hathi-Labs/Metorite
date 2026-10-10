@@ -1114,7 +1114,7 @@ the chart language:
 | File | Job |
 |---|---|
 | `theme.mjs` | The colours and the type, from the tokens of `lib/theme/themes.ts` |
-| `kinds.mjs` | `check` and build: a short spec in, a full ECharts option out |
+| `kinds.mjs` | `chartOption`: each kind checks its data, then a short spec in, a full ECharts option out |
 | `render.mjs` | The server half: ECharts SVG, then resvg with Geist, to a PNG |
 
 The web chat imports `kinds.mjs` and draws the option live (WAC-10g). The

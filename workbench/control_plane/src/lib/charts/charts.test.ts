@@ -97,8 +97,25 @@ describe("wac10f-every-kind-draws", () => {
     const { option } = chartOption({ type: "bar", title: "t", labels: ["A very long project name", "B"], values: [1, 2] });
     expect(option.yAxis.type).toBe("category");
   });
+  it("labels a stacked column with its total", () => {
+    const { option } = chartOption({ type: "bar", title: "t", labels: ["Q1"], stacked: true,
+      series: [{ name: "a", values: [10] }, { name: "b", values: [1] }] });
+    const top = option.series[1].label;
+    expect(top.formatter({ value: 1, dataIndex: 0 })).toBe("11");
+  });
+  it("draws a waterfall step as a bar from the old total to the new, below zero too", () => {
+    const { option } = chartOption({ type: "waterfall", title: "t", steps: [
+      { label: "Open", value: 10 }, { label: "Loss", value: -30 }, { label: "Close", total: true }] });
+    expect(option.series[0].data).toEqual([[0, 0, 10], [1, -20, 10], [2, -20, 0]]);
+  });
+  it("a funnel's share is of its first stage, and a sliver reads <1%", () => {
+    const { option } = chartOption({ type: "funnel", title: "t", labels: ["Leads", "Won"], values: [10000, 12] });
+    const f = option.series[0].label.formatter;
+    expect(f({ name: "Won", value: 12 })).toContain("<1%");
+    expect(f({ name: "Leads", value: 10000 })).toContain("100%");
+  });
   it("writes short numbers", () => {
-    expect([fmt(999), fmt(1200), fmt(34000), fmt(1500000), fmt(2.345)]).toEqual(["999", "1.2k", "34k", "1.5M", "2.35"]);
+    expect([fmt(999), fmt(1200), fmt(34000), fmt(1500000), fmt(2.345), fmt(-3)]).toEqual(["999", "1.2k", "34k", "1.5M", "2.35", "−3"]);
   });
 });
 
@@ -115,6 +132,9 @@ describe("wac10f-spec-refusals", () => {
     ["a bad date", { type: "gantt", title: "t", rows: [{ label: "x", start: "soon" }] }, /date like/],
     ["a calendar a century long", { type: "calendar", title: "t", days: [["1926-01-01", 1], ["2026-01-01", 2]] }, /spans at most 400 days/],
     ["a kind from the prototype", { type: "constructor", title: "t" }, /"type" must be one of/],
+    ["a stacked area below zero", { type: "area", title: "t", labels: ["a"], series: [{ name: "x", values: [-1] }, { name: "y", values: [1] }] }, /no negative value/],
+    ["a date that rolls over", { type: "calendar", title: "t", days: [["2026-02-30", 1]] }, /date like/],
+    ["a funnel below zero", { type: "funnel", title: "t", labels: ["a", "b"], values: [5, -1] }, /no negative value/],
     ["an end before its start", { type: "gantt", title: "t", rows: [{ label: "x", start: "2026-10-10", end: "2026-10-01" }] }, /on or after/],
   ];
   for (const [what, spec, says] of refused) {

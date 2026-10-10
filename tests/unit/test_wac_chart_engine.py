@@ -71,6 +71,14 @@ def test_the_tool_offers_exactly_the_kinds_the_engine_draws() -> None:
     assert sorted(js) == sorted(engine.KINDS) == sorted(SPECS)
 
 
+def test_the_tool_docstring_offers_each_kind_the_engine_draws() -> None:
+    # What the model reads is the docstring, so the fence is on the docstring
+    # (verifier, 2026-10-11): a kind the engine adds must reach the model.
+    doc = wui.whatsapp_ui.__doc__ or ""
+    missing = [k for k in engine.KINDS if k not in doc]
+    assert not missing, f"whatsapp_ui's docstring never offers: {missing}"
+
+
 # ── The fallback ────────────────────────────────────────────────────────────
 
 

@@ -6,7 +6,8 @@
  * where the tokens go: a 12-point line is ~54 tokens of spec against ~362 of
  * ECharts option and ~1665 of SVG (measured 2026-10-11).
  *
- * `check` is the ONE validator of a spec, for the web chat and for WhatsApp.
+ * `chartOption` is the ONE validator of a spec, for the web chat and for
+ * WhatsApp: each kind checks its own data before it builds.
  * A refusal says what to fix, in words a model can act on.
  *
  * Every size is in units of a 1080-pixel-wide drawing. `scale` maps them to
@@ -87,7 +88,8 @@ function series(spec, n, { min = 1 } = {}) {
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 function date(v, what) {
-  if (typeof v !== "string" || !DATE.test(v) || Number.isNaN(Date.parse(v))) fail(`"${what}" must be a date like 2026-10-11`);
+  if (typeof v !== "string" || !DATE.test(v) || Number.isNaN(Date.parse(v))
+      || new Date(Date.parse(v)).toISOString().slice(0, 10) !== v) fail(`"${what}" must be a date like 2026-10-11`);
   return Date.parse(/** @type {string} */ (v));
 }
 
@@ -100,10 +102,14 @@ const DAY = 86400000;
 /** Short numbers: 1.2k, 34k, 1.5M. */
 export function fmt(v) {
   const a = Math.abs(v);
-  if (a >= 1e6) return `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`;
-  if (a >= 1e3) return `${(v / 1e3).toFixed(a >= 1e4 ? 0 : 1)}k`;
-  return Number.isInteger(v) ? `${v}` : `${+v.toFixed(2)}`;
+  const out = a >= 1e6 ? `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`
+    : a >= 1e3 ? `${(v / 1e3).toFixed(a >= 1e4 ? 0 : 1)}k`
+      : Number.isInteger(v) ? `${v}` : `${+v.toFixed(2)}`;
+  return out.replace("-", "\u2212"); // one minus sign, the typographic one
 }
+
+/** Rich-text braces and bars in a label would pick a style, not print. */
+const plain = (s) => String(s).replace(/[{}|]/g, " ");
 
 function ctx(spec, opts) {
   const t = theme(opts.mode);
@@ -126,12 +132,16 @@ function base(spec, opts, c) {
     title: {
       text: text(spec.title, "title", LIMITS.title), subtext: text(spec.subtitle ?? "", "subtitle", 120, false),
       left: c.u(56), top: c.u(48), itemGap: c.u(14),
-      textStyle: { fontFamily: c.t.font, fontSize: c.u(40), fontWeight: 600, color: c.t.fg },
-      subtextStyle: { fontFamily: c.t.font, fontSize: c.u(25), color: c.t.muted },
+      // A long title ends in "…" before the brand mark, never off the edge.
+      textStyle: { fontFamily: c.t.font, fontSize: c.u(40), fontWeight: 600, color: c.t.fg,
+        width: c.u(1080 - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
+      subtextStyle: { fontFamily: c.t.font, fontSize: c.u(25), color: c.t.muted,
+        width: c.u(1080 - 112 - (opts.footer === false ? 0 : 150)), overflow: "truncate" },
     },
     grid: { left: c.u(56), right: c.u(56), top: c.u(c.top), bottom: c.u(72), containLabel: true },
+    // The brand mark sits top right, clear of a legend at the foot.
     graphic: opts.footer === false ? [] : [{
-      type: "text", right: c.u(40), bottom: c.u(26),
+      type: "text", right: c.u(56), top: c.u(58),
       style: { text: "Metorite", fill: c.t.faint, fontWeight: 500, fontSize: c.u(22), fontFamily: c.t.font },
     }],
   };
@@ -180,13 +190,15 @@ const BUILD = {
     const val = valueAxis(c, long ? { splitLine: { show: false }, axisLabel: { show: false } } : {});
     Object.assign(o, long ? { yAxis: cat, xAxis: val } : { xAxis: cat, yAxis: val });
     const stacked = Boolean(spec.stacked) && ss.length > 1;
+    const totals = ls.map((_l, j) => ss.reduce((a, s) => a + s.values[j], 0));
     o.series = ss.map((s, i) => ({
       type: "bar", name: s.name, stack: stacked ? "all" : undefined,
       data: s.values.map((v, j) => ({ value: v, itemStyle: { color: tn?.[j] ?? c.t.series[i] } })),
       barMaxWidth: c.u(ss.length > 1 && !stacked ? 44 : 96), barGap: "20%",
       itemStyle: { borderRadius: long ? [0, c.u(10), c.u(10), 0] : [c.u(12), c.u(12), c.u(4), c.u(4)] },
       label: ss.length === 1 || (stacked && i === ss.length - 1)
-        ? valueLabel(c, ({ value }) => c.label(value), { position: long ? "right" : "top", distance: c.u(10) })
+        ? valueLabel(c, ({ value, dataIndex }) => c.label(stacked ? totals[dataIndex] : value),
+          { position: long ? "right" : "top", distance: c.u(10) })
         : undefined,
     }));
     if (ss.length > 1) { o.legend = legend(c); o.grid.bottom = c.u(110); }
@@ -202,7 +214,8 @@ const BUILD = {
     o.yAxis = valueAxis(c, { scale: Boolean(spec.from_min) });
     const one = ss.length === 1;
     o.series = ss.map((s, i) => ({
-      type: "line", name: s.name, data: s.values, smooth: 0.35, symbol: "none",
+      type: "line", name: s.name, data: s.values, smooth: 0.35,
+      symbol: ls.length <= 2 ? "circle" : "none", symbolSize: c.u(14),
       lineStyle: { width: c.u(5), cap: "round" },
       areaStyle: one ? { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [
         { offset: 0, color: alpha(c.t.series[i], 0.35) }, { offset: 1, color: alpha(c.t.series[i], 0) }] } } : undefined,
@@ -216,6 +229,7 @@ const BUILD = {
   area(spec, opts, c) {
     const ls = labels(spec);
     const ss = series(spec, ls.length, { min: 2 });
+    if (ss.some((s) => s.values.some((v) => v < 0))) fail("a stacked area takes no negative value. Use a line");
     const tn = spec.tones !== undefined ? list(spec.tones, "tones", { max: ss.length }).map((w) => tone(c.t, w)) : [];
     const o = base(spec, opts, c);
     o.xAxis = categoryAxis(c, ls, { boundaryGap: false });
@@ -240,24 +254,24 @@ const BUILD = {
     const o = base(spec, opts, c);
     const W = 1080 * c.k, H = 760 * c.k;
     o.series = [{
-      type: "pie", radius: ["50%", "74%"], center: ["31%", "60%"], padAngle: 2.5,
+      type: "pie", radius: ["50%", "72%"], center: ["31%", "58%"], padAngle: 2.5,
       itemStyle: { borderRadius: c.u(10) }, label: { show: false },
-      data: ls.map((name, i) => ({ name, value: vs[i], itemStyle: tn?.[i] ? { color: tn[i] } : undefined })),
+      data: ls.map((name, i) => ({ name: plain(name), value: vs[i], itemStyle: tn?.[i] ? { color: tn[i] } : undefined })),
     }];
     const center = text(spec.center ?? "total", "center", 16, false);
     o.graphic.push(
-      { type: "text", x: W * 0.31, y: H * 0.6 - c.u(46),
+      { type: "text", x: W * 0.31, y: H * 0.58 - c.u(46),
         style: { text: fmt(total), align: "center", fill: c.t.fg, fontWeight: 600, fontSize: c.u(64), fontFamily: c.t.font } },
-      { type: "text", x: W * 0.31, y: H * 0.6 + c.u(26),
+      { type: "text", x: W * 0.31, y: H * 0.58 + c.u(26),
         style: { text: center, align: "center", fill: c.t.muted, fontSize: c.u(26), fontFamily: c.t.font } },
     );
     o.legend = {
       orient: "vertical", right: c.u(64), top: "middle", icon: "circle", itemWidth: c.u(20), itemHeight: c.u(20), itemGap: c.u(30),
       textStyle: { color: c.t.fg, fontFamily: c.t.font, fontSize: c.u(27), rich: {
-        n: { color: c.t.fg, fontSize: c.u(27), width: c.u(230), fontFamily: c.t.font },
+        n: { color: c.t.fg, fontSize: c.u(27), width: c.u(270), overflow: "truncate", fontFamily: c.t.font },
         p: { color: c.t.muted, fontSize: c.u(27), fontFamily: c.t.font, align: "right", width: c.u(90) } } },
       formatter: (name) => {
-        const v = vs[ls.indexOf(name)];
+        const v = vs[ls.map(plain).indexOf(name)];
         return `{n|${name}}{p|${Math.round((v / total) * 100)}%}`;
       },
     };
@@ -342,10 +356,14 @@ const BUILD = {
     const data = [];
     rows.forEach((r, y) => nums(r, `values[${y}]`, xs.length).forEach((v, x) => data.push([x, y, v])));
     const max = Math.max(1, ...data.map((d) => d[2]));
+    const min = Math.min(0, ...data.map((d) => d[2]));
     const o = base(spec, opts, c);
     o.xAxis = categoryAxis(c, xs, { axisLabel: { ...c.axisText, fontSize: c.u(22), interval: xs.length > 12 ? 2 : 0 } });
     o.yAxis = categoryAxis(c, ys, { inverse: true });
-    o.visualMap = { show: false, min: 0, max, inRange: { color: [c.t.grid, alpha(c.t.series[0], 0.55), c.t.series[0]] } };
+    // Below zero runs toward red, so a negative never reads as an empty cell.
+    o.visualMap = { show: false, min, max, inRange: { color: min < 0
+      ? [c.t.status.red, c.t.grid, c.t.series[0]]
+      : [c.t.grid, alpha(c.t.series[0], 0.55), c.t.series[0]] } };
     o.series = [{ type: "heatmap", data, itemStyle: { borderColor: c.t.card, borderWidth: c.u(5), borderRadius: c.u(8) } }];
     return { o, h: Math.max(520, c.top + 120 + ys.length * 64) };
   },
@@ -354,7 +372,8 @@ const BUILD = {
     const axes = list(spec.axes, "axes", { min: 3, max: 10 }).map((a, i) => text(a, `axes[${i}]`, 16));
     const ss = list(spec.series, "series", { max: 4 }).map((s, i) => ({
       name: text(s?.name ?? `Series ${i + 1}`, `series[${i}].name`, 24), values: nums(s?.values, `series[${i}].values`, axes.length) }));
-    const max = spec.max !== undefined ? num(spec.max, "max") : Math.max(...ss.flatMap((s) => s.values));
+    const max = spec.max !== undefined ? num(spec.max, "max") : Math.max(1, ...ss.flatMap((s) => s.values));
+    if (max <= 0) fail('"max" must be above zero');
     const o = base(spec, opts, c);
     o.radar = {
       center: ["50%", "58%"], radius: "58%", splitNumber: 4, shape: "polygon",
@@ -388,26 +407,40 @@ const BUILD = {
     const steps = list(spec.steps, "steps", { min: 2, max: 16 }).map((s, i) => ({
       label: text(s?.label, `steps[${i}].label`, 16), total: Boolean(s?.total),
       value: s?.total ? 0 : num(s?.value, `steps[${i}].value`) }));
+    // Each step is a FLOATING bar from where the total stood to where it
+    // stands after the step. A stacked "invisible base" cannot draw a bar
+    // that crosses zero: ECharts stacks each sign apart (review, 2026-10-11).
     let run = 0;
-    const helper = [], up = [], down = [], total = [];
-    steps.forEach((st, i) => {
-      if (st.total) { helper.push(0); total.push(run); up.push("-"); down.push("-"); return; }
-      if (i === 0) { run = st.value; helper.push(0); total.push(st.value); up.push("-"); down.push("-"); return; }
-      if (st.value >= 0) { helper.push(run); up.push(st.value); down.push("-"); run += st.value; }
-      else { run += st.value; helper.push(run); down.push(-st.value); up.push("-"); }
-      total.push("-");
+    const bars = steps.map((st, i) => {
+      if (st.total) return { lo: Math.min(0, run), hi: Math.max(0, run), kind: "total", show: run };
+      if (i === 0) { run = st.value; return { lo: Math.min(0, run), hi: Math.max(0, run), kind: "total", show: run }; }
+      const from = run;
+      run += st.value;
+      return { lo: Math.min(from, run), hi: Math.max(from, run), kind: st.value >= 0 ? "up" : "down", show: st.value };
     });
+    const colour = { total: c.t.status.blue, up: c.t.status.green, down: c.t.status.red };
     const o = base(spec, opts, c);
     o.xAxis = categoryAxis(c, steps.map((s) => s.label));
-    o.yAxis = valueAxis(c);
-    const lab = (pre) => valueLabel(c, ({ value }) => (value === "-" ? "" : `${pre}${c.label(value)}`), { position: "top", fontSize: c.u(24) });
-    const bar = { type: "bar", stack: "w", barMaxWidth: c.u(96) };
-    o.series = [
-      { ...bar, data: helper, itemStyle: { color: "transparent" }, silent: true },
-      { ...bar, data: total, itemStyle: { color: c.t.status.blue, borderRadius: c.u(8) }, label: lab("") },
-      { ...bar, data: up, itemStyle: { color: c.t.status.green, borderRadius: c.u(8) }, label: lab("+") },
-      { ...bar, data: down, itemStyle: { color: c.t.status.red, borderRadius: c.u(8) }, label: lab("−") },
-    ];
+    o.yAxis = valueAxis(c, { scale: false });
+    o.series = [{
+      type: "custom",
+      encode: { x: 0, y: [1, 2] },
+      data: bars.map((b, i) => [i, b.lo, b.hi]),
+      renderItem: (params, api) => {
+        const b = bars[api.value(0)];
+        const top = api.coord([api.value(0), b.hi]), bottom = api.coord([api.value(0), b.lo]);
+        const w = Math.min(api.size([1, 0])[0] * 0.56, c.u(96));
+        const h = Math.max(bottom[1] - top[1], c.u(3));
+        const sign = b.kind === "up" ? "+" : "";
+        return { type: "group", children: [
+          { type: "rect", shape: { x: top[0] - w / 2, y: top[1], width: w, height: h, r: c.u(8) },
+            style: { fill: colour[b.kind] } },
+          { type: "text", x: top[0], y: top[1] - c.u(10),
+            style: { text: `${sign}${c.label(b.show)}`, fill: c.t.fg, fontSize: c.u(24), fontWeight: 600,
+              fontFamily: c.t.font, align: "center", verticalAlign: "bottom" } },
+        ] };
+      },
+    }];
     return { o, h: 760 };
   },
 
@@ -415,13 +448,19 @@ const BUILD = {
     const ls = labels(spec);
     const vs = nums(spec.values, "values", ls.length);
     if (ls.length > 8) fail("a funnel takes at most 8 stages");
+    if (vs.some((v) => v < 0)) fail("a funnel takes no negative value");
     const o = base(spec, opts, c);
-    const first = vs[0] || 1;
+    const first = vs[0];
+    const share = (v) => {
+      if (first <= 0) return "";
+      const p = (v / first) * 100;
+      return ` \u00b7 ${p > 0 && p < 1 ? "<1" : Math.round(p)}%`;
+    };
     o.series = [{
-      type: "funnel", sort: "none", left: c.u(56), right: c.u(320), top: c.u(c.top), bottom: c.u(60),
+      type: "funnel", sort: "none", min: 0, max: Math.max(1, ...vs), left: c.u(56), right: c.u(320), top: c.u(c.top), bottom: c.u(60),
       minSize: "18%", gap: c.u(6), itemStyle: { borderWidth: 0, borderRadius: c.u(8) },
       label: { show: true, position: "right", color: c.t.fg, fontFamily: c.t.font, fontSize: c.u(26),
-        formatter: ({ name, value }) => `{n|${name}}\n{v|${c.label(value)} · ${Math.round((value / first) * 100)}%}`,
+        formatter: ({ name, value }) => `{n|${plain(name)}}\n{v|${c.label(value)}${share(value)}}`,
         rich: { n: { color: c.t.muted, fontSize: c.u(24), fontFamily: c.t.font, lineHeight: c.u(34) },
                 v: { color: c.t.fg, fontSize: c.u(28), fontWeight: 600, fontFamily: c.t.font } } },
       labelLine: { show: false },
@@ -444,16 +483,19 @@ const BUILD = {
     }
     const max = Math.max(1, ...days.map((d) => d[1]));
     const o = base(spec, opts, c);
-    o.calendar = { range: [sorted[0], sorted[sorted.length - 1]], top: c.u(c.top + 10), left: c.u(110), right: c.u(56),
-      cellSize: ["auto", c.u(44)],
-      itemStyle: { color: c.t.grid, borderColor: c.t.card, borderWidth: c.u(6), borderRadius: c.u(6) },
+    const weeks = Math.ceil((Date.parse(sorted[sorted.length - 1]) - Date.parse(sorted[0])) / DAY / 7) + 2;
+    const cell = Math.max(10, Math.min(56, (1080 - 110 - 56) / weeks));
+    const gap = Math.max(2, cell * 0.12);
+    o.calendar = { range: [sorted[0], sorted[sorted.length - 1]], top: c.u(c.top + 10), left: c.u(110),
+      cellSize: [c.u(cell), c.u(cell)],
+      itemStyle: { color: c.t.grid, borderColor: c.t.card, borderWidth: c.u(gap), borderRadius: c.u(cell * 0.18) },
       splitLine: { show: false }, yearLabel: { show: false },
       dayLabel: { color: c.t.muted, fontSize: c.u(20), fontFamily: c.t.font, firstDay: 1, nameMap: ["", "Mon", "", "Wed", "", "Fri", ""] },
       monthLabel: { color: c.t.muted, fontSize: c.u(22), fontFamily: c.t.font } };
     o.visualMap = { show: false, min: 0, max, inRange: { color: [alpha(c.t.status.green, 0.22), c.t.status.green] } };
     o.series = [{ type: "heatmap", coordinateSystem: "calendar", data: days.filter((d) => d[1] > 0),
-      itemStyle: { borderColor: c.t.card, borderWidth: c.u(6), borderRadius: c.u(6) } }];
-    return { o, h: c.top + 450 };
+      itemStyle: { borderColor: c.t.card, borderWidth: c.u(gap), borderRadius: c.u(cell * 0.18) } }];
+    return { o, h: c.top + 90 + cell * 7 + 40 };
   },
 
   gantt(spec, opts, c) {
