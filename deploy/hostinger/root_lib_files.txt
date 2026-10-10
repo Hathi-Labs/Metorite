@@ -1,0 +1,18 @@
+# WS-49 BH-6: the root copy at /usr/local/lib/acb/.
+# Each line: <path in the repo> <path under /usr/local/lib/acb/>.
+# scripts/vps_apply.sh writes the copy from `git archive "$DEPLOY_TARGET_SHA"`
+# of the first column, and never from the working tree. A root unit runs only
+# a file of this list. A line may name a directory, and the copy then holds
+# its whole tree. Add a line only with the BH-6 fence green.
+# Fence: tests/unit/test_root_units_root_owned.py (BH-F4).
+scripts/backup_db.sh backup_db.sh
+scripts/backup_offbox.sh backup_offbox.sh
+scripts/offbox_lib.sh offbox_lib.sh
+deploy/hostinger/health-watchdog.sh health-watchdog.sh
+scripts/bh2_rollback.sh bh2_rollback.sh
+scripts/root_env.sh root_env.sh
+deploy/hostinger/root_env_names.txt root_env_names.txt
+infra/docker-compose.yml infra/docker-compose.yml
+infra/postgres/00_create_databases.sql infra/postgres/00_create_databases.sql
+infra/postgres/01_schema.sql infra/postgres/01_schema.sql
+apps/services/meeting_bot apps/services/meeting_bot

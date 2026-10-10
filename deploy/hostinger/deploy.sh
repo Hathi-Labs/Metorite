@@ -17,8 +17,23 @@ if [ -s /tmp/acb-agents.json.bak ]; then
   say "Restored runtime agents.json ($(wc -l < apps/services/gateway/agents.json) lines)"
 fi
 
+# ── WS-49 BH-6: compose runs from the root copy, with root.env ─────────────
+# The project dir is /usr/local/lib/acb/infra and the env file is
+# /etc/acb/root.env, as in acb.service and scripts/vps_apply.sh (acb_compose
+# there). scripts/vps_apply.sh writes the copy. This manual script does not.
+if ! sudo test -f /usr/local/lib/acb/deployed_sha; then
+  echo "ERROR: no root copy is on this box (/usr/local/lib/acb/deployed_sha is missing)." >&2
+  echo "       The next run of scripts/vps_apply.sh makes it. Run that first (WS-49 BH-6)." >&2
+  exit 1
+fi
+acb_compose() {
+  sudo env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+    docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env \
+    -p acb -f /usr/local/lib/acb/infra/docker-compose.yml "$@"
+}
+
 say "Pulling images"
-docker compose -f infra/docker-compose.yml pull
+acb_compose pull
 
 # ── Memory-layer: disabled by default on 4GB VPS to save ~500MB RAM ──
 # MEM0 (episodic) still works via Postgres+pgvector without Neo4j.
@@ -62,8 +77,10 @@ for _var in GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
 done
 
 say "Booting stack (core only — memory profile disabled for 4GB VPS)"
-set -a && source /opt/acb/app/.env && set +a
-docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans
+# WS-49 BH-6: this script does not source .env. Compose reads root.env, and
+# root_env.sh writes it again from .env first.
+sudo bash /usr/local/lib/acb/root_env.sh
+acb_compose --profile core up -d --remove-orphans
 
 say "Waiting for healthchecks (up to 90s)"
 deadline=$(( $(date +%s) + 90 ))
@@ -76,6 +93,12 @@ done
 docker ps --filter "label=com.docker.compose.project=acb" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 
 say "Applying database migrations (02+ — initdb only mounts 00/01)"
+# The runner needs these names from .env. Read each named key with grep, as
+# scripts/vps_apply.sh does, and never source the file (WS-49 BH-6).
+for _k in PG_MODE PGHOST PGPORT PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; do
+  _v="$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  if [ -n "$_v" ]; then export "${_k}=${_v}"; fi
+done
 APP_DIR="$APP_DIR" bash scripts/apply_migrations.sh
 
 say "Syncing python deps"
@@ -130,7 +153,7 @@ sudo systemctl restart caddy || true
 
 say "Probing services"
 uv run python scripts/check_infra.py || {
-  echo "infra probe failed; check: docker compose -f infra/docker-compose.yml logs --tail=100"
+  echo "infra probe failed; check: sudo env -i PATH=/usr/bin:/bin HOME=/root docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env -p acb -f /usr/local/lib/acb/infra/docker-compose.yml logs --tail=100"
   exit 1
 }
 

@@ -33,7 +33,8 @@
 #                                         # acb-backup.service passes it.
 #
 # 🔴 **BH-6a: the root run trusts no value from the env (WS-49).**
-# acb-backup.service runs this as ROOT, and it loads /opt/acb/app/.env, which
+# acb-backup.service runs this as ROOT. Its env comes from /etc/acb/root.env
+# (WS-49 BH-6), and each value there still comes from /opt/acb/app/.env, which
 # the gateway can write. So each name below is in one of four classes. The
 # fence is tests/unit/test_backup_env_values.py.
 #   PINNED     the root run ignores the env, and uses a fixed value
@@ -50,8 +51,9 @@
 # env is the user's own. It crosses no privilege.
 #
 # The fixed paths of the root run come from where the script is. The unit runs
-# /opt/acb/app/scripts/backup_db.sh, so the layout root is "" and the paths are
-# literal. A root run from anywhere else is refused.
+# the ROOT COPY /usr/local/lib/acb/backup_db.sh (WS-49 BH-6), so the layout
+# root is "" and the paths are literal. A root run from anywhere else, the
+# checkout included, is refused.
 #
 # Env:
 #   BACKUP_DIR      PINNED. /opt/acb/backups (a non-root run: the env, same default)
@@ -68,7 +70,8 @@
 #                   @sha256:<64 hex>. Default pgvector/pgvector:pg<live major>.
 #   BACKUP_VERIFY_MEMORY  VALIDATED. <digits> then m or g (default 1g)
 #   PG_MODE         VALIDATED. local or docker (default docker)
-#   POSTGRES_USER, DATABASE_URL (read from $APP_DIR/.env)   VALIDATED. The
+#   POSTGRES_USER, DATABASE_URL (read from ENV_FILE: /etc/acb/root.env in a
+#                   root run, else $APP_DIR/.env)   VALIDATED. The
 #                   user is [a-z_][a-z0-9_]* with an optional .<ref> (the
 #                   Supabase pooler form). The database is [a-z_][a-z0-9_]*.
 #   CUSTOMER_CONSOLE_DATABASE_URL   VALIDATED. A postgresql:// URL whose only
@@ -163,10 +166,10 @@ script_dir="$(cd "$script_dir" && pwd)"
 # An rsync destination that a non-root run takes from its own env.
 remote_from_env="${BACKUP_REMOTE:-}"
 if [ "$env_guard" = "1" ]; then
-  layout_root="${script_dir%/opt/acb/app/scripts}"
-  if [ "$layout_root/opt/acb/app/scripts" != "$script_dir" ]; then
-    echo "ERROR: a root run must start from /opt/acb/app/scripts/backup_db.sh, the path" >&2
-    echo "       that acb-backup.service names. Its fixed paths come from there." >&2
+  layout_root="${script_dir%/usr/local/lib/acb}"
+  if [ "$layout_root/usr/local/lib/acb" != "$script_dir" ]; then
+    echo "ERROR: a root run must start from /usr/local/lib/acb/backup_db.sh, the root" >&2
+    echo "       copy that acb-backup.service names. Its fixed paths come from there." >&2
     exit 2
   fi
   # pinned_name <NAME> <fixed value> — warn when the env holds another value.
@@ -240,8 +243,15 @@ unit_timeout_secs=1800
 
 # Credentials come from the same place apply_migrations.sh reads them, so the
 # two can never disagree about which cluster is "the" database.
-# PINNED: ENV_FILE is never read from the env. It is always $APP_DIR/.env.
-ENV_FILE="$APP_DIR/.env"
+# PINNED: ENV_FILE is never read from the env or an argument. A root run reads
+# /etc/acb/root.env, the file that the unit loads (WS-49 BH-6). root_env.sh
+# copies its lines from $APP_DIR/.env. A run as another user (the
+# pre-migration backup, as acb) reads $APP_DIR/.env, and never root.env.
+if [ "$env_guard" = "1" ]; then
+  ENV_FILE="$layout_root/etc/acb/root.env"
+else
+  ENV_FILE="$APP_DIR/.env"
+fi
 PG_USER="acb"
 if [ -f "$ENV_FILE" ]; then
   PG_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
@@ -575,6 +585,19 @@ for db in "${db_list[@]}"; do
 done
 
 # --- Manifest ----------------------------------------------------------------
+# app_commit. A root run runs no git in the acb-owned checkout (WS-49 BH-6). It
+# reads deployed_sha of the root copy, which the deploy wrote, and takes it
+# only as 40 lower-case hex. A run as another user keeps the git call.
+app_commit=unknown
+if [ "$env_guard" = "1" ]; then
+  _sha=""
+  if [ -f "$layout_root/usr/local/lib/acb/deployed_sha" ]; then
+    IFS= read -r _sha < "$layout_root/usr/local/lib/acb/deployed_sha" || true
+  fi
+  if [[ "$_sha" =~ ^[0-9a-f]{40}$ ]]; then app_commit="${_sha:0:12}"; fi
+else
+  app_commit="$(git -C "$APP_DIR" -c safe.directory="$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+fi
 # Records enough to answer "what was true when this was taken" without
 # restoring it: checksums, the migration high-water mark, and row counts for
 # the tables whose loss would be noticed first.
@@ -584,7 +607,7 @@ say "Manifest"
   echo "host:             $(hostname)"
   echo "pg_container:     $PG_CONTAINER"
   echo "pg_version:       $(pg psql -U "$PG_USER" -d postgres -tAc 'show server_version' | tr -d ' ')"
-  echo "app_commit:       $(git -C "$APP_DIR" -c safe.directory="$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "app_commit:       $app_commit"
   echo "migration_files:  $(ls "$APP_DIR"/infra/postgres/[0-9][0-9]*_*.sql 2>/dev/null | wc -l)"
   echo "app_db:           $APP_DB"
   echo "databases:        ${dumped_dbs[*]}"
@@ -1114,7 +1137,9 @@ echo "    $(ls -1d [0-9]*Z 2>/dev/null | wc -l) backup(s) retained, $(du -sh "$B
 # root file's values, and the ERROR keeps the signal.)
 offbox_misplaced=0
 if [ "$offbox_requested" = "1" ]; then
-  for f in "$ENV_FILE" "$APP_DIR/apps/services/customer_console/.env"; do
+  # The two literal acb-writable files, and never $ENV_FILE: in a root run
+  # that is root.env, whose name list holds no such name (WS-49 BH-6).
+  for f in "$APP_DIR/.env" "$APP_DIR/apps/services/customer_console/.env"; do
     if [ -f "$f" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?BACKUP_(S3_|GPG_|OFFBOX_ENV_FILE)' "$f"; then
       echo "ERROR: $f holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE" >&2
       echo "       line. The backup ignores it and reads $offbox_key_file only. acb can" >&2

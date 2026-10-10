@@ -15,7 +15,8 @@ before the fix, except the three regression fences that say so.
 The root run is forced with `BACKUP_ENV_GUARD=1`, because a test cannot be
 uid 0. That knob can only make a run stricter, so the env may hold it. The
 forced run takes its paths from where the script is, so those tests copy the
-scripts into a layout: `$W/root/opt/acb/app/scripts`.
+scripts into a layout: `$W/root/usr/local/lib/acb`, the root copy of WS-49
+BH-6. Its env file is `$W/root/etc/acb/root.env`.
 """
 from __future__ import annotations
 
@@ -62,16 +63,17 @@ tar() { printf 'tar %s\n' "$*" >> "$CALLS"; command tar "$@"; }
 export -f psql rsync tar
 """
 
-# The root layout of a forced root run. The .env there is the real one; a
-# test puts the attacker's values in OTHER places and in the env.
+# The root layout of a forced root run (WS-49 BH-6): the scripts sit flat in
+# the root copy, and the env file is root.env. The root.env there is the real
+# one; a test puts the attacker's values in OTHER places and in the env.
 _LAYOUT = r"""
 R="$W/root"
-mkdir -p "$R/opt/acb/app/scripts" "$R/opt/acb/backups" "$R/etc/acb"
-cp scripts/backup_db.sh scripts/backup_offbox.sh scripts/offbox_lib.sh "$R/opt/acb/app/scripts/"
-printf 'POSTGRES_USER=acb\n' > "$R/opt/acb/app/.env"
+mkdir -p "$R/usr/local/lib/acb" "$R/opt/acb/app" "$R/opt/acb/backups" "$R/etc/acb"
+cp scripts/backup_db.sh scripts/backup_offbox.sh scripts/offbox_lib.sh "$R/usr/local/lib/acb/"
+printf 'POSTGRES_USER=acb\n' > "$R/etc/acb/root.env"
 """
 
-_ROOT_RUN = 'BACKUP_ENV_GUARD=1 PG_MODE=local bash "$W/root/opt/acb/app/scripts/backup_db.sh"'
+_ROOT_RUN = 'BACKUP_ENV_GUARD=1 PG_MODE=local bash "$W/root/usr/local/lib/acb/backup_db.sh"'
 _ACB_RUN = 'PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" bash scripts/backup_db.sh'
 
 
@@ -262,7 +264,7 @@ def test_a_root_run_outside_the_layout_is_refused() -> None:
     place has no fixed paths, so it stops before it touches anything."""
     r = _run(command=f"BACKUP_ENV_GUARD=1 {_ACB_RUN}")
     assert r["rc"] == 2, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
-    assert "a root run must start from /opt/acb/app/scripts/backup_db.sh" in str(r["err"])
+    assert "a root run must start from /usr/local/lib/acb/backup_db.sh" in str(r["err"])
     assert not _lines(r, "pg_dump"), "a refused run still dumped"
 
 
@@ -802,12 +804,12 @@ def _root_units_with_an_app_env_file() -> list[str]:
     return found
 
 
-def test_the_scan_finds_the_root_unit_that_loads_the_app_env() -> None:
-    """The companion: a scan that finds nothing passes the test below.
-    acb.service loads NO env file since fix round 1 (F1), so it is not here."""
-    found = set(_root_units_with_an_app_env_file())
-    assert "acb-backup.service" in found, found
-    assert "acb.service" not in found, "acb.service loads an env file again"
+def test_no_root_unit_loads_an_env_file_under_opt_acb() -> None:
+    """WS-49 BH-6. acb-backup.service loads /etc/acb/root.env, and
+    acb.service loads no env file since fix round 1 (F1). So the scan finds
+    no root unit. Mutation: put EnvironmentFile=/opt/acb/app/.env back in
+    acb-backup.service, and this goes red."""
+    assert _root_units_with_an_app_env_file() == []
 
 
 _PINNED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -851,10 +853,11 @@ def test_no_root_unit_that_runs_docker_loads_an_env_file_under_opt_acb() -> None
                     assert " -p acb " in v, f"{unit} {k} reads .env with no -p acb: {v}"
 
 
-@pytest.mark.parametrize("unit", _root_units_with_an_app_env_file())
-def test_a_root_unit_that_loads_the_app_env_drops_the_pre_script_names(unit: str) -> None:
-    """🔴 Each root unit that loads an env file under /opt/acb drops every
-    name of the list with UnsetEnvironment=. Mutation: delete the
+@pytest.mark.parametrize("unit", ["acb-backup.service"])
+def test_the_backup_unit_keeps_the_pre_script_block(unit: str) -> None:
+    """🔴 The root unit that loads an env file drops every name of the list
+    with UnsetEnvironment=. Since WS-49 BH-6 that file is root.env, and the
+    block stays as a second layer, pinned by unit name. Mutation: delete the
     UnsetEnvironment= lines from acb-backup.service, and this goes red."""
     keys = _effective_service_keys(_UNITS / unit)
     dropped = {n for v in keys.get("UnsetEnvironment", []) for n in v.split()}
@@ -954,7 +957,7 @@ def test_the_clean_start_runs_env_i_and_refuses_a_dirty_second_pass() -> None:
 _PIN_FILE = (
     "printf 'BACKUP_PG_HOST=db.example\\nBACKUP_PG_USER_SUFFIX=.abcref\\n"
     "BACKUP_CC_PG_HOST=cc.example\\nBACKUP_CC_PG_USER_SUFFIX=cc\\n' > " + _ROOT_RUN_KEYFILE + "\n"
-    "printf 'POSTGRES_USER=postgres.abcref\\n' > \"$R/opt/acb/app/.env\"\n"
+    "printf 'POSTGRES_USER=postgres.abcref\\n' > \"$R/etc/acb/root.env\"\n"
 )
 _PLANT_R = (
     'for d in $(seq -w 1 20); do mkdir -p "$R/opt/acb/backups/2026-01-${d}T000000Z"; done\n'
@@ -985,7 +988,7 @@ def test_a_pinned_server_that_matches_is_dumped() -> None:
         ),
         (
             'BACKUP_ENV_GUARD=1 PG_MODE=docker PGHOST=db.example '
-            'bash "$W/root/opt/acb/app/scripts/backup_db.sh"',
+            'bash "$W/root/usr/local/lib/acb/backup_db.sh"',
             "pins the database server, and PG_MODE is not local",
         ),
     ],
@@ -999,7 +1002,7 @@ def test_a_pinned_server_that_does_not_match_is_refused_with_no_prune(command: s
     or the PG_MODE check), and its case dumps."""
     setup = _PIN_FILE + _PLANT_R
     if "user" in why or "POSTGRES_USER" in why:
-        setup += "printf 'POSTGRES_USER=postgres.evilref\\n' > \"$R/opt/acb/app/.env\"\n"
+        setup += "printf 'POSTGRES_USER=postgres.evilref\\n' > \"$R/etc/acb/root.env\"\n"
     r = _run(command=f"KEEP_DAILY=3 {command}", setup=setup, root=True, offbox=True, after=_COUNT_R)
     assert r["rc"] == 1, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
     assert why in str(r["err"]), r["err"]

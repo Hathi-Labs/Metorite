@@ -416,6 +416,79 @@ def test_the_manifest_ships_the_three_entries() -> None:
         assert "EnvironmentFile=/opt/acb/app/.env" in text, unit
 
 
+# ── WS-49 BH-6: a push of app-env writes /etc/acb/root.env again (BH-F4) ─────
+#
+# root.env is not a manifest entry: the box derives it from the app .env with
+# the ROOT COPY of root_env.sh. An entry with "rebuild_root_env": true calls
+# the remote verb `rootenv` after a verified write. The verb runs only
+# /usr/local/lib/acb/root_env.sh, and a failure is a WARN of the push.
+
+_ROOT_ENV_SH = "/usr/local/lib/acb/root_env.sh"
+
+
+def _rootenv_calls(calls: str) -> list[str]:
+    """The ssh calls of the rootenv verb. It takes no argument, so it ends
+    the remote command."""
+    return [ln for ln in _ssh_lines(calls) if ln.rstrip().endswith("secrets-drop\\ rootenv")]
+
+
+def test_only_app_env_rebuilds_root_env_and_the_verb_runs_only_the_root_copy() -> None:
+    m = _manifest()
+    flagged = [e["name"] for e in m["entries"] if e.get("rebuild_root_env") is True]
+    assert flagged == ["app-env"], flagged
+    assert not [e["name"] for e in m["entries"] if "rebuild_root_env" in e
+                and not isinstance(e["rebuild_root_env"], bool)]
+    body = _bash_function("r_rootenv")
+    assert f"local s={_ROOT_ENV_SH}\n" in body, body
+    # One literal path, and nothing that a caller or the env can move.
+    assert re.findall(r"/[A-Za-z0-9_./-]+\.sh", body) == [_ROOT_ENV_SH], body
+    assert '"$1"' not in body and "$@" not in body, "the verb must take no path"
+    assert "/opt/acb" not in body, "the verb must never run a file of the checkout"
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert "  rootenv) r_rootenv ;;\n" in text
+
+
+def test_a_push_of_app_env_calls_rootenv_and_a_failure_is_a_warn() -> None:
+    """The test box has no /usr/local/lib/acb/root_env.sh, so the verb fails.
+    The push still ends OK, with a WARN. Mutation: make the failure a `die`,
+    and the exit code goes red."""
+    res = _run(_MERGE_SETUP + "SD push app-env --yes\n", manifest=_merge_manifest(restart=[]))
+    assert res["rc"] == 0, res["err"]
+    assert len(_rootenv_calls(res["calls"])) == 1, _ssh_lines(res["calls"])
+    assert "R rootenv missing" in res["remote"]
+    assert "WARNING: root.env: the rootenv step on" in res["err"], res["err"]
+    assert "OK" in res["out"].splitlines()
+
+
+def test_a_push_of_app_env_runs_the_root_copy_of_root_env_sh() -> None:
+    """The literal path, moved under the test box in a COPY of the script. The
+    stub builder records that it ran. The write comes first, the rebuild
+    second, and no restart runs before the rebuild."""
+    body = (
+        _MERGE_SETUP
+        + f'command sed -i "s#{_ROOT_ENV_SH}#\\$BOX{_ROOT_ENV_SH}#" "$W/repo/scripts/secrets.sh"\n'
+        + 'mkdir -p "$BOX/usr/local/lib/acb" "$BOX/etc/acb"\n'
+        + "printf '#!/usr/bin/env bash\\necho built > \"$BOX/etc/acb/root.env.built\"\\n' "
+        + f'> "$BOX{_ROOT_ENV_SH}"\n'
+        + "SD push app-env --yes\n"
+    )
+    res = _run(body, manifest=_merge_manifest(restart=[]))
+    assert res["rc"] == 0, res["err"]
+    assert "R rootenv ok" in res["remote"], res["remote"]
+    assert "root.env: /etc/acb/root.env on" in res["out"], res["out"]
+    assert _box(res, "/etc/acb/root.env.built") == b"built\n"
+    ssh = _ssh_lines(res["calls"])
+    writes = [i for i, ln in enumerate(ssh) if "secrets-drop\\ write\\ " in ln]
+    rebuild = [i for i, ln in enumerate(ssh) if ln.rstrip().endswith("secrets-drop\\ rootenv")]
+    assert writes and rebuild and max(writes) < rebuild[0], ssh
+
+
+def test_an_entry_without_the_flag_never_calls_rootenv() -> None:
+    res = _run("SD init >/dev/null\n" + _offbox_env() + "SD push backup-offbox --yes\n")
+    assert res["rc"] == 0, res["err"]
+    assert _rootenv_calls(res["calls"]) == []
+
+
 def test_a_bad_manifest_fails_loudly() -> None:
     m = _manifest()
     _entry(m, "backup-offbox")["validators"]["BACKUP_S3_REGION"] = ["no_such_check"]

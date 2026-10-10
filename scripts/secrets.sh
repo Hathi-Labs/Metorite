@@ -365,6 +365,16 @@ r_postcheck() {
   exit 5
 }
 
+# r_rootenv — WS-49 BH-6. Write /etc/acb/root.env again, with the ROOT COPY
+# of root_env.sh. It runs that one literal path, and never a file of the
+# checkout. Its output stays on the box: it holds names only, but this half
+# prints R lines only.
+r_rootenv() {
+  local s=/usr/local/lib/acb/root_env.sh
+  if [ -L "$s" ] || [ ! -f "$s" ]; then echo "R rootenv missing"; exit 6; fi
+  if bash "$s" >/dev/null 2>&1; then echo "R rootenv ok"; else echo "R rootenv fail"; exit 6; fi
+}
+
 verb="${1:?}"; shift
 case "$verb" in
   probe) r_probe "$@" ;;
@@ -372,6 +382,7 @@ case "$verb" in
   rollback) r_rollback "$@" ;;
   restart) r_restart "$@" ;;
   postcheck) r_postcheck "$@" ;;
+  rootenv) r_rootenv ;;
   *) echo "ERROR: unknown remote verb." >&2; exit 2 ;;
 esac
 REMOTE
@@ -526,6 +537,9 @@ load_manifest() {
       [[ "${mf[$p]}" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?/[A-Za-z0-9._/-]*$ ]] \
         || errs+=("$name: the health URL of $k must be http://127.0.0.1 or localhost.")
     done
+    if [ -n "${mft[entries.$i.rebuild_root_env]+x}" ] && [ "${mft[entries.$i.rebuild_root_env]}" != bool ]; then
+      errs+=("$name: rebuild_root_env must be true or false.")
+    fi
     if [ -n "${mft[entries.$i.post_push]+x}" ]; then
       [[ "${mf[entries.$i.post_push.start_unit]-}" =~ ^[A-Za-z0-9][A-Za-z0-9@._-]*$ ]] \
         || errs+=("$name: post_push.start_unit is not a unit name.")
@@ -1148,6 +1162,17 @@ cmd_push() {
 
   # Keep the backup path now: each remote call below resets r_backup.
   bak="${r_backup:-none}"
+  # WS-49 BH-6: the root units read /etc/acb/root.env, which the box derives
+  # from this file. So a new value reaches the backup with no deploy. A
+  # failure is a WARN, because the next deploy writes root.env again.
+  if [ "$(ef "$i" rebuild_root_env)" = true ]; then
+    rc=0; out="$(remote rootenv < /dev/null)" || rc=$?
+    if [ "$rc" -eq 0 ] && [[ "$out" == *"R rootenv ok"* ]]; then
+      say "root.env: /etc/acb/root.env on $host is written again"
+    else
+      warn "root.env: the rootenv step on $host failed (exit $rc). The next deploy writes /etc/acb/root.env again."
+    fi
+  fi
   if [ -n "$(el "$i" restart)" ]; then
     restart_units "$i" || roll_back "$i" "$name" "$pre" "$bak" "$want"
   else

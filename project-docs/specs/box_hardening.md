@@ -2,8 +2,9 @@
 
 **Status: ACTIVE, specified 2026-10-08, built in part. BH-2 full MERGED as
 #758 (`762ab5870`) on 2026-10-10.** BH-6a, the value guard, MERGED as #764
-(`373453b83`) on 2026-10-09. **BH-6 is SPECIFIED, dispatchable** (fix round
-5, 2026-10-10). Next: BH-6.
+(`373453b83`) on 2026-10-09. **BH-6 is BUILT on the branch `sec-bh6-build`,
+and not merged** (2026-10-10). Next: the BH-6 review, the merge and the box
+checks.
 
 Board row **WS-49**. The owner ruled on 2026-10-08 to close this gap first,
 before the data of the beta customers arrives. This spec owns H-270 and H-271
@@ -20,6 +21,7 @@ in `HANDOFF.md`.
 | The deploy re-exec fix | #757 | `7e9844a48` | merged, and live on 2026-10-09 |
 | BH-6a, the value guard of the root backup and the root compose unit | #764 | `373453b83` | merged on 2026-10-09 |
 | BH-2 full: `50-hardening.conf`, the strict check, the watchdog WARN, the rollback lock | #758 | `762ab5870` | merged on 2026-10-10. `bh2_strict_check` enforces it on each deploy |
+| BH-6: the root copy, root.env, the three root units, fence BH-F4 | — | branch `sec-bh6-build` | built 2026-10-10, not merged, not on the box |
 
 **BH-2 full is MERGED and enforced.** The staged drop-in ran on the box for a
 24 h soak before the merge. The gateway journal held 0 EROFS and 0 EACCES
@@ -1510,9 +1512,10 @@ drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
 
 ### BH-6 — Root units run only root-owned files
 
-**Status: SPECIFIED, dispatchable (fix round 5, 2026-10-10).** Not built.
-Each anchor below was read at `main` `2143d01f4` on 2026-10-10. Read each
-one again at dispatch, because the code is the fact.
+**Status: BUILT on the branch `sec-bh6-build` (2026-10-10). Not merged, and
+not on the box.** The fence BH-F4 is `tests/unit/test_root_units_root_owned.py`.
+Acceptance 1, 3, 5 to 9 and 11 need the box checks after the merge. Each
+anchor below was read at `main` `2143d01f4` on 2026-10-10.
 
 **BH-6a, the value guard, MERGED as #764 (`373453b83`) on 2026-10-09.** It
 closes the value part of P3 (§0) for `acb-backup.service` and
@@ -1980,17 +1983,27 @@ ssh metorite 'systemctl list-timers acb-backup.timer acb-health-watchdog.timer -
 - The backup reads a name that the list misses, and the night fails. The
   unit exits 1, and `vps-health.yml` shows it. The verification runs one backup
   by hand.
-- A missing relative path in the copy breaks the next `up`. Step 3
-  (`config -q`) stops the deploy before it.
+- A missing relative path in the copy breaks the next `up`. ⚠️ Step 3
+  (`config -q`) does NOT stop it. Measured on Compose v5.6.0 at the build:
+  `config -q` exits 0 with no bind source and no build context on disk.
+  It exits 0 with `--profile sandbox` too. So step 1 checks that each path
+  of the list is in the archive, and a missing path stops the deploy before
+  the first compose call. `test_the_copy_holds_each_path_the_compose_file_needs`
+  holds the list against the compose file.
 - A failed `acb.service` takes the gateway down, through `Requires=`.
   Acceptance 8 checks it.
-- A restart of `acb.service` runs its `ExecStop`, which is `compose down`
-  with no profile. So the deploy that changes the unit recreates `postgres`
-  and `redis` one more time. Acceptance 7 counts the `up` runs, not this
-  restart.
-- Measure on the box, under Compose v5.6.0, if that `down` removes
-  `acb-meeting-bot`. If it does, step 4 runs the meeting-bot `up` again
-  after the restart.
+- A restart of `acb.service` runs its `ExecStop`, which is now `compose
+  --profile core down`. So the deploy that changes the unit recreates
+  `postgres` and `redis` one more time. Acceptance 7 counts the `up` runs,
+  not this restart.
+- **Measured on the box, 2026-10-10, Compose v5.5.0.** The project `acb`
+  runs `acb-postgres`, `acb-redis` and `acb-meeting-bot`. A dry run of
+  `--profile core down` stops and removes only `redis` and `postgres`. The
+  meeting bot keeps running. The removal of the `acb_default` network says
+  "Resource is still in use", and the exit code is 0. A `down` with no
+  profile does nothing. So a restart of `acb.service` does not stop the
+  meeting bot, and step 4 runs no second meeting-bot `up`. The `ExecStop`
+  stays scoped to `--profile core`.
 - The live edit of the meeting bot ends. The bind mount at
   `docker-compose.yml:266-270` now reads the copy. So an edit of the
   checkout on the box does not reach the bot, and an edit goes through a
@@ -2233,8 +2246,8 @@ owner's, and a wrong sudoers file can lock everyone out of the box.
 ## 6. The order
 
 **State on 2026-10-10.** BH-1, BH-8, BH-7, BH-6a and BH-2 full are merged.
-`bh2_strict_check` enforces BH-2 on each deploy. **Dispatchable now: BH-6**
-(fix round 5).
+`bh2_strict_check` enforces BH-2 on each deploy. **BH-6 is built on the
+branch `sec-bh6-build`**, and waits for its review and the merge.
 
 1. **BH-1** — closes H-270 for every child, and needs no box change.
 2. **BH-8** — Neo4j and the compose ports. The coordinator already stopped

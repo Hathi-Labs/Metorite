@@ -159,6 +159,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
+    # the scan now. These are their own variables and the BH-6 deploy steps.
+    "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
+    "SRC_CONF", "STATE", "UNIT", "_ACB_CLEAN_ENV",
+    "BH6_ACB_RESTART", "BH6_CORE_CHANGED", "BH6_LIST",
     # gpg reads its keyring from here. The backup encrypts to a key in it.
     # tar reads TAR_OPTIONS as extra flags, so it could add or drop files in
     # the off-box copy (H-123).

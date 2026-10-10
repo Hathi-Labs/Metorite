@@ -933,7 +933,8 @@ def test_the_rw_paths_step_runs_before_the_gateway_restart() -> None:
                    if ln.startswith('install_dropins "$APP_DIR/deploy/hostinger"'))
     ensure = next(i for i, ln in enumerate(lines)
                   if ln.startswith('ensure_gateway_rw_paths "$APP_DIR"'))
-    restart = next(i for i, ln in enumerate(lines) if ln == "sudo systemctl restart acb-gateway")
+    # WS-49 BH-6: the restart sits in an if/else (step 4), so it is indented.
+    restart = next(i for i, ln in enumerate(lines) if ln.strip() == "sudo systemctl restart acb-gateway")
     assert install < ensure < restart
 
 

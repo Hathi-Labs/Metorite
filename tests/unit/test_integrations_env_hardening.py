@@ -1016,7 +1016,18 @@ _TS_READ = re.compile(
 _SH_READ = re.compile(r"""\$\{?([A-Z_][A-Z0-9_]*)(?![A-Za-z0-9_])""")
 _YML_READ = re.compile(r"""\$\{([A-Za-z_][A-Za-z0-9_]*)""")
 _SKIP_DIRS = {"node_modules", ".next", "__pycache__", ".venv", "tests", "test", "__tests__"}
-_UNIT_SCRIPTS = ("scripts/backup_db.sh", "scripts/backup_offbox.sh", "scripts/vps_apply.sh")
+def _unit_scripts() -> tuple[str, ...]:
+    """Each script of deploy/hostinger/root_lib_files.txt (the root copy, WS-49
+    BH-6), and scripts/vps_apply.sh, which writes the env that they read."""
+    found = ["scripts/vps_apply.sh"]
+    for raw in (REPO / "deploy/hostinger/root_lib_files.txt").read_text(encoding="utf-8").splitlines():
+        parts = raw.split()
+        if parts and not parts[0].startswith("#") and parts[0].endswith(".sh"):
+            found.append(parts[0])
+    return tuple(found)
+
+
+_UNIT_SCRIPTS = _unit_scripts()
 
 
 def _walk(base: Path, suffixes: tuple[str, ...]):

@@ -28,20 +28,19 @@ User=root
 # managed Postgres made PGHOST, PGUSER, PGPASSWORD and PG_MODE mandatory — the
 # unit had none of them, so it failed, and the timer was disabled rather than
 # repaired. The last dump before this fix was 2026-08-25.
-# 🔴 **BH-6a (WS-49): this file is acb-writable, so root trusts no value in
-# it.** backup_db.sh pins its paths, validates each value it takes, and reads
-# the off-box names from /etc/acb/backup-offbox.env only. Its header lists the
-# class of each name. ⚠️ An `Environment=` line here cannot pin a name: a
-# value from an EnvironmentFile wins over it. The UnsetEnvironment= block
-# below keeps BASH_ENV, LD_PRELOAD and the rest from root's bash. BH-6
-# removes this line.
-EnvironmentFile=/opt/acb/app/.env
-# ⚠️ The Customer Console is a SEPARATE Supabase project with its own
-# credentials, so its DSN lives in its own env file. The leading `-` makes it
-# optional: a box without the Console must still back up the app database
-# rather than fail the whole unit. `backup_db.sh` skips the second cluster when
-# the variable is absent.
-EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
+# 🔴 **WS-49 BH-6: root.env, not the acb-writable .env files.** This unit
+# loaded /opt/acb/app/.env and the Console .env, and acb can write both. Now
+# it loads /etc/acb/root.env, root:root 0600. The deploy writes it with
+# scripts/root_env.sh, which copies ONLY the names of
+# deploy/hostinger/root_env_names.txt from those two files (the Console
+# wins). So a new name in .env never reaches root. The VALUES still come from
+# .env, so backup_db.sh pins its paths and validates each value it takes
+# (BH-6a). ⚠️ An `Environment=` line here cannot pin a name: a value from an
+# EnvironmentFile wins over it. Not optional: without it PG_MODE defaults to
+# docker, which is the H-132 false green. The Console DSN is in root.env when
+# the Console .env holds it, and backup_db.sh skips that cluster when it is
+# absent.
+EnvironmentFile=/etc/acb/root.env
 # 🔴 **The off-box bucket key (H-123) lives HERE and nowhere else.** A
 # Supabase S3 key is PROJECT-WIDE: it passes Row Level Security and can read
 # or delete every object in every bucket of the project. /opt/acb/app/.env is
@@ -58,18 +57,17 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # compromise of the app can still read this key. That is H-271.
 # `test_only_the_backup_unit_loads_the_offbox_key_file` fences the units.
 EnvironmentFile=-/etc/acb/backup-offbox.env
-# 🔴 **WS-49 BH-6a stopgap: the names that act WITHOUT the script.** The
-# EnvironmentFile above is acb-writable. bash reads BASH_ENV, SHELLOPTS and PS4
+# 🔴 **WS-49 BH-6a: the names that act WITHOUT the script.** Since BH-6 no
+# file above holds such a name, and this block stays as a second layer. bash
+# reads BASH_ENV, SHELLOPTS and PS4
 # before the first line of a script, and ld.so reads LD_PRELOAD before bash
 # runs at all. So no script can refuse them, and each one is root code
 # execution. systemd applies UnsetEnvironment= as the LAST step, after every
 # Environment= and EnvironmentFile= line (systemd.exec(5), v255). These lines
 # remove each such name. The list also takes the names that a root child
 # (psql, tar, git, docker, a python or node tool) reads as code or config.
-# Each name here is one that no root unit needs from .env. box_hardening.md
-# BH-6 removes the .env line itself, and these lines can go with it.
-# Fence: tests/unit/test_backup_env_values.py (every root unit that loads an
-# env file under /opt/acb carries this block).
+# Each name here is one that no root unit needs from .env.
+# Fence: tests/unit/test_backup_env_values.py (this unit keeps the block).
 UnsetEnvironment=BASH_ENV ENV SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND BASH_XTRACEFD GLOBIGNORE CDPATH IFS
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE LD_BIND_NOW
 UnsetEnvironment=GCONV_PATH LOCPATH NLSPATH HOSTALIASES RESOLV_HOST_CONF MALLOC_CHECK_ OPENSSL_CONF OPENSSL_ENGINES
@@ -83,6 +81,9 @@ UnsetEnvironment=TAR_OPTIONS PSQLRC PGSYSCONFDIR PGSERVICEFILE PGPASSFILE TMPDIR
 UnsetEnvironment=http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ftp_proxy FTP_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
 UnsetEnvironment=SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE KRB5_CONFIG KRB5CCNAME KRB5_KTNAME KRB5_CLIENT_KTNAME KRB5_TRACE
 UnsetEnvironment=KRB5RCACHETYPE KRB5RCACHEDIR GSS_MECH_CONFIG QUOTING_STYLE COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES
+# 🔴 WS-49 BH-6: the ROOT COPY, never the checkout. /usr/local/lib/acb is
+# root:root with no group or other write bit. The deploy writes it from
+# `git archive` of the deployed sha (deploy/hostinger/root_lib_files.txt).
 # Invoked through bash on purpose — a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise fail with a bare
 # "Permission denied" and backups would silently never run. Same reasoning as
@@ -116,7 +117,7 @@ UnsetEnvironment=KRB5RCACHETYPE KRB5RCACHEDIR GSS_MECH_CONFIG QUOTING_STYLE COMP
 # timed-out upload is an ERROR, and the unit exits 1 at the end.
 # The journal line `off-box copy ok` is the evidence that a night left the box.
 # Restore: scripts/restore_offbox.sh, and project-docs/specs/backup_and_restore.md §4.2.
-ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore --offbox
+ExecStart=/bin/bash /usr/local/lib/acb/backup_db.sh --verify-restore --offbox
 # ⚠️ ONE value with `unit_timeout_secs` in scripts/backup_db.sh, which cuts
 # the off-box deadline from it. `test_the_unit_budget_is_one_value` fails when
 # the two drift. Change both, or neither.

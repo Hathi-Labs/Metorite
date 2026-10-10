@@ -331,27 +331,31 @@ def test_the_compose_unit_is_a_repo_file() -> None:
     keys = _unit_keys()
     assert keys["Type"] == ["oneshot"]
     assert keys["RemainAfterExit"] == ["yes"]
-    assert keys["WorkingDirectory"] == ["/opt/acb/app"]
+    # WS-49 BH-6: the root copy is the project dir, never the checkout.
+    assert keys["WorkingDirectory"] == ["/usr/local/lib/acb/infra"]
     # WS-49 BH-6a (F1): no env file. Root docker starts under `env -i`, and
     # compose reads .env itself (tests/unit/test_backup_env_values.py).
     assert "EnvironmentFile" not in keys
     assert keys["Requires"] == ["docker.service"]
     assert keys["WantedBy"] == ["multi-user.target"]
-    assert keys["ExecStop"] == [_CLEAN + "-f infra/docker-compose.yml down"]
+    # Scoped to the core profile: measured on Compose v5.5.0, it removes
+    # postgres and redis only, and the meeting bot keeps running (WS-49 BH-6).
+    assert keys["ExecStop"] == [_CLEAN + "--profile core down"]
 
 
-#: The prefix of every docker call of acb.service (WS-49 BH-6a, F1).
+#: The prefix of every docker call of acb.service (WS-49 BH-6a, F1). Since
+#: BH-6 the project dir and the compose file are the root copy, and the env
+#: file is /etc/acb/root.env.
 _CLEAN = (
     "/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
-    "HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb "
+    "HOME=/root /usr/bin/docker compose --project-directory /usr/local/lib/acb/infra "
+    "--env-file /etc/acb/root.env -p acb -f /usr/local/lib/acb/infra/docker-compose.yml "
 )
 
 
 def test_the_compose_unit_starts_the_core_profile_only() -> None:
     (start,) = _unit_keys()["ExecStart"]
-    assert start == (
-        _CLEAN + "-f infra/docker-compose.yml --profile core up -d --remove-orphans"
-    )
+    assert start == _CLEAN + "--profile core up -d --remove-orphans"
     assert re.findall(r"--profile\s+(\S+)", start) == ["core"]
     assert "--profile memory" not in _read(_UNIT)
 
