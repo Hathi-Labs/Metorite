@@ -496,6 +496,20 @@ BUILTIN_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS
     if k not in OPERATOR_ONLY_ENV_KEYS and not env_guard.is_platform_env(k)
 )
+#: Each built-in env var, and the ``(service, suffix)`` of its store row. It is
+#: read from ``acb_llm.key_store.INTEGRATION_ENV_MAP``, which the startup copy
+#: also reads, so a key that configure or ``PUT /keys`` stores lands under the
+#: one name that a reader uses (WS-54 IN-0 fix round 1). The old rule took the
+#: suffix from the guide key and stripped ``<service>_``. That never matched a
+#: service id with a hyphen, so ``ZOHO_CLIENT_ID`` went to
+#: ``zoho-crm:zoho_client_id`` and no reader found it. Fence:
+#: ``test_integrations_in0.py::test_configure_stores_the_name_the_startup_copy_reads``.
+BUILTIN_PROVIDER: dict[str, tuple[str, str]] = {
+    env: (svc, suffix)
+    for svc, key_map in INTEGRATION_ENV_MAP.items()
+    for suffix, env in key_map.items()
+    if env in BUILTIN_ENV_KEYS
+}
 #: The ids of the mail apps (WS-17 EM-G7, O-GM-5). No tile offers a key of
 #: either one, and the key store loads neither at startup. They stay
 #: reserved, so a custom integration cannot take the name of a mail app.
@@ -635,8 +649,15 @@ def _refuse_provider_key_without_byok(names: Iterable[str]) -> None:
 def _guide_env_var(service: str, key_name: str) -> str | None:
     """The env var that a setup guide maps ``key_name`` to, or None.
 
-    The same suffix rule as the loop in ``put_integration_key``.
+    ``key_name`` is first read as a suffix of ``INTEGRATION_ENV_MAP``, the
+    name of the store row (``client_id`` for ``ZOHO_CLIENT_ID``). The old
+    guide suffix rule (``zoho_client_id``) still resolves, so a row that an
+    older write named that way can still be found and deleted.
     """
+    mapped = INTEGRATION_ENV_MAP.get(service, {}).get(key_name)
+    guide_keys = {v["key"] for v in _SETUP_GUIDES.get(service, {}).get("env_vars", [])}
+    if mapped and mapped in guide_keys:
+        return mapped
     for var in _SETUP_GUIDES.get(service, {}).get("env_vars", []):
         suffix = var["key"].lower().removeprefix(
             f"{service}_".upper().lower()
@@ -991,14 +1012,6 @@ async def configure_integrations(
     _refuse_provider_key_without_byok(v.key for v in req.vars)
 
 
-    # Build reverse mapping: env_var → (service, suffix)
-    _env_to_service_suffix: dict[str, tuple[str, str]] = {}
-    for svc, guide in _SETUP_GUIDES.items():
-        for var in guide["env_vars"]:
-            suffix = var["key"].lower().removeprefix(f"{svc}_".upper().lower()) \
-                .replace("-", "_")
-            _env_to_service_suffix[var["key"]] = (svc, suffix)
-
     written: list[str] = []
     db_written: list[str] = []
     store_only: list[str] = []
@@ -1045,8 +1058,9 @@ async def configure_integrations(
         #    So a failed put answers 503. Before IN-0 it was swallowed, and
         #    the env write carried the value. Now a swallowed failure would
         #    answer 200 with nothing written. Layer C makes every key here a
-        #    guide key, so the map always holds it.
-        svc, suffix = _env_to_service_suffix[var.key]
+        #    built-in key, so `BUILTIN_PROVIDER` always holds it, under the
+        #    name that the startup copy reads.
+        svc, suffix = BUILTIN_PROVIDER[var.key]
         provider = f"{svc}:{suffix}"
         try:
             await store.put(
@@ -1159,21 +1173,12 @@ async def put_integration_key(
 
     # Find the env var for this key
     guide = _SETUP_GUIDES[req.service]
-    env_var = None
-    for var in guide["env_vars"]:
-        suffix = var["key"].lower().removeprefix(
-            f"{req.service}_".upper().lower()
-        ).replace("-", "_")
-        if suffix == req.key_name:
-            env_var = var["key"]
-            break
+    env_var = _guide_env_var(req.service, req.key_name)
 
     if env_var is None:
         known_keys = [
-            v["key"].lower().removeprefix(
-                f"{req.service}_".upper().lower()
-            ).replace("-", "_")
-            for v in guide["env_vars"]
+            BUILTIN_PROVIDER[v["key"]][1]
+            for v in guide["env_vars"] if v["key"] in BUILTIN_PROVIDER
         ]
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1191,14 +1196,22 @@ async def put_integration_key(
     # Store in encrypted DB, for this organization only. 🔒 IN-0: the env var
     # and the env file are NOT written. Each has one value for the whole
     # deployment, so that write replaced the key of every other organization.
-    provider = f"{req.service}:{req.key_name}"
+    # The row takes the name that the startup copy reads (`BUILTIN_PROVIDER`).
+    # Layer B passed, so `env_var` is a built-in key.
+    if env_var not in BUILTIN_PROVIDER:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{env_var} is not a key that an integration can store.",
+        )
+    svc, suffix = BUILTIN_PROVIDER[env_var]
+    provider = f"{svc}:{suffix}"
     from acb_llm.key_store import get_key_store
     store = get_key_store()
     await store.put(
         provider,
         value,
         credential_type="integration",
-        service=req.service,
+        service=svc,
         organization_id=current_tenant(),
     )
 

@@ -1178,7 +1178,7 @@ class TestEveryCallerStillWorks:
         )
         assert out["written"] == ["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN"]
         assert b"ZOHO_REFRESH_TOKEN" not in env_file.read_bytes()  # IN-0: the store only
-        assert ("zoho-crm:zoho_refresh_token", "1000.0f3b9c.4d2e8a1b") in store.puts
+        assert ("zoho-crm:refresh_token", "1000.0f3b9c.4d2e8a1b") in store.puts
 
     async def test_github_device_connect_saves_the_client_id(self, env_file, store, custom):
         # src/components/GitHubDeviceConnect.tsx (about :126), Option B.

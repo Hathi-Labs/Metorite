@@ -751,3 +751,51 @@ async def test_one_org_the_startup_copy_still_runs(monkeypatch: pytest.MonkeyPat
     ks = _startup_store(monkeypatch, org_count=1)
     await ks.configure_integrations()
     assert os.environ.get("APOLLO_API_KEY") == "stored-apollo-key"
+
+
+# ── Fix round 1, P1: configure and PUT write the name the startup copy reads ─
+
+
+def _startup_provider() -> dict[str, str]:
+    """Each built-in env var, and the provider name that the startup copy reads."""
+    from acb_llm.key_store import INTEGRATION_ENV_MAP
+
+    return {
+        env: f"{svc}:{suffix}"
+        for svc, key_map in INTEGRATION_ENV_MAP.items()
+        for suffix, env in key_map.items()
+        if env in integrations.BUILTIN_ENV_KEYS
+    }
+
+
+def test_every_builtin_key_has_one_startup_name() -> None:
+    from acb_llm.key_store import INTEGRATION_ENV_MAP
+
+    names: dict[str, list[str]] = {}
+    for svc, key_map in INTEGRATION_ENV_MAP.items():
+        for suffix, env in key_map.items():
+            names.setdefault(env, []).append(f"{svc}:{suffix}")
+    for key in integrations.BUILTIN_ENV_KEYS:
+        assert len(names.get(key, [])) == 1, (key, names.get(key))
+
+
+@pytest.mark.parametrize("key", sorted(integrations.BUILTIN_ENV_KEYS))
+async def test_configure_stores_the_name_the_startup_copy_reads(
+    key: str, env_file, store, tenant, byok_on,
+) -> None:
+    req = integrations.ConfigureRequest(
+        vars=[integrations.IntegrationVar(key=key, value="v1-value")],
+    )
+    await integrations.configure_integrations(req, user=USER)
+    assert [p for p, _, _ in store.puts] == [_startup_provider()[key]]
+
+
+@pytest.mark.parametrize("key", sorted(integrations.BUILTIN_ENV_KEYS))
+async def test_put_keys_stores_the_name_the_startup_copy_reads(
+    key: str, env_file, store, tenant, byok_on,
+) -> None:
+    service, key_name = _startup_provider()[key].split(":", 1)
+    req = integrations.IntegrationKeyRequest(service=service, key_name=key_name, value="v1-value")
+    out = await integrations.put_integration_key(req, user=USER)
+    assert out["env_var"] == key
+    assert [p for p, _, _ in store.puts] == [_startup_provider()[key]]
