@@ -87,8 +87,11 @@ interface ChatRequest {
    *  the last one, and composes the note the new run reads
    *  (`gateway/chat_supersede.py`). */
   supersedes?: string;
-  /** The id of this turn's own user row, so the edit never deletes it. */
+  /** The id of this turn's own user row. The gateway saves the turn under
+   *  this id at run start (WS-51 S4), and an edit never deletes it. */
   userMessageId?: string;
+  /** The browser's time stamp of that row, the one its own save writes. */
+  userMessageTs?: number;
   /** The Continue button after a restart (incident 2026-10-09). The gateway
    *  writes the words the model reads, from the saved partial reply, so this
    *  is a flag and never text. */
@@ -647,7 +650,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId } = body;
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs } = body;
   if (!agentName || !message) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
@@ -799,9 +802,17 @@ export async function POST(req: NextRequest): Promise<Response> {
             // email) so named agents — not just the orchestrator — receive it.
             // The executor injects it as a leading system message.
             ...(context ? { system_context: context } : {}),
-            // An edit of the last message: the gateway pops both keys
-            // before the payload reaches the executor.
-            ...(supersedes ? { supersedes, user_message_id: userMessageId ?? "" } : {}),
+            // The member's own row: the gateway saves the turn under this id
+            // before the run starts (WS-51 S4). An edit of the last message
+            // names its target too. The gateway pops all three keys before
+            // the payload reaches the executor.
+            ...(userMessageId
+              ? {
+                user_message_id: userMessageId,
+                ...(typeof userMessageTs === "number" ? { user_message_ts: userMessageTs } : {}),
+              }
+              : {}),
+            ...(supersedes ? { supersedes } : {}),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,
