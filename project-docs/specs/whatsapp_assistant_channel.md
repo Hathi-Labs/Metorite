@@ -1,7 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-2 built, dark (2026-10-09), after WAC-1 on the same day. WAC-3
-is next. Board row
+**Status:** WAC-3 built, dark (2026-10-10), after WAC-1 and WAC-2 on
+2026-10-09. WAC-4 is next. Board row
 **WS-47**. WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test
 number. WAC-0 (the number) is the owner's, and it gates production only. HANDOFF
 **H-251** carries it.
@@ -19,7 +19,11 @@ the group never reaches the WS-20 path. The bot replies with
 `WHATSAPP_ASSISTANT_ACCESS_TOKEN`, after the 200. `flags.py` reads both. A
 redelivery record keeps the reply of each link message by `wamid`, so a
 repeat gets the same reply and counts no second failure. It is in the process
-and single-process, and the durable `wamid` record of WAC-3 replaces it.
+and single-process.
+
+**The WAC-3 record replaces it for a linked sender only.** A link message from an
+unlinked phone has no org, so a tenant table cannot hold it. The in-process
+record stays for that case.
 
 The migration `whatsapp_member_link_lookups` adds the two SECURITY DEFINER reads
 of §5.3: `whatsapp_member_links_for_phone` and
@@ -28,6 +32,52 @@ row of the SAME phone, for the redelivery rule. A new code for a phone that
 the member already linked in that org revokes the old row, so the unique
 index holds. Fences: `tests/unit/test_wac_bot_inbound.py` and
 `tests/unit/test_wac_bot_link_r8.py` (R8).
+
+**WAC-3 as built (2026-10-10).** The run is `whatsapp_channel/bot_run.py`.
+The migration `whatsapp_bot_messages` adds the table and `chat_session.channel`. Before
+the 200, `inbound.py` binds the org of the phone's current link. It writes the
+member's turn into the WhatsApp thread, and then a `received` row by `wamid`.
+The turn has an id made from the `wamid`, so the sweep reads the text back from
+the thread.
+
+After the 200, the background task starts the run as a task of its own, so a
+slow run never holds the response.
+
+The run checks the switch, the link, the member, `feature:chat` and
+`resolve_identity`, in that order. Then it calls the executor's `run_agent` in
+the process. `acb_skills.ask_tools.refuse_cards` makes every card tool deny at
+once. `chat_fold.persist_channel_reply` writes the reply row. Fences:
+`tests/unit/test_wac_bot_run.py` and `tests/unit/test_wac_bot_run_r8.py` (R8).
+
+*(Review round 1, 2026-10-10.)* One thread runs one message at a time, oldest
+first, so a second text runs right after the first. A failure after the claim
+gives the row back to the sweep, and the last try sends the general text once.
+A thread that gets a participant on the web is a shared room. The bot leaves
+it, and the next text opens a new thread. A redelivery writes nothing, and a
+bot write keeps the agent that the member chose.
+
+*(Review round 2, 2026-10-10.)* Each message gets one reply at most, and at
+least one unless the channel fails. A row becomes `sending` in the database
+just before its first part goes out, and nothing runs a `sending` row again. A
+crash can lose the tail of a long reply, and it never sends a part twice. A
+thread is a room only when its visibility is not `private` or it has a
+participant who is not its member. The member's own `owner` row is no room.
+
+*(Review round 3, 2026-10-10.)* The bot sends a stored reply again only when
+the first part SURELY did not reach the member. That is a 4xx from Meta, or a
+connection that never opened. A read timeout, a 5xx or a 200 with no message
+id may have delivered the text. Then the row closes as `replied`, and nothing
+goes again. The last word of a used-up message is its stored reply when the thread
+holds one, and else the general text.
+
+**The trade-off is at-most-once.** A restart, or an unclear error, during the
+first send can lose the reply and still record the message as `replied`. A
+reply that goes out twice is the worse failure, so the bot accepts the loss.
+
+One more case falls on that side *(verifier F1, 2026-10-10)*. On the last try,
+the stored reply's own send mark can commit and then raise. The row then
+closes as `send_unconfirmed` with nothing sent. It needs a database fault after
+the commit, and it never sends twice.
 
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
@@ -220,10 +270,10 @@ app a free test number (§6.3).
 | Webhook parser | `apps/services/whatsapp_ingestion/whatsapp_ingestion/providers/webhook.py` | `parse_webhook(payload)`. It is total and never raises |
 | Send seam | `whatsapp_ingestion/providers/base.py` (`BaseWhatsAppProvider` line 122, `send_text` line 133, `send_template` line 147) and `providers/cloud_api.py` | Free text and templates over the Cloud API |
 | 24-hour window rule | `gateway/routes/whatsapp/transport/send.py` (route at line 62) | The template-or-text decision |
-| Agent run | `gateway/routes/agent.py`: `POST /agent/run` (line 2732), `/agent/run/stream` (line 2007), `/agent/run/async` (line 2798) | A run as a named member, through `session_user` |
+| Agent run | `gateway/routes/agent.py`: `POST /agent/run` (line 3065), `/agent/run/stream` (line 2192), `/agent/run/async` (line 3131). WAC-3 calls the executor's `run_agent` in the process instead, because these routes take the org from the email | A run as a named member, through `session_user` |
 | Service identity | `packages/acb_auth/acb_auth/deps.py` `get_current_user` (line 410) | `Bearer GATEWAY_INTERNAL_TOKEN` + `X-User-Email` gives a member context |
 | Projects, Tasks and Calendar tools | `apps/skills/skill-projects/skill_projects/` | Every tool calls the gateway as the member, through a per-run ContextVar |
-| Chat history | `chat_session`, `chat_message` (`infra/postgres/02_chat_history.sql`), with tenant RLS | One thread per member, visible in the web app |
+| Chat history | `chat_session`, `chat_message` (`infra/postgres/02_chat_history.sql`), with tenant RLS | The store of the web chat. It has no channel marker, and a server-started run writes no `chat_message` rows (measured 2026-10-10). WAC-3 adds both (§5.5) |
 | Speech to text | `packages/acb_stt/` | Voice notes |
 | Approval of an outward act | Action Broker, as `gateway/routes/whatsapp/automation/outbound.py` uses it | The pattern for a confirm step |
 | Calls | `whatsapp_calls_note_taker.md` Surface C | The later calls workstream |
@@ -392,6 +442,24 @@ Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
   message that stayed `received` too long. Use the BO-20 durable queue (WS-4)
   if it has landed by build time. Do not build a second queue.
 
+**The bot message record, as WAC-3 builds it** *(set 2026-10-10 from the WAC-3
+audit)*. BO-20 has not landed (WS-4 row). So WAC-3 adds the table
+`whatsapp_bot_messages`, tenant-scoped with FORCE RLS. Its columns are `id`,
+`organization_id`, `member_email`, `wa_id`, `wamid` (unique), `direction` (`in`
+or `out`), `state`, `chat_session_id`, `tries`, `error_code`, `received_at`
+and `updated_at`. The states are `received`, `running`, `sending`,
+`replied`, `refused`, `failed` and `expired`. A row is `sending` from just
+before the first part of its reply goes out, and nothing runs it again.
+
+- **It holds no message text.** The text lives only in the chat thread (§5.9).
+- **One `wamid`, one run.** A redelivery inserts nothing (`ON CONFLICT DO
+  NOTHING`). Only the insert that wrote the row starts a run.
+- **The sweep.** Every minute, a sweep binds each org of
+  `WHATSAPP_ASSISTANT_ORGS` in turn, so it needs no new SECURITY DEFINER
+  function. It runs a row again when the row stayed `received` or `running` for
+  more than 5 minutes, for at most 3 tries. A row older than 24 hours becomes
+  `expired` and gets no reply, because the reply window has closed.
+
 **Link redemption, as WAC-2 builds it** *(set 2026-10-09 from the WAC-2 audit)*:
 
 - **Status updates.** WAC-2 acks a status update and writes a log line with the
@@ -443,15 +511,35 @@ Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
   link row and is bound explicitly.** It is never re-derived from the email,
   because §4.2 gap 4 makes that fail for a member of two orgs. It is never read
   from the message text. (D-WAC-3.)
-- **Still a member.** Before each run, check that the membership is still
-  active. A removed member's link is revoked and the run does not start.
+- **The tools find the org again** *(measured 2026-10-10)*. Each tool calls the
+  gateway with `X-User-Email` (`skill_projects/client.py`). The gateway binds
+  the org from `resolve_identity` (`acb_auth/deps.py`). So binding the org on
+  the run does not reach the tools.
+- **So the run checks the identity first.** Before each run, WAC-3 checks that
+  `resolve_identity(member_email)` returns the org of the current link. When it
+  does not, the run does not start. The bot sends this fixed text: "Metorite
+  cannot open this workspace from WhatsApp yet. Use the web app." A run never
+  answers from an org that the link does not name.
+- **What this costs today.** Nothing yet: `app_user` is unique on the email
+  across all orgs (migration 162), so every link that exists resolves to its
+  own org. A full answer for a member of two orgs needs a per-request org claim
+  on the tool loopback. WS-35 slice B owns that, and WAC-3 does not build it.
+- **Still a member, and still allowed.** Before each run, check four things. The
+  member is active in the link's org (a bound read of `app_user.status`). The
+  member holds `feature:chat` there. The kill switch is on. The org allowlist
+  still holds the org. Refuse a second live run on the same thread. WAC-3 refuses the
+  run of a removed member. WAC-8 revokes the link.
 - **The scope rule.** The run carries a channel instruction: answer about this
   member's Metorite work only, and refuse other topics in one line. Keep replies
   short, and write plain text, because WhatsApp shows plain text and a little
   markup.
-- **The thread.** One `chat_session` per member for this channel, marked as
-  WhatsApp. The member sees the same thread in the web app. A message older than
-  the session window starts a new session (window chosen at build time).
+- **The thread** *(set 2026-10-10)*. The migration of WAC-3 also adds
+  `chat_session.channel text` (nullable, no default, expand only). WAC-3 writes
+  `whatsapp` there. The thread is the member's latest `whatsapp` session in the
+  link's org. A message more than 24 hours after the last one starts a new
+  session. WAC-3 writes the member's turn and the reply through `routes/chat.py`
+  `_upsert_session` and `_upsert_messages`, with the link's org. A badge in the
+  web sidebar is not part of WAC-3.
 - **Metering.** The run goes through the Router like every other chat run, and
   it spends the org's AI credits by the same rules. WhatsApp adds no second
   meter.
@@ -460,8 +548,22 @@ Meta ──POST /whatsapp/webhook──▶ verify HMAC ──▶ parse
 
 - A reply inside the 24-hour window is free-form text through `send_text`.
 - Split a long reply at paragraph breaks. WhatsApp's limit is 4096 characters.
-- **A write asks first.** A tool that needs a card on the web asks here with
-  reply buttons ("Confirm", "Cancel"). The button payload carries a signed,
+- **WAC-3 is reads only** *(set 2026-10-10)*. A server-started run pushes a card
+  that nobody sees, and the tool would wait up to an hour. So in a WhatsApp run,
+  a tool that asks for a card gets a deny at once. It writes nothing, and the
+  run does not wait. The reply says to make the change in the web app. Capture
+  moves to WAC-4. *(Accepted 2026-10-10, WAC-3 review.)* The member's own
+  memory tools (`remember`, `save_memory` and `save_episode`) ask for no card,
+  so they still write the member's own memory from WhatsApp.
+- **A rate limit per member is due before WAC-9** *(WAC-3 review)*. WAC-3 runs
+  every text of a linked member, and only the org's AI credits cap the cost.
+  WAC-9 must not switch on an org before a limit on bot runs per member exists.
+- **A failed run gets one fixed reply**, chosen by `classify_run_error`. For the
+  code `credits` the reply is: "Your organization is out of AI credits. An admin
+  can add credits in Settings, Billing." Every other code gets: "Metorite could
+  not answer just now. Try again in a few minutes."
+- **A write asks first** (WAC-4). A tool that needs a card on the web asks here
+  with reply buttons ("Confirm", "Cancel"). The button payload carries a signed,
   single-use, short-lived token for that one pending act. A tap from any other
   phone, or after expiry, does nothing.
 - **A destructive act never runs from WhatsApp.** A delete, a move or any
@@ -596,7 +698,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-0** | The Meta setup of §6 | **OWNER-GATE** | The five values of §5.1 are on the box, and `GET /whatsapp/webhook` answers Meta's handshake |
 | **WAC-1** ✅ built 2026-10-09 | The link table (§5.3), its migration, the code-issue route, and "Chat on WhatsApp" in member settings | AGENT-SAFE | A signed-in member gets a `wa.me` link and a QR. The code is stored as a hash and expires. The migration applies on a real database (R8). `test_tenant_coverage.py` passes |
 | **WAC-2** ✅ built 2026-10-09, dark | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
-| **WAC-3** | A linked text runs the assistant and the reply comes back (§5.5, §5.6, read tools and capture only) | AGENT-SAFE | "What is due today?" from the test phone returns the member's tasks. A member of two orgs gets answers from the LINKED org. One `wamid` delivered twice starts one run. A removed member gets no answer. The thread shows in the web chat |
+| **WAC-3** ✅ built 2026-10-10, dark | A linked text runs the main Chat assistant and the reply comes back (§5.4 bot message record, §5.5, §5.6). Read tools only: a card is denied at once (capture moves to WAC-4) | AGENT-SAFE | *(Made testable 2026-10-10.)* A1: a linked sender's message writes one `received` row, the route answers 200 before the run, and `run_agent` gets agent `orchestrator`, the link row's org, the link's email as the session user, and the scope rule in `system_context`. A2: one payload delivered twice, or twice at once, starts one run. A3: `resolve_identity` returning another org or none starts no run and sends the fixed refusal. A4: a member not active in the link's org gets no run and no reply. A5 (R8): a `chat_session` with channel `whatsapp` and its user and assistant rows exist in the link's org, `GET /chat/sessions` lists them for that member, and another org sees none. A6: a card tool in a WhatsApp run returns at once and writes nothing. A7: a `credits` failure sends the credits text, any other failure sends the general text, and the row ends `failed`. A8: the sweep runs a stale `received` row once, a row older than 24 hours ends `expired` with no send, and the tries stop at 3. A9: flag off or org off the allowlist starts no run. A10: the migration applies on a real database and `test_tenant_coverage.py` passes. Fences: `tests/unit/test_wac_bot_run.py`, `tests/unit/test_wac_bot_run_r8.py`. The live phone check stays the manual step of §8 |
 | **WAC-4** | Confirmation by reply buttons for class B writes, and the web-app link for guarded acts (§5.6) | AGENT-SAFE | "Add a task: call the vendor tomorrow" asks with buttons, and Confirm writes exactly one task. A tap from another phone or after expiry writes nothing. A delete request answers with a web link and changes nothing |
 | **WAC-5** | Voice notes (§5.7) | AGENT-SAFE | A voice note runs as its transcript, the reply echoes the transcript, and no audio file remains after the run |
 | **WAC-6** | Flow B, the Metorite-initiated link (§5.2) | AGENT-SAFE to build, **OWNER-GATE** to send to a real person | With a test template, YES links the phone and no reply links nothing |
@@ -632,7 +734,8 @@ manual step, and its evidence is the reply on the phone plus the run log line.
 
 | Rule | Fence (written by the slice named) |
 |---|---|
-| The run's org comes from the link row, never from the email or the message | A test with a member of two orgs (WAC-3) |
+| The run's org comes from the link row, never from the email or the message, and a run whose email resolves to another org does not start | A test with `resolve_identity` patched to another org (WAC-3, A3) |
+| A card tool in a WhatsApp run never waits and never writes | A test that runs a class B tool in a WhatsApp run (WAC-3, A6) |
 | An unknown sender gets no org data | A test that asserts the reply text is the fixed string (WAC-2) |
 | One `wamid` starts one run | A test that delivers one payload twice (WAC-3) |
 | A link code is single-use and expires | Tests for reuse and expiry (WAC-1, WAC-2) |

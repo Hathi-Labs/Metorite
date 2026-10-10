@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 141
+-- Tables in this phase: 143
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -976,6 +976,13 @@ ALTER TABLE wa_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE wa_templates FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS wa_templates_tenant_isolation ON wa_templates;
 CREATE POLICY wa_templates_tenant_isolation ON wa_templates
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE whatsapp_bot_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_bot_messages FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS whatsapp_bot_messages_tenant_isolation ON whatsapp_bot_messages;
+CREATE POLICY whatsapp_bot_messages_tenant_isolation ON whatsapp_bot_messages
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

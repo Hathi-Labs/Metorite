@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 141
+-- Tables in this phase: 143
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -1642,6 +1642,18 @@ ALTER TABLE wa_templates ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE wa_templates ADD CONSTRAINT wa_templates_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS wa_templates_org_idx ON wa_templates (organization_id);
+
+-- whatsapp_bot_messages
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM whatsapp_bot_messages WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: whatsapp_bot_messages still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE whatsapp_bot_messages ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE whatsapp_bot_messages ADD CONSTRAINT whatsapp_bot_messages_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS whatsapp_bot_messages_org_idx ON whatsapp_bot_messages (organization_id);
 
 -- whatsapp_member_links
 DO $$

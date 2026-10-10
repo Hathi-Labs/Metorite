@@ -37,6 +37,7 @@ __all__ = [
     "BASE_NAMES",
     "COPILOT_NAMES",
     "DOCKER_NAMES",
+    "NPM_CACHE_DIR",
     "T2_VENDOR_DIR",
     "child_env",
     "copilot_env",
@@ -124,6 +125,10 @@ AGENT_SITE_DIR = "/var/lib/acb-gateway/agent-site"
 #: (``40-agent-site.conf``). ``vps_apply.sh`` reads no path from ``.env``.
 T2_VENDOR_DIR = "/opt/acb/t2-vendor"
 
+#: The npm cache of an agent child (WS-49 BH-2), under the gateway unit's
+#: ``CacheDirectory=acb-gateway``. ``~/.npm`` is read-only in the sandbox.
+NPM_CACHE_DIR = "/var/cache/acb-gateway/npm"
+
 #: Fixed path values for the children that run agent code: the Copilot CLI
 #: (``copilot_env()``) and ``run_script`` (``code_tools._script_env``). This is
 #: the ONE place to add one. A value here wins over the gateway's own value of
@@ -133,9 +138,17 @@ T2_VENDOR_DIR = "/opt/acb/t2-vendor"
 #: dir. No unit sets it, because a unit-wide value goes BEFORE the venv on
 #: ``sys.path`` in the gateway too. ``CUSTOM_APPS_T2_VENDOR_DIR`` lets the
 #: in-chat T2 build of the app-builder agent find the vendor cache.
+#:
+#: WS-49 BH-2. ``npm_config_cache`` moves the npm cache out of ``~/.npm``.
+#: The gateway sandbox has ``ProtectHome=read-only``, so ``npm install`` in
+#: ``install_t2_deps.mjs`` (the app-builder agent, through the Copilot shell)
+#: fails with EROFS on ``~/.npm``. The dir is under the gateway unit's
+#: ``CacheDirectory=acb-gateway``. ``50-hardening.conf`` sets the same value
+#: for the gateway itself.
 AGENT_PATH_VALUES: dict[str, str] = {
     "PYTHONPATH": AGENT_SITE_DIR,
     "CUSTOM_APPS_T2_VENDOR_DIR": T2_VENDOR_DIR,
+    "npm_config_cache": NPM_CACHE_DIR,
 }
 
 #: The names that tell the ``docker`` CLI where the daemon is and how to

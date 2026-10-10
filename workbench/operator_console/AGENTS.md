@@ -109,15 +109,14 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
 - Everything server-shaped or rule-shaped is a pure `src/lib/*` module,
   unit-tested; `src/app` is composition.
 
-## Ship dark
-Not deployed, no hostname/Caddy route, no secrets set. Deploy, hostname, the
-operator-token env and the staff Google Workspace app are all OWNER-GATE.
-
-⚠️ **This section describes what `deploy/` PROVISIONS, and not the world.**
-The `Caddyfile` declares `api.metorite.com` and `app.metorite.com` alone, and
-no `acb-operator-console.service` sits beside the six units. But
-`operator.metorite.com` serves today, because somebody stood the console up by
-hand. H-75 holds that gap, and only the box settles it.
+## Deploy
+`operator.metorite.com` serves the console. `deploy/` holds both halves. The
+Caddy block is in `deploy/hostinger/caddy/Caddyfile`. The unit is
+`deploy/hostinger/acb-operator-console.service`, with its drop-in
+`acb-operator-console.service.d/50-hardening.conf` (WS-49 BH-2, 2026-10-09).
+`scripts/vps_apply.sh` installs both, and builds and restarts the console on
+each deploy. The operator-token env and the staff Google Workspace app stay
+OWNER-GATE.
 
 ## Verify
 `npm run typecheck` (whole app) · `npm run typecheck:lib` (pure lib only) ·

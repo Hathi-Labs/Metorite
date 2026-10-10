@@ -575,6 +575,45 @@ echo "==> Ensuring memory-layer env vars (Neo4j disabled for low-memory VPS)"
 # secrets into the live box while you thought you were in a sandbox. Until this
 # is unified (owner's call), hand-run it only with APP_DIR=/opt/acb/app.
 ENV_FILE="/opt/acb/app/.env"
+
+# ── WS-49 BH-2: a writer of .env must keep its inode ─────────────────────────
+# 🔴 The gateway sandbox (50-hardening.conf) lists .env on ReadWritePaths.
+# systemd bind-mounts the INODE that .env has when the gateway starts. A
+# writer that replaces the file by rename (`sed -i`, `tmp && mv`) leaves the
+# running gateway on the old, unlinked copy. The saves of the gateway then go
+# to that dead copy, and the next restart drops them. So every edit of .env
+# here builds the new content in a temp file and writes it back INTO the same
+# inode. The mode and the owner stay, because the inode stays. An append
+# (`>>`) keeps the inode already.
+# This apply holds the deploy lock, so no other deploy writes .env at once.
+# Fence: tests/unit/test_env_inode.py.
+# >>> env helpers
+# env_edit_in_place <file> <cmd> [args...] — run "<cmd> [args...] <file>" into
+# a temp file, then write the result INTO <file>. A failed command changes
+# nothing. `grep -v` exits 1 when it prints no line, and that is a result.
+env_edit_in_place() {
+  local f="$1" tmp rc=0
+  shift
+  tmp="$(mktemp "$(dirname "$f")/.env-edit.XXXXXX")"
+  "$@" "$f" > "$tmp" || rc=$?
+  if [ "$rc" -gt 1 ] || { [ "$rc" = 1 ] && [ "$1" != grep ]; }; then
+    rm -f "$tmp"
+    echo "    !! could not edit $f (exit $rc). It is unchanged."
+    return 1
+  fi
+  # 🔴 The write truncates first. ENOSPC or a kill in the middle leaves a
+  # short .env, and the next restart then starts the gateway with no
+  # DATABASE_URL. So compare, and keep the full copy when they differ.
+  # ensure_gateway_rw_paths also refuses a restart on a .env with no
+  # DATABASE_URL, which catches a short file from any writer.
+  if ! cat "$tmp" > "$f" || ! cmp -s "$tmp" "$f"; then
+    echo "    !! .env write failed, the full copy is at $tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+}
+# <<< env helpers
+
 for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
@@ -865,7 +904,7 @@ SEG_MODEL="$MODELS_DIR/segmentation.onnx"
 EMB_MODEL="$MODELS_DIR/embedding.onnx"
 upsert_env() {  # key value — set-or-replace in $ENV_FILE (paths ok)
   if grep -qE "^$1=" "$ENV_FILE" 2>/dev/null; then
-    sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"
+    env_edit_in_place "$ENV_FILE" sed "s|^$1=.*|$1=$2|"
   else
     echo "$1=$2" >> "$ENV_FILE"
   fi
@@ -941,8 +980,9 @@ strip_t2_vendor_env_line() {  # <env file>
   local f="$1" pat='^[[:space:]]*(export[[:space:]]+)?CUSTOM_APPS_T2_VENDOR_DIR[[:space:]]*='
   [ -f "$f" ] || return 0
   grep -qE "$pat" "$f" || return 0
-  # sed -i keeps the mode and the owner of the file. No value is printed.
-  sed -i -E "/$pat/d" "$f"
+  # A write INTO the file keeps its inode, mode and owner (env helpers above,
+  # WS-49 BH-2). `sed -i` would replace the inode. No value is printed.
+  env_edit_in_place "$f" sed -E "/$pat/d"
   echo "    WARN BH-7: removed a CUSTOM_APPS_T2_VENDOR_DIR line from $f."
   echo "    WARN BH-7: the T2 vendor dir is /opt/acb/t2-vendor, from 40-agent-site.conf."
 }
@@ -1010,6 +1050,147 @@ strip_t2_vendor_env_line "$ENV_FILE"
 install_dropins "$APP_DIR/deploy/hostinger"
 echo "    drop-ins installed and systemd reloaded"
 
+# ── WS-49 BH-2: the gateway sandbox, its write list and its strict check ────
+# Spec: project-docs/specs/box_hardening.md §5 BH-2 items 2, 5 and 6.
+#
+# deploy/hostinger/acb-gateway.service.d/50-hardening.conf went in with the
+# drop-ins above, so the gateway restart below runs the sandbox.
+#
+# 1. compile_bytecode and ensure_gateway_rw_paths run before that restart. A
+#    path on ReadWritePaths with no "-" must exist, or systemd cannot set up
+#    the sandbox and the gateway does not start. The step makes each such
+#    path but .env, and the home dirs of the "-" entries. A missing .env
+#    stops the deploy HERE, before the restart, so the gateway that runs now
+#    keeps serving.
+# 2. bh2_strict_check runs near the end, after the last restart and before
+#    the marker. It passes ONLY when acb-gateway is active, with
+#    NoNewPrivileges=yes and ProtectSystem=strict. A valid rollback
+#    (scripts/bh2_rollback.sh status = 0) passes too, and prints the WARN.
+#    Anything else fails the deploy, and no marker is written.
+#
+# tests/unit/test_bh2_strict_check.py sources the block between the two
+# marker lines below. Keep it free of side effects: definitions and defaults
+# only.
+# >>> bh2 helpers
+BH2_UNIT="${BH2_UNIT:-acb-gateway}"
+BH2_ROLLBACK_SCRIPT="${BH2_ROLLBACK_SCRIPT:-$APP_DIR/scripts/bh2_rollback.sh}"
+# The home of the service user, as 50-hardening.conf names it.
+BH2_HOME="${BH2_HOME:-/home/acb}"
+
+# Each path on the ReadWritePaths of 50-hardening.conf, before the restart.
+# - .env is the one path the deploy cannot make: it holds the secrets. A
+#   missing .env stops the deploy, and the gateway that runs keeps serving.
+# - data/ and the two JSON files are made when absent. Git tracks the JSON
+#   files today, but a later commit that drops one must not stop every deploy.
+#   agents.json holds a list, and the models cache holds an object.
+# - The "-" home dirs are made as the service user, so they bind on a fresh
+#   box. ~/.cache/github-copilot-sdk comes from the Copilot CLI fetch above.
+ensure_gateway_rw_paths() {  # <app dir> [<home of the service user>]
+  local app="$1" home="${2:-$BH2_HOME}" owner user f body d
+  owner="$(stat -c '%U:%G' "$app")"
+  user="${owner%%:*}"
+  if [ ! -f "$app/.env" ]; then
+    echo "    !! $app/.env is missing. It is on the ReadWritePaths of 50-hardening.conf,"
+    echo "       so the sandboxed gateway cannot start without it."
+    return 1
+  fi
+  # A .env that a failed write cut short has lost its later lines. With no
+  # DATABASE_URL the gateway starts and serves nothing, so refuse the restart
+  # and keep the gateway that runs now. This catches a short file from any
+  # writer. No value is printed.
+  if ! grep -q '^DATABASE_URL=.' "$app/.env"; then
+    echo "    !! $app/.env holds no DATABASE_URL. A write may have cut it short."
+    echo "       Restore it (a .env-edit.* or .env.bak-* file beside it holds a full copy)."
+    return 1
+  fi
+  # This function runs under `|| {…}`, so `set -e` is off here. Each write
+  # checks itself.
+  if [ ! -d "$app/data" ]; then
+    mkdir -p "$app/data" || return 1
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$app/data" || return 1; fi
+    echo "    made $app/data, a ReadWritePaths dir of the gateway"
+  fi
+  for f in "$app/infra/provider_models_cache.json" "$app/apps/services/gateway/agents.json"; do
+    [ -f "$f" ] && continue
+    case "$f" in */agents.json) body='[]' ;; *) body='{}' ;; esac
+    mkdir -p "$(dirname "$f")" || return 1
+    printf '%s\n' "$body" > "$f" || return 1
+    if [ "$(id -u)" = "0" ]; then chown "$owner" "$f" || return 1; fi
+    echo "    made $f as $body: it is on the ReadWritePaths of the gateway"
+  done
+  for d in "$home/.acb/agents" "$home/.copilot" "$home/.cache/copilot"; do
+    [ -d "$d" ] && continue
+    if [ "$(id -un)" = "$user" ]; then
+      mkdir -p "$d" || return 1
+    else
+      sudo -u "$user" mkdir -p "$d" || return 1
+    fi
+    echo "    made $d as $user, so its ReadWritePaths entry binds"
+  done
+}
+
+# The gateway cannot write __pycache__ under .venv, apps/ or packages/ in
+# the sandbox. Python then skips the write with no error, and compiles each
+# changed module again at every start. So the deploy compiles them, as the
+# owner of the checkout, before the restart. Best-effort: a file that does
+# not compile is logged, and the deploy goes on. The timestamp mode is right
+# here, because `git reset` and `uv sync` give a changed file a new mtime.
+compile_bytecode() {  # <app dir>
+  local app="$1" owner py rc=0
+  owner="$(stat -c '%U' "$app")"
+  py="${BH2_PYTHON:-$app/.venv/bin/python}"
+  if [ ! -x "$py" ]; then
+    echo "    ! no $py, so no bytecode was compiled (non-fatal)"
+    return 0
+  fi
+  local -a cmd=("$py" -m compileall -q -j 0 --invalidation-mode timestamp
+                -x '[/\\](node_modules|\.next|\.git)[/\\]' "$app/.venv/lib" "$app/apps" "$app/packages")
+  if [ "$(id -un)" = "$owner" ]; then
+    "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  else
+    sudo -u "$owner" -H "${cmd[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  if [ "$rc" = "0" ]; then
+    echo "    compiled the bytecode of .venv, apps/ and packages/"
+  else
+    echo "    ! compileall exited $rc: a file did not compile (non-fatal). Python compiles it at start."
+  fi
+  return 0
+}
+
+# On a failure it sets BH2_FAIL_WHY to the reason, for the deploy's last line.
+bh2_strict_check() {
+  local active nnp psys rb_out rb_rc=0
+  BH2_FAIL_WHY=""
+  active="$(systemctl show "$BH2_UNIT" -p ActiveState --value 2>/dev/null || true)"
+  nnp="$(systemctl show "$BH2_UNIT" -p NoNewPrivileges --value 2>/dev/null || true)"
+  psys="$(systemctl show "$BH2_UNIT" -p ProtectSystem --value 2>/dev/null || true)"
+  # status reads the root-only ack with sudo, and takes no deploy lock.
+  rb_out="$(bash "$BH2_ROLLBACK_SCRIPT" status 2>&1)" || rb_rc=$?
+  if [ "$rb_rc" = "0" ]; then
+    printf '%s\n' "$rb_out" | sed 's/^/    /'
+  fi
+  if [ "$active" != "active" ]; then
+    echo "    !! BH-2 strict check: $BH2_UNIT is '${active:-unknown}', not active."
+    BH2_FAIL_WHY="$BH2_UNIT is not active ('${active:-unknown}'). A rollback does not pass an inactive gateway"
+    return 1
+  fi
+  if [ "$nnp" = "yes" ] && [ "$psys" = "strict" ]; then
+    echo "    BH-2 strict check: $BH2_UNIT is active, NoNewPrivileges=yes, ProtectSystem=strict"
+    return 0
+  fi
+  if [ "$rb_rc" = "0" ]; then
+    echo "    BH-2 strict check: the sandbox is off (NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?}),"
+    echo "    and a valid rollback holds it off. Fix the cause, then run bh2_rollback.sh off."
+    return 0
+  fi
+  echo "    !! BH-2 strict check: NoNewPrivileges=${nnp:-?}, ProtectSystem=${psys:-?},"
+  echo "       and no valid rollback (bh2_rollback.sh status gave $rb_rc: $(printf '%s\n' "$rb_out" | head -n 1))."
+  BH2_FAIL_WHY="$BH2_UNIT is not sandboxed, and no valid rollback is on"
+  return 1
+}
+# <<< bh2 helpers
+
 # ── WhatsApp bridge (whatsmeow, personal-number QR) ───────────────
 # A localhost-only Go service that links a PERSONAL number by QR and
 # streams messages to the gateway's /whatsapp/bridge/ingest (same
@@ -1033,7 +1214,7 @@ grep -qE '^WHATSAPP_BRIDGE_CALL_RETENTION_DAYS=' "$ENV_FILE" || echo "WHATSAPP_B
 # Generate a strong shared secret once (used by BOTH gateway + bridge).
 if ! grep -qE '^WHATSAPP_BRIDGE_SECRET=.+' "$ENV_FILE"; then
   _wbsecret="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  grep -vE '^WHATSAPP_BRIDGE_SECRET=' "$ENV_FILE" > "$ENV_FILE.wb.tmp" && mv "$ENV_FILE.wb.tmp" "$ENV_FILE"
+  env_edit_in_place "$ENV_FILE" grep -vE '^WHATSAPP_BRIDGE_SECRET='
   echo "WHATSAPP_BRIDGE_SECRET=$_wbsecret" >> "$ENV_FILE"
   echo "    + generated WHATSAPP_BRIDGE_SECRET"
 fi
@@ -1108,7 +1289,7 @@ grep -qE '^MEET_VNC=' "$ENV_FILE" || echo "MEET_VNC=0" >> "$ENV_FILE"
 # worker's live-segment callback). Generated once, then reused.
 if ! grep -qE '^MEETING_BOT_TOKEN=.+' "$ENV_FILE"; then
   _mbtoken="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  grep -vE '^MEETING_BOT_TOKEN=' "$ENV_FILE" > "$ENV_FILE.mb.tmp" && mv "$ENV_FILE.mb.tmp" "$ENV_FILE"
+  env_edit_in_place "$ENV_FILE" grep -vE '^MEETING_BOT_TOKEN='
   echo "MEETING_BOT_TOKEN=$_mbtoken" >> "$ENV_FILE"
   echo "    + generated MEETING_BOT_TOKEN"
 fi
@@ -1266,6 +1447,15 @@ echo "==> Restarting gateway (systemd)"
 #
 # The drop-ins (acb-gateway.service.d/40-agent-site.conf and the rest) went in
 # at the BH-7 step above, before any restart, so this restart runs with them.
+# That includes the BH-2 sandbox (50-hardening.conf). Its ReadWritePaths must
+# exist first, or the gateway does not start (ensure_gateway_rw_paths).
+echo "==> WS-49 BH-2: compile the Python bytecode (best-effort)"
+compile_bytecode "$APP_DIR"
+ensure_gateway_rw_paths "$APP_DIR" || {
+  echo "GATEWAY NOT RESTARTED: .env is missing or holds no DATABASE_URL, or a write-list path could not be made."
+  echo "    The gateway that runs now keeps serving. Fix the cause above, then deploy again."
+  exit 1
+}
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
 sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
 sudo systemctl daemon-reload
@@ -1605,11 +1795,11 @@ echo "Workbench is active"
 # was up, Caddy routed it, and nothing in this script rebuilt it — so every
 # operator feature merged to `main` stayed on `main`.
 #
-# ⚠️ **The unit file is NOT in this repo.** Every other service here is copied
-# from `deploy/hostinger/*.service`; this one was stood up by hand on the box,
-# so there is nothing to `cp`. That is a real gap and it is recorded in the
-# handoff queue — until it closes, this block manages an artefact it cannot
-# reproduce.
+# The unit file is `deploy/hostinger/acb-operator-console.service` (WS-49
+# BH-2, 2026-10-09). It is the unit that ran on the box, byte for byte, and
+# the BO-23 unit loop below installs it. Its drop-in
+# (`acb-operator-console.service.d/50-hardening.conf`) went in at the BH-7
+# step, before this restart, so this restart runs with it.
 #
 # ⚠️ **Deliberately AFTER the workbench.** Customer surfaces come up first, so
 # a failure here fails the job loudly without having delayed a single customer
@@ -1687,7 +1877,7 @@ else
   echo "    $OC_UNIT is not enabled here — skipping the Operator Console."
   echo "    If it runs under another name, set OPERATOR_CONSOLE_UNIT in .env"
   echo "    on the box. If it runs on this host at all, it is NOT being"
-  echo "    rebuilt by this script and it WILL drift (see HANDOFF H-75)."
+  echo "    rebuilt by this script and it WILL drift."
 fi
 
 echo "==> Checking Caddy is still serving"
@@ -1815,6 +2005,28 @@ echo "==> WS-49 BH-7: one restart for a unit whose drop-in changed"
 # when its build is off, for one) gets ONE restart here. A unit that is not
 # active (the oneshot acb-smoke-chat) gets none: its next start applies them.
 restart_stale_dropin_units "$APP_DIR/deploy/hostinger"
+
+echo "==> WS-49 BH-2: the strict check of the gateway sandbox"
+# 🔴 **THIS GOES AFTER THE LAST RESTART AND BEFORE THE MARKER.** The last
+# restart is restart_stale_dropin_units just above. A restart after this check
+# could start a unit that the check never read. The marker is
+# record_applied_sha at the end. A failure here exits 1 BEFORE it, so the
+# next deploy applies this sha again.
+#
+# ⚠️ That retry has a cost. vps_pull.sh tries one target sha at most 3 times
+# (MAX_FAILS), and each try restarts the gateway before it reaches this check.
+# So a strict check that is broken costs 3 gateway restarts, and then the
+# timer stops and says so. The way out is the rollback, which passes this
+# check for 72 hours:
+#   sudo bash /opt/acb/app/scripts/bh2_rollback.sh on
+# Fence: tests/unit/test_bh2_strict_check.py.
+if ! bh2_strict_check; then
+  echo "BH-2 STRICT CHECK FAILED: ${BH2_FAIL_WHY:-the check failed}."
+  echo "    No marker was written, so the next deploy applies this sha again."
+  echo "    Read: systemctl show acb-gateway -p ActiveState -p NoNewPrivileges -p ProtectSystem"
+  echo "    Rollback for 72 h: sudo bash $APP_DIR/scripts/bh2_rollback.sh on"
+  exit 1
+fi
 
 echo "==> Running infra health probe"
 cd "$APP_DIR"

@@ -742,6 +742,29 @@ def test_a_wrong_owner_after_the_write_fails() -> None:
     assert "the manifest says 'root:root 600'" in res["err"]
 
 
+def test_env_merge_keeps_the_inode_of_the_app_env() -> None:
+    """WS-49 BH-2 fix round 1, P2-1. The gateway sandbox bind-mounts the
+    inode of /opt/acb/app/.env. A merge that renamed a new file into place
+    would leave the running gateway on the old, unlinked copy. So the merge
+    writes INTO the file (r_put, `dd oflag=nofollow`), and the inode stays."""
+    res = _run(
+        _MERGE_SETUP
+        + 'command stat -c %i "$BOX/opt/acb/app/.env" > "$W/ino.before"\n'
+        + "SD push app-env --yes\n"
+        + 'echo "INODES $(command cat "$W/ino.before") $(command stat -c %i "$BOX/opt/acb/app/.env")"\n',
+        manifest=_merge_manifest(),
+    )
+    assert res["rc"] == 0, res["err"]
+    line = next(ln for ln in res["out"].splitlines() if ln.startswith("INODES "))
+    _, before, after = line.split()
+    assert before == after, "the merge replaced the inode of the app env"
+    assert "R put in-place" in res["remote"], res["remote"]
+    assert _box(res, "/opt/acb/app/.env") == b"KEEP=1\nFOO_TOKEN=abc\n"
+    dd = _cmd_lines(res["calls"], "dd")
+    assert dd and all("oflag=nofollow" in ln for ln in dd), dd
+    assert not [p for p in res["files"] if ".secrets-drop." in p], "a temp file was left"
+
+
 def test_env_merge_keeps_the_other_lines_byte_for_byte() -> None:
     before = (
         b"# the app env\r\n"

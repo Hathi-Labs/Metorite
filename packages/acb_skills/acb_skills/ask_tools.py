@@ -32,7 +32,51 @@ Usage by agents::
 """
 from __future__ import annotations
 
+import contextlib as _contextlib
+import contextvars as _contextvars
 import json as _json
+from collections.abc import Iterator as _Iterator
+
+# ── A run with no card channel (WS-47 WAC-3) ──────────────────────────────────
+#
+# A run that the server starts for a channel with no cards (WhatsApp) has no
+# person who can see a card. Path C below would still find the run's thread,
+# push the card to a stream that nobody reads and wait an hour on it. So the
+# caller of such a run opens :func:`refuse_cards`, and inside it every card
+# tool here answers at once: ``request_confirmation`` denies, and
+# ``ask_questions`` returns a fixed line. Nothing is pushed, nothing waits,
+# and the tool writes nothing, because every class B tool writes only after
+# an approval.
+#
+# A ContextVar, so it is per run. A task that the run starts copies it, and
+# ``orchestrator.copilot_agent.carry_run_context`` carries it into the
+# Copilot SDK's callbacks. The default is False, so every web run is exactly
+# as before. Fence: ``tests/unit/test_wac_bot_run.py`` (A6).
+_CARDS_REFUSED: _contextvars.ContextVar[bool] = _contextvars.ContextVar(
+    "acb_cards_refused", default=False,
+)
+
+#: What ``ask_questions`` returns in a run with no card channel.
+NO_CARD_QUESTIONS = (
+    "This chat cannot show questions. Ask the member in plain text in your "
+    "reply, and stop."
+)
+
+
+@_contextlib.contextmanager
+def refuse_cards() -> _Iterator[None]:
+    """Deny every card for the run that this scope holds (WS-47 WAC-3)."""
+    token = _CARDS_REFUSED.set(True)
+    try:
+        yield
+    finally:
+        _CARDS_REFUSED.reset(token)
+
+
+def cards_refused() -> bool:
+    """True inside :func:`refuse_cards`: this run has no card channel."""
+    return _CARDS_REFUSED.get()
+
 
 # Tools that PARK the turn waiting on a human. When a run's last tool is one of
 # these, the turn ending with no closing assistant text is CORRECT, not a
@@ -109,6 +153,9 @@ async def ask_questions(questions: str) -> str:
         ``"Questions displayed to the user. Waiting for response."``
         The agent MUST stop after receiving this and let the user answer.
     """
+    if cards_refused():
+        # WS-47 WAC-3: no card channel. Answer at once, push and park nothing.
+        return NO_CARD_QUESTIONS
     try:
         data = _json.loads(questions)
     except (_json.JSONDecodeError, TypeError):
@@ -461,7 +508,10 @@ def confirmation_channel_open() -> bool:
     AFTER a denial, to tell a refusal from a run with no live chat (WS-17
     EM-T13a). It never decides an action. ``request_confirmation`` stays the
     one gate, and it fails closed, so a drift here changes a message only.
+    A run inside :func:`refuse_cards` has no channel (WS-47 WAC-3).
     """
+    if cards_refused():
+        return False
     try:
         from orchestrator.executor import (
             _active_run_queue,
@@ -518,11 +568,17 @@ async def request_confirmation(
         With ``rows``: the ``frozenset`` of the ticked row ids, each one an
         id the card offered. It is EMPTY, and so falsy, when the member did
         not approve, or when the answer named an id the card did not offer.
+
+        Inside :func:`refuse_cards` (WS-47 WAC-3) it denies at once, before
+        any channel is tried, whatever ``non_interactive_default`` says.
     """
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
     _rows = clean_card_rows(rows)
+    if cards_refused():
+        # A deny, never an approve: a channel with no card is no consent.
+        return frozenset() if _rows is not None else False
     _offered = frozenset(r["id"] for r in _rows or [])
 
     def _event(request_id: str) -> dict:

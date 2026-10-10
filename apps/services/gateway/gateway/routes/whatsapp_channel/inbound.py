@@ -20,8 +20,12 @@ What this module does with the bot's group:
   org must also be on ``WHATSAPP_ASSISTANT_ORGS``.
 * **An unknown phone with no code** gets :data:`REPLY_UNKNOWN`, which holds no
   org data, and nothing is written.
-* **A linked phone with no code** gets no reply and no run. WAC-3 owns the run.
-* **A button, list or reaction message** gets no action in WAC-2.
+* **A linked phone with a text** (WAC-3) is recorded by
+  :func:`bot_run.record_inbound` before the 200, and its run starts after
+  the 200. The org comes from the phone's CURRENT link. A link message from
+  an UNLINKED phone keeps the in-process redelivery record below, because
+  that message has no org, so a tenant table cannot hold it.
+* **A button, list or reaction message** gets no action (WAC-4, WAC-10).
 
 The replies are FIXED texts (§5.4 table). Only the success reply holds org
 data, and it goes only to the phone that just proved it holds the code. The
@@ -48,7 +52,7 @@ from typing import Any
 
 from acb_common import get_logger
 from gateway.db import bind_tenant, get_db, release_tenant, tenant_session
-from gateway.routes.whatsapp_channel import flags
+from gateway.routes.whatsapp_channel import bot_run, flags
 from gateway.routes.whatsapp_channel.link import CODE_ALPHABET, CODE_LENGTH, code_hash
 from sqlalchemy import text
 
@@ -142,7 +146,8 @@ def record_failure(wa_id: str) -> None:
 #
 # ⚠️ In-process and SINGLE-PROCESS, like the limiter above, and bounded: at
 # most `_HANDLED_CAP` entries for `_HANDLED_TTL_S` each. WAC-3's durable
-# record of each message by wamid replaces it.
+# record (`whatsapp_bot_messages`) holds the other messages of a LINKED phone.
+# A link message stays here, because its sender may have no org yet.
 
 _HANDLED_CAP = 2_000
 _HANDLED_TTL_S = 30 * 60
@@ -421,7 +426,7 @@ async def _redeem_once(wa_id: str, rest: str) -> Reply:
 # ── One message, and the whole group ────────────────────────────────────────
 
 
-async def _handle_message(msg: Any) -> Reply | None:
+async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
     if msg.direction != "in" or msg.from_history or msg.is_echo \
             or msg.chat_kind != "dm":
         return None
@@ -438,16 +443,25 @@ async def _handle_message(msg: Any) -> Reply | None:
     if rest is not None:
         return await redeem(wa_id, rest, str(msg.wa_message_id or "") or None)
 
-    if not await _active_links_for_phone(wa_id):
+    links = await _active_links_for_phone(wa_id)
+    if not links:
         return Reply(wa_id, REPLY_UNKNOWN, "unknown")
-    # A linked phone. WAC-3 runs the assistant. WAC-2 only acknowledges.
-    _log.info("whatsapp_channel.bot.linked_message_held",
-              phone_hint=wa_id[-4:], type=mtype[:20])
-    return None
+    # A linked phone (WAC-3). A text is recorded and runs after the 200. A
+    # voice note is WAC-5, so any other type gets no action yet.
+    body = str(msg.body_text or "").strip()
+    wamid = str(msg.wa_message_id or "").strip()
+    if mtype != "text" or not body or not wamid:
+        _log.info("whatsapp_channel.bot.linked_no_action",
+                  phone_hint=wa_id[-4:], type=mtype[:20])
+        return None
+    return await bot_run.record_inbound(links, wa_id, wamid, body)
 
 
-async def handle_bot_group(sub_payload: dict[str, Any], *, signed: bool) -> list[Reply]:
-    """Act on the bot number's part of a webhook batch. Returns the replies.
+async def handle_bot_group(
+    sub_payload: dict[str, Any], *, signed: bool,
+) -> list[Reply | bot_run.RunRequest]:
+    """Act on the bot number's part of a webhook batch. Returns the work for
+    after the 200: the fixed replies, and the runs of linked messages.
 
     *signed* is False when the box has no ``WHATSAPP_APP_SECRET``, so the
     route checked no signature. Then nothing happens, in dev too.
@@ -471,21 +485,63 @@ async def handle_bot_group(sub_payload: dict[str, Any], *, signed: bool) -> list
         _log.info("whatsapp_channel.bot.status", status=str(st.status)[:20],
                   failed=bool(st.error))
 
-    replies: list[Reply] = []
+    replies: list[Reply | bot_run.RunRequest] = []
+    failed = 0
     for msg in result.messages:
-        reply = await _handle_message(msg)
+        # One message that fails must not take the others with it. A run
+        # that this batch already recorded must still start: its redelivery
+        # finds the row and records nothing new.
+        try:
+            reply = await _handle_message(msg)
+        except Exception as exc:
+            failed += 1
+            # The class only: a constraint DETAIL can hold a phone number.
+            _log.warning("whatsapp_channel.bot.message_failed",
+                         error_type=type(exc).__name__)
+            continue
         if reply is not None:
             replies.append(reply)
+    if failed:
+        raise BotGroupFailed(failed, runs_of(replies))
     return replies
 
 
-async def send_replies(replies: list[Reply]) -> None:
-    """Send each reply from the bot number. Runs AFTER the route's 200.
+class BotGroupFailed(Exception):
+    """Some messages of the bot's group failed (WAC-3).
+
+    The route answers 500, so Meta sends the batch again. ``runs`` holds the
+    runs that this batch recorded before or after the failure. The route
+    starts them anyway, because their redelivery records nothing new.
+    """
+
+    def __init__(self, failed: int, runs: list[bot_run.RunRequest]) -> None:
+        super().__init__(f"{failed} bot message(s) failed")
+        self.failed = failed
+        self.runs = runs
+
+
+def runs_of(items: list[Any]) -> list[bot_run.RunRequest]:
+    """The runs among the work for after the 200."""
+    return [item for item in items if isinstance(item, bot_run.RunRequest)]
+
+
+async def send_replies(items: list[Reply | bot_run.RunRequest]) -> None:
+    """The work after the route's 200: start each run, then send each reply.
+
+    A run (WAC-3) starts as a task of its own (:func:`bot_run.start`), so
+    this returns as soon as the fixed replies are out, and a slow run never
+    holds the response or its connection.
 
     Builds the Cloud API provider from the platform credentials, with no
     ``wa_accounts`` row (D-WAC-1). A failed send logs Meta's error fields
     only, never the exception text, which can carry a URL or a token.
     """
+    for item in items:
+        if isinstance(item, bot_run.RunRequest):
+            bot_run.start(item)
+    replies = [item for item in items if isinstance(item, Reply)]
+    if not replies:
+        return
     creds = flags.bot_credentials()
     if creds is None:
         _log.warning("whatsapp_channel.bot.no_token_at_send", replies=len(replies))
