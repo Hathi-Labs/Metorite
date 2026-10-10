@@ -80,7 +80,7 @@ Each one is real at `ba6bbb7b6`. The last column names the slice that fixes it.
 | Id | Defect | Evidence | Slice |
 |---|---|---|---|
 | **IN-D1** | 🔴 **A customer key goes into the process environment and `.env`.** Every org on the box then uses it. | `routes/integrations.py:1044,1048` (configure), `:1210,1214` (PUT `/keys`), `:1276` (DELETE `/keys`), `:2195-2196` (GitHub device), `:2389-2390` (GitHub CLI), `routes/oauth.py:255-256`, `acb_llm/key_store.py:459` | IN-0, then IN-5 |
-| **IN-D2** | 🔴 **The writers have no role check.** PUT and DELETE `/keys`, `/custom`, `/mcp`, `/plugins` and the GitHub device flow check `feature:integrations` only. `integrations:manage` exists, and no route requires it. | `integrations.py:1118,1238,1491,1565,1791,1834,1931,2026,2108,2151`, `acb_auth/permissions.py:156` | IN-0 |
+| **IN-D2** | 🔴 **The writers have no role check.** PUT and DELETE `/keys`, `/discover`, `/custom`, `/mcp`, `/mcp/test`, `/plugins`, the GitHub device flow, and the OAuth authorize and refresh check `feature:integrations` only. `integrations:manage` exists, and no route requires it. | `integrations.py:1118,1238,1302,1491,1565,1791,1834,1857,1931,2026,2108,2151`, `oauth.py:126,215`, `acb_auth/permissions.py:156` | IN-0 |
 | **IN-D3** | 🔴 **The MCP list reads every org's rows and returns their secrets.** `mcp_servers` is exempt from RLS, and the list opens an unbound session. It returns `headers` and `env_vars`. | `integrations.py:1762-1787` | IN-0 |
 | **IN-D4** | 🔴 **The MCP delete removes a row of any org by name.** | `integrations.py:1844` | IN-0 |
 | **IN-D5** | 🔴 **Server-side request forgery.** `/mcp/test` makes the gateway GET any URL with the caller's headers. Plugin install fetches any URL. | `integrations.py:1857-1887`, `:1948-1983` | IN-0 |
@@ -89,7 +89,7 @@ Each one is real at `ba6bbb7b6`. The last column names the slice that fixes it.
 | **IN-D8** | **Status is deployment-wide.** `configured` comes from the environment, and `_is_configured` answers True for an unknown service. `/test` tests the environment. | `integrations.py:388-424` (`:420`), `:744-778`, `:1595-1605` | IN-1 |
 | **IN-D9** | **The old OAuth route is dead and unscoped.** Its state binds no org and no member, it writes `.env`, `refresh_access_token` has no caller, and no UI uses it. | `routes/oauth.py:61-119`, `:231-264` | IN-5 (retire), CRM-Z2 replaces it for Zoho |
 | **IN-D10** | **GitHub is one token for the deployment**, and connect-cli imports the server's own `gh` token. | `integrations.py:2327-2390` | IN-7 |
-| **IN-D11** | **A model-output token writes configure with the internal token and no tenant** (`<<<SETUP:svc:KEY=val>>>`). | `orchestrator/executor.py:5737-5755`, `src/app/api/agent/chat/route.ts:927`, HANDOFF H-244 | IN-0 |
+| **IN-D11** | **A model-output token writes configure with the internal token and no tenant** (`<<<SETUP:svc:KEY=val>>>`). | `orchestrator/executor.py:5737-5755`, `src/app/api/agent/chat/route.ts:927` (the pattern) and `:937` (the POST), HANDOFF H-244 | IN-0 (e), held behind H-244 |
 | **IN-D12** | **MCP on MAF does nothing.** Injection returns early for an agent that is not Copilot, and no MAF MCP client exists. The page says "every agent can discover" the servers. | `orchestrator/_tool_injection.py:2039-2041`, `integrations/page.tsx:1333,1407`, WS-8c, H-217 | IN-4 |
 | **IN-D13** | **Custom APIs and plugins store data that nothing reads.** `custom_api_definitions.service_id` is unique across every org. | `12_custom_api_definitions.sql:8`, `integrations.py:641,815,1467` | IN-6 |
 | **IN-D14** | **No single registry.** Connections live in `provider_keys`, `email_accounts`, `wa_accounts`, `mcp_servers`, `.env` and a disk token cache. The page fakes WhatsApp's `configured` from a second fetch. | `integrations/page.tsx:816-831`, `zoho/client.py:17` | IN-1 |
@@ -176,9 +176,11 @@ integration resolvers. IN-5 removes the old writes.
 1. Every table that holds a connection has FORCE RLS. If it does not, only a
    store that binds the tenant reads it (R5).
 2. No tenant and no identity come from the request.
-3. The gateway fetches a URL that a customer typed only when the URL passes
-   the egress guard and an allowlist of schemes and ports. The gateway
-   refuses a private address.
+3. The gateway fetches a URL that a customer typed only through its one URL
+   guard, `gateway/outbound_guard.py`. The guard refuses a private, loopback,
+   link-local or metadata address, and it does not follow a redirect. Do not
+   use `acb_skills/egress.py` here, because it classifies tools, not URLs.
+   IN-4 adds a port allowlist.
 4. A write to a connection writes one audit row: who, what, when, which org.
 5. The old routes that write the environment stop doing it in IN-0. They keep
    the per-org store write.
@@ -230,7 +232,7 @@ IN-0 comes first and alone, because it closes live holes.
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **IN-0** | **Close the holes.** (a) Configure, PUT and DELETE `/keys`, the GitHub device poll and connect-cli stop writing `os.environ` and `.env`, and keep the per-org store write. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete bind the caller's tenant, and the list returns no `headers` or `env_vars` value. (d) `/mcp/test` and plugin install refuse a URL that the egress guard refuses, and every private address. (e) The `<<<SETUP:...>>>` path stops writing configure. | 🟢 AGENT-SAFE. ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod that is 1 key in 1 org | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
+| **IN-0** | **Close the holes.** (a) Six routes stop writing `os.environ` and `.env`: configure, PUT and DELETE `/keys` keep the per-org store write. The GitHub device poll stores `github:token` for the org. connect-cli answers 410. The old OAuth authorize, callback and refresh are retired (410). A failed store write in configure answers 503. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete filter on the caller's tenant, and the list returns key names only, never a `headers` or `env_vars` value. (d) `/mcp/test` and plugin install fetch only through `gateway/outbound_guard.py`. (e) **Held behind H-244 [OWNER]:** the `<<<SETUP:...>>>` path stops writing configure. After (a) it can write no env value, so holding it leaves no cross-tenant hole | 🟢 AGENT-SAFE for (a) to (d). ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod the startup copy is already inert (9 orgs), so the cost is close to zero | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
 | **IN-1** | **The read model.** `GET /integrations/connections` over the three sources of §3.2. Status per org, not per deployment. `_is_configured` answers False for an unknown service | 🟢 AGENT-SAFE. Needs CRM-Z2 for the table | Two orgs see only their own rows. No response holds a credential (a sentinel fence). A mailbox row shows owner and health and no message |
 | **IN-2** | **The console.** It replaces the five tabs with one list of connections, filters by app and status, and opens a side panel with reconnect, disconnect, and a link to the owning app. MCP gets an "Add" form. The stale text goes (IN-D16) | 🟢 AGENT-SAFE | Visual review passes. Every action reaches the store through the routes of IN-0 and IN-1. `AppTopBar` and the shared controls only |
 | **IN-3** | **Per-run credentials for the integration resolvers.** `acb_skills` resolvers read the per-run context, filled from the per-org store, and the environment stops winning | 🔴 §6 gate (f) | A run in org A gets org A's key and a run in org B gets org B's, on one process at one time (R8) |
@@ -264,7 +266,7 @@ Each slice adds its own test file to this list.
 | Rule | Fence | Slice |
 |---|---|---|
 | No integrations route writes the process environment | A new AST fence over `routes/integrations.py` and `routes/oauth.py` | IN-0 |
-| Every integrations writer requires `integrations:manage` | A route walk, in the shape of `test_crm_kill_switch.py`'s fence | IN-0 |
+| Every integrations writer requires `integrations:manage` | A route walk, in the shape of the `GATED_ROUTERS` walk in `test_org_access_enforcement.py` | IN-0 |
 | The MCP list binds the tenant and returns no secret | R8, two orgs | IN-0 |
 | A customer-typed URL passes the egress guard | A test with private and metadata addresses | IN-0 |
 | No response of the read model holds a credential | A sentinel fence | IN-1 |
@@ -297,6 +299,6 @@ today is where every hole of §2.2 lives.
 
 | Id | Question | Recommendation |
 |---|---|---|
-| **Q1** | Ship IN-0 now, although a key set on the page stops reaching agents until IN-3? | Yes. 1 key in 1 org is affected, and the holes are open for 8 orgs |
+| **Q1** | Ship IN-0 now, although a key set on the page stops reaching agents until IN-3? | **Decided: yes** (orchestrator, 2026-10-11, a security fix inside the dev window). The startup copy is already inert on prod, so almost nothing stops working |
 | **Q2** | Custom APIs ("Add API" with a model-written schema) and plugins: keep, or retire? | Retire. 0 rows on prod, no reader, an unmetered model call. Bring them back on the registry when a customer asks |
 | **Q3** | Should a member see the console, read-only, for their own connections? | No. A member sees their connections in each app. The console is for admins |
