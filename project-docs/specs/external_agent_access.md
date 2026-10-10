@@ -1,8 +1,8 @@
 # External agent access — Metorite as an MCP server
 
-**Status: DECIDED (D96, 2026-10-10). Nothing is built.** Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Every anchor below came from that survey. Re-verify each one at dispatch (work_plan.md §1, item 4).
+**Status: DECIDED (D97, 2026-10-10). Nothing is built.** Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Every anchor below came from that survey. Re-verify each one at dispatch (work_plan.md §1, item 4).
 
-**Board row:** **WS-55**, in `work_plan.md` §2. **Decision:** D96, in `work_plan.md` §3. The owner accepted all eight defaults of §6 in chat on 2026-10-10.
+**Board row:** **WS-55**, in `work_plan.md` §2. **Decision:** D97, in `work_plan.md` §3. The owner accepted all eight defaults of §6 in chat on 2026-10-10.
 
 **Origin:** D91.5 says an MCP facade for external clients is "a later, separate item" with its own spec and an owner gate. This is that spec.
 
@@ -165,9 +165,22 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 
 **If WS-54 is late.** EA-4 builds the member pane as one component. The component first mounts in Settings and later mounts in the Integrations app. No code moves except the mount point.
 
-## 6. Decisions D-EA-1 to D-EA-9 (D-EA-1 to D-EA-8 taken, D96)
+### 5.5 Where the code lives, and the fixed addresses
 
-The owner accepted every default below in chat on 2026-10-10, with the words "go ahead with your recommendations for all". Nothing here re-opens D1 to D94. D96 in work_plan.md §3 records them.
+- **Issuer:** `https://mcp.metorite.com`. RFC 8414 and RFC 9207 need one fixed value.
+- **Public endpoints** run with the edge unit (D-EA-2): `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/token` and `/oauth/revoke`. They are not in the gateway `PUBLIC_ROUTES` list.
+- **Authorize page** at `https://app.metorite.com/connect/authorize`. EA-4 builds it.
+- **Store:** `packages/acb_auth/acb_auth/agent_tokens.py`. It follows `acb_auth/email_otp.py`.
+- **Authenticated half:** `apps/services/gateway/gateway/routes/agent_access.py`, prefix `/agent-access`, behind default-deny.
+- **Edge unit:** a new uv member `apps/services/agent_edge/`. EA-3 adds `/mcp` to it.
+- **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`.
+- **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py` (reuse it, never edit it), `nav.ts` and `launch_surface.md`. Do not name a new module `oauth.py`.
+- **Lifetimes** are `Settings` defaults, so a test can assert them: access token 3600 seconds, refresh token 30 days, authorization code 60 seconds, idle connection 90 days, unused registered client 1 day.
+- **No grace window.** A client that sends two refreshes at once loses the connection. The client must serialize its refreshes.
+
+## 6. Decisions D-EA-1 to D-EA-9 (D-EA-1 to D-EA-8 taken, D97)
+
+The owner accepted every default below in chat on 2026-10-10, with the words "go ahead with your recommendations for all". Nothing here re-opens D1 to D94. D97 in work_plan.md §3 records them.
 
 | # | Question | Accepted | Why |
 |---|---|---|---|
@@ -324,9 +337,11 @@ The gateway trusts `Authorization: Bearer <internal token>` plus `X-User-Email`.
 
 The token lookup happens **before** the tenant is known. A row-level-security table cannot serve it. The same problem exists for `user_identity` and `org_membership`, which are RLS-exempt.
 
-- `agent_token` and `agent_authz_code` are looked up by a SHA-256 hash. They sit in `gen_tenant_migration.EXEMPT` with that reason, and the lookup returns only the connection id.
+- `agent_token` holds the access tokens, the refresh tokens and the authorization codes, told apart by a `kind` column. A SHA-256 hash is the lookup key. The table carries `organization_id` with a foreign key to `organization`. The lookup returns the connection id **and** the organization id, so the edge can bind the tenant before it reads anything else.
+- `agent_token` sits in `gen_tenant_migration.EXEMPT` with that reason. It sits on the tenant plane as an exempt table, as `186_auth_email_otp_token.sql` does.
 - `agent_connection` is tenant-scoped. After the lookup, the edge binds the tenant and then reads it under RLS.
 - `agent_client` (a cache of client metadata) holds no tenant data. It is global and exempt.
+- Two new exempt entries take the map from 13 to 15. `tests/unit/test_tenant_coverage.py` caps the map at 15, so this spec adds no third entry. A code in its own table would have made 16.
 - Every table carries `organization_id` where it holds tenant data, and `tests/unit/test_tenant_coverage.py` must pass (R5).
 
 ## 11. Schema addition: task references
@@ -391,17 +406,18 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 
 | # | Slice | Done when | Gate |
 |---|---|---|---|
-| EA-0 | **Owner decisions.** The owner answers D-EA-1 to D-EA-8 | **DONE 2026-10-10.** The answers are in §6, with D96 and the WS-55 row in work_plan.md | OWNER-GATE |
-| EA-1 | **Tables and token store.** `agent_connection`, `agent_token`, `agent_authz_code`, `agent_client`. Hash at rest. Rotation with reuse detection | R8 suite on a real database proves: a reused refresh token revokes the connection, and a hash lookup works with no tenant bound | AGENT-SAFE |
-| EA-2 | **Authorization server.** Metadata, the `authorize` page, the `token` and `revoke` endpoints, PKCE, `resource`, `iss`. Client ID Metadata Documents with the fetch limits. Dynamic registration as a fallback | A conformance run against the MCP Inspector passes. A test refuses a token with the wrong audience | AGENT-SAFE |
-| EA-3 | **The edge, read tools.** `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline`, `search_tasks`. The authority rule of §7.1 | A test shows a member sees the same tasks over MCP as in the REST route. A removed grant removes the task on the next call | AGENT-SAFE |
+| EA-0 | **Owner decisions.** The owner answers D-EA-1 to D-EA-8 | **DONE 2026-10-10.** The answers are in §6, with D97 and the WS-55 row in work_plan.md | OWNER-GATE |
+| EA-1 | **Tables and token store.** One expand-only migration: `agent_connection` (tenant-scoped), `agent_token` (RLS-exempt, with a `kind` of `access`, `refresh` or `code`) and `agent_client` (RLS-exempt). A store module in `packages/acb_auth/acb_auth/agent_tokens.py`. The module keeps only the SHA-256 of a random opaque token. Rotation uses one `UPDATE ... WHERE used_at IS NULL RETURNING`. No grace window | `tests/unit/test_agent_connection_tokens.py` runs on a real database **as the non-privileged role, on the promoted catalog**. It proves: a lookup by hash works with no tenant bound and returns the connection id and the organization id. An unbound read of `agent_connection` returns zero rows. A reused refresh token revokes the connection and every token of it. A code works once. Two concurrent refreshes revoke the connection | AGENT-SAFE |
+| EA-2a | **Authorization server core, backend only.** The public half runs in the edge unit `apps/services/agent_edge/`: the metadata documents, `token` and `revoke`. The authenticated half is `apps/services/gateway/gateway/routes/agent_access.py` under `/agent-access`: validate an authorize request, then approve it and mint a code. It also holds the CIMD fetch, through `outbound_guard.py` | `tests/unit/test_agent_oauth_server.py` runs in process and proves each of these. The two metadata documents carry `issuer`, `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, `code_challenge_methods_supported` of `["S256"]`, `client_id_metadata_document_supported`, `resource` and `authorization_servers`. The server refuses an authorize request with no PKCE or with `plain`. It refuses a token request with a wrong verifier, resource, redirect URI or client. It refuses a code used twice and a token in a query string. The redirect carries `iss`. A CIMD URL that resolves to a private address, a body over the cap or a slow host is refused. `revoke` answers 200 for an unknown token. With the flag OFF every new route answers 404. `tests/unit/test_default_deny_auth.py` stays green | AGENT-SAFE |
+| EA-2b | **Dynamic client registration.** A fallback for clients with no CIMD support. A Postgres counter on the row limits it, as `186_auth_email_otp_token.sql` does for the one-time code. Unused clients expire after one day | The test shows the limit, the expiry and a 404 with the flag OFF | AGENT-SAFE |
+| EA-3 | **The edge, read tools.** `whoami`, `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline`, `search_tasks`. The authority rule of §7.1. The signed header of §10.1, control 2, lands here, with the gateway check | A test shows a member sees the same tasks over MCP as in the REST route. A removed grant removes the task on the next call | AGENT-SAFE |
 | EA-4 | **Consent and admin.** The consent page, the Connected agents list in the Integrations app (§5.4), the org switch, the client allow list, revoke | A revoked connection gets 401 on the next call. A suspended member gets 401 | AGENT-SAFE |
 | EA-5 | **Company context.** `get_company_context` and the three resources, after D-EA-6 is answered | The result holds no data that the member could not read in the app | AGENT-SAFE |
 | EA-6 | **References and write tools.** The `pm_task_refs` migration, the `mcp` source, the write tools, the Projects UI for references | The coding scenario of §12 passes end to end on a real database. A stale version is refused | AGENT-SAFE |
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** `test_mcp_edge_coverage.py`, a tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
-| EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip, the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
+| EA-10 | **Deploy.** The unit file, the Caddy block, the DNS record, the Caddy header strip, the proof that `GATEWAY_INTERNAL_TOKEN` is provisioned (§10.1, control 5), the flag | The flag turns ON for one test organization. The evidence is the deployed SHA and a real client round trip | OWNER-GATE |
 | EA-11 | **Hardening review.** An adversarial review of §10, then a second pass with a real outside client | Both reviews are recorded in this file | AGENT-SAFE |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3, EA-4 and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-6 and EA-5 can run in parallel after EA-3.
@@ -432,4 +448,5 @@ This spec adds **no app**. Its screens join the Integrations app (§5.4, D-EA-9)
 ## 18. Changelog
 
 - 2026-10-10 — First draft. Research record, design and slices. No code.
-- 2026-10-10 — The owner accepted all eight defaults in chat. D96 and the WS-55 row are now in work_plan.md. EA-0 is done.
+- 2026-10-10 — The owner accepted all eight defaults in chat. D97 and the WS-55 row are now in work_plan.md. EA-0 is done.
+- 2026-10-11 — The audit of EA-1 and EA-2 (verdict GO-NARROWED) changed the spec. The decision id moved from D96 to D97, because the open WS-54 pull request takes D96. `agent_authz_code` folded into `agent_token`. EA-2 split into EA-2a and EA-2b. §5.5 fixed the issuer, the layout and the lifetimes. The anchors in §4 use short paths. The full path of a gateway file is `apps/services/gateway/gateway/...`. The line numbers drifted by up to 25 lines, so every builder re-reads them.
