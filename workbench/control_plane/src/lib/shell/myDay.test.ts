@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  APPROVALS_SHOWN,
   APP_NAMES,
   KIND_LABELS,
   NEEDS_SHOWN,
@@ -22,9 +23,11 @@ import {
   greeting,
   greetingLine,
   groupNeeds,
+  keepApprovals,
   needsTaskIds,
   nextActions,
   rowTime,
+  seesApprovals,
   shownNeeds,
   summaryLine,
   todayWindow,
@@ -33,7 +36,14 @@ import type { NeedsItem, NeedsKind } from "./needs";
 
 const row = (id: string, kind: NeedsKind, extra: Partial<NeedsItem> = {}): NeedsItem => ({
   id,
-  app: kind === "notification" ? "projects" : kind === "needs_reply" ? "email" : "tasks",
+  app:
+    kind === "notification"
+      ? "projects"
+      : kind === "needs_reply"
+        ? "email"
+        : kind === "approval"
+          ? "approvals"
+          : "tasks",
   kind,
   title: `Row ${id}`,
   detail: null,
@@ -100,15 +110,23 @@ describe("the header", () => {
 
 describe("Needs you", () => {
   it("groups in the server's kind order, under plain labels", () => {
-    const items = [row("r", "needs_reply"), row("n", "notification"), row("o", "overdue"), row("d", "due_today")];
+    const items = [
+      row("r", "needs_reply"),
+      row("n", "notification"),
+      row("a", "approval"),
+      row("o", "overdue"),
+      row("d", "due_today"),
+    ];
     const groups = groupNeeds(items);
     expect(groups.map((g) => g.label)).toEqual([
       "Overdue",
+      "Waiting for your approval",
       "Due today",
       "From your projects",
       "Waiting for your reply",
     ]);
     expect(KIND_LABELS.needs_reply).toBe("Waiting for your reply");
+    expect(KIND_LABELS.approval).toBe("Waiting for your approval");
   });
 
   it("keeps the server's order inside a group, and drops an empty group", () => {
@@ -133,6 +151,20 @@ describe("Needs you", () => {
     expect(all.hidden).toBe(0);
   });
 
+  it("shows at most five approvals before Show all, so the member's own work stays in view", () => {
+    const items = [
+      ...Array.from({ length: 15 }, (_, i) => row(`a${i}`, "approval")),
+      row("d1", "due_today"),
+      row("n1", "notification"),
+    ];
+    expect(APPROVALS_SHOWN).toBe(5);
+    const cut = shownNeeds(items, false);
+    const shown = cut.groups.flatMap((g) => g.items).map((i) => i.id);
+    expect(shown).toEqual(["a0", "a1", "a2", "a3", "a4", "d1", "n1"]);
+    expect(cut.hidden).toBe(10);
+    expect(shownNeeds(items, true).groups.flatMap((g) => g.items)).toHaveLength(17);
+  });
+
   it("hides nothing when the feed is short", () => {
     expect(shownNeeds([row("a", "overdue")], false).hidden).toBe(0);
   });
@@ -151,12 +183,18 @@ describe("Needs you", () => {
     ]);
     expect(failedLines({})).toEqual([]);
     expect(APP_NAMES.email).toBe("Email");
+    expect(failedLines({ approvals: "failed", email: "ok" })).toEqual([
+      "Approvals did not answer, so its approvals may be missing.",
+    ]);
+    // An approver without the feature reads "absent", which is no gap.
+    expect(failedLines({ approvals: "absent" })).toEqual([]);
   });
 
   it("draws each app with its own manifest icon", () => {
     expect(appIcon("tasks")).toBe("CheckSquare");
     expect(appIcon("projects")).toBe("FolderKanban");
     expect(appIcon("email")).toBe("Mail");
+    expect(appIcon("approvals")).toBe("ShieldCheck");
   });
 });
 
@@ -217,6 +255,23 @@ describe("which cards a member gets", () => {
     expect(cardsFor(["projects"])).toEqual({ needs: true, today: false, next: false });
     expect(cardsFor(["chat"])).toEqual({ needs: false, today: false, next: false });
     expect(cardsFor([])).toEqual({ needs: false, today: false, next: false });
+  });
+
+  it("gives the approval group to an org admin with Approvals, and to nobody else", () => {
+    // Owner decision, 2026-10-10. `feature:*` reaches every member, so the
+    // feature alone would hand the org's queue to everyone.
+    expect(cardsFor(["approvals"], true)).toEqual({ needs: true, today: false, next: false });
+    expect(cardsFor(["approvals"], false)).toEqual({ needs: false, today: false, next: false });
+    expect(cardsFor(["approvals"])).toEqual({ needs: false, today: false, next: false });
+    expect(seesApprovals(["approvals"], true)).toBe(true);
+    expect(seesApprovals(["approvals"], false)).toBe(false);
+    expect(seesApprovals(["email"], true)).toBe(false);
+  });
+
+  it("drops an approval row the member may not see, and keeps the rest", () => {
+    const items = [row("o", "overdue"), row("a", "approval"), row("d", "due_today")];
+    expect(keepApprovals(items, false).map((i) => i.id)).toEqual(["o", "d"]);
+    expect(keepApprovals(items, true).map((i) => i.id)).toEqual(["o", "a", "d"]);
   });
 
   it("asks for what the server asks for: the lens needs feature:projects", () => {

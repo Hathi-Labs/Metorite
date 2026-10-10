@@ -3,9 +3,16 @@
 /**
  * "Needs you" — My Day's first card (`navigation_shell.md` §4.5 and §7.2).
  *
- * It draws the one needs feed, grouped in the server's order: Overdue, Due
- * today, From your projects, Waiting for your reply. The first seven rows
- * show, and "Show all" opens the rest in place.
+ * It draws the one needs feed, grouped in the server's order: Overdue,
+ * Waiting for your approval, Due today, From your projects, Waiting for your
+ * reply. The first seven rows show, and "Show all" opens the rest in place.
+ *
+ * The approval group is the "Waiting for you" card of §4.5, folded in here
+ * for the reason the reply rows are (NS-3 slice C). Only an org admin who
+ * holds `approvals` gets it (owner decision, 2026-10-10). The server and
+ * `useNeedsYou` both apply that test. At most five approval rows show before
+ * "Show all". A row opens Approvals and has no act, because approving runs
+ * an outward write.
  *
  * ⚠️ It holds the email "needs reply" rows too. §4.5 first named a separate
  * "Needs reply" card. One thread in two cards teaches the eye to skip both,
@@ -36,7 +43,7 @@ import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard, rowMover } from "./HomeCard";
-import { appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
+import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
 import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
 import {
   EMPTY_ACTS,
@@ -74,7 +81,11 @@ export interface NeedsYou {
  * shell's bell calls it too. The cache key is the same (`needsKey`), and the
  * removed rows are the one store above, so the two stay in step.
  */
-export function useNeedsYou(enabled: boolean): NeedsYou {
+export function useNeedsYou(
+  enabled: boolean,
+  /** An org admin with `approvals` (`seesApprovals`). The server applies it too. */
+  approvals = false,
+): NeedsYou {
   const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds());
   const { removed, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
 
@@ -99,8 +110,8 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
   }, []);
 
   const items = useMemo(
-    () => feed.data?.items.filter((i) => !removed.has(i.id)),
-    [feed.data, removed],
+    () => (feed.data ? keepApprovals(feed.data.items, approvals).filter((i) => !removed.has(i.id)) : undefined),
+    [feed.data, removed, approvals],
   );
   const gone = feed.data ? feed.data.items.length - (items?.length ?? 0) : 0;
   return {

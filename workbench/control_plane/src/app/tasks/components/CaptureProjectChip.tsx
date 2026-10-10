@@ -7,10 +7,11 @@
  * member picks a destination, and then names it. Typing `#` at the start of a
  * word opens the same picker, filtered by what follows the `#`.
  *
- * The list is the Move dialog's own (`destinations`, the company tree, folders
- * shown and disabled), with my Areas first, because an Area stays private. It
- * is drawn by `WherePicker`, the list Clarify's Where step draws, so the three
- * doors show one list.
+ * The list is the Move dialog's own (`ProjectPicker` over the company tree),
+ * with my Areas first, because an Area stays private. It is drawn by
+ * `WherePicker`, the list Clarify's Where step draws, so the three doors show
+ * one list. Opened from the chip it carries its own search box. Opened by `#`
+ * the capture box IS the search box, so the picker filters by the fragment.
  *
  * The list hangs from the chip through `AnchoredPanel`, the shared popover,
  * so no ancestor clips it. A click in the portalled list is not "outside",
@@ -24,7 +25,8 @@ import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 import type { LensArea } from "../lib/api";
-import type { DestinationRow } from "../lib/companyTree";
+import { pickerNodes } from "../../projects/lib/pickerTree";
+import type { ProjectNode } from "../../projects/lib/tree";
 import type { CaptureDestination } from "../lib/quickAdd";
 import type { MyTasksProject } from "../lib/types";
 import { WherePicker } from "./WherePicker";
@@ -36,7 +38,7 @@ export function CaptureProjectChip({
   onOpenChange,
   query,
   areas,
-  tree,
+  roots,
   projects,
   onCreateArea,
 }: {
@@ -47,7 +49,7 @@ export function CaptureProjectChip({
   /** The `#` fragment being typed, or null when the chip opened the picker. */
   query: string | null;
   areas: LensArea[];
-  tree: readonly DestinationRow[];
+  roots: readonly ProjectNode[];
   projects: MyTasksProject[];
   onCreateArea: (name: string) => Promise<LensArea | undefined>;
 }) {
@@ -67,25 +69,7 @@ export function CaptureProjectChip({
     return () => window.removeEventListener("pointerdown", onDown);
   }, [open, onOpenChange]);
 
-  const q = (query ?? "").trim().toLowerCase();
-  const shownAreas = useMemo(
-    () => (q ? areas.filter((a) => a.name.toLowerCase().includes(q)) : areas),
-    [areas, q],
-  );
-  // Filtered, the tree loses its parents, so a match is drawn flat.
-  const shownTree = useMemo(
-    () =>
-      q
-        ? tree
-            .filter((r) => r.legal && r.node.name.toLowerCase().includes(q))
-            .map((r) => ({ ...r, depth: 0 }))
-        : tree,
-    [tree, q],
-  );
-  const shownProjects = useMemo(
-    () => (q ? projects.filter((p) => p.outcome.toLowerCase().includes(q)) : projects),
-    [projects, q],
-  );
+  const nodes = useMemo(() => pickerNodes(roots), [roots]);
 
   const pick = (id: string | undefined) => {
     if (!id) {
@@ -94,12 +78,12 @@ export function CaptureProjectChip({
       return;
     }
     const area = areas.find((a) => a.id === id);
-    const row = tree.find((r) => r.node.id === id);
+    const row = nodes.find((n) => n.id === id);
     const flat = projects.find((p) => p.id === id);
     const dest: CaptureDestination | null = area
       ? { id, name: area.name, kind: "area" }
       : row
-        ? { id, name: row.node.name, kind: "project" }
+        ? { id, name: row.name, kind: "project" }
         : flat
           ? { id, name: flat.outcome, kind: "project" }
           : null;
@@ -114,7 +98,7 @@ export function CaptureProjectChip({
         ref={setChip}
         type="button"
         onClick={() => onOpenChange(!open)}
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title={
           value
@@ -139,18 +123,25 @@ export function CaptureProjectChip({
       <AnchoredPanel
         anchor={chip}
         open={open}
-        maxHeight={420}
+        maxHeight={460}
         align="end"
-        className="w-72 max-w-[calc(100vw-2rem)] p-1"
-        panelProps={{ role: "listbox", "aria-label": "Capture to" }}
+        className="w-80 max-w-[calc(100vw-2rem)] p-1"
+        // A dialog, not a listbox: it holds a search box and a tree.
+        panelProps={{ role: "dialog", "aria-label": "Capture to" }}
       >
           <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {q ? `Capture to “${query}”` : "Capture to"}
+            {query ? `Capture to “${query}”` : "Capture to"}
           </p>
           <WherePicker
-            areas={shownAreas}
-            projects={shownProjects}
-            tree={shownTree}
+            areas={areas}
+            projects={projects}
+            roots={roots}
+            query={query}
+            autoFocus={query === null}
+            onEscape={() => {
+              onOpenChange(false);
+              chip?.focus();
+            }}
             value={value?.id}
             noProjectLabel="Inbox"
             onChange={pick}

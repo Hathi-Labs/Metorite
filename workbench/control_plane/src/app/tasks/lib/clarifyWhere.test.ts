@@ -289,9 +289,9 @@ describe("the Where list", () => {
     const html = draw(true, undefined, BOARD.id);
     expect(html).toContain("No project");
     expect(html).toMatch(/Pricing page copy refresh<\/span><span[^>]*>suggested/);
-    // The board row is not pressed: only No project is.
-    expect(html).toMatch(/aria-pressed="true"[^>]*>.*No project/);
-    expect(html).not.toMatch(/aria-pressed="true"[^>]*>(?:(?!<\/button>).)*Pricing page/);
+    // The board row is not selected: only No project is.
+    expect(html).toMatch(/aria-selected="true"[^>]*>.*No project/);
+    expect(html).not.toMatch(/aria-selected="true"[^>]*>(?:(?!role="treeitem").)*Pricing page/);
   });
 });
 

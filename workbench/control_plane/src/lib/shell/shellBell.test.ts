@@ -136,7 +136,9 @@ describe("the live bell reads the feed", () => {
   it("reads My Day's own cache key, so the two stay in step", () => {
     const src = code(read("./NeedsYouCard.tsx"));
     expect(src).toMatch(/useCachedResource<NeedsFeed>\(enabled \? needsKey\(\) : null/);
-    expect(code(read("./ShellBell.tsx"))).toMatch(/useNeedsYou\(allowed\)/);
+    // With My Day's own approvals rule, so an admin sees the same group.
+    expect(code(read("./ShellBell.tsx"))).toMatch(/useNeedsYou\(allowed, approvals\)/);
+    expect(code(read("./ShellBell.tsx"))).toMatch(/approvals: seesApprovals\(access\.features, access\.is_admin\)/);
   });
 
   it("says when the feed was cut, and nothing when the list is whole", () => {

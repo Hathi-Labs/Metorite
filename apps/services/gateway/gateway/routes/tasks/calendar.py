@@ -1543,10 +1543,13 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
                         VALUES (:uid, :id, :title, :frm, NULL)"""),
                 {"uid": uid, "id": m.id, "title": m.title,
                  "frm": _parse_iso(m.scheduled_start)})
+        # The row of THIS organization only (H-256, migration 239): one
+        # address holds one settings row in each of its organizations.
         await db.execute(
             text("UPDATE user_settings SET last_rollover_date = :d "
-                 "WHERE user_id = :uid"),
-            {"d": local_today, "uid": uid})
+                 "WHERE user_id = :uid "
+                 "AND organization_id = CAST(:org AS uuid)"),
+            {"d": local_today, "uid": uid, "org": org_id})
     # `_tenant_session` commits on clean exit (H2: a mid-block commit would drop
     # the tenant GUC), so this logs AFTER the transaction lands.
     if overdue:
@@ -1562,9 +1565,13 @@ async def _run_rollover_sweep() -> None:
     organizations from the RLS-EXEMPT ``organization`` table on an unbound
     session (the tenant-less "which tenants exist" read), then bind
     ``tenant_session(org)`` per org and read that org's auto-rollover users,
-    threading the org into each per-user rollover. Deduped by ``user_id`` (first
-    tenant wins) so pre-phase-4 (RLS off, DARK) the unscoped per-org reads
-    collapse to a byte-identical set; post-phase-4 they are disjoint."""
+    threading the org into each per-user rollover.
+
+    Each per-org read names its own organization, so the reads are disjoint
+    with RLS or without it. Since migration 239 (H-256) one address can hold a
+    settings row in each of its organizations, and each one rolls over in its
+    own tenant. The old dedup on ``user_id`` alone (first tenant wins) would
+    skip the second one, so it is gone."""
     resolver = await _get_db()
     try:
         org_rows = (await resolver.execute(
@@ -1572,7 +1579,6 @@ async def _run_rollover_sweep() -> None:
     finally:
         await resolver.close()
 
-    seen: set[str] = set()
     pending: list[tuple[Any, str]] = []
     for org_row in org_rows:
         org_id = str(org_row.id)
@@ -1582,13 +1588,11 @@ async def _run_rollover_sweep() -> None:
                                last_rollover_date, day_start_hour, day_end_hour,
                                daily_capacity_mins, buffer_mins, energy_windows
                         FROM user_settings
-                        WHERE coalesce(auto_rollover, true) = true"""),
+                        WHERE coalesce(auto_rollover, true) = true
+                          AND organization_id = CAST(:org AS uuid)"""),
+                {"org": org_id},
             )).fetchall()
-        for row in rows:
-            if row.user_id in seen:
-                continue  # first tenant that saw it wins (pre-phase-4 dedup)
-            seen.add(row.user_id)
-            pending.append((row, org_id))
+        pending.extend((row, org_id) for row in rows)
 
     for row, org_id in pending:
         try:

@@ -54,7 +54,7 @@ import Button from "@/components/ui/Button";
 import Modal, { type ModalPlacement } from "@/components/ui/Modal";
 import { onClear } from "@/lib/dataCache";
 
-import { cardsFor } from "./myDay";
+import { cardsFor, seesApprovals } from "./myDay";
 import { NeedsList, type NeedsYou, useNeedsYou } from "./NeedsYouCard";
 import { homePane } from "./shellNav";
 
@@ -119,10 +119,18 @@ export function bellLabel(count: number | undefined): string {
   return `Needs you, ${n} ${n === 1 ? "item" : "items"}`;
 }
 
-/** Whether this member can have a feed at all (the needs card's own rule). */
-function useBellAllowed(): boolean {
+/**
+ * Whether this member can have a feed at all, and whether it holds the
+ * approvals group. Both are My Day's own rules (`cardsFor`, `seesApprovals`),
+ * so the bell and the card show the same rows.
+ */
+function useBellAllowed(): { allowed: boolean; approvals: boolean } {
   const { access, loading } = useAccess();
-  return !loading && cardsFor(access.features).needs;
+  if (loading) return { allowed: false, approvals: false };
+  return {
+    allowed: cardsFor(access.features, access.is_admin).needs,
+    approvals: seesApprovals(access.features, access.is_admin),
+  };
 }
 
 // ── The control ──────────────────────────────────────────────────────────────
@@ -186,8 +194,8 @@ export function ShellBell({
   /** Layout only. */
   className?: string;
 }) {
-  const allowed = useBellAllowed();
-  const needs = useNeedsYou(allowed);
+  const { allowed, approvals } = useBellAllowed();
+  const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
   if (!allowed) return null;
   return (
@@ -325,8 +333,8 @@ export function BellPanel({
  * bell offers the store's Undo everywhere.
  */
 export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
-  const allowed = useBellAllowed();
-  const needs = useNeedsYou(allowed);
+  const { allowed, approvals } = useBellAllowed();
+  const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
   const { refresh } = needs;
 

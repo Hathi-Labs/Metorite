@@ -196,8 +196,10 @@ async def main() -> None:
 
         # A person with a row keeps THEIR value — seeded once, never mirrored.
         await db.execute(text(
-            "INSERT INTO user_settings (user_id, day_start_hour) "
-            "VALUES (:uid, 5)"), {"uid": SUBJECT_EMAIL})
+            # Names its organization: since migration 239 (H-256) the column
+            # is NOT NULL and part of the key, with no DEFAULT on a fresh ladder.
+            "INSERT INTO user_settings (organization_id, user_id, day_start_hour) "
+            "VALUES (CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid), :uid, 5)"), {"uid": SUBJECT_EMAIL})
         await db.commit()
         check("an existing preference is never overwritten",
               (await tasks_settings._load(db, SUBJECT_EMAIL)).day_start_hour, 5)

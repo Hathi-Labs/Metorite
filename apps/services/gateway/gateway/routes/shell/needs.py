@@ -17,20 +17,50 @@ The pattern is ``search.py``'s, on the same router:
   out of time is left out, and its source reads ``failed``. It never fails
   the feed.
 
-The three providers, and the function each one calls:
+The four providers, and the function each one calls:
 
-=========  ===================  ===========================================
-Source     Feature              Function
-=========  ===================  ===========================================
+=========  ====================  ==========================================
+Source     Feature               Function
+=========  ====================  ==========================================
 tasks      ``feature:projects``  ``projects.personal.my_due_tasks``: one
                                  bounded read of the lens, due today and
                                  overdue, the oldest deadline first.
+approvals  ``feature:approvals`` ``action_broker.read_pending``: the queue
+           and an org admin      of the bound tenant, the longest wait
+                                 first, 50 rows at most (NS-3 slice C).
 projects   ``feature:projects``  ``projects.notifications.list_notifications``,
                                  unread only.
 email      ``feature:email``     ``email.transport.accounts.list_accounts``,
                                  then ``email.digest.needs_reply_threads``
                                  for each mailbox, the longest wait first.
-=========  ===================  ===========================================
+=========  ====================  ==========================================
+
+⚠️ **Only an org admin gets approval rows** (owner decision, 2026-10-10).
+The router of ``routes/actions.py`` demands ``feature:approvals``, and that
+gate alone is too wide: migration 207 grants ``feature:*`` to ``member`` and
+``manager`` in every org. So the provider ALSO demands ``ADMIN_PERMISSION``,
+the admin test of ``routes/shell/intent.py``. ``GET /auth/me`` reports the
+same test as ``is_admin``. Any other member keeps the Approvals app if they
+hold it, and their feed holds only their own work. ``pending_actions`` has
+no approver column. A finer Approver role is a later option.
+
+``GET /actions/pending`` also demands ``require_internal_auth``. That check is
+the transport: the BFF sends the internal token on every call, and on this
+call too. The broker binds the tenant itself (H-201).
+
+⚠️ **The feed reads ``read_pending``, not ``list_pending``.** ``list_pending``
+answers ``[]`` when the database fails, so the source would read a false
+``ok``. ``read_pending`` raises, so the source reads ``failed``. It is also
+bounded: 50 rows, the oldest first.
+
+⚠️ **Approvals never push the member's own work out of the feed.** An
+approval takes only the room that the other rows leave inside ``limit``
+(``YIELDING_KINDS``). The approvals provider also runs LAST, so a slow sync
+pool cannot spend the time budget of the member's own sources.
+
+⚠️ **An approval row has no act.** Approving runs an outward write: a mail, a
+CRM push, a broadcast. The member reads the proposal in Approvals first, so
+My Day never approves in one click.
 
 ⚠️ **My Tasks needs ``feature:projects``, not ``feature:tasks``.** The lens
 routes live on the Projects router, and that router demands ``projects``.
@@ -62,6 +92,9 @@ own time limit. The source reads ``failed`` only when every mailbox failed.
   (``app/projects/lib/notifications.ts`` ``linkTo``).
 * an email: ``/email?email=<message id>&account=<account id>``
   (``app/email/lib/emailLink.ts`` ``emailLink``).
+* an approval: ``/approvals``. The Approvals app reads no link to one
+  action (``app/approvals/page.tsx`` reads no search value), so the row
+  opens the queue.
 
 **The one-click acts** (``act``), each through the OWNING app's route:
 
@@ -71,7 +104,8 @@ own time limit. The source reads ``failed`` only when every mailbox failed.
   ``{"ids": [act_ref]}``. The Projects bell marks a row read through it
   (``app/projects/lib/api.ts`` ``notificationsApi.markRead``).
 
-An email row has no act. A reply needs the app.
+An email row has no act. A reply needs the app. An approval row has no act
+either, for the reason above.
 
 The answer is plain words: a row says what it is, where it opens, and
 nothing else. An id travels only inside ``id``, ``href`` and ``act_ref``.
@@ -81,6 +115,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -89,6 +124,7 @@ from urllib.parse import quote, urlencode
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.personal import NOT_NOW_DISPOSITIONS
+from gateway.routes.shell.intent import ADMIN_PERMISSION
 from gateway.routes.shell.search import router
 
 logger = logging.getLogger(__name__)
@@ -115,11 +151,16 @@ TOTAL_BUDGET_S = 4.0
 #: only narrow the feed.
 HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 
-#: The order of the feed, by kind (§7.2 contract).
-KIND_ORDER = {"overdue": 0, "due_today": 1, "notification": 2, "needs_reply": 3}
+#: The order of the feed, by kind (§7.2 contract). An approval comes right
+#: after an overdue task, because an agent's work waits on it.
+KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
+              "needs_reply": 4}
+#: The kinds that take only the room the member's own rows leave inside the
+#: limit. An admin's approvals must never push out their own work.
+YIELDING_KINDS = frozenset({"approval"})
 #: Within a kind: True is newest first, False is oldest first.
-NEWEST_FIRST = {"overdue": False, "due_today": False, "notification": True,
-                "needs_reply": False}
+NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
+                "notification": True, "needs_reply": False}
 
 Item = dict[str, Any]
 
@@ -279,12 +320,96 @@ async def _email(user: UserContext) -> list[Item]:
     return _sort(out)[:PER_APP]
 
 
-#: source → (the feature its app's router demands, the provider).
+# ── Approvals: the pending actions of the member's organization ─────────────
+
+#: An action's plain words, by its name. The names are the ones each
+#: registered handler takes (``register_action_handler``).
+_ACTION_WORDS = {
+    "app.publish_review": "Review an app before it publishes",
+    "workflow.resume_run": "Resume a paused workflow",
+    "whatsapp.broadcast": "Send a WhatsApp broadcast",
+    "crm.zoho_create": "Create a record in Zoho CRM",
+    "crm.zoho_update": "Change a record in Zoho CRM",
+    "crm.zoho_delete": "Delete a record in Zoho CRM",
+}
+#: The proposers whose name says nothing to a member.
+_PROPOSER_WORDS = {"crm:zoho-sync": "the Zoho CRM sync"}
+#: An id, which a title never prints.
+_LOOKS_LIKE_ID = re.compile(r"^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$",
+                            re.IGNORECASE)
+
+
+def _words(name: str) -> str:
+    return " ".join(re.split(r"[._\-\s]+", name)).strip()
+
+
+def _action_title(row: dict[str, Any]) -> str:
+    """What the action does, in plain words. It prints no id."""
+    action = str(row.get("action") or "").strip()
+    title = _ACTION_WORDS.get(action)
+    if title is None:
+        if action.startswith("app.") and len(action) > len("app."):
+            # An app's own tool (``routes/apps/tools.py``).
+            title = f"Run {_words(action[len('app.'):])} for an app"
+        else:
+            words = _words(action)
+            title = (words[:1].upper() + words[1:]) if words else "An action"
+    if action == "whatsapp.broadcast":
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        targets = payload.get("targets")
+        if isinstance(targets, list) and targets:
+            title += f" to {len(targets)} chat" + ("" if len(targets) == 1 else "s")
+    return title
+
+
+def _proposer(actor: Any) -> str:
+    """Who proposed the action, as the Approvals queue names the actor."""
+    raw = str(actor or "").strip()
+    if raw in _PROPOSER_WORDS:
+        return _PROPOSER_WORDS[raw]
+    kind, _, rest = raw.partition(":")
+    name = rest.split(":")[0].strip()
+    if kind == "agent" and name:
+        return f"the {_words(name)} agent"
+    if kind == "app" and name:
+        return f"the {name} app"
+    if kind == "workflow" and name:
+        return "a workflow" if _LOOKS_LIKE_ID.match(name) else f"the {name} workflow"
+    if kind == "user" and name:
+        return _who(name)
+    return _who(raw)
+
+
+async def _approvals(user: UserContext) -> list[Item]:
+    import action_broker
+
+    # The broker's bounded read of the queue, which raises on a database
+    # failure (the module note). The broker binds the tenant this request
+    # bound (H-201). The read is sync, so it runs in a thread, which takes
+    # this context and its tenant with it.
+    rows = await asyncio.to_thread(action_broker.read_pending, PER_APP)
+    out = []
+    for row in rows:
+        action_id = str(row["id"])
+        out.append(_item(
+            id=f"approvals:{action_id}", app="approvals", kind="approval",
+            title=_action_title(row), detail=f"Proposed by {_proposer(row.get('actor'))}",
+            href="/approvals", at=row.get("created_at"),
+        ))
+    return _sort(out)[:PER_APP]
+
+
+#: source → (the feature its app's router demands, the provider). The order
+#: here is the order the providers run in, not the order of the feed.
+#: Approvals runs LAST (the module note).
 PROVIDERS: dict[str, tuple[str, Callable[[UserContext], Awaitable[list[Item]]]]] = {
     "tasks": ("projects", _tasks),
     "projects": ("projects", _projects),
     "email": ("email", _email),
+    "approvals": ("approvals", _approvals),
 }
+#: The sources that also demand the admin test (owner decision, 2026-10-10).
+ADMIN_SOURCES = frozenset({"approvals"})
 
 
 def _sort(items: list[Item]) -> list[Item]:
@@ -319,7 +444,9 @@ async def shell_needs(
     deadline = loop.time() + TOTAL_BUDGET_S
     for key, (feature, provider) in PROVIDERS.items():
         # The gate the app's router would have applied (see the module note).
-        if not user.has_permission(f"feature:{feature}"):
+        if not user.has_permission(f"feature:{feature}") or (
+            key in ADMIN_SOURCES and not user.has_permission(ADMIN_PERMISSION)
+        ):
             sources[key] = "absent"
             continue
         left = deadline - loop.time()
@@ -345,9 +472,18 @@ async def shell_needs(
         sources[key] = "ok"
         items.extend(rows[:PER_APP])
 
-    feed = _sort(items)[:size]
-    # ``count`` is the rows sent, as before. ``total`` is every row the
-    # sources gave before the cut to ``size``, so the shell's bell can say 45
-    # when it shows 30 (NS-6). Each source gives ``PER_APP`` at most, so
-    # ``total`` is a floor, not a full count of what waits.
-    return {"count": len(feed), "total": len(items), "items": feed, "sources": sources}
+    return {**_fit(items, size), "sources": sources}
+
+
+def _fit(items: list[Item], size: int) -> dict[str, Any]:
+    """The first ``size`` rows. A yielding kind takes only the room left.
+
+    ``count`` is the rows sent, as before. ``total`` is every row the
+    sources gave before the cut to ``size``, so the shell's bell can say 45
+    when it shows 30 (NS-6). Each source gives ``PER_APP`` at most, so
+    ``total`` is a floor, not a full count of what waits.
+    """
+    own = _sort([i for i in items if i["kind"] not in YIELDING_KINDS])[:size]
+    rest = _sort([i for i in items if i["kind"] in YIELDING_KINDS])[:size - len(own)]
+    feed = _sort(own + rest)
+    return {"count": len(feed), "total": len(items), "items": feed}

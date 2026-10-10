@@ -323,8 +323,10 @@ async def main() -> None:
             if today.isoformat() != case["today"] or bool(hidden) is not case["hidden"]:
                 wrong.append(case["name"])
         await db.execute(text(
-            "INSERT INTO user_settings (user_id, timezone) VALUES (:u, 'Asia/Kolkata') "
-            "ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone"),
+            # Keyed per organization since migration 239 (H-256).
+            "INSERT INTO user_settings (organization_id, user_id, timezone) "
+            "VALUES (CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid), :u, 'Asia/Kolkata') "
+            "ON CONFLICT (organization_id, user_id) DO UPDATE SET timezone = EXCLUDED.timezone"),
             {"u": ALICE})
         stored = await member_today(db, ALICE, datetime(2026, 9, 24, 20, 0, tzinfo=UTC))
         check("6c the start date is judged on the member's own date, from their zone",

@@ -1296,9 +1296,11 @@ as the answer. The slices build to these answers.
     29 mutations each turn a fence red. The R8 half reads the zone on
     asyncpg, as a role that FORCE RLS binds, on the promoted catalog of the
     H3 rehearsal. Another tenant and an unbound session read no zone.
-  - A finding, not fixed: the primary key of `user_settings` is `user_id`
-    alone. So a member of two organizations can have one settings row only
-    (H-256).
+  - A finding, FIXED on 2026-10-10 (H-256): the primary key of
+    `user_settings` was `user_id` alone, so a member of two organizations
+    could have one settings row only. Migration 239 keys the table on
+    `(organization_id, user_id)`. The fence is
+    `tests/unit/test_user_settings_per_org_r8.py`.
   - Review round 1 (2026-10-06) fixed four findings:
     - A member with no saved zone got the label "UTC, no zone saved" as a
       zone, and a block time then failed with "Function failed". The zone

@@ -254,24 +254,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
-### H-290 · Give the long-header data-engine test a fixed memory budget · [AGENT]
-- **Check:** run the test 20 times in a shell loop:
-  `for i in $(seq 20); do uv run pytest tests/unit/test_data_engine.py -q -k long_header || echo FAIL; done`.
-  One `FAIL` with "The load passed the memory cap of the engine" means this
-  is open.
-- **Why.** On 2026-10-10 `test_a_long_header_keeps_each_answer_under_1_mb`
-  failed the post-merge Unit tests of #816, and it passed on a rerun. A red
-  post-merge job blocks the deploy, so this test blocks deploys at random.
-  The engine sets DuckDB's `memory_limit` from the container
-  (`_duckdb_memory_mb`, `sandbox/data_engine.py`). So the cap moves with the
-  runner's memory, and a 400-column header of 5000-character names sits near
-  it.
-- **Do this:** pin the memory budget in the test. Patch `_duckdb_memory_mb`
-  to a fixed value that the load fits in. Or make the header smaller, while
-  it still proves the cut. Do not mark the test flaky, and do not delete it.
-- **Authority:** `CLAUDE.md` §3 rule 8, the deploy gate
-- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
-
 ### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
 - **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
   No hit means S7 is not built.
@@ -825,22 +807,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_agent_parity.md` §15, the P7 record
 - **Added:** 2026-10-06 · WS-46 P7 review round 1
 
-### H-256 · Give `user_settings` a key for each organization of a member · [AGENT]
-- **Check:** `rg -n "user_id TEXT PRIMARY KEY" infra/postgres/51_gtd_settings.sql`,
-  then find a later migration that keys the table on
-  `(organization_id, user_id)`. No such migration means this is open.
-- **Why.** The table holds one row for each address, because `user_id` is
-  its whole primary key. The tenancy phases in `generated/` add
-  `organization_id` and FORCE RLS, and the key stays the same. So a member of two
-  organizations can save settings in one of them only. The insert in the
-  other one fails on the key. Since WS-46 P7 the Projects chat reads the
-  member's zone from this table (`GET /projects/my/today`).
-- **Do.** Measure the rows first. Then change the key in expand and contract
-  steps (R6): add a unique index on `(organization_id, user_id)`, move each
-  reader and writer to it, and drop the old key in a later release. Fence it
-  with an R8 test of one address in two organizations.
+### H-256 · Show on production that `user_settings` has a key for each organization · [AGENT]
+- **Check:** on production, as an owner role, run
+  `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'user_settings'::regclass AND contype = 'p'`.
+  The answer `PRIMARY KEY (organization_id, user_id)`, and a ledger line for
+  `239_user_settings_per_org.sql`, close this entry. Delete it then.
+- **Why.** Migration 239 keys the table on `(organization_id, user_id)`, so a
+  member of two organizations can save settings in each. The old key was
+  `user_id` alone. `PUT /tasks/settings` and the rollover sweep moved to the
+  new key in the same change, and `tests/unit/test_user_settings_per_org_r8.py`
+  is the fence. A green deploy run is not the proof (rule 8).
+- **Do.** Before the deploy, measure the rows:
+  `SELECT organization_id, count(*) FROM user_settings GROUP BY 1`. After it,
+  run the check, and measure the rows again. 239 changes no row.
+  ⚠️ 239 swaps the key in one step, so no later release has a key to drop. For
+  the seconds between the migration and the restart, the old code's save
+  answers 500. Reads do not change.
 - **Authority:** `specs/projects_agent_parity.md` §15, the P7 record · R5 · R6
-- **Added:** 2026-10-06 · WS-46 P7
+- **Added:** 2026-10-06 · WS-46 P7 · built 2026-10-10
 
 ### H-255 · Check the pop-out and the discard of a reply by eye (EM-G3c-3) · [OWNER]
 - **Check:** `rg -n "EM-G3c-3 visual check passed" project-docs/specs/email_app_master_plan.md`
@@ -5138,6 +5122,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10 ·
   `work_plan.md` §6.1
 - **Added:** 2026-10-04 · PR #622
+
+### H-296 · Four more project pickers still draw the whole tree as one list · [AGENT]
+- **Check:** `grep -rln "ProjectPicker" workbench/control_plane/src/app/projects/components/AssistantRail.tsx workbench/control_plane/src/app/projects/components/ReportsView.tsx workbench/control_plane/src/app/projects/components/StatusSetControl.tsx workbench/control_plane/src/app/projects/components/MoveDialog.tsx`
+  → fewer than four files means this is open.
+- **Why:** on 2026-10-10 the owner found the task Move picker hard to read.
+  It drew every node of every space as one open list. `ProjectPicker`
+  (search, spaces closed, a path on each result) now serves the three doors
+  that put a TASK into a project: Move, Clarify and the capture chip. Four
+  other pickers still draw the old list. They are the chat focus
+  (`AssistantRail.tsx`), the report scope (`ReportsView.tsx`), "Copy
+  statuses from" (`StatusSetControl.tsx`) and the project "Move to…"
+  dialog (`MoveDialog.tsx`).
+- **Do:** give `pickerNodes` a pick rule as an argument. The chat and the
+  report may pick a space or a folder. `MoveDialog` must show the reason
+  from `moveRefusal` on a refused row. Then add a popover host for the
+  three `SelectButton` sites. Do not add a second tree model.
+- **Authority:** owner ask, 2026-10-10 · `app/projects/lib/pickerTree.ts`
+- **Added:** 2026-10-10 · the project picker session
 
 # DONE — deleted, not archived
 
