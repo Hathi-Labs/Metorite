@@ -190,8 +190,8 @@ def test_the_tables_are_created_before_they_are_referenced(bare: str) -> None:
         ("crm_deals", "status_id", "RESTRICT"),
         # SET NULL everywhere a parent is optional context, so deleting an
         # organization does not take its deals' history with it.
-        ("crm_contacts", "organization_id", "SET NULL"),
-        ("crm_deals", "organization_id", "SET NULL"),
+        ("crm_contacts", "company_id", "SET NULL"),
+        ("crm_deals", "company_id", "SET NULL"),
         ("crm_deals", "lead_id", "SET NULL"),
         ("crm_deals", "lost_reason_id", "SET NULL"),
         ("crm_leads", "lost_reason_id", "SET NULL"),
@@ -218,7 +218,7 @@ def test_activities_cascade_from_all_four_targets(bare: str) -> None:
     """An activity outlives nothing: its whole meaning is its target."""
     body = bare.split("CREATE TABLE IF NOT EXISTS crm_activities", 1)[1]
     body = body.split("CONSTRAINT crm_activities_target_required", 1)[0]
-    for column in ("lead_id", "deal_id", "contact_id", "organization_id"):
+    for column in ("lead_id", "deal_id", "contact_id", "company_id"):
         window = body[body.index(f"{column} "):][:200]
         assert "ON DELETE CASCADE" in window, f"{column} must CASCADE"
 
@@ -235,7 +235,7 @@ def test_an_activity_must_name_at_least_one_target(bare: str) -> None:
     timeline and accumulates silently."""
     body = bare.split("CONSTRAINT crm_activities_target_required CHECK", 1)[1]
     body = body.split(")\n", 1)[0]
-    for column in ("lead_id", "deal_id", "contact_id", "organization_id"):
+    for column in ("lead_id", "deal_id", "contact_id", "company_id"):
         assert f"{column} IS NOT NULL" in body
     assert body.count("OR") == 3
 

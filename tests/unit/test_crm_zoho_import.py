@@ -328,7 +328,7 @@ async def test_contacts_map_and_link_to_their_account(
     assert contact["last_name"] == "Varada"
     assert contact["title"] == "Founder"
     # Accounts import before Contacts precisely so this link resolves.
-    assert contact["organization_id"] == str(org["id"])
+    assert contact["company_id"] == str(org["id"])
 
 
 async def test_a_surname_only_contact_still_satisfies_not_null(
@@ -574,7 +574,7 @@ async def test_a_note_lands_on_its_parent_and_bumps_its_recency(
     [note] = db.rows("crm_activities")
     assert note["type"] == "note"
     assert note["subject"] == "Called"
-    assert note["organization_id"] == str(org["id"])
+    assert note["company_id"] == str(org["id"])
     # §3.8's discipline — an imported record must not sort as never-touched on
     # the day it arrives.
     assert org["last_activity_at"] is not None
@@ -649,7 +649,7 @@ async def test_a_bare_string_parent_id_still_resolves(
 
     [org] = db.rows(ORGANIZATIONS.table)
     [note] = db.rows("crm_activities")
-    assert note["organization_id"] == str(org["id"])
+    assert note["company_id"] == str(org["id"])
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────

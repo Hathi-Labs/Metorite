@@ -212,7 +212,7 @@ async def test_conversion_is_never_refusable_by_a_settings_grid_edit(
 
     `_create_deal` always calls `load_default_status` and `ConvertDeal` has no
     `status_id` field at all, so a converted deal ALWAYS lands in the default
-    lane. Gate the defaulted path and an owner requiring `organization_id`
+    lane. Gate the defaulted path and an owner requiring `company_id`
     there makes every lead that names no company permanently unconvertible —
     `ConvertModal.tsx` renders "This lead names no company, so no organization
     is created" and offers no picker, so there is no request the user could
@@ -220,13 +220,13 @@ async def test_conversion_is_never_refusable_by_a_settings_grid_edit(
     conversion must still succeed.
     """
     for row in db.rows("crm_deal_statuses"):
-        row["required_fields"] = ["organization_id", "amount"]
+        row["required_fields"] = ["company_id", "amount"]
     lead = _lead(db, organization_name=None)
 
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.organization is None
-    assert result.deal["organization_id"] is None
+    assert result.deal["company_id"] is None
     assert result.deal["amount"] is None
     assert len(db.rows("crm_deals")) == 1
 
@@ -237,7 +237,7 @@ async def test_a_caller_chosen_organization_wins(db: FakeCrmDB) -> None:
     lead = _lead(db)
 
     result = await convert_lead(
-        str(lead.id), ConvertRequest(organization_id=str(chosen.id)), USER,
+        str(lead.id), ConvertRequest(company_id=str(chosen.id)), USER,
     )
     assert result.organization["id"] == str(chosen.id)
 
@@ -251,7 +251,7 @@ async def test_the_deal_carries_its_lead_provenance(db: FakeCrmDB) -> None:
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.deal["lead_id"] == str(lead.id)
-    assert result.deal["organization_id"] == result.organization["id"]
+    assert result.deal["company_id"] == result.organization["id"]
 
 
 async def test_the_deal_is_named_after_the_company_then_the_lead(

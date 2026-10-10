@@ -4,7 +4,7 @@
  * The deals kanban — the landing tab (specs/crm_app.md §5 surface 1).
  *
  * Lanes are `crm_deal_statuses` by position, colored; cards carry
- * name / organization / amount / owner / stage-age; dragging a card issues
+ * name / company / amount / owner / stage-age; dragging a card issues
  * `PATCH /crm/deals/{id} {status_id}`; each lane header shows its count and
  * ₹ total for the WHOLE lane, not the page of cards returned.
  *

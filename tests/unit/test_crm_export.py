@@ -437,7 +437,7 @@ async def test_a_deal_carries_its_organization_name(db) -> None:
     join the Organization column would be empty on every row — a column of
     nothing that reads as missing data."""
     org = db.seed("crm_companies", name="Acme")
-    db.seed("crm_deals", name="Big one", organization_id=org.id, amount=100)
+    db.seed("crm_deals", name="Big one", company_id=org.id, amount=100)
 
     text, _ = await _export("deals")
 

@@ -710,7 +710,7 @@ async def test_a_deal_push_carries_its_stage_name_not_its_status_uuid(
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed(
         DEALS.table, name="10 printers", amount=450000,
-        status_id=deal_status.id, organization_id=org.id, zoho_dirty=True,
+        status_id=deal_status.id, company_id=org.id, zoho_dirty=True,
     )
     await crm_sync.run_cycle()
 
@@ -1654,7 +1654,7 @@ async def test_a_native_note_pushes_as_a_zoho_note(
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed(
         "crm_activities", type="note", subject="Called", body="Wants a quote",
-        organization_id=org.id, created_by="vjvarada@fracktal.in", zoho_id=None,
+        company_id=org.id, created_by="vjvarada@fracktal.in", zoho_id=None,
     )
     report = await crm_sync.run_cycle()
 
@@ -1676,9 +1676,9 @@ async def test_a_status_change_activity_is_never_pushed(
     the PREDICATE, so a new push path cannot reach them by another route."""
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed("crm_activities", type="status_change", subject="New → Won",
-            organization_id=org.id, created_by="platform", zoho_id=None)
+            company_id=org.id, created_by="platform", zoho_id=None)
     db.seed("crm_activities", type="system", subject="Imported",
-            organization_id=org.id, created_by="platform", zoho_id=None)
+            company_id=org.id, created_by="platform", zoho_id=None)
 
     report = await crm_sync.run_cycle()
 
@@ -1696,7 +1696,7 @@ async def test_an_activity_whose_parent_has_no_zoho_id_yet_waits(
     given the parent an id."""
     org = db.seed(ORGANIZATIONS.table, name="Fracktal")
     db.seed("crm_activities", type="note", subject="Called",
-            organization_id=org.id, created_by="a@b.in", zoho_id=None)
+            company_id=org.id, created_by="a@b.in", zoho_id=None)
 
     report = await crm_sync.run_cycle()
 

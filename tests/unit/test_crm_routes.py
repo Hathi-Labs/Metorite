@@ -327,14 +327,14 @@ async def test_creating_into_a_chosen_gated_stage_without_the_fields_is_422(
     demanding three fields, two of them absent, must not also name the one the
     body supplied, or the modal asks for something already filled in."""
     _seed_pipeline(db)
-    stage = _late_stage(db, "amount", "expected_close_date", "organization_id")
+    stage = _late_stage(db, "amount", "expected_close_date", "company_id")
 
     with pytest.raises(HTTPException) as exc:
         await crm_records.create_record(
             DEALS,
             crm_core.DealIn(
                 name="Printer order", status_id=str(stage.id),
-                organization_id=str(uuid4()),
+                company_id=str(uuid4()),
             ),
             USER,
         )
@@ -344,7 +344,7 @@ async def test_creating_into_a_chosen_gated_stage_without_the_fields_is_422(
     assert "Proposal" in detail
     assert "amount" in detail
     assert "expected_close_date" in detail
-    assert "organization_id" not in detail
+    assert "company_id" not in detail
 
 
 async def test_a_refused_create_writes_no_deal_at_all(db: FakeCrmDB) -> None:
@@ -789,7 +789,7 @@ async def test_every_entity_logs_to_its_own_target_column(
         entity, str(seeded.id), crm_activities.ActivityIn(body="note"), USER,
     )
     assert logged[entity.activity_column] == str(seeded.id)
-    targets = {"lead_id", "deal_id", "contact_id", "organization_id"}
+    targets = {"lead_id", "deal_id", "contact_id", "company_id"}
     assert [c for c in targets if logged[c] is not None] == [entity.activity_column]
 
 
@@ -1456,7 +1456,7 @@ async def test_a_listed_deal_carries_its_organization_name(
     org = db.seed(ORGANIZATIONS.table, name="Bosch India")
     db.seed(
         DEALS.table, name="Bosch printer", status_id=deal_status.id,
-        organization_id=org.id,
+        company_id=org.id,
     )
     result = await crm_records._list(DEALS, _params())
 

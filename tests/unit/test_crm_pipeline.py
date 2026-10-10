@@ -1020,7 +1020,7 @@ async def test_a_board_card_carries_its_organization_name(
     the account list because that list is paged at 100."""
     stages = _deal_pipeline(db)
     org = db.seed("crm_companies", name="Bosch India")
-    _seed_deal(db, stages["Proposal"], amount=100_000.0, organization_id=org.id)
+    _seed_deal(db, stages["Proposal"], amount=100_000.0, company_id=org.id)
 
     board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
     proposal = next(x for x in board.lanes if x.status.name == "Proposal")
