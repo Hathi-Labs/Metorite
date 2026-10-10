@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
@@ -226,5 +228,29 @@ describe("(e) the pointer corrects itself when the session disagrees", () => {
     expect(bindAppearanceScope(A.email, "")).toBe(false);
     expect(bindAppearanceScope(null, null)).toBe(false);
     expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBe(SCOPE_A);
+  });
+});
+
+describe("the wiring (source fence)", () => {
+  const read = (rel: string) => readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("ThemeProvider copies the mode BEFORE it binds, and applies org defaults after", () => {
+    const src = read("components/ThemeProvider.tsx");
+    const mirror = src.indexOf("themeStorage.mirrorMode(");
+    const bind = src.indexOf("reconcileAppearanceScope(email");
+    const org = src.indexOf("setOrgDefaults(org)");
+    expect(mirror).toBeGreaterThan(0);
+    expect(bind).toBeGreaterThan(mirror);
+    expect(org).toBeGreaterThan(bind);
+  });
+
+  it("the appearance provider mounts inside AccessProvider, so useAccess() resolves", () => {
+    const src = read("components/Providers.tsx");
+    const open = src.indexOf("<AccessProvider>");
+    const close = src.indexOf("</AccessProvider>");
+    const at = src.indexOf("<AppearanceProvider />");
+    expect(open).toBeGreaterThan(0);
+    expect(at).toBeGreaterThan(open);
+    expect(at).toBeLessThan(close);
   });
 });
