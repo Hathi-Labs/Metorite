@@ -64,6 +64,15 @@ _ALICE = "alice@pa-a.test"
 _CAROL = "carol@pa-b.test"
 _QUESTION = "Archive the Apollo project?"
 
+
+def _resent(answer: str) -> str:
+    """The message a late answer comes back as: the question fenced as data."""
+    from gateway.chat_recovery import compose_card_answer
+
+    text = compose_card_answer(_QUESTION, answer)
+    assert "<<<asked-question>>>" in text and text.endswith(f"My answer: {answer}")
+    return text
+
 pytestmark = _DB_GATE
 
 
@@ -315,7 +324,7 @@ def test_the_late_answer_resolves_under_the_callers_tenant_only(
     assert alice.status_code == 409, alice.text
     detail = alice.json()["detail"]
     assert detail["error"] == "run_restarted"
-    assert detail["resumeMessage"] == f'You asked me: "{_QUESTION}"\n\nMy answer: APPROVE'
+    assert detail["resumeMessage"] == _resent("APPROVE")
     assert tuple(_admin_row(w, w.org_a, rid)) == ("answered", "APPROVE")
 
 
@@ -339,3 +348,25 @@ def test_active_sessions_lists_a_parked_thread_for_its_member_only(
     assert alice[w.t_alice]["askKind"] == "confirmation"
     assert alice[w.t_alice]["agentName"] == "orchestrator"
     assert w.t_alice not in {r["threadId"] for r in _rows(_CAROL, w.org_b)}
+
+
+def test_deleting_the_chat_closes_its_questions(as_app, flag_on):
+    """Review of #813. A deleted chat asks nothing: the delete closes its rows
+    in the same tenant transaction, so no "needs you" and no late answer."""
+    from gateway.routes.chat import _delete_session
+
+    w = as_app
+    tid = f"pa-del-{uuid.uuid4().hex[:8]}"
+    with w.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session (id, user_id, agent_name, title, organization_id) "
+            "VALUES (:id, :u, 'orchestrator', 'gone soon', :o)"),
+            {"id": tid, "u": _ALICE, "o": w.org_a})
+    rid = _ask(w.org_a, tid)
+    pending_ask.move_ask(w.org_a, rid, to="parked", from_states=("open",))
+
+    assert _delete_session(tid, _ALICE, organization_id=w.org_a) is True
+    assert tuple(_admin_row(w, w.org_a, rid))[0] == "closed"
+    assert pending_ask.read_ask(w.org_a, rid) is None
+    waiting = pending_ask.waiting_asks(w.org_a, actor_email=_ALICE)
+    assert tid not in {r["thread_id"] for r in waiting}

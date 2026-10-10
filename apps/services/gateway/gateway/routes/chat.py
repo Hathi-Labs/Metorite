@@ -458,7 +458,16 @@ def _delete_session(
             text("DELETE FROM chat_session s WHERE " + _MAY_DELETE_SQL),
             {"id": session_id, "uid": user_id},
         )
-        return result.rowcount > 0
+        deleted = result.rowcount > 0
+        if deleted:
+            # WS-51 S2 (review of #813): a deleted chat asks nothing more. Its
+            # questions close in the SAME transaction, so no "needs you" and
+            # no late answer can bring the chat back.
+            from orchestrator import pending_ask  # noqa: PLC0415
+
+            if pending_ask.durable_asks_enabled():
+                pending_ask.close_thread_asks(s, session_id)
+        return deleted
 
 
 def _get_messages(
@@ -1196,9 +1205,12 @@ async def list_pending_asks(
     still wait, so the chat draws each card again, from the server, after a
     reload or a restart.
 
-    Only a member who may SEND in the room gets the list, because only that
-    member may answer (``POST /agent/respond-input`` checks the same). The
-    read is under the caller's tenant. Each row is ``requestId``, ``kind``,
+    Only the member who was ASKED gets a card back (``actor_email``), and only
+    while that member may still send in the room. ``POST
+    /agent/respond-input`` holds the same rule for a late answer. A thread
+    with no chat row passes the room gate for any member of the org
+    (``rooms._unsaved_thread``), so the room alone is not enough (review of
+    #813). The read is under the caller's tenant. Each row is ``requestId``, ``kind``,
     ``event`` (the card's event name), ``payload`` (the card's own event
     value), ``askedAt`` and ``answerBy``: ``run`` while the run that asked
     still waits on it live, ``new_run`` when an answer starts a new run.
@@ -1225,7 +1237,7 @@ async def list_pending_asks(
         )
     try:
         rows = await asyncio.to_thread(
-            pending_ask.waiting_asks, org, thread_id=thread_id,
+            pending_ask.waiting_asks, org, thread_id=thread_id, actor_email=email,
         )
     except Exception:  # noqa: BLE001
         _log.warning("chat.pending_asks_read_failed", exc_info=True)
@@ -1364,7 +1376,7 @@ async def list_active_sessions(
         # Postgres unavailable: list only the runs the caller started. Their
         # ids are already the caller's. Nobody else's id leaves this route.
         _log.warning("chat.active_sessions_db_failed", exc_info=True)
-        return [_own_unknown(tid) for tid in ids if _is_mine(tid)]
+        return [_own_unknown(tid) for tid in ids if tid in by_tid and _is_mine(tid)]
 
     result = [
         {
@@ -1377,8 +1389,9 @@ async def list_active_sessions(
         for r in rows
     ]
     # No session row yet: the run started before the browser's upsert landed.
-    # Only the person who started it may see it.
+    # Only the person who started it may see it. A question with no live run
+    # and no chat row is a deleted chat's, and is never listed (WS-51 S2).
     for tid in ids:
-        if tid not in known and _is_mine(tid):
+        if tid not in known and tid in by_tid and _is_mine(tid):
             result.append(_own_unknown(tid))
     return result

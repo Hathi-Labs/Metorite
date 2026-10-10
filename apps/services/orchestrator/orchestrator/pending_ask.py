@@ -247,6 +247,25 @@ def move_ask(
         return _row(r) if r is not None else None
 
 
+def close_thread_asks(session: Any, thread_id: str) -> int:
+    """Close every question of *thread_id* that still waits. Returns the count.
+
+    Runs inside the CALLER's tenant transaction (the chat delete), so the
+    chat and its questions go together.
+    """
+    from sqlalchemy import text
+
+    result = session.execute(
+        text(
+            "UPDATE chat_pending_ask SET state = 'closed', "
+            "  answered_at = COALESCE(answered_at, now()) "
+            "WHERE thread_id = :tid AND state = ANY(:waiting)"
+        ),
+        {"tid": thread_id, "waiting": list(WAITING)},
+    )
+    return int(result.rowcount or 0)
+
+
 def read_ask(organization_id: str, request_id: str) -> dict[str, Any] | None:
     """One row of the caller's tenant that still waits, or None."""
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
@@ -443,16 +462,41 @@ async def end_of_run(thread_id: str) -> None:
         await settle(request_id, answer=None)
 
 
-async def park(request_id: str, thread_id: str) -> bool:
+def _answered(fut: Any) -> bool:
+    return fut is not None and fut.done()
+
+
+def _answer_of(fut: Any) -> str:
+    try:
+        result = fut.result()
+    except BaseException:
+        return ""
+    return str((result or {}).get("answer", "") or "") if isinstance(result, dict) else ""
+
+
+async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
     """Park the run that waits on *request_id*, and end it. True when parked.
 
     False changes nothing, and the caller keeps waiting as before: no row, no
-    detached run to end, or a row that is no longer open.
+    detached run to end, a row that is no longer open, or an answer that
+    arrived while this ran.
+
+    Review of #813, both P1s:
+
+    * An answer can resolve *fut* during any await here. After each await,
+      a done *fut* means the member answered: the row moves to ``answered``
+      and the run is NOT ended, so the answer is never lost.
+    * The Future leaves ``executor._pending_user_input`` BEFORE the run is
+      cancelled, in the same step as the last check, with no await between
+      them. A later answer then finds no Future, reads the parked row, and
+      starts a new run. Two parking sites pop their Future only on a timeout
+      (ask_questions path A, the B1 bridge), so an orphan Future used to take
+      a late answer, answer 200, and start nothing.
     """
     from orchestrator import stream_relay
 
     org = await _insert_org(request_id, pop=False)
-    if not org:
+    if not org or _answered(fut):
         return False
     run = stream_relay.get_detached_task(thread_id)
     if run is None or run.done():
@@ -466,7 +510,22 @@ async def park(request_id: str, thread_id: str) -> bool:
         return False
     if row is None:
         return False
+    if _answered(fut):
+        # The answer came in while the row moved. It reached the live run, so
+        # the row records it, and the run goes on.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(
+                move_ask, org, request_id, to="answered",
+                from_states=("parked",), answer=_answer_of(fut),
+            )
+        return False
+    # No await from the check above to the pop: from here on, an answer finds
+    # no Future and takes the late path.
     _remember_parked(request_id)
+    with contextlib.suppress(Exception):
+        from orchestrator.executor import _pending_user_input
+
+        _pending_user_input.pop(request_id, None)
     with contextlib.suppress(Exception):
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,

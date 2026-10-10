@@ -2753,6 +2753,12 @@ async def _late_answer_from_row(
         return None, False
     if row is None:
         return None, False
+    # Only the member who was asked answers a card whose run has ended
+    # (review of #813). A thread with no chat row passes the room gate for
+    # any member of the org, so the room alone is not enough.
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if not me or str(row.get("actor_email") or "") != me:
+        return None, True
 
     from gateway.chat_recovery import card_answer_from_ask  # noqa: PLC0415
 

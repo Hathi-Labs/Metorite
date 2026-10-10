@@ -824,6 +824,17 @@ def resolve_user_input(
         if not fut.done():
             fut.set_result(payload)
         return True
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        # Same loop: set it NOW, so ``fut.done()`` is true before this returns.
+        # WS-51 S2 (review of #813): ``pending_ask.park`` reads ``done()`` to
+        # tell an answer that arrived from no answer. A result still queued by
+        # ``call_soon`` read as "no answer", and the run was parked over it.
+        fut.set_result(payload)
+        return True
     loop.call_soon_threadsafe(
         lambda: (not fut.done()) and fut.set_result(payload)
     )
@@ -908,7 +919,7 @@ async def wait_user_future(
                     and loop.time() >= park_at
                 ):
                     park_at = None  # one attempt; a refusal keeps waiting
-                    if await pending_ask.park(rid, tid):
+                    if await pending_ask.park(rid, tid, fut):
                         raise asyncio.CancelledError
                 if tid:
                     try:

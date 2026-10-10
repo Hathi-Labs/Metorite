@@ -79,7 +79,10 @@ describe("the chat's wiring", () => {
     );
   });
 
-  it("asks again when the chat opens, when a run ends, and when the poller says it waits", () => {
+  // Mutation: drop the `threadNeedsInput` guard, and this fails. With the
+  // flag off the server never says needs_input, so the chat sends nothing.
+  it("asks only while the poller says the thread waits, and again when a run ends", () => {
+    expect(chat).toContain("if (!sessionId || !threadNeedsInput) return;");
     expect(chat).toContain("}, [sessionId, threadNeedsInput, pendingAskTick]);");
     expect(chat).toContain("setPendingAskTick((n) => n + 1);");
     expect(chat).toContain("const threadNeedsInput = useThreadNeedsInput(sessionId);");

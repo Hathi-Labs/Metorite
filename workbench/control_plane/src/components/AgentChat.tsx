@@ -1008,8 +1008,8 @@ export default function AgentChat({
       // the user submits — clearing here makes it vanish mid-interaction.
       setElicitation((prev) => prev && prev.requestId ? null : prev);
       setUserInput((prev) => prev && prev.requestId ? null : prev);
-      // A run that PARKED on a card also ends here (WS-51 S2). Ask the server
-      // for the cards that still wait, so the parked card comes back.
+      // A run that PARKED on a card also ends here (WS-51 S2). While the
+      // thread still needs the member, ask the server again for its cards.
       setPendingAskTick((n) => n + 1);
     },
   };
@@ -1038,14 +1038,16 @@ export default function AgentChat({
 
   // ── A durable "needs input" (WS-51 S2, `lib/pendingAsks.ts`) ─────────
   // The cards of this chat that still wait on the server: a run that parked,
-  // a run a restart killed, or a reload. Fetched when the chat opens, when a
-  // run ends, and when the shared poller says this thread needs the member.
+  // a run a restart killed, or a reload. Fetched ONLY while the shared poller
+  // says this thread needs the member, and again when a run ends then. The
+  // server says that only with `CHAT_DURABLE_ASKS` on, so with the flag off
+  // this sends no request at all (review of #813).
   // A card that comes back answers through `postRespondInput`, and the
   // gateway's 409 `run_restarted` turns the answer into a new run.
   const [pendingAskTick, setPendingAskTick] = useState(0);
   const threadNeedsInput = useThreadNeedsInput(sessionId);
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !threadNeedsInput) return;
     let stale = false;
     const forSession = sessionId;
     void fetchPendingAsks(forSession).then((asks) => {

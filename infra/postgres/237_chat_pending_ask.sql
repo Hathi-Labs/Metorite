@@ -22,9 +22,11 @@
 --
 -- A run can start before the browser saves its chat row (the "no row yet"
 -- case of `GET /chat/active-sessions`). A foreign key would then refuse the
--- row of the very first question. Every reader joins `chat_session` under
--- `SESSION_VISIBLE_SQL`, so a row of a deleted chat is never listed, and
--- `expires_at` bounds how long it stays.
+-- row of the very first question. So the delete of a chat closes its rows
+-- itself, in the same tenant transaction (`routes/chat.py` `_delete_session`).
+-- `/chat/active-sessions` lists a question with no live run only when its
+-- chat row exists, and only the member who was asked reads or answers a
+-- row. `expires_at` bounds how long a row stays.
 --
 -- ── The payload is data ────────────────────────────────────────────────────
 --
