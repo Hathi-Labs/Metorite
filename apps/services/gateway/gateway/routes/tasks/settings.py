@@ -21,6 +21,7 @@ default so the app works before the user ever opens Settings.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -352,6 +353,36 @@ def _energy_windows(val: Any) -> list[dict]:
     return out
 
 
+#: The tenant the session binds, as a uuid. An unbound session reads NULL here
+#: (not ``''``, which would not cast), and the NOT NULL column then refuses the
+#: row. So a write with no tenant fails closed. Same form as
+#: ``routes/people/schedule.py``.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+
+def upsert_settings_sql(
+    cols: list[str], placeholder: Callable[[str], str] | None = None,
+) -> str:
+    """The one write of a member's settings row, for the columns ``cols``.
+
+    ⚠️ Migration 239 (H-256) keys the row ``(organization_id, user_id)``, so
+    one address holds one row in each of its organizations. The statement
+    names the bound tenant and that arbiter. The old ``ON CONFLICT (user_id)``
+    matches no constraint after 239.
+    ``tests/unit/test_user_settings_per_org_r8.py`` is the fence.
+    """
+    ph = placeholder or (lambda k: f":{k}")
+    names = ", ".join(cols)
+    vals = ", ".join(ph(k) for k in cols)
+    sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in cols)
+    return (
+        f"INSERT INTO user_settings (organization_id, user_id, {names}) "
+        f"VALUES ({_BOUND_ORG}, :uid, {vals}) "
+        "ON CONFLICT (organization_id, user_id) "
+        f"DO UPDATE SET {sets}, updated_at = now()"
+    )
+
+
 @router.get("/settings", response_model=UserSettingsModel)
 async def get_user_settings(user: UserContext = Depends(get_current_user)):
     async with _tenant_session() as db:
@@ -385,14 +416,7 @@ async def put_user_settings(
         def _ph(k: str) -> str:
             return f":{k} ::jsonb" if k in _jsonb_cols else f":{k}"
         async with _tenant_session() as db:
-            cols = ", ".join(fields)
-            vals = ", ".join(_ph(k) for k in fields)
-            sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in fields)
-            await db.execute(text(
-                f"""INSERT INTO user_settings (user_id, {cols})
-                    VALUES (:uid, {vals})
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET {sets}, updated_at = now()"""),
-                {"uid": uid, **fields})
+            await db.execute(text(upsert_settings_sql(list(fields), _ph)),
+                             {"uid": uid, **fields})
     async with _tenant_session() as db:
         return await _load(db, uid)
