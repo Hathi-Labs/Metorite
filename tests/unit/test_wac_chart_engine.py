@@ -170,3 +170,58 @@ async def test_a_bad_spec_reaches_the_model_as_a_fix(monkeypatch: pytest.MonkeyP
         out = await wui.whatsapp_ui("chart", {"type": "heatmap", "title": "T", "x": ["a"],
                                               "y": ["r"], "values": [["lots"]]})
     assert out["ok"] is False and "must be a number" in out["error"]
+
+
+# ── The review round of 2026-10-11 ──────────────────────────────────────────
+
+
+def test_a_status_word_reaches_the_engine_as_the_products_hue() -> None:
+    spec = wui._with_hues({"type": "bar", "tones": ["On hold", "Shipped", "review", "red"],
+                           "rows": [{"label": "x", "status": "Waiting on vendor"}, {"label": "y"}]})
+    from acb_skills import whatsapp_cards as cards
+
+    assert spec["tones"] == [cards.hue(w) for w in ("On hold", "Shipped", "review", "red")]
+    assert spec["tones"][0] == "amber" and spec["tones"][3] == "red"
+    assert spec["rows"][0]["status"] == cards.hue("Waiting on vendor")
+    assert "status" not in spec["rows"][1]
+
+
+def test_the_child_gets_the_bh1_allowlist_never_the_gateways_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    monkeypatch.setenv("DATABASE_URL", "postgres://secret")
+    monkeypatch.setattr(engine, "_node", lambda: "node")
+    monkeypatch.setattr(engine.ENGINE.__class__, "is_file", lambda self: True)
+
+    def _run(argv: list[str], **kw: Any) -> Any:
+        seen.update(kw)
+        return subprocess.CompletedProcess(argv, 0, b'{"images": [{"error": "x"}]}', b"")
+
+    monkeypatch.setattr(engine.subprocess, "run", _run)
+    engine.render_many([{"type": "bar"}])
+    assert isinstance(seen.get("env"), dict) and "DATABASE_URL" not in seen["env"]
+
+
+async def test_a_fault_inside_the_engine_falls_back_and_never_reads_as_a_spec_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _engine(monkeypatch, True)
+    monkeypatch.setattr(engine, "_node", lambda: "node")
+    monkeypatch.setattr(engine.ENGINE.__class__, "is_file", lambda self: True)
+    monkeypatch.setattr(engine.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 0, b'{"images": [{"fault": "TypeError"}]}', b""))
+    with wui.whatsapp_run("orchestrator") as run:
+        out = await wui.whatsapp_ui("chart", {"type": "bar", "title": "T", **SPECS["bar"]})
+        new = await wui.whatsapp_ui("chart", {"type": "funnel", "title": "T", **SPECS["funnel"]})
+    assert out["ok"] is True and run.outbox[0].png.startswith(PNG)
+    assert new["ok"] is False and "TypeError" not in new["error"]
+
+
+def test_an_unavailable_engine_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged: list[str] = []
+    monkeypatch.setattr(engine._log, "warning", lambda event, **kw: logged.append(event))
+    monkeypatch.setattr(engine, "ENGINE", engine.ENGINE.with_name("nowhere.mjs"))
+    with pytest.raises(engine.EngineUnavailable):
+        engine.render_many([{"type": "bar"}])
+    assert logged == ["whatsapp_engine.unavailable"]

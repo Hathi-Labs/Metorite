@@ -8,17 +8,21 @@ option, in Metorite's own look. The web chat draws it live. For WhatsApp,
 this module runs ``src/lib/charts/render.mjs`` as a child process, which
 draws the SAME chart to a PNG (ECharts SVG, then resvg with Geist).
 
-**No port and no token.** The child reads JSON on stdin and writes JSON on
-stdout. It reaches no network and reads no secret, so it adds no door to the
-box. It runs as the gateway's own user, under the gateway's own sandbox.
+**No port, no token, no secret.** The child reads JSON on stdin and writes
+JSON on stdout, so it adds no door to the box. Its environment is
+``acb_common.child_env``'s allowlist (BH-1), never the gateway's own: a
+compromised chart package could read nothing worth stealing. It runs as the
+gateway's user, under the gateway's sandbox.
 
 **Bounded.** At most :data:`MAX_PARALLEL` children run at once, each one for
 at most :data:`TIMEOUT_S`, and the reply is read up to :data:`MAX_OUTPUT`.
 
-**It fails soft.** :class:`EngineUnavailable` means the engine is off, Node or
-the file is missing, or the child broke: the caller falls back to the old
-renderer, or answers in text. :class:`render.RenderError` carries the
-engine's reason for a bad spec, so the model can fix the data.
+**It fails soft, and says so.** :class:`EngineUnavailable` means the engine is
+off, Node or the file is missing, or the child broke or faulted: the caller
+falls back to the old renderer, or answers in text. Each one logs
+``whatsapp_engine.unavailable`` with its reason. :class:`render.RenderError`
+carries the engine's reason for a bad SPEC only, so the model can fix the
+data. A fault inside the engine is never read as a bad spec.
 
 Fence: ``tests/unit/test_wac_chart_engine.py``.
 """
@@ -30,10 +34,14 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
+from acb_common import get_logger
 from acb_skills import whatsapp_render as render
+
+_log = get_logger(__name__)
 
 #: ``packages/acb_skills/acb_skills`` → the repo root → the web app's renderer.
 ENGINE = (Path(__file__).resolve().parents[3]
@@ -82,25 +90,41 @@ def render_png(spec: dict[str, Any], *, mode: str = "dark") -> bytes:
 
 
 def render_many(specs: list[dict[str, Any]], *, mode: str = "dark") -> list[bytes | str]:
-    """Each chart as PNG bytes, or the engine's reason it refused that one."""
+    """Each chart as PNG bytes, or the engine's reason it refused that spec."""
+    try:
+        return _render_many(specs, mode)
+    except EngineUnavailable as exc:
+        _log.warning("whatsapp_engine.unavailable", reason=str(exc)[:160])
+        raise
+
+
+def _render_many(specs: list[dict[str, Any]], mode: str) -> list[bytes | str]:
     node = _node()
     if node is None or not ENGINE.is_file():
         raise EngineUnavailable("node or the chart engine is missing")
     payload = json.dumps({"charts": specs, "mode": mode}, ensure_ascii=False).encode("utf-8")
     if not _SLOTS.acquire(timeout=TIMEOUT_S):
         raise EngineUnavailable("the chart engine is busy")
+    started = time.monotonic()
     try:
-        # A fixed argv: our node binary and our own file. No shell, no input in it.
+        from acb_common.child_env import child_env
+
+        # A fixed argv: our node binary and our own file. No shell, no input
+        # in it, and the BH-1 allowlist for its environment.
         proc = subprocess.run(
             [node, str(ENGINE)], input=payload, capture_output=True,
-            timeout=TIMEOUT_S, cwd=str(ENGINE.parent), check=False,
+            timeout=TIMEOUT_S, cwd=str(ENGINE.parent), check=False, env=child_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EngineUnavailable(f"the chart engine did not answer ({type(exc).__name__})") from exc
     finally:
         _SLOTS.release()
     if proc.returncode != 0 or len(proc.stdout) > MAX_OUTPUT:
-        raise EngineUnavailable(f"the chart engine failed (exit {proc.returncode})")
+        # The last line of stderr names the fault (a missing package, say).
+        # It holds our own paths, never a secret: the child has none.
+        tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-1:]
+        raise EngineUnavailable(f"the chart engine failed (exit {proc.returncode}): "
+                                f"{(tail[0] if tail else '')[:120]}")
     try:
         images = json.loads(proc.stdout.decode("utf-8"))["images"]
     except (ValueError, KeyError, TypeError) as exc:
@@ -116,6 +140,12 @@ def render_many(specs: list[dict[str, Any]], *, mode: str = "dark") -> list[byte
             out.append(png)
         elif isinstance(item, dict) and isinstance(item.get("error"), str):
             out.append(item["error"][:300])
+        elif isinstance(item, dict) and isinstance(item.get("fault"), str):
+            # The engine broke on a valid spec: not the model's to fix.
+            raise EngineUnavailable(f"the chart engine faulted: {item['fault'][:120]}")
         else:
             raise EngineUnavailable("the chart engine answered in a wrong shape")
+    _log.info("whatsapp_engine.rendered", charts=len(specs),
+              kinds=",".join(str(s.get("type")) for s in specs)[:80],
+              ms=int((time.monotonic() - started) * 1000))
     return out

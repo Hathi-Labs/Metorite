@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { THEME } from "@/lib/theme/themes";
 import { CAT_HUES, SERIES_SLOTS, hsl, theme, tone } from "./theme.mjs";
 import { ChartSpecError, KINDS, chartOption, fmt } from "./kinds.mjs";
-import { handle, renderPng } from "./render.mjs";
+import { classify, handle, renderPng } from "./render.mjs";
 
 const PNG = [0x89, 0x50, 0x4e, 0x47];
 
@@ -51,11 +51,13 @@ describe("wac10f-one-palette", () => {
       expect((CAT_HUES as Record<number, number>)[slot]).toBe(parts(dark[`cat-${slot}`])[0]);
     }
   });
-  it("a tone names a status hue, and anything else names none", () => {
+  it("a tone names one of statusAccent's six hues, and a status WORD names none", () => {
+    // A status word is mapped by statusAccent (web) or whatsapp_cards.hue
+    // (WhatsApp) before it reaches a chart: this file holds no second list.
     const t = theme("dark");
-    expect(tone(t, "In progress")).toBe(t.status.blue);
-    expect(tone(t, "overdue")).toBe(t.status.red);
-    expect(tone(t, "#ff00ff")).toBeNull();
+    expect(tone(t, "amber")).toBe(t.status.amber);
+    expect(tone(t, " Violet ")).toBe(t.status.violet);
+    for (const word of ["On hold", "overdue", "In progress", "#ff00ff", "purple"]) expect(tone(t, word)).toBeNull();
   });
 });
 
@@ -72,7 +74,7 @@ const SPECS: Record<string, Record<string, unknown>> = {
   waterfall: { title: "Cash", steps: [{ label: "Open", value: 42 }, { label: "Sales", value: 31 }, { label: "Close", total: true }] },
   funnel: { title: "Pipeline", labels: ["Leads", "Won"], values: [240, 12] },
   calendar: { title: "Streak", days: [["2026-10-01", 3], ["2026-10-02", 0], ["2026-10-05", 7]] },
-  gantt: { title: "Plan", today: "2026-10-11", rows: [{ label: "Design", start: "2026-09-01", end: "2026-09-20", progress: 100, status: "done" }] },
+  gantt: { title: "Plan", today: "2026-10-11", rows: [{ label: "Design", start: "2026-09-01", end: "2026-09-20", progress: 100, status: "green" }] },
 };
 
 describe("wac10f-every-kind-draws", () => {
@@ -111,6 +113,8 @@ describe("wac10f-spec-refusals", () => {
     ["a donut of nothing", { type: "donut", title: "t", labels: ["a"], values: [0] }, /total above zero/],
     ["a stacked area of one", { type: "area", title: "t", labels: ["a"], series: [{ name: "x", values: [1] }] }, /2 to 6/],
     ["a bad date", { type: "gantt", title: "t", rows: [{ label: "x", start: "soon" }] }, /date like/],
+    ["a calendar a century long", { type: "calendar", title: "t", days: [["1926-01-01", 1], ["2026-01-01", 2]] }, /spans at most 400 days/],
+    ["a kind from the prototype", { type: "constructor", title: "t" }, /"type" must be one of/],
     ["an end before its start", { type: "gantt", title: "t", rows: [{ label: "x", start: "2026-10-10", end: "2026-10-01" }] }, /on or after/],
   ];
   for (const [what, spec, says] of refused) {
@@ -124,6 +128,10 @@ describe("wac10f-spec-refusals", () => {
     expect(out.images[0].png.length).toBeGreaterThan(1000);
     expect(out.images[1].error).toMatch(/"labels" must be a list/);
     expect(handle("not json").error).toMatch(/not JSON/);
+  });
+  it("a fault inside the engine is a fault, never a spec error for the model", () => {
+    expect(classify(new TypeError("boom"))).toEqual({ fault: "TypeError" });
+    expect(classify(new ChartSpecError("fix this"))).toEqual({ error: "fix this" });
   });
   it("hostile text stays text", () => {
     const png: Buffer = renderPng({ type: "bar", title: "<script>alert(1)</script>", labels: ["</text><x>"], values: [1] });

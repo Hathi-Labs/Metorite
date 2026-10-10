@@ -424,9 +424,27 @@ def _engine_png(spec: dict[str, Any]) -> bytes | None:
     if not engine.enabled():
         return None
     try:
-        return engine.render_png(spec)
+        return engine.render_png(_with_hues(spec))
     except engine.EngineUnavailable:
         return None
+
+
+def _with_hues(spec: dict[str, Any]) -> dict[str, Any]:
+    """The spec with each status word as one of the six hue names.
+
+    The engine knows the hue NAMES only. The rule from a word ("On hold",
+    "Shipped") to a hue is ``statusAccent.ts``'s, which ``cards.hue``
+    mirrors under its own fence, so a chart and a card never disagree
+    (review, 2026-10-11).
+    """
+    out = dict(spec)
+    if isinstance(spec.get("tones"), list):
+        out["tones"] = [cards.hue(t) for t in spec["tones"]]
+    if isinstance(spec.get("rows"), list):
+        out["rows"] = [{**r, "status": cards.hue(r["status"])}
+                       if isinstance(r, dict) and r.get("status") is not None else r
+                       for r in spec["rows"]]
+    return out
 
 
 def _chart(data: dict[str, Any]) -> OutMessage:

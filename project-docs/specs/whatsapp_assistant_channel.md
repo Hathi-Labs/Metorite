@@ -1127,8 +1127,9 @@ about 54 tokens as a spec, 362 as an ECharts option, and 1665 as an SVG.
 
 **Why a child process and not a route.** The gateway already runs on the box
 that holds the web app's packages. A child process reads JSON on stdin and
-writes JSON on stdout. It opens no port, carries no token and reaches no
-network, so it adds no door to the box. The files are plain JavaScript,
+writes JSON on stdout. It opens no port, so it adds no door to the box. Its
+environment is the BH-1 allowlist of `acb_common.child_env`, not the
+gateway's own, so a compromised chart package reads no secret. The files are plain JavaScript,
 because the box runs Node 20, which cannot strip TypeScript types.
 
 **The kinds.** bar, line, area, donut, progress, scatter, heatmap, radar,
@@ -1141,10 +1142,19 @@ The engine can be off, or Node, the file or the packages can be missing. A
 child can also time out, crash or answer in a wrong shape. In each case the
 old SVG renderer draws bar, line, progress and donut. A new kind is then
 refused, and the refusal names the four old kinds. A bad spec comes back with
-the engine's reason, so the model fixes the data.
+the engine's reason, so the model fixes the data. A fault inside the engine is never a
+spec error: it falls back like a missing engine. Each fallback logs
+`whatsapp_engine.unavailable` with its reason, and each drawing logs
+`whatsapp_engine.rendered`.
+
+**One status vocabulary.** The engine knows the six hue names only. The
+gateway turns each status word into a hue with `whatsapp_cards.hue`, the
+fenced mirror of `statusAccent.ts`, before the spec reaches the engine. So
+"On hold" is amber on a chart, as it is on a card.
 
 **Bounded.** At most 2 children run at once, for at most 20 seconds each. One
-call draws at most 6 charts, and a drawing is at most 2400 pixels tall.
+call draws at most 6 charts, a drawing is at most 2400 pixels tall, and a
+calendar spans at most 400 days.
 
 **Acceptance (WAC-10f).**
 

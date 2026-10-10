@@ -50,6 +50,18 @@ export function renderPng(spec, opts = {}) {
   }
 }
 
+/**
+ * A spec error says what to fix, and goes to the model. Anything else is the
+ * engine's own fault: the gateway falls back, and the model is never asked to
+ * fix what it did not break (review, 2026-10-11).
+ * @param {unknown} err
+ */
+export function classify(err) {
+  return err instanceof ChartSpecError
+    ? { error: err.message }
+    : { fault: String(/** @type {any} */ (err)?.name ?? "Error") };
+}
+
 /** @param {string} raw */
 export function handle(raw) {
   let req;
@@ -64,8 +76,7 @@ export function handle(raw) {
       try {
         return { png: renderPng(spec, { mode: req.mode }).toString("base64") };
       } catch (err) {
-        // A spec error says what to fix. Anything else is the engine's own.
-        return { error: err instanceof ChartSpecError ? err.message : `the chart could not be drawn (${err?.name ?? "Error"})` };
+        return classify(err);
       }
     }),
   };

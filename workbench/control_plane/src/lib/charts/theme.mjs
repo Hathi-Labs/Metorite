@@ -9,7 +9,8 @@
  * ⚠️ NOT a second palette. Every value here is a token of `lib/theme/themes.ts`
  * (which `themes.test.ts` holds to `globals.css`), or one of its hues lifted
  * to read on a chart. `theme.test.ts` fails if a value drifts from the token.
- * Change the token, then this file, or the test stops you.
+ * Change the token, then this file, or the test stops you
+ * (`charts.test.ts`, `wac10f-one-palette`).
  */
 
 /** A `hsl(h s% l%)` triple as `#rrggbb`. Every renderer reads hex. */
@@ -85,21 +86,20 @@ export function theme(mode = "dark") {
   };
 }
 
-/** The status and colour words a `tone` may name, as `statusAccent.ts` names
- * the hues, plus the plain colour words a model writes. */
-const TONE_WORDS = {
-  green: "green", done: "green", good: "green", success: "green", complete: "green", completed: "green",
-  amber: "amber", yellow: "amber", orange: "amber", warning: "amber", "at risk": "amber", blocked: "amber",
-  red: "red", overdue: "red", late: "red", bad: "red", danger: "red", cancelled: "red", "off track": "red",
-  blue: "blue", "in progress": "blue", active: "blue", current: "blue", info: "blue",
-  violet: "violet", purple: "violet", review: "violet",
-  gray: "gray", grey: "gray", todo: "gray", "to do": "gray", backlog: "gray", upcoming: "gray", none: "gray",
-};
+/**
+ * The six hues of `statusAccent.ts` by name, and nothing more.
+ *
+ * ⚠️ NOT a status vocabulary. A status WORD ("On hold", "Shipped") is turned
+ * into one of these six names BEFORE it reaches the chart, by the one seam
+ * that owns that rule: `statusAccent.ts` in the web app, and its fenced
+ * Python mirror `whatsapp_cards.hue` on the WhatsApp side. A second list here
+ * drew "On hold" blue where the product draws it amber (review, 2026-10-11).
+ */
+const HUE_NAMES = new Set(["green", "amber", "red", "blue", "violet", "gray"]);
 
-/** The colour a tone word names, or null. @param {ChartTheme} t */
-export function tone(t, word) {
-  if (typeof word !== "string") return null;
-  const key = word.trim().toLowerCase().replace(/[_-]+/g, " ");
-  const hue = /** @type {Record<string, string>} */ (TONE_WORDS)[key];
-  return hue ? t.status[hue] : null;
+/** The colour a hue name names, or null. @param {ChartTheme} t */
+export function tone(t, name) {
+  if (typeof name !== "string") return null;
+  const key = name.trim().toLowerCase();
+  return HUE_NAMES.has(key) ? t.status[key] : null;
 }

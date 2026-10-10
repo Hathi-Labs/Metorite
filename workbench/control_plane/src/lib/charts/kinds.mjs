@@ -437,6 +437,11 @@ const BUILD = {
       return [q[0], num(q[1], `days[${i}][1]`)];
     });
     const sorted = days.map((d) => d[0]).sort();
+    // The entry count bounds nothing here: two dates a century apart draw
+    // 36 500 cells and take the whole timeout (review, 2026-10-11).
+    if ((Date.parse(sorted[sorted.length - 1]) - Date.parse(sorted[0])) / DAY > LIMITS.days) {
+      fail(`a calendar spans at most ${LIMITS.days} days`);
+    }
     const max = Math.max(1, ...days.map((d) => d[1]));
     const o = base(spec, opts, c);
     o.calendar = { range: [sorted[0], sorted[sorted.length - 1]], top: c.u(c.top + 10), left: c.u(110), right: c.u(56),
@@ -511,7 +516,8 @@ function quartiles(xs) {
 export function chartOption(spec, opts = {}) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) fail("a chart is an object with a \"type\"");
   const kind = typeof spec.type === "string" ? spec.type.trim().toLowerCase() : "";
-  const build = /** @type {Record<string, Function>} */ (BUILD)[kind];
+  // An own key only: "constructor" or "toString" is not a kind.
+  const build = Object.hasOwn(BUILD, kind) ? /** @type {Record<string, Function>} */ (BUILD)[kind] : null;
   if (!build) fail(`"type" must be one of: ${Object.keys(KINDS).join(", ")}`);
   const width = opts.width ?? 1080;
   const scale = opts.scale ?? width / 1080;
