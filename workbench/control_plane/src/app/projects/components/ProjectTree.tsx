@@ -226,6 +226,7 @@ function DraftRow({
         label={draft.label}
         depth={depth}
         guides
+        tree
         editor={
         <form
           className="flex min-w-0 flex-1 items-center gap-2"
@@ -546,6 +547,7 @@ function Node({
         label={node.name}
         depth={depth}
         guides
+        tree
         tier={level === "space" ? "group" : "item"}
         selected={isSelected && !litInto}
         onSelect={() => onSelect(node)}
@@ -642,6 +644,44 @@ function Node({
                 Save
               </Button>
             </form>
+          ) : undefined
+        }
+        // On a phone every row shows ONE "···", always, at a 40 px target. It
+        // opens the same menu, and that menu already offers the "+" options
+        // (`createOptions`). Nothing can hover there, and selecting a row
+        // closes the drawer, so a control on the selected row only was a
+        // control a phone member reached in three steps (review, 2026-10-10).
+        phoneActions={
+          actions ? (
+            <Button
+              variant="ghost"
+              size="none"
+              radius="keep"
+              className="h-10 w-10 rounded"
+              icon="MoreHorizontal"
+              aria-label={`Actions for ${node.name}`}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setMenu({ x: rect.left, y: rect.bottom + 2 });
+              }}
+            />
+          ) : onAddChild && addOptions.length > 0 ? (
+            <Button
+              variant="ghost"
+              size="none"
+              radius="keep"
+              className="h-10 w-10 rounded"
+              icon="Plus"
+              aria-label={`${addOptions[0].label} under ${node.name}`}
+              onClick={(e) => {
+                if (addOptions.length === 1) {
+                  onAddChild(node, addOptions[0]);
+                  return;
+                }
+                const rect = e.currentTarget.getBoundingClientRect();
+                setAddMenu({ x: rect.left, y: rect.bottom + 2 });
+              }}
+            />
           ) : undefined
         }
         actions={

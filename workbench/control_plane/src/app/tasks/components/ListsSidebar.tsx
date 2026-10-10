@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Icon from "@/components/Icon";
+import { ContextMenu } from "@/components/ContextMenu";
+import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
@@ -251,6 +252,8 @@ function AreasSection({
   const [renaming, setRenaming] = useState<LensArea | null>(null);
   const [renameTo, setRenameTo] = useState("");
   const [removing, setRemoving] = useState<LensArea | null>(null);
+  // The phone's "···" menu: which Area, and where it opens.
+  const [areaMenu, setAreaMenu] = useState<{ area: LensArea; x: number; y: number } | null>(null);
 
   const submitCreate = async () => {
     const clean = newName.trim();
@@ -350,6 +353,24 @@ function AreasSection({
               />
             }
             meta={count > 0 ? count : null}
+            // On a phone: one "···", always shown, that opens Rename and
+            // Remove. Nothing can hover there, and choosing an Area closes
+            // the drawer.
+            phoneActions={
+              <Button
+                type="button"
+                variant="ghost"
+                size="none"
+                radius="keep"
+                icon="Ellipsis"
+                aria-label={`Actions for ${area.name}`}
+                className="h-10 w-10 rounded-md"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setAreaMenu({ area, x: rect.left, y: rect.bottom + 2 });
+                }}
+              />
+            }
             // Hidden until hover or focus so the list reads as a list.
             // `RailRow` holds the reveal, and on a phone the selected Area
             // keeps them on screen.
@@ -421,6 +442,32 @@ function AreasSection({
           </Button>
         </div>
       )}
+
+      {areaMenu ? (
+        <ContextMenu
+          x={areaMenu.x}
+          y={areaMenu.y}
+          items={[
+            {
+              kind: "item",
+              label: "Rename",
+              icon: themedIcon("Pencil"),
+              onSelect: () => {
+                setRenaming(areaMenu.area);
+                setRenameTo(areaMenu.area.name);
+              },
+            },
+            {
+              kind: "item",
+              label: "Remove",
+              icon: themedIcon("Trash2"),
+              danger: true,
+              onSelect: () => setRemoving(areaMenu.area),
+            },
+          ]}
+          onClose={() => setAreaMenu(null)}
+        />
+      ) : null}
 
       <Modal
         open={renaming !== null}

@@ -75,31 +75,39 @@ export interface RailRowExpand {
  * ArrowLeft closes an open one. Any other key, or a key that would change
  * nothing, returns `false`, and the row leaves the key alone.
  */
+export function expandKey(key: string, expanded: boolean): boolean {
+  if (key === "ArrowRight") return !expanded;
+  if (key === "ArrowLeft") return expanded;
+  return false;
+}
+
+/** How long a recorded press stays the cause of a click, in ms. */
+export const PRESS_FRESH_MS = 1000;
+
 /**
  * What a press on the expand toggle does: switch the row, or select it.
  *
- * ⚠️ A TOUCH press on a row that is not selected SELECTS it. The chevron is
- * transparent over the icon at rest, so the member taps what looks like an
- * icon. Chromium sets `:hover` at the tap's start, and the tap's click then
- * lands on a chevron that `rail-row-chevron` has just switched on. The CSS
- * alone cannot stop that, so this rule does. The first tap selects the row
- * and shows the chevron, and a tap on the selected row's chevron switches it.
+ * ⚠️ A TOUCH press on a row that is not selected SELECTS it. On a hover
+ * device the chevron is transparent over the icon at rest, so the member
+ * taps what looks like an icon. Chromium sets `:hover` at the tap's start,
+ * and the tap's click then lands on a chevron that `rail-row-chevron` has
+ * just switched on. The CSS alone cannot stop that, so this rule does. The
+ * first tap selects the row and shows the chevron. A tap on the selected
+ * row's chevron switches it.
  *
- * A mouse, a pen, a keyboard and a phone always switch. A phone shows its
- * chevron at all times, so there the member can see what they tap.
+ * A mouse, a pen and a phone always switch. A phone draws its chevron in
+ * its own column, so the member sees what they tap. A KEYBOARD always
+ * switches: a click with `detail === 0` came from Enter or Space, whatever
+ * pointer pressed in the row before it.
  */
 export function togglePress(
   pointer: string | null,
   selected: boolean,
   phone: boolean,
+  keyboard = false,
 ): "toggle" | "select" {
+  if (keyboard) return "toggle";
   return pointer === "touch" && !selected && !phone ? "select" : "toggle";
-}
-
-export function expandKey(key: string, expanded: boolean): boolean {
-  if (key === "ArrowRight") return !expanded;
-  if (key === "ArrowLeft") return expanded;
-  return false;
 }
 
 export interface RailRowProps {
@@ -110,16 +118,27 @@ export interface RailRowProps {
   /** Draw a thin vertical guide in each indent step. */
   guides?: boolean;
   /**
-   * The row opens and closes. Its chevron takes the icon's slot on hover and
-   * on keyboard focus (on a phone, at all times).
+   * The row opens and closes. On a hover device its chevron takes the icon's
+   * slot on hover and on keyboard focus. On a phone it has its own column.
    */
   expand?: RailRowExpand;
+  /**
+   * The row sits in a tree. On a phone a leaf keeps the chevron column
+   * empty, so its icon lines up with its siblings that can open.
+   */
+  tree?: boolean;
   /** The marker before the label: an icon, a dot, a state mark. */
   icon?: React.ReactNode;
   /** What the trailing zone shows at rest, such as a count. Muted. */
   meta?: React.ReactNode;
   /** The row's controls. Hidden at rest, shown on hover or focus. */
   actions?: React.ReactNode;
+  /**
+   * The row's controls on a phone, ALWAYS visible, usually one "···" that
+   * opens the row's menu. Nothing can hover there, and selecting a row closes
+   * the drawer the rail sits in. Absent: the selected row keeps `actions`.
+   */
+  phoneActions?: React.ReactNode;
   /** Hold the actions open, for example while the row's menu is open. */
   pinned?: boolean;
   selected?: boolean;
@@ -155,7 +174,7 @@ export function railRowClass({
   // ⚠️ No `gap` on the row. A flex gap still charges its 4 px beside the
   // zero-width actions zone and beside each indent step, which took 8 px of
   // the room this row exists to give back (measured at a 256 px rail). The
-  // lead keeps its own margin instead.
+  // phone's chevron column keeps its own margin instead.
   return `group relative flex ${height} items-center rounded-md px-2 tech-transition ${tone}`;
 }
 
@@ -164,9 +183,11 @@ export function RailRow({
   depth = 0,
   guides = false,
   expand,
+  tree = false,
   icon,
   meta,
   actions,
+  phoneActions,
   pinned = false,
   selected = false,
   tier = "item",
@@ -181,21 +202,31 @@ export function RailRow({
   // the whole object as a ref, and refuse each other read of it in render.
   const { attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip } =
     useOverflowTip(label);
-  // A phone cannot hover, so the row the member chose keeps its controls.
-  const held = Boolean(actions) && (pinned || (isMobile && selected));
-  // The toggle sits over the icon's slot, so it draws only where the icon
-  // does. An editor draws its own icon, and no toggle covers it.
+  // On a phone, `phoneActions` (always shown) take the place of `actions`.
+  const phoneControls = isMobile && phoneActions != null && !editor;
+  const hoverActions = !phoneControls && Boolean(actions) && !editor;
+  // A phone cannot hover. With no `phoneActions`, the chosen row keeps its own.
+  const held = hoverActions && (pinned || (isMobile && selected));
+  // An editor draws its own icon, and no toggle covers it.
   const toggle = expand && !editor ? expand : null;
-  // The kind of pointer that last pressed in this row. Taken on the ROW, in
-  // the capture phase: a tap's pointerdown lands on the icon, before the
-  // hover that switches the chevron on, so the toggle never sees it. Read
-  // and cleared on each click, so Enter and Space always switch the row.
+  // The phone gives the chevron a column of its own and keeps the icon. The
+  // in-slot swap is for a device that can hover.
+  const ownColumn = isMobile && (tree || Boolean(toggle));
+  const swap = Boolean(toggle) && !isMobile;
+  // The kind of pointer that last pressed in this row, and when. Taken on
+  // the ROW, in the capture phase: a tap's pointerdown lands on the icon,
+  // before the hover that switches the chevron on, so the toggle never sees
+  // it. A press counts only while it is fresh, and a cancel forgets it, so a
+  // pan or a long-press cannot change what a later key does.
   const pressedBy = useRef<string | null>(null);
+  const pressedAt = useRef(0);
   const onTogglePress = toggle
-    ? () => {
-        const by = pressedBy.current;
+    ? (event: React.MouseEvent) => {
+        const fresh = performance.now() - pressedAt.current < PRESS_FRESH_MS;
+        const by = fresh ? pressedBy.current : null;
         pressedBy.current = null;
-        if (togglePress(by, selected, isMobile) === "select") onSelect?.();
+        const keyboard = event.detail === 0;
+        if (togglePress(by, selected, isMobile, keyboard) === "select") onSelect?.();
         else toggle.onToggle();
       }
     : undefined;
@@ -207,14 +238,40 @@ export function RailRow({
       }
     : undefined;
 
+  const toggleButton = toggle ? (
+    <Button
+      variant="ghost"
+      size="none"
+      radius="keep"
+      icon={toggle.expanded ? "ChevronDown" : "ChevronRight"}
+      aria-label={toggle.expanded ? `Collapse ${label}` : `Expand ${label}`}
+      aria-expanded={toggle.expanded}
+      data-rail-toggle=""
+      onClick={onTogglePress}
+      onKeyDown={onKeyDown}
+      className={
+        swap
+          ? "rail-row-chevron absolute -left-0.5 top-1/2 z-10 h-5 w-5 -translate-y-1/2 rounded"
+          : "h-8 w-6 rounded"
+      }
+    />
+  ) : null;
+
   return (
     <div
       {...rowProps}
       onPointerDownCapture={(event: React.PointerEvent) => {
         pressedBy.current = event.pointerType;
+        pressedAt.current = performance.now();
+      }}
+      onPointerCancelCapture={() => {
+        pressedBy.current = null;
       }}
       data-rail-row=""
       data-pinned={held ? "" : undefined}
+      // The count gives way only to actions that take its place. A row with
+      // no actions keeps its count on hover and on focus.
+      data-has-actions={hoverActions ? "" : undefined}
       className={`${railRowClass({ selected, tier, touch: isMobile })} ${className}`}
     >
       {Array.from({ length: depth }, (_, level) => (
@@ -222,25 +279,15 @@ export function RailRow({
           {guides ? <span className="absolute inset-y-0 left-2 w-px bg-border" /> : null}
         </span>
       ))}
-      {toggle ? (
+      {ownColumn ? (
+        // The phone's chevron column, as the tree drew it before the swap.
+        <span className="-ml-1 mr-1 flex w-6 shrink-0 items-center justify-center">
+          {toggleButton}
+        </span>
+      ) : swap ? (
         // A zero-width anchor where the icon starts. The toggle hangs from it
         // over the icon, so the slot is one slot and costs no width.
-        <span className="relative w-0 shrink-0 self-stretch">
-          <Button
-            variant="ghost"
-            size="none"
-            radius="keep"
-            icon={toggle.expanded ? "ChevronDown" : "ChevronRight"}
-            aria-label={toggle.expanded ? `Collapse ${label}` : `Expand ${label}`}
-            aria-expanded={toggle.expanded}
-            data-rail-toggle=""
-            onClick={onTogglePress}
-            onKeyDown={onKeyDown}
-            className={`absolute -left-0.5 top-1/2 z-10 h-5 w-5 -translate-y-1/2 rounded ${
-              isMobile ? "" : "rail-row-chevron"
-            }`}
-          />
-        </span>
+        <span className="relative w-0 shrink-0 self-stretch">{toggleButton}</span>
       ) : null}
       {editor ?? (
         <button
@@ -256,18 +303,17 @@ export function RailRow({
           onKeyDown={onKeyDown}
           className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
         >
-          {toggle && icon ? (
+          {swap && icon ? (
             // Stays in the button, so its name (a state mark's words) is
             // still part of the row's name while the chevron covers it.
-            <span
-              data-rail-icon=""
-              className={`inline-flex shrink-0 ${isMobile ? "opacity-0" : "rail-row-icon"}`}
-            >
+            <span data-rail-icon="" className="rail-row-icon inline-flex shrink-0">
               {icon}
             </span>
-          ) : (
-            icon
-          )}
+          ) : icon ? (
+            <span data-rail-icon="" className="inline-flex shrink-0">
+              {icon}
+            </span>
+          ) : null}
           <span
             ref={attachLabel}
             onPointerEnter={onPointerEnter}
@@ -285,12 +331,16 @@ export function RailRow({
           ) : null}
         </button>
       )}
-      {actions && !editor ? (
+      {hoverActions ? (
         <span className="reveal-on-hover rail-row-actions flex shrink-0 items-center gap-0.5">
           {/* The space before the actions, INSIDE the zone, so it folds away
               with them at rest. */}
           <span aria-hidden className="w-0.5 shrink-0" />
           {actions}
+        </span>
+      ) : phoneControls ? (
+        <span data-rail-phone-actions="" className="-mr-2 flex shrink-0 items-center">
+          {phoneActions}
         </span>
       ) : null}
       {editor ? null : tip}

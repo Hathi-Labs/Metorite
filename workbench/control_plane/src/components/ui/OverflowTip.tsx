@@ -164,6 +164,10 @@ export function useOverflowTip(text: string) {
       anchor={anchor}
       open={state.phase === "open"}
       variant="tip"
+      // ⚠️ The TOP layer, not the default popover one. The phone drawer is
+      // `fixed inset-0 z-[70]` (AppShell), so a tip at `z-[60]` painted under
+      // it: invisible in a drawer rail, and its Escape still caught.
+      layer="top"
       maxHeight={160}
       panelProps={{ id: tipId, role: "tooltip", "data-overflow-tip": "" }}
       className="text-xs"

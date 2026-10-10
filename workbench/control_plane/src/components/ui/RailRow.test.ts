@@ -94,6 +94,18 @@ describe("the row", () => {
     expect(draw({ depth: 2 }).match(/w-px bg-border/g)).toBeNull();
   });
 
+  it("flags a row with actions, so only that row swaps its count", () => {
+    expect(draw()).toContain('data-has-actions=""');
+    expect(draw({ actions: undefined })).not.toContain("data-has-actions");
+  });
+
+  it("adds no second accessible name to the label", () => {
+    const src = readFileSync(fileURLToPath(new URL("./RailRow.tsx", import.meta.url)), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toContain("aria-describedby");
+    expect(code).not.toMatch(/\stitle=/);
+  });
+
   it("marks itself for the e2e and the fence", () => {
     expect(draw()).toContain('data-rail-row=""');
   });
@@ -155,6 +167,9 @@ describe("the chevron takes the icon's slot", () => {
     expect(togglePress(null, false, false)).toBe("toggle");
     // A phone shows the chevron, so the finger sees what it taps.
     expect(togglePress("touch", false, true)).toBe("toggle");
+    // A click with detail 0 is Enter or Space. A touch press left behind by
+    // a pan or a long-press must not turn the key into a select.
+    expect(togglePress("touch", false, false, true)).toBe("toggle");
   });
 
   it("opens on ArrowRight and closes on ArrowLeft, and leaves other keys alone", () => {
@@ -201,12 +216,16 @@ describe("the utilities it relies on", () => {
     expect(iconBody).not.toContain("@media");
   });
 
-  it("rail-row-meta gives its place to the actions on the same three states", () => {
+  it("rail-row-meta gives way only on a row with actions, and only from sight", () => {
     const body = block("rail-row-meta");
-    expect(body).toContain(".group:hover &");
-    expect(body).toContain(".group:has(:focus-visible) &");
-    expect(body).toContain(".group[data-pinned] &");
-    expect(body).toContain("display: none");
+    // A row with no actions keeps its count: nothing would take its place.
+    expect(body).toContain(".group[data-has-actions]:hover &");
+    expect(body).toContain(".group[data-has-actions]:has(:focus-visible) &");
+    expect(body).toContain(".group[data-has-actions][data-pinned] &");
+    expect(body).not.toMatch(/\.group:hover &/);
+    // `display: none` took the count out of the accessible name on focus.
+    expect(body).not.toContain("display: none");
+    expect(body).toContain("clip-path: inset(50%)");
     expect(body).not.toContain("@media");
   });
 });

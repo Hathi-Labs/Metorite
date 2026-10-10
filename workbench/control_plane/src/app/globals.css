@@ -1048,11 +1048,27 @@ select optgroup {
   }
 }
 
+/*
+ * The count gives its place to the actions, and ONLY on a row that has
+ * actions (`data-has-actions`). A row with none, such as an Email folder,
+ * keeps its count on hover and on focus. Nothing would take its place.
+ *
+ * ⚠️ Hidden from SIGHT only, never with `display: none`. The count is part
+ * of the label button's accessible name ("Finance & Accounts 6 open tasks").
+ * `display: none` took it out of the name the moment a keyboard focused the
+ * row. This is the screen-reader-only clip: no width, no paint, still read.
+ */
 @utility rail-row-meta {
-  .group:hover &,
-  .group:has(:focus-visible) &,
-  .group[data-pinned] & {
-    display: none;
+  .group[data-has-actions]:hover &,
+  .group[data-has-actions]:has(:focus-visible) &,
+  .group[data-has-actions][data-pinned] & {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 
