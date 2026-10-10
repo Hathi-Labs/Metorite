@@ -31,7 +31,7 @@
  * (`overflowTipReducer`), as in `InfoTip.tsx`. `e2e/rail-rows.spec.ts`
  * measures the real tip in a browser.
  */
-import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useReducer, useState } from "react";
 
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 
@@ -103,34 +103,33 @@ function hasVisibleFocus(element: Element): boolean {
 
 /**
  * The tip's state and wiring, for a caller that owns the label's markup
- * (`RailRow`). Put `labelRef`, `onPointerEnter` and `onPointerLeave` on the
+ * (`RailRow`). Put `attachLabel`, `onPointerEnter` and `onPointerLeave` on the
  * truncated element, and `onFocus` and `onBlur` on the control that takes
  * focus. Render `tip` anywhere.
  */
 export function useOverflowTip(text: string) {
   const [state, dispatch] = useReducer(overflowTipReducer, TIP_IDLE);
-  const label = useRef<HTMLElement | null>(null);
+  // The label element, held in state rather than in a ref. The hook hands
+  // its callbacks to the caller's render, and the React compiler refuses a
+  // ref read there (`react-hooks/refs`).
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [width, setWidth] = useState(OVERFLOW_TIP_MAX_WIDTH);
   const tipId = useId();
 
   // Stable, so React does not detach and attach it on each render.
-  const labelRef = useCallback((node: HTMLElement | null) => {
-    label.current = node;
-    setAnchor(node);
-  }, []);
+  const attachLabel = useCallback((node: HTMLElement | null) => setAnchor(node), []);
 
   useEffect(() => {
     if (state.phase !== "waiting") return;
     const timer = window.setTimeout(() => {
-      const node = label.current;
+      const node = anchor;
       // Measured when the delay ends, not when the pointer arrived: the row's
       // actions take their room on hover, and that can cut a name that fit.
       if (node) setWidth(overflowTipWidth(node.getBoundingClientRect().left, window.innerWidth));
       dispatch({ type: "elapsed", truncated: isTruncated(node) });
     }, OVERFLOW_TIP_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [state.phase]);
+  }, [state.phase, anchor]);
 
   useEffect(() => {
     if (state.phase !== "open") return;
@@ -175,7 +174,7 @@ export function useOverflowTip(text: string) {
     </AnchoredPanel>
   );
 
-  return { phase: state.phase, labelRef, onPointerEnter, onPointerLeave, onFocus, onBlur, tip };
+  return { phase: state.phase, attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip };
 }
 
 export interface OverflowTipProps {
@@ -187,18 +186,21 @@ export interface OverflowTipProps {
 
 /** A one-line label that cuts with an ellipsis and shows its whole text on hover. */
 export function OverflowTip({ text, className = "" }: OverflowTipProps) {
-  const tip = useOverflowTip(text);
+  // Destructured: `ref={result.attachLabel}` would make the React compiler read
+  // the whole object as a ref, and refuse each other read of it in render.
+  const { attachLabel, onPointerEnter, onPointerLeave, tip } =
+    useOverflowTip(text);
   return (
     <>
       <span
-        ref={tip.labelRef}
-        onPointerEnter={tip.onPointerEnter}
-        onPointerLeave={tip.onPointerLeave}
+        ref={attachLabel}
+        onPointerEnter={onPointerEnter}
+        onPointerLeave={onPointerLeave}
         className={`truncate ${className}`}
       >
         {text}
       </span>
-      {tip.tip}
+      {tip}
     </>
   );
 }

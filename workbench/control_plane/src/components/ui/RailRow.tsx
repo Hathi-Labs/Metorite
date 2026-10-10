@@ -121,7 +121,10 @@ export function RailRow({
   className = "",
 }: RailRowProps) {
   const { isMobile } = useViewMode();
-  const tip = useOverflowTip(label);
+  // Destructured: `ref={result.attachLabel}` would make the React compiler read
+  // the whole object as a ref, and refuse each other read of it in render.
+  const { attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip } =
+    useOverflowTip(label);
   // A phone cannot hover, so the row the member chose keeps its controls.
   const held = Boolean(actions) && (pinned || (isMobile && selected));
 
@@ -145,15 +148,15 @@ export function RailRow({
           type="button"
           {...buttonProps}
           onClick={onSelect}
-          onFocus={tip.onFocus}
-          onBlur={tip.onBlur}
+          onFocus={onFocus}
+          onBlur={onBlur}
           className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
         >
           {icon}
           <span
-            ref={tip.labelRef}
-            onPointerEnter={tip.onPointerEnter}
-            onPointerLeave={tip.onPointerLeave}
+            ref={attachLabel}
+            onPointerEnter={onPointerEnter}
+            onPointerLeave={onPointerLeave}
             className={`min-w-0 flex-1 truncate text-[0.8125rem] leading-5 ${
               tier === "group" ? "font-medium" : ""
             }`}
@@ -172,7 +175,7 @@ export function RailRow({
           {actions}
         </span>
       ) : null}
-      {editor ? null : tip.tip}
+      {editor ? null : tip}
     </div>
   );
 }
