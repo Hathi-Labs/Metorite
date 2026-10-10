@@ -7,6 +7,8 @@
 # .env, then from the Console .env, so systemd and compose parse the same
 # bytes as before. For a name in both files the Console wins, and for a name
 # with two lines the last line wins. A missing Console file is not an error.
+# An `export NAME=` line counts, as compose reads it, and root.env holds it
+# as `NAME=`, so systemd and compose read the same line.
 #
 # BH-6 filters NAMES, not values. A value still comes from a file that acb
 # can write. The backup validates each value it takes, and compose puts each
@@ -70,6 +72,7 @@ read_source() {
     exit 1
   fi
   while IFS= read -r l || [ -n "$l" ]; do
+    if [[ "$l" =~ ^export[[:space:]]+(.*)$ ]]; then l="${BASH_REMATCH[1]}"; fi
     k="${l%%=*}"
     [ "$k" != "$l" ] || continue
     [[ "$k" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue

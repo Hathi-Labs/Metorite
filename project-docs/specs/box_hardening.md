@@ -1613,13 +1613,27 @@ closes the value part of P3 (§0) for `acb-backup.service` and
   rollback, with the sandbox off. Exit 3 is an expired or partial rollback,
   and its drop-in can keep the sandbox off too.
 - For each exit but 1, the step skips the sync. It prints `WARN BH-6: the
-  BH-2 rollback is not off, so the root copy stays at <sha>`.
+  BH-2 rollback is not off, so the root copy stays at <sha>`, and it names
+  the forced deploy: `sudo MODE=force bash /opt/acb/app/scripts/vps_pull.sh`.
+- **Fix round 1 (build).** A skipped sync still records the sha as
+  applied, so no later pull syncs the copy. So `bh2_rollback.sh off` prints
+  `WARN BH-6: the root copy at /usr/local/lib/acb may be stale`, and it
+  names the same forced deploy. The fence is
+  `test_rollback_off_names_the_forced_deploy_that_syncs_the_copy`.
 - The step cannot call `bh2_strict_check`, because the bh2 helper block
   (`vps_apply.sh:1074-1192`) comes later in the file. It runs the same
   `status` command as `vps_apply.sh:1169`.
 - A skipped sync leaves the copy and `deployed_sha` at the last synced
   commit, and the root units run that known copy. With no copy on the box
   yet, a skip stops the deploy before the first compose call.
+- **Fix round 1 (build).** The `git reset` of the pull block puts the BH-6
+  `backup_db.sh` in the checkout, and it refuses a root run from there. So
+  the deploy installs `acb-backup.service` and `acb-health-watchdog.service`
+  directly after steps 1 to 3, before the first compose call. A deploy that
+  fails later does not leave the old units. For one release, a root run
+  from the checkout path also runs the root copy of the same layout, when
+  that copy is a plain file. It cannot loop, because the copy passes the
+  layout check. Remove it in the release after BH-6.
 - `backup_db.sh:587` runs `git rev-parse` as root in the checkout. A root
   run reads `/usr/local/lib/acb/deployed_sha` in its place. It takes the
   value only in the shape `^[0-9a-f]{40}$`, and prints its first 12
@@ -1639,6 +1653,9 @@ closes the value part of P3 (§0) for `acb-backup.service` and
   compose parse the same bytes as before. For a name with two lines, the
   last line wins. It refuses a source that is a symlink or not a regular
   file.
+- **Fix round 1 (build).** An `export NAME=` line counts too, because
+  compose reads it. root.env holds it as `NAME=`, so systemd and compose
+  read the same line.
 - It writes under `umask 077`, into a temp file in `/etc/acb`. Then it runs
   `install -m 0600 -o root -g root <tmp> /etc/acb/root.env`. It writes only
   when the content changed.
@@ -1821,9 +1838,13 @@ stays as it is.
 - The rewrite runs on the dev box, in `scripts/secrets.sh`. It reaches the
   box through `remote()` (`secrets.sh:384-390`), which runs the remote half
   as root with `sudo -n`.
-- After a verified write of the `app-env` entry, the push calls a new remote
-  verb, `rootenv`. The verb runs `/usr/local/lib/acb/root_env.sh`, the
-  copy. It never runs a file of the checkout.
+- After a verified write of the `app-env` entry and a restart that passed,
+  the push calls a new remote verb, `rootenv`. The verb runs
+  `/usr/local/lib/acb/root_env.sh`, the copy. It never runs a file of the
+  checkout.
+- **Fix round 1 (build).** A failed restart puts the old `.env` back and
+  exits in `roll_back`, before `rootenv`. So root.env keeps the values of
+  the `.env` that stays live.
 - `secrets.sh` holds no name list. The `app-env` entry of
   `deploy/secrets/manifest.json` gets a field `"rebuild_root_env": true`,
   and the push reads it. So a new password reaches the backup at once, with
@@ -1836,9 +1857,11 @@ stays as it is.
   root.env is not a manifest entry, because the box derives it. The name
   list and the `allowed_keys` of `backup-offbox` share no name, and BH-F4
   holds that.
-- The `allowed_keys` of `app-env` is empty today
-  (`test_secrets_drop.py:410`). So today a push of `app-env` changes no name
-  of the list, and the hook is ready for the day the list grows.
+- The `allowed_keys` of `app-env` holds one key since #820:
+  `WHATSAPP_ASSISTANT_ACCESS_TOKEN`. It is not a name of root_env_names.txt.
+  So today a push of `app-env` changes no name of the list. The rebuild
+  then writes the same root.env, and the hook is ready for the day a
+  listed name joins `allowed_keys`.
 - The Console `.env` has no manifest entry. A change there reaches root.env
   at the next deploy.
 

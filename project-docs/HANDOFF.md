@@ -124,6 +124,20 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-288 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
+- **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
+- **Why.** WS-49 BH-6 runs `acb-backup`, `acb-health-watchdog` and `acb.service` from the root
+  copy at `/usr/local/lib/acb`, with `/etc/acb/root.env`. These runbooks still tell a person to
+  run the checkout scripts and the old compose command as root.
+- **Do this:**
+  1. Name the root copy and the `acb_compose` command shape of `scripts/vps_apply.sh` in each
+     runbook.
+  2. `deploy/hostinger/bootstrap.sh` ends with "run deploy.sh". Since BH-6, `deploy.sh` stops until
+     a run of `scripts/vps_apply.sh` has written the root copy. Change that last step to name
+     `scripts/vps_apply.sh` first.
+- **Authority:** `specs/box_hardening.md` §5 BH-6
+- **Added:** 2026-10-10 · branch `sec-bh6-build`
+
 ### H-287 · Three AI paths spend money and write no usage row · [AGENT]
 - **Check:** run `rg -n "litellm|_litellm" packages/acb_llm/acb_llm/context.py apps/services/gateway/gateway/routes/integrations.py`
   and `rg -n "v1/embeddings" apps/services/gateway/gateway/main.py`. If

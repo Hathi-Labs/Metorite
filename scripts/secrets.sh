@@ -1162,8 +1162,15 @@ cmd_push() {
 
   # Keep the backup path now: each remote call below resets r_backup.
   bak="${r_backup:-none}"
+  if [ -n "$(el "$i" restart)" ]; then
+    restart_units "$i" || roll_back "$i" "$name" "$pre" "$bak" "$want"
+  else
+    say "restart: none"
+  fi
   # WS-49 BH-6: the root units read /etc/acb/root.env, which the box derives
-  # from this file. So a new value reaches the backup with no deploy. A
+  # from this file. So a new value reaches the backup with no deploy. It runs
+  # only HERE, after the restart passed: a failed restart rolls the file back
+  # and exits in roll_back, so root.env keeps the .env that stays live. A
   # failure is a WARN, because the next deploy writes root.env again.
   if [ "$(ef "$i" rebuild_root_env)" = true ]; then
     rc=0; out="$(remote rootenv < /dev/null)" || rc=$?
@@ -1172,11 +1179,6 @@ cmd_push() {
     else
       warn "root.env: the rootenv step on $host failed (exit $rc). The next deploy writes /etc/acb/root.env again."
     fi
-  fi
-  if [ -n "$(el "$i" restart)" ]; then
-    restart_units "$i" || roll_back "$i" "$name" "$pre" "$bak" "$want"
-  else
-    say "restart: none"
   fi
   log_push "$name" "sha=$want result=ok"
   say "OK"

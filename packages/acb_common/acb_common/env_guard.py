@@ -5,10 +5,12 @@ Integrations routes (``gateway/routes/integrations.py``), the OAuth token
 writer (``gateway/routes/oauth.py``), the Models routes
 (``gateway/routes/settings.py::_write_env_key``), and the startup load of the
 credential store (``acb_llm/key_store.py``). On the box the env file is
-``/opt/acb/app/.env``. It is the ``EnvironmentFile`` of ``acb-gateway.service``,
-``acb-backup.service`` and ``acb-whatsapp-bridge.service``, and
-``deploy/hostinger/deploy.sh`` runs ``source`` on it. One process env and one
-file serve every organization, so a write here changes the deployment.
+``/opt/acb/app/.env``. It is the ``EnvironmentFile`` of ``acb-gateway.service``
+and ``acb-whatsapp-bridge.service``. Since WS-49 BH-6 no root unit loads it:
+``scripts/root_env.sh`` copies the names of
+``deploy/hostinger/root_env_names.txt`` from it into ``/etc/acb/root.env``,
+which ``acb-backup.service`` and compose read. One process env and one file
+serve every organization, so a write here changes the deployment.
 
 This module holds the rule, and it holds no I/O. A caller asks it, and then
 the caller refuses. Do not copy a rule into a route. A second copy of a

@@ -495,6 +495,27 @@ def test_a_push_of_app_env_runs_the_root_copy_of_root_env_sh() -> None:
     assert writes and rebuild and max(writes) < rebuild[0], ssh
 
 
+def test_rootenv_runs_after_a_restart_that_passed() -> None:
+    """Fix round 1, reviewer P3. root.env must equal the .env that stays
+    live. So the rebuild runs only after the restart of the gateway passed."""
+    res = _run(_MERGE_SETUP + "SD push app-env --yes\n", manifest=_merge_manifest())
+    assert res["rc"] == 0, res["err"]
+    ssh = _ssh_lines(res["calls"])
+    restarts = [i for i, ln in enumerate(ssh) if "secrets-drop\\ restart\\ " in ln]
+    rebuild = [i for i, ln in enumerate(ssh) if ln.rstrip().endswith("secrets-drop\\ rootenv")]
+    assert restarts and len(rebuild) == 1 and max(restarts) < rebuild[0], ssh
+
+
+def test_a_rolled_back_push_never_rebuilds_root_env() -> None:
+    """The restart fails, the push puts the old .env back and exits. root.env
+    keeps the old values, which match the .env that stays live. Mutation:
+    call rootenv before the restart, and this goes red."""
+    res = _run(_MERGE_SETUP + "STUB_INACTIVE=1 SD push app-env --yes\n", manifest=_merge_manifest())
+    assert res["rc"] != 0, res["out"]
+    assert "ROLLED BACK" in res["err"], res["err"]
+    assert _rootenv_calls(res["calls"]) == []
+
+
 def test_an_entry_without_the_flag_never_calls_rootenv() -> None:
     res = _run("SD init >/dev/null\n" + _offbox_env() + "SD push backup-offbox --yes\n")
     assert res["rc"] == 0, res["err"]

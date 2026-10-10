@@ -275,12 +275,25 @@ def _backup_allow_list() -> set[str]:
     return set(line.split(" -- ")[0].split()[2:])
 
 
+#: A compose interpolation: `${NAME...}` or a bare `$NAME`. `$$` is an escape,
+#: so a `$` after a `$` starts none.
+_INTERP = re.compile(r"(?<!\$)\$(?:\{([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def test_the_interpolation_pattern_sees_both_forms_and_skips_an_escape() -> None:
+    def found(text: str) -> set[str]:
+        return {a or b for a, b in _INTERP.findall(text)}
+
+    assert found("x ${A:-1} $B y") == {"A", "B"}
+    assert found("$${C} $$D $$@") == set()
+
+
 def _compose_names() -> dict[str, set[str]]:
     """The names each service of docker-compose.yml interpolates."""
     compose = yaml.safe_load(_read(COMPOSE))
     out = {}
     for name, svc in compose["services"].items():
-        out[name] = set(re.findall(r"(?<!\$)\$\{([A-Za-z_][A-Za-z0-9_]*)", yaml.safe_dump(svc)))
+        out[name] = {a or b for a, b in _INTERP.findall(yaml.safe_dump(svc))}
     return out
 
 
@@ -303,7 +316,8 @@ def test_each_name_has_a_reader_and_each_reader_has_its_name() -> None:
 
 def test_each_interpolation_of_the_compose_file_sits_under_environment() -> None:
     """A value of root.env picks what a container sees, never a host path, a
-    port, an image or a build context. `$${` is not an interpolation."""
+    port, an image or a build context. `${X}` and a bare `$X` both count, and
+    `$$` is an escape."""
     compose = yaml.safe_load(_read(COMPOSE))
     bad = []
 
@@ -314,7 +328,7 @@ def test_each_interpolation_of_the_compose_file_sits_under_environment() -> None
         elif isinstance(node, list):
             for v in node:
                 walk(v, path)
-        elif (isinstance(node, str) and re.search(r"(?<!\$)\$\{", node)
+        elif (isinstance(node, str) and _INTERP.search(node)
               and "environment" not in path):
             bad.append("/".join(path))
 
@@ -418,7 +432,7 @@ def test_the_sync_reads_git_archive_of_the_target_sha_and_refuses_a_symlink() ->
     assert 'GIT_NO_REPLACE_OBJECTS=1 git show "$sha:$BH6_LIST"' in sync
     assert 'links="$(sudo find "$stage" -type l)"' in sync
     assert 'sudo mktemp -d /usr/local/lib/acb-stage.XXXXXX' in sync
-    assert ('sudo rsync -a --delete --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/'
+    assert ('sudo rsync -a --delete --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/'
             in sync)
     assert 'sudo chmod 0755 "$stage/copy"' in sync
     # It never reads the working tree.
@@ -463,6 +477,25 @@ def test_the_steps_sit_in_order() -> None:
     assert not [ln for ln in lines[reexec:helper] if "acb_compose " in ln or "docker compose" in ln]
 
 
+def test_the_two_timer_units_go_in_right_after_the_steps() -> None:
+    """Fix round 1, reviewer P1. `git reset` puts the BH-6 backup_db.sh in
+    the checkout, and it refuses a root run from there. So acb-backup.service
+    and acb-health-watchdog.service go in DIRECTLY after steps 1 to 3, before
+    the first compose call, and not only in the BO-23 loop at the end.
+    Mutation: move the call below the core `up`, and this goes red."""
+    lines = [ln.strip() for ln in _code_lines(_read(APPLY))]
+    steps = lines.index("bh6_root_steps || {")
+    close = lines.index("}", steps)
+    units = lines.index('bh6_install_root_units "$APP_DIR/deploy/hostinger" || {')
+    core_up = next(i for i, ln in enumerate(lines) if ln.startswith("acb_compose --profile core up"))
+    assert units == close + 1, (steps, close, units)
+    assert units < core_up
+    fn = _function(_bh6_block(), "bh6_install_root_units")
+    assert "for u in acb-backup.service acb-health-watchdog.service; do" in fn
+    assert 'sudo install -m 0644 "$dir/$u" "/etc/systemd/system/$u"' in fn
+    assert "sudo systemctl daemon-reload" in fn
+
+
 def test_the_watchdog_step_drops_the_chmod_of_the_checkout_script() -> None:
     assert "health-watchdog.sh" not in "\n".join(
         ln for ln in _code_lines(_read(APPLY)) if "chmod" in ln
@@ -492,7 +525,7 @@ args=()
 for a in "$@"; do
   case "$a" in
     --chown=*) continue ;;
-    /usr/local/lib/*|/etc/acb/*) args+=("$FAKE_ROOT$a") ;;
+    /usr/local/lib/*|/etc/acb/*|/etc/systemd/*) args+=("$FAKE_ROOT$a") ;;
     *) args+=("$a") ;;
   esac
 done
@@ -518,6 +551,10 @@ class Sync:
         binr.mkdir()
         (binr / "sudo").write_text(STUB_SUDO, encoding="utf-8", newline="\n")
         (binr / "sudo").chmod(0o755)
+        (binr / "systemctl").write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$STUB_LOG.systemctl"\n',
+            encoding="utf-8", newline="\n")
+        (binr / "systemctl").chmod(0o755)
         self.log = tmp / "log"
         self.env = dict(
             os.environ,
@@ -695,6 +732,23 @@ def test_a_skip_with_no_copy_yet_stops_the_deploy(sync: Sync) -> None:
 
 
 @needs_linux
+def test_the_timer_units_are_installed_once_and_reloaded(sync: Sync) -> None:
+    """The install step copies the two units when they differ, runs one
+    daemon-reload, and does nothing on the next run."""
+    (sync.fake / "etc/systemd/system").mkdir(parents=True)
+    r = sync.bash(f'bh6_install_root_units "{UNITS.as_posix()}"')
+    assert r.returncode == 0, r.stdout + r.stderr
+    for u in ("acb-backup.service", "acb-health-watchdog.service"):
+        assert (sync.fake / "etc/systemd/system" / u).read_bytes() == (UNITS / u).read_bytes(), u
+    log = Path(f"{sync.log}.systemctl")
+    assert log.read_text(encoding="utf-8").splitlines() == ["daemon-reload"]
+    log.unlink()
+    r = sync.bash(f'bh6_install_root_units "{UNITS.as_posix()}"')
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not log.exists(), "an unchanged unit ran daemon-reload again"
+
+
+@needs_linux
 def test_a_failed_root_env_stops_the_steps_before_compose(sync: Sync) -> None:
     app = sync.tmp / "app"
     (app / "scripts").mkdir(parents=True, exist_ok=True)
@@ -764,24 +818,27 @@ def test_root_env_keeps_only_the_listed_names_byte_for_byte(layout: Layout) -> N
     layout.app.write_bytes(
         b"PG_MODE=docker\n" + _HOSTILE.encode()
         + b"PGPASSWORD=a b#c $x 'q'\nPG_MODE=local\nDATABASE_URL=postgresql://u:p@h:5432/acb\n"
-        + b"CUSTOMER_CONSOLE_DATABASE_URL=postgresql://app-value\nexport PGHOST=ignored\n"
+        + b"CUSTOMER_CONSOLE_DATABASE_URL=postgresql://app-value\n"
+        + b"export PGHOST=db.example\nexport LD_PRELOAD=/tmp/y.so\n"
     )
     layout.console.write_bytes(b"CUSTOMER_CONSOLE_DATABASE_URL=postgresql://cc:pw@cc:5432/postgres\n")
     r = layout.run()
     assert r.returncode == 0, r.stdout + r.stderr
     body = layout.out.read_bytes().decode()
     lines = [ln for ln in body.splitlines() if not ln.startswith("#")]
+    # `export NAME=` counts, as compose reads it, and root.env holds `NAME=`.
     assert lines == [
         "PG_MODE=local",
+        "PGHOST=db.example",
         "PGPASSWORD=a b#c $x 'q'",
         "DATABASE_URL=postgresql://u:p@h:5432/acb",
         "CUSTOMER_CONSOLE_DATABASE_URL=postgresql://cc:pw@cc:5432/postgres",
     ], body
     for bad in ("LD_PRELOAD", "POSTGRES_BIND", "COMPOSE_PROJECT_NAME", "BACKUP_DIR", "PG_CONTAINER",
-                "BASH_ENV", "BACKUP_S3", "PGHOST"):
+                "BASH_ENV", "BACKUP_S3", "export "):
         assert bad not in body, bad
     assert "pw@cc" not in r.stdout + r.stderr, "a value reached the output"
-    assert "holds 4 of" in r.stdout
+    assert "holds 5 of" in r.stdout
 
 
 @needs_linux
@@ -873,14 +930,75 @@ def test_a_root_run_takes_app_commit_from_deployed_sha(content: str | None, want
     assert not _lines(r, "git "), "a root run ran git"
 
 
+_CHECKOUT_SETUP = 'mkdir -p "$R/opt/acb/app/scripts"; cp scripts/*.sh "$R/opt/acb/app/scripts/"\n'
+_CHECKOUT_RUN = _ROOT_RUN.replace("$W/root/usr/local/lib/acb/", "$W/root/opt/acb/app/scripts/")
+
+
 @needs_linux
-def test_a_root_run_from_the_checkout_path_is_refused() -> None:
-    setup = 'mkdir -p "$R/opt/acb/app/scripts"; cp scripts/*.sh "$R/opt/acb/app/scripts/"\n'
-    cmd = _ROOT_RUN.replace("$W/root/usr/local/lib/acb/", "$W/root/opt/acb/app/scripts/")
-    r = _run(setup=setup, root=True, command=cmd)
+def test_a_root_run_from_the_checkout_path_with_no_copy_is_refused() -> None:
+    setup = _CHECKOUT_SETUP + 'rm -f "$R/usr/local/lib/acb/backup_db.sh"\n'
+    r = _run(setup=setup, root=True, command=_CHECKOUT_RUN)
     assert r["rc"] == 2, f"{r['out']}\n{r['err']}"
     assert "a root run must start from /usr/local/lib/acb/backup_db.sh" in str(r["err"])
     assert not _lines(r, "pg_dump")
+
+
+@needs_linux
+def test_the_belt_runs_the_root_copy_for_an_old_unit_and_cannot_loop() -> None:
+    """Fix round 1, the belt for one release. The old unit names the checkout
+    path. A root run from there runs the root copy of the same layout, one
+    time: the copy passes the layout check, so it never takes this branch.
+    Mutation: exec the checkout script again, and the run never ends (the
+    harness timeout makes it red)."""
+    setup = _CHECKOUT_SETUP + "printf 'POSTGRES_USER=from_root_env\\n' > \"$R/etc/acb/root.env\"\n"
+    r = _run(setup=setup, root=True, command=_CHECKOUT_RUN)
+    assert r["rc"] == 0, f"{r['out']}\n{r['err']}"
+    err = str(r["err"])
+    assert err.count("a root run from the checkout. Running the root copy") == 1, err
+    users = [ln for ln in _lines(r, "psql ") if " -U " in ln]
+    assert users and all(" -U from_root_env " in ln for ln in users), users
+
+
+@needs_linux
+def test_the_belt_refuses_a_root_copy_that_is_a_symlink() -> None:
+    setup = (
+        _CHECKOUT_SETUP
+        + 'mv "$R/usr/local/lib/acb/backup_db.sh" "$R/usr/local/lib/acb/real.sh"\n'
+        + 'ln -s real.sh "$R/usr/local/lib/acb/backup_db.sh"\n'
+    )
+    r = _run(setup=setup, root=True, command=_CHECKOUT_RUN)
+    assert r["rc"] == 2, f"{r['out']}\n{r['err']}"
+    assert "Running the root copy" not in str(r["err"])
+
+
+def test_the_belt_is_scoped_to_the_checkout_path() -> None:
+    text = _read(BACKUP)
+    belt = text[text.index('  case "$script_dir" in\n    */opt/acb/app/scripts)'):]
+    belt = belt[: belt.index("  esac\n")]
+    assert '_copy="${script_dir%/opt/acb/app/scripts}/usr/local/lib/acb/backup_db.sh"' in belt
+    assert 'if [ -f "$_copy" ] && [ ! -L "$_copy" ]; then' in belt
+    assert 'exec /bin/bash "$_copy" "$@"' in belt
+    # The belt sits inside the root run, before the layout refusal.
+    assert text.index(belt) < text.index('if [ "$layout_root/usr/local/lib/acb" != "$script_dir" ]')
+
+
+# ── bh2_rollback.sh off: the root copy may be stale ──────────────────────
+
+
+@needs_linux
+def test_rollback_off_names_the_forced_deploy_that_syncs_the_copy(tmp_path: Path) -> None:
+    """Fix round 1, reviewer P3. A deploy skips the sync while a rollback is
+    on, and records its sha as applied, so no later pull syncs it. `off`
+    says so, and names the forced deploy. The skip WARN of the deploy names
+    it too."""
+    box = Box(tmp_path)
+    assert box.run("on").returncode == 0
+    r = box.run("off")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "WARN BH-6: the root copy at /usr/local/lib/acb may be stale" in r.stdout
+    assert "sudo MODE=force bash" in r.stdout and "scripts/vps_pull.sh" in r.stdout
+    steps = _function(_bh6_block(), "bh6_root_steps")
+    assert 'After bh2_rollback.sh off, run: sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh' in steps
 
 
 @needs_linux

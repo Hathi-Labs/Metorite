@@ -167,6 +167,21 @@ script_dir="$(cd "$script_dir" && pwd)"
 remote_from_env="${BACKUP_REMOTE:-}"
 if [ "$env_guard" = "1" ]; then
   layout_root="${script_dir%/usr/local/lib/acb}"
+  # WS-49 BH-6 fix round 1, a belt for ONE release. A deploy that fails
+  # before it installs the new acb-backup.service leaves the old unit, which
+  # names the checkout path. Run the ROOT COPY of the same layout in its place,
+  # when it is a plain file. It cannot loop: the copy is in
+  # <layout>/usr/local/lib/acb, so the check below passes there and this branch
+  # never runs again. Remove it in the release after BH-6.
+  # Fence: tests/unit/test_root_units_root_owned.py (the belt tests).
+  case "$script_dir" in
+    */opt/acb/app/scripts)
+      _copy="${script_dir%/opt/acb/app/scripts}/usr/local/lib/acb/backup_db.sh"
+      if [ -f "$_copy" ] && [ ! -L "$_copy" ]; then
+        warn "a root run from the checkout. Running the root copy $_copy (WS-49 BH-6)."
+        exec /bin/bash "$_copy" "$@"
+      fi ;;
+  esac
   if [ "$layout_root/usr/local/lib/acb" != "$script_dir" ]; then
     echo "ERROR: a root run must start from /usr/local/lib/acb/backup_db.sh, the root" >&2
     echo "       copy that acb-backup.service names. Its fixed paths come from there." >&2

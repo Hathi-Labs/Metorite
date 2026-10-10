@@ -794,13 +794,34 @@ bh6_sync_root_copy() {
   for i in infra/docker-compose.yml infra/postgres/00_create_databases.sql infra/postgres/01_schema.sql; do
     sudo cmp -s "$stage/copy/$i" "/usr/local/lib/acb/$i" || BH6_CORE_CHANGED=1
   done
-  if ! sudo rsync -a --delete --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/; then
+  # --delay-updates: each new file goes in at the end, so a root unit that
+  # starts during the sync does not see a mix of two commits.
+  if ! sudo rsync -a --delete --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/; then
     sudo rm -rf -- "$stage"
     echo "    !! BH-6: rsync to /usr/local/lib/acb/ failed"
     return 1
   fi
   sudo rm -rf -- "$stage"
   echo "    root copy: /usr/local/lib/acb is at ${sha:0:12} (core inputs changed: $BH6_CORE_CHANGED)"
+}
+
+# bh6_install_root_units DIR — install acb-backup.service and
+# acb-health-watchdog.service from DIR now, right after steps 1 to 3. The
+# reset of the pull block already put the BH-6 scripts in the checkout, and
+# the BH-6 backup_db.sh refuses a root run from there. So the old units must
+# not wait for the BO-23 loop at the end: a failure between here and that
+# loop would leave the nightly backup failing. No restart: both are oneshot
+# units of a timer. The BO-23 loop then finds them unchanged.
+bh6_install_root_units() {
+  local dir="$1" u changed=0
+  for u in acb-backup.service acb-health-watchdog.service; do
+    if ! sudo cmp -s "$dir/$u" "/etc/systemd/system/$u"; then
+      sudo install -m 0644 "$dir/$u" "/etc/systemd/system/$u" || return 1
+      echo "    installed $u: it runs the root copy now"
+      changed=1
+    fi
+  done
+  if [ "$changed" = "1" ]; then sudo systemctl daemon-reload || return 1; fi
 }
 
 # bh6_root_steps — steps 1 to 3. False stops the deploy before any compose call.
@@ -812,6 +833,7 @@ bh6_root_steps() {
     bh6_sync_root_copy "${DEPLOY_TARGET_SHA:-}" || return 1
   elif sudo test -f /usr/local/lib/acb/deployed_sha; then
     echo "WARN BH-6: the BH-2 rollback is not off, so the root copy stays at $(sudo head -c 40 /usr/local/lib/acb/deployed_sha)"
+    echo "    After bh2_rollback.sh off, run: sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
   else
     echo "    !! BH-6: the BH-2 rollback is not off (status $rb_rc), and this box has no root copy yet."
     echo "       Turn the rollback off (sudo bash $APP_DIR/scripts/bh2_rollback.sh off), then deploy again."
@@ -825,6 +847,11 @@ bh6_root_steps() {
 echo "==> WS-49 BH-6: the root copy, root.env and the compose check"
 bh6_root_steps || {
   echo "BH-6 FAILED: the root copy, root.env or the compose file is not right. Read the lines above."
+  echo "    No compose call ran, and no service was restarted. Fix the cause, then deploy again."
+  exit 1
+}
+bh6_install_root_units "$APP_DIR/deploy/hostinger" || {
+  echo "BH-6 FAILED: acb-backup.service or acb-health-watchdog.service was not installed."
   echo "    No compose call ran, and no service was restarted. Fix the cause, then deploy again."
   exit 1
 }
