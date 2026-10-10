@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 import pytest
 from acb_llm.voice import CORE, OVERLAYS
@@ -42,6 +43,8 @@ ORC = "apps/services/orchestrator/orchestrator/"
 LLM_ENTRY_ANY = frozenset({
     "acompletion_with_fallback", "acompletion_stream_text", "_llm_json",
     "acompletion", "completion", "chat_completion", "_call_llm", "aembedding",
+    # The billed Router entry (H-171). Every routed completion goes through it.
+    "completion_on_router",
 })
 #: Entry points matched only as a bare name, because ``.complete()`` is a
 #: common method name elsewhere. ``acb_llm`` exports these two.
@@ -74,11 +77,11 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     GW + "tasks/capture_email.py::_llm_detect_commitment": (("title", "description"), None),
     GW + "tasks/planning.py::_llm_plan": (("title", "description"), None),
     GW + "tasks/resume_parse.py::llm_extract_profile": (("summary",), None),
-    # A message drafted in the member's name takes the email overlay.
+    # A WhatsApp message in the member's name takes the message overlay.
     GW + "whatsapp/automation/drafting.py::draft_reply": (
-        ("email",), GW + "whatsapp/automation/drafting.py::build_draft_messages"),
+        ("message",), GW + "whatsapp/automation/drafting.py::build_draft_messages"),
     GW + "whatsapp/automation/commitments.py::draft_nudge": (
-        ("email",), GW + "whatsapp/automation/commitments.py::build_nudge_messages"),
+        ("message",), GW + "whatsapp/automation/commitments.py::build_nudge_messages"),
     GW + "whatsapp/automation/groups.py::summarize_group": (
         ("summary",), GW + "whatsapp/automation/groups.py::build_group_summary_messages"),
     GW + "workflows/copilot.py::_call_copilot": (
@@ -100,6 +103,7 @@ MACHINE_SITES: dict[str, str] = {
     "apps/services/gateway/gateway/main.py::_prewarm_prompt_cache": "cache warm-up with the agent prompt",
     "packages/acb_llm/acb_llm/client.py::complete": "transport",
     "packages/acb_llm/acb_llm/client.py::complete_with_tools": "transport",
+    "packages/acb_llm/acb_llm/client.py::_routed_text": "transport to the Router",
     "packages/acb_llm/acb_llm/context.py::_complete_with_fallback": "transport",
     "packages/acb_llm/acb_llm/context.py::_stream_text": "transport",
     # Embeddings.
@@ -130,6 +134,7 @@ MACHINE_SITES: dict[str, str] = {
     GW + "email/automation/voice_profile.py::sample_voice_profile": "imitates the member's own voice on purpose",
     GW + "email/automation/actions.py::_render_template": "fills placeholders in the member's own template, verbatim",
     GW + "tasks/ai.py::_llm_atomize": "splits the member's own words and keeps them verbatim",
+    GW + "shell/intent.py::_fill": "form fields copied from the member's own words",
     # Someone else owns the prompt, or the output is not prose.
     GW + "apps/runtime.py::ai_complete": "the Custom App author owns the prompt",
     GW + "integrations.py::discover_api": "an API configuration as JSON, for an admin",
@@ -289,3 +294,83 @@ def test_the_brief_prompt_holds_the_voice() -> None:
 
     assert CORE in digest._BRIEF_SYSTEM
     assert OVERLAYS["summary"] in digest._BRIEF_SYSTEM
+
+
+# ── Outbound text: the member comes first (review round 1) ─────────────────
+
+def _resp(content: str) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
+async def test_the_email_drafter_puts_the_member_first(monkeypatch) -> None:
+    """A personal instruction that breaks a house rule still reaches the
+    model, and the email overlay tells the model to follow the member."""
+    from acb_llm.voice import OVERLAYS
+    from gateway.routes.email.automation import drafting as dr
+
+    seen: list[list[dict]] = []
+
+    async def fake(*, model, messages, **kw):
+        seen.append(messages)
+        return _resp("Hope you are well, Alice.\n\nPricing is attached."), model
+
+    monkeypatch.setattr("acb_llm.context.acompletion_with_fallback", fake)
+    rule = "Open every email with 'Hope you are well'."
+    about = f"<personal_instructions>\n{rule}\n</personal_instructions>"
+    email = {"from": "alice@example.com", "from_name": "Alice Kumar",
+             "subject": "Quote", "body": "Can you send pricing?"}
+    await dr._llm_draft_reply(email, about=about, signature="", model="tier-powerful")
+
+    system, user = seen[0][0]["content"], seen[0][1]["content"]
+    assert rule in user, "the member's instruction must reach the model"
+    assert OVERLAYS["email"] in system
+    assert "follow the member" in OVERLAYS["email"]
+    # The drafter's own ranking of the member's blocks comes first, and the
+    # house voice comes last in the system message, before the user message.
+    assert system.index("<personal_instructions>, follow them") < system.index(CORE)
+    # No record-id rule reaches a draft for an outside recipient.
+    assert "#141" not in system
+
+
+async def test_a_literal_pattern_keeps_its_value(monkeypatch) -> None:
+    """The JSON note keeps the voice off literals, and no code rewrites one:
+    a pattern with a dash and filler words comes back exactly."""
+    from acb_llm.voice import JSON_NOTE
+    from gateway.routes.email.automation import rules as rl
+
+    seen: list[list[dict]] = []
+    literal = "Invoice — just a reminder"
+
+    async def fake(model, messages, **kw):
+        seen.append(messages)
+        data = {"rules": [{
+            "name": "Invoices", "subject_pattern": literal,
+            "from_pattern": "billing@acme.example",
+            "actions": [{"type": "LABEL", "label": "Finance — AP"}],
+        }]}
+        return data, "", model
+
+    monkeypatch.setattr(rl, "_llm_json", fake)
+    out = await rl._llm_generate_rules("label invoices as Finance")
+    assert JSON_NOTE in seen[0][0]["content"]
+    for word in ("patterns", "names", "addresses", "enum values", "quoted source text"):
+        assert word in JSON_NOTE, word
+    assert out[0]["subject_pattern"] == literal
+    assert out[0]["from_pattern"] == "billing@acme.example"
+    assert out[0]["actions"][0]["label"] == "Finance — AP"
+
+
+def test_a_whatsapp_message_is_not_an_email() -> None:
+    from acb_llm.voice import OVERLAYS
+    from gateway.routes.whatsapp.automation.commitments import build_nudge_messages
+    from gateway.routes.whatsapp.automation.drafting import build_draft_messages
+
+    import inspect
+
+    for build in (build_draft_messages, build_nudge_messages):
+        src = inspect.getsource(build)
+        assert 'voice_prompt("message")' in src, build.__name__
+    assert "no greeting or sign-off unless the member uses them" in OVERLAYS["message"]

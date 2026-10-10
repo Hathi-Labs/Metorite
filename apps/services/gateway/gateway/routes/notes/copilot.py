@@ -35,6 +35,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends
 from fastapi.responses import StreamingResponse
 from gateway.routes.notes.copilot_policy import (
@@ -51,7 +52,6 @@ from gateway.routes.notes.core import (
     router,
 )
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 _RING = 100          # recent copilot events kept per session for late viewers
 _QUEUE_MAX = 200

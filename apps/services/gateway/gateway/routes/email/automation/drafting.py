@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
@@ -35,11 +36,11 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _fmt_addr_list,
-    _savepoint,
-    _tenant_session,
     _llm_json,
     _log,
     _row_to_message,
+    _savepoint,
+    _tenant_session,
     email_memory_scope,
     provider_session,
     router,
@@ -56,7 +57,6 @@ from gateway.routes.email.transport.send import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 
 async def _account_signature(db: Any, account_id: str) -> str:
@@ -2459,8 +2459,7 @@ async def send_draft_endpoint(
             # "reply shows up as a separate email in Sent" bug). Providers
             # without an update/send-draft primitive (IMAP) fall back to a
             # thread-aware fresh send.
-            from gateway.routes.email.signature import \
-                build_signed_bodies  # noqa: PLC0415
+            from gateway.routes.email.signature import build_signed_bodies  # noqa: PLC0415
             sig_row = (await db.execute(text(
                 "SELECT signature FROM email_assistant_settings "
                 "WHERE account_id = :aid"

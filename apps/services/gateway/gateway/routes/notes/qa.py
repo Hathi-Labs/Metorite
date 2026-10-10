@@ -12,12 +12,12 @@ from __future__ import annotations
 import re
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.core import _log, _tenant_session, load_owned_meeting, router
 from gateway.routes.notes.summaries import _PASS_CHARS, _llm_json, _model, _tag
 from pydantic import BaseModel
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 _STOP = {
     "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "is",

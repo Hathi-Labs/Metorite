@@ -10,9 +10,9 @@ from __future__ import annotations
 from acb_audit import AuditEvent, record
 from acb_llm import LLMTier, complete
 from acb_llm.guardrails import CitationError, repair_citations, require_citations
+from acb_llm.voice import voice_prompt
 
 from orchestrator.retrieval import format_context, retrieve
-from acb_llm.voice import voice_prompt
 
 _SYSTEM_GROUNDED = (
     "You are the AI Company Brain Pull agent. Answer using ONLY the supplied "

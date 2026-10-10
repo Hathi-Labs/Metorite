@@ -30,11 +30,11 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 _MAX_ITEMS = 12
 _MAX_TITLE = 120

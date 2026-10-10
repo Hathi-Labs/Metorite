@@ -18,6 +18,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+
 from acb_llm.voice import voice_prompt
 
 # A small base vocabulary so a résumé skill that no one in people has yet is

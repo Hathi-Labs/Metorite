@@ -102,7 +102,6 @@ from orchestrator._tool_injection import (
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
-from acb_llm.voice import voice_prompt
 
 
 def _tier2_copilot_client(agent_settings: dict[str, Any]) -> Any:
@@ -6084,6 +6083,7 @@ async def _llm_recovery(
 
     try:
         from acb_llm import LLMTier, complete
+        from acb_llm.voice import voice_prompt
 
         messages: list[dict[str, str]] = list(event_payload.get("messages", []))
         latest: str = event_payload.get("message", "")

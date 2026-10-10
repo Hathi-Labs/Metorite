@@ -45,11 +45,11 @@ import re
 from datetime import UTC, datetime
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.actions import ApproveResponse, _create_task_from_action
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 #: Auto-dispatch only fires at or above this confidence — the same bar the
 #: bulk-approve button has always used. Manual dispatch has no floor.

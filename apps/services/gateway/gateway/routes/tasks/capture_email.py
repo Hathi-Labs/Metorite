@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
     MyTaskModel,
@@ -43,7 +44,6 @@ from gateway.routes.tasks.core import (
 from gateway.routes.tasks.item_source import item_source
 from pydantic import BaseModel
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 # GTD dispositions the email router may assign at capture. (No PROJECT/REFERENCE
 # /TRASH/DO_NOW: an email capture is either mine to do, mine to schedule, a

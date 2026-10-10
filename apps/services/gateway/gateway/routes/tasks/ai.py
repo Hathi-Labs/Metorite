@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends
 from gateway.routes.tasks.core import (
     DEFAULT_CONTEXTS,
@@ -29,7 +30,6 @@ from gateway.routes.tasks.core import (
 )
 from gateway.routes.tasks.item_source import item_source
 from sqlalchemy import text
-from acb_llm.voice import voice_prompt
 
 # ── Shared prompt context (system information every AI decision needs) ───────
 

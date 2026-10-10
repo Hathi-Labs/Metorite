@@ -254,24 +254,48 @@ runs `--live` and commits `baseline.json`. S4 makes that a tracked score.
 |---|---|---|---|---|
 | **S1** | The core, the overlays, every agent on both runtimes, the checker, the eval set | Every in-tree agent and a new agent of each shape hold `CORE` once, after their own instructions. `floor_opt_out` cannot remove it. The core stays under its ceiling. The scripted eval passes | `tests/unit/test_agent_voice.py`, `tests/unit/test_agent_voice_eval.py` | AGENT-SAFE |
 | **S2** | Every direct model call that drafts member text reads `voice_prompt(<surface>)` | Each registered drafting site holds the voice, with the right overlay. A new member-facing prompt builder with no voice fails the sweep. A machine-only prompt is on an explicit allowlist with a reason | `tests/unit/test_drafting_voice.py` (a registry plus an AST sweep) | AGENT-SAFE |
-| **S3** | The email voice profile of each member, learned from the mail that the member sent | See §8.1 | A tenant-coverage test, an RLS test against a real database (R8), and a test that no raw email body reaches the table | 🔴 OWNER-GATE: the consent wording |
+| **S3** | Extend the email voice profile that exists (`email_voice_profiles`): consent before the first build, and derived features only | See §8.1 | A test that no sample body reaches `traits` or `style_guide`, and a test that a build with no consent starts no job | 🔴 OWNER-GATE: the consent wording, and whether WhatsApp reads the profile |
 | **S4** | A tracked score: the eval on a schedule, a model grader for the rules that the checker cannot see, and the score over time | A run records the score of each arm by date, and a drop below the last score fails the run | The S4 runner test, and the grader's own scripted cases | AGENT-SAFE to build. To run it on a schedule against the Router spends credits, so that is OWNER-GATE |
 
-### 8.1 S3 — the email voice profile
+### 8.1 S3 — extend the email voice profile that exists
 
-- **Opt-in per member.** The default is off. Nothing reads sent mail until the
-  member turns it on.
-- **Tenant-scoped.** One new table, keyed by organization and member, under
-  FORCE ROW LEVEL SECURITY, through the generated RLS migration (R5).
-- **Derived features only.** It stores the greeting, the sign-off, the typical
-  length, the formality and the recurring phrases. It never stores a copy of
-  an email, and no raw body enters the table.
-- **The member sees and deletes it.** One settings pane shows each feature,
-  and one action deletes the profile.
-- **How it reaches a draft.** The email overlay gains a short "your voice"
-  line from the profile, after the core. The core always comes first.
-- **Owner decision owed.** The wording of the consent that the member reads
-  before the profile reads the mail that the member sent.
+**S3 adds no table.** Review round 1 (2026-10-10) found that the voice profile
+is already built. S3 extends it and builds nothing parallel to it.
+
+**What exists today** (`gateway/routes/email/automation/voice_profile.py`,
+migration 94):
+
+| Part | As built |
+|---|---|
+| Store | `email_voice_profiles`, one row for each mail account (`account_id` is the primary key), under FORCE ROW LEVEL SECURITY. It holds `traits` (JSONB: tone, formality, typical length, greetings, sign-offs, common phrases, dos and don'ts), a narrative `style_guide`, the source folders and the date range |
+| Build | `POST /email/voice-profile/build` starts a job when the member clicks. It reads at most 150 sent or drafted mails in the range, strips the quoted chains and keeps no sample |
+| Use | `voice_profile_block` renders a `<voice_profile>` block. `_load_assistant_about` puts it between `<writing_style>` (which outranks it) and `<learned_writing_style>` |
+| View and delete | `GET /email/voice-profile` shows it, `PUT` turns it on or off, and `DELETE` removes it with its unapproved knowledge suggestions |
+
+**Keying.** The key stays the mail account. An account has one owner
+(`email_accounts.user_id`), and `_assert_account_owner` checks it on each
+route. So a profile is per member and per mailbox. A member with two
+mailboxes can write two ways, and S3 keeps that. S3 adds no organization key,
+because the RLS policy already binds the organization.
+
+**What S3 changes.**
+
+1. **The house voice defers to the profile.** S2 review round 1 did this: the
+   email and message overlays say that the member's voice profile comes
+   first. `test_drafting_voice.py` checks it on the drafter.
+2. **Consent before the first build.** Today the build dialog starts a job
+   with no consent text. S3 adds one notice that says what the job reads, what
+   it keeps and how to delete it. The member must accept it once for each
+   mailbox before the first build.
+3. **Derived features only, by test.** `common_phrases`, `greetings` and
+   `signoffs` can quote a mail. S3 caps each item at a short length and adds a
+   test that no sample body reaches `traits` or `style_guide`.
+4. **WhatsApp reads it, or not.** The WhatsApp drafter does not read the
+   profile. Whether a mailbox profile may shape a WhatsApp reply is the
+   second owner question.
+
+**Owner decisions owed.** The wording of the consent notice, and whether the
+WhatsApp drafter may read the email profile.
 
 ### 8.2 S2 as built — the direct drafting calls
 
@@ -281,16 +305,29 @@ branch starts from the S1 branch.
 **How a site gets the voice.** Each member-facing site appends
 `voice_prompt(<surface>)` to its own system string, after its rules and its
 DATA fence. It adds no second system message, so a test that reads
-`messages[0]` or `messages[1]` still reads the same message. A site whose
-output is JSON passes `json=True`, which adds one line: the rules bind the
-text values, never the keys or the shape. A site that writes two kinds of
+`messages[0]` or `messages[1]` still reads the same message.
+
+A site whose output is JSON passes `json=True`, which adds `JSON_NOTE`. It says that the
+rules bind only prose that a member reads. They never bind keys, enum
+values, ids, patterns, names, addresses or quoted source text, so a rule's
+`subject_pattern` keeps its exact value. A site that writes two kinds of
 text names both surfaces, for example `voice_prompt("title", "description")`.
 
-**A message in the member's name takes the email overlay.** That covers the
-WhatsApp reply and the WhatsApp nudge. The contract has five overlays, and
-this spec adds no sixth one.
+**A limit in the site's prompt wins.** The title overlay says "up to 8
+words unless the prompt sets a limit". So the capture prompt keeps its
+15 words, and the meeting title keeps its 12.
 
-The sites that take the voice (26 functions). The sweep finds 64 functions that call a model, and the other 38 are machine sites:
+**A WhatsApp message takes the `message` overlay.** That covers the reply
+and the nudge. Review round 1 added it, because the WhatsApp prompt asks
+for a chat register and the email overlay asked for an email.
+
+**Outbound text puts the member first.** The email and message overlays
+say that the member's own instructions, writing style and voice profile
+come first. In the email drafter the voice is the last block of the system
+message, after the drafter's own ranking of those blocks. The member's
+blocks arrive in the user message after it.
+
+The sites that take the voice (26 functions). The sweep finds 66 functions that call a model, and the other 40 are machine sites:
 
 | Area | Function | Surfaces |
 |---|---|---|
@@ -305,7 +342,7 @@ The sites that take the voice (26 functions). The sweep finds 64 functions that 
 | Tasks | `ai._llm_propose`, `capture_email._llm_capture`, `capture_email._llm_detect_commitment`, `planning._llm_plan` | title, description |
 | Tasks | `ai._llm_suggest_title` | title |
 | Tasks | `calendar._llm_rank_day`, `resume_parse.llm_extract_profile` | summary |
-| WhatsApp | `drafting.draft_reply`, `commitments.draft_nudge`, through their message builders | email |
+| WhatsApp | `drafting.draft_reply`, `commitments.draft_nudge`, through their message builders | message |
 | WhatsApp | `groups.summarize_group`, through its builder | summary |
 | Workflows | `copilot._call_copilot`, through `workflow_copilot` | chat |
 | Orchestrator | `executor._llm_recovery`, `agents/pull_agent.answer`, `agents/sales_pull_agent.answer` | chat |
@@ -332,8 +369,10 @@ run only when decide is off.
 
 **The fence.** `test_drafting_voice.py` walks the AST of every production
 module under `apps/` and `packages/`. It finds each function that calls a
-model entry point, and each one must be in `VOICE_SITES` or in
-`MACHINE_SITES`. For a voice site, the function (or the builder or the
+model entry point. The billed Router entry, `completion_on_router`, is one
+of them. Each such function must be in `VOICE_SITES` or in `MACHINE_SITES`.
+
+For a voice site, the function (or the builder or the
 constant that it names) must call `voice_prompt` with exactly its surfaces.
 A machine site must not call it. An entry whose function no longer calls a
 model fails, so the lists cannot go stale.
