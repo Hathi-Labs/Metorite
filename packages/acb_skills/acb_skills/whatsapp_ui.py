@@ -25,6 +25,10 @@ an ``interactive`` message, and ``inbound`` turns its title into the member's
 text turn. So a tap is untrusted input exactly like typed text, and no id from
 the phone ever selects an org or a record (§5.11 "The tap is untrusted input").
 
+**A reaction is not an element (WAC-10e).** Kind "react" queues one emoji
+for the member's own message. ``bot_run`` sends it first and best effort, so
+a refused reaction never costs the member the answer.
+
 **Reads only, as in WAC-3.** Buttons and rows ask or narrow a question. A
 write still goes to the web app until WAC-4.
 
@@ -36,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -108,11 +113,19 @@ class OutMessage:
     so the next turn knows which buttons it offered.
     """
 
-    kind: str  # "interactive", "image", or "text" (a view's own text)
+    kind: str  # "interactive", "image", "text" (a view's own text) or "reaction"
     rendition: str
     interactive: dict[str, Any] | None = None
     png: bytes | None = None
     caption: str | None = None
+    #: The emoji of a "reaction". It goes ON the member's message (WAC-10e).
+    emoji: str | None = None
+
+    @property
+    def counts(self) -> bool:
+        """True for an element that counts toward :data:`MAX_MESSAGES`. A
+        view's text and a reaction are not elements."""
+        return self.kind not in ("text", "reaction")
 
 
 @dataclass
@@ -446,7 +459,41 @@ def _gantt(data: dict[str, Any]) -> OutMessage:
     return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
 
 
+#: The code points an emoji may hold: symbols, a skin tone (Sk), the emoji
+#: presentation selector (Mn), the zero width joiner (Cf) and a keycap (Me).
+_EMOJI_CATEGORIES = frozenset({"So", "Sk", "Mn", "Cf", "Me"})
+#: A family or a flag sequence is longer than one code point, and no emoji
+#: is longer than this.
+EMOJI_MAX = 10
+
+
+def _emoji(raw: Any) -> str:
+    """One emoji, or :class:`ValueError`. Meta takes any emoji, and refuses
+    text, so text never reaches it."""
+    value = str(raw or "").strip()
+    # A keycap (1️⃣, #️⃣) is the only emoji that starts with a plain character.
+    keycap = len(value) >= 2 and value[0] in "0123456789#*" and value[-1] == "⃣"
+    body = value[1:] if keycap else value
+    if (not value or len(value) > EMOJI_MAX
+            or any(unicodedata.category(ch) not in _EMOJI_CATEGORIES for ch in body)
+            or not (keycap or any(unicodedata.category(ch) == "So" for ch in body))):
+        raise _Refused('"emoji" must be one emoji, such as 👍')
+    return value
+
+
+def reaction(emoji: str) -> OutMessage:
+    """A reaction on the member's message (WAC-10e). Not an element: it never
+    counts toward :data:`MAX_MESSAGES`, and a later one replaces it."""
+    value = _emoji(emoji)
+    return OutMessage("reaction", f"[Reaction: {value}]", emoji=value)
+
+
+def _react(data: dict[str, Any]) -> OutMessage:
+    return reaction(data.get("emoji"))
+
+
 _BUILDERS = {
+    "react": _react,
     "buttons": _buttons,
     "list": _list,
     "link": _link,
@@ -510,6 +557,9 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - view: {"name"}: a ready view that the server reads and builds, with no
       rows from you. Names: my_day, due_today, overdue, calendar, approvals,
       menu. Prefer it whenever the question is one of these.
+    - react: {"emoji": "👍"}: one emoji ON the member's message, as a person
+      reacts. Not an element, and a later one replaces it. Call it in the
+      same step as your first other tool call.
     A "tone" or "status" is a status word or a colour (green, amber, red,
     blue, violet, gray).
 
@@ -521,6 +571,15 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run = _RUN.get()
     if run is None:
         return {"ok": False, "error": "whatsapp_ui works only in a WhatsApp chat"}
+    if str(kind or "").strip().lower() == "react":
+        try:
+            message = reaction(data.get("emoji") if isinstance(data, dict) else None)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        run.outbox[:] = [m for m in run.outbox if m.kind != "reaction"]
+        run.outbox.append(message)
+        return {"ok": True, "note": "The reaction goes on the member's message. "
+                                    "A message that needs no answer needs no text."}
     if _elements(run) >= MAX_MESSAGES:
         return {"ok": False,
                 "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
@@ -538,8 +597,8 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _elements(run: WhatsAppRun) -> int:
-    """The elements queued so far. A view's text is not an element."""
-    return sum(1 for m in run.outbox if m.kind != "text")
+    """The elements queued so far. A view's text and a reaction are not."""
+    return sum(1 for m in run.outbox if m.counts)
 
 
 async def _send_view(run: WhatsAppRun, data: Any) -> dict[str, Any]:
@@ -590,7 +649,8 @@ def resend_text(stored: str | None) -> str | None:
 
     The text part, so the member never gets the renditions as text. An answer
     of elements only has no text part, and then the renditions go, because
-    some answer is better than none.
+    some answer is better than none. A reaction is never sent as text: an
+    answer that was a reaction only resends as "" (nothing goes out).
     """
     if stored is None:
         return None
@@ -598,7 +658,13 @@ def resend_text(stored: str | None) -> str | None:
     if RENDITION_MARK not in stored:
         return stored
     text, _mark, rest = stored.partition(RENDITION_MARK)
-    return text.strip() or rest.strip()
+    return text.strip() or without_reactions(rest)
+
+
+def without_reactions(records: str) -> str:
+    """The element records with each reaction record cut out."""
+    kept = [r for r in records.split("\n\n") if not r.startswith("[Reaction:")]
+    return "\n\n".join(kept).strip()
 
 
 # ── The reply guard (WAC-10c, owner screenshots of 2026-10-10) ───────────────
@@ -610,7 +676,8 @@ def resend_text(stored: str | None) -> str | None:
 # tappable becomes a list of the reply's own bullets, or loses the sentence.
 
 _RECORD_HEAD = re.compile(
-    r"^\s*\[(Table|Chart|Buttons|List|Link|Stats|Board|Timeline|Agenda|Schedule)\b",
+    r"^\s*\[(Table|Chart|Buttons|List|Link|Stats|Board|Timeline|Agenda|Schedule"
+    r"|Reaction)\b",
     re.IGNORECASE)
 _TAP_PROMISE = re.compile(r"\b(?:tap|tapping|select one|pick one)\b", re.IGNORECASE)
 _BULLET = re.compile(r"^\s*(?:[-•▪◦·]|\d+[.)])\s+(.+)$")
@@ -690,7 +757,7 @@ def polish(reply: str, messages: list[OutMessage]) -> tuple[str, list[OutMessage
 
 def _polish(reply: str, out: list[OutMessage]) -> tuple[str, list[OutMessage]]:
     def room() -> int:
-        return MAX_MESSAGES - sum(1 for m in out if m.kind != "text")
+        return MAX_MESSAGES - sum(1 for m in out if m.counts)
 
     kept: list[str] = []
     lines = reply.split("\n")
