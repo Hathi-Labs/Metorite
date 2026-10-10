@@ -2,9 +2,9 @@
 
 **Status: ACTIVE, specified 2026-10-08, built in part. BH-2 full MERGED as
 #758 (`762ab5870`) on 2026-10-10.** BH-6a, the value guard, MERGED as #764
-(`373453b83`) on 2026-10-09. **BH-6 is BUILT on the branch `sec-bh6-build`,
-and not merged** (2026-10-10). Next: the BH-6 review, the merge and the box
-checks.
+(`373453b83`) on 2026-10-09. **BH-6 MERGED as #825
+(`6912a3431`) and live** on 2026-10-10. Next: the backup checks of BH-6, then
+BH-3 and BH-4.
 
 Board row **WS-49**. The owner ruled on 2026-10-08 to close this gap first,
 before the data of the beta customers arrives. This spec owns H-270 and H-271
@@ -1512,9 +1512,12 @@ drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
 
 ### BH-6 — Root units run only root-owned files
 
-**Status: BUILT on the branch `sec-bh6-build` (2026-10-10). Not merged, and
-not on the box.** The fence BH-F4 is `tests/unit/test_root_units_root_owned.py`.
-Acceptance 1, 3, 5 to 9 and 11 need the box checks after the merge. Each
+**Status: MERGED as #825 (`6912a3431`) and live on 2026-10-10.** The fence
+BH-F4 is `tests/unit/test_root_units_root_owned.py`. On the box, acceptance 1,
+3, 6, 7, 8 and 11 pass. One transaction restarted postgres, redis and the
+gateway at 08:44:03 UTC, and the four volumes did not change. Acceptance 5 and
+9 wait for the backup run at 02:33 UTC on 2026-10-11. Acceptance 10 waits for a
+deploy that applies a migration. Each
 anchor below was read at `main` `2143d01f4` on 2026-10-10.
 
 **BH-6a, the value guard, MERGED as #764 (`373453b83`) on 2026-10-09.** It
