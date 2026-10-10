@@ -195,6 +195,7 @@ import {
   showsDashboard,
   spaceOf,
 } from "./lib/tree";
+import { forgetFold, resumeFold } from "./lib/railFold";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
@@ -4635,6 +4636,21 @@ function ProjectsWorkspace() {
 }
 
 export default function ProjectsPage() {
+  // The rail's folds (`lib/railFold.ts`, owner 2026-10-10): kept while the
+  // member works here, dropped after 30 idle minutes — checked on arrival and
+  // whenever the tab comes back — and dropped on leaving for another app.
+  useEffect(() => {
+    resumeFold();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") resumeFold();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      forgetFold();
+    };
+  }, []);
+
   // `useSearchParams` needs a Suspense boundary in the App Router.
   return (
     <Suspense fallback={renderState("loading", LOADING_COPY, "page")}>

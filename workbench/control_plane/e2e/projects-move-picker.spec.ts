@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAllRows } from "./railOpen";
 
 /**
  * The Move dialog's project picker: every row reachable, and the tree usable.
@@ -116,6 +117,8 @@ test("the Move dialog's project picker shows every row, searches, and folds", as
   await page.goto("/projects");
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(4000);
+  // The rail starts closed (railFold.ts): open it like a member does.
+  await openAllRows(page);
   await page.getByText("Metorite", { exact: true }).last().click();
   await page.waitForTimeout(2500);
 
