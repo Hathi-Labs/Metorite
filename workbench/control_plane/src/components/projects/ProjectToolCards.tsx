@@ -27,6 +27,7 @@ import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
 import EntityPill from "@/components/ui/EntityPill";
 import Readout from "@/components/Readout";
+import RollupCard from "@/components/RollupCard";
 import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -34,6 +35,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
 import { placementOf } from "@/lib/chatPlacement";
 import { parseDatasetTable } from "@/lib/datasetTable";
+import { unfenced } from "@/lib/fencedText";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { LEGEND, parseTaskRows, taskMetaForPeople, type ProjectTaskRow } from "@/lib/projectToolRows";
 
@@ -704,7 +706,11 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         : outcome === "refused"
           ? "Not done"
           : meta.label;
+  // A receipt is a card of the transcript: its arrival rolls up the long
+  // cards above it (`components/RollupCard.tsx`). It is short, so it draws
+  // no toggle of its own.
   return (
+    <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]}>
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 flex-shrink-0">
@@ -733,6 +739,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         </div>
       </div>
     </div>
+    </RollupCard>
   );
 }
 
@@ -864,7 +871,20 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
         : outcome === "cancelled" ? "Cancelled"
           : outcome === "refused" ? "Not done"
             : `${meta.label} (${rows.length})`;
+  // The owner's tall "Tasks created (5)" (2026-10-10). Five rows are long,
+  // so it rolls up when a newer card arrives, to its label, its count and
+  // the rows' names on one line.
+  const names = kind.rows === "task"
+    ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`)
+    : words.map((r) => r.name);
   return (
+    <RollupCard
+      id={`tool:${e.id}`}
+      title={outcome === "done" ? meta.label : heading}
+      icon={icon}
+      rows={rows.length || undefined}
+      summary={names.join(" · ") || unfenced(head)}
+    >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 flex-shrink-0">
@@ -900,6 +920,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
         </div>
       </div>
     </div>
+    </RollupCard>
   );
 }
 
