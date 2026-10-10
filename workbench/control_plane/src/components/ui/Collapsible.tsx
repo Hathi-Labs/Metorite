@@ -142,4 +142,97 @@ export function CollapsibleSection({
   );
 }
 
+/**
+ * The motion of a card's fold. It runs only on a toggle by hand
+ * (`animate`): an automatic roll-up snaps, so the transcript under it does
+ * not slide while the member reads. `motion-reduce` drops it for a member
+ * who asked the system for less motion. The height variable is Base UI's
+ * own, and it returns to `auto` once the panel is open, so a card that
+ * grows while open is never clipped.
+ */
+export const CARD_PANEL_MOTION =
+  "h-[var(--collapsible-panel-height)] overflow-hidden transition-[height] duration-200 ease-out data-[starting-style]:h-0 data-[ending-style]:h-0 motion-reduce:transition-none";
+
+export interface CollapsibleCardProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /**
+   * Draw the header that toggles the body. Off, the card draws its body and
+   * nothing else, and it is always open: a short card has nothing to fold.
+   * The body stays in the same place in the tree either way, so a card that
+   * becomes long never remounts its content.
+   */
+  toggle: boolean;
+  /** The header's words. Plain text, one line. */
+  label: string;
+  /** Lucide name, drawn before the label. */
+  icon?: string;
+  /** How many rows the body holds. Shown in both states. */
+  count?: number | null;
+  /** One line that says what the folded body holds. Shown only while shut. */
+  summary?: string;
+  /** Animate the next fold (a toggle by hand). */
+  animate?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}
+
+/**
+ * A chat card that folds to one header row (owner request, 2026-10-10).
+ *
+ * Shut, the header is the card: chevron, icon, label, count and a one-line
+ * summary, inside the card's own border. Open, the header is one quiet line
+ * above the card, so the card keeps its own chrome and nothing draws twice.
+ * The trigger is a real button with `aria-expanded` and `aria-controls`,
+ * from the substrate. The body stays mounted while shut (`keepMounted`), so
+ * a card keeps what the member typed into it.
+ */
+export function CollapsibleCard({
+  open,
+  onOpenChange,
+  toggle,
+  label,
+  icon,
+  count,
+  summary,
+  animate = false,
+  className,
+  children,
+}: CollapsibleCardProps) {
+  const shown = toggle ? open : true;
+  return (
+    <Base.Root
+      open={shown}
+      onOpenChange={onOpenChange}
+      render={<div className={className} data-rollup={shown ? "open" : "closed"} />}
+    >
+      {toggle ? (
+        <Base.Trigger
+          data-rollup-toggle=""
+          aria-label={`${label}${typeof count === "number" && count > 0 ? `, ${count}` : ""}. ${shown ? "Roll up" : "Show all"}`}
+          className={
+            shown
+              ? "cc-control group mb-1 flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-[10px] text-muted-foreground hover:text-foreground"
+              : "cc-control group flex w-full min-w-0 items-center gap-1.5 rounded-lg border border-border bg-card/40 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+          }
+        >
+          <Icon
+            name="ChevronDown"
+            className={`h-3 w-3 shrink-0 ${animate ? "transition-transform motion-reduce:transition-none" : ""} ${shown ? "" : "-rotate-90"}`}
+          />
+          {icon ? <Icon name={icon} className="h-3 w-3 shrink-0" /> : null}
+          <span className={`shrink-0 truncate ${shown ? "" : "max-w-[60%] font-medium text-foreground"}`}>{label}</span>
+          {typeof count === "number" && count > 0 ? (
+            <span className="shrink-0 tabular-nums">· {count}</span>
+          ) : null}
+          {!shown && summary ? <span className="min-w-0 flex-1 truncate">{summary}</span> : null}
+        </Base.Trigger>
+      ) : null}
+      <Base.Panel keepMounted className={toggle && animate ? CARD_PANEL_MOTION : undefined}>
+        {children}
+      </Base.Panel>
+    </Base.Root>
+  );
+}
+
 export default CollapsibleSection;

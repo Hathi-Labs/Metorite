@@ -27,7 +27,10 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import AskPin from "@/components/AskPin";
-import { HITL_TARGET, pendingAsk } from "@/lib/askPin";
+import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
+import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
+import { RollupRegistry, domOrder } from "@/lib/cardRollup";
+import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
   CONFIRMATION_RESOLVED,
@@ -1343,9 +1346,11 @@ export default function AgentChat({
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
+    let lastTop = el.scrollTop;
     const onScroll = () => {
-      const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const nearBottom = dist < 80;
+      // Only a scroll up leaves the bottom (`lib/stickToBottom.ts`).
+      const nearBottom = nearAfterScroll(isNearBottomRef.current, lastTop, el);
+      lastTop = el.scrollTop;
       isNearBottomRef.current = nearBottom;
       setShowScrollBtn(!nearBottom && el.scrollHeight > el.clientHeight + 200);
       // Near the top → lazy-load the previous page of history.
@@ -1353,6 +1358,24 @@ export default function AgentChat({
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Stick to the bottom on every change of size, not only on a new message
+  // (`lib/stickToBottom.ts`, owner 2026-10-10). An approval card comes from
+  // the confirmation queue, not from `messages`, so the effect below never
+  // saw it: the card drew below the fold of a member who sat at the bottom,
+  // and the pin then pointed at it. A fold by hand keeps its place.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const lastManualToggleRef = useRef(Number.NEGATIVE_INFINITY);
+  useEffect(() => {
+    const thread = threadRef.current;
+    const content = contentRef.current;
+    if (!thread || !content) return;
+    return attachStickToBottom(thread, content, {
+      getNearBottom: () => isNearBottomRef.current,
+      setNearBottom: (near) => { isNearBottomRef.current = near; },
+      lastManualToggleAt: () => lastManualToggleRef.current,
+    });
   }, []);
 
   // Auto-scroll only when the user is near the bottom.  Use "auto" (instant),
@@ -1665,8 +1688,11 @@ export default function AgentChat({
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
-    // while a card waits (`lib/askPin.ts`, spec §24 rule 1).
+    // while a card waits (`lib/askPin.ts`, spec §24 rule 1). It is a card of
+    // the transcript too: its arrival rolls up the long cards above it, and
+    // it never rolls up itself (`components/RollupCard.tsx`).
     return (
+      <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
       <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
         {hasConfirmations && (
           <ConfirmationQueue cards={confirmations.cards} onAnswer={answerConfirmation} />
@@ -1757,20 +1783,39 @@ export default function AgentChat({
           />
         )}
       </div>
+      </RollupCard>
     );
   };
 
   // The element that waits on the member, for the pin above the composer
   // (spec §24 rule 1). It reads the queue and the question state above, and
   // keeps none of its own.
-  const waiting = pendingAsk({
+  const askSources = {
     confirmations: confirmations.cards,
     elicitation,
     userInput,
     messages,
     runActive: isRunActive,
     answered: answeredAsks,
-  });
+  };
+  const waiting = pendingAsk(askSources);
+
+  // The transcript's cards, for the roll-up (`lib/cardRollup.ts`): which one
+  // is the newest, and which ones wait. Keyed on the targets' text, so the
+  // context changes only when what waits changes, not on every token.
+  const [rollupRegistry] = useState(() => new RollupRegistry<Node>(domOrder));
+  const waitingKey = JSON.stringify([...waitingTargets(askSources)]);
+  const onManualToggle = useCallback(() => {
+    lastManualToggleRef.current = performance.now();
+  }, []);
+  const rollupScope = useMemo<RollupScope>(
+    () => ({
+      registry: rollupRegistry,
+      waiting: new Set(JSON.parse(waitingKey) as string[]),
+      onManualToggle,
+    }),
+    [rollupRegistry, waitingKey, onManualToggle],
+  );
 
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
@@ -1869,7 +1914,8 @@ export default function AgentChat({
           </button>
         )}
 
-        <div className="max-w-3xl mx-auto space-y-5">
+        <RollupContext.Provider value={rollupScope}>
+        <div ref={contentRef} className="max-w-3xl mx-auto space-y-5">
           {/* Stream recovery / agent status indicator */}
           {recovering || runStatus === "running" ? (
             <div role="status" aria-live="polite" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] text-primary/90 flex items-center gap-2">
@@ -2049,6 +2095,7 @@ export default function AgentChat({
             </div>
           ) : null}
         </div>
+        </RollupContext.Provider>
         <div ref={bottomRef} />
       </div>
 
