@@ -851,7 +851,7 @@ export default function EmailPage() {
           title="My Email"
           subtitle={
             viewAll ? (
-              `All inboxes · ${pooledCount} mailboxes`
+              <>All inboxes · {pooledCount} mailboxes</>
             ) : selectedAccount ? (
               <>
                 {accounts.length > 1 ? <MailboxChip account={selectedAccount} /> : null}{" "}
