@@ -9,7 +9,6 @@
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
 > the sync design (§7.1) that this plan reuses. Do not re-derive them here.
 
-> **Decision this plan needs:** D95 (§16), proposed, owner to confirm.
 
 ---
 
@@ -19,7 +18,7 @@ The CRM already exists, and most of it works. WS-26 built the `crm_*` tables,
 a 8,889-line gateway package, the `/crm` app, a CRM agent and a two-way Zoho
 sync. Three things stop it from being a Metorite app:
 
-1. It is not tenant-isolated, so a member of any organization can read every CRM row.
+1. Three of its tables are not tenant-isolated, so a member of any organization can read every contact, deal and activity.
 2. Its Zoho link is one global credential in `.env`, so only one company can connect.
 3. Its UI is older than the house look.
 
@@ -94,6 +93,15 @@ Each organization picks **Native** (Metorite is the CRM) or **Mirror**
   It did not move to Supabase. **No customer data needs a migration.**
 - **9 organizations exist**, and 8 of them are not Fracktal. Their members
   hold `feature:*`, so they hold `feature:crm` (migration 207).
+- **10 of the 13 `crm_*` tables are tenant-scoped on prod.** The generated
+  phases gave them `organization_id NOT NULL` and FORCE RLS on 2026-08-23.
+  `crm_contacts`, `crm_deals` and `crm_activities` have no tenant column, no
+  policy and no FORCE RLS.
+- **The seed rows belong to the org `default`.** That is 6 deal stages, 5
+  lead stages and 6 lost reasons. So under RLS, `fracktalworks` and every
+  other org see no stages today.
+- **On the box, `CRM_ZOHO_SYNC=false`**, and the box `.env` holds no Zoho
+  refresh token. The old sync loop does not run.
 - `/crm` is `preview` (`launch_surface.md` §2). The nav hides it. The routes
   answer.
 
@@ -103,13 +111,13 @@ Each one is real at `7176fdf56`. The last column names the slice that fixes it.
 
 | Id | Defect | Evidence | Slice |
 |---|---|---|---|
-| **CR-1** | 🔴 **Any member of any organization reads and writes the one shared CRM.** No CRM table has a tenant column, so `tenant_session()` filters nothing. The data is empty today. The first row any org writes is visible to all 9. | `144_crm.sql`, `core.py:44-68`, `207_every_app_by_default.sql:85-112` | CRM-0, then CRM-T1 |
+| **CR-1** | 🔴 **Any member of any organization reads and writes the shared contacts, deals and activities.** These 3 tables have no tenant column, so `tenant_session()` filters nothing. The other 10 tables are scoped on prod. The data is empty today. The first contact, deal or activity that any org writes is visible to all 9. | `144_crm.sql`, `core.py:44-68`, `207_every_app_by_default.sql:85-112` | CRM-0, then CRM-T1 |
 | **CR-2** | **The tenant column name is taken.** `crm_contacts`, `crm_deals` and `crm_activities` hold `organization_id`, but it points at `crm_organizations`, the customer company. | `scripts/gen_tenant_migration.py:138-141`, `144_crm.sql:74,197,289` | CRM-T1 |
-| **CR-3** | **Unique keys are global, not per tenant.** `zoho_id UNIQUE` on 5 tables, status `name UNIQUE`, lost reason `label UNIQUE`, and `crm_sync_cursors` keyed on `module` alone. A second org collides on its first import. | `144_crm.sql:49,80,108,118,133,177,223,293`, `145_crm_zoho_sync.sql:541` | CRM-T1 |
+| **CR-3** | **Unique keys are global, not per tenant.** `zoho_id UNIQUE` on 5 tables, status `name UNIQUE`, lost reason `label UNIQUE`, and `crm_sync_cursors` keyed on `module` alone. A second org collides on its first import. | `144_crm.sql:49,80,108,118,133,177,223,293`, `145_crm_zoho_sync.sql:149-158` | CRM-T1 |
 | **CR-4** | **Three background paths open an unbound session.** The sync loop, the auto-lead hook and the broker push handler use `_get_db()`. Under FORCE RLS they see zero rows. Today they see every org. | `sync_zoho.py:1152-1163`, `auto_lead.py:279-284,656-690`, `broker_handlers.py:191-200`, HANDOFF H-201 | CRM-T3 |
 | **CR-5** | **The Zoho token is one global value in `.env`.** `_persist_tokens` writes `ZOHO_REFRESH_TOKEN` to the box file. The client caches the access token in `.zoho_token_cache.json` in the working directory. | `routes/oauth.py:62-70,226-260`, `ingestion/sources/zoho/client.py:17-75` | CRM-Z2 |
-| **CR-6** | **Per-org keys leak into a process global.** `configure_integrations` copies `provider_keys` into `os.environ`. | `acb_llm/key_store.py:416-470`, `routes/integrations.py:55-80` | CRM-Z1 |
-| **CR-7** | **The Zoho data centre is one operator setting.** `ZOHO_API_DOMAIN` and `ZOHO_ACCOUNTS_URL` default to `.com`. `ZOHO_REGION` exists and nothing reads it. | `routes/integrations.py:106-123,430-470` | CRM-Z1 |
+| **CR-6** | **Per-org keys leak into a process global.** `configure_integrations` copies `provider_keys` into `os.environ`, for every integration and not only Zoho. CRM-Z1 does not touch it, because the adapter takes its credential as an argument. | `acb_llm/key_store.py:416-530`, `routes/integrations.py:55-80` | CRM-Z11 for Zoho. The other integrations need their own item |
+| **CR-7** | **The Zoho data centre is one operator setting.** `ZOHO_API_DOMAIN` and `ZOHO_ACCOUNTS_URL` default to `.com`. Only `acb_skills/integrations.py:78` reads `ZOHO_REGION`, and the client does not. | `routes/integrations.py:106-123,430-470` | CRM-Z1 |
 | **CR-8** | **No rate-limit handling.** Neither the client nor the writer handles a 429 or Zoho's `TOO_MANY_REQUESTS`. | `ingestion/sources/zoho/client.py`, `writer.py` | CRM-Z1 |
 | **CR-9** | **One sync for the whole process.** `_cycle_lock` is a process-global `asyncio.Lock`, and the loop syncs one Zoho tenant. | `sync_zoho.py:1116` | CRM-Z5 |
 | **CR-10** | **Any member edits the stages and lost reasons.** `admin.py` checks `feature:crm` only. | `admin.py:278-425` | CRM-T5 |
@@ -141,7 +149,7 @@ follows the one-click rule (memory: customer setup is one click).
 
 ### 3.2 Mirror v1 reads only
 
-This is D95.3, proposed. The reasons:
+D95.3 decides this. The reasons:
 
 1. **The customer's CRM is their system of record.** Root `AGENTS.md`
    constraint 8 holds. A read-only mirror cannot corrupt it.
@@ -240,7 +248,7 @@ deals went quiet this month" needs no Zoho call. It reads the mirror.
 also means the customer company. That breaks W3 (one term for one thing), and
 it blocks the tenant column (CR-2).
 
-**Proposal (D95.2, owner call):**
+**D95.2 (decided 2026-10-11):**
 
 | Today | After |
 |---|---|
@@ -263,21 +271,320 @@ shape of `tests/unit/test_gtd_rename_upgrade.py`.
 
 ⚠️ **R6 says "never rename in place".** The case for an exception is narrow and
 measured. The tables hold 0 rows on prod, the app is `preview`, and the old
-code can only fail during the restart window of one deploy. The owner decides
-this (Q2). If the owner refuses, the fallback is expand and contract over three
-releases: add `company_id`, write both, switch the reads, then drop the old
-column. Only after that can the tenant column take the name.
+code can only fail during the restart window of one deploy. The owner accepted
+this exception (Q2). CRM-0 merges first, with the switch OFF, so that window
+serves no CRM traffic.
+
+⚠️ **A changed migration file runs again on the next deploy**
+(`scripts/apply_migrations.sh:281-290`). So guard each seed INSERT in
+`144_crm.sql` to run only when its table has no `organization_id` column. Else
+the INSERT meets NOT NULL and FORCE RLS with no tenant bound, and the deploy
+stops.
 
 ### 4.2 The tenant column and RLS
 
 One migration, at the next free number at build time (R1). Number 240 is free
-on 2026-10-11. Use `238_whatsapp_bot_messages.sql:36-102` as the template.
+on 2026-10-11. Use `223_email_accounts_unique_per_tenant.sql` as the template,
+with the `$rls# CRM — the Metorite port, two modes, and the Zoho mirror
 
-1. Add `organization_id UUID REFERENCES organization(id)` to each of the 13
-   `crm_*` tables, and to the new tables of §5.3.
-2. Give the 6 seed stages and the seed lost reasons to `fracktalworks`. Every
-   other org gets its own seed on its first CRM open (CRM-T5).
-3. Set `NOT NULL`. The entity tables are empty, so no backfill is needed.
+> **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
+> **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
+> `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
+> agent to build it. D95 is decided (§16). Nothing is built yet.
+
+> **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
+> record of the CRM that exists. It keeps the data model (§3), the API (§4) and
+> the sync design (§7.1) that this plan reuses. Do not re-derive them here.
+
+
+---
+
+## 0. The answer in one paragraph
+
+The CRM already exists, and most of it works. WS-26 built the `crm_*` tables,
+a 8,889-line gateway package, the `/crm` app, a CRM agent and a two-way Zoho
+sync. Three things stop it from being a Metorite app:
+
+1. Three of its tables are not tenant-isolated, so a member of any organization can read every contact, deal and activity.
+2. Its Zoho link is one global credential in `.env`, so only one company can connect.
+3. Its UI is older than the house look.
+
+This plan fixes those three in that order. Then it adds the new product shape.
+Each organization picks **Native** (Metorite is the CRM) or **Mirror**
+(Metorite copies an external CRM, Zoho first).
+
+---
+
+## 1. Scope and non-goals
+
+### 1.1 What the owner asked for (2026-10-11)
+
+1. Port the CRM from the Command Center era into Metorite, with its database.
+2. Find what is missing, and bring the UI up to the other Metorite apps.
+3. Support two modes. **Native** is a standalone CRM. **Mirror** copies the
+   data of an external CRM, runs insights on it, and syncs on a schedule.
+4. Mirror Zoho CRM first. Add the other popular CRMs later.
+
+### 1.2 In scope
+
+- The tenant port of every `crm_*` table and every CRM code path (§4).
+- One connector seam for external CRMs, and the Zoho adapter on it (§5).
+- The parts a Native CRM still lacks (§6).
+- The joins to Projects, My Tasks, Calendar, Email, WhatsApp, People and chat (§7).
+- The UI uplift to the one look (§8), and insights (§9).
+- The shell manifest (§11) and the path from `preview` to `live` (§13).
+
+### 1.3 Non-goals
+
+- **A second CRM spec for the same tables.** This file owns new work. The
+  as-built record stays in `crm_app.md`.
+- **Two-way sync in Mirror v1.** Mirror v1 reads only (§3.2, D95.3). Write-back
+  is a later, opt-in slice (CRM-Z9).
+- **A provider other than Zoho in this plan.** §5.1 defines the seam that the
+  next provider uses. Each new provider gets its own slice list when the owner
+  picks it (Q5).
+- **Marketing automation, sequences, telephony and invoicing.** These stay out,
+  as `crm_app.md` §1 already says.
+- **Products, price books and proposals.** D22 puts them in CRM scope. They
+  need their own section before any ticket exists (CRM-S9 is a spec slice only).
+
+---
+
+## 2. Measured state (2026-10-11)
+
+### 2.1 What exists and works
+
+| Part | Where | State |
+|---|---|---|
+| Schema | `infra/postgres/144_crm.sql`, `145_crm_zoho_sync.sql`, `163_crm_auto_lead_cursor.sql`, `169_crm_stage_discipline.sql` | 13 tables, applied on prod |
+| API | `apps/services/gateway/gateway/routes/crm/` (13 files) | Behind `require_feature_router("crm")` |
+| Records | `records.py` | CRUD for leads, deals, contacts and organizations |
+| Pipeline | `pipeline.py` | Board, stage moves with entry rules, lead conversion |
+| Timeline | `activities.py` | Notes, tasks, status changes, and the caller's email threads |
+| Reports | `reports.py` | Forecast, funnel, win and loss, owner leaderboard |
+| Export | `export.py`, `gateway/csv_export.py` | CSV, complete or refused |
+| Settings | `admin.py` | Stages and lost reasons |
+| Zoho import | `import_zoho.py`, `stage_metadata.py` | Backfill and stage repair |
+| Zoho sync | `sync_zoho.py`, `ingestion/sources/zoho/{client,writer}.py` | Two-way, 600 s loop, `CRM_ZOHO_SYNC` |
+| Auto-lead | `auto_lead.py` | Unknown inbound sender becomes a lead. `CRM_AUTO_LEAD` is OFF |
+| Agent | `apps/agents/agent-crm/` | 4 read tools, 4 write tools that ask first |
+| UI | `workbench/control_plane/src/app/crm/` | 7 tabs, kanban, record sheet, reports, settings |
+| Chat card | `src/components/crm/CrmEvidence.tsx` | Renders the read tools |
+
+### 2.2 Production, measured 2026-10-11
+
+- **The CRM tables are empty.** Each entity table holds 0 rows.
+  `crm_deal_statuses` holds the 6 seed rows. `crm_sync_cursors` holds 0 rows,
+  so no Zoho cycle has completed against this database.
+- The 2026-08-06 backfill (737 organizations, 551 deals) was on the old box.
+  It did not move to Supabase. **No customer data needs a migration.**
+- **9 organizations exist**, and 8 of them are not Fracktal. Their members
+  hold `feature:*`, so they hold `feature:crm` (migration 207).
+- **10 of the 13 `crm_*` tables are tenant-scoped on prod.** The generated
+  phases gave them `organization_id NOT NULL` and FORCE RLS on 2026-08-23.
+  `crm_contacts`, `crm_deals` and `crm_activities` have no tenant column, no
+  policy and no FORCE RLS.
+- **The seed rows belong to the org `default`.** That is 6 deal stages, 5
+  lead stages and 6 lost reasons. So under RLS, `fracktalworks` and every
+  other org see no stages today.
+- **On the box, `CRM_ZOHO_SYNC=false`**, and the box `.env` holds no Zoho
+  refresh token. The old sync loop does not run.
+- `/crm` is `preview` (`launch_surface.md` §2). The nav hides it. The routes
+  answer.
+
+### 2.3 Defects
+
+Each one is real at `7176fdf56`. The last column names the slice that fixes it.
+
+| Id | Defect | Evidence | Slice |
+|---|---|---|---|
+| **CR-1** | 🔴 **Any member of any organization reads and writes the shared contacts, deals and activities.** These 3 tables have no tenant column, so `tenant_session()` filters nothing. The other 10 tables are scoped on prod. The data is empty today. The first contact, deal or activity that any org writes is visible to all 9. | `144_crm.sql`, `core.py:44-68`, `207_every_app_by_default.sql:85-112` | CRM-0, then CRM-T1 |
+| **CR-2** | **The tenant column name is taken.** `crm_contacts`, `crm_deals` and `crm_activities` hold `organization_id`, but it points at `crm_organizations`, the customer company. | `scripts/gen_tenant_migration.py:138-141`, `144_crm.sql:74,197,289` | CRM-T1 |
+| **CR-3** | **Unique keys are global, not per tenant.** `zoho_id UNIQUE` on 5 tables, status `name UNIQUE`, lost reason `label UNIQUE`, and `crm_sync_cursors` keyed on `module` alone. A second org collides on its first import. | `144_crm.sql:49,80,108,118,133,177,223,293`, `145_crm_zoho_sync.sql:149-158` | CRM-T1 |
+| **CR-4** | **Three background paths open an unbound session.** The sync loop, the auto-lead hook and the broker push handler use `_get_db()`. Under FORCE RLS they see zero rows. Today they see every org. | `sync_zoho.py:1152-1163`, `auto_lead.py:279-284,656-690`, `broker_handlers.py:191-200`, HANDOFF H-201 | CRM-T3 |
+| **CR-5** | **The Zoho token is one global value in `.env`.** `_persist_tokens` writes `ZOHO_REFRESH_TOKEN` to the box file. The client caches the access token in `.zoho_token_cache.json` in the working directory. | `routes/oauth.py:62-70,226-260`, `ingestion/sources/zoho/client.py:17-75` | CRM-Z2 |
+| **CR-6** | **Per-org keys leak into a process global.** `configure_integrations` copies `provider_keys` into `os.environ`, for every integration and not only Zoho. CRM-Z1 does not touch it, because the adapter takes its credential as an argument. | `acb_llm/key_store.py:416-530`, `routes/integrations.py:55-80` | CRM-Z11 for Zoho. The other integrations need their own item |
+| **CR-7** | **The Zoho data centre is one operator setting.** `ZOHO_API_DOMAIN` and `ZOHO_ACCOUNTS_URL` default to `.com`. Only `acb_skills/integrations.py:78` reads `ZOHO_REGION`, and the client does not. | `routes/integrations.py:106-123,430-470` | CRM-Z1 |
+| **CR-8** | **No rate-limit handling.** Neither the client nor the writer handles a 429 or Zoho's `TOO_MANY_REQUESTS`. | `ingestion/sources/zoho/client.py`, `writer.py` | CRM-Z1 |
+| **CR-9** | **One sync for the whole process.** `_cycle_lock` is a process-global `asyncio.Lock`, and the loop syncs one Zoho tenant. | `sync_zoho.py:1116` | CRM-Z5 |
+| **CR-10** | **Any member edits the stages and lost reasons.** `admin.py` checks `feature:crm` only. | `admin.py:278-425` | CRM-T5 |
+| **CR-11** | **A second task store.** CRM follow-ups are `crm_activities type='task'`. D52 and D53 say `pm_tasks` holds every task in the product. | `144_crm.sql:276-301`, `crm_app.md` §6 | CRM-S1 |
+| **CR-12** | **The UI breaks the house rules.** No `AppTopBar`, 6 hand-rolled overlays, raw `<select>`, a third colour map (`board.ts:60-87`), no read cache, no `EmptyState`, no shell manifest. | `src/app/crm/page.tsx:199-293`, `DESIGN_SYSTEM.md:485` (H-148), `sharedTaskUi.test.ts:472-478` | CRM-U1 to U6 |
+| **CR-13** | **The kanban has its own drop logic.** It uses HTML5 drag events and not `lib/boardDrop.ts`. | `KanbanBoard.tsx:74,185` | CRM-U3 |
+| **CR-14** | **Offboarding skips the CRM.** An org purge leaves its CRM rows. | `acb_auth/offboard.py:17-26,67-73,134` | CRM-T4 |
+| **CR-15** | **No test runs CRM SQL against a real database (R8).** All 14 CRM suites use `_crm_fakes.py`. | `tests/unit/test_crm_*.py` | CRM-T4 |
+| **CR-16** | **Only one pipeline.** `stage_metadata.py` stops when Zoho has more than one. A real Zoho org often has two or more. | `stage_metadata.py`, D-CRM-11 | CRM-S7 |
+| **CR-17** | **No custom fields.** Fields live in migrations. A Zoho org has many custom fields, and a mirror without them loses data. | `crm_app.md` §1 non-goals | CRM-Z3 |
+
+---
+
+## 3. The two modes
+
+### 3.1 What a mode is
+
+A **mode** is a property of the organization, not of a member. It lives in
+one row of a new `crm_settings` table, keyed on `organization_id`.
+
+| Mode | Who owns the records | What Metorite does |
+|---|---|---|
+| **Native** | Metorite | Every CRM feature, read and write |
+| **Mirror** | The external CRM | Copy, show, search, report, and give insights. No write to a mirrored field |
+
+A new organization starts with **no mode**. The first open of `/crm` shows a
+choice of two cards: "Use Metorite as your CRM" and "Connect your CRM". This
+follows the one-click rule (memory: customer setup is one click).
+
+### 3.2 Mirror v1 reads only
+
+D95.3 decides this. The reasons:
+
+1. **The customer's CRM is their system of record.** Root `AGENTS.md`
+   constraint 8 holds. A read-only mirror cannot corrupt it.
+2. **The consent screen asks for less.** Read scopes are an easier "yes" for
+   a customer admin than full write scopes.
+3. **D52.5 named five costs of a connector.** They are a token, a webhook
+   receiver, a poll scheduler, a rate limiter and a three-way merge. A
+   read-only mirror needs the first four and not the merge.
+4. **The write path exists.** WS-26b built it. CRM-Z9 can turn it on for one
+   org later, behind its own flag.
+
+### 3.3 What a member can do in Mirror mode
+
+- Read every mirrored record, with its custom fields.
+- Filter, sort, save views, export and search.
+- See reports and insights, and ask the CRM assistant.
+- Add **Metorite-only** items to a mirrored record: a task in the one task
+  store, a note, or a logged call. A badge marks each one as "Only in
+  Metorite". CRM-Z9 can push them upstream later.
+- Open the record in the external CRM through a deep link.
+
+A member cannot edit a mirrored field. The gateway refuses it with a 409 that
+names the source system. The UI shows the field as locked. The gateway is the
+boundary, and the UI is a courtesy.
+
+### 3.4 Moving between modes
+
+| From | To | Allowed | How |
+|---|---|---|---|
+| no mode | Native or Mirror | Yes | The setup choice |
+| Mirror | Native | Yes | "Make Metorite your CRM": a final sync, then the mode flips and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10) |
+| Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
+
+### 3.5 The architecture: one store, two writers
+
+**Both modes use one store.** The `crm_*` tables hold the records in Native
+mode and in Mirror mode. There is no second schema for mirrored data, and no
+cache beside the tables. The mode decides only **who may write a record
+field**.
+
+```
+            Native mode                          Mirror mode
+            ───────────                          ───────────
+  member ─► /crm routes ─┐            Zoho ─► adapter ─► sync engine ─┐
+  agent  ─► /crm routes ─┤                                            │
+                         ▼                                            ▼
+                 core.insert_row / core.update_row          core.upsert_from_source
+                   (the write guard runs here)              (the only bypass of the guard)
+                         │                                            │
+                         └──────────────► crm_* tables ◄──────────────┘
+                                   (organization_id + FORCE RLS)
+                                               │
+          ┌──────────────┬──────────────┬──────┴───────┬──────────────┬──────────────┐
+          ▼              ▼              ▼              ▼              ▼              ▼
+       /crm UI      crm-assistant    reports       insights       shell search    exports
+```
+
+Four rules make this hold:
+
+1. **Every reader is blind to the mode.** The UI, the agent, the reports, the
+   insights, the search provider and the export read the same tables through
+   the same routes. So an AI agent reasons over Zoho data exactly as it
+   reasons over native data. No reader has a Zoho branch.
+2. **One write guard.** `core.insert_row` and `core.update_row` call
+   `assert_writable(org, entity, fields)`. In Mirror mode it refuses a write
+   to a field that came from the source, with a 409 that names the source.
+   A Metorite-only item (§3.3) passes. The fence is
+   `test_crm_mirror_readonly.py`.
+3. **One bypass.** The sync engine writes through
+   `core.upsert_from_source` only. No route, agent tool or skill imports it.
+   An AST fence holds that, in the shape of the WS-26h reachability fences.
+4. **The provider stays behind the adapter.** The sync engine calls the
+   `CrmSource` protocol (§5.1) and never a provider client. A second provider
+   adds one adapter, and the engine, the guard and every reader stay as they
+   are.
+
+**The sync engine is generic.** `sync_zoho.py` becomes `crm_sync/engine.py`.
+It loops over the orgs with an active connection, binds each tenant, takes an
+advisory lock for that connection, and calls the adapter. The push half that
+WS-26b built stays in the engine. It runs only for a connection with
+`write_back = true`, and every connection starts with `false` (D95.3).
+
+**What the AI agents read.** `crm-assistant` reads `/crm` routes as the
+member, so it sees the member's tenant and nothing else. Its read tools work
+in both modes. In Mirror mode it offers no write tool for a mirrored field.
+The insights of §9 run on the same rows. So a question such as "which Zoho
+deals went quiet this month" needs no Zoho call. It reads the mirror.
+
+---
+
+## 4. The tenant port (milestone M1)
+
+### 4.1 The rename that frees the name
+
+`organization` means the tenant everywhere else in Metorite. In the CRM it
+also means the customer company. That breaks W3 (one term for one thing), and
+it blocks the tenant column (CR-2).
+
+**D95.2 (decided 2026-10-11):**
+
+| Today | After |
+|---|---|
+| table `crm_organizations` | `crm_companies` |
+| column `organization_id` on `crm_contacts`, `crm_deals`, `crm_activities` | `company_id` |
+| UI label "Organizations" | "Companies" |
+| tenant column | `organization_id` on every `crm_*` table, `REFERENCES organization(id)` |
+
+"Company" is the word HubSpot uses. Zoho and Salesforce say "Account", but
+`email_accounts` already holds that word in Metorite.
+
+**How.** Use the pattern the owner approved for the `gtd_*` rename on
+2026-09-21. The rename lives inside the migration that creates each table,
+behind a guard, so one file answers a fresh install, an upgrade and a replay.
+Index, constraint and policy names keep the old spelling.
+
+⚠️ **Sweep the tree first, and add the guarded prologue second.** If you do it
+the other way, the sweep rewrites the prologue into a no-op. The fence is the
+shape of `tests/unit/test_gtd_rename_upgrade.py`.
+
+⚠️ **R6 says "never rename in place".** The case for an exception is narrow and
+measured. The tables hold 0 rows on prod, the app is `preview`, and the old
+code can only fail during the restart window of one deploy. The owner accepted
+this exception (Q2). CRM-0 merges first, with the switch OFF, so that window
+serves no CRM traffic.
+
+⚠️ **A changed migration file runs again on the next deploy**
+(`scripts/apply_migrations.sh:281-290`). So guard each seed INSERT in
+`144_crm.sql` to run only when its table has no `organization_id` column. Else
+the INSERT meets NOT NULL and FORCE RLS with no tenant bound, and the deploy
+stops.
+
+### 4.2 The tenant column and RLS
+
+ block of `238_whatsapp_bot_messages.sql:85-103`.
+
+**It must give one result from two starting shapes.** On prod, 10 tables
+already carry the column and the policy. On a fresh install, none does. So
+each step is `IF NOT EXISTS` or guarded.
+
+1. Add `organization_id UUID REFERENCES organization(id) ON DELETE CASCADE`
+   to each of the 13 `crm_*` tables where it is missing. Declare the foreign
+   key inline, because generated phase 3 adds `<t>_org_fk` by name.
+2. Fill a NULL `organization_id` with the id of `fracktalworks` if it
+   exists, else with the only org. With two or more orgs and no
+   `fracktalworks`, stop and name the table. The seed rows on prod already
+   belong to `default`. Every org gets its own seed on its first CRM open
+   (CRM-T5).
+3. Set `NOT NULL`.
 4. `ENABLE` and `FORCE ROW LEVEL SECURITY`, with one `USING` and `WITH CHECK`
    policy on `app.tenant_id`.
 5. Replace each global unique key with a per-tenant one (CR-3).
@@ -408,6 +715,8 @@ When CRM-Z5 is live and Fracktal has chosen its mode, retire the global path
 
 - `settings.zoho_*`, `.env.example`'s Zoho block, and `_persist_tokens` in `routes/oauth.py`
 - `.zoho_token_cache.json`
+- the read client `ingestion/sources/zoho/client.py`, which CRM-Z1 copies into `crm_sources/zoho/`
+- the copy of each integration key into `os.environ` for Zoho (CR-6)
 - the unwired nightly job `ingestion/scheduler.py::_run_zoho` and `scripts/zoho_sync.py`
 - the Phase-0 graph normaliser in `ingestion/sources/zoho/normaliser.py`
 - the shared-secret `/webhooks/zoho`
@@ -581,7 +890,7 @@ These acts are the owner's. An agent writes the runbook and stops.
 
 | Act | Why it is the owner's | Slice |
 |---|---|---|
-| Confirm D95 and answer Q1 to Q7 | Product shape (memory: consult before strategy decisions) | Before CRM-T1 |
+| ✅ Confirm D95 and answer Q1 to Q7 | Product shape. **Done 2026-10-11** | Before CRM-T1 |
 | Register Metorite's Zoho OAuth client, with multi-DC on and the redirect URL | A third-party account | CRM-Z0 runbook, then the owner |
 | Drop the client id and secret into `~/.metorite/secrets` | Credentials. An agent pushes them with `scripts/secrets.sh` | CRM-Z2 |
 | Connect a real customer's Zoho for the first time | A third party's data (§3a rule 3) | CRM-Z5 |
@@ -616,15 +925,15 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **CRM-0** | A kill switch. `CRM_ENABLED` (default OFF) makes every `/crm` route answer 404, the nav hide CRM, and `crm-assistant` refuse. An allowlist of org slugs `CRM_ORGS` turns it on for named orgs only | 🟢 AGENT-SAFE to build. The flag stays OFF for every org until CRM-T4 merges | A member of an org outside `CRM_ORGS` gets 404 on each of the 4 entity lists, a create and the agent's `search_crm`. Fence: `tests/unit/test_crm_kill_switch.py`, measured red first |
+| **CRM-0** | A kill switch. `CRM_ENABLED` (default OFF) makes every `/crm` route answer 404, the nav hide CRM, and `crm-assistant` refuse. An allowlist of organization ids, `CRM_ORGS` (or `*`), turns it on for named orgs only. This is the repo idiom (`whatsapp_assistant_orgs`) | 🟢 AGENT-SAFE to build. The flag stays OFF for every org until CRM-T4 merges | A member of an org outside `CRM_ORGS` gets 404 on each of the 4 entity lists, a create and the agent's `search_crm`. Fence: `tests/unit/test_crm_kill_switch.py`, measured red first |
 
 ### 13.3 Phase 1 — the tenant port (§4)
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **CRM-T1** | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE to build. 🔴 Q2 must be answered first | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
-| **CRM-T2** | Every request path through `_tenant_session()`. `_get_db` leaves `core.py` | 🟢 AGENT-SAFE | `test_db_engine_seam.py` lists no CRM file as exempt |
-| **CRM-T3** | The three background paths bind their tenant (§4.3). The advisory lock replaces `_cycle_lock` | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: two orgs, two cycles, each sees only its own rows. H-201's CRM half is deleted |
+| **CRM-T1** | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE. After CRM-0 is merged and deployed | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
+| ~~**CRM-T2**~~ | ✅ **Already true** (audit, 2026-10-11). Every request handler uses `_tenant_session` (`test_db_engine_seam.py:359-361`). `_get_db` stays only in the three background paths, and CRM-T3 removes them | — | Moved into CRM-T3 |
+| **CRM-T3** | The three background paths bind their tenant (§4.3). The advisory lock replaces `_cycle_lock` | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: two orgs, two cycles, each sees only its own rows. `test_db_engine_seam.py` exempts no CRM file. H-201's CRM half is deleted |
 | **CRM-T4** | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
 | **CRM-T5** | Per-org seeds of stages and lost reasons on first open. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` and `access` (Q3) | 🟢 AGENT-SAFE | A new org opens `/crm` and gets its own 6 stages. A member who is not an admin gets 403 on `POST /crm/statuses/deal`. With `access = admins`, a member gets 403 on every `/crm` route |
 
@@ -773,6 +1082,5 @@ Zoho and Gmail. D95.3 stays inside that.
   read H-201 only, because CRM-T3 closes part of it.
 - **It did not re-audit the WS-26i-bulk contract** in `crm_app.md` §9. CRM-S4
   must do that first.
-- **It did not check the box `.env`** for `CRM_ZOHO_SYNC` or the Zoho token. The
-  0 cursors on prod show that no cycle has completed. They do not show if the
-  flag is on.
+- **It read one key in the box `.env`.** `CRM_ZOHO_SYNC=false`, and no Zoho
+  refresh token is set. It printed no secret.

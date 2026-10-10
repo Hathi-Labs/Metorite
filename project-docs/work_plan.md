@@ -326,7 +326,7 @@ only application-level care.
 | **H3.2** | ⚠️ **The sign-in brick — an OWNER DECISION, written up and NOT enacted** | 🔴 **as rehearsed, phase 4 breaks sign-in for every user**: unbound `app_user` reads return zero rows and `ensure_owner_bootstrap()` is refused by WITH CHECK. This is the 2026-07-30 lockout shape, by construction | 🔴 **the decision H3 cannot be run without** |
 | **MT-1j** | Tenant-side organization provisioning — the substrate that lets org #2 exist | ◐ slices 1·2·3·4·6·7 built; slice 5 at the **owner-gated floor** of the walker-visible set (`4 + 1` sites left) | 🔴 EXECUTE against a real second org = §6 |
 | **MT-1b** | Promotion of the generated scoping | ◐ generated, not applied — **and it blocks WS-32 OI-2**: before promotion tenant B's upload overwrites tenant A's logo | 🟢 dispatchable the day promotion lands |
-| **CRM** | ⚠️ `crm_contacts` / `crm_deals` / `crm_activities` carry **NO isolation** | 🔴 `HOMONYM_BLOCKED` — their `organization_id` references `crm_organizations`, not `organization`; the generator refuses to scope them pending a rename | 🔴 **owner call, unmoved since 2026-08-09** |
+| **CRM** | ⚠️ `crm_contacts` / `crm_deals` / `crm_activities` carry **NO isolation** | 🔴 `HOMONYM_BLOCKED` — their `organization_id` references `crm_organizations`, not `organization`. The generator refuses to scope them before a rename | ✅ **D95.2 decided 2026-10-11. CRM-T1 (WS-53) builds it** |
 | **restore** | Per-tenant restore | 🔴 **does not exist and had no board row** — restoring one customer rolls every other customer back (D31). Minted below as **WS-36** | 🔴 needs an owning spec |
 
 > **The ordering that is not negotiable: H2 before H3.** Everything else can move.
