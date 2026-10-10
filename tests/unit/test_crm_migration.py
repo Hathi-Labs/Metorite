@@ -301,7 +301,9 @@ def test_the_email_indexes_are_case_folding_and_not_unique(bare: str) -> None:
 def test_every_table_carries_zoho_provenance_where_it_is_imported(
     bare: str,
 ) -> None:
-    """§7.1 upserts ``ON CONFLICT (zoho_id)``, which needs the UNIQUE."""
+    """§7.1 upserts on the Zoho id. Migration 241 (WS-53 CRM-T1) replaces this
+    global UNIQUE with the per-tenant key ``(organization_id, zoho_id)``. The
+    fence for that is ``test_crm_rename_upgrade.py``."""
     for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals",
                   "crm_activities"):
         body = bare.split(f"CREATE TABLE IF NOT EXISTS {table}", 1)[1]
@@ -784,7 +786,7 @@ def _discipline_migration() -> Path:
     found = [
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
-        and "required_fields" in path.read_text(encoding="utf-8")
+        and "ADD COLUMN IF NOT EXISTS required_fields" in path.read_text(encoding="utf-8")
     ]
     assert len(found) == 1, (
         f"expected exactly one migration adding required_fields, found "

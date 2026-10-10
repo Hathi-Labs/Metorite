@@ -15,15 +15,18 @@ the ``people*`` family, ``tenant_placement``, ``provider_keys``,
 ``model_config``, ``mcp_servers``, ``plugins``), so deleting the
 ``organization`` row deletes the tenant plane.
 
-⚠️ **The three ``crm_*`` tables that LOOK org-scoped are not** — measured the
-hard way: ``crm_activities``/``crm_deals``/``crm_contacts`` carry an
-``organization_id`` that references ``crm_companies`` (the CRM's *company
-records*), not the tenant ``organization``. The CRM family has **no tenancy
-column at all yet** (the un-threaded MT-1j remainder), so there is nothing
-per-tenant this purge could address there; ``_NOT_TENANT_SCOPED`` names the
-exclusion and the R8 fence re-derives it from ``information_schema`` — the
-day CRM threading lands, that fence goes red and this purge must grow the
-CRM deletes.
+**The ``crm_*`` family cascades too, since WS-53 CRM-T1 (2026-10-11).** Three
+of its tables used to carry an ``organization_id`` that referenced the CRM's
+*company records*, not the tenant. 144_crm.sql renamed that column to
+``company_id``, and migration 241 gave all 13 ``crm_*`` tables the tenant
+``organization_id`` with ``ON DELETE CASCADE``. So ``_NOT_TENANT_SCOPED`` is
+empty, and the R8 fence re-derives that from ``information_schema``.
+
+⚠️ **Known hazard, owned by CRM-T4, not fixed here.** ``crm_leads.status_id``
+and ``crm_deals.status_id`` are ``ON DELETE RESTRICT``. A purge of an
+organization that holds leads or deals cascades into both the records and
+their statuses, and the RESTRICT can refuse that DELETE. No organization holds
+CRM rows today. CRM-T4 owns the purge content and its two-org R8 suite.
 
 What is deliberately KEPT:
 
@@ -37,7 +40,7 @@ What is deliberately KEPT:
 measured): ~119 of the tenant database's ~155 tables carry NO
 ``organization_id`` and no FK path to ``organization`` at all — the
 un-threaded MT-1j remainder (chat, email, WhatsApp, meetings, GTD, apps,
-workflows, CRM), where rows are keyed by email or by nothing. Their data is
+workflows), where rows are keyed by email or by nothing. Their data is
 not attributable to a tenant, so no per-tenant delete can exist for it until
 threading lands; deleting by member email would be WRONG (an address can
 belong to a future org). The operator-facing copy states this instead of
@@ -64,14 +67,13 @@ _log = get_logger("acb_auth.offboard")
 
 _ORG_BY_SLUG_SQL = "SELECT id FROM organization WHERE slug = :slug"
 
-#: Tables whose ``organization_id`` is NOT the tenant (it references
-#: ``crm_companies`` — a CRM company record). Named so the R8 fence can
-#: assert the exclusion is exactly this set and nothing more: a NEW table
-#: with a non-cascading tenant ``organization_id`` must fail the suite, not
-#: slip into an exclusion written for a different fact.
-_NOT_TENANT_SCOPED: frozenset[str] = frozenset(
-    {"crm_activities", "crm_deals", "crm_contacts"}
-)
+#: Tables whose ``organization_id`` is NOT the tenant. EMPTY since WS-53
+#: CRM-T1: the three CRM tables that were here now call the company
+#: ``company_id``. Kept, so the R8 fence can still assert the exclusion is
+#: exactly this set and nothing more: a NEW table with a non-cascading
+#: ``organization_id`` must fail the suite, not slip into an exclusion written
+#: for a different fact.
+_NOT_TENANT_SCOPED: frozenset[str] = frozenset()
 
 _DELETE_ORG_SQL = "DELETE FROM organization WHERE id = CAST(:org_id AS uuid)"
 
@@ -130,7 +132,7 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
         "kept": [
             "user_identity",
             "auth_email_otp_token",
-            "un-threaded tables (chat/email/wa/meetings/gtd/apps/workflows/"
-            "crm — no tenancy column yet; the MT-1j remainder)",
+            "un-threaded tables (chat/email/wa/meetings/gtd/apps/workflows "
+            "— no tenancy column yet; the MT-1j remainder)",
         ],
     }

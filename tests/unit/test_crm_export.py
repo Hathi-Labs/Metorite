@@ -384,7 +384,7 @@ async def test_the_export_carries_every_matching_row(db) -> None:
     text, headers = await _export("organizations", sort="name", direction="asc")
 
     assert _rows(text) == [
-        ["Organization", "Industry", "Phone", "Owner"],
+        ["Company", "Industry", "Phone", "Owner"],
         ["Acme", "Manufacturing", "123", "priya@fracktal.in"],
         ["Globex", "Retail", "456", "asha@fracktal.in"],
     ]
@@ -434,7 +434,7 @@ async def test_converted_leads_are_hidden_unless_asked_for(db) -> None:
 @pytest.mark.asyncio
 async def test_a_deal_carries_its_organization_name(db) -> None:
     """The joined display column ``core.project_joined`` projects. Without the
-    join the Organization column would be empty on every row — a column of
+    join the Company column would be empty on every row — a column of
     nothing that reads as missing data."""
     org = db.seed("crm_companies", name="Acme")
     db.seed("crm_deals", name="Big one", company_id=org.id, amount=100)
@@ -614,7 +614,7 @@ async def test_an_empty_result_is_a_header_row_not_an_error(db) -> None:
     download; the header row says "this filter matched nothing"."""
     text, headers = await _export("deals")
 
-    assert _rows(text) == [["Deal", "Organization", "Amount", "Closing", "Owner"]]
+    assert _rows(text) == [["Deal", "Company", "Amount", "Closing", "Owner"]]
     assert headers["x-export-rows"] == "0"
 
 

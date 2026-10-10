@@ -19,8 +19,9 @@ Two layers, because they fail at different times:
   never applied.
 
 ⚠️ **Both layers here match on the column NAME.** Neither asks what an existing
-``organization_id`` references, and three CRM tables have one that points at
-``crm_companies`` — a customer company, not the tenant. That is why
+``organization_id`` references. Three CRM tables had one that pointed at the
+customer company, not the tenant, until WS-53 CRM-T1 renamed it to
+``company_id`` (2026-10-11). That is why
 ``gen_tenant_migration.HOMONYM_BLOCKED`` exists, and why the partition
 assertions ("every table is in exactly one bucket") live in
 ``test_tenancy_boundary.py``, which matches the foreign key's target. This file

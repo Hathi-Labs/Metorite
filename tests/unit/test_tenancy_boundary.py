@@ -31,8 +31,10 @@ hypothetical:
     crm_contacts.organization_id  REFERENCES crm_companies   -- a CUSTOMER
     pm_tasks.organization_id      REFERENCES organization        -- the TENANT
 
-Three CRM tables carry the first kind. A name-based check reads them as scoped;
-they are not scoped at all. That mistake was in the first version of THIS file
+Three CRM tables carried the first kind until WS-53 CRM-T1 (2026-10-11, D95.2).
+Now 144_crm.sql calls the customer company `company_id`, and migration 241
+gives all 13 `crm_*` tables the tenant key. A name-based check read them as
+scoped while they were not scoped at all. That mistake was in the first version of THIS file
 too — it published "6 tables scoped" when the answer was 3 — and matching the FK
 target is what corrected it. The same blind spot then turned out to be live in
 MT-1b's generator, which would have emitted `UPDATE crm_contacts SET
@@ -118,6 +120,12 @@ EXPECTED_SCOPED = {
     "pm_task_links", "pm_task_personal", "pm_task_statuses",
     "pm_task_types", "pm_task_watchers",
     "pm_tasks", "pm_view_task_positions", "pm_views",
+    # WS-53 CRM-T1 (2026-10-11): migration 241 gives every `crm_*` table the
+    # tenant key, FORCE row level security and per-tenant unique keys.
+    "crm_activities", "crm_auto_lead_cursors", "crm_companies",
+    "crm_contacts", "crm_deal_contacts", "crm_deal_statuses", "crm_deals",
+    "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
+    "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
@@ -154,21 +162,9 @@ BASELINE_UNSCOPED = {
     "chat_session_participant",
 # copilot_*
     "copilot_config", "copilot_event",
-# crm_* — ⚠️ `crm_activities`, `crm_contacts` and `crm_deals` are NOT here.
-    # They carry a column called `organization_id` that REFERENCES
-    # crm_companies, a CUSTOMER COMPANY, so they are neither scoped nor
-    # ordinary debt: they are BLOCKED in `gen_tenant_migration.HOMONYM_BLOCKED`
-    # until the column is renamed, because a generator that scopes by name
-    # would corrupt a business column.
-    # crm_auto_lead_cursors (migration 163): per-MAILBOX cursor state, one row
-    # per email_accounts id with an ON DELETE CASCADE FK — its tenant derives
-    # transitively through email_accounts (org-scoped by the generated RLS
-    # set), and a direct organization_id would be a second copy of a derivable
-    # fact that the purge cascade already treats as mailbox-owned.
-    "crm_auto_lead_cursors",
-    "crm_deal_contacts", "crm_deal_statuses", "crm_lead_statuses",
-    "crm_leads", "crm_lost_reasons", "crm_companies",
-    "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
+# crm_*
+#   — all 13 left this baseline in WS-53 CRM-T1 (migration 241). They are
+#     asserted as scoped by `EXPECTED_SCOPED` above.
 # custom_*
     "custom_api_definitions",
 # customer_*
@@ -444,8 +440,10 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
+    # 94 since 2026-10-11: ten `crm_*` tables left with migration 241 (WS-53
+    # CRM-T1). The other three were blocked as homonyms, never in this list.
     # 104 since 2026-10-10: `user_settings` left with migration 239 (H-256,
     # one settings row for each organization of a member).
     # 105 since 2026-10-09: `org_settings` left with migration 234 (the logo
     # and the default look, keyed per organization).
-    assert len(BASELINE_UNSCOPED) == 104
+    assert len(BASELINE_UNSCOPED) == 94

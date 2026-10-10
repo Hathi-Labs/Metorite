@@ -10,9 +10,11 @@ and the ``already_absent`` retry arm.
 **R8** — real Postgres via the tenant ladder (``TENANT_LADDER_DATABASE_URL``):
 the whole feature IS FK topology, which a hermetic fake cannot disagree with.
 The suite's sharpest lesson is pinned in ``TestTheExclusionCannotGoStale``:
-the ``crm_*`` tables' ``organization_id`` references ``crm_companies``
-(a CRM company record), NOT the tenant — discovered when this suite's first
-draft seeded them as tenant rows and the FK refused.
+three ``crm_*`` tables had an ``organization_id`` that referenced the CRM
+company record, NOT the tenant — discovered when this suite's first draft
+seeded them as tenant rows and the FK refused. WS-53 CRM-T1 renamed that
+column to ``company_id``, and all 13 ``crm_*`` tables now cascade from the
+tenant (migration 241).
 
 ⚠️ Writes are COMMITTED (the function opens its own sessions); every test
 seeds unique rows and cleans up in ``finally``.
@@ -200,20 +202,18 @@ class TestThePurge:
 
 
 class TestTheExclusionCannotGoStale:
-    def test_every_organization_id_cascades_to_the_tenant_or_is_named_crm(
-        self, eng
-    ):
-        """Every column NAMED ``organization_id`` must either (a) cascade to
-        the tenant ``organization`` table — so the purge's single DELETE
-        reaches it — or (b) be one of the named ``crm_*`` tables whose
-        ``organization_id`` is a DIFFERENT fact (an FK to
-        ``crm_companies``, the CRM company record — measured 2026-08-24
-        when seeding them as tenant rows was refused by that very FK).
+    def test_every_organization_id_cascades_to_the_tenant(self, eng):
+        """Every column NAMED ``organization_id`` must cascade to the tenant
+        ``organization`` table, so the purge's single DELETE reaches it, or be
+        named in ``_NOT_TENANT_SCOPED``.
 
-        The red arms, both deliberate: a NEW tenant table without the cascade
-        FK would orphan rows the purge claims to destroy; and the day MT-1j
-        threads the CRM family onto real tenancy, the exclusion stops being
-        true and the purge must grow their deletes."""
+        That set is EMPTY since WS-53 CRM-T1 (2026-10-11). It held the three
+        ``crm_*`` tables whose ``organization_id`` was the CRM company record.
+        144_crm.sql renamed that column to ``company_id``, and migration 241
+        gave all 13 ``crm_*`` tables a cascading tenant key.
+
+        The red arm is deliberate: a NEW tenant table without the cascade FK
+        would orphan rows the purge claims to destroy."""
         from acb_auth.offboard import _NOT_TENANT_SCOPED
 
         with eng.begin() as conn:
@@ -236,27 +236,35 @@ class TestTheExclusionCannotGoStale:
                     "      AND c.confdeltype = 'c')"
                 ))
             }
+        assert _NOT_TENANT_SCOPED == frozenset()
         assert not_cascading == set(_NOT_TENANT_SCOPED), (
             f"organization_id columns outside the cascade: "
             f"{sorted(not_cascading)} — a new tenant table must gain "
-            "ON DELETE CASCADE to organization; a newly-threaded CRM table "
-            "must be removed from _NOT_TENANT_SCOPED and purged explicitly"
+            "ON DELETE CASCADE to organization"
         )
 
-        # And the exclusion means what the docstring says: each named table's
-        # organization_id points at crm_companies, not the tenant.
+    def test_every_crm_table_cascades_from_the_tenant(self, eng):
+        """WS-53 CRM-T1: the positive half, so the empty set above is not
+        vacuous for the CRM. Each of the 13 ``crm_*`` tables carries an
+        ``organization_id`` that cascades from ``organization``."""
         with eng.begin() as conn:
-            for table in sorted(_NOT_TENANT_SCOPED):
-                target = conn.execute(text(
-                    "SELECT ref.relname FROM pg_constraint c "
+            cascading = {
+                r[0]
+                for r in conn.execute(text(
+                    "SELECT rel.relname FROM pg_constraint c "
                     "JOIN pg_class rel ON rel.oid = c.conrelid "
                     "JOIN pg_class ref ON ref.oid = c.confrelid "
                     "JOIN pg_attribute a ON a.attrelid = c.conrelid "
                     "  AND a.attnum = ANY(c.conkey) "
                     "WHERE c.contype = 'f' AND a.attname = 'organization_id' "
-                    f"  AND rel.relname = '{table}'"
-                )).scalar_one_or_none()
-                assert target == "crm_companies", (
-                    f"{table}.organization_id references {target!r} — the "
-                    "exclusion's premise changed; re-derive it"
-                )
+                    "  AND ref.relname = 'organization' "
+                    "  AND c.confdeltype = 'c' "
+                    "  AND starts_with(rel.relname, 'crm_')"
+                ))
+            }
+        assert cascading == {
+            "crm_activities", "crm_auto_lead_cursors", "crm_companies",
+            "crm_contacts", "crm_deal_contacts", "crm_deal_statuses",
+            "crm_deals", "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
+            "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
+        }
