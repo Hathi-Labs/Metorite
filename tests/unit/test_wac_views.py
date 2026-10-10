@@ -215,16 +215,20 @@ class _Prov:
         self.world.sent.append((PHONE, item))
         return f"wamid.out.{len(self.world.sent)}"
 
-    async def send_text(self, to: str, body: str) -> str:
+    async def send_text(self, to: str, body: str, **_quote: Any) -> str:
         return self._sent(body)
 
-    async def send_interactive(self, to: str, inter: dict) -> str:
+    async def send_reaction(self, to: str, wamid: str, emoji: str) -> str:
+        return self._sent(("reaction", emoji))
+
+    async def send_interactive(self, to: str, inter: dict, **_quote: Any) -> str:
         return self._sent(("interactive", inter["type"]))
 
     async def upload_media(self, data: bytes, mime: str, name: str) -> str:
         return "media-1"
 
-    async def send_image(self, to: str, media_id: str, *, caption: str | None = None) -> str:
+    async def send_image(self, to: str, media_id: str, *, caption: str | None = None,
+                         **_quote: Any) -> str:
         return self._sent(("image", media_id))
 
     async def show_typing(self, wamid: str) -> bool:

@@ -178,19 +178,38 @@ class WhatsAppCloudProvider(BaseWhatsAppProvider):
             return resp.json()
 
     async def send_interactive(
-        self, to_wa_id: str, interactive: dict[str, Any],
+        self, to_wa_id: str, interactive: dict[str, Any], *,
+        reply_to_wa_message_id: str | None = None,
     ) -> str:
         """Reply buttons, a list or a link button (``type`` inside the object).
 
         The caller builds and checks the object (WS-47 WAC-10a,
         ``acb_skills.whatsapp_ui``). This method only posts it.
         """
-        payload = {
+        payload: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": to_wa_id,
             "type": "interactive",
             "interactive": interactive,
+        }
+        if reply_to_wa_message_id:
+            payload["context"] = {"message_id": reply_to_wa_message_id}
+        return await self._post_message(payload)
+
+    async def send_reaction(
+        self, to_wa_id: str, wa_message_id: str, emoji: str,
+    ) -> str:
+        """React with *emoji* to the message *wa_message_id* (WS-47 WAC-10e).
+
+        A second reaction to the same message replaces the first one.
+        """
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "reaction",
+            "reaction": {"message_id": wa_message_id, "emoji": emoji},
         }
         return await self._post_message(payload)
 
@@ -215,17 +234,20 @@ class WhatsAppCloudProvider(BaseWhatsAppProvider):
 
     async def send_image(
         self, to_wa_id: str, media_id: str, *, caption: str | None = None,
+        reply_to_wa_message_id: str | None = None,
     ) -> str:
         image: dict[str, Any] = {"id": media_id}
         if caption:
             image["caption"] = caption
-        payload = {
+        payload: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": to_wa_id,
             "type": "image",
             "image": image,
         }
+        if reply_to_wa_message_id:
+            payload["context"] = {"message_id": reply_to_wa_message_id}
         return await self._post_message(payload)
 
     async def show_typing(self, wa_message_id: str) -> bool:
