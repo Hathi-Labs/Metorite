@@ -131,6 +131,20 @@ def test_another_org_lists_none_of_its_rows(broker_as_app):
         assert own not in _ids(list_pending())
 
 
+def test_the_feeds_read_lists_only_the_bound_orgs_rows(broker_as_app):
+    # `read_pending`, the needs feed's bounded read (NS-3 slice C).
+    from action_broker import enqueue, read_pending
+
+    a, b = broker_as_app.org_a, broker_as_app.org_b
+    with _as_tenant(a):
+        mine = enqueue(_proposal("deal:h201-feed-a"))
+        assert mine in _ids(read_pending())
+    with _as_tenant(b):
+        assert mine not in _ids(read_pending())
+    with _as_tenant(None):
+        assert read_pending() == []
+
+
 def test_another_org_cannot_reject_or_approve_a_row(broker_as_app):
     from action_broker import approve, enqueue, register_action_handler, reject
     from action_broker.broker import _mark

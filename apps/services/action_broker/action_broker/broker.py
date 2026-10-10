@@ -311,6 +311,39 @@ def list_pending() -> list[dict[str, Any]]:
         return []
 
 
+#: The most rows :func:`read_pending` returns.
+READ_PENDING_MAX = 50
+
+
+def read_pending(limit: int = READ_PENDING_MAX) -> list[dict[str, Any]]:
+    """The bound tenant's pending queue, the longest wait first, ``limit`` rows.
+
+    The sibling of :func:`list_pending` for a reader that must tell "empty"
+    from "broken": the needs feed (``gateway/routes/shell/needs.py``). It
+    RAISES when the database fails, so the feed reads ``failed`` and never a
+    false ``ok``. It is bounded: at most ``READ_PENDING_MAX`` rows. With no
+    bound tenant it answers ``[]``, as :func:`list_pending` does.
+    """
+    org = _bound_tenant("read_pending")
+    if org is None:
+        return []
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    size = max(1, min(int(limit), READ_PENDING_MAX))
+    with tenant_session(org) as sess:
+        rows = sess.execute(
+            text(
+                "SELECT id, actor, action, target, payload, authority, "
+                "       destructive, disposition, status, created_at "
+                "FROM pending_actions WHERE status = 'pending' "
+                "ORDER BY created_at ASC, id LIMIT :limit"
+            ),
+            {"limit": size},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def _load_proposal(action_id: str) -> tuple[ActionProposal | None, str | None]:
     """Load a queued row and rebuild its :class:`ActionProposal` + current status.
 

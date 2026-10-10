@@ -20,7 +20,7 @@ vi.mock("@/app/tasks/lib/completeFromHome", () => ({
 
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
 
-import { NEEDS_CACHE, needsKey, readFeed, runAct, type NeedsItem } from "./needs";
+import { KIND_ORDER, NEEDS_CACHE, needsKey, readFeed, runAct, type NeedsItem } from "./needs";
 
 function rowLog() {
   const log: string[] = [];
@@ -86,6 +86,24 @@ describe("readFeed", () => {
     expect(feed.count).toBe(2);
     expect(feed.sources).toEqual({ tasks: "ok" });
   });
+
+  it("keeps an approval row, the kind slice C adds", () => {
+    const approval = item({
+      id: "approvals:pa1",
+      app: "approvals",
+      kind: "approval",
+      href: "/approvals",
+      act: null,
+      act_ref: null,
+    });
+    const feed = readFeed({ count: 1, items: [approval], sources: { approvals: "ok" } });
+    expect(feed.items).toEqual([approval]);
+    expect(feed.sources).toEqual({ approvals: "ok" });
+  });
+
+  it("puts approvals right after the overdue rows", () => {
+    expect(KIND_ORDER).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+  });
 });
 
 describe("runAct goes through the owning app", () => {
@@ -124,6 +142,15 @@ describe("runAct goes through the owning app", () => {
     );
     expect(out).toBe("failed");
     expect(r.log).toEqual(["hide", "fail:Could not mark it read. Try again."]);
+  });
+
+  it("never approves from My Day: an approval row runs nothing", async () => {
+    const { calls } = stub({});
+    const r = rowLog();
+    const approval = item({ id: "approvals:pa1", app: "approvals", kind: "approval", act: null, act_ref: null });
+    expect(await runAct(approval, r.row)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(r.log).toEqual([]);
   });
 
   it("does nothing for a row with no act", async () => {
