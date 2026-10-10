@@ -318,6 +318,11 @@ Seven rules on top of the three above. Each one exists because it was broken:
    only. The design note is `project-docs/specs/projects_ai_chat.md` §23,
    "Chat cache namespaces and multi-account". Fence:
    `src/lib/railSessions.test.ts`, which greps for a raw chat key.
+   **The appearance keys are per account too** (owner bug, 2026-10-11).
+   Mode, density and accent live at `<key>:<email>|<orgId>`, and
+   `lib/theme/scope.ts` moves the pointer that the boot script reads. Read
+   and write them through `themeStorage`, never by a bare key. Fence:
+   `src/lib/theme/scope.test.ts`.
 10. **An app plugs into the shell. It never builds one.** *(D89, owner
    directive 2026-10-05.)* The owner said: "Future applications … should also
    follow the same UI/UX rules." The shell owns the top bar, the command bar,

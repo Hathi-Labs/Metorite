@@ -2,10 +2,11 @@
  * GET /api/settings/appearance — the organisation's appearance defaults
  * PUT /api/settings/appearance — update them (admin-only, enforced upstream)
  *
- * Only the ORGANISATION half lives here. A member's own density and accent
- * stay in their browser: they are per-device preferences with no server-side
- * consequence, and round-tripping them would add a request to every page load
- * to render something the boot script has already applied.
+ * Only the ORGANISATION half lives here. A member's own mode, density and
+ * accent stay in their browser: they are per-account preferences on one
+ * device, with no server-side consequence. Round-tripping them would add a
+ * request to every page load to render what the boot script already applied.
+ * `lib/theme/scope.ts` keeps each signed-in account's copy apart.
  *
  * ⚠️ `themeId` was removed on 2026-08-31 with the theming engine. The route
  * still ACCEPTS and discards it (see `normaliseOrg`) rather than 400-ing,

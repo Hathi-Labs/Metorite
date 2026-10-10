@@ -11,8 +11,9 @@
  *
  * Two scopes, deliberately separated because they behave differently:
  *
- *   • Your appearance — mode, density and accent for this browser. Applies
- *     the moment you click; nothing to save.
+ *   • Your appearance — mode, density and accent for this account in this
+ *     browser. Each signed-in account keeps its own (`lib/theme/scope.ts`).
+ *     Applies the moment you click; nothing to save.
  *   • Organisation default — what everyone gets who has not chosen for
  *     themselves. Admin-only, and needs a gateway that stores it.
  *
