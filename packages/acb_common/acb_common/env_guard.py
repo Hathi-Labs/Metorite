@@ -207,6 +207,8 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # Flags and switches.
     "EMAIL_", "DECIDE_", "BYOK_", "CRM_", "INGESTION_", "ACTION_BROKER_",
     "WORKFLOW_", "WHATSAPP_", "MEETING_BOT_", "MIGRATION_", "SKIP_",
+    # The chat run switches (WS-51 S2: CHAT_DURABLE_ASKS and its knobs).
+    "CHAT_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

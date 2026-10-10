@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 140
+-- Tables in this phase: 141
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -238,6 +238,18 @@ ALTER TABLE chat_message ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE chat_message ADD CONSTRAINT chat_message_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS chat_message_org_idx ON chat_message (organization_id);
+
+-- chat_pending_ask
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM chat_pending_ask WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: chat_pending_ask still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE chat_pending_ask ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE chat_pending_ask ADD CONSTRAINT chat_pending_ask_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_pending_ask_org_idx ON chat_pending_ask (organization_id);
 
 -- chat_session
 DO $$

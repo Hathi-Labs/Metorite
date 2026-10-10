@@ -1281,6 +1281,12 @@ async def run_detached(
             with contextlib.suppress(BaseException):
                 await _stop_control_listener_wait(thread_id)
             unregister_control_handler(thread_id)
+            # WS-51 S2: a card this run left open, and no wait settled, is
+            # closed now. A parked card stays open (orchestrator.pending_ask).
+            with contextlib.suppress(BaseException):
+                from orchestrator.pending_ask import end_of_run  # noqa: PLC0415
+
+                await asyncio.shield(end_of_run(thread_id))
             if on_complete is not None:
                 # Shield: this finally also runs on task cancellation (Stop /
                 # steer), where the first await would otherwise re-raise

@@ -803,6 +803,23 @@ class Settings(BaseSettings):
     # `orchestrator.native_session_store.finish_turn`.
     maf_session_max_bytes: int = 2 * 1024 * 1024
 
+    # ── A durable "needs input" (WS-51 S2, chat_run_continuity.md §4 S2) ────
+    #
+    # `CHAT_DURABLE_ASKS`, default OFF. OFF means no change: no row is written,
+    # no run parks, and `/chat/active-sessions` reports every run as
+    # `running`. ON writes one `chat_pending_ask` row for each card a run
+    # waits on. After `CHAT_ASK_PARK_SECONDS` with no answer, the run saves its
+    # reply and ends, and the row stays `parked`. A late answer then starts a
+    # new run. The one reader is `orchestrator.pending_ask.durable_asks_enabled`.
+    # Fence: tests/unit/test_pending_ask_flow.py.
+    chat_durable_asks: bool = False
+    # How long a run waits on a card before it parks, in seconds. The spec
+    # says "about ten minutes". With the flag OFF, `ASK_USER_TIMEOUT` (1 h)
+    # still bounds the wait.
+    chat_ask_park_seconds: int = 600
+    # How long a parked question stays answerable, in hours.
+    chat_ask_ttl_hours: int = 168
+
     # Copilot SDK chat (coworker sessions via /copilot/chat)
     # Auth order: LITELLM_MASTER_KEY → gateway /v1  |  GITHUB_TOKEN → api.githubcopilot.com
     # Model must be available in whichever provider is active.

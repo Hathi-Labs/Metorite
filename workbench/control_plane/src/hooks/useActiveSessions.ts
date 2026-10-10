@@ -92,6 +92,10 @@ export type RunActivity = {
   total: number;
   /** Live runs per app pane href, e.g. `{ "/chat": 2, "/projects": 1 }`. */
   byApp: Record<string, number>;
+  /** The runs that wait on the member's answer (WS-51 S2), across every app. */
+  needsTotal: number;
+  /** The same, per app pane href. A pane with any wears the amber badge. */
+  needsByApp: Record<string, number>;
 };
 
 /**
@@ -108,6 +112,25 @@ export function useRunActivity(
   const serverRuns = useServerRuns(enabled);
   return useMemo(() => {
     const runs = mergeRuns(serverRuns, localActive, getSessionAgent);
-    return { total: runs.length, byApp: countRunsByApp(runs, visibleHrefs) };
+    const needsByApp = countRunsByApp(runs, visibleHrefs, undefined, true);
+    return {
+      total: runs.length,
+      byApp: countRunsByApp(runs, visibleHrefs),
+      needsTotal: Object.values(needsByApp).reduce((a, b) => a + b, 0),
+      needsByApp,
+    };
   }, [serverRuns, localActive, visibleHrefs]);
+}
+
+/**
+ * True while the server says *threadId* waits on the member's answer
+ * (WS-51 S2). The chat reads it to fetch its parked card again. It reads the
+ * one shared poller and starts no poll of its own.
+ */
+export function useThreadNeedsInput(threadId: string | null | undefined): boolean {
+  const serverRuns = useServerRuns(Boolean(threadId));
+  return useMemo(
+    () => Boolean(threadId) && serverRuns.some((r) => r.threadId === threadId && r.state === "needs_input"),
+    [serverRuns, threadId],
+  );
 }

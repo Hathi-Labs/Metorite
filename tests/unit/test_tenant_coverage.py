@@ -80,6 +80,20 @@ def test_exemptions_are_deliberate_and_few() -> None:
     )
 
 
+def test_the_pending_ask_table_is_tenant_scoped() -> None:
+    """WS-51 S2 (``chat_run_continuity.md`` §4 S2). ``chat_pending_ask`` holds
+    the questions a run asks a member. It must never be exempt, and the
+    committed policy phase must carry it."""
+    gen = _generator()
+    assert "chat_pending_ask" in gen.discover_tables()
+    assert "chat_pending_ask" not in gen.EXEMPT
+    assert "chat_pending_ask" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE chat_pending_ask FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the

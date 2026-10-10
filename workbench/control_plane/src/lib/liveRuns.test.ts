@@ -136,8 +136,38 @@ describe("one poller for the whole app", () => {
     const off = subscribeLiveRuns(() => {});
     await flush();
     expect(getLiveRuns()).toEqual([
-      { threadId: "t1", agentName: "unknown", title: null, startedAt: null },
+      { threadId: "t1", agentName: "unknown", title: null, startedAt: null, state: "running", askKind: null },
     ]);
+    off();
+  });
+
+  // WS-51 S2. Mutation: map every row to `running`, and this fails.
+  it("carries the server's needs_input and the card's kind", async () => {
+    payload = [
+      { threadId: "t1", agentName: "orchestrator", state: "needs_input", askKind: "confirmation" },
+      { threadId: "t2", agentName: "orchestrator", state: "anything-else" },
+    ];
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    expect(getLiveRuns().map((r) => [r.threadId, r.state, r.askKind])).toEqual([
+      ["t1", "needs_input", "confirmation"],
+      ["t2", "running", null],
+    ]);
+    off();
+  });
+
+  // Mutation: drop the state from the publish key, and this fails.
+  it("a run that starts to need the member is published again", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", state: "running" }];
+    let calls = 0;
+    const off = subscribeLiveRuns(() => { calls += 1; });
+    await flush();
+    const before = calls;
+    payload = [{ threadId: "t1", agentName: "orchestrator", state: "needs_input" }];
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(calls).toBeGreaterThan(before);
+    expect(getLiveRuns()[0].state).toBe("needs_input");
     off();
   });
 });
