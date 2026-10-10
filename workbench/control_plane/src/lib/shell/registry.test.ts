@@ -1,9 +1,13 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PANES, type NavPane } from "@/lib/nav";
+import { PANES, visibleSections, type NavPane } from "@/lib/nav";
+import { pinnedPanes } from "./presets";
 import {
   JOBS,
   buildItems,
   contextPane,
+  heldPanes,
   rank,
   readRecent,
   rememberRecent,
@@ -237,5 +241,98 @@ describe("the purpose line is behind the shell nav flag (NS-2)", () => {
   it("reads the flag by default, and the flag is off in a test", () => {
     const go = buildItems([approvals]).find((i) => i.key === "go:/approvals")!;
     expect(go.hint).toBe(approvals.note);
+  });
+});
+
+/**
+ * The bar finds every app the member holds, pinned or not (owner,
+ * 2026-10-11). The sidebar shows only the pinned apps, so an app the member
+ * did not pin has one door: the command bar. A member who pinned nothing
+ * must still find all of them.
+ *
+ * Mutations, seen red first: build the bar from `pinnedPanes(pins, …)` in
+ * `ShellBar.tsx`, cut `heldPanes` to a part of the list, or drop its Center
+ * filter. Each one fails a case below.
+ */
+describe("every app the member holds, with nothing pinned", () => {
+  const LIVE_FEATURES = ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals"];
+  // Preview panes the member also holds the grant for. They stay out.
+  const PREVIEW_FEATURES = ["crm", "notes", "dashboard", "workflows", "agents", "integrations"];
+  const goHrefs = (features: string[], admin: boolean, preview = false) =>
+    buildItems(heldPanes(visibleSections(features, admin, preview)))
+      .filter((i) => i.group === "go")
+      .map((i) => i.href);
+  const top = (features: string[], admin: boolean, query: string) =>
+    rank({ items: buildItems(heldPanes(visibleSections(features, admin, false))), query, context: null, recent: [] })
+      .filter((i) => i.group === "go")
+      .map((i) => i.href);
+
+  it("an admin who pinned nothing finds all eleven live panes, Admin and AI Studio too", () => {
+    const sections = visibleSections([...LIVE_FEATURES, ...PREVIEW_FEATURES], true, false);
+    // The sidebar's own input, with no pins: it holds nothing to draw.
+    expect(pinnedPanes([], sections)).toEqual([]);
+    expect(goHrefs([...LIVE_FEATURES, ...PREVIEW_FEATURES], true)).toEqual([
+      "/tasks",
+      "/calendar",
+      "/people/me",
+      "/email",
+      "/whatsapp",
+      "/projects",
+      "/people",
+      "/chat",
+      "/approvals",
+      "/settings/organization",
+      "/settings/appearance",
+    ]);
+  });
+
+  it("a member gets no pane they lack, and no admin pane", () => {
+    expect(goHrefs(["tasks", "chat"], false)).toEqual([
+      "/tasks",
+      "/calendar",
+      "/people/me",
+      "/chat",
+      "/settings/appearance",
+    ]);
+  });
+
+  it("finds each app by a part of its name", () => {
+    const admin = [...LIVE_FEATURES];
+    expect(top(admin, true, "peo")).toContain("/people");
+    expect(top(admin, true, "email")).toContain("/email");
+    expect(top(admin, true, "appro")).toContain("/approvals");
+    expect(top(admin, true, "orga")[0]).toBe("/settings/organization");
+    expect(top(admin, true, "chat")).toContain("/chat");
+    expect(top(admin, true, "whats")).toContain("/whatsapp");
+    expect(top(admin, true, "cal")).toContain("/calendar");
+  });
+
+  it("finds nothing for an app the member lacks", () => {
+    const member = ["tasks", "chat"];
+    expect(top(member, false, "peo")).toEqual([]);
+    expect(top(member, false, "appro")).toEqual([]);
+    expect(top(member, false, "orga")).toEqual([]);
+    expect(top(member, false, "email")).toEqual([]);
+  });
+
+  it("never offers a preview pane, even to a member who holds its grant", () => {
+    const preview = new Set(PANES.filter((p) => p.launch === "preview").map((p) => p.href));
+    const go = goHrefs([...LIVE_FEATURES, ...PREVIEW_FEATURES], true);
+    expect(go.filter((h) => preview.has(h))).toEqual([]);
+  });
+
+  it("never links to a Center, even with the preview flag on (D49)", () => {
+    const centerFeatures = PANES.filter((p) => p.href.startsWith("/centers/")).map((p) => p.feature!);
+    expect(centerFeatures.length).toBeGreaterThan(0);
+    const go = goHrefs([...LIVE_FEATURES, ...centerFeatures], true, true);
+    expect(go.filter((h) => h.startsWith("/centers/"))).toEqual([]);
+    // The flag still restores the other preview panes, as in the sidebar.
+    expect(goHrefs(["crm"], false, true)).toContain("/crm");
+  });
+
+  it("the shell bar hands the bar every held pane, never the pins", () => {
+    const src = readFileSync(fileURLToPath(new URL("./ShellBar.tsx", import.meta.url)), "utf8");
+    expect(src).toMatch(/heldPanes\(visibleSections\(loading \? null : access\.features, access\.is_admin\)\)/);
+    expect(src).not.toMatch(/pinnedPanes|shellSidebar|layout\.pins/);
   });
 });
