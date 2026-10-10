@@ -37,7 +37,10 @@ import { placementOf } from "@/lib/chatPlacement";
 import { parseDatasetTable } from "@/lib/datasetTable";
 import { unfenced } from "@/lib/fencedText";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
-import { LEGEND, parseTaskRows, taskMetaForPeople, type ProjectTaskRow } from "@/lib/projectToolRows";
+import { StatusChip } from "@/components/StatusChip";
+import { useOverflowTip } from "@/components/ui/OverflowTip";
+import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
+import { statusAccent } from "@/lib/statusAccent";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -359,38 +362,85 @@ function useOpenTask() {
 
 // ── Cards ─────────────────────────────────────────────────────────────────────
 
+/**
+ * The box of one listed row in a card: a task, a tag, a type (owner
+ * feedback, 2026-10-10). Rem padding, so compact density draws it denser.
+ * On a touch screen the row is at least 40 px tall, in px, so a finger
+ * keeps its target at every density.
+ */
+export const LIST_ROW_BOX = "px-1 py-0.5 pointer-coarse:min-h-[40px]";
+
+/**
+ * The list of rows in a card. It reaches 1 unit past the card's padding on
+ * each side, and its rows pad back by the same unit (`LIST_ROW_BOX`). So the
+ * text of a row starts at the card's content edge, in line with the
+ * header's chevron, and a row's hover fill still has room round its text.
+ */
+export const LIST_ROWS_BOX = "-mx-1 space-y-px";
+
+/**
+ * One task row, on ONE line (owner feedback, 2026-10-10): `#141` muted, the
+ * title (it truncates, and the whole text shows in a tip), the status as its
+ * pill, the open icon. It was two lines, "#141 title" over "status Backlog".
+ *
+ * ⚠️ The row wraps by its content, not by a measure. The title and the pill
+ * share one wrapping line box, and the title asks for 60 % of it
+ * (`basis-3/5`). When the pill does not fit beside that, the pill drops under
+ * the title. The open icon is outside that box, so it stays on the first line.
+ *
+ * The pill is the shared `StatusChip`, in the hue `statusAccent` gives the
+ * lane. It drops the "status " word, which only the screen reader hears now.
+ */
 function TaskRowView({ row }: { row: ProjectTaskRow }) {
   const openTask = useOpenTask();
+  const facts = taskRowFacts(row.meta);
+  const whole = [`${row.number} ${row.title}`, facts.status, facts.rest].filter(Boolean).join(" · ");
+  const { attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip } = useOverflowTip(whole);
   return (
-    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors">
+    <div
+      data-task-row=""
+      className="flex min-w-0 items-center gap-0.5 rounded-md border border-transparent transition-colors hover:border-border"
+    >
       <button
         type="button"
         onClick={() => openTask(row.id)}
-        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
-        title="Open in Projects"
+        onFocus={onFocus}
+        onBlur={onBlur}
+        className={`cc-link flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md text-left hover:bg-secondary/60 ${LIST_ROW_BOX}`}
       >
-        <span className="block text-[11px] text-foreground truncate">
-          <span className="text-muted-foreground mr-1">{row.number}</span>
+        <span
+          ref={attachLabel}
+          onPointerEnter={onPointerEnter}
+          onPointerLeave={onPointerLeave}
+          data-task-row-title=""
+          className="min-w-0 flex-1 basis-3/5 truncate text-[11px] text-foreground"
+        >
+          <span className="mr-1 tabular-nums text-muted-foreground">{row.number}</span>
           {row.title}
+          {facts.rest && <span className="text-muted-foreground"> · {facts.rest}</span>}
         </span>
-        {row.meta && (
-          <span className="block text-[10px] text-muted-foreground truncate">
-            {taskMetaForPeople(row.meta)}
-          </span>
+        {facts.status && (
+          <StatusChip
+            accent={statusAccent({ category: facts.category, name: facts.status })}
+            label={facts.status}
+            ariaLabel={`Status: ${facts.status}`}
+            className="shrink-0"
+          />
         )}
       </button>
       <Button
         variant="ghost"
         size="icon-xs"
         radius="keep"
-        layout=""
+        layout="inline-flex items-center justify-center"
         onClick={() => openTask(row.id)}
         title="Open in Projects"
         aria-label="Open in Projects"
-        className="rounded mr-0.5"
+        className="shrink-0 rounded pointer-coarse:min-h-[40px] pointer-coarse:min-w-[40px]"
       >
         <AppIcon name="ExternalLink" size={11} />
       </Button>
+      {tip}
     </div>
   );
 }
@@ -455,13 +505,13 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
   const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
   return (
     <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px]">
-      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+      <div className="-mx-1 max-h-72 overflow-y-auto overflow-x-hidden px-1 scrollbar-thin">
         {isList && rows.length > 0 ? (
           <>
             <div className="mb-1 text-[11px] font-medium text-foreground">
               {listLabel(e)} <span className="text-muted-foreground">{rows.length}</span>
             </div>
-            <div className="space-y-0.5">
+            <div className={LIST_ROWS_BOX}>
               {rows.map((r) => (
                 <TaskRowView key={r.id} row={r} />
               ))}
@@ -706,6 +756,15 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         : outcome === "refused"
           ? "Not done"
           : meta.label;
+  // A write that names its task rows ("Updated:", "Assigned:", a new task)
+  // draws them as the one-line rows a batch draws (owner feedback,
+  // 2026-10-10), not as a paragraph of facts and a separate link.
+  const tasks = outcome === "done" || outcome === "partial" ? parseTaskRows(result) : [];
+  const lead = tasks.length > 0 ? receiptLead(result) : "";
+  const notes = tasks.length > 0 ? batchNotes(result) : [];
+  // The rows open their task. The link stays only for a task the rows do not
+  // list: the parent of new subtasks prints its id with no row.
+  const linkOut = !!rowId && !tasks.some((t) => t.id === rowId);
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
@@ -713,25 +772,41 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
     <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <RollupHeader />
-      <RollupBody indent>
-          {detail && (
+      <RollupBody>
+        {tasks.length > 0 ? (
+          <>
+            {lead && (
+              <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
+                <FencedText text={lead} pills={false} />
+              </div>
+            )}
+            <div className={`mt-1 ${LIST_ROWS_BOX}`}>
+              {tasks.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+            </div>
+            <ReceiptNotes notes={notes} />
+          </>
+        ) : (
+          detail && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
               <FencedText text={detail} pills={false} />
             </div>
-          )}
-          {(outcome === "done" || outcome === "partial") && rowId && (
-            <div className="mt-1">
-              <Button
-                variant="text"
-                size="none"
-                icon="ExternalLink"
-                onClick={() => openTask(rowId)}
-                className="gap-1 text-[10px]"
-              >
-                Open in Projects
-              </Button>
-            </div>
-          )}
+          )
+        )}
+        {(outcome === "done" || outcome === "partial") && linkOut && (
+          <div className="mt-1">
+            <Button
+              variant="text"
+              size="none"
+              icon="ExternalLink"
+              onClick={() => openTask(rowId)}
+              className="gap-1 text-[10px]"
+            >
+              Open in Projects
+            </Button>
+          </div>
+        )}
       </RollupBody>
     </div>
     </RollupCard>
@@ -817,10 +892,37 @@ export function batchNotes(result: string): string[] {
   return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
 }
 
+/**
+ * The first line of a write's receipt, when it says more than the card's
+ * title. A bare lead-in ("Updated:", "Assigned:") restates the title, and a
+ * task row is drawn as a row. Pure, exported for its test.
+ */
+export function receiptLead(result: string): string {
+  const first = withoutLegend(result).split(NL)[0] ?? "";
+  if (/^\s*-\s*#\S+\s*«/.test(first)) return "";
+  const shown = forPeopleFenced(first);
+  return /^[A-Za-z]+:$/.test(shown.trim()) ? "" : shown;
+}
+
+/** The lines about a receipt's rows: a row that failed, a stop, a note. */
+function ReceiptNotes({ notes }: { notes: string[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5">
+      {notes.map((n, i) => (
+        <div key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap"
+          style={{ overflowWrap: "anywhere" }}>
+          <FencedText text={n} pills={false} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** One word a vocabulary batch added. A tag is the tag pill, a type a plain pill. */
 function VocabRowView({ row }: { row: VocabRow }) {
   return (
-    <div className="flex min-w-0 items-center gap-1.5 px-1.5 py-0.5">
+    <div className={`flex min-w-0 items-center gap-2 ${LIST_ROW_BOX}`}>
       <span className="inline-flex min-w-0 max-w-full">
         <EntityPill fit kind={row.kind === "tag" ? "tag" : "unknown"} label={row.name} />
       </span>
@@ -887,14 +989,14 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
       <RollupHeader />
-      <RollupBody indent>
+      <RollupBody>
           {head && (outcome !== "done" || rows.length === 0) && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
               <FencedText text={head} pills={false} />
             </div>
           )}
           {rows.length > 0 && (
-            <div className="mt-1 space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            <div className={`mt-1 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin ${LIST_ROWS_BOX}`}>
               {tasks.map((r) => (
                 <TaskRowView key={r.id} row={r} />
               ))}
@@ -903,16 +1005,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
               ))}
             </div>
           )}
-          {notes.length > 0 && (
-            <div className="mt-1 space-y-0.5">
-              {notes.map((n, i) => (
-                <div key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap"
-                  style={{ overflowWrap: "anywhere" }}>
-                  <FencedText text={n} pills={false} />
-                </div>
-              ))}
-            </div>
-          )}
+          <ReceiptNotes notes={notes} />
       </RollupBody>
     </div>
     </RollupCard>

@@ -162,15 +162,14 @@ export const CARD_PANEL_MOTION =
 export const CARD_FRAME_CLASS = "rounded-lg border border-border bg-card/40 px-2.5 py-1.5";
 
 /**
- * How far an indented body moves in, so it lines up under the title and not
- * under the icon. The header draws a 12 px chevron (while it toggles) and a
- * 13 px icon, each followed by `gap-2`. Px for the glyphs, rem for the gaps,
- * so the gaps follow the density as they do in the header.
+ * ⚠️ **The body has no hanging indent** (owner feedback, 2026-10-10). It
+ * lined up under the TITLE once, past the chevron and the icon, and that
+ * left about 60 px of empty column at the left of every receipt row. Now the
+ * body starts at the card's content padding, in line with the chevron's left
+ * edge. There is no prop to bring the indent back: a card that needs its own
+ * inner padding (a table, a generative card) sets it on its own box.
+ * Fence: `src/lib/cardDenseLayout.test.ts`.
  */
-const BODY_INDENT = {
-  toggle: "pl-[calc(25px+1rem)]",
-  still: "pl-[calc(13px+0.5rem)]",
-} as const;
 
 /**
  * What a folding card tells its own header and body (owner feedback,
@@ -248,13 +247,19 @@ export function CollapsibleCardHeader({
   const { toggle, open, label, icon, count, summary, panelId } = fold;
   const counted = typeof count === "number" && count > 0;
   const shut = toggle && !open;
+  // The count sits right after the title, at a word's gap (`gap-1`), not at
+  // the row's gap: "Tasks created · 5" reads as one phrase. The two share
+  // one box, so a shut card's summary cuts after the count, never inside it.
   const words = (
     <>
       {icon ? <Icon name={icon} size={13} className="shrink-0" /> : null}
-      <span className={`min-w-0 truncate ${shut && summary ? "max-w-[60%] shrink-0" : ""} ${titleClassName}`}>
-        {title ?? label}
+      <span
+        data-rollup-title=""
+        className={`flex min-w-0 items-baseline gap-1 ${shut && summary ? "max-w-[60%] shrink-0" : ""}`}
+      >
+        <span className={`min-w-0 truncate ${titleClassName}`}>{title ?? label}</span>
+        {counted ? <span className="shrink-0 font-normal tabular-nums text-muted-foreground">· {count}</span> : null}
       </span>
-      {counted ? <span className="shrink-0 font-normal tabular-nums text-muted-foreground">· {count}</span> : null}
     </>
   );
   if (!toggle) {
@@ -288,8 +293,6 @@ export function CollapsibleCardHeader({
 }
 
 export interface CollapsibleCardBodyProps {
-  /** Line the body up under the title, past the chevron and the icon. */
-  indent?: boolean;
   /** Classes for the body's own box (its gap, its padding). */
   className?: string;
   children: React.ReactNode;
@@ -301,10 +304,9 @@ export interface CollapsibleCardBodyProps {
  * Its children see no fold state, so a card nested inside cannot claim the
  * header a second time.
  */
-export function CollapsibleCardBody({ indent = false, className = "", children }: CollapsibleCardBodyProps) {
+export function CollapsibleCardBody({ className = "", children }: CollapsibleCardBodyProps) {
   const fold = useCardFold();
-  const pad = indent ? BODY_INDENT[fold?.toggle ? "toggle" : "still"] : "";
-  const box = `min-w-0 ${pad} ${className}`.trim();
+  const box = `min-w-0 ${className}`.trim();
   const inner = (
     <CardFoldContext.Provider value={null}>
       <div ref={fold?.bodyRef} className={box}>
