@@ -1058,17 +1058,21 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-05 · branch `integrations-env-hardening`. The box results
   are from 2026-10-05.
 
-### H-243 · Answer WS-44's four open questions before a shell flag goes on · [OWNER]
+### H-243 · Answer WS-44's open questions before a shell flag goes on · [OWNER]
 - **Check:** read `project-docs/specs/navigation_shell.md` §13.3. A row that
   still shows only a default means that question is open.
 - **Why:** each question has a default, and an agent builds to it behind a
   flag. The owner checks the default before the flag reaches customers.
-  1. **Q2.** Does `/` become My Day for every member? The default is yes.
+  1. **Q2.** Does `/` become My Day for every member? The owner answered
+     yes on 2026-10-09.
   2. **Q4.** Does the shell bar share one row with each app's bar? The
-     default is yes.
+     owner answered no on 2026-10-10, and so reversed the default. Each app
+     draws its own title bar under a constant shell bar.
   3. **Q5.** Fixed presets, or an editor for each organization? The default
-     is eight fixed presets.
-  4. **Q6.** Does Desk mode hide All apps? The default is yes.
+     is eight fixed presets. It is open.
+  4. **Q6.** Does Desk mode hide All apps? The default is yes. It is open.
+  5. **Q7.** Do the bell and the dock toggle go in the shell bar? The owner
+     answered yes on 2026-10-10, at its right end (NS-6).
 - **Authority:** `specs/navigation_shell.md` §13.3 · `work_plan.md` §6.0 C5 ·
   board row WS-44.
 - **Added:** 2026-10-05 · the session that wrote `navigation_shell.md`.

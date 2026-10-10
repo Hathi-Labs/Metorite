@@ -1,7 +1,7 @@
 # The shell — how a member finds an app, a job or an answer
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
-and 2, NS-3 slices A and B, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+and 2, NS-3 slices A and B, NS-4a, NS-4b, NS-6 slice 6a, NS-10, NS-10b and NS-11. The shell bar is ON in production
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
@@ -27,6 +27,12 @@ wrap, so a long name never parts the rail toggle from the name.
 NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
 `NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
 production (§13.1).
+
+**NS-6 slice 6a BUILT 2026-10-10, dark: the one bell** (§7.2). The shell draws
+"Needs you" at the right end of the shell bar, before Activity. It is behind
+`NEXT_PUBLIC_SHELL_DOCK`, which is off by default. With the flag on, Projects
+and My Tasks mount no bell of their own. The dock is slice 6b, and it is not
+built. Only the owner turns the flag on in production (§13.1).
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -155,8 +161,9 @@ Left to right, the app bar holds:
 2. the app's icon and its name. The name is the app's one `<h1>`.
 3. the scope line, such as "Every space you can see".
 4. the app's actions, such as Capture in My Tasks.
-5. the app's tools at the right end: the bell, the assistant, refresh and
-   settings.
+5. the app's tools at the right end: refresh and settings. Until NS-9, the
+   app's own bell and assistant toggle sit here too. With
+   `NEXT_PUBLIC_SHELL_DOCK` on, Projects and My Tasks mount no bell (NS-6).
 
 The app bar is `h-10`, in one order and one look in every app. A pane may keep
 its own header under it when it titles a pane, as Email's list does with
@@ -221,8 +228,8 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | ~~App actions~~ | — | Not in the bar. They are in the app's own title bar |
 | Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end |
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
-| Bell | The shell | "Needs you", from every app (§7.2). Not built. Today each app's bell is a tool in its own title bar, and an app's bell never moves into this bar |
-| Assistant | The shell | The dock toggle (§7.1). Not built. Today each app's assistant toggle is a tool in its own title bar |
+| Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
+| Assistant | The shell | The dock toggle (§7.1). Not built, NS-6 slice 6b. It goes at the right end beside the bell (owner, 2026-10-10, §13.3 Q7). Today each app's assistant toggle is a tool in its own title bar |
 | ~~Avatar~~ | — | Not in the bar. The account menu is the sidebar's foot (§3.3, NS-2 slice 1) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
@@ -848,6 +855,42 @@ a member with more work than the cap.
 
 ---
 
+**The bell, BUILT in NS-6 slice 6a (2026-10-10, dark).**
+`src/lib/shell/ShellBell.tsx` draws it behind `NEXT_PUBLIC_SHELL_DOCK`.
+`dockFlag.ts` reads the flag, and a dev build also reads
+`localStorage["cc-shell-dock"]`.
+
+- **Its place follows the activity control.** It sits at the right end of the
+  shell bar, before Activity. With the shell bar flag off, it sits in the
+  sidebar's head. On a phone, it sits in the head of the Menu drawer.
+- **The badge is the feed's `count`,** the number of rows that need the
+  member. It is not a sum of unread mail. It shows "99+" past 99, and no
+  badge at 0. The spoken name is "Needs you, N items".
+- **The panel draws `NeedsList`,** the same list as My Day's card. So the
+  groups, the rows and the acts are one code. The foot of the panel opens
+  My Day. The panel is a `Modal`, as the activity panel beside it is, so
+  Escape closes it and focus goes back to the bell.
+- **Each act works as on My Day.** Done runs the store's own gesture, with
+  the subtask question and the Undo. The rows that an act takes off live in
+  one store, so a Done in the bell takes the row off My Day's card too.
+- **The Undo shows on every page.** A page that mounts `UndoToast` shows it
+  already. On every other page, `UndoToastFallback` shows it, with no keys.
+- **The bell reads the feed each minute** while the tab shows, and each time
+  the panel opens. The Projects bell read its list each minute too.
+
+⚠️ **The bell is narrower than the Projects `NotificationBell`.** The owner
+must know this before the flag goes on:
+
+- It shows unread notifications only. The Projects bell also listed the read
+  rows.
+- It shows 15 rows from each source at most, and 30 in all.
+- It has no "Mark all read".
+- It has no separate count of mentions.
+- A notification row opens its task at the feed's link. The Projects bell
+  opened the task in the page's own panel.
+
+Fences: `src/lib/shell/shellBell.test.ts` and `e2e/shell-bell.spec.ts`.
+
 ### 7.3 Updating, not broken
 
 **Owner directive, 2026-10-05.** The owner asked for a pop-up that says "The
@@ -1367,7 +1410,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
@@ -1380,6 +1423,11 @@ Done when:
 3. With the flag off, the three rails and `NotificationBell` render as today.
    NS-9 deletes them.
 4. The Projects confirm cards pass their tests inside the dock.
+
+**Slice 6a, the bell, BUILT 2026-10-10.** It meets the bell half of item 2
+and all of item 3 (§7.2). The dock half of items 1, 2 and 4 is slice 6b.
+`SEAM_DEBT` does not change: with the flag off, both apps still mount
+`NotificationBell`, so the debt falls only when NS-9 deletes the mounts.
 
 ### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE
 
@@ -1493,6 +1541,9 @@ npx vitest run src/components/AppTopBar.test.ts src/components/pageHeading.test.
 # The constant shell bar and each app's title bar, in a browser
 npx playwright test e2e/shell-bar.spec.ts --project=chromium
 
+# The one bell (NS-6 slice 6a), in a browser
+npx playwright test e2e/shell-bell.spec.ts --project=chromium
+
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_search.py tests/unit/test_shell_intent.py -q
@@ -1531,6 +1582,11 @@ table is the only fence (R7, advisory).
 - **Q2, answered by the owner on 2026-10-09.** Yes. `/` becomes My Day for
   every member, behind `NEXT_PUBLIC_MY_DAY`. To turn the flag on in
   production stays owner-only (§13.1).
+- **Q7, answered by the owner on 2026-10-10.** Yes. The one bell and the one
+  assistant toggle sit at the right end of the shell bar. The owner's words:
+  "They belong to the whole product, not to an app." This amends the rule
+  that the shell bar holds nothing of an app (§3.1). The two are parts of the
+  shell, as Activity is. An app's own bell or tool still never goes there.
 
 ### 13.3 Still open — each has a default an agent builds to
 
@@ -1540,8 +1596,9 @@ table is the only fence (R7, advisory).
 | Q4 | Does the shell bar take one shared row with each app's bar? | No. The owner reversed this on 2026-10-10. The shell bar is constant, and each app draws its own title bar under it (§3.1). Until then the default was one row, merged in NS-1 |
 | Q5 | Fixed presets, or an editor for each organization? | Eight fixed presets first. Add the editor when a second customer asks |
 | Q6 | Does Desk mode hide All apps? | Yes. The command bar stays |
+| Q7 | Do the bell and the dock toggle go in the shell bar? | Answered on 2026-10-10: yes, at its right end. See §13.2 |
 
-HANDOFF holds one owner entry for these four.
+HANDOFF holds one owner entry for these questions (H-243).
 
 ---
 
