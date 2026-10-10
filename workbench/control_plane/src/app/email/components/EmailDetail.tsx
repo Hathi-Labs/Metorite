@@ -43,6 +43,7 @@ import { MessageTimelineModal } from "./MessageTimelineModal";
 import { MessageActions } from "./MessageActions";
 import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { revealWithin } from "@/lib/scrollWithin";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
   draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
@@ -162,6 +163,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The reply/forward composer block — scrolled into view when opened from a
   // conversation card so the draft box isn't off-screen below a long thread.
   const composerRef = useRef<HTMLDivElement>(null);
+  // The thread scroller. The composer reveal scrolls this box and no other.
+  const threadRef = useRef<HTMLDivElement>(null);
   const replyDirty = useRef(false);
   // The AI drafting session for this reply: live backend steps + the revision
   // history of each refine round.
@@ -708,10 +711,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     }
     setReplyMode(mode);
     // Bring the composer into view (it renders below a possibly-long thread).
-    setTimeout(
-      () => composerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }),
-      60
-    );
+    // Scroll the thread only. `scrollIntoView` also scrolls each box above it,
+    // and that moved the app shell (owner report, 2026-10-10).
+    setTimeout(() => revealWithin(threadRef.current, composerRef.current, "smooth"), 60);
   };
 
   /** Switch reply mode without resetting the body/draft — only rebuilds recipients. */
@@ -1141,7 +1143,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   runAiDraftRef.current = runAiDraft;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    // `overflow-clip`, not `hidden`: a script cannot scroll a clip box, so no
+    // reveal or focus can shift the pane (owner report, 2026-10-10).
+    <div className="flex flex-col h-full overflow-clip">
       {/* ── Main toolbar (MOBILE ONLY — on desktop the unified EmailToolbar
           below the page top bar provides these actions) ── */}
       {isMobile && (
@@ -1335,7 +1339,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
       )}
 
       {/* ── Email content ── */}
-      <div className="flex-1 overflow-y-auto scrollbar-hide px-6 py-5">
+      {/* `overscroll-contain`: a wheel at the end of the thread stops here,
+          and never moves the page (owner report, 2026-10-10). */}
+      <div
+        ref={threadRef}
+        data-email-thread=""
+        className="flex-1 overflow-y-auto overscroll-contain scrollbar-hide px-6 py-5"
+      >
         {/* Subject + status badges */}
         <div className="flex items-start gap-2 mb-4">
           <h2 className="flex-1 text-foreground text-lg font-semibold">
@@ -1653,6 +1663,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
               placeholder={`Write your ${replyLabel.toLowerCase()}…`}
               rows={6}
               autoFocus
+              // No `overscroll-contain` here. On a short window, a wheel at
+              // the end of the draft must go on to the thread, so the member
+              // reaches the AI bar and Send. The thread holds the wheel.
               className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none"
             />
             {replyMode === "forward" && (

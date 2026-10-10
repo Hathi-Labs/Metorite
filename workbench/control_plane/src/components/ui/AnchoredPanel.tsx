@@ -119,6 +119,12 @@ export interface PanelBox {
   right: number;
   top: number;
   width: number;
+  /**
+   * The tallest the panel may be on the side it opens to, 8px clear of the
+   * window edge. On a short window this is less than `maxHeight`, and the
+   * panel scrolls inside instead of running off the window.
+   */
+  height: number;
 }
 
 export function panelBox(
@@ -128,13 +134,16 @@ export function panelBox(
 ): PanelBox {
   const below = viewport.height - rect.bottom;
   const up = below < maxHeight && rect.top > below;
+  const room = (up ? rect.top : below) - 2 - 8;
+  const height = Math.max(0, Math.min(maxHeight, room));
   return {
     left: rect.left,
     right: viewport.width - rect.right,
     // Never off the top either: a flipped panel taller than the space above
     // it is the same defect upside down.
-    top: up ? Math.max(8, rect.top - maxHeight - 2) : rect.bottom + 2,
+    top: up ? Math.max(8, rect.top - height - 2) : rect.bottom + 2,
     width: rect.width,
+    height,
   };
 }
 
@@ -148,7 +157,7 @@ export function panelStyle(
     ...(align === "end" ? { right: box.right } : { left: box.left }),
     top: box.top,
     minWidth: box.width,
-    maxHeight,
+    maxHeight: Math.min(maxHeight, box.height),
   };
 }
 
