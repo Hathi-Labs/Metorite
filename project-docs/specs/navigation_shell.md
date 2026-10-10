@@ -28,6 +28,11 @@ NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
 `NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
 production (§13.1).
 
+**BUILT 2026-10-10: NS-7, presets, pins and the first sign-in question.** It
+rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
+release, by owner decision of 2026-10-10. §11 records this exception, and
+§8 holds the table that the owner approved.
+
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -296,6 +301,11 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    name "My Day" would promise a page that does not exist. NS-3 renames it.
    Since NS-3 slice B, the item reads "My Day" when the My Day flag is on
    (`homePane` in `shellNav.ts`). With the flag off, it still reads "Home".
+   ✅ **Since NS-7 (2026-10-10), "My apps" exists.** It comes first, after
+   Home and before Personal Center, by owner decision (§8.4 rule 4). §3.2
+   put it third. A pinned app moves into "My apps" and leaves its team's
+   group. So an app has one door only, as §3.3 asks. A member with no held
+   pin gets no "My apps" heading.
 2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
    because the bell and My Day carry its items. Neither is built (NS-3,
    NS-6). Until they are, Approvals is an approver's only door to the queue,
@@ -312,9 +322,11 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    app and not a page about the member. ⚠️ This item does not wait on a
    ticket. It replaces the §3.2 shape for Organisation.
 
-**Groups, in order:** Home, then Personal Center, Across teams, AI Studio and
-Admin, each only when it has an item. Admin holds Approvals, and Organisation
-for an admin. All apps and the account menu are at the foot.
+**Groups, in order:** Home, then My apps (NS-7), Personal Center, Across
+teams, AI Studio and Admin, each only when it has an item. Admin holds
+Approvals, and Organisation for an admin. All apps and the account menu are
+at the foot.
+
 `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
 `shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
 The others are a member with three apps, one with none, and an unresolved
@@ -939,23 +951,54 @@ renders.
 
 The first version ships eight fixed presets in `src/lib/shell/presets.ts`.
 That is the default answer to Q5. The member's preset comes from the first
-sign-in question. Without an answer, the role picks it:
+sign-in question. Without an answer, the role picks it (§8.4 rule 2).
 
-| Role | Default preset |
-|---|---|
-| `owner` | Founder: all my teams, pins from the teams the member holds |
-| `admin` | Founder |
-| `manager` | Team lead: the member's first group |
-| `member` | Personal |
-| `guest` | Personal, with no pins |
+**The eight presets** (owner, 2026-10-10, "Approve as drafted"). A preset
+arranges three things only. They are the pinned apps, the order of the My Day
+cards and the order of the jobs in the command bar. It never grants. Each pin
+passes through `visibleSections`. So a pin for an app that the member does
+not hold, or for an app that is not live yet, does not render.
 
-The eight presets: Founder, Sales manager, Marketing lead, Finance manager,
-Operations manager, Engineer, Accounts assistant (Desk mode) and New hire. The
-design record holds the table of what each one pins.
+| Preset | Pinned apps | My Day card order | "New" jobs first |
+|---|---|---|---|
+| Founder | Projects, Approvals, My Email, Chat | Needs you, Today, Team pulse (NS-5) | new-project ("New space"), invite, capture |
+| Sales manager | My Email, My WhatsApp, Projects, CRM (preview, renders when live) | Needs you (needs_reply first), Today, Next actions | compose, whatsapp-reply, capture |
+| Marketing lead | Projects, My Email, Chat | Needs you, Next actions, Today | capture, new-chat, compose |
+| Finance manager | Approvals, My Email, Projects, Invoices (preview, renders when live) | Needs you (approval first), Today | review-approvals, compose |
+| Operations manager | Projects, People, Calendar | Needs you, Today, Next actions, Out today (NS-5) | new-project, capture, find-person |
+| Engineer | My Tasks, Projects, Calendar, Chat | Next actions, Today, Needs you | capture, plan-day, new-chat |
+| Accounts assistant | My Tasks, My Email | Needs you, Next actions | capture, compose |
+| New hire | My Tasks, People, Chat | Today, Next actions | edit-profile, find-person, new-chat |
+
+The Desk mode of the Accounts assistant waits on NS-8, which waits on a live
+data-entry app.
+
+**What NS-7 built from the table, and what it left out.**
+
+- **Invoices is not pinned.** No Invoices pane exists in `nav.ts`, so a pin
+  would be a guess at its href. The Finance manager gets the pin in the
+  pull request that adds the pane. The Sales manager DOES pin CRM, because
+  its `preview` pane exists. It renders when the owner promotes it (H-21).
+- **Team pulse and Out today wait on NS-5.** A preset names them, and My
+  Day draws only the cards that exist. A card that a preset does not name
+  follows the named cards. So a preset changes the order and never hides a
+  card.
+- **"needs_reply first" and "approval first"** put that group of Needs you
+  first, and the cut to seven rows follows that order. The `approval` kind
+  arrives with NS-3 slice C. Until then that preset keeps the server's
+  order.
+- **Two lists of names, held as one.** The gateway checks the preset, pane,
+  card and job names (`routes/admin/me.py`). `presets.ts` owns what each
+  preset arranges. `test_auth_me_shell.py::TestOneVocabulary` fails when the
+  two lists differ.
 
 **Fence (NS-7).** `src/lib/shell/presets.test.ts` takes every preset and
-several sets of grants, from none to partial to full. For each pair, it
-asserts that what renders is a subset of `visibleSections` for those grants.
+eight sets of grants, from none to partial to full, with and without the
+preview apps. For each pair, it asserts that what renders is a subset of
+`visibleSections` for those grants. That holds for the pins, the whole
+sidebar, the cards and the jobs. A pin for CRM renders only with the preview apps restored.
+Mutation, seen to fail first: let `pinnedPanes` read every pane, not
+`visibleSections`, and 97 cases fail.
 
 ### 8.2 Pins
 
@@ -974,6 +1017,27 @@ asserts that what renders is a subset of `visibleSections` for those grants.
   already covers it (R5a).
 - The ticket runs the migration and the route against a real Postgres (R8).
 
+**Built 2026-10-10 (NS-7).**
+
+- **Migration 240** adds `shell_prefs JSONB`, nullable, with no default.
+  Since 239 the key of the row is `(organization_id, user_id)`, so one
+  address keeps one layout in each of its organizations.
+- **The stored shape:** `preset`, `answered` (`"answered"`, `"skipped"` or
+  null), `pins`, `cardOrder` and `newOrder`. A null field means "use the
+  preset". A null `answered` means "never asked".
+- **The gateway applies no preset.** `GET` answers the stored layout, or all
+  nulls. The client applies the role's preset (`presetForRole`), so the
+  rule lives in one place.
+- **A failed read answers 503, never all nulls.** All nulls opens the first
+  sign-in question. So a fault must not look like "never asked".
+- **The first write keeps the calendar seed.** `/tasks/settings` reads "no
+  row" as "seed the day from the People schedule" (D-PC-16). So the shell's
+  first write puts that seed in the new row. Later writes change
+  `shell_prefs` only (`upsert_settings_sql`, its `update` argument).
+- **The `PUT` refuses** an unknown preset, pane, card or job, an unknown
+  key, more than 24 pins, and an answer with no preset. The member and the
+  tenant come from the session only (R5).
+
 ### 8.3 Desk mode
 
 A preset flag for data-entry staff. Home becomes one app's queue and its form.
@@ -988,6 +1052,48 @@ blocked until one is.
 `WelcomeDialog` already mounts in `AppShell`. It asks one question, "What will
 you do most here?", with six answers. The answer picks a preset. The member may
 skip it. The question changes the starting layout and nothing else.
+
+| Answer | Preset |
+|---|---|
+| Run the company | Founder |
+| Sell and look after customers | Sales manager |
+| Plan campaigns and content | Marketing lead |
+| Handle money and approvals | Finance manager |
+| Run projects and operations | Operations manager |
+| Build and ship the work | Engineer |
+
+**Four rules** (owner, 2026-10-10):
+
+1. **Every member sees the question on their first visit,** invited members
+   too. Before NS-7, `WelcomeDialog` opened only on `?welcome=new-org`.
+2. **A skip lets the role pick.** `owner` and `admin` get Founder. `manager`
+   gets Operations manager, and `member` gets New hire. `guest` gets New hire
+   with no pins. This rule replaces "Team lead" and "Personal", which are
+   not among the eight. A custom role reads as `member`.
+3. **`shell_prefs` stores "Skipped" as a choice.** So null means "never
+   asked", and the shell never asks a member twice. "Change my layout" in
+   the account menu asks again.
+4. **Pins show as a "My apps" group at the top of the sidebar.** A star in
+   All apps pins an app or unpins it.
+
+**Built 2026-10-10 (NS-7).**
+
+- **One dialog, never two.** A founder's `?welcome=new-org` asks the
+  question first, and then shows the invite step in the same dialog.
+- **The question opens only when the server answers "never asked".** A
+  failed read opens nothing, because only the server knows that fact.
+- **A close is a skip.** On the first visit, Escape and "Skip for now" both
+  store "skipped". When "Change my layout" asks again, the way out reads
+  "Keep my layout" and writes nothing.
+- **An answer resets the pins to the new preset's pins.** A skip keeps any
+  pin that the member set before.
+- **Each answer names what it pins,** from the apps the member holds, such as
+  "Pins My Tasks, Projects, Calendar and Chat".
+- Fences: `presets.test.ts` holds the answer map and the role defaults.
+  `shellPrefs.test.ts` holds that only a real layout can say "never asked".
+  `e2e/shell-presets.spec.ts` holds the browser half.
+- Mutation, seen to fail first: let "Skip for now" close the dialog with no
+  write. The e2e then fails at the write, and again at the reload.
 
 ---
 
@@ -1027,6 +1133,11 @@ Every ticket ships dark behind its flag, default off. With a flag off, every
 surface renders as it does today, because a merge to `main` is a deploy. Each
 flag stays off in production until the owner turns it on (§13). To build is
 AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
+
+⚠️ **One exception, the owner's: NS-7.** NS-7 rides `NEXT_PUBLIC_SHELL_NAV`,
+which is on in production. The owner decided on 2026-10-10 that "merge is the
+release". So NS-7 is live for every organization when it merges, with no new
+flag.
 
 ### NS-1 · The shell bar and the one ⌘K listener — AGENT-SAFE · slice 1 BUILT 2026-10-08, dark
 
@@ -1381,13 +1492,14 @@ Done when:
    NS-9 deletes them.
 4. The Projects confirm cards pass their tests inside the dock.
 
-### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE
+### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE · BUILT 2026-10-10, live on merge (owner)
 
-Flag `NEXT_PUBLIC_SHELL_NAV`. Files: `src/lib/shell/presets.ts`, one migration
-(number taken at build time), `GET` and `PUT /auth/me/shell` in
-`routes/admin/me.py`, and `WelcomeDialog`.
+Flag `NEXT_PUBLIC_SHELL_NAV`, which is on in production. The owner decided
+that the merge is the release (§11). Files: `src/lib/shell/presets.ts`,
+migration 240, `GET` and `PUT /auth/me/shell` in `routes/admin/me.py`, and
+`WelcomeDialog`.
 
-Done when:
+Done when, all met on 2026-10-10:
 
 1. The eight presets exist, and `presets.test.ts` proves the subset rule of
    §8.1.
@@ -1395,6 +1507,29 @@ Done when:
    writes it. A guest with no `feature:tasks` can save a pin.
 3. The migration and the route ran against a real Postgres (R8).
 4. `WelcomeDialog` asks the question, and the answer sets the preset.
+
+**Built:**
+
+- `src/lib/shell/presets.ts` holds the table, the answers and the role
+  defaults. `src/lib/shell/shellPrefs.ts` is the one client of the layout.
+  It reads through `dataCache`, and it writes at once and reverts on a
+  refusal.
+- "My apps" is first in the sidebar and in the phone drawer
+  (`shellSidebar`, §3.2a item 1). All apps has a star on each app.
+- My Day orders its cards by the preset. The empty command bar puts the
+  preset's jobs after the jobs of the app the member is in.
+- `WelcomeDialog` asks the question (§8.4). "Change my layout" in the account
+  menu, on the desktop and on the phone, asks again.
+- `src/app/api/auth/me/shell/route.ts` sends the layout on. A failure is a
+  502, never an empty layout.
+- R8: `tests/unit/test_auth_me_shell_r8.py` runs as the role with no
+  privilege. One address saves a layout in each of two organizations. A
+  guest saves a pin, a skip stays, a null `PUT` resets, and the first write
+  keeps the calendar seed. It is in the pr-check list of suites that must
+  not skip.
+
+**Not built:** the editor of a card order or a job order. The column and the
+route accept both, and no surface writes them yet.
 
 ### NS-9 · Retire what the shell replaced — AGENT-SAFE, after the owner flip
 
@@ -1492,6 +1627,11 @@ npx vitest run src/components/AppTopBar.test.ts src/components/pageHeading.test.
 
 # The constant shell bar and each app's title bar, in a browser
 npx playwright test e2e/shell-bar.spec.ts --project=chromium
+
+# NS-7: presets, pins and the first sign-in question
+npx vitest run src/lib/shell/presets.test.ts src/lib/shell/shellPrefs.test.ts src/app/api/auth/me/shell/
+npx playwright test e2e/shell-presets.spec.ts --project=chromium
+uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py -q
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
