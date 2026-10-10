@@ -20,6 +20,7 @@ The adapter reads and never writes. Its only POST is the OAuth token call in
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -161,14 +162,19 @@ def _is_rate_limited(response: httpx.Response) -> bool:
 
 
 def _backoff_seconds(response: httpx.Response, attempt: int) -> float:
-    """``Retry-After`` when it is a number, else 1, 2, 4, 8. Never past 60."""
+    """``Retry-After`` when it is a finite number, else 1, 2, 4, 8. Never past 60.
+
+    A ``nan`` must not reach the sleep, because ``asyncio.sleep(nan)`` never
+    returns. So a value that is not finite, or below zero, takes the step.
+    """
+    step = float(2 ** (attempt - 1))
     header = response.headers.get("Retry-After", "")
     try:
         wait = float(header)
     except ValueError:
-        wait = float(2 ** (attempt - 1))
-    if wait < 0:
-        wait = float(2 ** (attempt - 1))
+        wait = step
+    if not math.isfinite(wait) or wait < 0:
+        wait = step
     return min(wait, MAX_BACKOFF_SECONDS)
 
 

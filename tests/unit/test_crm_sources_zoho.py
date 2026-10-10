@@ -213,6 +213,17 @@ async def test_retry_after_sets_the_wait_and_60_is_the_cap(
     assert fake.sleeps == [wait]
 
 
+@pytest.mark.parametrize("header", ["nan", "inf", "-inf", "NaN"])
+async def test_a_non_finite_retry_after_falls_back_to_the_step(
+    leaks: list[str],
+    header: str,
+) -> None:
+    """``asyncio.sleep(nan)`` never returns, so a non-finite value must not reach it."""
+    fake = Fake([too_many(**{"Retry-After": header}), rows("1")])
+    await fake.source().list_changed("lead")
+    assert fake.sleeps == [1.0]
+
+
 async def test_the_backoff_writes_a_log_line_with_no_token() -> None:
     """A positive control for the ``leaks`` capture: the warning is caught."""
     fake = Fake([too_many(), rows("1")])
