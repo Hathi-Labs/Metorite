@@ -46,6 +46,7 @@ from gateway.routes.tasks.core import (
 from gateway.routes.tasks.priority import important_from_importance
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 
 # ── external-calendar sync seams (P4) ────────────────────────────────────────
@@ -478,7 +479,7 @@ async def _llm_rank_day(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.2, max_tokens=1200,
             response_format={"type": "json_object"},

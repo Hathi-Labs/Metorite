@@ -34,6 +34,7 @@ from gateway.routes.tasks.core import (
 )
 from gateway.routes.tasks.item_source import item_source
 from pydantic import BaseModel
+from acb_llm.voice import voice_prompt
 
 _PRIORITIES = {"low", "medium", "high", "urgent"}
 _CONTEXTS = {"@computer", "@calls", "@errands", "@agenda"}
@@ -162,7 +163,7 @@ async def _llm_plan(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.2, max_tokens=2200,
             response_format={"type": "json_object"},

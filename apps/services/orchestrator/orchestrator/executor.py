@@ -102,6 +102,7 @@ from orchestrator._tool_injection import (
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
+from acb_llm.voice import voice_prompt
 
 
 def _tier2_copilot_client(agent_settings: dict[str, Any]) -> Any:
@@ -6097,7 +6098,7 @@ async def _llm_recovery(
             "Never show raw Python tracebacks or variable names. Be concise."
         )
         recovery_msgs: list[dict[str, str]] = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": system + "\n\n" + voice_prompt("chat")},
             *messages,
             *(
                 [{"role": "user", "content": latest}]

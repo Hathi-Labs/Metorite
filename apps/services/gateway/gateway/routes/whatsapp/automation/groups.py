@@ -25,6 +25,7 @@ from gateway.routes.whatsapp.automation.replyzero import _account_wa_ids
 from gateway.routes.whatsapp.core import _get_db, _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 _log = get_logger("gateway.whatsapp.groups")
 
@@ -65,7 +66,7 @@ def build_group_summary_messages(
         "Summarize now as strict JSON."
     )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + "\n\n" + voice_prompt("summary", json=True)},
         {"role": "user", "content": user},
     ]
 

@@ -51,6 +51,7 @@ from gateway.routes.notes.core import (
     router,
 )
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 _RING = 100          # recent copilot events kept per session for late viewers
 _QUEUE_MAX = 200
@@ -245,7 +246,7 @@ async def _craft(
             model="tier-balanced",
             fallback_model="tier-fast",
             messages=[
-                {"role": "system", "content": _system(_CRAFT_SYSTEM, instructions)},
+                {"role": "system", "content": _system(_CRAFT_SYSTEM + "\n\n" + voice_prompt("chat"), instructions)},
                 {"role": "user", "content": (
                     (f"BACKGROUND:\n{background}\n\n" if background else "")
                     + f"MEETING STATE:\n{state.as_prompt()}\n\n"

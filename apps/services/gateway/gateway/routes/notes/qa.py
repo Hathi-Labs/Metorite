@@ -17,6 +17,7 @@ from gateway.routes.notes.core import _log, _tenant_session, load_owned_meeting,
 from gateway.routes.notes.summaries import _PASS_CHARS, _llm_json, _model, _tag
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 _STOP = {
     "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "is",
@@ -134,7 +135,7 @@ async def ask_meeting(
         + '\nReturn STRICT JSON: {"answer": str, "refs": [int]}'
     )
     result = await _llm_json(
-        system,
+        system + "\n\n" + voice_prompt("chat", json=True),
         f"QUESTION: {question}\n\nTRANSCRIPT (DATA):\n{data}",
         _model("meeting_qa"),
         max_tokens=700,

@@ -12,6 +12,7 @@ from acb_llm import LLMTier, complete
 from acb_llm.guardrails import CitationError, repair_citations, require_citations
 
 from orchestrator.retrieval import format_context, retrieve
+from acb_llm.voice import voice_prompt
 
 _SYSTEM_GROUNDED = (
     "You are the AI Company Brain Pull agent. Answer using ONLY the supplied "
@@ -65,7 +66,7 @@ async def answer(query: str, *, user_email: str | None = None, trace_id: str | N
     raw = await complete(
         tier=LLMTier.TIER_2,
         messages=[
-            {"role": "system", "content": system},
+            {"role": "system", "content": system + "\n\n" + voice_prompt("chat")},
             {"role": "user", "content": user_content},
         ],
     )

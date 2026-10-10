@@ -33,6 +33,7 @@ from gateway.routes.workflows.modules import _extract_json
 from gateway.routes.workflows.search import search_catalog
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 COPILOT_TIER = "tier-balanced"
 COPILOT_FALLBACK_TIER = "tier-fast"
@@ -274,7 +275,7 @@ async def workflow_copilot(
         context = await _capability_context(body.message, db)
 
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": COPILOT_SYSTEM_PROMPT},
+        {"role": "system", "content": COPILOT_SYSTEM_PROMPT + "\n\n" + voice_prompt("chat", json=True)},
         {
             "role": "system",
             "content": (

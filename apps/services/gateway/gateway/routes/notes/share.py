@@ -13,6 +13,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.core import _log, _tenant_session, load_owned_meeting, router
 from pydantic import BaseModel
+from acb_llm.voice import voice_prompt
 
 
 class EmailDraft(BaseModel):
@@ -82,7 +83,7 @@ async def _draft(title: str, summary_md: str) -> tuple[str, str]:
             model="tier-balanced",
             fallback_model="tier-fast",
             messages=[
-                {"role": "system", "content": system},
+                {"role": "system", "content": system + "\n\n" + voice_prompt("email", json=True)},
                 {"role": "user", "content": user},
             ],
             temperature=0.3,

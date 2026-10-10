@@ -23,6 +23,7 @@ from gateway.routes.email.core import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 
 class RuleActionAttachment(BaseModel):
@@ -646,7 +647,7 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
         # forced; generous budget so several rules aren't truncated.
         data, _content, _used = await _llm_json(
             "tier-powerful",
-            [{"role": "system", "content": sys_prompt},
+            [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("title", json=True)},
              {"role": "user", "content": prompt[:4000]}],
             max_tokens=2500,
             feature="rules_generate",

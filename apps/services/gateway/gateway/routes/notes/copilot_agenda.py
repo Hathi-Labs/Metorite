@@ -34,6 +34,7 @@ from fastapi import Depends, HTTPException
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 _MAX_ITEMS = 12
 _MAX_TITLE = 120
@@ -155,7 +156,7 @@ async def draft_agenda(
             model="tier-balanced",
             fallback_model="tier-fast",
             messages=[
-                {"role": "system", "content": _AGENDA_SYSTEM},
+                {"role": "system", "content": _AGENDA_SYSTEM + "\n\n" + voice_prompt("chat", "title", json=True)},
                 {"role": "user", "content": (
                     ("\n\n".join(ctx) + "\n\n" if ctx else "")
                     + f"USER SAYS:\n{message}"

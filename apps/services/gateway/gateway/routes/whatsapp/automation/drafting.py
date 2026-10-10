@@ -27,6 +27,7 @@ from fastapi import Depends, HTTPException
 from gateway.routes.whatsapp.core import _tenant_session, assert_chat_owned, router
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 _log = get_logger("gateway.whatsapp.drafting")
 
@@ -87,7 +88,7 @@ def build_draft_messages(
         "Draft the founder's reply now."
     )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + "\n\n" + voice_prompt("email")},
         {"role": "user", "content": user},
     ]
 

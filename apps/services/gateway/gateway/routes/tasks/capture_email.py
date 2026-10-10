@@ -43,6 +43,7 @@ from gateway.routes.tasks.core import (
 from gateway.routes.tasks.item_source import item_source
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 # GTD dispositions the email router may assign at capture. (No PROJECT/REFERENCE
 # /TRASH/DO_NOW: an email capture is either mine to do, mine to schedule, a
@@ -291,7 +292,7 @@ async def _llm_capture(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-fast",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=450,
             feature="tasks.capture_email",
@@ -1078,7 +1079,7 @@ async def _llm_detect_commitment(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-fast",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=450,
             feature="tasks.capture_email",

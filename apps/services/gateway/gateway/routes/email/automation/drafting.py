@@ -56,6 +56,7 @@ from gateway.routes.email.transport.send import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 
 async def _account_signature(db: Any, account_id: str) -> str:
@@ -934,7 +935,7 @@ async def _llm_draft_reply(
         )
         if instructions:
             user_prompt += f"\nExtra instructions: {instructions}\n"
-        _messages = [{"role": "system", "content": sys_prompt},
+        _messages = [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("email")},
                      {"role": "user", "content": user_prompt}]
         # Generous output budget — a full reply body (greeting + paragraphs +
         # context) must never be truncated mid-sentence.
@@ -1091,7 +1092,7 @@ async def _llm_compose_assist(
                 "email for the recipient and subject above.\n"
             )
         user_prompt = "".join(parts)
-        _messages = [{"role": "system", "content": sys_prompt},
+        _messages = [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("email")},
                      {"role": "user", "content": user_prompt}]
         if on_delta is not None:
             # Streaming path (SSE compose): live deltas reach the composer;

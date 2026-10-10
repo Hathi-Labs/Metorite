@@ -29,6 +29,7 @@ from gateway.routes.tasks.core import (
 )
 from gateway.routes.tasks.item_source import item_source
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 # ── Shared prompt context (system information every AI decision needs) ───────
 
@@ -811,7 +812,7 @@ async def _llm_propose(
         resp, _used = await acompletion_with_fallback(
             model=model,
             fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0,
             max_tokens=500,
@@ -1504,7 +1505,7 @@ async def _llm_suggest_title(title: str, notes: str | None, model: str) -> dict[
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=120,
             response_format={"type": "json_object"},

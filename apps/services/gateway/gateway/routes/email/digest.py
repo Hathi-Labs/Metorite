@@ -28,6 +28,7 @@ from gateway.routes.email.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 
 # The digest is a PROJECTION of the same windowed inbox aggregates the Analytics
@@ -532,7 +533,7 @@ _BRIEF_SYSTEM = (
     "for the day — what's most pressing and who it's with. Name 1-3 "
     "specific items (a person or subject), newest-pressing first. No "
     "greeting, no preamble, under 25 words. "
-    'Respond ONLY JSON {"brief": "<sentence>"}.')
+    'Respond ONLY JSON {"brief": "<sentence>"}.' + "\n\n" + voice_prompt("summary", json=True))
 
 
 def _brief_cache_key(account_id: str, user_prompt: str) -> Any:

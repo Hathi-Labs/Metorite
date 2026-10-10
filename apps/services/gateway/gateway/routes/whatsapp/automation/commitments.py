@@ -26,6 +26,7 @@ from gateway.routes.whatsapp.automation.drafting import detect_language
 from gateway.routes.whatsapp.core import _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 _log = get_logger("gateway.whatsapp.commitments")
 
@@ -212,7 +213,7 @@ def build_nudge_messages(
         "Draft the founder's gentle follow-up now."
     )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + "\n\n" + voice_prompt("email")},
         {"role": "user", "content": user},
     ]
 

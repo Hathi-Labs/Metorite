@@ -76,20 +76,29 @@ AGENT = "agent"
 SURFACES: tuple[str, ...] = tuple(OVERLAYS)
 
 
-def voice_prompt(surface: str = AGENT) -> str:
+#: The line a JSON drafting call adds, so the rules bind the prose values
+#: and never the keys or the shape that code parses.
+JSON_NOTE = "The output is JSON: these rules bind its text values, never its keys or its shape."
+
+
+def voice_prompt(surface: str = AGENT, *more: str, json: bool = False) -> str:
     """The voice for *surface*, as system-prompt text.
 
     ``AGENT`` (the default) gives the heading, the core and every overlay,
     because an agent writes chat replies, titles, descriptions, emails and
     summaries. A surface name gives the core and that one overlay, for a
-    direct drafting call. An unknown name raises ``KeyError``, so a typo
+    direct drafting call. A call whose output holds two kinds of text (a
+    title and a description) names both, and gets both overlays. ``json``
+    adds :data:`JSON_NOTE`. An unknown name raises ``KeyError``, so a typo
     fails in a test and never ships a prompt with no overlay.
     """
-    if surface == AGENT:
+    if surface == AGENT and not more:
         overlays = "\n".join(f"- {text}" for text in OVERLAYS.values())
-        return f"{VOICE_HEADING}\n{CORE}\nBy surface:\n{overlays}"
-    overlay = OVERLAYS[surface]
-    return f"{VOICE_HEADING}\n{CORE}\n{overlay}"
+        text = f"{VOICE_HEADING}\n{CORE}\nBy surface:\n{overlays}"
+    else:
+        overlays = "\n".join(OVERLAYS[name] for name in (surface, *more))
+        text = f"{VOICE_HEADING}\n{CORE}\n{overlays}"
+    return f"{text}\n{JSON_NOTE}" if json else text
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +213,6 @@ def voice_lint(text: str, surface: str | None = None) -> list[Finding]:
 
 
 __all__ = [
-    "AGENT", "CORE", "CORPORATE_STEMS", "FILLER_WORDS", "Finding", "OVERLAYS",
+    "AGENT", "CORE", "CORPORATE_STEMS", "FILLER_WORDS", "Finding", "JSON_NOTE", "OVERLAYS",
     "SURFACES", "VOICE_HEADING", "voice_lint", "voice_prompt",
 ]

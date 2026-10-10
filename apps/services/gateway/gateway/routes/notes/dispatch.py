@@ -49,6 +49,7 @@ from fastapi import Depends, HTTPException
 from gateway.routes.notes.actions import ApproveResponse, _create_task_from_action
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
 from sqlalchemy import text
+from acb_llm.voice import voice_prompt
 
 #: Auto-dispatch only fires at or above this confidence — the same bar the
 #: bulk-approve button has always used. Manual dispatch has no floor.
@@ -234,7 +235,7 @@ async def _draft_email(action, meeting, recipient: str, excerpts: list[str]) -> 
             else ""
         )
     )
-    data = await _llm_json(_EMAIL_DRAFT_SYSTEM, user, "tier-balanced", max_tokens=700)
+    data = await _llm_json(_EMAIL_DRAFT_SYSTEM + "\n\n" + voice_prompt("email", json=True), user, "tier-balanced", max_tokens=700)
     if not data:
         return None
     subject = str(data.get("subject") or "").strip()
@@ -384,7 +385,7 @@ async def _dispatch_document(action, meeting, owner_email: str) -> str:
             else ""
         )
     )
-    data = await _llm_json(_DOC_DRAFT_SYSTEM, user, "tier-balanced", max_tokens=1800)
+    data = await _llm_json(_DOC_DRAFT_SYSTEM + "\n\n" + voice_prompt("title", "summary", json=True), user, "tier-balanced", max_tokens=1800)
     title = str((data or {}).get("title") or "").strip() or action.description[:80]
     markdown = str((data or {}).get("markdown") or "").strip()
     if not markdown:
