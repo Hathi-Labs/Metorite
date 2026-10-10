@@ -6,15 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 143
---
--- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
--- else on these tables, so scoping them by that name would corrupt a
--- business column. They carry NO tenant isolation until the column is
--- renamed (owner call; see gen_tenant_migration.HOMONYM_BLOCKED):
---   crm_activities     organization_id = the customer company (144_crm.sql:289)
---   crm_contacts       organization_id = the customer company (144_crm.sql:74)
---   crm_deals          organization_id = the customer company (144_crm.sql:197)
+-- Tables in this phase: 146
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -202,10 +194,24 @@ CREATE POLICY copilot_event_tenant_isolation ON copilot_event
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE crm_activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_activities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_activities_tenant_isolation ON crm_activities;
+CREATE POLICY crm_activities_tenant_isolation ON crm_activities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE crm_auto_lead_cursors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_auto_lead_cursors FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_auto_lead_cursors_tenant_isolation ON crm_auto_lead_cursors;
 CREATE POLICY crm_auto_lead_cursors_tenant_isolation ON crm_auto_lead_cursors
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_contacts FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_contacts_tenant_isolation ON crm_contacts;
+CREATE POLICY crm_contacts_tenant_isolation ON crm_contacts
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -220,6 +226,13 @@ ALTER TABLE crm_deal_statuses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_deal_statuses FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_deal_statuses_tenant_isolation ON crm_deal_statuses;
 CREATE POLICY crm_deal_statuses_tenant_isolation ON crm_deal_statuses
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_deals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_deals FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_deals_tenant_isolation ON crm_deals;
+CREATE POLICY crm_deals_tenant_isolation ON crm_deals
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -244,10 +257,10 @@ CREATE POLICY crm_lost_reasons_tenant_isolation ON crm_lost_reasons
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE crm_organizations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE crm_organizations FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS crm_organizations_tenant_isolation ON crm_organizations;
-CREATE POLICY crm_organizations_tenant_isolation ON crm_organizations
+ALTER TABLE crm_companies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_companies FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_organizations_tenant_isolation ON crm_companies;
+CREATE POLICY crm_organizations_tenant_isolation ON crm_companies
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

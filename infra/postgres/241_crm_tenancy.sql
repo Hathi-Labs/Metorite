@@ -166,7 +166,9 @@ $fill$;
 -- ── 3. NOT NULL, and an index for the policy ────────────────────────────────
 --
 -- The index name is the one generated phase 3 uses, with IF NOT EXISTS, so
--- the two cannot collide.
+-- the two cannot collide. crm_companies keeps the name that production gave
+-- it before the rename (`crm_organizations_org_idx`), as the gtd renames keep
+-- theirs, so production does not get a second index on the same column.
 
 ALTER TABLE crm_companies         ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_contacts          ALTER COLUMN organization_id SET NOT NULL;
@@ -182,7 +184,7 @@ ALTER TABLE crm_zoho_tombstones   ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_sync_cursors      ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_auto_lead_cursors ALTER COLUMN organization_id SET NOT NULL;
 
-CREATE INDEX IF NOT EXISTS crm_companies_org_idx ON crm_companies (organization_id);
+CREATE INDEX IF NOT EXISTS crm_organizations_org_idx ON crm_companies (organization_id);
 CREATE INDEX IF NOT EXISTS crm_contacts_org_idx ON crm_contacts (organization_id);
 CREATE INDEX IF NOT EXISTS crm_leads_org_idx ON crm_leads (organization_id);
 CREATE INDEX IF NOT EXISTS crm_deals_org_idx ON crm_deals (organization_id);
@@ -201,10 +203,11 @@ CREATE INDEX IF NOT EXISTS crm_auto_lead_cursors_org_idx ON crm_auto_lead_cursor
 --
 -- The block of 238_whatsapp_bot_messages.sql, once for each table. A table
 -- that already forces row level security keeps the policy it has. On
--- production the generated phase put `<old name>_tenant_isolation` on ten of
--- them, and a renamed table keeps the policy name it had. The policy name here
--- is the one generated phase 4 uses, so phase 4 replaces it and adds no
--- second policy.
+-- production the generated phase put `<t>_tenant_isolation` on ten of them,
+-- and a renamed table keeps the policy name it had. So crm_companies uses
+-- `crm_organizations_tenant_isolation`, and so does the committed phase 4.
+-- Each policy name here is the one phase 4 uses, so phase 4 replaces it and
+-- adds no second policy.
 
 DO $rls$
 DECLARE
@@ -214,9 +217,14 @@ DECLARE
         'crm_lost_reasons', 'crm_deal_contacts', 'crm_status_changes',
         'crm_zoho_tombstones', 'crm_sync_cursors', 'crm_auto_lead_cursors'
     ];
-    t text;
+    t      text;
+    policy text;
 BEGIN
     FOREACH t IN ARRAY crm_tables LOOP
+        policy := CASE t
+            WHEN 'crm_companies' THEN 'crm_organizations_tenant_isolation'
+            ELSE t || '_tenant_isolation'
+        END;
         CONTINUE WHEN EXISTS (
             SELECT 1 FROM pg_class
              WHERE oid = to_regclass(format('public.%I', t))
@@ -225,15 +233,14 @@ BEGIN
         );
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE  ROW LEVEL SECURITY', t);
-        EXECUTE format('DROP POLICY IF EXISTS %I ON %I',
-                       t || '_tenant_isolation', t);
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', policy, t);
         EXECUTE format(
             'CREATE POLICY %I ON %I '
             '    USING      (organization_id = '
             '        current_setting(''app.tenant_id'', true)::uuid) '
             '    WITH CHECK (organization_id = '
             '        current_setting(''app.tenant_id'', true)::uuid)',
-            t || '_tenant_isolation', t);
+            policy, t);
     END LOOP;
 END
 $rls$;
