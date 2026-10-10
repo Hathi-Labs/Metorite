@@ -50,6 +50,7 @@ import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
+  ADD_APPS_HINT,
   accountLinks,
   desktopFrame,
   homePane,
@@ -429,10 +430,12 @@ function MobileBottomNavInner({
   // NS-6: the one bell sits beside the activity control here, as on the bar.
   const [dockOn] = useState(() => shellDockOn());
   const [launcherOpen, setLauncherOpen] = useState(false);
-  // The member's pins (NS-7), the same "My apps" as the desktop sidebar.
+  const [launcherHint, setLauncherHint] = useState<string | undefined>(undefined);
+  // The member's stars (owner, 2026-10-11), the same model as the desktop
+  // sidebar: each category lists only the apps they starred.
   const shell = useShellPrefs();
   const drawerSections = shellNav
-    ? shellSidebar(navSections, shell.loading ? undefined : shell.layout.pins)
+    ? shellSidebar(navSections, shell.loading ? undefined : shell.layout)
     : navSections;
   // The run badge (WS-51 S1), from the one shared poller. Each drawer link
   // shows its app's count. The bottom bar shows the total on every page: on
@@ -515,7 +518,7 @@ function MobileBottomNavInner({
           </div>
         )}
         {drawerSections.map((section) => (
-          <div key={section.id} className="px-2 pt-1 pb-1.5">
+          <div key={section.id} className="px-2 pt-1 pb-1.5" data-nav-section={section.id}>
             <div
               className={
                 section.sub
@@ -553,6 +556,28 @@ function MobileBottomNavInner({
             </div>
           </div>
         ))}
+        {/* "Add apps" (owner, 2026-10-11): the last item of the list, always,
+            as on the desktop sidebar. The drawer closes first. */}
+        {shellNav && !accessLoading && (
+          <div className="px-2 pb-1">
+            <button
+              type="button"
+              onClick={() => {
+                close();
+                setLauncherHint(ADD_APPS_HINT);
+                setLauncherOpen(true);
+              }}
+              aria-haspopup="dialog"
+              data-nav-add-apps=""
+              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground">
+                <AppIcon name="Plus" size={15} />
+              </span>
+              <span className="text-sm">Add apps</span>
+            </button>
+          </div>
+        )}
         {/* All apps (NS-2), only when it would list something. The drawer
             closes first, so one overlay shows. */}
         {shellNav && !accessLoading && launcherGroups(navSections).length > 0 && (
@@ -561,6 +586,7 @@ function MobileBottomNavInner({
               type="button"
               onClick={() => {
                 close();
+                setLauncherHint(undefined);
                 setLauncherOpen(true);
               }}
               className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
@@ -803,6 +829,7 @@ function MobileBottomNavInner({
         onClose={() => setLauncherOpen(false)}
         sections={navSections}
         pathname={pathname}
+        hint={launcherHint}
       />
     )}
     </>

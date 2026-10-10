@@ -21,7 +21,7 @@ import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
-import { accountLinks, homePane, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
+import { ADD_APPS_HINT, accountLinks, homePane, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
 import { useShellPrefs } from "@/lib/shell/shellPrefs";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
@@ -80,12 +80,19 @@ export default function Sidebar() {
   // because it swaps the whole page; a label here does not.
   const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
-  // The member's pins (NS-7): "My apps" first, from their layout. While the
-  // first read is out the groups draw without it, which is complete, not
-  // blank. A failed read draws the role's preset (`shellLayout`).
+  // The hint All apps shows when "Add apps" opened it, and none otherwise.
+  const [launcherHint, setLauncherHint] = useState<string | undefined>(undefined);
+  const openLauncher = (hint?: string) => {
+    setLauncherHint(hint);
+    setLauncherOpen(true);
+  };
+  // The member's stars (owner, 2026-10-11): each category lists only the
+  // apps they starred. While the first read is out the groups draw every
+  // held app, which is complete, not blank. A failed read draws every held
+  // app too (`shellLayout`).
   const shell = useShellPrefs();
   const railSections = shellNav
-    ? shellSidebar(sections, shell.loading ? undefined : shell.layout.pins)
+    ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
@@ -335,6 +342,7 @@ export default function Sidebar() {
               shellNav={shellNav}
             />
           ))}
+          {shellNav && <AddAppsRow collapsed={collapsed} onOpen={() => openLauncher(ADD_APPS_HINT)} />}
           </>
         )}
       </nav>
@@ -344,7 +352,7 @@ export default function Sidebar() {
         <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
           <button
             type="button"
-            onClick={() => setLauncherOpen(true)}
+            onClick={() => openLauncher()}
             title={collapsed ? "All apps" : undefined}
             aria-label="All apps"
             aria-haspopup="dialog"
@@ -363,6 +371,7 @@ export default function Sidebar() {
           onClose={() => setLauncherOpen(false)}
           sections={sections}
           pathname={pathname}
+          hint={launcherHint}
         />
       )}
 
@@ -406,7 +415,57 @@ export default function Sidebar() {
 }
 
 // ---------------------------------------------------------------------------
+// "Add apps" — the last item of the list (owner, 2026-10-11)
+// ---------------------------------------------------------------------------
+
+/**
+ * The way to add an app, always at the end of the list, so a member who
+ * starred nothing still sees where to start. It opens All apps, where the
+ * star on each app says what the sidebar shows.
+ *
+ * ⚠️ It takes the geometry of `NavLink` on purpose, and not that of
+ * `RailRow`. The block is `px-2`, the row is `px-3 py-2`, and the icon
+ * column is the same, so its icon sits in line with the app icons above it,
+ * open or folded. `e2e/shell-presets.spec.ts` measures that. It is a button
+ * that opens a dialog, not a place, so it has no active state.
+ */
+function AddAppsRow({ collapsed, onOpen }: { collapsed: boolean; onOpen: () => void }) {
+  if (collapsed) {
+    return (
+      <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Add apps"
+          aria-label="Add apps"
+          aria-haspopup="dialog"
+          className="flex items-center justify-center rounded-lg p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+        >
+          <Icon name="Plus" size={18} />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-0.5 px-2 py-1.5" data-nav-add-apps="">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-haspopup="dialog"
+        className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+      >
+        <span className="flex items-center gap-2.5">
+          <Icon name="Plus" size={16} />
+          <span className="text-[13px]">Add apps</span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Nav skeleton — what an unresolved viewer sees
+
 // ---------------------------------------------------------------------------
 
 /**

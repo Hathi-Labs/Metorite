@@ -25,7 +25,7 @@
  */
 import type { NavPane, NavSection } from "@/lib/nav";
 import { myDayOn } from "@/lib/shell/myDayFlag";
-import { pinnedPanes } from "@/lib/shell/presets";
+import { starredHrefs, type Stars } from "@/lib/shell/presets";
 
 /** The flag for the shell nav. Off, the sidebar and the drawer are as before. */
 export function shellNavOn(): boolean {
@@ -112,24 +112,27 @@ function byTeam(panes: readonly NavPane[]): NavSection[] {
   return groups.filter((g) => g.items.length > 0);
 }
 
-/** The id of the pins' group, first in the sidebar (NS-7). */
-export const MY_APPS = "my-apps";
-
 /**
- * The sidebar's groups: every held pane whose door is the sidebar.
+ * The sidebar's groups: every held pane whose door is the sidebar, by team,
+ * in `TEAM_GROUPS` order, and each item in `nav.ts` order.
  *
- * With `pins` (NS-7, §3.2), "My apps" comes first and holds the member's
- * pinned apps, in pin order. A pinned app moves there and leaves its team's
- * group, so each app keeps ONE door (the rule of §3.3). `pinnedPanes` picks
- * from `sections` alone, so a pin never draws a pane the member does not
- * hold or that is not live.
+ * **The star model** (owner, 2026-10-11). With `stars`, a group lists only
+ * the apps the member starred (`starredHrefs`), never in star order, and a
+ * group with no starred app is dropped. Nothing moves between groups, and
+ * there is no "My apps" group (NS-7 had one, and this replaces it). With no
+ * stars, or with `stars.pins` null, every held app shows, as before stars.
+ * Home is not a group item, and the sidebar draws it on its own, always.
+ * `starredHrefs` picks from `sections` alone, so a star never draws a pane
+ * the member does not hold or that is not live.
  */
-export function shellSidebar(sections: readonly NavSection[], pins?: readonly string[]): NavSection[] {
+export function shellSidebar(sections: readonly NavSection[], stars?: Stars | null): NavSection[] {
   const doors = held(sections).filter((p) => (p.door ?? "sidebar") === "sidebar");
-  const mine = pins ? pinnedPanes(pins, sections).filter((p) => doors.includes(p)) : [];
-  const rest = byTeam(doors.filter((p) => !mine.includes(p)));
-  return mine.length ? [{ id: MY_APPS, label: "My apps", items: mine }, ...rest] : rest;
+  const shown = starredHrefs(stars, sections);
+  return byTeam(shown === null ? doors : doors.filter((p) => shown.has(p.href)));
 }
+
+/** The line All apps shows when the sidebar's "Add apps" opens it. */
+export const ADD_APPS_HINT = "Star the apps you want in your sidebar.";
 
 /** The account menu's panes, in their manifest order. */
 export function accountPanes(sections: readonly NavSection[]): NavPane[] {

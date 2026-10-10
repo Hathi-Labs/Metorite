@@ -1,17 +1,22 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 /**
- * NS-7 in a browser: presets, pins and the first sign-in question
- * (`navigation_shell.md` §8, the owner's table of 2026-10-10).
+ * NS-7 in a browser: presets, stars and the first sign-in question
+ * (`navigation_shell.md` §8, and the star model of 2026-10-11, §3.2).
  *
- *   1. A first visit asks "What will you do most here?". An answer sets the
- *      preset, and the sidebar's "My apps" shows its pins.
- *   2. "Skip for now" is stored, so a reload does not ask again. The role's
- *      preset then fills "My apps".
- *   3. The star in All apps pins an app and unpins it.
- *   4. "Change my layout" in the account menu asks again.
- *   5. A founder's `?welcome=new-org` asks the question first, then shows the
- *      welcome, one dialog at a time.
+ *   1. A first visit asks "What will you do most here?". An answer opens
+ *      step 2, "Choose the apps for your sidebar", with the defaults ticked.
+ *      "Done" saves the answer and the stars in ONE write, and each category
+ *      of the sidebar then lists only its ticked apps.
+ *   2. "Skip for now" is stored, so a reload does not ask again. Every held
+ *      app then shows.
+ *   3. The star in All apps shows an app under its category, or hides it.
+ *      A category with nothing starred is gone.
+ *   4. "Add apps" at the end of the sidebar opens All apps with a hint.
+ *   5. "Change my layout" in the account menu asks again.
+ *   6. A founder's `?welcome=new-org` goes question, apps, invite, one
+ *      dialog at a time.
+ *   7. The phone drawer follows the same model.
  *
  * No gateway runs here, so `/api/auth/me/shell` is an in-memory store that
  * answers as the gateway does.
@@ -37,7 +42,13 @@ const MEMBER = {
   organization: { id: "org1", slug: "acme", display_name: "Acme" },
 };
 
-const EMPTY = { preset: null, answered: null, pins: null, cardOrder: null, newOrder: null };
+const EMPTY = { preset: null, answered: null, pins: null, known: null, cardOrder: null, newOrder: null };
+
+/** Every app MEMBER may star, in nav.ts order: the `known` of each save. */
+const KNOWN = ["/tasks", "/calendar", "/email", "/projects", "/people", "/chat", "/approvals"];
+
+/** The Engineer's defaults for MEMBER: Personal Center, and the preset's apps. */
+const ENGINEER_STARS = ["/tasks", "/calendar", "/email", "/projects", "/chat"];
 
 type Layout = typeof EMPTY | Record<string, unknown>;
 
@@ -115,104 +126,244 @@ async function stub(page: Page, start: Layout = EMPTY, opts: StubOptions = {}): 
 }
 
 const question = (page: Page) => page.getByRole("dialog", { name: "What will you do most here?" });
-const myApps = (page: Page) => page.locator('aside [data-nav-section="my-apps"] a');
+const appsStep = (page: Page) => page.getByRole("dialog", { name: "Choose the apps for your sidebar" });
 const sidebar = (page: Page) => page.locator("aside[data-collapsed]");
+
+/** The sidebar's categories, in order, each with its app names. */
+async function shape(page: Page, root = sidebar(page)): Promise<[string, string[]][]> {
+  return root.locator("[data-nav-section]").evaluateAll((els) =>
+    els.map((el) => [
+      el.getAttribute("data-nav-section") ?? "",
+      [...el.querySelectorAll("a")].map((a) => a.textContent?.trim() ?? ""),
+    ]),
+  );
+}
+
+const tick = (page: Page, name: string) => appsStep(page).getByRole("checkbox", { name });
 
 test.use({ viewport: { width: 1280, height: 860 } });
 
-test("a first visit asks the question, and the answer sets the pins", async ({ page }) => {
+test("a first visit asks, an answer ticks the defaults, and Done saves the ticks in one write", async ({ page }) => {
   const store = await stub(page);
   await page.goto("/settings/appearance");
   await expect(question(page)).toBeVisible();
   // An answer has the focus, never Close: Enter there would skip.
   await expect(question(page).getByRole("button", { name: /Run the company/ })).toBeFocused();
   await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+
+  // Step 2, in the same dialog, with the Engineer's defaults ticked.
+  await expect(appsStep(page)).toBeVisible();
   await expect(question(page)).toHaveCount(0);
-  expect(store.puts).toEqual([{ ...EMPTY, preset: "engineer", answered: "answered" }]);
-  // The Engineer's pins, in the table's order, first in the sidebar.
-  await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
-  // A pinned app moves into My apps. It keeps one door.
-  await expect(sidebar(page).getByRole("link", { name: "Projects" })).toHaveCount(1);
+  expect(store.puts).toEqual([]);
+  for (const name of ["My Tasks", "Calendar", "My Email", "Projects", "Chat"]) await expect(tick(page, name)).toBeChecked();
+  for (const name of ["People", "Approvals"]) await expect(tick(page, name)).not.toBeChecked();
+  // The settings pages are not apps, so they are not in the list.
+  await expect(tick(page, "My Profile")).toHaveCount(0);
+  await expect(tick(page, "Appearance")).toHaveCount(0);
+  // It says where to change this later, and names the real controls.
+  const later = appsStep(page).getByTestId("layout-apps-later");
+  await expect(later).toContainText("All apps");
+  await expect(later).toContainText("+ Add apps");
+  await expect(later).toContainText("Change my layout");
+
+  // Untick one, tick another.
+  await tick(page, "My Email").click();
+  await tick(page, "People").click();
+  await appsStep(page).getByRole("button", { name: "Done" }).click();
+  await expect(appsStep(page)).toHaveCount(0);
+  expect(store.puts).toEqual([
+    {
+      ...EMPTY,
+      preset: "engineer",
+      answered: "answered",
+      pins: ["/tasks", "/calendar", "/projects", "/people", "/chat"],
+      known: KNOWN,
+    },
+  ]);
+  // Each category lists only its ticked apps. Admin has none, so it is gone.
+  await expect.poll(() => shape(page)).toEqual([
+    ["personal", ["My Tasks", "Calendar"]],
+    ["across", ["Projects", "People"]],
+    ["studio", ["Chat"]],
+  ]);
 });
 
-test("Skip for now is stored, and a reload does not ask again", async ({ page }) => {
+test("Back on step 2 returns to the question, and saves nothing", async ({ page }) => {
+  const store = await stub(page);
+  await page.goto("/settings/appearance");
+  await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+  await appsStep(page).getByRole("button", { name: "Back" }).click();
+  await expect(question(page)).toBeVisible();
+  expect(store.puts).toEqual([]);
+});
+
+test("the X on step 2 keeps the answer, with the ticks it started with", async ({ page }) => {
+  const store = await stub(page);
+  await page.goto("/settings/appearance");
+  await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+  await tick(page, "People").click();
+  await appsStep(page).getByRole("button", { name: "Close" }).click();
+  await expect(appsStep(page)).toHaveCount(0);
+  expect(store.puts).toEqual([
+    { ...EMPTY, preset: "engineer", answered: "answered", pins: ENGINEER_STARS, known: KNOWN },
+  ]);
+});
+
+test("Skip for now is stored, a reload does not ask again, and every app shows", async ({ page }) => {
   const store = await stub(page);
   await page.goto("/settings/appearance");
   await expect(question(page)).toBeVisible();
   await question(page).getByRole("button", { name: "Skip for now" }).click();
   await expect(question(page)).toHaveCount(0);
+  await expect(appsStep(page)).toHaveCount(0);
   expect(store.puts).toEqual([{ ...EMPTY, answered: "skipped" }]);
 
   const read = page.waitForResponse((r) => r.url().endsWith("/api/auth/me/shell"));
   await page.reload();
   await read;
   await expect(sidebar(page)).toBeVisible();
-  // The role picks: a member gets New hire.
-  await expect(myApps(page)).toHaveText(["My Tasks", "People", "Chat"]);
+  // Personal Center first, and every category the member holds an app in.
+  await expect.poll(() => shape(page)).toEqual([
+    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["across", ["Projects", "People"]],
+    ["studio", ["Chat"]],
+    ["admin", ["Approvals"]],
+  ]);
   await expect(question(page)).toHaveCount(0);
   expect(store.puts).toHaveLength(1);
 });
 
-test("the star in All apps pins an app, and unpins it", async ({ page }) => {
-  const store = await stub(page, { ...EMPTY, preset: "engineer", answered: "answered" });
+test("the star in All apps shows an app under its category, and hides it", async ({ page }) => {
+  const store = await stub(page, { ...EMPTY, preset: "engineer", answered: "answered", pins: ENGINEER_STARS, known: KNOWN });
   await page.goto("/settings/appearance");
-  await expect(myApps(page)).toHaveCount(4);
+  await expect.poll(() => shape(page)).toEqual([
+    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["across", ["Projects"]],
+    ["studio", ["Chat"]],
+  ]);
   await expect(question(page)).toHaveCount(0);
 
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
   const launcher = page.getByRole("dialog", { name: "All apps" });
-  const star = launcher.getByRole("button", { name: "Pin My Email to My apps" });
+  // Opened from the foot, it shows no hint.
+  await expect(launcher.getByTestId("launcher-hint")).toHaveCount(0);
+  const star = launcher.getByRole("button", { name: "Show People in sidebar" });
   await expect(star).toHaveAttribute("aria-pressed", "false");
+  await expect(star).toHaveAttribute("title", "Show in sidebar");
   // The star sits in its tile's top right corner. `.cc-control` once moved
   // it under the tile, where it read as the next tile's.
-  const tile = await launcher.getByRole("link", { name: /^My Email/ }).boundingBox();
+  const tile = await launcher.getByRole("link", { name: /^People/ }).boundingBox();
   const at = await star.boundingBox();
   expect(at!.x).toBeGreaterThan(tile!.x + tile!.width / 2);
   expect(at!.x + at!.width).toBeLessThanOrEqual(tile!.x + tile!.width);
   expect(at!.y).toBeGreaterThanOrEqual(tile!.y);
   expect(at!.y + at!.height).toBeLessThan(tile!.y + tile!.height / 2);
+  // A personal app has a star too: it is starred, and it can be hidden.
+  await expect(launcher.getByRole("button", { name: "Hide My Email from sidebar" })).toHaveAttribute("aria-pressed", "true");
   await star.click();
-  const unstar = launcher.getByRole("button", { name: "Unpin My Email from My apps" });
+  const unstar = launcher.getByRole("button", { name: "Hide People from sidebar" });
   await expect(unstar).toHaveAttribute("aria-pressed", "true");
-  expect(store.puts.at(-1)).toMatchObject({ pins: ["/tasks", "/projects", "/calendar", "/chat", "/email"] });
+  await expect(unstar).toHaveAttribute("title", "Shown in sidebar");
+  expect(store.puts.at(-1)).toMatchObject({ pins: ["/tasks", "/calendar", "/email", "/projects", "/people", "/chat"], known: KNOWN });
   await page.keyboard.press("Escape");
-  await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat", "My Email"]);
+  // People shows under its own category, in nav.ts order: never moved.
+  await expect.poll(() => shape(page)).toEqual([
+    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["across", ["Projects", "People"]],
+    ["studio", ["Chat"]],
+  ]);
 
+  // Hide People again, and hide Chat: AI Studio has nothing left, so it goes.
   await sidebar(page).getByRole("button", { name: "All apps" }).click();
-  await launcher.getByRole("button", { name: "Unpin My Email from My apps" }).click();
-  expect(store.puts.at(-1)).toMatchObject({ pins: ["/tasks", "/projects", "/calendar", "/chat"] });
+  await launcher.getByRole("button", { name: "Hide People from sidebar" }).click();
+  await launcher.getByRole("button", { name: "Hide Chat from sidebar" }).click();
+  expect(store.puts.at(-1)).toMatchObject({ pins: ["/tasks", "/calendar", "/email", "/projects"] });
   await page.keyboard.press("Escape");
-  await expect(myApps(page)).toHaveCount(4);
+  await expect.poll(() => shape(page)).toEqual([
+    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["across", ["Projects"]],
+  ]);
 });
 
-test("Change my layout in the account menu asks again", async ({ page }) => {
-  const store = await stub(page, { ...EMPTY, preset: "engineer", answered: "answered" });
+test("Add apps ends the sidebar, opens All apps with the hint, and lines up with the rows", async ({ page }) => {
+  await stub(page, { ...EMPTY, preset: "engineer", answered: "answered", pins: [], known: KNOWN });
   await page.goto("/settings/appearance");
-  await expect(myApps(page)).toHaveCount(4);
-  await expect(question(page)).toHaveCount(0);
+  // Nothing starred: no category at all, and Add apps still shows.
+  await expect.poll(() => shape(page)).toEqual([]);
+  const add = sidebar(page).getByRole("button", { name: "Add apps" });
+  await expect(add).toBeVisible();
+  await add.click();
+  const launcher = page.getByRole("dialog", { name: "All apps" });
+  await expect(launcher.getByTestId("launcher-hint")).toHaveText("Star the apps you want in your sidebar.");
+  await launcher.getByRole("button", { name: "Show Projects in sidebar" }).click();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
 
-  // From the keyboard: in the dev build, Next's own badge sits over the foot.
-  const foot = page.getByRole("button", { name: /^Accounts: signed in as/ });
-  await foot.focus();
-  await page.keyboard.press("Enter");
-  await page.getByRole("button", { name: "Change my layout" }).click();
+  // Its icon sits on the same centre line as the row above it, open and folded.
+  const centre = async (el: ReturnType<Page["locator"]>) => {
+    const box = await el.locator("svg").first().boundingBox();
+    return box!.x + box!.width / 2;
+  };
+  const rowAbove = sidebar(page).locator('[data-nav-section="across"] a').last();
+  expect(Math.abs((await centre(add)) - (await centre(rowAbove)))).toBeLessThanOrEqual(1);
+  await page.getByRole("button", { name: "Collapse sidebar" }).first().click();
+  await expect(sidebar(page)).toHaveAttribute("data-collapsed", "true");
+  const folded = sidebar(page).getByRole("button", { name: "Add apps" });
+  await expect(folded).toHaveAttribute("title", "Add apps");
+  await expect.poll(async () => Math.abs((await centre(folded)) - (await centre(rowAbove)))).toBeLessThanOrEqual(1);
+});
+
+test("Change my layout asks again: the same answer keeps the stars, a new one gives its defaults", async ({ page }) => {
+  const store = await stub(page, { ...EMPTY, preset: "engineer", answered: "answered", pins: ["/projects"], known: KNOWN });
+  await page.goto("/settings/appearance");
+  await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
+
+  const openMenu = async () => {
+    // From the keyboard: in the dev build, Next's own badge sits over the foot.
+    const foot = page.getByRole("button", { name: /^Accounts: signed in as/ });
+    await foot.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Change my layout" }).click();
+  };
+  await openMenu();
   await expect(question(page)).toBeVisible();
   // The way out keeps the layout as it is.
   await expect(question(page).getByRole("button", { name: "Keep my layout" })).toBeVisible();
+  // The same answer: the member's current stars, ticked.
+  await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+  await expect(tick(page, "Projects")).toBeChecked();
+  await expect(tick(page, "My Tasks")).not.toBeChecked();
+  // Back, and a different answer: its defaults replace them.
+  await appsStep(page).getByRole("button", { name: "Back" }).click();
   await question(page).getByRole("button", { name: /Run the company/ }).click();
-  await expect(question(page)).toHaveCount(0);
-  expect(store.puts.at(-1)).toEqual({ ...EMPTY, preset: "founder", answered: "answered" });
-  // Founder pins Approvals too. A member who holds it sees it.
-  await expect(myApps(page)).toHaveText(["Projects", "Approvals", "My Email", "Chat"]);
+  for (const name of ["My Tasks", "Calendar", "My Email", "Projects", "Chat", "Approvals"]) await expect(tick(page, name)).toBeChecked();
+  await expect(tick(page, "People")).not.toBeChecked();
+  await appsStep(page).getByRole("button", { name: "Done" }).click();
+  expect(store.puts.at(-1)).toEqual({
+    ...EMPTY,
+    preset: "founder",
+    answered: "answered",
+    pins: ["/tasks", "/calendar", "/email", "/projects", "/chat", "/approvals"],
+    known: KNOWN,
+  });
+  await expect.poll(() => shape(page)).toEqual([
+    ["personal", ["My Tasks", "Calendar", "My Email"]],
+    ["across", ["Projects"]],
+    ["studio", ["Chat"]],
+    ["admin", ["Approvals"]],
+  ]);
 });
 
-test("a founder's welcome follows the question, one dialog at a time", async ({ page }) => {
+test("a founder's welcome follows the question and the apps, one dialog at a time", async ({ page }) => {
   await stub(page, EMPTY, { me: { ...MEMBER, is_admin: true, roles: ["owner"] } });
   await page.goto("/settings/appearance?welcome=new-org");
   await expect(question(page)).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(question(page)).toContainText("Your organization is ready");
   await question(page).getByRole("button", { name: /Run the company/ }).click();
+  await expect(appsStep(page)).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await appsStep(page).getByRole("button", { name: "Done" }).click();
   const welcome = page.getByRole("dialog", { name: "Your organization is ready" });
   await expect(welcome).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
@@ -250,53 +401,91 @@ test.describe("a failed save never traps the member in the question", () => {
     });
   }
 
-  test("an answer closes it, and its preset applies for this page", async ({ page }) => {
-    await stub(page, EMPTY, { putStatus: 503 });
-    await page.goto("/settings/appearance");
-    await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
-    await expect(question(page)).toHaveCount(0);
-    await expect(page.getByLabel("Notifications").getByText(SAVE_FAILED)).toHaveCount(1);
-    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
-  });
+  const appsWays: Array<[string, (page: Page) => Promise<void>]> = [
+    ["Done", (page) => appsStep(page).getByRole("button", { name: "Done" }).click()],
+    ["the header's X", (page) => appsStep(page).getByRole("button", { name: "Close" }).click()],
+    ["Escape", (page) => page.keyboard.press("Escape")],
+  ];
+  for (const [name, leave] of appsWays) {
+    test(`step 2's ${name} closes it, says so once, and the answer applies for this page`, async ({ page }) => {
+      const store = await stub(page, EMPTY, { putStatus: 503 });
+      await page.goto("/settings/appearance");
+      await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+      await expect(appsStep(page)).toBeVisible();
+      await leave(page);
+      await expect(appsStep(page)).toHaveCount(0);
+      await expect(question(page)).toHaveCount(0);
+      await expect(page.getByLabel("Notifications").getByText(SAVE_FAILED)).toHaveCount(1);
+      expect(store.puts).toHaveLength(1);
+      await expect.poll(() => shape(page)).toEqual([
+        ["personal", ["My Tasks", "Calendar", "My Email"]],
+        ["across", ["Projects"]],
+        ["studio", ["Chat"]],
+      ]);
+    });
+  }
 });
 
 // ── Round 2: the first frame draws the last known layout ───────────────────
 
 test.describe("a reload draws the last known layout on its first frame", () => {
-  const FOUNDER = { ...EMPTY, preset: "founder", answered: "answered" };
-  const ENGINEER = { ...EMPTY, preset: "engineer", answered: "answered" };
+  const FOUNDER = { ...EMPTY, preset: "founder", answered: "answered", pins: ["/approvals"], known: KNOWN };
+  const ENGINEER = { ...EMPTY, preset: "engineer", answered: "answered", pins: ["/projects"], known: KNOWN };
 
-  test("with a copy, My apps paints before the read answers, then the read wins", async ({ page }) => {
+  test("with a copy, the stars paint before the read answers, then the read wins", async ({ page }) => {
     const store = await stub(page, ENGINEER, { cached: FOUNDER, holdGet: true });
     await page.goto("/settings/appearance");
-    await expect(myApps(page)).toHaveText(["Projects", "Approvals", "My Email", "Chat"]);
+    await expect.poll(() => shape(page)).toEqual([["admin", ["Approvals"]]]);
     expect(store.gets).toBe(0);
     await expect(question(page)).toHaveCount(0);
     store.release();
-    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+    await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
     // The copy now holds what the server said.
     const kept = await page.evaluate((k) => localStorage.getItem(k), CACHE_KEY);
-    expect(JSON.parse(kept ?? "{}")).toMatchObject({ preset: "engineer" });
+    expect(JSON.parse(kept ?? "{}")).toMatchObject({ preset: "engineer", pins: ["/projects"], known: KNOWN });
   });
 
-  test("with no copy, there is no My apps until the read answers", async ({ page }) => {
+  test("with no copy, every held app shows until the read answers", async ({ page }) => {
     const store = await stub(page, ENGINEER, { holdGet: true });
     await page.goto("/settings/appearance");
     await expect(sidebar(page).getByRole("link", { name: "People" })).toBeVisible();
-    await expect(myApps(page)).toHaveCount(0);
     store.release();
-    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+    await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
   });
 
   test("a refused write is never kept in the copy", async ({ page }) => {
     await stub(page, ENGINEER, { putStatus: 503 });
     await page.goto("/settings/appearance");
-    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+    await expect.poll(() => shape(page)).toEqual([["across", ["Projects"]]]);
     await sidebar(page).getByRole("button", { name: "All apps" }).click();
-    await page.getByRole("dialog", { name: "All apps" }).getByRole("button", { name: "Pin My Email to My apps" }).click();
-    await expect(page.getByText("Your pin was not saved. Try again.").first()).toBeVisible();
+    await page.getByRole("dialog", { name: "All apps" }).getByRole("button", { name: "Show People in sidebar" }).click();
+    await expect(page.getByText("Your sidebar was not saved. Try again.").first()).toBeVisible();
+    // The star went back.
+    await expect(
+      page.getByRole("dialog", { name: "All apps" }).getByRole("button", { name: "Show People in sidebar" }),
+    ).toHaveAttribute("aria-pressed", "false");
     const kept = await page.evaluate((k) => localStorage.getItem(k), CACHE_KEY);
-    expect(JSON.parse(kept ?? "{}").pins ?? null).toBeNull();
+    expect(JSON.parse(kept ?? "{}").pins).toEqual(["/projects"]);
+  });
+});
+
+// ── The phone drawer follows the same model ────────────────────────────────
+
+test.describe("phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("the drawer lists only the starred apps, Personal Center first, and ends with Add apps", async ({ page }) => {
+    await stub(page, { ...EMPTY, preset: "engineer", answered: "answered", pins: ["/email", "/chat"], known: KNOWN });
+    await page.goto("/settings/appearance");
+    await page.getByRole("button", { name: "Menu" }).click();
+    const drawer = page.locator("aside:not([data-collapsed])");
+    await expect.poll(() => shape(page, drawer)).toEqual([
+      ["personal", ["My Email"]],
+      ["studio", ["Chat"]],
+    ]);
+    await drawer.getByRole("button", { name: "Add apps" }).click();
+    const launcher = page.getByRole("dialog", { name: "All apps" });
+    await expect(launcher.getByTestId("launcher-hint")).toHaveText("Star the apps you want in your sidebar.");
   });
 });
 

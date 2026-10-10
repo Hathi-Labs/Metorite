@@ -13,10 +13,16 @@
  * It reads `launcherGroups(visibleSections(...))`, so it shows nothing the
  * member does not hold (`launch_surface.md` §8.4).
  *
- * A star on each app pins it to "My apps", or unpins it (NS-7, §3.2). The
+ * **The star says what the sidebar shows** (owner, 2026-10-11). A filled
+ * star means that the app shows in the sidebar, under its own category. An
+ * outline star means that it does not. The owner said "clicking the star",
+ * so the star stays, and its tooltip and its name say what it does. The
  * star shows once the member's layout is known. Before that, a toggle would
  * write over a layout the shell has not read. The write shows at once and
  * goes back when the server refuses it (`saveShellPrefs`).
+ *
+ * `hint` is one line at the top. The sidebar's "Add apps" row opens this
+ * dialog with it, so a member who came to add an app reads what to do.
  */
 import Link from "next/link";
 import { useRef, useState } from "react";
@@ -24,7 +30,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
-import { EMPTY_SHELL, PINNABLE, togglePin } from "@/lib/shell/presets";
+import { EMPTY_SHELL, STARRABLE, isStarred, toggleStar } from "@/lib/shell/presets";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
 import { saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
@@ -33,12 +39,15 @@ export default function AppLauncher({
   onClose,
   sections,
   pathname,
+  hint,
 }: {
   open: boolean;
   onClose: () => void;
   /** `visibleSections(...)` for this member. */
   sections: readonly NavSection[];
   pathname: string | null;
+  /** One line at the top, for a member who came here to add an app. */
+  hint?: string;
 }) {
   const groups = launcherGroups(sections);
   // ⚠️ Focus the app the member is in, else the first app. Without this the
@@ -48,13 +57,12 @@ export default function AppLauncher({
   const focusHref = (shown.find((p) => isActive(pathname, p.href)) ?? shown[0])?.href;
   const focusRef = useRef<HTMLAnchorElement | null>(null);
   const shell = useShellPrefs();
-  const canPin = shell.enabled && shell.stored !== undefined;
-  const pins = shell.layout.pins;
-  const [pinError, setPinError] = useState<string | null>(null);
+  const canStar = shell.enabled && shell.stored !== undefined;
+  const [starError, setStarError] = useState<string | null>(null);
   const toggle = (href: string) => {
-    setPinError(null);
-    const next = { ...EMPTY_SHELL, ...shell.stored, pins: togglePin(pins, href) };
-    saveShellPrefs(next).catch(() => setPinError("Your pin was not saved. Try again."));
+    setStarError(null);
+    const next = { ...EMPTY_SHELL, ...shell.stored, ...toggleStar(shell.layout, sections, href) };
+    saveShellPrefs(next).catch(() => setStarError("Your sidebar was not saved. Try again."));
   };
   return (
     <Modal
@@ -77,9 +85,15 @@ export default function AppLauncher({
             </Link>
           </p>
         )}
-        {pinError && (
+        {hint && groups.length > 0 && (
+          <p className="text-sm text-muted-foreground" data-testid="launcher-hint">
+            <Icon name="Star" size={14} className="mr-1.5 inline-block align-[-2px] text-primary" />
+            {hint}
+          </p>
+        )}
+        {starError && (
           <p role="alert" className="text-xs text-destructive">
-            {pinError}
+            {starError}
           </p>
         )}
         {groups.map((g) => (
@@ -93,7 +107,8 @@ export default function AppLauncher({
             <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {g.items.map((p) => {
                 const here = isActive(pathname, p.href);
-                const pinned = pins.includes(p.href);
+                const starrable = canStar && STARRABLE.has(p.href);
+                const shown = starrable && isStarred(shell.layout, sections, p.href);
                 return (
                   <li key={p.href} className="relative">
                     <Link
@@ -101,7 +116,7 @@ export default function AppLauncher({
                       href={p.href}
                       onClick={onClose}
                       aria-current={here ? "page" : undefined}
-                      className={`flex h-full items-start gap-3 rounded-lg border px-3 py-2.5 tech-transition ${canPin && PINNABLE.has(p.href) ? "pr-10" : ""} ${
+                      className={`flex h-full items-start gap-3 rounded-lg border px-3 py-2.5 tech-transition ${starrable ? "pr-10" : ""} ${
                         here
                           ? "border-primary/40 bg-primary/10"
                           : "border-border hover:border-primary/30 hover:bg-secondary"
@@ -123,21 +138,21 @@ export default function AppLauncher({
                     {/* ⚠️ The wrapper places the star. `.cc-control` sets its
                         own `position`, which beats an `absolute` class on
                         the button, and the star then drew under the tile. */}
-                    {canPin && PINNABLE.has(p.href) && (
+                    {starrable && (
                       <span className="absolute right-2 top-2">
                         <Button
                           variant="ghost"
                           size="icon-xs"
-                          aria-pressed={pinned}
-                          aria-label={pinned ? `Unpin ${p.label} from My apps` : `Pin ${p.label} to My apps`}
-                          title={pinned ? "Unpin from My apps" : "Pin to My apps"}
+                          aria-pressed={shown}
+                          aria-label={shown ? `Hide ${p.label} from sidebar` : `Show ${p.label} in sidebar`}
+                          title={shown ? "Shown in sidebar" : "Show in sidebar"}
                           onClick={() => toggle(p.href)}
-                          data-testid="launcher-pin"
+                          data-testid="launcher-star"
                         >
                           <Icon
                             name="Star"
                             size={14}
-                            className={pinned ? "fill-current text-primary" : "text-muted-foreground"}
+                            className={shown ? "fill-current text-primary" : "text-muted-foreground"}
                           />
                         </Button>
                       </span>

@@ -4,10 +4,11 @@
  * sign-out without importing the hook.
  *
  * Why it exists. The read cache (`dataCache`) lives in memory only, so every
- * full page load started with no layout. The pins then jumped from the team
- * groups into "My apps" when the read landed, and a click in that moment
- * opened the wrong app. This copy paints the last known layout on the first
- * frame, and the read confirms it or replaces it.
+ * full page load started with no layout. The sidebar then changed shape when
+ * the read landed, and a click in that moment opened the wrong app. This
+ * copy paints the last known layout on the first frame, and the read
+ * confirms it or replaces it. It holds the stars (`pins`) and `known`, and
+ * never a tenant row.
  *
  * The rules:
  *

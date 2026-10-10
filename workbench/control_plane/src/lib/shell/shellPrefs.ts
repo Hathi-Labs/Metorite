@@ -8,19 +8,26 @@
  * sign-in question all read this key, so a pin toggled in one shows in all of
  * them at once.
  *
+ * ⚠️ **`pins` holds the STARRED apps** (owner, 2026-10-11). The field keeps
+ * its NS-7 name, so no stored row changes (R6). `known` beside it holds the
+ * apps the member could see at their last save. `starredHrefs` in
+ * `presets.ts` reads the two, and `routes/admin/me.py` stores them.
+ *
  * The rules:
  *
  * - **The first frame draws the last known layout** (round 2). The browser
  *   keeps the layout the server last confirmed, per account
  *   (`shellCache.ts`). The read then confirms it or replaces it. With no
- *   such copy, as on a first visit, "My apps" waits for the read.
+ *   such copy, as on a first visit, the sidebar shows every held app until
+ *   the read answers.
  * - **The read starts with the access read, not after it.** The route needs
  *   only the session. So `AppShell` calls this hook before access resolves,
  *   and the answer is often in memory by the first frame of the sidebar.
  * - **A read that fails never blanks the sidebar.** The layout falls back to
- *   the role's preset (`shellLayout`), and the first sign-in question does
+ *   the role's preset and every held app (`shellLayout`), and the first
+ *   sign-in question does
  *   not open, because "never asked" is a fact only the server knows.
- * - **A write shows at once.** A pin that the server refuses goes back. An
+ * - **A write shows at once.** A star that the server refuses goes back. An
  *   answer to the question that the server refuses STAYS for this page
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
@@ -96,7 +103,7 @@ export async function readShellPrefs(): Promise<StoredShell> {
  *
  * On a refusal it throws, so the caller can say so. With `keep`, the chosen
  * layout stays for this page (an answer to the question). Without it, the
- * cache goes back to what it held (a pin).
+ * cache goes back to what it held (a star).
  */
 export async function saveShellPrefs(
   next: StoredShell | null,
