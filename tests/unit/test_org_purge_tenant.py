@@ -10,7 +10,7 @@ and the ``already_absent`` retry arm.
 **R8** — real Postgres via the tenant ladder (``TENANT_LADDER_DATABASE_URL``):
 the whole feature IS FK topology, which a hermetic fake cannot disagree with.
 The suite's sharpest lesson is pinned in ``TestTheExclusionCannotGoStale``:
-the ``crm_*`` tables' ``organization_id`` references ``crm_organizations``
+the ``crm_*`` tables' ``organization_id`` references ``crm_companies``
 (a CRM company record), NOT the tenant — discovered when this suite's first
 draft seeded them as tenant rows and the FK refused.
 
@@ -207,7 +207,7 @@ class TestTheExclusionCannotGoStale:
         the tenant ``organization`` table — so the purge's single DELETE
         reaches it — or (b) be one of the named ``crm_*`` tables whose
         ``organization_id`` is a DIFFERENT fact (an FK to
-        ``crm_organizations``, the CRM company record — measured 2026-08-24
+        ``crm_companies``, the CRM company record — measured 2026-08-24
         when seeding them as tenant rows was refused by that very FK).
 
         The red arms, both deliberate: a NEW tenant table without the cascade
@@ -244,7 +244,7 @@ class TestTheExclusionCannotGoStale:
         )
 
         # And the exclusion means what the docstring says: each named table's
-        # organization_id points at crm_organizations, not the tenant.
+        # organization_id points at crm_companies, not the tenant.
         with eng.begin() as conn:
             for table in sorted(_NOT_TENANT_SCOPED):
                 target = conn.execute(text(
@@ -256,7 +256,7 @@ class TestTheExclusionCannotGoStale:
                     "WHERE c.contype = 'f' AND a.attname = 'organization_id' "
                     f"  AND rel.relname = '{table}'"
                 )).scalar_one_or_none()
-                assert target == "crm_organizations", (
+                assert target == "crm_companies", (
                     f"{table}.organization_id references {target!r} — the "
                     "exclusion's premise changed; re-derive it"
                 )

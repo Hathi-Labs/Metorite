@@ -29,7 +29,7 @@
 
 -- ── Organizations (Zoho: Accounts) ─────────────────────────────────────── §3.1
 
-CREATE TABLE IF NOT EXISTS crm_organizations (
+CREATE TABLE IF NOT EXISTS crm_companies (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name                TEXT NOT NULL,
     website             TEXT,
@@ -53,13 +53,13 @@ CREATE TABLE IF NOT EXISTS crm_organizations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_name
-    ON crm_organizations (name);
+    ON crm_companies (name);
 -- The query predicate is lower(owner_email) = :owner (R10), so the index must
 -- fold case too — a plain column index can never serve it.
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_owner_email
-    ON crm_organizations (lower(owner_email));
+    ON crm_companies (lower(owner_email));
 CREATE INDEX IF NOT EXISTS idx_crm_organizations_last_activity_at
-    ON crm_organizations (last_activity_at);
+    ON crm_companies (last_activity_at);
 
 -- ── Contacts (Zoho: Contacts) ──────────────────────────────────────────── §3.2
 
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS crm_contacts (
     phone               TEXT,
     mobile              TEXT,
     title               TEXT,
-    organization_id     UUID REFERENCES crm_organizations (id) ON DELETE SET NULL,
+    company_id          UUID REFERENCES crm_companies (id) ON DELETE SET NULL,
     description         TEXT,
     linkedin_url        TEXT,
     owner_email         TEXT,
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS crm_contacts (
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_email
     ON crm_contacts (lower(email));
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_organization_id
-    ON crm_contacts (organization_id);
+    ON crm_contacts (company_id);
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_owner_email
     ON crm_contacts (lower(owner_email));
 CREATE INDEX IF NOT EXISTS idx_crm_contacts_last_activity_at
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS crm_leads (
     email                       TEXT,
     phone                       TEXT,
     mobile                      TEXT,
-    -- Free text. Becomes a crm_organizations row only on conversion (§3.7).
+    -- Free text. Becomes a crm_companies row only on conversion (§3.7).
     organization_name           TEXT,
     website                     TEXT,
     industry                    TEXT,
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS crm_leads (
     -- Conversion provenance (§3.7 step 4).
     converted_at                TIMESTAMPTZ,
     converted_contact_id        UUID REFERENCES crm_contacts (id) ON DELETE SET NULL,
-    converted_organization_id   UUID REFERENCES crm_organizations (id) ON DELETE SET NULL,
+    converted_organization_id   UUID REFERENCES crm_companies (id) ON DELETE SET NULL,
     -- FK added in the guarded DO $$ below, once crm_deals exists: crm_deals
     -- references crm_leads for provenance, so the two cannot both be inline.
     converted_deal_id           UUID,
@@ -194,7 +194,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_leads_last_activity_at
 CREATE TABLE IF NOT EXISTS crm_deals (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name                    TEXT NOT NULL,
-    organization_id         UUID REFERENCES crm_organizations (id) ON DELETE SET NULL,
+    company_id              UUID REFERENCES crm_companies (id) ON DELETE SET NULL,
     status_id               UUID NOT NULL
                                 REFERENCES crm_deal_statuses (id) ON DELETE RESTRICT,
     -- The stage-age clock: re-stamped by every status transition, so "how long
@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS crm_deals (
 CREATE INDEX IF NOT EXISTS idx_crm_deals_status_id
     ON crm_deals (status_id);
 CREATE INDEX IF NOT EXISTS idx_crm_deals_organization_id
-    ON crm_deals (organization_id);
+    ON crm_deals (company_id);
 CREATE INDEX IF NOT EXISTS idx_crm_deals_owner_email
     ON crm_deals (lower(owner_email));
 CREATE INDEX IF NOT EXISTS idx_crm_deals_expected_close_date
@@ -286,7 +286,7 @@ CREATE TABLE IF NOT EXISTS crm_activities (
     lead_id             UUID REFERENCES crm_leads (id) ON DELETE CASCADE,
     deal_id             UUID REFERENCES crm_deals (id) ON DELETE CASCADE,
     contact_id          UUID REFERENCES crm_contacts (id) ON DELETE CASCADE,
-    organization_id     UUID REFERENCES crm_organizations (id) ON DELETE CASCADE,
+    company_id          UUID REFERENCES crm_companies (id) ON DELETE CASCADE,
     -- An email address, or `agent:<name>` when the platform wrote it.
     created_by          TEXT NOT NULL,
     meta                JSONB,
@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS crm_activities (
         lead_id IS NOT NULL
         OR deal_id IS NOT NULL
         OR contact_id IS NOT NULL
-        OR organization_id IS NOT NULL
+        OR company_id IS NOT NULL
     )
 );
 
@@ -307,7 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_activities_lead_id_created_at
 CREATE INDEX IF NOT EXISTS idx_crm_activities_contact_id_created_at
     ON crm_activities (contact_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_crm_activities_organization_id_created_at
-    ON crm_activities (organization_id, created_at);
+    ON crm_activities (company_id, created_at);
 -- Partial: the only question asked of due_at is "what is still open", and the
 -- completed tail is the majority of the table within a quarter.
 CREATE INDEX IF NOT EXISTS idx_crm_activities_due_at

@@ -17,7 +17,7 @@ the ``people*`` family, ``tenant_placement``, ``provider_keys``,
 
 ⚠️ **The three ``crm_*`` tables that LOOK org-scoped are not** — measured the
 hard way: ``crm_activities``/``crm_deals``/``crm_contacts`` carry an
-``organization_id`` that references ``crm_organizations`` (the CRM's *company
+``organization_id`` that references ``crm_companies`` (the CRM's *company
 records*), not the tenant ``organization``. The CRM family has **no tenancy
 column at all yet** (the un-threaded MT-1j remainder), so there is nothing
 per-tenant this purge could address there; ``_NOT_TENANT_SCOPED`` names the
@@ -65,7 +65,7 @@ _log = get_logger("acb_auth.offboard")
 _ORG_BY_SLUG_SQL = "SELECT id FROM organization WHERE slug = :slug"
 
 #: Tables whose ``organization_id`` is NOT the tenant (it references
-#: ``crm_organizations`` — a CRM company record). Named so the R8 fence can
+#: ``crm_companies`` — a CRM company record). Named so the R8 fence can
 #: assert the exclusion is exactly this set and nothing more: a NEW table
 #: with a non-cascading tenant ``organization_id`` must fail the suite, not
 #: slip into an exclusion written for a different fact.

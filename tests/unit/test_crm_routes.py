@@ -607,9 +607,9 @@ async def test_a_jsonb_column_is_cast_and_serialized(db: FakeCrmDB) -> None:
         ),
         USER,
     )
-    [insert] = db.statements_touching("INSERT INTO crm_organizations")
+    [insert] = db.statements_touching("INSERT INTO crm_companies")
     assert "CAST(:address AS jsonb)" in insert
-    [(_, params)] = [c for c in db.calls if "INSERT INTO crm_organizations" in c[0]]
+    [(_, params)] = [c for c in db.calls if "INSERT INTO crm_companies" in c[0]]
     assert isinstance(params["address"], str)
 
 
@@ -709,7 +709,7 @@ async def test_a_patch_touches_updated_at(db: FakeCrmDB) -> None:
     await crm_records.patch_record(
         ORGANIZATIONS, str(seeded.id), crm_core.OrganizationIn(industry="Auto"), USER,
     )
-    [update] = db.statements_touching("UPDATE crm_organizations SET")
+    [update] = db.statements_touching("UPDATE crm_companies SET")
     assert "updated_at = now()" in update
 
 
@@ -803,7 +803,7 @@ async def test_an_activity_bumps_its_targets_last_activity_at(
         ORGANIZATIONS, str(org.id), crm_activities.ActivityIn(body="met"), USER,
     )
     assert db.statements_touching(
-        "UPDATE crm_organizations SET last_activity_at = now()"
+        "UPDATE crm_companies SET last_activity_at = now()"
     )
 
 
@@ -1478,14 +1478,14 @@ async def test_the_join_wraps_the_page_rather_than_the_table(
     db: FakeCrmDB,
 ) -> None:
     """Structural: filter, order and limit stay INSIDE the derived table the
-    join wraps. Inlining the join would put crm_organizations' own
+    join wraps. Inlining the join would put crm_companies' own
     ``owner_email``, ``source`` and ``name`` in scope for every unqualified
     predicate list_contract renders — in all four entities, to serve one."""
     _, deal_status = _seed_pipeline(db)
     db.seed(DEALS.table, name="Bosch printer", status_id=deal_status.id)
     await crm_records._list(DEALS, _params(owner="VJ@Fracktal.in"))
 
-    joined = db.statements_touching("LEFT JOIN crm_organizations")
+    joined = db.statements_touching("LEFT JOIN crm_companies")
     assert joined, "the deal list lost its organization-name projection"
     inner = joined[0].split(") base")[0]
     assert "lower(owner_email) = :owner" in inner

@@ -159,7 +159,7 @@ async def _resolve_status(
     has been claimed by nobody, and is never gated. Without that condition a
     requirement on the default lane would 422 ``QuickCreateModal`` (which sends
     no ``status_id``) and every lead conversion (``ConvertDeal`` has no such
-    field) — and ``organization_id`` is requirable while neither surface can
+    field) — and ``company_id`` is requirable while neither surface can
     supply one, so those leads would become permanently unconvertible.
 
     The permissive direction is deliberate and cheaply reversible: deleting the

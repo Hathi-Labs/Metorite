@@ -28,7 +28,7 @@ It never looks at what an existing `organization_id` actually *references*.
 This file matches the **foreign key's target**, and that distinction is not
 hypothetical:
 
-    crm_contacts.organization_id  REFERENCES crm_organizations   -- a CUSTOMER
+    crm_contacts.organization_id  REFERENCES crm_companies   -- a CUSTOMER
     pm_tasks.organization_id      REFERENCES organization        -- the TENANT
 
 Three CRM tables carry the first kind. A name-based check reads them as scoped;
@@ -36,7 +36,7 @@ they are not scoped at all. That mistake was in the first version of THIS file
 too — it published "6 tables scoped" when the answer was 3 — and matching the FK
 target is what corrected it. The same blind spot then turned out to be live in
 MT-1b's generator, which would have emitted `UPDATE crm_contacts SET
-organization_id = <tenant>` into a column whose FK points at `crm_organizations`
+organization_id = <tenant>` into a column whose FK points at `crm_companies`
 and aborted phase 2 in the maintenance window. `HOMONYM_BLOCKED` is the fix;
 the assertions below are what stop it coming back.
 
@@ -156,7 +156,7 @@ BASELINE_UNSCOPED = {
     "copilot_config", "copilot_event",
 # crm_* — ⚠️ `crm_activities`, `crm_contacts` and `crm_deals` are NOT here.
     # They carry a column called `organization_id` that REFERENCES
-    # crm_organizations, a CUSTOMER COMPANY, so they are neither scoped nor
+    # crm_companies, a CUSTOMER COMPANY, so they are neither scoped nor
     # ordinary debt: they are BLOCKED in `gen_tenant_migration.HOMONYM_BLOCKED`
     # until the column is renamed, because a generator that scopes by name
     # would corrupt a business column.
@@ -167,7 +167,7 @@ BASELINE_UNSCOPED = {
     # fact that the purge cascade already treats as mailbox-owned.
     "crm_auto_lead_cursors",
     "crm_deal_contacts", "crm_deal_statuses", "crm_lead_statuses",
-    "crm_leads", "crm_lost_reasons", "crm_organizations",
+    "crm_leads", "crm_lost_reasons", "crm_companies",
     "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
 # custom_*
     "custom_api_definitions",
@@ -256,7 +256,7 @@ def _references_the_tenant(body: str) -> bool:
     ⚠️ **This function exists because the first version of this file was wrong,
     and wrong in the direction that flatters.** It matched the column NAME, so
     it counted `crm_activities`, `crm_contacts` and `crm_deals` as tenant-scoped
-    on the strength of an `organization_id` that `REFERENCES crm_organizations`
+    on the strength of an `organization_id` that `REFERENCES crm_companies`
     — a CUSTOMER COMPANY, not the tenant root. The published figure was six
     scoped tables; it was three.
 

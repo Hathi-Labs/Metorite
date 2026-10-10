@@ -112,13 +112,13 @@ _DENORMALISE_NOTE = (
 #: they are BLOCKED**, and the difference matters:
 #:
 #: ``crm_contacts.organization_id`` is the customer COMPANY a contact works at
-#: (``REFERENCES crm_organizations``), not the tenant that owns the row. The
+#: (``REFERENCES crm_companies``), not the tenant that owns the row. The
 #: generator's phases are name-based, so left alone they would emit, for each:
 #:
 #:   phase 1  ADD COLUMN IF NOT EXISTS  -> silent no-op, the column exists
 #:   phase 2  UPDATE ... WHERE organization_id IS NULL
 #:                                      -> writes a TENANT id into a column whose
-#:                                         FK points at ``crm_organizations``;
+#:                                         FK points at ``crm_companies``;
 #:                                         aborts on that FK, mid-window
 #:   phase 3  ADD CONSTRAINT ... REFERENCES organization(id)
 #:                                      -> a second, contradictory FK on one

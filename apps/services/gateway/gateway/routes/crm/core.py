@@ -134,7 +134,7 @@ WEIGHTED_SQL = (
 #: guaranteed), nor `probability` (D-CRM-10 inherits it from the stage, so
 #: demanding it would demand something the platform is about to supply).
 STAGE_REQUIREABLE_FIELDS: tuple[str, ...] = (
-    "amount", "expected_close_date", "organization_id", "owner_email",
+    "amount", "expected_close_date", "company_id", "owner_email",
 )
 
 #: `crm_activities.type`, mirrored from the same migration.
@@ -196,7 +196,7 @@ class ContactModel(BaseModel):
     phone: str | None = None
     mobile: str | None = None
     title: str | None = None
-    organization_id: str | None = None
+    company_id: str | None = None
     description: str | None = None
     linkedin_url: str | None = None
     owner_email: str | None = None
@@ -214,7 +214,7 @@ class ContactIn(BaseModel):
     phone: str | None = None
     mobile: str | None = None
     title: str | None = None
-    organization_id: str | None = None
+    company_id: str | None = None
     description: str | None = None
     linkedin_url: str | None = None
     owner_email: str | None = None
@@ -275,7 +275,7 @@ class LeadIn(BaseModel):
 class DealModel(BaseModel):
     id: str
     name: str
-    organization_id: str | None = None
+    company_id: str | None = None
     #: NOT a column — projected by the LEFT JOIN in :func:`project_joined` so a
     #: kanban card can print the account name without the browser client-side
     #: joining a paged organization list against it (WS-26c done-when 2). A row
@@ -304,7 +304,7 @@ class DealModel(BaseModel):
 
 class DealIn(BaseModel):
     name: str | None = None
-    organization_id: str | None = None
+    company_id: str | None = None
     status_id: str | None = None
     amount: float | None = None
     currency: str | None = None
@@ -330,7 +330,7 @@ class ActivityModel(BaseModel):
     lead_id: str | None = None
     deal_id: str | None = None
     contact_id: str | None = None
-    organization_id: str | None = None
+    company_id: str | None = None
     created_by: str | None = None
     meta: dict | None = None
     zoho_id: str | None = None
@@ -426,16 +426,16 @@ _TIMESTAMP_SORTS = {
 
 ORGANIZATIONS = Entity(
     slug="organizations",
-    table="crm_organizations",
+    table="crm_companies",
     label="Organization",
-    activity_column="organization_id",
+    activity_column="company_id",
     model=OrganizationModel,
     payload=OrganizationIn,
     required=("name",),
     sorts={"name": "name", "owner_email": "owner_email", **_TIMESTAMP_SORTS},
     default_sort="last_activity_at",
     search=("name", "email", "website"),
-    cascades=(("crm_activities", "organization_id"),),
+    cascades=(("crm_activities", "company_id"),),
     # Zoho calls an organization an Account — the one place that rename lives.
     zoho_module="Accounts",
     zoho_entity_type="organization",
@@ -514,7 +514,7 @@ DEALS = Entity(
     # would render blank labels that look like missing data (WS-26c dw 2).
     joined_columns=(("organization_name", "org.name"),),
     join_sql=(
-        " LEFT JOIN crm_organizations org ON org.id = base.organization_id"
+        " LEFT JOIN crm_companies org ON org.id = base.company_id"
     ),
 )
 
@@ -770,11 +770,11 @@ def project_joined(entity: Entity, inner: str, order_by: str) -> str:
 
         SELECT base.*, org.name AS organization_name
         FROM (SELECT * FROM crm_deals WHERE … ORDER BY … LIMIT …) base
-        LEFT JOIN crm_organizations org ON org.id = base.organization_id
+        LEFT JOIN crm_companies org ON org.id = base.company_id
         ORDER BY base.…
 
     Inlining it would put two relations in scope for the WHERE clause, and
-    ``crm_organizations`` carries ``owner_email``, ``source``, ``name`` and the
+    ``crm_companies`` carries ``owner_email``, ``source``, ``name`` and the
     timestamp trio too — so every unqualified predicate
     :func:`list_contract` renders would become ambiguous, and the fix would be
     to qualify all of them, in all four entities, for one entity's benefit.
@@ -915,7 +915,7 @@ def coerce_write_values(values: dict[str, Any]) -> dict[str, Any]:
 #: here: a NOT NULL column without one is a missing *required* field, which
 #: ``Entity.required`` and the route-level checks already answer.
 NOT_NULL_DEFAULTED: dict[str, frozenset[str]] = {
-    "crm_organizations": frozenset({"source"}),
+    "crm_companies": frozenset({"source"}),
     "crm_contacts": frozenset({"source"}),
     "crm_leads": frozenset({"source"}),
     "crm_deals": frozenset({"source", "currency", "status_changed_at"}),
@@ -987,7 +987,7 @@ def _bindable(values: dict[str, Any]) -> dict[str, Any]:
 #: ``zoho_id``), so a dirty column there would be a second answer to one
 #: question.
 ZOHO_TRACKED_TABLES: frozenset[str] = frozenset({
-    "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
 })
 
 

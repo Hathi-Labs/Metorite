@@ -713,7 +713,7 @@ async def build_payload(db: Any, entity: Entity, row: Any) -> dict[str, Any]:
     if entity is ORGANIZATIONS:
         return to_zoho_account(row)
     account_id = await _linked_zoho_id(
-        db, ORGANIZATIONS.table, getattr(row, "organization_id", None),
+        db, ORGANIZATIONS.table, getattr(row, "company_id", None),
     )
     if entity is CONTACTS:
         return to_zoho_contact(row, account_id=account_id)

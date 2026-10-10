@@ -499,11 +499,11 @@ async def apply_record(
     if status_id:
         values["status_id"] = status_id
     if entity is CONTACTS:
-        values["organization_id"] = await _linked_native_id(
+        values["company_id"] = await _linked_native_id(
             db, ORGANIZATIONS, record.get("Account_Name"),
         )
     if entity is DEALS:
-        values["organization_id"] = await _linked_native_id(
+        values["company_id"] = await _linked_native_id(
             db, ORGANIZATIONS, record.get("Account_Name"),
         )
 

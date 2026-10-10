@@ -209,7 +209,7 @@ async def test_every_record_upsert_carries_on_conflict_zoho_id(
 
     await _run()
 
-    for table in ("crm_organizations", "crm_contacts", "crm_leads", "crm_deals"):
+    for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals"):
         [insert] = [
             s for s in db.statements if s.startswith(f"INSERT INTO {table} (")
         ]
@@ -228,7 +228,7 @@ async def test_the_upsert_never_bumps_updated_at(
     zoho.data["Accounts"] = [{"id": "z-acc-1", "Account_Name": "Fracktal"}]
     await _run()
 
-    [insert] = db.statements_touching("INSERT INTO crm_organizations (")
+    [insert] = db.statements_touching("INSERT INTO crm_companies (")
     assert "updated_at" not in insert
 
 

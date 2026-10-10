@@ -27,16 +27,16 @@ MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
 
 
 def _crm_migration() -> Path:
-    """The migration that creates ``crm_organizations``, whatever it is numbered."""
+    """The migration that creates ``crm_companies``, whatever it is numbered."""
     found = [
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
-        and "CREATE TABLE IF NOT EXISTS crm_organizations" in path.read_text(
+        and "CREATE TABLE IF NOT EXISTS crm_companies" in path.read_text(
             encoding="utf-8",
         )
     ]
     assert len(found) == 1, (
-        f"expected exactly one migration creating crm_organizations, found "
+        f"expected exactly one migration creating crm_companies, found "
         f"{[p.name for p in found]}"
     )
     return found[0]
@@ -155,7 +155,7 @@ def test_no_statement_drops_or_truncates_data(bare: str) -> None:
 # ── §3's tables and their shape ─────────────────────────────────────────────
 
 EXPECTED_TABLES = (
-    "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
     "crm_deal_contacts", "crm_lead_statuses", "crm_deal_statuses",
     "crm_activities", "crm_status_changes", "crm_lost_reasons",
 )
@@ -302,7 +302,7 @@ def test_every_table_carries_zoho_provenance_where_it_is_imported(
     bare: str,
 ) -> None:
     """§7.1 upserts ``ON CONFLICT (zoho_id)``, which needs the UNIQUE."""
-    for table in ("crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals",
                   "crm_activities"):
         body = bare.split(f"CREATE TABLE IF NOT EXISTS {table}", 1)[1]
         body = body.split(");", 1)[0]
@@ -537,7 +537,7 @@ def test_the_sync_migration_drops_or_truncates_nothing(sync_bare: str) -> None:
 
 @pytest.mark.parametrize(
     "table",
-    ["crm_organizations", "crm_contacts", "crm_leads", "crm_deals"],
+    ["crm_companies", "crm_contacts", "crm_leads", "crm_deals"],
 )
 def test_the_four_record_tables_gain_the_dirty_pair(
     sync_bare: str, table: str,
@@ -564,7 +564,7 @@ def test_the_statuses_and_the_activity_spine_are_not_dirty_tracked(
     """
     altered = set(re.findall(r"ALTER TABLE\s+(\w+)", sync_bare, re.I))
     assert altered == {
-        "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+        "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
         "crm_activities",
     }, altered
 
@@ -581,7 +581,7 @@ def test_the_statuses_and_the_activity_spine_are_not_dirty_tracked(
 
 @pytest.mark.parametrize(
     "table",
-    ["crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    ["crm_companies", "crm_contacts", "crm_leads", "crm_deals",
      "crm_activities"],
 )
 def test_every_push_queue_can_back_off_and_give_up(
@@ -660,7 +660,7 @@ def test_the_unpushed_backlog_index_is_partial(sync_bare: str) -> None:
 def test_the_dirty_indexes_are_partial(sync_bare: str) -> None:
     """The push phase asks one question — "what is dirty" — against a table
     that is almost entirely clean."""
-    for table in ("crm_organizations", "crm_contacts", "crm_leads", "crm_deals"):
+    for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals"):
         assert f"ON {table} (zoho_dirty) WHERE zoho_dirty" in sync_bare
 
 

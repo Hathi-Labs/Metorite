@@ -1019,7 +1019,7 @@ async def test_a_board_card_carries_its_organization_name(
     name/org/amount/owner/stage-age, and the browser cannot client-side join
     the account list because that list is paged at 100."""
     stages = _deal_pipeline(db)
-    org = db.seed("crm_organizations", name="Bosch India")
+    org = db.seed("crm_companies", name="Bosch India")
     _seed_deal(db, stages["Proposal"], amount=100_000.0, organization_id=org.id)
 
     board = await crm_pipeline.get_pipeline(owner=None, per_lane=50, user=USER)
@@ -1053,7 +1053,7 @@ async def test_the_lane_query_joins_after_its_own_limit(
     _seed_deal(db, stages["Proposal"], amount=1.0)
 
     await crm_pipeline.get_pipeline(owner=None, per_lane=2, user=USER)
-    joined = db.statements_touching("LEFT JOIN crm_organizations")
+    joined = db.statements_touching("LEFT JOIN crm_companies")
 
     assert joined, "the board lost its organization-name projection"
     assert "LIMIT :limit) base LEFT JOIN" in joined[0]
