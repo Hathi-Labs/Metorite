@@ -853,8 +853,6 @@ a failed source and the SQL of the two reads. `tests/unit/test_shell_needs_r8.py
 is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
 a member with more work than the cap.
 
----
-
 **The bell, BUILT in NS-6 slice 6a (2026-10-10, dark).**
 `src/lib/shell/ShellBell.tsx` draws it behind `NEXT_PUBLIC_SHELL_DOCK`.
 `dockFlag.ts` reads the flag, and a dev build also reads
@@ -890,6 +888,8 @@ must know this before the flag goes on:
   opened the task in the page's own panel.
 
 Fences: `src/lib/shell/shellBell.test.ts` and `e2e/shell-bell.spec.ts`.
+
+---
 
 ### 7.3 Updating, not broken
 
