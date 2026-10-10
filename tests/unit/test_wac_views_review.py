@@ -227,6 +227,20 @@ async def test_a_typed_record_becomes_the_real_element(
     assert ("image", "media-1") in parts and ("interactive", "list") in parts
 
 
+def test_the_run_payload_carries_no_element_record() -> None:
+    """The payload the model reads: past replies with their text only."""
+    from gateway.routes.whatsapp_channel import bot_run
+
+    history = [{"role": "user", "content": "due today?"},
+               {"role": "assistant", "content": "Two tasks.\n\n" + wui.RENDITION_MARK
+                + "[Table: Due today]\n# | Task\n80 | Drawings"}]
+    payload = bot_run.build_payload("and tomorrow?", history, "alice@fracktal.in",
+                                    native=True)
+    for turns in (payload["messages"], payload["_history_loader"]()):
+        assert turns[1]["content"] == "Two tasks."
+        assert all("[Table" not in t["content"] for t in turns)
+
+
 # ── The guard alone ─────────────────────────────────────────────────────────
 
 
