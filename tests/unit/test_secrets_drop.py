@@ -404,8 +404,11 @@ def test_the_manifest_ships_the_three_entries() -> None:
 
     app = _entry(m, "app-env")
     assert (app["kind"], app["remote_path"], app["owner"]) == ("env-merge", "/opt/acb/app/.env", "acb")
-    # Both units load the app env file (deploy/hostinger/*.service).
-    assert app["restart"] == ["acb-gateway", "acb-whatsapp-bridge"]
+    # acb-gateway loads the app env file (deploy/hostinger/*.service). The
+    # whatsmeow bridge loads it too, but it is retired and disabled since
+    # 2026-10-08, and restarting a disabled unit STARTS it: on 2026-10-10 a push
+    # started it, it crash-looped (203/EXEC), and the push rolled back.
+    assert app["restart"] == ["acb-gateway"]
     assert app["health"] == {"acb-gateway": "http://127.0.0.1:8080/health"}
     # The list is a reviewed allowlist, one key at a time. WS-47 WAC-0
     # (2026-10-10) added the WhatsApp bot's System User token, and nothing else.
