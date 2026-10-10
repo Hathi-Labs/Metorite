@@ -385,6 +385,21 @@ async def _resolve_and_bind(user: UserContext) -> UserContext:
     return enriched
 
 
+async def member_context(email: str) -> UserContext:
+    """The ``UserContext`` that a signed-in request for *email* gets.
+
+    For an in-process caller that has ALREADY proved who the member is and
+    bound their org: the WhatsApp channel's run (WS-47 WAC-10c), whose org
+    comes from the phone's link row and whose ``resolve_identity`` check has
+    passed. It is the request path's own resolve (:func:`_resolve_and_bind`),
+    so the permissions, the org and the legacy role match a web request.
+
+    ⚠️ Never call it with an email that came from request input. The caller
+    must own the identity, as ``get_current_user`` owns it for a request.
+    """
+    return await _resolve_and_bind(UserContext(email=email, role=UserRole.EMPLOYEE))
+
+
 def _bind_session_member(email: str | None) -> None:
     """Name the signed-in member on every AI call this request makes.
 
