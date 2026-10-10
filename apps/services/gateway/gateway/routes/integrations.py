@@ -1907,6 +1907,8 @@ async def test_mcp_server(
     if req.transport == "http-sse" and req.url:
         headers = dict(req.headers)
         headers.setdefault("Accept", "application/json")
+        # The guard keeps raw bytes and decodes no content encoding.
+        headers["Accept-Encoding"] = "identity"
         try:
             answer = await outbound_guard.request("GET", req.url, headers=headers)
         except outbound_guard.OutboundRefused as exc:
@@ -2000,7 +2002,9 @@ async def install_plugin(
     # 1. Fetch the manifest
     try:
         manifest_resp = await outbound_guard.request(
-            "GET", manifest_url, headers={"Accept": "application/json"},
+            "GET", manifest_url,
+            # The guard keeps raw bytes and decodes no gzip, so ask for none.
+            headers={"Accept": "application/json", "Accept-Encoding": "identity"},
         )
     except outbound_guard.OutboundRefused as exc:
         _log.warning(
@@ -2039,7 +2043,10 @@ async def install_plugin(
         try:
             spec_resp = await outbound_guard.request(
                 "GET", str(api_url),
-                headers={"Accept": "application/json, application/yaml"},
+                headers={
+                    "Accept": "application/json, application/yaml",
+                    "Accept-Encoding": "identity",
+                },
             )
             if spec_resp.status_code == 200:
                 # The guard gives no headers, so JSON first, then YAML.

@@ -875,3 +875,94 @@ class TestTheDeviceFlowReadsTheOrgClientId:
         assert out["status"] == "authorized"
         assert github == ["Iv1.org-a-client"]
         assert [(p, v) for p, v, _ in store.puts] == [("github:token", "gho_In0Token123")]
+
+
+# ── Fix round 1, P2: the guard reads raw bytes, so ask for no encoding ───────
+
+
+class TestTheGuardedFetchesAskForNoEncoding:
+    """``outbound_guard`` keeps the raw bytes of an answer and never decodes them.
+
+    httpx sends ``Accept-Encoding: gzip, deflate`` by default. A server that
+    honours it sends gzip, and ``json.loads`` fails on it. This server answers
+    gzip whenever the request allows it, as a real one may.
+    """
+
+    @staticmethod
+    def _install(monkeypatch: pytest.MonkeyPatch, body: bytes) -> list[httpx.Request]:
+        import gzip
+
+        seen: list[httpx.Request] = []
+        real = httpx.AsyncClient
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            accepts = request.headers.get("accept-encoding", "")
+            if "gzip" in accepts:
+                return httpx.Response(200, headers={"content-encoding": "gzip"},
+                                      stream=httpx.ByteStream(gzip.compress(body)))
+            return httpx.Response(200, stream=httpx.ByteStream(body))
+
+        def _client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            kwargs.pop("transport", None)
+            return real(*args, transport=httpx.MockTransport(_handle), **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _client)
+        _resolver(monkeypatch, {"plugins.example.com": [PUBLIC_IP]})
+        monkeypatch.setattr(outbound_guard, "_is_local_address", lambda _a: False)
+        return seen
+
+    async def test_plugin_install_parses_the_manifest_and_the_spec(self, monkeypatch) -> None:
+        spec = {"paths": {"/ping": {"get": {"operationId": "ping"}}}}
+        manifest = {"name_for_model": "demo",
+                    "api": {"url": "https://plugins.example.com/openapi.json"}}
+
+        real = httpx.AsyncClient  # before `_install` replaces it
+        seen = self._install(monkeypatch, b"")
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            body = json.dumps(spec if request.url.path.endswith("openapi.json") else manifest)
+            if "gzip" in request.headers.get("accept-encoding", ""):
+                import gzip
+                return httpx.Response(200, headers={"content-encoding": "gzip"},
+                                      stream=httpx.ByteStream(gzip.compress(body.encode())))
+            return httpx.Response(200, stream=httpx.ByteStream(body.encode()))
+
+        def _client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+            kwargs.pop("transport", None)
+            return real(*args, transport=httpx.MockTransport(_handle), **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _client)
+
+        class _Session:
+            def __enter__(self) -> _Session:
+                return self
+
+            def __exit__(self, *_: Any) -> bool:
+                return False
+
+            def execute(self, *_: Any, **__: Any) -> None:
+                return None
+
+            def commit(self) -> None:
+                return None
+
+        import acb_graph
+
+        monkeypatch.setattr(acb_graph, "get_session", lambda: _Session())
+        out = await integrations.install_plugin(
+            integrations.PluginInstallRequest(manifest_url="https://plugins.example.com/ai-plugin.json"),
+            user=USER,
+        )
+        assert out["tools_count"] == 1
+        assert [r.headers.get("accept-encoding") for r in seen] == ["identity", "identity"]
+
+    async def test_mcp_test_asks_for_no_encoding(self, monkeypatch) -> None:
+        seen = self._install(monkeypatch, b"{}")
+        req = integrations.McpServerRequest(
+            name="srv", transport="http-sse", url="https://plugins.example.com/sse",
+        )
+        out = await integrations.test_mcp_server(req, user=USER)
+        assert out["ok"] is True
+        assert [r.headers.get("accept-encoding") for r in seen] == ["identity"]
