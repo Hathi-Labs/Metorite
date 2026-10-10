@@ -24,7 +24,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, fields
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -499,6 +499,16 @@ async def test_created_time_is_shown_but_never_keys_the_cursor(leaks: list[str])
     page = await fake.source().list_changed("deal")
     assert [r.modified_at for r in page.records] == [at(5), at(7)]
     assert page.next_cursor == SourceCursor(since=None, page=2, page_token=None, seen_ids=())
+
+
+async def test_if_modified_since_is_sent_in_utc(leaks: list[str]) -> None:
+    """A Zoho time carries its own offset (``+05:30`` for an IN tenant). The
+    header is sent in UTC, the one form the live check covered."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    fake = Fake([httpx.Response(304)])
+    since = datetime(2026, 10, 1, 15, 30, tzinfo=ist)
+    await fake.source().list_changed("deal", SourceCursor(since=since))
+    assert fake.requests[0].headers["If-Modified-Since"] == "Thu, 01 Oct 2026 10:00:00 +0000"
 
 
 @pytest.mark.parametrize("status", [204, 304])

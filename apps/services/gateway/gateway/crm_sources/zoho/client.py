@@ -90,7 +90,9 @@ def _with_modified_since(
         return headers
     if since.tzinfo is None:
         since = since.replace(tzinfo=UTC)
-    # e.g. "Tue, 01 Jan 2026 00:00:00 +0000".
+    # Always UTC, e.g. "Tue, 01 Jan 2026 00:00:00 +0000". A Zoho time keeps
+    # the offset of its tenant (+0530 on IN), and the live check covered +0000.
+    since = since.astimezone(UTC)
     return {
         **headers,
         "If-Modified-Since": since.strftime("%a, %d %b %Y %H:%M:%S %z"),
