@@ -8,7 +8,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 |---|---|
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
-| S3 — the top-right activity control | Spec only |
+| S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | Spec only |
 | S5 — unread replies, the toast, the tab title and the phone pill | Spec only |
 | S6 — the activity of the other signed-in accounts | Spec only |
@@ -344,6 +344,82 @@ the S2 `state`. It draws on every page, desktop and phone.
 
 **Fence.** A render test of the three row states, and the S1 tree sweep.
 
+**As built (2026-10-10).** No flag. The control only reads the S1 store, and
+it writes nothing.
+
+1. **The control.** `lib/shell/ActivityControl.tsx` draws the `Bot` icon with
+   `NavBadge` and `runBadge`, the one colour rule. Green counts the running
+   runs. Amber counts the runs that need the member, and amber wins. With no
+   run, the control shows the icon alone. The shell bar draws it at its right
+   end, after the app's tools and the bell (`ShellBar.tsx`).
+2. **The panel.** `ShellFrame` mounts one `Modal`, at the new `end`
+   placement under the bar. Escape and an outside press close it, Tab stays
+   in it, and focus goes back to the control. The rows come from
+   `useActivityRows`, which reads the same two sources as the badges: the S1
+   store and the runs of this tab. Newest first. A row shows the agent, its
+   app, the chat title and a status: "Running · 2 min · Search tasks" or
+   "Needs your answer". With no run, it says "No assistants are running."
+3. **The link.** No chat link existed before S3. The shell job door
+   (`lib/shell/doJob.tsx`) is the deep-link idiom, so a row links to
+   `<app>?do=open-chat&fill.session=<thread id>`. Chat, My Tasks, Projects
+   and Email each declare `<ShellJob id={OPEN_CHAT_JOB}>`. The three apps
+   open their assistant and call `askRailSession`. Then `useAgentSessions`
+   opens the chat once its restore is done. Every other agent opens in Chat.
+   App Workshop opens in Chat too, because its chat is per app, not per id.
+   A run on a pane that the member cannot see also opens in Chat.
+4. **The step.** `/chat/active-sessions` adds `lastStep` to a running row
+   (`stream_relay.latest_step`). It reads the tail of the run's own stream,
+   one XREVRANGE with COUNT 12, and adds no key. A tool start gives its tool
+   in words, a progress line gives its text, and a text delta gives "Writing
+   a reply". The server takes out tags, angle brackets and control characters,
+   and it caps the step at 60 characters. The browser caps it again and draws
+   it as text.
+5. **The phone.** The phone has no shell row. The Menu drawer shows the same
+   control beside "Search or ask anything", and a tap opens the same panel as
+   a bottom sheet (the new `sheet` placement). The Menu tab keeps its S1
+   badge, so a member sees the count before the drawer opens.
+6. **Visibility.** The panel lists only the rows that `/chat/active-sessions`
+   returns for the member and org, plus the runs of this tab. An asked chat
+   opens only when `findSession` finds it in the member's own list.
+
+**Where the build differs from the text above.**
+
+- **"New reply" waits for S5.** The server keeps no "finished, unread" state
+  for a run. A run leaves the list when it ends. So the panel shows two row
+  states, and S5 adds the third with its unread rule.
+
+**Fences (R7), as built.**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/shell/activityControl.test.ts` | The quiet, green and amber states. The rows, their order and their text. The link of each agent, and the job on each app that a link names. The panel is a `Modal` that hands back `onClose`. The empty state. A step drawn as text. The shell owns the control, and it polls nothing |
+| `src/lib/railAsk.test.ts` | An ask is read and never taken, it opens once in each rail, and it goes stale. `findSession` finds only the member's own chat |
+| `src/lib/liveRuns.test.ts` | The store carries the step, caps it, and publishes a new step |
+| `tests/unit/test_run_last_step.py` | The step rule, the 60-character cap, plain text, one tail read, the route, and a question with no step |
+
+**Mutation record (2026-10-10).** Nine mutants, nine killed:
+
+- every row sent to Chat, and amber that does not win
+- an ask taken on read, and an ask that never goes stale
+- the step left out of the publish key
+- no cap, angle brackets kept, the whole stream read, and a step read for a
+  question
+
+**Visual review (2026-10-10).** The rig ran the control and the open panel
+with two running chats and one that needs the member. It captured dark,
+light, compact and violet accent at 1440, and the phone at 390. It also drove
+Escape, the focus return, the Tab trap, and two links. A My Tasks row opened
+the asked chat in the My Tasks rail, and a Chat row opened it in Chat.
+
+**Known limits.**
+
+- The control in the phone drawer shows the counts of the moment the drawer
+  opened, like the drawer links (S1).
+- With the shell bar flag off, the desktop draws no control. The flag is on
+  in production.
+- A member with no `chat` feature cannot open a Chat link. The same gap holds
+  for the S1 badge.
+
 ### S4 — the server saves the prompt at run start
 
 **What.** Today the browser saves the member's turn (`lib/sessions.ts`, a
@@ -407,7 +483,9 @@ An agent must refuse these by name until the owner decides.
 | Path | Role |
 |---|---|
 | `workbench/control_plane/src/lib/liveRuns.ts` | The one poller (S1) |
-| `workbench/control_plane/src/lib/runActivity.ts` | The agent-to-app map and the counts (S1) |
+| `workbench/control_plane/src/lib/runActivity.ts` | The agent-to-app map and the counts (S1), the panel rows and the chat link (S3) |
+| `workbench/control_plane/src/lib/shell/ActivityControl.tsx` | The activity control and its panel (S3) |
+| `workbench/control_plane/src/lib/railSessions.ts` | `askRailSession`, `findSession` (S3) |
 | `workbench/control_plane/src/hooks/useActiveSessions.ts` | `useActiveSessions` and `useRunActivity` |
 | `workbench/control_plane/src/components/NavBadge.tsx` | The one nav count |
 | `workbench/control_plane/src/components/Sidebar.tsx` | `NavLink`, `paneBadge` |
