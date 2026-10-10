@@ -5,8 +5,9 @@
  * (MT-1k, `saas_multitenancy.md` "Org-aware links", owner 2026-10-10).
  *
  * A link with `?org=<organization uuid>` names the organization of the record
- * it points at. This gate reads that parameter BEFORE the page mounts, so the
- * page never fetches as the wrong account:
+ * it points at. AppShell holds the whole shell while access loads, and this
+ * gate decides before it lets the page render, so the page does not mount
+ * as the wrong account (review, 2026-10-10):
  *
  *   • the active account's org, or a malformed id → remove `org`, show the page
  *   • another signed-in account's org → switch to it, then reload on the same
@@ -45,13 +46,27 @@ function stripOrg(): void {
 
 function OrgLinkNotice({ canAdd, onStay }: { canAdd: boolean; onStay: () => void }) {
   const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
   const signIn = async () => {
     setPending(true);
+    setFailed(false);
     const link = here();
-    // Keep this account in a slot first, so it is one tap away later. With
-    // the switcher off there is no slot, and the sign-in replaces it.
-    if (canAdd && (await addAccount(undefined, link))) return;
-    window.location.assign(signInUrl(link, false));
+    if (!canAdd) {
+      // The switcher is off: there is no slot, and the sign-in replaces
+      // this session. The text below says so.
+      window.location.assign(signInUrl(link, false));
+      return;
+    }
+    // Keep this account in a slot first, so it is one tap away later. A
+    // stash that fails stops here: the notice promised this account stays
+    // signed in, so it never falls through to a sign-in that replaces it.
+    try {
+      if (await addAccount(undefined, link)) return;
+    } catch {
+      // a network failure: the same as a refused stash
+    }
+    setFailed(true);
+    setPending(false);
   };
   return (
     <div className="flex h-full items-center justify-center p-8">
@@ -66,8 +81,13 @@ function OrgLinkNotice({ canAdd, onStay }: { canAdd: boolean; onStay: () => void
         <p className="mt-2 text-sm text-muted-foreground">
           {canAdd
             ? "Sign in to the account that belongs to that workspace. This account stays signed in."
-            : "Sign in to the account that belongs to that workspace to open it."}
+            : "Sign in to the account that belongs to that workspace to open it. This signs you out of this account."}
         </p>
+        {failed && (
+          <p role="alert" className="mt-2 text-sm text-destructive">
+            Metorite could not keep this account signed in. Check your connection and try again.
+          </p>
+        )}
         <div className="mt-6 flex flex-col items-center gap-2">
           <Button onClick={() => void signIn()} loading={pending} disabled={pending}>
             Sign in to that account
@@ -126,9 +146,15 @@ function OrgLinkGateInner({ children }: { children: ReactNode }) {
     // One POST per link, also under React's double effect in development.
     if (started.current === param) return;
     started.current = param;
-    void switchTo(slot, undefined, withoutOrg(here())).then((ok) => {
-      if (!ok) setRefused(param);
-    });
+    // A refused switch (409) and a failed request (a weak mobile network,
+    // the WhatsApp case) both end on the notice, never on a cover that
+    // stays over the page (review, 2026-10-10).
+    switchTo(slot, undefined, withoutOrg(here())).then(
+      (ok) => {
+        if (!ok) setRefused(param);
+      },
+      () => setRefused(param),
+    );
   }, [kind, slot, param]);
 
   if (decision.kind === "load") return <SwitchingCover email={null} />;

@@ -2529,8 +2529,13 @@ vocabulary: the chooser lists organizations, never roles (D12).
      never mints a session and never names an identity. The gateway binds the
      tenant from the active session alone, so R11 is untouched.
   2. The switch is the same-origin `POST /api/accounts/switch` of rule 2. The
-     proxy and a GET never switch, so a page on another site cannot switch a
-     member by a link or an image.
+     proxy and a GET never switch, so an image or a form on another site
+     cannot call it. A LINK can cause a switch, on purpose: that is the
+     owner's ask. A link from any site, an email or WhatsApp that names an
+     org this browser holds opens that account with no extra click. Like any
+     switch, it reloads the member's other open tabs at `/`. The harm ends
+     there: no data leaks, and no tenant is read across. *(Review,
+     2026-10-10.)*
   3. A switch and a sign-in land only on a same-origin relative path. One
      `/` starts it, and `//`, a backslash or a control byte refuse it. Auth.js
      keeps the `callbackUrl` on the origin as well.
