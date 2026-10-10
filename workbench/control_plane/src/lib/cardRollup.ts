@@ -48,18 +48,26 @@ export interface RollupInputs {
   /** The body is long (rule 4). */
   long: boolean;
   /**
-   * The focus is inside the card. An automatic fold would hide the focused
-   * control, and a keyboard member would lose their place (review round 1).
-   * Only a toggle by hand folds a card that holds the focus.
+   * The focus is inside the card, and this is whether the card was open when
+   * it came in. An automatic fold would hide the focused control, and a
+   * keyboard member would lose their place (review round 1). So the card
+   * keeps that state until the focus leaves, and only a toggle by hand
+   * changes it.
+   *
+   * ⚠️ It HOLDS the state. It does not open the card. Focus on a shut card's
+   * header used to open it (owner feedback round, 2026-10-10): a mouse press
+   * focuses the header before its click, the card opened under the pointer,
+   * and the click then landed on an open card and shut it, or landed nowhere.
    */
-  focused?: boolean;
+  held?: boolean;
 }
 
 /** Is the card open? The four rules, in order. */
-export function rollupOpen({ pending, manual, newest, long, focused = false }: RollupInputs): boolean {
+export function rollupOpen({ pending, manual, newest, long, held }: RollupInputs): boolean {
   if (pending) return true;
   if (manual) return manual === "open";
-  if (newest || focused) return true;
+  if (held !== undefined) return held;
+  if (newest) return true;
   return !long;
 }
 
