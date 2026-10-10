@@ -255,6 +255,10 @@ cmd_off() {
     restart_and_check
     echo "    the BH-2 rollback is off. If a deploy failed on the expiry, run:"
     echo "    sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
+    # WS-49 BH-6: a deploy skips the sync of the root copy while a rollback
+    # is on, and records its sha as applied. So no later pull syncs it.
+    echo "    WARN BH-6: the root copy at /usr/local/lib/acb may be stale. A deploy"
+    echo "    during the rollback skipped its sync. Run the forced deploy above to sync it."
   else
     echo "    the BH-2 rollback is already off"
     check_health

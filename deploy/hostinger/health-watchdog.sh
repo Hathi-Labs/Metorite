@@ -12,7 +12,9 @@
 # The CI workflow (.github/workflows/vps-health.yml) is the external alarm for
 # the case this script cannot fix: box healthy locally, still unreachable.
 #
-# Safe to run by hand:  sudo /opt/acb/app/deploy/hostinger/health-watchdog.sh
+# acb-health-watchdog.service runs the ROOT COPY (WS-49 BH-6), never this
+# checkout file. Safe to run by hand, as the unit does:
+#   sudo BH2_ROLLBACK_SCRIPT=/usr/local/lib/acb/bh2_rollback.sh bash /usr/local/lib/acb/health-watchdog.sh
 # Check mode (no restarts):  ... health-watchdog.sh --dry-run
 
 set -uo pipefail

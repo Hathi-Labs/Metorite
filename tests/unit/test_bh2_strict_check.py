@@ -485,7 +485,8 @@ def test_the_compile_runs_before_the_gateway_restart_in_timestamp_mode() -> None
              if not ln.lstrip().startswith("#")]
     comp = lines.index('compile_bytecode "$APP_DIR"')
     ensure = next(i for i, ln in enumerate(lines) if ln.startswith('ensure_gateway_rw_paths "$APP_DIR"'))
-    restart = lines.index("sudo systemctl restart acb-gateway")
+    # WS-49 BH-6: the restart sits in an if/else (step 4), so it is indented.
+    restart = next(i for i, ln in enumerate(lines) if ln.strip() == "sudo systemctl restart acb-gateway")
     assert comp < ensure < restart
     block = _block("# >>> bh2 helpers", "# <<< bh2 helpers")
     fn = block[block.index("compile_bytecode() {"):]
@@ -556,6 +557,23 @@ def test_the_watchdog_reads_the_real_rollback_script_by_default(box: Box) -> Non
     assert r.returncode == 0, r.stdout + r.stderr
     got = _bh2_lines(lines)
     assert len(got) == 1 and "WARN BH-2 rolled back until" in got[0], got
+
+
+def test_the_watchdog_unit_names_the_root_copy_of_the_rollback_script() -> None:
+    """WS-49 BH-6. The unit runs the FLAT root copy of the watchdog, and from
+    there `../../scripts/bh2_rollback.sh` is not a file. So the unit names
+    the root copy of the rollback script, and the copy holds it. The checkout
+    default above stays for a run from the checkout. Mutation: drop the
+    Environment= line, and this goes red."""
+    unit = (ROOT / "deploy/hostinger/acb-health-watchdog.service").read_text(encoding="utf-8")
+    keys = [ln for ln in unit.splitlines() if ln.startswith(("ExecStart=", "Environment="))]
+    assert keys == [
+        "ExecStart=/bin/bash /usr/local/lib/acb/health-watchdog.sh",
+        "Environment=BH2_ROLLBACK_SCRIPT=/usr/local/lib/acb/bh2_rollback.sh",
+    ], keys
+    copy = (ROOT / "deploy/hostinger/root_lib_files.txt").read_text(encoding="utf-8").splitlines()
+    assert "scripts/bh2_rollback.sh bh2_rollback.sh" in copy
+    assert "deploy/hostinger/health-watchdog.sh health-watchdog.sh" in copy
 
 
 @needs_bash

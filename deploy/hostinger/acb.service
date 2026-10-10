@@ -13,7 +13,15 @@ After=docker.service network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/opt/acb/app
+# 🔴 WS-49 BH-6: the ROOT COPY at /usr/local/lib/acb/infra is the project dir,
+# never the checkout. Root docker reads the compose file, the two SQL files
+# and the meeting-bot dir from there (deploy/hostinger/root_lib_files.txt).
+# --env-file is /etc/acb/root.env (root:root 0600), which holds only the
+# names of deploy/hostinger/root_env_names.txt.
+# ExecStop is scoped to `--profile core`. Measured on Compose v5.5.0: it
+# removes postgres and redis only, and the meeting bot keeps running. A
+# `down` with no profile does nothing, because each service has a profile.
+WorkingDirectory=/usr/local/lib/acb/infra
 # 🔴 **WS-49 BH-6a fix round 1 (F1): NO EnvironmentFile here, on purpose.**
 # /opt/acb/app/.env is acb-writable, and this unit runs as root. Docker reads
 # $HOME/.docker/config.json, and it searches the cli-plugins dir there BEFORE
@@ -22,11 +30,11 @@ WorkingDirectory=/opt/acb/app
 # not close it. So:
 #   - the unit loads no env file, and `env -i` starts docker with ONLY a
 #     pinned PATH and HOME=/root
-#   - compose reads .env itself, through --env-file, for interpolation only
-#     (POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB for the core
+#   - compose reads root.env itself, through --env-file, for interpolation
+#     only (POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB for the core
 #     profile). An explicit --env-file also replaces the infra/.env lookup.
 #   - `-p acb` is the project name of infra/docker-compose.yml (`name: acb`).
-#     Without it, a COMPOSE_PROJECT_NAME line in .env renames the project,
+#     Without it, a COMPOSE_PROJECT_NAME line renames the project,
 #     because compose reads COMPOSE_* from the --env-file (measured on
 #     Compose v5.6.0). --profile and -f already win over COMPOSE_PROFILES and
 #     COMPOSE_FILE, and compose does not take DOCKER_HOST from the file.
@@ -36,8 +44,8 @@ WorkingDirectory=/opt/acb/app
 # `env -i`, nothing from .env reaches the process.
 # Fence: tests/unit/test_backup_env_values.py (no root unit that runs docker
 # loads an env file under /opt/acb).
-ExecStart=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb -f infra/docker-compose.yml --profile core up -d --remove-orphans
-ExecStop=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb -f infra/docker-compose.yml down
+ExecStart=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env -p acb -f /usr/local/lib/acb/infra/docker-compose.yml --profile core up -d --remove-orphans
+ExecStop=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env -p acb -f /usr/local/lib/acb/infra/docker-compose.yml --profile core down
 
 [Install]
 WantedBy=multi-user.target

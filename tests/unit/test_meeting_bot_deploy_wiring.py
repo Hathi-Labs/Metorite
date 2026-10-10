@@ -116,11 +116,18 @@ def test_deploy_generates_the_shared_secret_once() -> None:
     assert "grep -qE '^MEETING_BOT_TOKEN=.+' \"$ENV_FILE\"" in deploy
 
 
-def test_deploy_passes_the_app_env_file_explicitly() -> None:
-    """Compose resolves a bare .env against the project dir (infra/), not the
-    app root — so the substitutions would silently come out empty."""
+def test_deploy_passes_the_root_env_file_explicitly() -> None:
+    """Compose resolves a bare .env against the project dir, so the
+    substitutions would silently come out empty. Since WS-49 BH-6 every
+    compose call goes through acb_compose, which names /etc/acb/root.env and
+    the root copy of the project dir."""
     deploy = _APPLY.read_text(encoding="utf-8")
-    assert 'docker compose --env-file "$ENV_FILE" -f infra/docker-compose.yml' in deploy
+    assert "acb_compose --timeout 900 --profile meetingbot" in deploy
+    assert "acb_compose --profile meetingbot rm -sf meeting-bot" in deploy
+    helper = deploy[deploy.index("acb_compose() {"):]
+    helper = helper[: helper.index("\n}\n")]
+    assert "--env-file /etc/acb/root.env" in helper
+    assert "--project-directory /usr/local/lib/acb/infra" in helper
 
 
 def test_meeting_bot_failure_cannot_fail_the_deploy() -> None:

@@ -1,0 +1,40 @@
+# WS-49 BH-6: the ONLY names that /etc/acb/root.env holds, one on each line.
+# scripts/root_env.sh copies the line of each name from the app .env and the
+# Console .env (the Console wins). acb-backup.service loads root.env, and
+# acb.service and every compose call of the deploy read it with --env-file.
+# No pattern, no COMPOSE_* name, no *_BIND name, and no name that a root run
+# of backup_db.sh pins or reads from /etc/acb/backup-offbox.env.
+# Fence: tests/unit/test_root_units_root_owned.py (BH-F4).
+#
+# The backup: the allow list of scripts/backup_db.sh, and the two names that
+# it reads from the env file.
+PG_MODE
+PGHOST
+PGPORT
+PGUSER
+PGPASSWORD
+PGDATABASE
+PGSSLMODE
+PGCONNECT_TIMEOUT
+POSTGRES_USER
+DATABASE_URL
+CUSTOMER_CONSOLE_DATABASE_URL
+KEEP_DAILY
+BACKUP_VERIFY_IMAGE
+BACKUP_VERIFY_MEMORY
+BACKUP_FILE_DIRS
+BACKUP_MEETING_BOT_VOLUME
+# Compose, the core profile (POSTGRES_USER is above).
+POSTGRES_PASSWORD
+POSTGRES_DB
+# Compose, the meetingbot profile.
+MEETING_BOT_TOKEN
+LIVE_ASR_URL
+NOTES_LIVE_TOKEN_URL
+MEETING_BOT_EMBED_CMD
+MEETING_BOT_TTS_CMD
+MEET_MAX_DURATION
+MEET_PROFILE_DIR
+MEET_GOOGLE_EMAIL
+MEET_GOOGLE_PASSWORD
+MEET_VNC

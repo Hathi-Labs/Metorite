@@ -678,8 +678,190 @@ else
   fi
 fi
 
+# ── WS-49 BH-6: the root units run only root-owned files ────────────────────
+# 🔴 acb-backup, acb-health-watchdog and acb.service run as root. They ran
+# scripts and read the compose project from this checkout, which acb owns, and
+# they loaded the acb-writable .env. Now they run the ROOT COPY at
+# /usr/local/lib/acb and read /etc/acb/root.env. Spec: box_hardening.md §5 BH-6.
+#
+# Steps 1 to 3 run HERE: after the pull block, so the target's own copy of
+# this script runs them, and before the first compose call. The .env steps
+# above write no name of root_env_names.txt, so root.env sees .env as the
+# first compose call sees it.
+#   1. Sync the copy: `git archive "$DEPLOY_TARGET_SHA"` of the paths of
+#      deploy/hostinger/root_lib_files.txt, into a 0700 root stage, then one
+#      rsync to the literal /usr/local/lib/acb/. It never reads the working
+#      tree, and it refuses a symlink. It runs ONLY when bh2_rollback.sh
+#      status exits 1 (no rollback). While the BH-2 sandbox is off, the
+#      gateway can write .git, so `git archive` would not prove the bytes.
+#      A skip keeps the last synced copy. With no copy yet, a skip stops the
+#      deploy.
+#   2. Write /etc/acb/root.env with the root copy of root_env.sh. It runs
+#      again after the meeting-bot env block, which can write four names.
+#   3. `config -q` of the compose file. A failure stops the deploy.
+# Step 4 installs acb.service and joins its restart to the gateway restart.
+# ⚠️ Measured on Compose v5.6.0: `config -q` does NOT see a missing bind
+# source or build context. So step 1 checks that each path of the list is in
+# the archive, and stops the deploy when one is not.
+# Fence: tests/unit/test_root_units_root_owned.py (BH-F4). It sources the
+# block between the two marker lines below. Keep it free of side effects:
+# definitions and defaults only.
+# >>> bh6 helpers
+BH6_LIST="deploy/hostinger/root_lib_files.txt"
+BH6_CORE_CHANGED=0
+
+# acb_compose [--timeout SECS] ARGS... — EVERY compose call of the deploy.
+# The project dir and the compose file are the root copy, and the env file is
+# root.env. sudo, because root.env is 0600. `env -i` keeps the HOME of acb
+# away from root docker (BH-6a, F1). `-p acb` stops a COMPOSE_PROJECT_NAME
+# line from renaming the project.
+acb_compose() {
+  local -a pre=()
+  if [ "${1:-}" = "--timeout" ]; then pre=(timeout "$2"); shift 2; fi
+  "${pre[@]}" sudo env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+    docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env \
+    -p acb -f /usr/local/lib/acb/infra/docker-compose.yml "$@"
+}
+
+# bh6_ensure_rsync — the apt pattern of the off-box tool step below. That
+# step comes after every compose call, so it is too late for the sync.
+bh6_ensure_rsync() {
+  command -v rsync >/dev/null 2>&1 && return 0
+  echo "    installing rsync (WS-49 BH-6 needs it)"
+  sudo apt-get -o DPkg::Lock::Timeout=120 update -qq >/dev/null 2>&1 < /dev/null \
+    || echo "    !! apt-get update FAILED — trying the install from the package lists on the box"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq rsync >/dev/null 2>&1 < /dev/null || true
+  command -v rsync >/dev/null 2>&1 && return 0
+  echo "    !! rsync is missing, and apt could not install it"
+  return 1
+}
+
+# bh6_sync_root_copy SHA — step 1. Sets BH6_CORE_CHANGED=1 when the compose
+# file or a SQL file of the copy changed. False on any failure, and then the
+# copy on the box is not changed.
+bh6_sync_root_copy() {
+  local sha="$1" list stage tarf src dst i links
+  local -a srcs=() dsts=()
+  BH6_CORE_CHANGED=0
+  if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "    !! BH-6: the target sha '$sha' is not 40 hex"
+    return 1
+  fi
+  # The list of the TARGET commit, from the object database.
+  list="$(GIT_NO_REPLACE_OBJECTS=1 git show "$sha:$BH6_LIST")" || return 1
+  while read -r src dst _; do
+    case "$src" in ''|'#'*) continue ;; esac
+    if ! [[ "$src" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ && "$dst" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ ]] \
+       || [[ "/$src/$dst/" == */../* ]]; then
+      echo "    !! BH-6: $BH6_LIST holds a line that is not two plain relative paths"
+      return 1
+    fi
+    srcs+=("$src"); dsts+=("$dst")
+  done <<< "$list"
+  [ "${#srcs[@]}" -gt 0 ] || { echo "    !! BH-6: $BH6_LIST is empty"; return 1; }
+  tarf="$(mktemp "${TMPDIR:-/tmp}/acb-bh6-archive.XXXXXX")" || return 1
+  if ! GIT_NO_REPLACE_OBJECTS=1 git archive --format=tar -o "$tarf" "$sha" -- "${srcs[@]}"; then
+    rm -f "$tarf"
+    echo "    !! BH-6: git archive of ${sha:0:12} failed"
+    return 1
+  fi
+  stage="$(sudo mktemp -d /usr/local/lib/acb-stage.XXXXXX)" || { rm -f "$tarf"; return 1; }
+  case "$stage" in /usr/local/lib/acb-stage.?*) ;; *) rm -f "$tarf"; return 1 ;; esac
+  if ! sudo mkdir "$stage/tree" "$stage/copy" || ! sudo tar -xf "$tarf" -C "$stage/tree" --no-same-owner; then
+    rm -f "$tarf"; sudo rm -rf -- "$stage"
+    echo "    !! BH-6: could not unpack the archive"
+    return 1
+  fi
+  rm -f "$tarf"
+  for i in "${!srcs[@]}"; do
+    src="${srcs[$i]}"; dst="${dsts[$i]}"
+    if ! sudo test -e "$stage/tree/$src" || ! sudo mkdir -p "$(dirname "$stage/copy/$dst")" \
+       || ! sudo mv "$stage/tree/$src" "$stage/copy/$dst"; then
+      sudo rm -rf -- "$stage"
+      echo "    !! BH-6: $src is not in ${sha:0:12}. The copy is NOT changed"
+      return 1
+    fi
+  done
+  links="$(sudo find "$stage" -type l)"
+  if [ -n "$links" ]; then
+    sudo rm -rf -- "$stage"
+    echo "    !! BH-6: the archive holds a symlink. Root runs no linked file. The copy is NOT changed"
+    return 1
+  fi
+  printf '%s\n' "$sha" | sudo tee "$stage/copy/deployed_sha" >/dev/null
+  # rsync -a gives the destination root the mode of the source root (N1).
+  sudo chmod 0755 "$stage/copy"
+  for i in infra/docker-compose.yml infra/postgres/00_create_databases.sql infra/postgres/01_schema.sql; do
+    sudo cmp -s "$stage/copy/$i" "/usr/local/lib/acb/$i" || BH6_CORE_CHANGED=1
+  done
+  # --delay-updates and --delete-delay put each new file in, and delete each
+  # old one, at the END of the transfer. That makes the window short, and it
+  # is NOT atomic: the renames and deletes still come one at a time. A root
+  # unit that starts in that window can see files of two commits.
+  if ! sudo rsync -a --delete --delete-delay --delay-updates --chown=root:root --chmod=go-w "$stage/copy/" /usr/local/lib/acb/; then
+    sudo rm -rf -- "$stage"
+    echo "    !! BH-6: rsync to /usr/local/lib/acb/ failed"
+    return 1
+  fi
+  sudo rm -rf -- "$stage"
+  echo "    root copy: /usr/local/lib/acb is at ${sha:0:12} (core inputs changed: $BH6_CORE_CHANGED)"
+}
+
+# bh6_install_root_units DIR — install acb-backup.service and
+# acb-health-watchdog.service from DIR now, right after steps 1 to 3. The
+# reset of the pull block already put the BH-6 scripts in the checkout, and
+# the BH-6 backup_db.sh refuses a root run from there. So the old units must
+# not wait for the BO-23 loop at the end: a failure between here and that
+# loop would leave the nightly backup failing. No restart: both are oneshot
+# units of a timer. The BO-23 loop then finds them unchanged.
+bh6_install_root_units() {
+  local dir="$1" u changed=0
+  for u in acb-backup.service acb-health-watchdog.service; do
+    if ! sudo cmp -s "$dir/$u" "/etc/systemd/system/$u"; then
+      sudo install -m 0644 "$dir/$u" "/etc/systemd/system/$u" || return 1
+      echo "    installed $u: it runs the root copy now"
+      changed=1
+    fi
+  done
+  if [ "$changed" = "1" ]; then sudo systemctl daemon-reload || return 1; fi
+}
+
+# bh6_root_steps — steps 1 to 3. False stops the deploy before any compose call.
+bh6_root_steps() {
+  local rb_rc=0
+  bash "$APP_DIR/scripts/bh2_rollback.sh" status >/dev/null 2>&1 || rb_rc=$?
+  if [ "$rb_rc" = "1" ]; then
+    bh6_ensure_rsync || return 1
+    bh6_sync_root_copy "${DEPLOY_TARGET_SHA:-}" || return 1
+  elif sudo test -f /usr/local/lib/acb/deployed_sha; then
+    echo "WARN BH-6: the BH-2 rollback is not off, so the root copy stays at $(sudo head -c 40 /usr/local/lib/acb/deployed_sha)"
+    echo "    After bh2_rollback.sh off, run: sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
+  else
+    echo "    !! BH-6: the BH-2 rollback is not off (status $rb_rc), and this box has no root copy yet."
+    echo "       The nightly backup stays down until a deploy passes: its unit runs the root copy."
+    echo "       Turn the rollback off (sudo bash $APP_DIR/scripts/bh2_rollback.sh off), then run:"
+    echo "       sudo MODE=force bash $APP_DIR/scripts/vps_pull.sh"
+    return 1
+  fi
+  sudo bash /usr/local/lib/acb/root_env.sh || return 1
+  acb_compose --profile core --profile meetingbot config -q || return 1
+}
+# <<< bh6 helpers
+
+echo "==> WS-49 BH-6: the root copy, root.env and the compose check"
+bh6_root_steps || {
+  echo "BH-6 FAILED: the root copy, root.env or the compose file is not right. Read the lines above."
+  echo "    No compose call ran, and no service was restarted. Fix the cause, then deploy again."
+  exit 1
+}
+bh6_install_root_units "$APP_DIR/deploy/hostinger" || {
+  echo "BH-6 FAILED: acb-backup.service or acb-health-watchdog.service was not installed."
+  echo "    No compose call ran, and no service was restarted. Fix the cause, then deploy again."
+  exit 1
+}
+
 echo "==> Bootstrapping Docker Compose stack (core only)"
-docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans
+acb_compose --profile core up -d --remove-orphans
 
 echo "==> Waiting for healthchecks (up to 90s)"
 deadline=$(( $(date +%s) + 90 ))
@@ -1293,6 +1475,13 @@ if ! grep -qE '^MEETING_BOT_TOKEN=.+' "$ENV_FILE"; then
   echo "MEETING_BOT_TOKEN=$_mbtoken" >> "$ENV_FILE"
   echo "    + generated MEETING_BOT_TOKEN"
 fi
+# WS-49 BH-6, step 2 again. The block above can write MEETING_BOT_TOKEN,
+# NOTES_LIVE_TOKEN_URL, MEET_PROFILE_DIR and MEET_VNC, and the compose call
+# below reads root.env. Without this run, a new box starts the bot with no token.
+sudo bash /usr/local/lib/acb/root_env.sh || {
+  echo "BH-6 FAILED: /etc/acb/root.env was not written again. No service was restarted."
+  exit 1
+}
 
 MB_ENABLED="$(grep -E '^MEETING_BOT_ENABLED=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
 # Never recreate the worker while a bot is in a live call — each
@@ -1306,8 +1495,8 @@ if [ "$MB_ENABLED" = "1" ] && [ -n "$MB_ACTIVE" ] && [ "$MB_ACTIVE" -gt 0 ] 2>/d
 elif [ "$MB_ENABLED" = "1" ]; then
   # --build is cheap after the first run (layer cache); the first
   # deploy pulls the Playwright base image, which is large.
-  # --env-file is explicit on purpose: compose resolves a bare .env
-  # against the project directory (infra/), not the app root.
+  # acb_compose (WS-49 BH-6) builds from the root copy of the meeting-bot
+  # dir, and reads /etc/acb/root.env.
   #
   # `timeout` and </dev/null are both scar tissue: an apt postinst
   # that prompts (tzdata asking "Geographic area:") hung this build
@@ -1316,8 +1505,7 @@ elif [ "$MB_ENABLED" = "1" ]; then
   # bot image stayed live. Bounded + no tty means a prompt fails
   # fast instead of eating the deploy.
   MB_IMAGE_BEFORE="$(docker images -q acb-meeting-bot:latest 2>/dev/null || true)"
-  if timeout 900 docker compose --env-file "$ENV_FILE" \
-       -f infra/docker-compose.yml --profile meetingbot \
+  if acb_compose --timeout 900 --profile meetingbot \
        up -d --build meeting-bot </dev/null 2>&1 | tail -5; then
     sleep 5
     if curl -fsS --max-time 10 http://127.0.0.1:8095/health >/dev/null 2>&1; then
@@ -1340,8 +1528,7 @@ elif [ "$MB_ENABLED" = "1" ]; then
   fi
 else
   echo "    MEETING_BOT_ENABLED=0 — meeting bot OFF (join-by-link unavailable)"
-  docker compose --env-file "$ENV_FILE" -f infra/docker-compose.yml \
-    --profile meetingbot rm -sf meeting-bot >/dev/null 2>&1 || true
+  acb_compose --profile meetingbot rm -sf meeting-bot >/dev/null 2>&1 || true
 fi
 
 echo "==> Installing the Caddy config (H-60)"
@@ -1458,9 +1645,25 @@ ensure_gateway_rw_paths "$APP_DIR" || {
 }
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
 sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
+# WS-49 BH-6, step 4. Here, after ensure_gateway_rw_paths: acb-gateway holds
+# Requires=acb.service, so a restart of acb.service restarts the gateway too,
+# and a restart before that guard would skip it. acb.service restarts only
+# when its unit file or a core input of the root copy changed (step 1). Then
+# ONE transaction restarts both, so the gateway restarts one time.
+BH6_ACB_RESTART=0
+if ! sudo cmp -s "$APP_DIR/deploy/hostinger/acb.service" /etc/systemd/system/acb.service; then
+  sudo install -m 0644 "$APP_DIR/deploy/hostinger/acb.service" /etc/systemd/system/acb.service
+  BH6_ACB_RESTART=1
+fi
+if [ "${BH6_CORE_CHANGED:-0}" = "1" ]; then BH6_ACB_RESTART=1; fi
 sudo systemctl daemon-reload
 sudo systemctl enable acb-gateway >/dev/null 2>&1 || true
-sudo systemctl restart acb-gateway
+if [ "$BH6_ACB_RESTART" = "1" ]; then
+  echo "    acb.service or a core input of the root copy changed: one restart of acb.service and acb-gateway"
+  sudo systemctl restart acb.service acb-gateway
+else
+  sudo systemctl restart acb-gateway
+fi
 sleep 3
 systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exit 1; }
 # Wait until it ANSWERS. The build below does not need it, but the verify at
@@ -1900,10 +2103,8 @@ echo "==> Installing health watchdog (systemd timer)"
 # Self-heals services between deploys and captures network forensics
 # every 10 min. Deliberately installed here so it can never drift
 # from the repo. See deploy/hostinger/health-watchdog.sh.
-# The script is already in place via git reset; just make sure it is
-# executable. (Do NOT `install` it onto itself — src == dest is an
-# error, which is how it ended up non-executable the first time.)
-sudo chmod 0755 "$APP_DIR/deploy/hostinger/health-watchdog.sh" || true
+# The unit runs the ROOT COPY /usr/local/lib/acb/health-watchdog.sh, which
+# the BH-6 step wrote. It runs it through bash, so no mode bit matters.
 sudo cp "$APP_DIR/deploy/hostinger/acb-health-watchdog.service" /etc/systemd/system/
 sudo cp "$APP_DIR/deploy/hostinger/acb-health-watchdog.timer"   /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -2031,7 +2232,7 @@ fi
 echo "==> Running infra health probe"
 cd "$APP_DIR"
 uv run python scripts/check_infra.py || {
-  echo "INFRA PROBE FAILED — check logs: docker compose -f infra/docker-compose.yml logs --tail=100"
+  echo "INFRA PROBE FAILED — check logs: sudo env -i PATH=/usr/bin:/bin HOME=/root docker compose --project-directory /usr/local/lib/acb/infra --env-file /etc/acb/root.env -p acb -f /usr/local/lib/acb/infra/docker-compose.yml logs --tail=100"
   exit 1
 }
 

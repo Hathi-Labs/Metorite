@@ -107,11 +107,15 @@ def test_the_backup_service_must_load_its_credentials() -> None:
     when it was disabled.
     """
     service = (_UNITS_DIR / "acb-backup.service").read_text(encoding="utf-8")
-    assert "EnvironmentFile=/opt/acb/app/.env" in service, (
-        "acb-backup.service must load /opt/acb/app/.env. Without it PG_MODE "
-        "defaults to docker, the unit dumps the empty local container, and "
-        "--verify-restore passes on nothing. See H-132."
+    # WS-49 BH-6: the unit loads /etc/acb/root.env, which root_env.sh builds
+    # from .env. The H-132 point stays: that file carries PG_MODE.
+    assert "\nEnvironmentFile=/etc/acb/root.env\n" in service, (
+        "acb-backup.service must load /etc/acb/root.env (not optional). Without "
+        "it PG_MODE defaults to docker, the unit dumps the empty local "
+        "container, and --verify-restore passes on nothing. See H-132."
     )
+    names = (_UNITS_DIR / "root_env_names.txt").read_text(encoding="utf-8").split()
+    assert "PG_MODE" in names, "root.env must carry PG_MODE (H-132)"
 
 
 def test_no_timer_is_carved_out_of_the_enable_loop() -> None:
@@ -1203,7 +1207,7 @@ def test_only_the_nightly_unit_passes_offbox() -> None:
     unit = (_UNITS_DIR / "acb-backup.service").read_text(encoding="utf-8")
     exec_start = [ln for ln in unit.splitlines() if ln.startswith("ExecStart=")]
     assert exec_start == [
-        "ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore --offbox"
+        "ExecStart=/bin/bash /usr/local/lib/acb/backup_db.sh --verify-restore --offbox"
     ], exec_start
     allowed = {"deploy/hostinger/acb-backup.service", "scripts/rehearse_offbox.sh",
                "scripts/backup_db.sh"}

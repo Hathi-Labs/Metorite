@@ -124,6 +124,36 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
+- **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
+- **Why.** WS-49 BH-6 runs `acb-backup`, `acb-health-watchdog` and `acb.service` from the root
+  copy at `/usr/local/lib/acb`, with `/etc/acb/root.env`. These runbooks still tell a person to
+  run the checkout scripts and the old compose command as root.
+- **Do this:**
+  1. Name the root copy and the `acb_compose` command shape of `scripts/vps_apply.sh` in each
+     runbook.
+  2. `deploy/hostinger/bootstrap.sh` ends with "run deploy.sh". Since BH-6, `deploy.sh` stops until
+     a run of `scripts/vps_apply.sh` has written the root copy. Change that last step to name
+     `scripts/vps_apply.sh` first.
+- **Authority:** `specs/box_hardening.md` §5 BH-6
+- **Added:** 2026-10-10 · branch `sec-bh6-build`. It was H-288, and main took
+  H-288 to H-293 first, so it moved to H-294 at the merge.
+
+### H-295 · Remove the one-release belt of `backup_db.sh` after BH-6 · [AGENT]
+- **Check:** run `rg -n "belt for ONE release" scripts/backup_db.sh`. A hit means this is open.
+- **Why.** BH-6 fix round 1 added a belt to `scripts/backup_db.sh`. A root run from the checkout
+  path runs the root copy at `/usr/local/lib/acb/backup_db.sh` in its place. It covers a box
+  that still holds the old `acb-backup.service` after a failed deploy. The belt is for one
+  release only.
+- **Do this:**
+  1. Wait until the BH-6 deploy and one later deploy have passed on the box.
+  2. Confirm that `systemctl cat acb-backup` names `/usr/local/lib/acb/backup_db.sh`.
+  3. Delete the `case "$script_dir" in */opt/acb/app/scripts)` block of `backup_db.sh`.
+  4. Delete its three belt tests in `tests/unit/test_root_units_root_owned.py`.
+  5. Keep the test of a checkout root run with no copy. It must exit 2 with a copy too.
+- **Authority:** `specs/box_hardening.md` §5 BH-6 (fix round 1)
+- **Added:** 2026-10-10 · branch `sec-bh6-build`
+
 ### H-293 · Decide whether agent runs move to their own service, so a deploy stops none · [OWNER]
 - **Check:** run `rg -n "D-1" project-docs/specs/chat_run_continuity.md`. If
   the §5 row still says **OWNER-GATE**, the decision is open.

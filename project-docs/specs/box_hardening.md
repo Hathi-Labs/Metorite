@@ -2,8 +2,9 @@
 
 **Status: ACTIVE, specified 2026-10-08, built in part. BH-2 full MERGED as
 #758 (`762ab5870`) on 2026-10-10.** BH-6a, the value guard, MERGED as #764
-(`373453b83`) on 2026-10-09. **BH-6 is SPECIFIED, dispatchable** (fix round
-5, 2026-10-10). Next: BH-6.
+(`373453b83`) on 2026-10-09. **BH-6 is BUILT on the branch `sec-bh6-build`,
+and not merged** (2026-10-10). Next: the BH-6 review, the merge and the box
+checks.
 
 Board row **WS-49**. The owner ruled on 2026-10-08 to close this gap first,
 before the data of the beta customers arrives. This spec owns H-270 and H-271
@@ -20,6 +21,7 @@ in `HANDOFF.md`.
 | The deploy re-exec fix | #757 | `7e9844a48` | merged, and live on 2026-10-09 |
 | BH-6a, the value guard of the root backup and the root compose unit | #764 | `373453b83` | merged on 2026-10-09 |
 | BH-2 full: `50-hardening.conf`, the strict check, the watchdog WARN, the rollback lock | #758 | `762ab5870` | merged on 2026-10-10. `bh2_strict_check` enforces it on each deploy |
+| BH-6: the root copy, root.env, the three root units, fence BH-F4 | — | branch `sec-bh6-build` | built 2026-10-10, not merged, not on the box |
 
 **BH-2 full is MERGED and enforced.** The staged drop-in ran on the box for a
 24 h soak before the merge. The gateway journal held 0 EROFS and 0 EACCES
@@ -1510,9 +1512,10 @@ drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
 
 ### BH-6 — Root units run only root-owned files
 
-**Status: SPECIFIED, dispatchable (fix round 5, 2026-10-10).** Not built.
-Each anchor below was read at `main` `2143d01f4` on 2026-10-10. Read each
-one again at dispatch, because the code is the fact.
+**Status: BUILT on the branch `sec-bh6-build` (2026-10-10). Not merged, and
+not on the box.** The fence BH-F4 is `tests/unit/test_root_units_root_owned.py`.
+Acceptance 1, 3, 5 to 9 and 11 need the box checks after the merge. Each
+anchor below was read at `main` `2143d01f4` on 2026-10-10.
 
 **BH-6a, the value guard, MERGED as #764 (`373453b83`) on 2026-10-09.** It
 closes the value part of P3 (§0) for `acb-backup.service` and
@@ -1610,13 +1613,27 @@ closes the value part of P3 (§0) for `acb-backup.service` and
   rollback, with the sandbox off. Exit 3 is an expired or partial rollback,
   and its drop-in can keep the sandbox off too.
 - For each exit but 1, the step skips the sync. It prints `WARN BH-6: the
-  BH-2 rollback is not off, so the root copy stays at <sha>`.
+  BH-2 rollback is not off, so the root copy stays at <sha>`, and it names
+  the forced deploy: `sudo MODE=force bash /opt/acb/app/scripts/vps_pull.sh`.
+- **Fix round 1 (build).** A skipped sync still records the sha as
+  applied, so no later pull syncs the copy. So `bh2_rollback.sh off` prints
+  `WARN BH-6: the root copy at /usr/local/lib/acb may be stale`, and it
+  names the same forced deploy. The fence is
+  `test_rollback_off_names_the_forced_deploy_that_syncs_the_copy`.
 - The step cannot call `bh2_strict_check`, because the bh2 helper block
   (`vps_apply.sh:1074-1192`) comes later in the file. It runs the same
   `status` command as `vps_apply.sh:1169`.
 - A skipped sync leaves the copy and `deployed_sha` at the last synced
   commit, and the root units run that known copy. With no copy on the box
   yet, a skip stops the deploy before the first compose call.
+- **Fix round 1 (build).** The `git reset` of the pull block puts the BH-6
+  `backup_db.sh` in the checkout, and it refuses a root run from there. So
+  the deploy installs `acb-backup.service` and `acb-health-watchdog.service`
+  directly after steps 1 to 3, before the first compose call. A deploy that
+  fails later does not leave the old units. For one release, a root run
+  from the checkout path also runs the root copy of the same layout. The
+  copy must be a plain file. It cannot loop, because the copy passes the
+  layout check. Remove it in the release after BH-6.
 - `backup_db.sh:587` runs `git rev-parse` as root in the checkout. A root
   run reads `/usr/local/lib/acb/deployed_sha` in its place. It takes the
   value only in the shape `^[0-9a-f]{40}$`, and prints its first 12
@@ -1636,6 +1653,9 @@ closes the value part of P3 (§0) for `acb-backup.service` and
   compose parse the same bytes as before. For a name with two lines, the
   last line wins. It refuses a source that is a symlink or not a regular
   file.
+- **Fix round 1 (build).** An `export NAME=` line counts too, because
+  compose reads it. root.env holds it as `NAME=`, so systemd and compose
+  read the same line.
 - It writes under `umask 077`, into a temp file in `/etc/acb`. Then it runs
   `install -m 0600 -o root -g root <tmp> /etc/acb/root.env`. It writes only
   when the content changed.
@@ -1818,9 +1838,13 @@ stays as it is.
 - The rewrite runs on the dev box, in `scripts/secrets.sh`. It reaches the
   box through `remote()` (`secrets.sh:384-390`), which runs the remote half
   as root with `sudo -n`.
-- After a verified write of the `app-env` entry, the push calls a new remote
-  verb, `rootenv`. The verb runs `/usr/local/lib/acb/root_env.sh`, the
-  copy. It never runs a file of the checkout.
+- After a verified write of the `app-env` entry and a restart that passed,
+  the push calls a new remote verb, `rootenv`. The verb runs
+  `/usr/local/lib/acb/root_env.sh`, the copy. It never runs a file of the
+  checkout.
+- **Fix round 1 (build).** A failed restart puts the old `.env` back and
+  exits in `roll_back`, before `rootenv`. So root.env keeps the values of
+  the `.env` that stays live.
 - `secrets.sh` holds no name list. The `app-env` entry of
   `deploy/secrets/manifest.json` gets a field `"rebuild_root_env": true`,
   and the push reads it. So a new password reaches the backup at once, with
@@ -1833,9 +1857,11 @@ stays as it is.
   root.env is not a manifest entry, because the box derives it. The name
   list and the `allowed_keys` of `backup-offbox` share no name, and BH-F4
   holds that.
-- The `allowed_keys` of `app-env` is empty today
-  (`test_secrets_drop.py:410`). So today a push of `app-env` changes no name
-  of the list, and the hook is ready for the day the list grows.
+- The `allowed_keys` of `app-env` holds one key since #820:
+  `WHATSAPP_ASSISTANT_ACCESS_TOKEN`. It is not a name of root_env_names.txt.
+  So today a push of `app-env` changes no name of the list. The rebuild
+  then writes the same root.env, and the hook is ready for the day a
+  listed name joins `allowed_keys`.
 - The Console `.env` has no manifest entry. A change there reaches root.env
   at the next deploy.
 
@@ -1980,17 +2006,27 @@ ssh metorite 'systemctl list-timers acb-backup.timer acb-health-watchdog.timer -
 - The backup reads a name that the list misses, and the night fails. The
   unit exits 1, and `vps-health.yml` shows it. The verification runs one backup
   by hand.
-- A missing relative path in the copy breaks the next `up`. Step 3
-  (`config -q`) stops the deploy before it.
+- A missing relative path in the copy breaks the next `up`. ⚠️ Step 3
+  (`config -q`) does NOT stop it. Measured on Compose v5.6.0 at the build:
+  `config -q` exits 0 with no bind source and no build context on disk.
+  It exits 0 with `--profile sandbox` too. So step 1 checks that each path
+  of the list is in the archive. A missing path stops the deploy before
+  the first compose call. `test_the_copy_holds_each_path_the_compose_file_needs`
+  holds the list against the compose file.
 - A failed `acb.service` takes the gateway down, through `Requires=`.
   Acceptance 8 checks it.
-- A restart of `acb.service` runs its `ExecStop`, which is `compose down`
-  with no profile. So the deploy that changes the unit recreates `postgres`
-  and `redis` one more time. Acceptance 7 counts the `up` runs, not this
-  restart.
-- Measure on the box, under Compose v5.6.0, if that `down` removes
-  `acb-meeting-bot`. If it does, step 4 runs the meeting-bot `up` again
-  after the restart.
+- A restart of `acb.service` runs its `ExecStop`, which is now `compose
+  --profile core down`. So the deploy that changes the unit recreates
+  `postgres` and `redis` one more time. Acceptance 7 counts the `up` runs,
+  not this restart.
+- **Measured on the box, 2026-10-10, Compose v5.5.0.** The project `acb`
+  runs `acb-postgres`, `acb-redis` and `acb-meeting-bot`. A dry run of
+  `--profile core down` stops and removes only `redis` and `postgres`. The
+  meeting bot keeps running. The removal of the `acb_default` network says
+  "Resource is still in use", and the exit code is 0. A `down` with no
+  profile does nothing. So a restart of `acb.service` does not stop the
+  meeting bot, and step 4 runs no second meeting-bot `up`. The `ExecStop`
+  stays scoped to `--profile core`.
 - The live edit of the meeting bot ends. The bind mount at
   `docker-compose.yml:266-270` now reads the copy. So an edit of the
   checkout on the box does not reach the bot, and an edit goes through a
@@ -2233,8 +2269,8 @@ owner's, and a wrong sudoers file can lock everyone out of the box.
 ## 6. The order
 
 **State on 2026-10-10.** BH-1, BH-8, BH-7, BH-6a and BH-2 full are merged.
-`bh2_strict_check` enforces BH-2 on each deploy. **Dispatchable now: BH-6**
-(fix round 5).
+`bh2_strict_check` enforces BH-2 on each deploy. **BH-6 is built on the
+branch `sec-bh6-build`**, and waits for its review and the merge.
 
 1. **BH-1** — closes H-270 for every child, and needs no box change.
 2. **BH-8** — Neo4j and the compose ports. The coordinator already stopped
