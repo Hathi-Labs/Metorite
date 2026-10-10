@@ -369,15 +369,20 @@ browser save already writes the same row.
    refusal and after the supersede, and before the agent row of the run. The
    write goes through `_upsert_messages`, bound to the org of the session.
    The author is the caller from the session, never the payload. A caller
-   who may not send in the room saves nothing (`prompt_to_save`).
+   who may not send in the room saves nothing (`prompt_to_save`). The turn
+   and the agent row go in ONE worker call (`_mint_run_row`), with one
+   `_ensure_session` and one 2 s budget. So a stalled database holds the
+   first byte for one budget, not two. A browser id that names an agent row
+   changes nothing, because the seam declines it.
 3. **The time.** The row takes the browser's own time stamp, which the
    browser save also writes. The earlier turns carry the browser clock, so a
    server clock could sort the turn above the reply before it.
 4. **An edit.** The supersede removes the old turn first. The new turn then
    goes in with its "Edited" marker.
 5. **A steer.** The spec was silent. The route saves a steered turn with its
-   actor, so it shows on a reload. The route saves nothing for a stop, or
-   for a turn that it drops.
+   actor, so it shows on a reload. The save is a background task that runs
+   after the 202 is sent. The route saves nothing for a stop, or for a turn
+   that it drops.
 6. **The history.** A first turn sends no history, so the executor reads
    the store. That read now leaves out the current turn, which the model
    reads as `message`.
@@ -385,7 +390,9 @@ browser save already writes the same row.
 
 **Mutation record (2026-10-10).** Five mutants, five killed: no save at run
 start, a server id in place of the browser id, no author, no `can_send`
-check, and no history filter.
+check, and no history filter. The follow-up added three more, and the suite
+killed all three: the save split from the mint with a second budget, the steered
+save awaited before the 202, and the kind check of the seam removed.
 
 ### S5 — signals outside an open chat
 
