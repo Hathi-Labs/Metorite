@@ -49,7 +49,7 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
-import { codeForStatus } from "@/lib/runErrors";
+import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -846,8 +846,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
     if (!streamRes.ok || !streamRes.body) {
       const text = await streamRes.text().catch(() => `status ${streamRes.status}`);
+      // The body names the run cap (WS-51 D-3), which a bare 429 cannot.
       return new Response(
-        `data: ${JSON.stringify({ type: "error", content: text, code: codeForStatus(streamRes.status) })}\n\n`,
+        `data: ${JSON.stringify({ type: "error", content: text, code: codeForGatewayRefusal(streamRes.status, text) })}\n\n`,
         { status: streamRes.status, headers: sseHeaders() }
       );
     }

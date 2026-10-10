@@ -81,6 +81,11 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     # no longer the signed-in one. The route refuses it before the gateway,
     # so the answer never reaches the other account's org.
     "answer_in_other_account",
+    # WS-51 D-3: the member already has CHAT_MAX_RUNS_PER_MEMBER live runs.
+    # `/agent/run/stream` refuses with 429 `too_many_runs` before the run
+    # starts, and the chat route names the code from that body. The chat
+    # keeps the member's words and never retries by itself.
+    "too_many_runs",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.

@@ -29,6 +29,8 @@ Mutations this suite catches (R7):
   answer to a steer;
 * the seam's kind check removed: a browser id that names an AGENT row
   rewrites that reply as the member's turn;
+* the run cap's refusal moved below the save point (WS-51 D-3): the cap
+  case finds the refused turn in Postgres;
 * the save moved in front of the supersede: no failure, because the keep
   list protects the new turn. That order is a choice, not a fence.
 
@@ -596,3 +598,33 @@ def test_a_stalled_database_does_not_hold_the_answer_to_a_steer(
     assert _send_and_close(alice, _run_body(sid, "u-steer", "Add a due date"))[0] == 202
     assert clock["first_byte"] < 1.0, clock
     assert _wait_for(lambda: [r.id for r in _user_rows(graph_as_app, sid)] == ["u-steer"])
+
+
+# ── The run cap (WS-51 D-3) ─────────────────────────────────────────────────
+
+@_DB_GATE
+def test_a_run_the_cap_refuses_saves_no_prompt_and_mints_no_row(
+        graph_as_app, world, monkeypatch):
+    """The cap answers before the save point, so the refused turn leaves no
+    row: no member's turn, no agent row, and no chat row from the mint.
+    ``tests/unit/test_run_cap.py`` holds the count and the race."""
+    import orchestrator.run_cap as run_cap
+
+    async def _refuse(**_k):
+        return run_cap.Admission(False, 5, ("t-1", "t-2", "t-3", "t-4", "t-5"))
+
+    monkeypatch.setattr(run_cap, "admit_member_run", _refuse)
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    code, body = _send_and_close(alice, _run_body(sid, "u-cap", "Plan the release"))
+    assert code == 429, body
+    assert json.loads(body) == {
+        "error": "too_many_runs", "limit": 5,
+        "running": ["t-1", "t-2", "t-3", "t-4", "t-5"],
+    }
+    assert _rows(graph_as_app, sid) == []
+    with graph_as_app.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM chat_session WHERE id = :s"), {"s": sid}).scalar() == 0
+    assert world.payloads == []

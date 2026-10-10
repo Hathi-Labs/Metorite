@@ -820,6 +820,18 @@ class Settings(BaseSettings):
     # How long a parked question stays answerable, in hours.
     chat_ask_ttl_hours: int = 168
 
+    # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ──────────────────
+    #
+    # `CHAT_MAX_RUNS_PER_MEMBER`, default 5. A member may have at most this
+    # many live assistant runs at one time. `/agent/run/stream` refuses the
+    # next one with 429 `too_many_runs`. A steer into a live run is not a new
+    # run, so it never counts. 0 means no cap. There is NO org cap, by the
+    # owner's call: an org can have many people. A caller with no member
+    # (automation, cron, a service) is not capped and never counts. The one
+    # reader is `orchestrator.run_cap.run_cap_limit`.
+    # Fence: tests/unit/test_run_cap.py.
+    chat_max_runs_per_member: int = 5
+
     # Copilot SDK chat (coworker sessions via /copilot/chat)
     # Auth order: LITELLM_MASTER_KEY → gateway /v1  |  GITHUB_TOKEN → api.githubcopilot.com
     # Model must be available in whichever provider is active.
