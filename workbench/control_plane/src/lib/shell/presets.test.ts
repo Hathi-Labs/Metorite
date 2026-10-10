@@ -20,6 +20,7 @@ import { cardsFor } from "./myDay";
 import {
   ANSWERS,
   BUILT_CARDS,
+  PINNABLE,
   CARD_KEYS,
   EMPTY_SHELL,
   PRESETS,
@@ -234,6 +235,23 @@ describe("a stored layout wins, field by field", () => {
   it("carries the answer through, so a skip is never asked again", () => {
     expect(shellLayout({ ...EMPTY_SHELL, answered: "skipped" }, ["member"]).answered).toBe("skipped");
     expect(shellLayout(EMPTY_SHELL, ["member"]).answered).toBeNull();
+  });
+});
+
+describe("a star only where the save can land (round 2)", () => {
+  // The gateway accepts the panes nav.ts declares by a literal href
+  // (`SHELL_PANES`, held to nav.ts by `test_auth_me_shell.py`). The six
+  // Center panes are derived, D49 keeps them unlinked, and the PUT refuses
+  // them. So with the preview apps on, a Center tile gets no star.
+  it("holds no Center pane, and every other pane", () => {
+    expect([...PINNABLE].some((h) => h.startsWith("/centers/"))).toBe(false);
+    const literal = PANES.filter((p) => !p.href.startsWith("/centers/")).map((p) => p.href);
+    expect([...PINNABLE].sort()).toEqual([...literal].sort());
+    expect(PANES.some((p) => p.href.startsWith("/centers/"))).toBe(true);
+  });
+
+  it("holds every pin of every preset", () => {
+    for (const p of PRESETS) for (const h of p.pins) expect(PINNABLE.has(h), `${p.id} pins ${h}`).toBe(true);
   });
 });
 

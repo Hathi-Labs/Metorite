@@ -44,15 +44,46 @@ type Layout = typeof EMPTY | Record<string, unknown>;
 interface Store {
   layout: Layout;
   puts: unknown[];
+  gets: number;
+  /** Lets a held GET answer. A no-op when the GET is not held. */
+  release: () => void;
 }
 
-async function stub(page: Page, start: Layout = EMPTY, me: unknown = MEMBER): Promise<Store> {
-  const store: Store = { layout: start, puts: [] };
-  await page.addInitScript(() => {
-    localStorage.setItem("cc-shell-bar", "1");
-    localStorage.setItem("cc-shell-nav", "1");
-    localStorage.removeItem("cc-sidebar-collapsed");
+interface StubOptions {
+  me?: unknown;
+  /** The status every PUT answers with. 503 is a write fault. */
+  putStatus?: number;
+  /** Hold every GET of the layout until `release()`. */
+  holdGet?: boolean;
+  /** The browser's copy of the layout, written before the first load. */
+  cached?: Layout;
+  /** Turn My Day on at `/`. */
+  myDay?: boolean;
+}
+
+/** The browser copy's key for MEMBER (`shellCache.ts`). */
+const CACHE_KEY = "cc-shell-prefs:priya@example.com|org1";
+
+async function stub(page: Page, start: Layout = EMPTY, opts: StubOptions = {}): Promise<Store> {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
   });
+  const store: Store = { layout: start, puts: [], gets: 0, release: () => release() };
+  await page.addInitScript(
+    ({ cached, key, myDay }) => {
+      localStorage.setItem("cc-shell-bar", "1");
+      localStorage.setItem("cc-shell-nav", "1");
+      localStorage.removeItem("cc-sidebar-collapsed");
+      if (myDay) localStorage.setItem("cc-my-day", "1");
+      // Only before the first load: a reload must read what the page wrote.
+      if (cached && !sessionStorage.getItem("ns7-seeded")) {
+        localStorage.setItem(key, JSON.stringify(cached));
+        sessionStorage.setItem("ns7-seeded", "1");
+      }
+    },
+    { cached: opts.cached ?? null, key: CACHE_KEY, myDay: !!opts.myDay },
+  );
   // One router, on purpose (`org-branding.spec.ts` says why).
   await page.route("**/api/**", async (route: Route) => {
     const req = route.request();
@@ -63,15 +94,21 @@ async function stub(page: Page, start: Layout = EMPTY, me: unknown = MEMBER): Pr
       if (req.method() === "PUT") {
         const body = req.postDataJSON() as Record<string, unknown> | null;
         store.puts.push(body);
+        if (opts.putStatus && opts.putStatus >= 400) return json({ error: "shell_unavailable" }, opts.putStatus);
         store.layout = body === null ? EMPTY : { ...EMPTY, ...body };
+        return json(store.layout);
       }
+      if (opts.holdGet) await held;
+      store.gets += 1;
       return json(store.layout);
     }
-    if (path === "/api/auth/me") return json(me);
+    if (path === "/api/auth/me") return json(opts.me ?? MEMBER);
     if (path === "/api/auth/session") return json(SESSION);
     if (path === "/api/health") return json({ gateway: "up" });
     if (path === "/api/accounts") return json({ enabled: false });
     if (path === "/api/settings/branding") return json({ logo: null, updatedBy: "", updatedAt: "" });
+    if (path === "/api/shell/needs") return json({ count: 0, total: 0, items: [], sources: {} });
+    if (path.startsWith("/api/projects/my/")) return json({ rows: [], total: 0 });
     return json([]);
   });
   return store;
@@ -170,7 +207,7 @@ test("Change my layout in the account menu asks again", async ({ page }) => {
 });
 
 test("a founder's welcome follows the question, one dialog at a time", async ({ page }) => {
-  await stub(page, EMPTY, { ...MEMBER, is_admin: true, roles: ["owner"] });
+  await stub(page, EMPTY, { me: { ...MEMBER, is_admin: true, roles: ["owner"] } });
   await page.goto("/settings/appearance?welcome=new-org");
   await expect(question(page)).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
@@ -182,4 +219,113 @@ test("a founder's welcome follows the question, one dialog at a time", async ({ 
   await welcome.getByRole("button", { name: "Explore on my own first" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page).toHaveURL(/\/settings\/appearance$/);
+});
+
+// ── Round 2: a write fault never traps the member ───────────────────────────
+
+const SAVE_FAILED = "Couldn't save that. We'll ask again next time.";
+
+test.describe("a failed save never traps the member in the question", () => {
+  const ways: Array<[string, (page: Page) => Promise<void>]> = [
+    ["Skip for now", (page) => question(page).getByRole("button", { name: "Skip for now" }).click()],
+    ["Escape", (page) => page.keyboard.press("Escape")],
+    ["the header's X", (page) => question(page).getByRole("button", { name: "Close" }).click()],
+  ];
+  for (const [name, leave] of ways) {
+    test(`${name} closes it, says so once, and does not ask again in this page`, async ({ page }) => {
+      const store = await stub(page, EMPTY, { putStatus: 503 });
+      await page.goto("/settings/appearance");
+      await expect(question(page)).toBeVisible();
+      await leave(page);
+      await expect(question(page)).toHaveCount(0);
+      await expect(page.getByLabel("Notifications").getByText(SAVE_FAILED)).toHaveCount(1);
+      expect(store.puts).toHaveLength(1);
+      // Another page in the same document: the question stays closed.
+      await sidebar(page).getByRole("link", { name: "People" }).click();
+      await page.waitForURL("**/people**");
+      await expect(question(page)).toHaveCount(0);
+      // A later visit asks again, because the server still says "never asked".
+      await page.reload();
+      await expect(question(page)).toBeVisible();
+    });
+  }
+
+  test("an answer closes it, and its preset applies for this page", async ({ page }) => {
+    await stub(page, EMPTY, { putStatus: 503 });
+    await page.goto("/settings/appearance");
+    await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
+    await expect(question(page)).toHaveCount(0);
+    await expect(page.getByLabel("Notifications").getByText(SAVE_FAILED)).toHaveCount(1);
+    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+  });
+});
+
+// ── Round 2: the first frame draws the last known layout ───────────────────
+
+test.describe("a reload draws the last known layout on its first frame", () => {
+  const FOUNDER = { ...EMPTY, preset: "founder", answered: "answered" };
+  const ENGINEER = { ...EMPTY, preset: "engineer", answered: "answered" };
+
+  test("with a copy, My apps paints before the read answers, then the read wins", async ({ page }) => {
+    const store = await stub(page, ENGINEER, { cached: FOUNDER, holdGet: true });
+    await page.goto("/settings/appearance");
+    await expect(myApps(page)).toHaveText(["Projects", "Approvals", "My Email", "Chat"]);
+    expect(store.gets).toBe(0);
+    await expect(question(page)).toHaveCount(0);
+    store.release();
+    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+    // The copy now holds what the server said.
+    const kept = await page.evaluate((k) => localStorage.getItem(k), CACHE_KEY);
+    expect(JSON.parse(kept ?? "{}")).toMatchObject({ preset: "engineer" });
+  });
+
+  test("with no copy, there is no My apps until the read answers", async ({ page }) => {
+    const store = await stub(page, ENGINEER, { holdGet: true });
+    await page.goto("/settings/appearance");
+    await expect(sidebar(page).getByRole("link", { name: "People" })).toBeVisible();
+    await expect(myApps(page)).toHaveCount(0);
+    store.release();
+    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+  });
+
+  test("a refused write is never kept in the copy", async ({ page }) => {
+    await stub(page, ENGINEER, { putStatus: 503 });
+    await page.goto("/settings/appearance");
+    await expect(myApps(page)).toHaveText(["My Tasks", "Projects", "Calendar", "Chat"]);
+    await sidebar(page).getByRole("button", { name: "All apps" }).click();
+    await page.getByRole("dialog", { name: "All apps" }).getByRole("button", { name: "Pin My Email to My apps" }).click();
+    await expect(page.getByText("Your pin was not saved. Try again.").first()).toBeVisible();
+    const kept = await page.evaluate((k) => localStorage.getItem(k), CACHE_KEY);
+    expect(JSON.parse(kept ?? "{}").pins ?? null).toBeNull();
+  });
+});
+
+// ── Round 2: My Day keeps one card order ────────────────────────────────────
+
+test.describe("My Day draws its cards in one order", () => {
+  const ENGINEER = { ...EMPTY, preset: "engineer", answered: "answered" };
+  const order = (page: Page) =>
+    page
+      .locator('[data-testid="my-day"] :is([data-testid="needs-you"], [data-testid="today"], [data-testid="next-actions"])')
+      .evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
+
+  test("with a copy, the member's order on the first frame", async ({ page }) => {
+    const store = await stub(page, ENGINEER, { cached: ENGINEER, holdGet: true, myDay: true });
+    await page.goto("/");
+    await expect(page.getByTestId("next-actions")).toBeVisible();
+    expect(await order(page)).toEqual(["next-actions", "today", "needs-you"]);
+    expect(store.gets).toBe(0);
+    store.release();
+  });
+
+  test("with no copy, the cards wait for the layout, then draw the member's order", async ({ page }) => {
+    const store = await stub(page, ENGINEER, { holdGet: true, myDay: true });
+    await page.goto("/");
+    await expect(page.getByTestId("my-day")).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(await order(page)).toEqual([]);
+    store.release();
+    await expect(page.getByTestId("next-actions")).toBeVisible();
+    expect(await order(page)).toEqual(["next-actions", "today", "needs-you"]);
+  });
 });
