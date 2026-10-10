@@ -181,8 +181,9 @@ export interface CollapsibleCardProps {
  * A chat card that folds to one header row (owner request, 2026-10-10).
  *
  * Shut, the header is the card: chevron, icon, label, count and a one-line
- * summary, inside the card's own border. Open, the header is one quiet line
- * above the card, so the card keeps its own chrome and nothing draws twice.
+ * summary, inside the card's own border. Open, the header is a quiet "Roll
+ * up" control above the card, so the card keeps its own chrome and its title
+ * does not draw twice.
  * The trigger is a real button with `aria-expanded` and `aria-controls`,
  * from the substrate. The body stays mounted while shut (`keepMounted`), so
  * a card keeps what the member typed into it.
@@ -212,20 +213,29 @@ export function CollapsibleCard({
           aria-label={`${label}${typeof count === "number" && count > 0 ? `, ${count}` : ""}. ${shown ? "Roll up" : "Show all"}`}
           className={
             shown
-              ? "cc-control group mb-1 flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-[10px] text-muted-foreground hover:text-foreground"
+              ? "cc-control group mb-1 ml-auto flex w-fit items-center gap-1 rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
               : "cc-control group flex w-full min-w-0 items-center gap-1.5 rounded-lg border border-border bg-card/40 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
           }
         >
+          {/* Open, the card below already wears its title, so the control
+              says only what it does. Shut, the header stands in for the
+              card: its icon, its label, its count and one line of it. */}
           <Icon
             name="ChevronDown"
-            className={`h-3 w-3 shrink-0 ${animate ? "transition-transform motion-reduce:transition-none" : ""} ${shown ? "" : "-rotate-90"}`}
+            className={`h-3 w-3 shrink-0 ${animate ? "transition-transform motion-reduce:transition-none" : ""} ${shown ? "rotate-180" : "-rotate-90"}`}
           />
-          {icon ? <Icon name={icon} className="h-3 w-3 shrink-0" /> : null}
-          <span className={`shrink-0 truncate ${shown ? "" : "max-w-[60%] font-medium text-foreground"}`}>{label}</span>
-          {typeof count === "number" && count > 0 ? (
-            <span className="shrink-0 tabular-nums">· {count}</span>
-          ) : null}
-          {!shown && summary ? <span className="min-w-0 flex-1 truncate">{summary}</span> : null}
+          {shown ? (
+            <span>Roll up</span>
+          ) : (
+            <>
+              {icon ? <Icon name={icon} className="h-3 w-3 shrink-0" /> : null}
+              <span className="max-w-[60%] shrink-0 truncate font-medium text-foreground">{label}</span>
+              {typeof count === "number" && count > 0 ? (
+                <span className="shrink-0 tabular-nums">· {count}</span>
+              ) : null}
+              {summary ? <span className="min-w-0 flex-1 truncate">{summary}</span> : null}
+            </>
+          )}
         </Base.Trigger>
       ) : null}
       <Base.Panel keepMounted className={toggle && animate ? CARD_PANEL_MOTION : undefined}>

@@ -18,8 +18,10 @@
  * - `attachStickToBottom` stops setting `scrollTop` -> "at the bottom: the
  *   transcript stays pinned, and the pin does not show" (run 2026-10-10);
  * - `nearAfterScroll` trusts every scroll event -> "the late event of our
- *   own snap keeps the member at the bottom";
- * - `AgentChat` stops attaching it -> "the chat attaches it".
+ *   own snap keeps the member at the bottom" (run 2026-10-10: red);
+ * - `AgentChat` stops attaching it -> "the chat attaches it", and in the
+ *   browser `e2e/chat-card-rollup.spec.ts` (run 2026-10-10: red, the pin
+ *   drew in all 62 samples while the card sat 166 px below the fold).
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

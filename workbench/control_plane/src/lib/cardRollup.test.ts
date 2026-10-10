@@ -6,15 +6,15 @@
  * Mutations this file catches (R7), each run red before the change:
  *
  * - `rollupOpen` loses its pending rule -> "a pending approval card never
- *   rolls up" (run 2026-10-10, 3 cases red);
+ *   rolls up" (run 2026-10-10: red);
  * - the newest rule wins over a manual choice -> "a manual open beats the
- *   automatic rule";
+ *   automatic rule" (run 2026-10-10: red);
  * - `AgentChat` stops wrapping the approval group -> "the approval group is
  *   a card of the transcript".
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createElement } from "react";
+import { createElement as rawElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -33,6 +33,9 @@ import {
   showRollupToggle,
 } from "@/lib/cardRollup";
 import { EMPTY_CONFIRMATIONS, confirmationReducer } from "@/lib/confirmationQueue";
+
+/** `createElement` with children passed the way JSX passes them. */
+const createElement = rawElement as unknown as (type: unknown, props: unknown, ...children: unknown[]) => ReactElement;
 
 /** A registry ordered by a number: a later card has a bigger one. */
 const byPosition = () => new RollupRegistry<number>((a, b) => a - b);
