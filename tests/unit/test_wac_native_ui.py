@@ -371,6 +371,22 @@ def test_a_run_with_no_scope_still_loses_the_web_tools(_no_db: None) -> None:
     assert not names & wui.WITHHELD_TOOLS, sorted(names & wui.WITHHELD_TOOLS)
 
 
+def test_the_final_list_drops_a_web_tool_that_a_scope_let_through(
+    _no_db: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last word: the no-match fallback and a drifted scope can both hand
+    back a web tool. The final ``_drop_withheld`` still takes it out."""
+    monkeypatch.setattr(ti, "_resolve_injected_scope",
+                        lambda *a, **k: {"emit_generative_ui", "write_artifact", "call_agent"})
+    agent = _FakeMafAgent("orchestrator")
+    with wui.whatsapp_run("orchestrator"):
+        ti._inject_agent_tools([agent], tool_scope=["call_agent"], agent_name="orchestrator",
+                               agent_config={}, no_egress=False)
+    names = _names(agent)
+    assert "call_agent" in names
+    assert not names & {"emit_generative_ui", "write_artifact"}
+
+
 def test_the_copilot_addendum_offers_no_withheld_tool(_no_db: None) -> None:
     """The scope union: the addendum describes only the tools in scope."""
     def _addendum(wa: bool) -> str:
