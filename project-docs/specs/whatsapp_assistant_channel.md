@@ -711,7 +711,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
 | **WAC-10a** ✅ live 2026-10-10 (Meta test number) | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
 | **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
-| **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E6. Fence: `tests/unit/test_wac_react.py` |
+| **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1070,6 +1070,19 @@ the AI asked. A thanks after the AI's own buttons goes to the AI.
 react in the same step as its first other tool call, so a reaction adds no
 model round.
 
+**A long job says so first** (owner, 2026-10-11). A member who asks for an
+image, a calculation, code or a page must know at once that it takes time.
+The AI calls `whatsapp_ui` kind `working` FIRST, with one line: what it does
+and about how long it takes. That line goes at once, quotes the member's
+message, and shows "typing..." again. The answer follows in full.
+
+If the AI sends no such line, code sends `REPLY_WORKING` after
+`WORKING_AFTER_S` (20 seconds), with no AI call. Meta hides "typing..." after
+25 seconds, so the member hears before the indicator goes. The member never
+gets both lines, and a quick answer gets neither. The line is no part of the
+answer and goes before the send mark. So a try that runs again can send it
+again: that costs one short line, never a second answer.
+
 **Acceptance (WAC-10e).**
 
 | # | Check | Fence |
@@ -1080,5 +1093,6 @@ model round.
 | E4 | The tool refuses text, takes one emoji (a skin tone, a family, a flag, a keycap), and the last one wins | `test_the_tool_takes_one_emoji_and_a_later_one_replaces_it` |
 | E5 | A resend never sends a reaction as text | `test_a_resend_never_sends_a_reaction_as_text` |
 | E6 | A plain thanks gets a 👍 with no AI call and no text. An "ok" goes to the AI | `test_a_thanks_gets_a_thumbs_up_with_no_ai_call_and_no_text`, `test_only_a_plain_thanks_is_a_thanks` |
+| E7 | A long job tells the member first: the AI's line, or code's line past 20 s. Never both, and never on a quick run | `test_the_ai_says_first_that_a_long_job_takes_a_while`, `test_a_long_run_with_no_early_message_gets_one_from_code`, `test_the_timer_stays_quiet_after_the_ais_own_early_message`, `test_a_quick_run_sends_no_early_message` |
 
-All six fences are in `tests/unit/test_wac_react.py`.
+All seven fences are in `tests/unit/test_wac_react.py`.

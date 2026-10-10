@@ -139,6 +139,11 @@ class WhatsAppRun:
     views: Callable[[str], Awaitable[Any]] | None = None
     #: The org of the phone's link row. Each link button carries it.
     org: str | None = None
+    #: Sends one text to the member NOW, before the answer (WAC-10e, kind
+    #: "working"). ``bot_run`` gives it. It returns False when nothing went.
+    notify: Callable[[str], Awaitable[bool]] | None = None
+    #: True once the member heard that the job takes a while.
+    notified: bool = False
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -147,14 +152,16 @@ _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
 @contextlib.contextmanager
 def whatsapp_run(agent: str, *,
                  views: Callable[[str], Awaitable[Any]] | None = None,
-                 org: str | None = None) -> Iterator[WhatsAppRun]:
+                 org: str | None = None,
+                 notify: Callable[[str], Awaitable[bool]] | None = None,
+                 ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
     value it found.
     """
-    run = WhatsAppRun(agent=agent, views=views, org=org)
+    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify)
     token = _RUN.set(run)
     try:
         yield run
@@ -560,6 +567,11 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - react: {"emoji": "👍"}: one emoji ON the member's message, as a person
       reacts. Not an element, and a later one replaces it. Call it in the
       same step as your first other tool call.
+    - working: {"text"}: sent NOW, before your answer, once. Use it FIRST
+      when the job takes more than about 15 seconds (an image, a
+      calculation, code, a page, a long search): one line of what you are
+      doing and about how long it takes, e.g. "Building the chart, about 30
+      seconds." Not an element.
     A "tone" or "status" is a status word or a colour (green, amber, red,
     blue, violet, gray).
 
@@ -571,6 +583,8 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run = _RUN.get()
     if run is None:
         return {"ok": False, "error": "whatsapp_ui works only in a WhatsApp chat"}
+    if str(kind or "").strip().lower() == "working":
+        return await _working(run, data)
     if str(kind or "").strip().lower() == "react":
         try:
             message = reaction(data.get("emoji") if isinstance(data, dict) else None)
@@ -594,6 +608,36 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run.outbox.append(message)
     return {"ok": True, "queued": len(run.outbox),
             "note": "It goes after your text. Refer to it in one line."}
+
+
+#: The longest "working" line. One line, read at a glance.
+WORKING_MAX = 300
+
+
+async def _working(run: WhatsAppRun, data: Any) -> dict[str, Any]:
+    """Tell the member NOW that the job takes a while (WAC-10e).
+
+    Sent at once through ``run.notify``, not queued, and only once a reply.
+    It is not part of the answer, so the answer still goes in full after it.
+    """
+    text = " ".join(str((data or {}).get("text") or "").split()) \
+        if isinstance(data, dict) else ""
+    if not text:
+        return {"ok": False, "error": '"text" is required: what you are doing, and how long'}
+    if len(text) > WORKING_MAX:
+        return {"ok": False, "error": f'"text" must be at most {WORKING_MAX} characters'}
+    if run.notified:
+        return {"ok": False, "error": "the member already knows. Carry on with the job"}
+    if run.notify is None:
+        return {"ok": False, "error": "no early message in this chat. Carry on"}
+    run.notified = True  # before the await, so two calls in one step send once
+    try:
+        sent = await run.notify(text)
+    except Exception:  # a nicety: never cost the member the answer
+        sent = False
+    run.notified = sent  # a failed one leaves the timer's own line free to go
+    return ({"ok": True, "note": "Sent. Now do the job, then answer in full."} if sent
+            else {"ok": False, "error": "the early message did not go. Carry on"})
 
 
 def _elements(run: WhatsAppRun) -> int:

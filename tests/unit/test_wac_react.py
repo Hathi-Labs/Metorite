@@ -10,11 +10,15 @@ R7 fences named here:
 * ``wac10e-react``: a reaction goes ON the member's message, is never a part
   of the answer, never counts toward the element cap, and a refused one never
   costs the member the answer. A resend never sends it as text.
+* ``wac10e-working``: a long job tells the member first. The AI sends one
+  line (kind "working") at once, or code sends :data:`bot_run.REPLY_WORKING`
+  past :data:`bot_run.WORKING_AFTER_S`. Never both, and never on a quick run.
 * ``wac10e-thanks``: a plain thanks gets a 👍 from code, with no AI call and no
   text. An "ok" is not a thanks.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -223,3 +227,96 @@ async def test_the_provider_quotes_and_reacts_with_metas_shapes(
     assert posted[1]["context"] == {"message_id": "wamid.in"}
     assert posted[2]["context"] == {"message_id": "wamid.in"}
     assert "context" not in posted[3]
+
+
+# ── The early message: "this takes a while" ─────────────────────────────────
+
+
+class _SlowAgent(_UiAgent):
+    """An agent that works for *delay* seconds after its tool calls."""
+
+    def __init__(self, calls: list[tuple[str, dict]], delay: float) -> None:
+        super().__init__(calls)
+        self.delay = delay
+
+    async def __call__(self, agent: str, payload: dict[str, Any], **kw: Any) -> Any:
+        out = await super().__call__(agent, payload, **kw)
+        await asyncio.sleep(self.delay)
+        return out
+
+
+_WORKING = ("working", {"text": "Building the chart, about 30 seconds."})
+
+
+async def test_the_ai_says_first_that_a_long_job_takes_a_while(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, True)
+    prov = _provider(monkeypatch, world)
+    world.agent = _UiAgent([_WORKING])
+    msg = _message()
+    await _post_and_run(msg)
+    assert [s for _to, s in world.sent] == [_WORKING[1]["text"], ANSWER]
+    # Both quote the member's message, and "typing…" shows again after it.
+    assert prov.quotes == [_wamid(msg), _wamid(msg)]
+    assert prov.typing == [_wamid(msg), _wamid(msg)]
+    assert world.store.inbound_rows()[0]["state"] == "replied"
+
+
+async def test_a_long_run_with_no_early_message_gets_one_from_code(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, True)
+    monkeypatch.setattr(bot_run, "WORKING_AFTER_S", 0.01)
+    _provider(monkeypatch, world)
+    world.agent = _SlowAgent([], delay=0.2)
+    await _post_and_run(_message())
+    assert [s for _to, s in world.sent] == [bot_run.REPLY_WORKING, ANSWER]
+
+
+async def test_the_timer_stays_quiet_after_the_ais_own_early_message(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, True)
+    monkeypatch.setattr(bot_run, "WORKING_AFTER_S", 0.01)
+    _provider(monkeypatch, world)
+    world.agent = _SlowAgent([_WORKING], delay=0.2)
+    await _post_and_run(_message())
+    assert [s for _to, s in world.sent] == [_WORKING[1]["text"], ANSWER]
+
+
+async def test_a_quick_run_sends_no_early_message(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, True)
+    _provider(monkeypatch, world)
+    world.agent = _UiAgent([])
+    await _post_and_run(_message())
+    assert [s for _to, s in world.sent] == [ANSWER]
+
+
+async def test_the_working_kind_sends_once_and_checks_its_text() -> None:
+    sent: list[str] = []
+
+    async def _notify(text: str) -> bool:
+        sent.append(text)
+        return True
+
+    with wui.whatsapp_run("orchestrator", notify=_notify) as run:
+        assert (await wui.whatsapp_ui("working", {"text": ""}))["ok"] is False
+        too_long = {"text": "x" * (wui.WORKING_MAX + 1)}
+        assert (await wui.whatsapp_ui("working", too_long))["ok"] is False
+        assert (await wui.whatsapp_ui(*_WORKING))["ok"] is True
+        assert (await wui.whatsapp_ui(*_WORKING))["ok"] is False
+    assert sent == [_WORKING[1]["text"]] and run.notified and run.outbox == []
+
+
+async def test_a_failed_early_message_leaves_the_timer_free() -> None:
+    async def _broken(text: str) -> bool:
+        raise RuntimeError("down")
+
+    with wui.whatsapp_run("orchestrator", notify=_broken) as run:
+        assert (await wui.whatsapp_ui(*_WORKING))["ok"] is False
+    assert run.notified is False
+    with wui.whatsapp_run("orchestrator") as run:
+        assert (await wui.whatsapp_ui(*_WORKING))["ok"] is False

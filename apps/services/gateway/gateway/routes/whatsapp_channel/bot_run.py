@@ -98,7 +98,7 @@ import contextlib
 import hashlib
 import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
@@ -127,6 +127,10 @@ REPLY_CREDITS = (
     "Settings, Billing."
 )
 REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
+#: The early message that code sends when a run takes long and the AI did not
+#: say so itself (WAC-10e).
+REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply "
+                 "here when it is ready.")
 
 #: The channel instruction (§5.5 "The scope rule", D-WAC-5). Advisory: no unit
 #: test can prove a model's refusal (§9). It goes to the run as
@@ -176,7 +180,10 @@ SCOPE_RULE_NATIVE = (
     "React to the member's message when an emoji says it well (whatsapp_ui "
     "kind \"react\"): 👍 noted, ✅ done, 🎉 good news, 🙏 thanks, 👀 looking into "
     "it, 😕 bad news. Do it in the same step as your first other tool call. A "
-    "message that needs no answer gets the reaction and no text."
+    "message that needs no answer gets the reaction and no text.\n"
+    "When a job takes more than about 15 seconds (an image, a calculation, "
+    "code, a page, a long search), FIRST call whatsapp_ui kind \"working\" with "
+    "one line: what you are doing and about how long it takes. Then do the job."
 )
 
 # ── The limits ──────────────────────────────────────────────────────────────
@@ -201,6 +208,9 @@ SWEEP_BATCH = 20
 _TYPING_TIMEOUT_S = 5
 #: A quick command's view (WAC-10c). Past this, the assistant answers instead.
 QUICK_TIMEOUT_S = 15
+#: A run this long with no early message gets :data:`REPLY_WORKING` (WAC-10e).
+#: Meta hides "typing…" after 25 seconds, so the member hears before that.
+WORKING_AFTER_S = 20
 
 #: The namespace of a thread id that a message opens (:func:`new_thread_id`).
 _THREAD_NS = uuid.UUID("5f3c1a2e-9d47-4b8e-a6c1-7e2d0b9f4a13")
@@ -1246,9 +1256,10 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
             try:
                 with refuse_cards(), (whatsapp_run(
                         AGENT, org=req.organization_id,
-                        views=views.runner(req.member_email, req.organization_id))
+                        views=views.runner(req.member_email, req.organization_id),
+                        notify=_notifier(req))
                         if native else contextlib.nullcontext()) as wa_run:
-                    result = await asyncio.wait_for(
+                    result = await _still_working(req, wa_run, asyncio.wait_for(
                         _executor()(
                             AGENT, payload,
                             run_id=run_id,
@@ -1260,7 +1271,7 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
                             session_user=req.member_email,
                         ),
                         timeout=RUN_TIMEOUT_S,
-                    )
+                    ))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1315,6 +1326,62 @@ def _resend_text(stored: str | None) -> str | None:
     from acb_skills.whatsapp_ui import resend_text
 
     return resend_text(stored)
+
+
+def _notifier(req: RunRequest) -> Callable[[str], Awaitable[bool]]:
+    """The early message of one run (WAC-10e, ``whatsapp_ui`` kind "working").
+
+    It quotes the member's message, then shows "typing…" again, because
+    Meta hides the indicator when a message arrives. Best effort: it never
+    raises. It is no part of the answer and goes before the send mark, so a
+    run that a later try repeats can send it again. That costs one short
+    line, never a second answer.
+    """
+    async def _notify(text: str) -> bool:
+        creds = flags.bot_credentials()
+        if creds is None:
+            return False
+        try:
+            from whatsapp_ingestion.providers.factory import build_provider
+
+            provider = build_provider("cloud_api", creds)
+            await asyncio.wait_for(
+                provider.send_text(req.wa_id, text, reply_to_wa_message_id=req.wamid),
+                timeout=_TYPING_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.info("whatsapp_channel.run.working_failed",
+                      error_type=type(exc).__name__)
+            return False
+        _log.info("whatsapp_channel.run.working_sent", message_id=req.message_id)
+        await _show_typing(req)
+        return True
+
+    return _notify
+
+
+async def _still_working(req: RunRequest, wa_run: Any,
+                         job: Coroutine[Any, Any, Any]) -> Any:
+    """Await *job*. Past :data:`WORKING_AFTER_S` with no early message, tell
+    the member, in code and with no AI call, that the answer is on its way.
+    """
+    if wa_run is None or wa_run.notify is None:
+        return await job
+
+    async def _later() -> None:
+        await asyncio.sleep(WORKING_AFTER_S)
+        if not wa_run.notified:
+            wa_run.notified = True
+            wa_run.notified = await wa_run.notify(REPLY_WORKING)
+
+    timer = asyncio.create_task(_later())
+    try:
+        return await job
+    finally:
+        timer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await timer
 
 
 async def _quick_answer(req: RunRequest, message: str,
