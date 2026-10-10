@@ -3,8 +3,9 @@
 **Status.** ACTIVE. Owner directive, 2026-10-10. Board row **WS-52**.
 Verified against code on 2026-10-10.
 
-S1 is built on branch `agent-writing-voice`. S2 follows in a second PR. S3
-and S4 are spec only.
+S1 is built on branch `agent-writing-voice` (PR #828). S2 is built on branch
+`agent-voice-drafting`, which starts from the S1 branch (§8.2). S3 and S4 are
+spec only.
 
 **Owner of the text.** `packages/acb_llm/acb_llm/voice.py` holds the text of
 record. §3 copies it, and `tests/unit/test_agent_voice.py` fails when the two
@@ -243,10 +244,83 @@ runs `--live` and commits `baseline.json`. S4 makes that a tracked score.
 - **Owner decision owed.** The wording of the consent that the member reads
   before the profile reads the mail that the member sent.
 
+### 8.2 S2 as built — the direct drafting calls
+
+**Status.** Built on 2026-10-10, on branch `agent-voice-drafting`. That
+branch starts from the S1 branch.
+
+**How a site gets the voice.** Each member-facing site appends
+`voice_prompt(<surface>)` to its own system string, after its rules and its
+DATA fence. It adds no second system message, so a test that reads
+`messages[0]` or `messages[1]` still reads the same message. A site whose
+output is JSON passes `json=True`, which adds one line: the rules bind the
+text values, never the keys or the shape. A site that writes two kinds of
+text names both surfaces, for example `voice_prompt("title", "description")`.
+
+**A message in the member's name takes the email overlay.** That covers the
+WhatsApp reply and the WhatsApp nudge. The contract has five overlays, and
+this spec adds no sixth one.
+
+The sites that take the voice (26 functions). The sweep finds 64 functions that call a model, and the other 38 are machine sites:
+
+| Area | Function | Surfaces |
+|---|---|---|
+| Email | `drafting._llm_draft_reply`, `drafting._llm_compose_assist` | email |
+| Email | `rules._llm_generate_rules` | title |
+| Email | `digest._digest_brief`, through the constant `_BRIEF_SYSTEM` | summary |
+| Notes | `summaries._single_pass` and `_map_reduce`, through `templates.build_system_prompt` | summary, title |
+| Notes | `share._draft`, `dispatch._draft_email` | email |
+| Notes | `dispatch._dispatch_document` | title, summary |
+| Notes | `qa.ask_meeting`, `copilot._craft` | chat |
+| Notes | `copilot_agenda.draft_agenda` | chat, title |
+| Tasks | `ai._llm_propose`, `capture_email._llm_capture`, `capture_email._llm_detect_commitment`, `planning._llm_plan` | title, description |
+| Tasks | `ai._llm_suggest_title` | title |
+| Tasks | `calendar._llm_rank_day`, `resume_parse.llm_extract_profile` | summary |
+| WhatsApp | `drafting.draft_reply`, `commitments.draft_nudge`, through their message builders | email |
+| WhatsApp | `groups.summarize_group`, through its builder | summary |
+| Workflows | `copilot._call_copilot`, through `workflow_copilot` | chat |
+| Orchestrator | `executor._llm_recovery`, `agents/pull_agent.answer`, `agents/sales_pull_agent.answer` | chat |
+
+The two pull agents have no production caller today. They take the voice, so
+the day one is called, it already writes in the house voice.
+
+**The sites that take no voice, on purpose.** `MACHINE_SITES` in the fence
+lists each one with its reason. There are four kinds:
+
+1. **No member prose.** Transport wrappers, embeddings, classifiers, routing
+   JSON, extraction, a health ping and an entity tie-break.
+2. **The member's own voice is the point.** These are the voice profile
+   (observe, synthesize, sample) and the writing-style guides. The template
+   fill and the split of a mind-dump into captures are here too. The house voice must not bias
+   what these learn, and it must not rewrite the member's words.
+3. **Someone else owns the prompt.** A Custom App's `ai_complete`.
+4. **The output is code or configuration.** The workflow module generator,
+   and the API discovery for an admin.
+
+Three email classifiers show a short reason in the UI (`engine` twice and
+`senders`). They stay machine sites, because the reason is a label and they
+run only when decide is off.
+
+**The fence.** `test_drafting_voice.py` walks the AST of every production
+module under `apps/` and `packages/`. It finds each function that calls a
+model entry point, and each one must be in `VOICE_SITES` or in
+`MACHINE_SITES`. For a voice site, the function (or the builder or the
+constant that it names) must call `voice_prompt` with exactly its surfaces.
+A machine site must not call it. An entry whose function no longer calls a
+model fails, so the lists cannot go stale.
+
+**Advisory.** The sweep cannot see three things. One is a one-shot MAF
+`Agent` that code builds (`acb_skills.system_one`). One is a vendor SDK with
+its own client (Graphiti, Mem0). One is an entry point with a new name.
+
+**The cost.** One site adds the core and one or two overlays: 355 to 400
+tokens in `o200k_base`, and about 15 more with `json=True`. A machine site
+adds nothing.
+
 ## 9. Verification commands
 
 ```bash
-uv run pytest tests/unit/test_agent_voice.py tests/unit/test_agent_voice_eval.py -q
+uv run pytest tests/unit/test_agent_voice.py tests/unit/test_agent_voice_eval.py tests/unit/test_drafting_voice.py -q
 uv run pytest tests/unit/test_chat_upload_every_agent.py tests/unit/test_floor_opt_out.py tests/unit/test_generated_addendum.py tests/unit/test_skill_index.py tests/unit/test_tool_schema_diet.py -q
 uv run python -m evals.agent_voice.run --scripted
 # Manual, with a model:
