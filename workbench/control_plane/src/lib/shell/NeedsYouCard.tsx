@@ -18,13 +18,21 @@
  * row back with a short error.
  *
  * Only the overdue tone is coloured, and it comes from `statusAccent.ts`.
+ *
+ * **The shell's bell draws the SAME list** (NS-6, `ShellBell.tsx`). This file
+ * holds the list once, `NeedsList`, and the card and the bell's panel both
+ * render it. So the groups, the rows and the acts cannot drift between the
+ * two. The rows an act took off live in one store here, shared by every
+ * reader of the feed, so a Done in the bell leaves My Day's card at once.
+ * Fence: `shellBell.test.ts`.
  */
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { onClear } from "@/lib/dataCache";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -33,6 +41,64 @@ import { appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myD
 import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
 
 const DANGER = accentForHue("red");
+
+// ── The rows an act took off, for every reader of the feed ───────────────────
+//
+// My Day's card and the shell's bell each read the feed. If each held its own
+// "removed" set, a Done in the bell would leave the card's row in place until
+// the feed read again. One small store, memory only, as `ActivityControl`'s
+// open state is.
+
+const NO_IDS: ReadonlySet<string> = new Set();
+const NO_ERRORS: Readonly<Record<string, string>> = {};
+
+let removedIds: ReadonlySet<string> = NO_IDS;
+let rowErrors: Readonly<Record<string, string>> = NO_ERRORS;
+const actListeners = new Set<() => void>();
+
+function emitActs(): void {
+  actListeners.forEach((l) => l());
+}
+
+function subscribeActs(listener: () => void): () => void {
+  actListeners.add(listener);
+  return () => {
+    actListeners.delete(listener);
+  };
+}
+
+function removeRow(id: string, gone: boolean): void {
+  if (gone === removedIds.has(id)) return;
+  const next = new Set(removedIds);
+  if (gone) next.add(id);
+  else next.delete(id);
+  removedIds = next;
+  emitActs();
+}
+
+function setRowError(id: string, message: string | null): void {
+  if ((rowErrors[id] ?? null) === message) return;
+  const next = { ...rowErrors };
+  if (message) next[id] = message;
+  else delete next[id];
+  rowErrors = next;
+  emitActs();
+}
+
+/** Forget each removed row that the newest answer no longer holds. */
+function pruneRemoved(held: Iterable<string>): void {
+  const kept = keepRemoved(removedIds, held);
+  if (kept === removedIds) return;
+  removedIds = kept;
+  emitActs();
+}
+
+// A new member on this browser starts with nothing hidden.
+onClear(() => {
+  removedIds = NO_IDS;
+  rowErrors = NO_ERRORS;
+  emitActs();
+});
 
 export interface NeedsYou {
   /** The feed's rows, minus the ones an act just removed. */
@@ -49,53 +115,30 @@ export interface NeedsYou {
 
 /**
  * The feed and its optimistic acts. My Day calls it once and hands it down,
- * so the summary line, this card and Next actions read ONE answer.
+ * so the summary line, this card and Next actions read ONE answer. The
+ * shell's bell calls it too. The cache key is the same (`needsKey`), and the
+ * removed rows are the one store above, so the two stay in step.
  */
 export function useNeedsYou(enabled: boolean): NeedsYou {
   const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds());
-  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
-  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+  const removed = useSyncExternalStore(subscribeActs, () => removedIds, () => NO_IDS);
+  const errors = useSyncExternalStore(subscribeActs, () => rowErrors, () => NO_ERRORS);
 
   // A new answer from the server forgets each removed row it no longer
   // holds. Without this, a task that comes back later (reopened in Projects)
-  // would stay hidden here until a reload. Adjusted during render, React's
-  // own pattern for state that follows a prop.
-  const [seen, setSeen] = useState(feed.data);
-  if (feed.data !== seen) {
-    setSeen(feed.data);
-    if (feed.data && removed.size > 0) {
-      const kept = keepRemoved(removed, feed.data.items.map((i) => i.id));
-      if (kept !== removed) setRemoved(kept);
-    }
-  }
-
-  const remove = useCallback((id: string, gone: boolean) => {
-    setRemoved((prev) => {
-      const next = new Set(prev);
-      if (gone) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  }, []);
-
-  const setError = useCallback((id: string, message: string | null) => {
-    setErrors((prev) => {
-      const next = { ...prev };
-      if (message) next[id] = message;
-      else delete next[id];
-      return next;
-    });
-  }, []);
+  // would stay hidden here until a reload. It only drops ids the answer does
+  // not hold, so no drawn row changes, and an effect is early enough.
+  useEffect(() => {
+    if (feed.data) pruneRemoved(feed.data.items.map((i) => i.id));
+  }, [feed.data]);
 
   // A done is the My Tasks store's own gesture: it may ask the subtask
   // question first, its Undo is the store's toast (`UndoToast`, mounted by
-  // My Day), and its failure arrives as `syncFailure` (`markDoneFromHome`).
-  const act = useCallback(
-    (item: NeedsItem, from: HTMLElement | null) => {
-      void runAct(item, rowMover(item.id, remove, setError, from));
-    },
-    [remove, setError],
-  );
+  // My Day, or `UndoToastFallback` by the bell's host), and its failure
+  // arrives as `syncFailure` (`markDoneFromHome`).
+  const act = useCallback((item: NeedsItem, from: HTMLElement | null) => {
+    void runAct(item, rowMover(item.id, removeRow, setRowError, from));
+  }, []);
 
   const items = useMemo(
     () => feed.data?.items.filter((i) => !removed.has(i.id)),
@@ -124,7 +167,30 @@ export default function NeedsYouCard({
   now: Date | null;
   className?: string;
 }) {
+  return (
+    <HomeCard title="Needs you" icon="Bell" testId="needs-you" className={className}>
+      <NeedsList needs={needs} now={now} />
+    </HomeCard>
+  );
+}
+
+/**
+ * THE list of what needs the member: the groups, the rows, their acts, the
+ * empty line and the caveat. My Day's card and the shell bell's panel both
+ * render it, so they show the same rows (NS-6).
+ */
+export function NeedsList({
+  needs,
+  now,
+}: {
+  needs: NeedsYou;
+  /** The page's clock, by the minute. A render reads no clock itself. */
+  now: Date | null;
+}) {
   const [expanded, setExpanded] = useState(false);
+  // The card and the bell's panel can both be on screen, so each list names
+  // its group labels with its own prefix.
+  const uid = useId();
 
   let body: React.ReactNode;
   if (needs.items === undefined) {
@@ -149,9 +215,9 @@ export default function NeedsYouCard({
     body = (
       <div className="flex flex-col gap-2">
         {groups.map((group) => (
-          <div key={group.kind} role="group" aria-labelledby={`needs-${group.kind}`}>
+          <div key={group.kind} role="group" aria-labelledby={`${uid}-${group.kind}`}>
             <div
-              id={`needs-${group.kind}`}
+              id={`${uid}-${group.kind}`}
               className={`px-2 pt-1 pb-0.5 text-[11px] font-medium ${
                 group.kind === "overdue" ? DANGER.text : "text-muted-foreground"
               }`}
@@ -190,7 +256,7 @@ export default function NeedsYouCard({
   const stale = needs.items !== undefined && needs.error;
   const failed = failedLines(needs.sources);
   return (
-    <HomeCard title="Needs you" icon="Bell" testId="needs-you" className={className}>
+    <div data-needs-list="">
       {body}
       {/* The caveat, said ONCE and where the gap is: one muted line per
           silent source, or one for a refresh that failed, and one Retry. */}
@@ -215,7 +281,7 @@ export default function NeedsYouCard({
           </Button>
         </div>
       ) : null}
-    </HomeCard>
+    </div>
   );
 }
 

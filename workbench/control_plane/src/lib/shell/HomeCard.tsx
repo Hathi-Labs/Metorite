@@ -111,13 +111,17 @@ export function focusTarget<T>(acts: readonly T[], from: T, heading: T | null): 
  * Move focus off an act whose row is leaving. Mark each row's act control
  * with `data-row-act`. Nothing moves unless that control holds focus, so a
  * row that leaves for another reason never steals it.
+ *
+ * The scope is a Home card, or the shell bell's panel (`data-needs-panel`,
+ * NS-6). After the last row, focus goes to the card's heading, or to the
+ * panel's `data-leave-focus` control.
  */
 export function moveFocusAfterLeave(from: HTMLElement | null): void {
   if (!from || typeof document === "undefined" || document.activeElement !== from) return;
-  const card = from.closest("[data-home-card]");
+  const card = from.closest("[data-home-card], [data-needs-panel]");
   if (!card) return;
   const acts = [...card.querySelectorAll<HTMLElement>("[data-row-act]")];
-  const target = focusTarget(acts, from, card.querySelector<HTMLElement>("h2"));
+  const target = focusTarget(acts, from, card.querySelector<HTMLElement>("h2, [data-leave-focus]"));
   // After React has taken the row out.
   requestAnimationFrame(() => target?.focus());
 }
