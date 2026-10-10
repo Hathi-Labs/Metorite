@@ -471,20 +471,30 @@ def _batches(width: int) -> list[list[int]]:
     return [js[i : i + _BATCH] for i in range(0, width, _BATCH)]
 
 
-def _one_row(con: duckdb.DuckDBPyConnection, sql: str, deadline: float) -> tuple[Any, ...]:
-    work = lambda: con.execute(sql).fetchone()  # noqa: E731
-    return tuple(_timed(con, max(1, int(deadline - time.monotonic())), work, "load") or ())
+def _one_row(stage: Path, sql: str, deadline: float) -> tuple[Any, ...]:
+    """Run one statement of a load on its own DuckDB database, and close it.
+
+    One database keeps memory from each wide statement, outside its
+    ``memory_limit`` (which counted 4 MB). Measured on DuckDB 1.5.6 in the
+    image on 2026-10-10 (H-290): a load of 400 columns grew to 500 MB
+    resident over its 41 statements, and to 771 MB on a CI runner, past the
+    watch of ``_isolated``. A fresh database for each statement stays flat.
+    """
+    con = _load_connection(stage)
+    try:
+        work = lambda: con.execute(sql).fetchone()  # noqa: E731
+        return tuple(_timed(con, max(1, int(deadline - time.monotonic())), work, "load") or ())
+    finally:
+        con.close()
 
 
-def _decimal_comma(
-    con: duckdb.DuckDBPyConnection, source: str, width: int, deadline: float
-) -> bool:
+def _decimal_comma(stage: Path, source: str, width: int, deadline: float) -> bool:
     """A ";" file with 12,5 or 1.234,5 reads its numbers with a decimal comma."""
     for js in _batches(width):
         tests = [f"count_if(c{j} LIKE '%,%' AND NOT vw{j} AND vd{j})" for j in js]
         if sum(
             _one_row(
-                con, f"SELECT {', '.join(tests)} FROM {_parts(source, js, ('w', 'd'))}", deadline
+                stage, f"SELECT {', '.join(tests)} FROM {_parts(source, js, ('w', 'd'))}", deadline
             )
         ):
             return True
@@ -516,7 +526,7 @@ def _column_stats(j: int, m: str) -> list[str]:
 
 
 def _date_formats(
-    con: duckdb.DuckDBPyConnection, source: str, counts: list[tuple[Any, ...]], deadline: float
+    stage: Path, source: str, counts: list[tuple[Any, ...]], deadline: float
 ) -> dict[int, list[str]]:
     """The date formats that read every value of each column, in the order of ``_FORMATS``.
 
@@ -527,12 +537,12 @@ def _date_formats(
     dated = [j for j, s in enumerate(counts, 1) if s[0] and max(s[1], s[2]) < s[0] == s[12]]
     out: dict[int, list[str]] = {}
     for i in range(0, len(dated), _BATCH):
-        out |= _date_batch(con, source, counts, dated[i : i + _BATCH], deadline)
+        out |= _date_batch(stage, source, counts, dated[i : i + _BATCH], deadline)
     return out
 
 
 def _date_batch(
-    con: duckdb.DuckDBPyConnection,
+    stage: Path,
     source: str,
     counts: list[tuple[Any, ...]],
     dated: list[int],
@@ -544,7 +554,7 @@ def _date_batch(
     ]
     head = f"SELECT count(*), {', '.join(f'count(c{j})' for j in dated)}, {', '.join(tries)}"
     cols = ", ".join(f"c{j}" for j in dated)
-    found = _one_row(con, f"{head} FROM (SELECT {cols} FROM {source} LIMIT 2000)", deadline)
+    found = _one_row(stage, f"{head} FROM (SELECT {cols} FROM {source} LIMIT 2000)", deadline)
     n = len(_FORMATS)
     picked = {
         j: [
@@ -557,7 +567,7 @@ def _date_batch(
     tries = [
         f"count_if(try_strptime(c{j}, {_lit(f)}) IS NOT NULL)" for j in dated for f in picked[j]
     ]
-    found = _one_row(con, f"SELECT {', '.join(tries)} FROM {source}", deadline) if tries else ()
+    found = _one_row(stage, f"SELECT {', '.join(tries)} FROM {source}", deadline) if tries else ()
     out: dict[int, list[str]] = {}
     at = 0
     for j in dated:
@@ -568,7 +578,7 @@ def _date_batch(
 
 
 def _types(
-    con: duckdb.DuckDBPyConnection,
+    stage: Path,
     source: str,
     seen: dict[str, Any],
     semicolon: bool,
@@ -577,13 +587,13 @@ def _types(
     """Give each column one type. Return the decimal comma, the manifest
     entries and the SQL that casts each column."""
     width = len(seen["names"])
-    dc = semicolon and _decimal_comma(con, source, width, deadline)
+    dc = semicolon and _decimal_comma(stage, source, width, deadline)
     mode = "d" if dc else "w"
     found: tuple[Any, ...] = ()
     for js in _batches(width):
         stats = [s for j in js for s in _column_stats(j, mode)]
         found += _one_row(
-            con, f"SELECT {', '.join(stats)} FROM {_parts(source, js, (mode,))}", deadline
+            stage, f"SELECT {', '.join(stats)} FROM {_parts(source, js, (mode,))}", deadline
         )
     # Over a column with no value, DuckDB gives NULL for a count_if, and a
     # count is a number (WS-43y1b: an empty column failed the load before).
@@ -591,7 +601,7 @@ def _types(
         tuple(0 if v is None and k in _COUNTS else v for k, v in enumerate(found[i : i + 13]))
         for i in range(0, len(found), 13)
     ]
-    fits = _date_formats(con, source, counts, deadline)
+    fits = _date_formats(stage, source, counts, deadline)
     cols, casts = [], []
     for j, (s, name) in enumerate(zip(counts, seen["names"], strict=True), 1):
         filled, bools, nums, loose, pct, dotted, scale, whole, power, low, high, dateish, _ = s
@@ -691,8 +701,8 @@ def _write_dataset(
     """DuckDB types the rows of *raw* and writes them as one Parquet file."""
     con = _load_connection(stage)
     table = _table_name(con, Path(label).stem, set())
-    dc, cols = _typed(con, stage, raw, table, seen, delim == ";", deadline)
     con.close()
+    dc, cols = _typed(stage, raw, table, seen, delim == ";", deadline)
     width = len(seen["names"])
     last, header = _letter(width - 1), seen["header"]
     left_out: list[dict[str, Any]] = [
@@ -710,7 +720,6 @@ def _write_dataset(
 
 
 def _typed(
-    con: duckdb.DuckDBPyConnection,
     stage: Path,
     raw: Path,
     table: str,
@@ -735,10 +744,10 @@ def _typed(
     # serves each batch only its own columns.
     staged = (stage / "rows.parquet").as_posix()
     options = _parquet_options(width)
-    _one_row(con, f"COPY (SELECT * FROM {source}) TO {_lit(staged)} {options}", deadline)
+    _one_row(stage, f"COPY (SELECT * FROM {source}) TO {_lit(staged)} {options}", deadline)
     raw.unlink()
     source = f"read_parquet({_lit(staged)})"
-    dc, cols, casts = _types(con, source, seen, semicolon, deadline)
+    dc, cols, casts = _types(stage, source, seen, semicolon, deadline)
     parquet = (stage / f"{table}.parquet").as_posix()
     # Each batch of columns writes its own typed file, and one positional join
     # then makes the dataset's file. One cast of every column at once took
@@ -756,13 +765,13 @@ def _typed(
         select = lead + ", ".join(casts[j - 1] for j in js)
         part = (stage / f"typed{k}.parquet").as_posix()
         copy = f"COPY (SELECT {select} FROM (SELECT c0, {inner} FROM {source}))"
-        _one_row(con, f"{copy} TO {_lit(part)} {options}", deadline)
+        _one_row(stage, f"{copy} TO {_lit(part)} {options}", deadline)
         parts.append(part)
     if len(parts) == 1:
         os.replace(parts[0], parquet)
     else:
         joined = " POSITIONAL JOIN ".join(f"read_parquet({_lit(p)})" for p in parts)
-        _one_row(con, f"COPY (SELECT * FROM {joined}) TO {_lit(parquet)} {options}", deadline)
+        _one_row(stage, f"COPY (SELECT * FROM {joined}) TO {_lit(parquet)} {options}", deadline)
         for part in parts:
             Path(part).unlink()
     Path(staged).unlink()
@@ -771,7 +780,7 @@ def _typed(
         bounds = ", ".join(
             f"min({_q(cols[j - 1]['name'])}), max({_q(cols[j - 1]['name'])})" for j in js
         )
-        found += _one_row(con, f"SELECT {bounds} FROM read_parquet({_lit(parquet)})", deadline)
+        found += _one_row(stage, f"SELECT {bounds} FROM read_parquet({_lit(parquet)})", deadline)
     for j, col in enumerate(cols):
         if found[2 * j] is not None:
             col["min"], col["max"] = _cell(found[2 * j])[0], _cell(found[2 * j + 1])[0]
@@ -2067,7 +2076,7 @@ def _type_tables(book: _Book, stage: Path, deadline: float) -> list[dict[str, An
             table = name if k == 0 else f"{name}__totals"
             taken.add(table)
             seen = {"names": found["names"], "samples": samples, "rows": out.rows}
-            _, cols = _typed(con, stage, out.path, table, seen, False, deadline)
+            _, cols = _typed(stage, out.path, table, seen, False, deadline)
             entry = _table_entry(found, out, table, cols)
             if k == 0:
                 sheet.table_names.append(table)
