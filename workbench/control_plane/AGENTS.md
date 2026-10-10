@@ -175,6 +175,10 @@ Seven rules on top of the three above. Each one exists because it was broken:
    not add a second fold. The transcript follows its bottom on each change
    of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
    `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.
+   The body of a card has no hanging indent. It starts at the content
+   padding, in line with the chevron (owner, 2026-10-10). A listed row is
+   one line: number, title, status pill and open icon. Fence:
+   `src/lib/cardDenseLayout.test.ts`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).

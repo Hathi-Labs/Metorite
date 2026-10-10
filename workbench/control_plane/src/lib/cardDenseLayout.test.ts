@@ -13,13 +13,17 @@
  * - a task row is ONE line: `#141`, the title (it truncates, and the whole
  *   text stays in the row), the status as its pill, the open icon;
  * - the pill is the shared `StatusChip`, in the hue `statusAccent` gives,
- *   named "Status: Backlog" for a screen reader, with no "status " word.
+ *   named "Status: Backlog" for a screen reader, with no "status " word;
+ * - a receipt whose body is one short line ("Nothing was created.") draws
+ *   that line on its title row, so the card is one row.
  *
  * Mutations this file catches (R7), each run red before the change:
  *
  * - the row draws the "status " word again (`TaskRowView` uses
  *   `taskMetaForPeople(row.meta)` in place of `facts.rest`) -> "a receipt
- *   row is one line" (run 2026-10-10: red).
+ *   row is one line" (run 2026-10-10: red);
+ * - the body box takes `pl-[calc(25px+1rem)]` again -> "the body has no
+ *   hanging indent" (run 2026-10-10: red).
  *
  * The browser twin is the visual review in the PR body.
  */
@@ -190,10 +194,18 @@ describe("the other receipts that list rows", () => {
     expect(receiptLead("Added to «Backlog» under #12 «Parent»:")).toBe("Added to «Backlog» under #12 «Parent»:");
   });
 
-  it("'Nothing was created' starts at the content edge, like the rows", () => {
+  it("'Nothing was created' is one row: the line sits on the title row", () => {
     const html = inTranscript(receipt([{ ...BATCH, id: "t-none", result: "Nothing was created." }]));
-    expect(html).toContain("Nothing was created.");
+    expect(count(html, "Nothing was created.")).toBe(1);
+    expect(html).toMatch(/>Not done<\/span><\/span><span data-rollup-aside="" [^>]*>Nothing was created\.<\/span>/);
     expect(html).not.toMatch(/pl-\[calc\(/);
+  });
+
+  it("a longer line, or several, stays in the body, where it wraps", () => {
+    const long = `Row 3 has no title. ${"Every task needs one. ".repeat(6)}Nothing was created.`;
+    const html = inTranscript(receipt([{ ...BATCH, id: "t-long", result: long }]));
+    expect(html).not.toContain("data-rollup-aside");
+    expect(html).toContain("Row 3 has no title.");
   });
 });
 

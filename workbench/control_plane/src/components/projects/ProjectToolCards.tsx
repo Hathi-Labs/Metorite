@@ -764,14 +764,17 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const notes = tasks.length > 0 ? batchNotes(result) : [];
   // The rows open their task. The link stays only for a task the rows do not
   // list: the parent of new subtasks prints its id with no row.
-  const linkOut = !!rowId && !tasks.some((t) => t.id === rowId);
+  const linkOut = (outcome === "done" || outcome === "partial") && !!rowId && !tasks.some((t) => t.id === rowId);
+  // A receipt whose whole body is one short line draws it on the title row:
+  // "Not done  Nothing was created." is one row, not two.
+  const aside = tasks.length === 0 && !linkOut && oneLine(detail) ? detail : "";
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
   return (
     <RollupCard id={`tool:${e.id}`} title={heading} icon={icon} summary={unfenced(detail).split(NL)[0]} header="own">
     <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
-      <RollupHeader />
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} /> : undefined} />
       <RollupBody>
         {tasks.length > 0 ? (
           <>
@@ -788,13 +791,13 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
             <ReceiptNotes notes={notes} />
           </>
         ) : (
-          detail && (
+          detail && !aside && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
               <FencedText text={detail} pills={false} />
             </div>
           )
         )}
-        {(outcome === "done" || outcome === "partial") && linkOut && (
+        {linkOut && (
           <div className="mt-1">
             <Button
               variant="text"
@@ -904,6 +907,11 @@ export function receiptLead(result: string): string {
   return /^[A-Za-z]+:$/.test(shown.trim()) ? "" : shown;
 }
 
+/** Short enough to share the title row: one line, at most 100 characters. */
+function oneLine(text: string): boolean {
+  return !!text && !text.includes(NL) && unfenced(text).length <= 100;
+}
+
 /** The lines about a receipt's rows: a row that failed, a stop, a note. */
 function ReceiptNotes({ notes }: { notes: string[] }) {
   if (notes.length === 0) return null;
@@ -922,7 +930,9 @@ function ReceiptNotes({ notes }: { notes: string[] }) {
 /** One word a vocabulary batch added. A tag is the tag pill, a type a plain pill. */
 function VocabRowView({ row }: { row: VocabRow }) {
   return (
-    <div className={`flex min-w-0 items-center gap-2 ${LIST_ROW_BOX}`}>
+    // `text-[11px]`: the pill sizes from its text (`0.9em`), so it matches the
+    // task rows' type and does not stand taller than them.
+    <div className={`flex min-w-0 items-center gap-2 text-[11px] ${LIST_ROW_BOX}`}>
       <span className="inline-flex min-w-0 max-w-full">
         <EntityPill fit kind={row.kind === "tag" ? "tag" : "unknown"} label={row.name} />
       </span>
@@ -975,6 +985,9 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   // so it rolls up when a newer card arrives, to its title row: its label,
   // its count and the rows' names on one line. That row is the card's own
   // (`header="own"`), so there is one title and one toggle.
+  // No rows and one short line (a refusal, "Nothing was created."): the line
+  // sits on the title row, and the card is one row.
+  const aside = rows.length === 0 && notes.length === 0 && oneLine(head) ? head : "";
   const names = kind.rows === "task"
     ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`)
     : words.map((r) => r.name);
@@ -988,9 +1001,9 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
       header="own"
     >
     <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
-      <RollupHeader />
+      <RollupHeader aside={aside ? <FencedText text={aside} pills={false} /> : undefined} />
       <RollupBody>
-          {head && (outcome !== "done" || rows.length === 0) && (
+          {head && !aside && (outcome !== "done" || rows.length === 0) && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
               <FencedText text={head} pills={false} />
             </div>

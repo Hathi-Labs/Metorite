@@ -223,6 +223,14 @@ export interface CollapsibleCardHeaderProps {
   className?: string;
   /** The title's weight and colour. The icon keeps the card's own colour. */
   titleClassName?: string;
+  /**
+   * A short line that says the rest, on the title row itself: a receipt
+   * whose whole body is one line ("Not done  Nothing was created.") draws
+   * as one row and no body. Muted, and it wraps rather than cuts, because a
+   * refusal's reason is the part the member needs. Not drawn while shut:
+   * the summary has that place.
+   */
+  aside?: React.ReactNode;
 }
 
 /**
@@ -241,6 +249,7 @@ export function CollapsibleCardHeader({
   quiet = false,
   className = "text-[11px]",
   titleClassName = "font-medium text-foreground",
+  aside,
 }: CollapsibleCardHeaderProps) {
   const fold = useCardFold();
   if (!fold) return null;
@@ -260,6 +269,11 @@ export function CollapsibleCardHeader({
         <span className={`min-w-0 truncate ${titleClassName}`}>{title ?? label}</span>
         {counted ? <span className="shrink-0 font-normal tabular-nums text-muted-foreground">· {count}</span> : null}
       </span>
+      {aside && !shut ? (
+        <span data-rollup-aside="" className="min-w-0 font-normal text-muted-foreground">
+          {aside}
+        </span>
+      ) : null}
     </>
   );
   if (!toggle) {
