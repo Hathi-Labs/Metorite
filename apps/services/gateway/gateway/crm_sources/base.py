@@ -21,7 +21,7 @@ is CRM-Z3 and CRM-Z4.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -57,20 +57,20 @@ class OAuthClientConfig:
 
 @dataclass(frozen=True)
 class SourceCredential:
-    """The tokens of one connection, and the data centre they belong to.
+    """The tokens of one connection. Both tokens are kept out of ``repr``.
 
-    Both tokens are kept out of ``repr``. ``accounts_server`` and
-    ``api_domain`` are origins (``https://host``) that the adapter checks
-    against its allowlist before each request.
+    ``provider_meta`` holds what one provider needs and another does not, as
+    strings. For Zoho that is the data centre: ``accounts_server``,
+    ``api_domain`` and ``location``. The adapter checks each host against its
+    allowlist before a request. The shape names no provider's words, so a
+    second provider adds keys and no fields.
     """
 
     access_token: str = field(repr=False)
     refresh_token: str = field(repr=False)
     expires_at: datetime
-    accounts_server: str
-    api_domain: str
     scopes: tuple[str, ...] = ()
-    location: str | None = None
+    provider_meta: Mapping[str, str] = field(default_factory=dict)
 
 
 # ── Records and paging ──────────────────────────────────────────────────────
@@ -160,16 +160,15 @@ class CrmSource(Protocol):
     @property
     def credential(self) -> SourceCredential | None: ...
 
-    # 1. Start the consent flow and finish it.
+    # 1. Start the consent flow and finish it. ``params`` is the query of the
+    # provider's redirect. The caller checks the signed ``state`` first.
     def consent_url(self, *, scopes: Sequence[str], state: str) -> str: ...
 
     async def finish_consent(
         self,
         *,
-        code: str,
-        accounts_server: str,
+        params: Mapping[str, str],
         scopes: Sequence[str],
-        location: str | None = None,
     ) -> SourceCredential: ...
 
     # 2. Refresh the credential. Raise NeedsReconnect when the refresh fails.

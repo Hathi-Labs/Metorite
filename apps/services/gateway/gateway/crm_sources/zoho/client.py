@@ -289,17 +289,27 @@ class ZohoSource:
     async def finish_consent(
         self,
         *,
-        code: str,
-        accounts_server: str,
+        params: Mapping[str, str],
         scopes: Sequence[str],
-        location: str | None = None,
     ) -> SourceCredential:
+        """Finish the consent from the query of Zoho's redirect.
+
+        Zoho sends ``code``, ``accounts-server`` and ``location``, or ``error``
+        when the admin refused. The caller has checked ``state`` already.
+        """
+        if params.get("error"):
+            refused = auth.safe_code(params.get("error"))
+            raise SourceError(f"Zoho consent was refused ({refused})")
+        code = params.get("code") or ""
+        accounts_server = params.get("accounts-server") or ""
+        if not code or not accounts_server:
+            raise SourceError("The Zoho redirect has no code or no accounts-server")
         self._credential = await auth.exchange_code(
             self._config,
             code=code,
             accounts_server=accounts_server,
             scopes=scopes,
-            location=location,
+            location=params.get("location") or None,
             transport=self._transport,
             clock=self._clock,
         )
@@ -333,10 +343,10 @@ class ZohoSource:
         """One GET to ``api_domain``, with credits, the budget and the backoff."""
         credential = self._connected()
         self._check_budget()
-        base = auth.check_api_domain(credential.api_domain)
+        base = auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
         if auth.needs_refresh(credential, self._clock()):
             credential = await self.refresh()
-            base = auth.check_api_domain(credential.api_domain)
+            base = auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
         headers = _with_modified_since(
             {"Authorization": f"Zoho-oauthtoken {credential.access_token}"},
             since,

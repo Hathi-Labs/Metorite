@@ -68,6 +68,11 @@ ZOHO_DATA_CENTRES: Mapping[str, DataCentre] = MappingProxyType(
 ACCOUNTS_HOSTS: frozenset[str] = frozenset(dc.accounts_host for dc in ZOHO_DATA_CENTRES.values())
 API_HOSTS: frozenset[str] = frozenset(dc.api_host for dc in ZOHO_DATA_CENTRES.values())
 
+#: The keys of ``SourceCredential.provider_meta`` for Zoho.
+META_ACCOUNTS_SERVER = "accounts_server"
+META_API_DOMAIN = "api_domain"
+META_LOCATION = "location"
+
 #: A multi-DC client always starts the consent at the US accounts server.
 CONSENT_SERVER = "https://accounts.zoho.com"
 
@@ -125,6 +130,11 @@ def check_accounts_server(url: str) -> str:
 def check_api_domain(url: str) -> str:
     """The origin of an API domain, or :class:`UntrustedHost`."""
     return _checked_origin(url, API_HOSTS, "API domain")
+
+
+def meta(credential: SourceCredential, key: str) -> str:
+    """One key of ``provider_meta``, or ``""`` when it is not there."""
+    return str(credential.provider_meta.get(key) or "")
 
 
 def safe_code(value: object) -> str:
@@ -223,14 +233,15 @@ async def exchange_code(
     if not body.get("refresh_token"):
         raise SourceError("Zoho sent no refresh token. Consent again with access_type=offline")
     api_domain = check_api_domain(str(body.get("api_domain") or ""))
+    provider_meta = {META_ACCOUNTS_SERVER: server, META_API_DOMAIN: api_domain}
+    if location:
+        provider_meta[META_LOCATION] = location
     return SourceCredential(
         access_token=str(body["access_token"]),
         refresh_token=str(body["refresh_token"]),
         expires_at=_expiry(body, clock()),
-        accounts_server=server,
-        api_domain=api_domain,
         scopes=tuple(scopes),
-        location=location,
+        provider_meta=provider_meta,
     )
 
 
@@ -250,7 +261,7 @@ async def refresh(
     raises :class:`SourceError`, because a new consent does not repair it.
     """
     status, body = await _token_call(
-        credential.accounts_server,
+        meta(credential, META_ACCOUNTS_SERVER),
         {
             "grant_type": "refresh_token",
             "client_id": config.client_id,
@@ -267,14 +278,14 @@ async def refresh(
         raise RateLimited("The Zoho accounts server throttled the refresh", tries=1)
     if status >= 300 or raw_error or not body.get("access_token"):
         raise SourceError(f"The Zoho token refresh failed ({error or status})")
-    api_domain = credential.api_domain
+    provider_meta = dict(credential.provider_meta)
     if body.get("api_domain"):
-        api_domain = check_api_domain(str(body["api_domain"]))
+        provider_meta[META_API_DOMAIN] = check_api_domain(str(body["api_domain"]))
     return replace(
         credential,
         access_token=str(body["access_token"]),
         expires_at=_expiry(body, clock()),
-        api_domain=api_domain,
+        provider_meta=provider_meta,
     )
 
 
@@ -292,6 +303,10 @@ __all__ = [
     "check_accounts_server",
     "check_api_domain",
     "consent_url",
+    "META_ACCOUNTS_SERVER",
+    "META_API_DOMAIN",
+    "META_LOCATION",
+    "meta",
     "exchange_code",
     "needs_refresh",
     "refresh",

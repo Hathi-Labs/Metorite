@@ -22,7 +22,7 @@ import inspect
 import json
 import logging
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -69,10 +69,14 @@ def credential(
         access_token=ACCESS,
         refresh_token=REFRESH,
         expires_at=expires_at,
-        accounts_server=accounts_server,
-        api_domain=api_domain,
         scopes=("ZohoCRM.modules.READ",),
+        provider_meta={"accounts_server": accounts_server, "api_domain": api_domain},
     )
+
+
+def callback(server: str = "https://accounts.zoho.eu", **extra: str) -> dict[str, str]:
+    """The query of Zoho's consent redirect, as CRM-Z2 hands it over."""
+    return {"code": CODE, "accounts-server": server, "state": "signed", **extra}
 
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -343,14 +347,13 @@ async def test_the_api_domain_of_the_token_response_takes_the_next_call(
         clock=lambda: NOW,
     )
     cred = await source.finish_consent(
-        code=CODE,
-        accounts_server="https://accounts.zoho.eu",
+        params=callback(location="eu"),
         scopes=["ZohoCRM.modules.READ"],
-        location="eu",
     )
-    assert cred.api_domain == "https://www.zohoapis.eu"
-    assert cred.accounts_server == "https://accounts.zoho.eu"
-    assert cred.location == "eu"
+    assert cred.provider_meta["api_domain"] == "https://www.zohoapis.eu"
+    assert cred.provider_meta["accounts_server"] == "https://accounts.zoho.eu"
+    assert cred.provider_meta["location"] == "eu"
+    assert cred.scopes == ("ZohoCRM.modules.READ",)
     await source.list_changed("deal")
     token_req, api_req = fake.requests
     assert token_req.method == "POST"
@@ -399,7 +402,7 @@ async def test_an_accounts_server_off_the_allowlist_raises_before_a_request(
     fake = Fake([ok(token_body())])
     source = fake.source()
     with pytest.raises(UntrustedHost) as caught:
-        await source.finish_consent(code=CODE, accounts_server=server, scopes=["s"])
+        await source.finish_consent(params=callback(server), scopes=["s"])
     assert fake.requests == []
     leaks.extend(exc_texts(caught.value))
 
@@ -408,8 +411,7 @@ async def test_a_token_response_off_the_allowlist_is_refused(leaks: list[str]) -
     fake = Fake([ok(token_body(api_domain="https://www.zohoapis.example"))])
     with pytest.raises(UntrustedHost) as caught:
         await fake.source().finish_consent(
-            code=CODE,
-            accounts_server="https://accounts.zoho.com",
+            params=callback("https://accounts.zoho.com"),
             scopes=["s"],
         )
     assert len(fake.requests) == 1
@@ -635,6 +637,34 @@ async def test_users_become_source_records() -> None:
 
 
 # ── The seam ────────────────────────────────────────────────────────────────
+
+
+def test_the_credential_is_provider_neutral() -> None:
+    """Zoho's data-centre words live in ``provider_meta``, not in the shape."""
+    names = {f.name for f in fields(SourceCredential)}
+    assert names == {"access_token", "refresh_token", "expires_at", "scopes", "provider_meta"}
+    params = inspect.signature(CrmSource.finish_consent).parameters
+    assert set(params) == {"self", "params", "scopes"}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"error": "access_denied", "state": "signed"},
+        {"accounts-server": "https://accounts.zoho.eu"},
+        {"code": CODE},
+    ],
+    ids=["denied", "no-code", "no-accounts-server"],
+)
+async def test_a_callback_with_no_code_sends_nothing(
+    leaks: list[str],
+    params: dict[str, str],
+) -> None:
+    fake = Fake([ok(token_body())])
+    with pytest.raises(SourceError) as caught:
+        await fake.source().finish_consent(params=params, scopes=["s"])
+    assert fake.requests == []
+    leaks.extend(exc_texts(caught.value))
 
 
 def test_the_protocol_exposes_the_current_credential() -> None:
