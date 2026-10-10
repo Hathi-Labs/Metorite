@@ -1030,7 +1030,12 @@ async def _process(req: RunRequest, *, stale: bool) -> None:
 
 
 async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
-    """Close a try that raised. At most one reply, and no silent loss.
+    """Close a try that raised. At most one reply.
+
+    Known gap (verifier F1, 2026-10-10): the last word's own send mark has no
+    path back. If that mark commits and then raises, the row stays
+    ``sending``, the sweep closes it ``send_unconfirmed``, and the member gets
+    nothing. It needs a DB fault after commit, and it never sends twice.
 
     * Not claimed yet: nothing changed, and the row still waits.
     * A part went out, or may have: the row is ``replied``. Nothing more goes.

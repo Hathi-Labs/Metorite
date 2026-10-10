@@ -74,6 +74,11 @@ holds one, and else the general text.
 first send can lose the reply and still record the message as `replied`. A
 reply that goes out twice is the worse failure, so the bot accepts the loss.
 
+One more case falls on that side *(verifier F1, 2026-10-10)*. On the last try,
+the stored reply's own send mark can commit and then raise. The row then
+closes as `send_unconfirmed` with nothing sent. It needs a database fault after
+the commit, and it never sends twice.
+
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
 
