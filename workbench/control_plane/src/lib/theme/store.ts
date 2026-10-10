@@ -16,6 +16,11 @@
  * both of which adjust the one theme rather than replacing it. Colour mode
  * (dark/light) is `next-themes`' own state and deliberately stays there;
  * duplicating it here would give the app two sources for one fact.
+ *
+ * The member values are per ACCOUNT on this device, not per device
+ * (owner bug, 2026-10-11). `themeStorage` reads and writes the active
+ * account's scope, and `rehydrate` re-reads after the scope moves
+ * (`scope.ts`).
  */
 
 import { create } from "zustand";
@@ -48,6 +53,8 @@ type AppearanceState = {
   setAccent: (color: string | null) => void;
   setOrgDefaults: (org: { density: Density; allowUserOverride: boolean }) => void;
   hydrate: () => void;
+  /** Read storage again, for an appearance scope that just moved. */
+  rehydrate: () => void;
 };
 
 /** The density actually in force, honouring the org's override policy. */
@@ -112,6 +119,10 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
 
   hydrate: () => {
     if (get().hydrated) return;
+    get().rehydrate();
+  },
+
+  rehydrate: () => {
     const storedOrgDensity = themeStorage.getOrgDensity();
     set({
       userDensity: themeStorage.getDensity(),
