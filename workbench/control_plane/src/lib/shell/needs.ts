@@ -42,7 +42,15 @@ export interface NeedsItem {
 }
 
 export interface NeedsFeed {
+  /** The rows in `items`. */
   count: number;
+  /**
+   * Every row the sources gave before the feed's own cut to `limit`. Each
+   * source gives 15 at most, so it can be more than `count`, and it is a
+   * floor, not an exact sum of what waits. An older gateway leaves it out,
+   * and it then reads as `count`.
+   */
+  total: number;
   items: NeedsItem[];
   sources: Partial<Record<NeedsApp, SourceState>>;
 }
@@ -76,8 +84,10 @@ export const needsKey = (limit = NEEDS_LIMIT): string => cacheKey(NEEDS_CACHE, {
 export function readFeed(raw: unknown): NeedsFeed {
   const body = (raw ?? {}) as Partial<NeedsFeed>;
   const items = Array.isArray(body.items) ? body.items.filter(isItem) : [];
+  const count = typeof body.count === "number" ? body.count : items.length;
   return {
-    count: typeof body.count === "number" ? body.count : items.length,
+    count,
+    total: typeof body.total === "number" ? Math.max(body.total, count) : count,
     items,
     sources: body.sources && typeof body.sources === "object" ? body.sources : {},
   };

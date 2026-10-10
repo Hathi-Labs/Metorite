@@ -25,9 +25,16 @@
  * row back with a short error.
  *
  * Only the overdue tone is coloured, and it comes from `statusAccent.ts`.
+ *
+ * **The shell's bell draws the SAME list** (NS-6, `ShellBell.tsx`). This file
+ * holds the list once, `NeedsList`, and the card and the bell's panel both
+ * render it. So the groups, the rows and the acts cannot drift between the
+ * two. The rows an act took off live in one store, `needsActs.ts`, shared
+ * by every reader of the feed, so a Done in the bell leaves My Day's card at
+ * once. Fences: `shellBell.test.ts` and `needsActs.test.ts`.
  */
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -35,9 +42,18 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { CardError, HomeCard, keepRemoved, rowMover } from "./HomeCard";
+import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
 import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
+import {
+  EMPTY_ACTS,
+  acquireReader,
+  actsSnapshot,
+  pruneActs,
+  removeRow,
+  setRowError,
+  subscribeActs,
+} from "./needsActs";
 
 const DANGER = accentForHue("red");
 
@@ -46,6 +62,11 @@ export interface NeedsYou {
   items: NeedsItem[] | undefined;
   /** The count for the summary line, minus the removed rows. */
   count: number | undefined;
+  /**
+   * Every row the sources gave before the feed's own cut (`total`), minus
+   * the removed rows. The bell's badge reads it. It is `count` or more.
+   */
+  total: number | undefined;
   sources: NeedsFeed["sources"];
   loading: boolean;
   error: string | null;
@@ -56,7 +77,9 @@ export interface NeedsYou {
 
 /**
  * The feed and its optimistic acts. My Day calls it once and hands it down,
- * so the summary line, this card and Next actions read ONE answer.
+ * so the summary line, this card and Next actions read ONE answer. The
+ * shell's bell calls it too. The cache key is the same (`needsKey`), and the
+ * removed rows are the one store above, so the two stay in step.
  */
 export function useNeedsYou(
   enabled: boolean,
@@ -64,49 +87,27 @@ export function useNeedsYou(
   approvals = false,
 ): NeedsYou {
   const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds());
-  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
-  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+  const { removed, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
 
-  // A new answer from the server forgets each removed row it no longer
-  // holds. Without this, a task that comes back later (reopened in Projects)
-  // would stay hidden here until a reload. Adjusted during render, React's
-  // own pattern for state that follows a prop.
-  const [seen, setSeen] = useState(feed.data);
-  if (feed.data !== seen) {
-    setSeen(feed.data);
-    if (feed.data && removed.size > 0) {
-      const kept = keepRemoved(removed, feed.data.items.map((i) => i.id));
-      if (kept !== removed) setRemoved(kept);
-    }
-  }
+  // The shared store keeps marks only while a reader is mounted
+  // (`needsActs.ts` rule 1), so an error or a hidden row never outlives
+  // the page that showed it.
+  useEffect(() => acquireReader(), []);
 
-  const remove = useCallback((id: string, gone: boolean) => {
-    setRemoved((prev) => {
-      const next = new Set(prev);
-      if (gone) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  }, []);
-
-  const setError = useCallback((id: string, message: string | null) => {
-    setErrors((prev) => {
-      const next = { ...prev };
-      if (message) next[id] = message;
-      else delete next[id];
-      return next;
-    });
-  }, []);
+  // A new answer from the server forgets each mark it no longer holds, and
+  // each mark older than the hold window (`needsActs.ts` rules 2 and 3).
+  // Without this, a task reopened in Projects would stay hidden here.
+  useEffect(() => {
+    if (feed.data) pruneActs(feed.data.items.map((i) => i.id));
+  }, [feed.data]);
 
   // A done is the My Tasks store's own gesture: it may ask the subtask
   // question first, its Undo is the store's toast (`UndoToast`, mounted by
-  // My Day), and its failure arrives as `syncFailure` (`markDoneFromHome`).
-  const act = useCallback(
-    (item: NeedsItem, from: HTMLElement | null) => {
-      void runAct(item, rowMover(item.id, remove, setError, from));
-    },
-    [remove, setError],
-  );
+  // My Day, or `UndoToastFallback` by the bell's host), and its failure
+  // arrives as `syncFailure` (`markDoneFromHome`).
+  const act = useCallback((item: NeedsItem, from: HTMLElement | null) => {
+    void runAct(item, rowMover(item.id, removeRow, setRowError, from));
+  }, []);
 
   const items = useMemo(
     () => (feed.data ? keepApprovals(feed.data.items, approvals).filter((i) => !removed.has(i.id)) : undefined),
@@ -116,6 +117,7 @@ export function useNeedsYou(
   return {
     items,
     count: feed.data ? Math.max(0, feed.data.count - gone) : undefined,
+    total: feed.data ? Math.max(0, feed.data.total - gone) : undefined,
     sources: feed.data?.sources ?? {},
     loading: feed.loading,
     error: feed.error,
@@ -138,7 +140,36 @@ export default function NeedsYouCard({
   first?: string;
   className?: string;
 }) {
+  return (
+    <HomeCard title="Needs you" icon="Bell" testId="needs-you" className={className}>
+      <NeedsList needs={needs} now={now} first={first} />
+    </HomeCard>
+  );
+}
+
+/**
+ * THE list of what needs the member: the groups, the rows, their acts, the
+ * empty line and the caveat. My Day's card and the shell bell's panel both
+ * render it, so they show the same rows (NS-6).
+ */
+export function NeedsList({
+  needs,
+  now,
+  first,
+}: {
+  needs: NeedsYou;
+  /** The page's clock, by the minute. A render reads no clock itself. */
+  now: Date | null;
+  /**
+   * The group the member's preset puts first (NS-7). My Day's card passes
+   * it. The bell's panel does not, so it keeps the server's order.
+   */
+  first?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
+  // The card and the bell's panel can both be on screen, so each list names
+  // its group labels with its own prefix.
+  const uid = useId();
 
   let body: React.ReactNode;
   if (needs.items === undefined) {
@@ -163,9 +194,9 @@ export default function NeedsYouCard({
     body = (
       <div className="flex flex-col gap-2">
         {groups.map((group) => (
-          <div key={group.kind} role="group" aria-labelledby={`needs-${group.kind}`}>
+          <div key={group.kind} role="group" aria-labelledby={`${uid}-${group.kind}`}>
             <div
-              id={`needs-${group.kind}`}
+              id={`${uid}-${group.kind}`}
               className={`px-2 pt-1 pb-0.5 text-[11px] font-medium ${
                 group.kind === "overdue" ? DANGER.text : "text-muted-foreground"
               }`}
@@ -204,7 +235,7 @@ export default function NeedsYouCard({
   const stale = needs.items !== undefined && needs.error;
   const failed = failedLines(needs.sources);
   return (
-    <HomeCard title="Needs you" icon="Bell" testId="needs-you" className={className}>
+    <div data-needs-list="">
       {body}
       {/* The caveat, said ONCE and where the gap is: one muted line per
           silent source, or one for a refresh that failed, and one Retry. */}
@@ -229,7 +260,7 @@ export default function NeedsYouCard({
           </Button>
         </div>
       ) : null}
-    </HomeCard>
+    </div>
   );
 }
 

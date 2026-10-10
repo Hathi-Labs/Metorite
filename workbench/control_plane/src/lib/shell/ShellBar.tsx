@@ -4,16 +4,17 @@
  * The shell bar: one row across the top of every desktop page
  * (`navigation_shell.md` §3.1, NS-1, flag `NEXT_PUBLIC_SHELL_BAR`).
  *
- *   [ fold · logo ]          [ ✦ Search or ask anything  in <App>  ⌘K ]          [ activity ]
+ *   [ fold · logo ]          [ ✦ Search or ask anything  in <App>  ⌘K ]          [ bell · activity ]
  *
  * With the shell nav on too, the bar spans the whole window and opens with a
  * `lead` zone that AppShell fills: the sidebar's fold control and the
  * organization's logo (owner, 2026-10-09, `desktopFrame` in `shellNav.ts`).
  *
  * **The bar is CONSTANT. An app never renders into it** (owner, 2026-10-10).
- * It holds only shell things: the lead zone, the command bar and the shell's
- * activity control. It has no slot, no portal target and no app name, so it
- * draws the same pixels on every page. Each app opens with its own title bar
+ * It holds only shell things: the lead zone, the command bar, the shell's
+ * bell (NS-6, behind `NEXT_PUBLIC_SHELL_DOCK`) and the shell's activity
+ * control. It has no slot, no portal target and no app name, so it draws the
+ * same pixels on every page. Each app opens with its own title bar
  * under it, `AppTopBar` (`components/AppTopBar.tsx`), which holds the app's
  * name and tools. The "in <App>" chip inside the command bar stays: it is
  * the command bar's own scope (§6.4 rule 3), not the app's chrome.
@@ -36,6 +37,11 @@
  * the bar: every live assistant run, across apps
  * (`ActivityControl.tsx`). `AppShell` mounts its one panel, in every layout,
  * so the control works with this bar's flag off too (from the sidebar head).
+ *
+ * **The bell** (NS-6 slice 6a, `ShellBell.tsx`) sits just before it, while
+ * `NEXT_PUBLIC_SHELL_DOCK` is on. The owner placed both here on 2026-10-10:
+ * "They belong to the whole product, not to an app." An app's own bell or
+ * tools never move into this bar.
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -46,8 +52,10 @@ import { useAccess } from "@/components/AccessProvider";
 import { visibleSections } from "@/lib/nav";
 import { ActivityControl } from "./ActivityControl";
 import { CommandBar } from "./CommandBar";
+import { shellDockOn } from "./dockFlag";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
 import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
+import { ShellBell } from "./ShellBell";
 import { useShellPrefs } from "./shellPrefs";
 
 export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
@@ -119,6 +127,9 @@ export function ShellFrame({
   // The member's preset orders the jobs of the empty bar (NS-7). Off, the
   // shell nav reads nothing and the bar keeps its own order.
   const shell = useShellPrefs();
+  // NS-6: the one bell, with its flag on. Read once, as the sidebar reads
+  // the bar's flag, because the dev override lives in `localStorage`.
+  const [dockOn] = useState(() => shellDockOn());
 
   return (
     <>
@@ -128,6 +139,7 @@ export function ShellFrame({
           here={here}
           onOpen={() => openWith("")}
           lead={lead}
+          bell={dockOn ? <ShellBell /> : null}
           activity={<ActivityControl />}
         />
       ) : null}
@@ -166,12 +178,15 @@ export function ShellBarRow({
   here,
   onOpen,
   lead,
+  bell,
   activity,
 }: {
   /** The command bar's scope chip, "in <App>". Its only use of the app. */
   here: { label: string; icon: string } | null;
   onOpen: () => void;
   lead?: ReactNode;
+  /** The shell's one bell (NS-6), before the activity control. */
+  bell?: ReactNode;
   /** The shell's own control at the right end. */
   activity?: ReactNode;
 }) {
@@ -207,9 +222,11 @@ export function ShellBarRow({
         </kbd>
       </button>
 
-      {/* The shell's own control, the same on every page. An app's tools sit
-          at the right end of its own title bar, never here. */}
+      {/* The shell's own controls, the same on every page: the bell, then
+          the activity control. An app's tools sit at the right end of its
+          own title bar, never here. */}
       <div className="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1">
+        {bell}
         {activity}
       </div>
     </header>

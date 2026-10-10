@@ -67,6 +67,7 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
 import { NotificationBell } from "./components/NotificationBell";
+import { shellDockOn } from "@/lib/shell/dockFlag";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
@@ -544,6 +545,10 @@ function ProjectsWorkspace() {
   // layout here.
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
+  // NS-6: with the shell's one bell on, this app mounts no bell of its own.
+  // Read once, as the shell reads its flags: the dev override is in
+  // `localStorage`, which the server render cannot see.
+  const [dockOn] = useState(() => shellDockOn());
   /** Desktop only: the left rail collapses, at Tasks' width. */
   const [railOpen, setRailOpen] = useState(true);
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
@@ -4396,7 +4401,7 @@ function ProjectsWorkspace() {
           compact
           title={title}
           actions={projectActions(true)}
-          tools={<NotificationBell onOpenTask={openTaskById} />}
+          tools={dockOn ? undefined : <NotificationBell onOpenTask={openTaskById} />}
         />
 
         {workArea}
@@ -4436,7 +4441,9 @@ function ProjectsWorkspace() {
         tools={
           <>
             <AppSearchButton onOpen={() => setSearching(true)} />
-            <NotificationBell onOpenTask={openTaskById} />
+            {/* NS-6: with the shell's one bell on, this app mounts no bell
+                of its own. Off, nothing changes. NS-9 deletes it. */}
+            {dockOn ? null : <NotificationBell onOpenTask={openTaskById} />}
             {/* The assistant sits at the right end of the top bar, where My
                 Tasks puts it (owner ask, 2026-09-24). One component for both
                 apps. It lived in the project header's action row until then,

@@ -15,6 +15,8 @@ import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import { ActivityControl } from "@/lib/shell/ActivityControl";
+import { shellDockOn } from "@/lib/shell/dockFlag";
+import { ShellBell } from "@/lib/shell/ShellBell";
 import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
@@ -44,6 +46,8 @@ export default function Sidebar() {
   const head = fold.placement === "rail";
   // The shell bar draws the activity control when it is on (WS-51 S3).
   const [barOn] = useState(() => shellBarOn());
+  // NS-6: and the one bell, with its own flag on, beside the activity control.
+  const [dockOn] = useState(() => shellDockOn());
   const asideRef = useRef<HTMLElement>(null);
   const { data: session } = useSession();
   // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
@@ -281,8 +285,10 @@ export default function Sidebar() {
             <OrgBrandLockup fallbackCaption="Control Plane" maxWidth={152} />
           )}
           {/* WS-51 S3: with the shell bar off, this head is the top of the
-              page, so the activity control sits here, beside the fold. */}
+              page, so the activity control sits here, beside the fold. The
+              one bell (NS-6) sits before it while its flag is on. */}
           <div className={`flex items-center gap-1 ${collapsed ? "flex-col" : ""}`}>
+            {!barOn && dockOn ? <ShellBell /> : null}
             {!barOn ? <ActivityControl /> : null}
             <SidebarFoldButton />
           </div>

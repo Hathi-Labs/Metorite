@@ -440,12 +440,19 @@ Naming both, because a third appears whenever the set is left implicit.
   command bar and the activity control. It draws the same pixels on every
   page. The command bar's "in <App>" chip is the command bar's own scope, so
   it stays.
+- **The shell's one bell sits before the activity control** (owner,
+  2026-10-10: "They belong to the whole product, not to an app"). It shows
+  only while `NEXT_PUBLIC_SHELL_DOCK` is on (NS-6 slice 6a). From slice 6b,
+  the one assistant toggle joins it, behind the same flag. An app's own bell
+  or tool never goes in the shell bar.
 - The app bar sits under the shell bar, at the top of the app's content. It
   spans the whole app, over the app's own rail too.
 - An app's rail toggle lives in its bar, never in the rail. The Email app's
   toggle is the model.
-- An app's tools sit at the right end of its bar: the bell, the assistant,
-  refresh and settings. No app tool goes in the shell bar.
+- An app's tools sit at the right end of its bar: refresh and settings.
+  Until NS-9, an app's own bell and assistant toggle sit there too. With
+  `NEXT_PUBLIC_SHELL_DOCK` on, Projects and My Tasks mount no bell, because
+  the shell's bell replaces it. No app tool goes in the shell bar.
 - On a phone the bar is the compact one: no rail, the title at body size,
   and the subtitle muted after it. `AppTopBar` draws the compact bar on a
   phone by itself.

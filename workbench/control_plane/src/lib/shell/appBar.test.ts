@@ -259,4 +259,24 @@ describe("(c) the shell bar holds no app", () => {
     expect(inner.startsWith('<div aria-hidden="true" class="min-w-0 flex-1 basis-0"></div><button')).toBe(true);
     expect(inner.endsWith('<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"></div>')).toBe(true);
   });
+
+  it("the end zone holds the shell's bell, then its activity control, and nothing else", () => {
+    // Owner, 2026-10-10: the bell belongs to the whole product, so it joins
+    // the activity control at the right end, behind `NEXT_PUBLIC_SHELL_DOCK`
+    // (NS-6). `ShellFrame` passes it only with that flag on, which
+    // `shellBell.test.ts` holds. The row has no other prop an app could fill.
+    const html = renderToStaticMarkup(
+      createElement(ShellBarRow, {
+        here: null,
+        onOpen: () => {},
+        bell: createElement("i", { "data-zone": "bell" }),
+        activity: createElement("i", { "data-zone": "activity" }),
+      }),
+    );
+    expect(html).toMatch(
+      /<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"><i data-zone="bell"><\/i><i data-zone="activity"><\/i><\/div><\/header>$/,
+    );
+    const props = code(read("lib/shell/ShellBar.tsx")).match(/export function ShellBarRow\(\{([^}]*)\}/)?.[1] ?? "";
+    expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual(["activity", "bell", "here", "lead", "onOpen"]);
+  });
 });

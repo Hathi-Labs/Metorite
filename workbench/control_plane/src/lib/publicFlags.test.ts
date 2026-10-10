@@ -108,6 +108,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_SHOW_PREVIEW_APPS",
       // WS-45 S3: the chat's model picker leaves for a covered agent.
       "NEXT_PUBLIC_AI_TIER_ROUTING",
+      // WS-44 NS-6: the shell's one bell, and later its dock.
+      "NEXT_PUBLIC_SHELL_DOCK",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

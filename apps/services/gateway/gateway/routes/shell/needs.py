@@ -476,8 +476,14 @@ async def shell_needs(
 
 
 def _fit(items: list[Item], size: int) -> dict[str, Any]:
-    """The first ``size`` rows. A yielding kind takes only the room left."""
+    """The first ``size`` rows. A yielding kind takes only the room left.
+
+    ``count`` is the rows sent, as before. ``total`` is every row the
+    sources gave before the cut to ``size``, so the shell's bell can say 45
+    when it shows 30 (NS-6). Each source gives ``PER_APP`` at most, so
+    ``total`` is a floor, not a full count of what waits.
+    """
     own = _sort([i for i in items if i["kind"] not in YIELDING_KINDS])[:size]
     rest = _sort([i for i in items if i["kind"] in YIELDING_KINDS])[:size - len(own)]
     feed = _sort(own + rest)
-    return {"count": len(feed), "items": feed}
+    return {"count": len(feed), "total": len(items), "items": feed}

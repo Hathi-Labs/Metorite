@@ -49,6 +49,7 @@ export default function NavBadge({
   tone,
   label,
   placement = "inline",
+  text,
   className = "",
 }: {
   count: number;
@@ -56,6 +57,11 @@ export default function NavBadge({
   /** The spoken name of the count, e.g. "2 assistants running". */
   label: string;
   placement?: NavBadgePlacement;
+  /**
+   * The printed count, for a reader that caps it at another number. The
+   * shell's bell prints "99+" (NS-6, `bellBadge`). The default is "9+".
+   */
+  text?: string;
   /** Layout only, never a colour or a position that `placement` sets. */
   className?: string;
 }) {
@@ -68,7 +74,7 @@ export default function NavBadge({
       data-nav-badge={tone}
       className={`flex items-center justify-center rounded-full text-[10px] font-bold leading-none ${PLACE[placement]} ${TONE[tone]} ${className}`}
     >
-      {badgeText(count)}
+      {text ?? badgeText(count)}
     </span>
   );
 }
