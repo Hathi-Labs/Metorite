@@ -37,7 +37,7 @@ import { visibleSections } from "@/lib/nav";
 
 import AppLauncher from "./AppLauncher";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
-import { cardsFor, dateLine, failedLines, greetingLine, summaryLine } from "./myDay";
+import { cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
 import { BUILT_CARDS, orderCards } from "./presets";
 import { homePane } from "./shellNav";
 import { useShellPrefs } from "./shellPrefs";
@@ -67,8 +67,8 @@ export default function MyDay() {
   // This page renders only with the flag on, so its pane is My Day.
   const home = homePane(true);
 
-  const cards = cardsFor(accessLoading ? [] : access.features);
-  const needs = useNeedsYou(!accessLoading && cards.needs);
+  const cards = cardsFor(accessLoading ? [] : access.features, access.is_admin);
+  const needs = useNeedsYou(!accessLoading && cards.needs, seesApprovals(access.features, access.is_admin));
   const today = useTodayItems(!accessLoading && cards.today, now);
   const sections = visibleSections(accessLoading ? null : access.features, access.is_admin);
   // The member's preset orders the cards (NS-7, §8.1). It hides none: a card

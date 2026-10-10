@@ -92,6 +92,7 @@ export function emptyNeedsLine(partial: boolean): string {
 /** The small plain label over each group, by kind. */
 export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   overdue: "Overdue",
+  approval: "Waiting for your approval",
   due_today: "Due today",
   notification: "From your projects",
   needs_reply: "Waiting for your reply",
@@ -99,6 +100,26 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
 
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
 export const NEEDS_SHOWN = 7;
+
+/**
+ * Approval rows shown before "Show all". An admin's queue can be long, and
+ * the member's own work must stay in view below it.
+ */
+export const APPROVALS_SHOWN = 5;
+
+/**
+ * Whether this member gets the "Waiting for your approval" group: an org
+ * admin who holds `approvals` (owner decision, 2026-10-10). The server
+ * applies the same test (`ADMIN_SOURCES` in `routes/shell/needs.py`).
+ */
+export function seesApprovals(features: readonly string[], isAdmin: boolean): boolean {
+  return isAdmin && features.includes("approvals");
+}
+
+/** The feed's rows, minus any approval row this member may not see. */
+export function keepApprovals(items: readonly NeedsItem[], allowed: boolean): NeedsItem[] {
+  return allowed ? [...items] : items.filter((i) => i.kind !== "approval");
+}
 
 export interface NeedsGroup {
   kind: NeedsKind;
@@ -132,8 +153,9 @@ export function groupNeeds(items: readonly NeedsItem[], first?: string): NeedsGr
 /**
  * The rows to draw: the first seven, or all of them once the member asks.
  * The cut runs over the whole feed, then groups, so seven means seven rows
- * and not seven per group. With a preset's first kind, the cut runs over the
- * feed in that order, so its rows are the ones that stay.
+ * and not seven per group. Before "Show all", at most five are approvals,
+ * so the member's own work stays in view. With a preset's first kind (NS-7),
+ * the cut runs over the feed in that order, so its rows are the ones that stay.
  */
 export function shownNeeds(
   items: readonly NeedsItem[],
@@ -145,7 +167,12 @@ export function shownNeeds(
   const sorted = first
     ? order.flatMap((kind) => items.filter((i) => i.kind === kind))
     : items;
-  const shown = expanded ? sorted : sorted.slice(0, limit);
+  let approvals = 0;
+  const shown = expanded
+    ? sorted
+    : sorted
+        .filter((i) => i.kind !== "approval" || ++approvals <= APPROVALS_SHOWN)
+        .slice(0, limit);
   return { groups: groupNeeds(shown, first), hidden: items.length - shown.length };
 }
 
@@ -162,12 +189,14 @@ export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()
 /** The member-facing name of each source app. */
 export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
   tasks: "My Tasks",
+  approvals: "Approvals",
   projects: "Projects",
   email: "Email",
 };
 
 const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
   tasks: "/tasks",
+  approvals: "/approvals",
   projects: "/projects",
   email: "/email",
 };
@@ -188,6 +217,7 @@ export function failedLines(sources: Partial<Record<NeedsApp, SourceState>>): st
 /** What a source's silence can hide, in the member's words. */
 const MISSING: Readonly<Record<NeedsApp, string>> = {
   tasks: "due tasks",
+  approvals: "approvals",
   projects: "notifications",
   email: "replies",
 };
@@ -258,14 +288,18 @@ export interface MyDayCards {
  * with `tasks` and no `projects` would otherwise get two error cards.
  *
  * Needs you shows when any source of the feed is open to the member. The
- * feed's tasks and Projects sources need `feature:projects`, and its email
- * source needs `feature:email` (`routes/shell/needs.py`, `PROVIDERS`).
+ * feed's tasks and Projects sources need `feature:projects`, its email
+ * source needs `feature:email`, and its approvals source needs
+ * `feature:approvals` AND the admin test (`routes/shell/needs.py`,
+ * `PROVIDERS` and `ADMIN_SOURCES`). So an org admin with no other app gets
+ * the card for the "Waiting for your approval" group, and any other member
+ * with `approvals` alone gets no card.
  */
-export function cardsFor(features: readonly string[]): MyDayCards {
+export function cardsFor(features: readonly string[], isAdmin = false): MyDayCards {
   const has = new Set(features);
   const lens = has.has("tasks") && has.has("projects");
   return {
-    needs: has.has("projects") || has.has("email"),
+    needs: has.has("projects") || has.has("email") || seesApprovals(features, isAdmin),
     today: lens,
     next: lens,
   };

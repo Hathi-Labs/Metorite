@@ -43,8 +43,8 @@ export interface Preset {
   /** My Day's cards, first to last. A card not named here follows them. */
   cards: readonly CardKey[];
   /**
-   * The group of Needs you that comes first. `approval` arrives with NS-3
-   * slice C. Until then that kind is not in the feed, and the order is the
+   * The group of Needs you that comes first. Only an org admin gets
+   * `approval` rows (NS-3 slice C), so for anyone else the order is the
    * server's.
    */
   needsFirst?: "needs_reply" | "approval";

@@ -1,7 +1,7 @@
 # The shell — how a member finds an app, a job or an answer
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
-and 2, NS-3 slices A and B, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+and 2, NS-3 slices A, B and C, NS-4a, NS-4b, NS-7, NS-10, NS-10b and NS-11. The shell bar is ON in production
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
@@ -24,9 +24,9 @@ and a phone draws the compact bar. Chat on a phone has none, and the Settings
 sub-pages take the bar. Round 3 added a fifth: only the actions and the tools
 wrap, so a long name never parts the rail toggle from the name.
 
-NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
-`NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
-production (§13.1).
+NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
+The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
+(2026-10-10) adds Approvals to the needs feed and to My Day.
 
 **BUILT 2026-10-10: NS-7, presets, pins and the first sign-in question.** It
 rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
@@ -307,8 +307,9 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    group. So an app has one door only, as §3.3 asks. A member with no held
    pin gets no "My apps" heading.
 2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
-   because the bell and My Day carry its items. Neither is built (NS-3,
-   NS-6). Until they are, Approvals is an approver's only door to the queue,
+   because the bell and My Day carry its items. My Day carries them since
+   NS-3 slice C, and the bell is not built (NS-6). Until it is, Approvals is
+   an approver's only door to the queue from each app,
    and Chat is the assistant itself. Both stay in their team's group: AI
    Studio and Admin.
 3. **One line per item.** The old sidebar printed a second line under each
@@ -482,6 +483,19 @@ a reply. So the Needs you card shows those threads as its last group,
 "Waiting for your reply". One thread in two cards teaches the eye to skip
 both cards. For the same reason, Next actions leaves out each task that
 Needs you already shows. Fence: `src/lib/shell/myDay.test.ts`.
+
+**Waiting for you is a group of Needs you, not a card** *(NS-3 slice C,
+2026-10-10)*. The rule is the one for Needs reply. The pending actions show
+under "Waiting for your approval", right after Overdue.
+
+**The approver is an org admin** *(owner decision, 2026-10-10)*. The feed
+sends approval rows only to an org admin who holds `approvals`. Any other
+member keeps the Approvals app if they hold it, and their My Day shows only
+their own work. A finer Approver role is a later option. So an admin with no
+other app gets the Needs you card, and every other member gets no approval
+row. At most five approval rows show before "Show all", so the admin's own
+work stays in view. Each row opens Approvals. Fences:
+`src/lib/shell/myDay.test.ts` and `src/lib/shell/myDayPage.test.ts`.
 
 **No second arithmetic.** A team card draws a number that a Projects read or a
 report section already computes. The shell computes nothing.
@@ -791,12 +805,14 @@ two:
   - My Tasks: due today and overdue, through the lens.
 
 **Built in NS-3 slice A (2026-10-09, dark).** `gateway/routes/shell/needs.py`
-serves `GET /shell/needs` on the router of `search.py`. Three providers are
-built. Each one checks its feature, then calls the app's own read:
+serves `GET /shell/needs` on the router of `search.py`. Slice A built three
+providers, and slice C (2026-10-10) built the fourth. Each one checks its
+feature, then calls the app's own read:
 
 | Source | Feature | Function |
 |---|---|---|
 | `tasks` | `feature:projects` | `my_due_tasks` in `routes/projects/personal.py` |
+| `approvals` | `feature:approvals` | `list_pending` in `action_broker/broker.py` |
 | `projects` | `feature:projects` | `list_notifications`, unread only |
 | `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
 
@@ -822,8 +838,48 @@ leaves out a thread when the member snoozed its last message, or put it in
 the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
 an archived thread too.
 
-**Approvals is slice C, and it waits on H-201.** Until then the feed has no
-`approvals` source.
+**Approvals is slice C, built 2026-10-10 after H-201.** The provider checks
+two things. The first is `feature:approvals`, the feature that the router of
+`routes/actions.py` demands. The second is the admin test,
+`ADMIN_PERMISSION` in `routes/shell/intent.py`. `GET /auth/me` reports the
+same test as `is_admin`. A member who fails either check gets no row, and
+the broker is not called.
+
+**Why the admin test** *(owner decision, 2026-10-10)*. The feature alone is
+too wide. Migration 207 grants `feature:*` to `member` and `manager` in every
+org, and that covers `feature:approvals`. `pending_actions` has no approver
+column. So with the feature alone, each member's My Day would show the whole
+queue of the org, above their own work. The approver is an org admin. A
+finer Approver role is a later option.
+
+`GET /actions/pending` also demands `require_internal_auth`. That check is
+the transport, and the BFF sends the internal token on this call too. The
+broker binds the tenant of the request itself (H-201).
+
+**An approval row has no act** (`act` is null). To approve runs an outward
+write, such as a mail, a CRM push or a broadcast. The member must read the
+proposal first, so My Day never approves in one click. The row opens
+`/approvals`. Approvals reads no link to one action, so the row opens the
+queue.
+
+**An approval row says what the action does, in plain words.** The title
+comes from the action name, for example "Change a record in Zoho CRM". The
+detail names the proposer, for example "Proposed by the email assistant
+agent". Neither prints an id.
+
+**The approvals read is `read_pending`, and it is bounded.** It is a sibling
+of `list_pending` in `action_broker/broker.py`. It reads the pending rows of
+the bound tenant, the oldest first, and 50 rows at most. The feed asks for
+15. `list_pending` answers an empty list when the database fails, so a
+failure there would read `ok`. `read_pending` raises, so the `approvals`
+source reads `failed`.
+
+**Approvals never push the member's own work out.** An approval row takes
+only the room that the other rows leave inside `limit` (`YIELDING_KINDS` in
+`needs.py`). So 15 overdue tasks and 15 approvals at a limit of 30 still
+return the notifications and the replies. The approvals provider also runs
+last, so a slow pool cannot spend the time of the member's own sources. The
+display order stays as below.
 
 **The contract.** My Day and the bell read this shape:
 
@@ -831,19 +887,22 @@ an archived thread too.
 - The answer is `{count, items, sources}`. `count` is the length of `items`.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
-- `id` is `tasks:<task id>`, `projects:<notification id>` or
-  `email:<account id>:<thread id>`.
-- `kind` is `overdue`, `due_today`, `notification` or `needs_reply`.
+- `id` is `tasks:<task id>`, `approvals:<pending action id>`,
+  `projects:<notification id>` or `email:<account id>:<thread id>`.
+- `kind` is `overdue`, `approval`, `due_today`, `notification` or
+  `needs_reply`.
 - `act` is `done`, `read` or null. `done` runs
   `POST /projects/tasks/{act_ref}/complete`. `read` runs
-  `POST /projects/notifications/read` with the id in `ids`.
+  `POST /projects/notifications/read` with the id in `ids`. An approval and
+  an email always have a null `act`.
 - `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
   that the member does not hold the feature.
 
-**The order.** Overdue rows come first, the oldest first. Then rows due today,
-then notifications with the newest first. Then needs-reply rows, with the
+**The order.** Overdue rows come first, the oldest first. Then approvals,
+with the action that waited longest first, because the work of an agent
+waits on it. Then rows due today, then notifications with the newest first. Then needs-reply rows, with the
 person who waits longest first. Each source gives 15 rows at most, so one app
-cannot fill the feed.
+cannot fill the feed. An approval takes only the room left inside `limit`.
 
 **Two rules from the email app apply.** A mailbox that the member keeps
 separate stays out of the feed (D-EM-30). The read of the mail never starts
@@ -854,9 +913,15 @@ limit of one second. The `email` source reads `failed` only when every
 mailbox failed.
 
 Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
-a failed source and the SQL of the two reads. `tests/unit/test_shell_needs_r8.py`
+a failed source and the SQL of the two reads. It also holds the approvals
+gate, the admin test, each org's queue, the room rule and the plain words of
+each action. Its fake is the tenant session, so the real `read_pending`
+runs, and a database error reads `failed`. `tests/unit/test_shell_needs_r8.py`
 is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
-a member with more work than the cap.
+a member with more work than the cap. Its `TestTheApprovalsQueue` seeds a
+pending action in each org through `enqueue`. An admin sees the row of
+their own org and never the other. A member with the feature who is not an
+admin sees none, and a member without the feature sees none.
 
 ---
 
@@ -984,9 +1049,10 @@ data-entry app.
   follows the named cards. So a preset changes the order and never hides a
   card.
 - **"needs_reply first" and "approval first"** put that group of Needs you
-  first, and the cut to seven rows follows that order. The `approval` kind
-  arrives with NS-3 slice C. Until then that preset keeps the server's
-  order.
+  first, and the cut to seven rows follows that order. NS-3 slice C added
+  the `approval` kind, and its cap of five approvals still applies. Only an
+  org admin gets approval rows, so for any other member the order of the
+  server stays.
 - **Two lists of names, held as one.** The gateway checks the preset, pane,
   card and job names (`routes/admin/me.py`). `presets.ts` owns what each
   preset arranges. `test_auth_me_shell.py::TestOneVocabulary` fails when the
@@ -1261,14 +1327,21 @@ Done when:
 5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
-### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, live · slice B BUILT 2026-10-09, dark
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, live · slice B BUILT 2026-10-09, ON in production since 2026-10-10 (owner) · slice C BUILT 2026-10-10
 
 **Slice A is built.** `GET /shell/needs` serves three of the four providers
 of §7.2: My Tasks, Projects and Email. §7.2 records the contract. Done-when 2
 to 4 are met for those three, and the R8 run is in the pull request.
 
-Slice C adds Approvals after H-201. My Day itself (done-when 1 and 5) is
-slice B, below. It is dark, so no page that a member sees reads the feed yet.
+**Slice C is built (2026-10-10).** It adds the fourth provider, Approvals,
+after H-201, and the "Waiting for your approval" group of Needs you (§4.5,
+§7.2). So done-when 2 now holds for the four providers, and done-when 3 for
+the four negative tests. Only an org admin with the approvals gate gets a
+pending action (owner decision, 2026-10-10). The R8 run is in the pull
+request.
+
+My Day itself (done-when 1 and 5) is slice B, below. The owner turned it on
+in production on 2026-10-10.
 
 Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
 app exports, and `gateway/routes/shell/needs.py` with its providers.
@@ -1279,15 +1352,16 @@ Done when:
 2. `GET /shell/needs` merges the four providers of §7.2 on the request's
    session.
 3. Each of the four providers has its own negative test. Another member's
-   private task, notification, pending action and mail thread reach no card
-   and no needs row. A member without the approvals gate gets no pending
-   action.
+   private task, notification and mail thread reach no card and no needs
+   row. Another organization's pending action reaches no card and no needs
+   row, and neither does any pending action for a member who is not an
+   admin. A member without the approvals gate gets no pending action.
 4. The needs SQL ran against a real Postgres (R8), and the run is in the pull
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
 
-**Slice B, built 2026-10-09, dark.** It builds My Day at `/`, behind
-`NEXT_PUBLIC_MY_DAY`. Done-when 1 and 5 hold for the page, and
+**Slice B, built 2026-10-09, ON in production since 2026-10-10 (owner).** It
+builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Done-when 1 and 5 hold for the page, and
 `src/lib/shell/myDayPage.test.ts` renders both branches. Done-when 2 to 4
 belong to slice A, the gateway feed.
 
@@ -1321,7 +1395,8 @@ belong to slice A, the gateway feed.
 - **Who gets a card.** A card asks for what the server asks for. Today and
   Next actions read `/projects/my/*`, and the Projects router demands
   `feature:projects`. So both cards need `tasks` and `projects`. Needs you
-  needs `projects` or `email`, the features of its sources.
+  needs `projects` or `email`, or `approvals` for an org admin. These are
+  the features of its sources.
 - **One caveat, once.** When a source does not answer, the Needs you card
   names the gap and offers Retry. An example is "Email did not answer, so
   its replies may be missing". The summary then says nothing about needs.
@@ -1670,7 +1745,8 @@ table is the only fence (R7, advisory).
   and shows no price. The owner accepted the recommendation.
 - **Q2, answered by the owner on 2026-10-09.** Yes. `/` becomes My Day for
   every member, behind `NEXT_PUBLIC_MY_DAY`. To turn the flag on in
-  production stays owner-only (§13.1).
+  production stays owner-only (§13.1). The owner turned it on in production
+  on 2026-10-10.
 
 ### 13.3 Still open — each has a default an agent builds to
 

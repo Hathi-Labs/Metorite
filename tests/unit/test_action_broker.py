@@ -320,6 +320,43 @@ def test_list_pending_returns_rows(_fake_db):
     assert {r["action"] for r in rows} == {"clickup.comment", "zoho.email"}
 
 
+def test_read_pending_is_bounded_and_the_longest_wait_first(_fake_db):
+    # The needs feed's read (NS-3 slice C). One query, oldest first, capped.
+    from action_broker import read_pending
+
+    _fake_db.select_rows = [_pending_row()]
+    assert len(read_pending(500)) == 1
+    sql, params = next((s, p) for s, p in _fake_db.executed if "pending_actions" in s)
+    assert "ORDER BY created_at ASC, id LIMIT :limit" in " ".join(sql.split())
+    assert params == {"limit": 50}
+    assert _fake_db.tenants == [_ORG]
+
+
+def test_read_pending_raises_where_list_pending_answers_empty(_fake_db, monkeypatch):
+    # The feed must tell "empty" from "broken". list_pending hides the error.
+    from action_broker import read_pending
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(_fake_db, "execute", _boom)
+    assert list_pending() == []
+    with pytest.raises(RuntimeError):
+        read_pending()
+
+
+def test_read_pending_with_no_tenant_reads_nothing(_fake_db):
+    from acb_common.db import clear_tenant, release_tenant
+    from action_broker import read_pending
+
+    token = clear_tenant()
+    try:
+        assert read_pending() == []
+    finally:
+        release_tenant(token)
+    assert _fake_db.tenants == []
+
+
 # ── H-201: the queue binds the tenant of the context, and only that one ──────
 
 def test_every_queue_call_binds_the_context_tenant(_fake_db):
@@ -356,10 +393,12 @@ def test_the_queue_opens_no_unbound_session() -> None:
 
     from action_broker import broker
 
-    for fn in (broker.enqueue, broker.list_pending, broker._load_proposal, broker._mark):
+    for fn in (broker.enqueue, broker.list_pending, broker.read_pending,
+               broker._load_proposal, broker._mark):
         src = inspect.getsource(fn)
         assert "get_session" not in src, fn.__name__
         assert "tenant_session(" in src, fn.__name__
     # The tenant comes from the bound context, never from an argument.
-    for fn in (broker.enqueue, broker.list_pending, broker.approve, broker.reject):
+    for fn in (broker.enqueue, broker.list_pending, broker.read_pending,
+               broker.approve, broker.reject):
         assert "organization_id" not in inspect.signature(fn).parameters, fn.__name__
