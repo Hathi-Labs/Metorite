@@ -113,6 +113,9 @@ export default function WhatsAppLayout({ children }: { children: React.ReactNode
   if (isMobile) {
     return (
       <div className="flex h-full min-h-0 w-full flex-col bg-background text-foreground">
+        {/* The compact bar: the app's name and the section, the h1 on a
+            phone. The sections stay in the bottom drawer. */}
+        <AppTopBar title="My WhatsApp" subtitle={section} />
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </div>
     );

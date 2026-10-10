@@ -23,8 +23,13 @@
  *       the same bar, except for the command bar's own "in <App>" chip.
  *
  * The runner is `environment: "node"`, so (a) and (b) read source, and (c)
- * renders the row to a string. `e2e/shell-bar.spec.ts` checks the same rule
- * in a browser.
+ * renders the row to a string.
+ *
+ * ⚠️ (b) is a SOURCE fence. It cannot see `{false && <AppTopBar />}`, or a
+ * branch that never renders. The runtime half is `e2e/app-title-bar.spec.ts`:
+ * it opens every live pane and the four Settings sub-pages at 1440 and at 390
+ * and counts exactly one `<h1>` and one app bar on each. `e2e/shell-bar.spec.ts`
+ * checks the shell bar in a browser.
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -123,6 +128,19 @@ const APP_BAR_HOME: Record<string, string> = {
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */
 const MY_DAY_HOME = "lib/shell/MyDayPage.tsx";
 
+/**
+ * The Settings sub-pages a live pane links to (round 2). Teams and Roles open
+ * from the Organisation bar, a member row opens its page, and Billing is the
+ * money page. Each lost its only h1 when `SettingsHeader` became an h2, so
+ * each opens with the bar too, with its way back.
+ */
+const SUB_PAGE_HOME: Record<string, string> = {
+  "/settings/groups": "app/settings/groups/page.tsx",
+  "/settings/roles": "app/settings/roles/page.tsx",
+  "/settings/billing": "app/settings/billing/page.tsx",
+  "/settings/members/[email]": "app/settings/members/[email]/page.tsx",
+};
+
 /** The route's page, its layout, and the layout of every route above it. */
 function routeFiles(href: string): string[] {
   const out: string[] = [];
@@ -166,6 +184,13 @@ describe("(b) every live pane opens with AppTopBar", () => {
     });
   }
 
+  for (const [href, rel] of Object.entries(SUB_PAGE_HOME)) {
+    it(`the sub-page ${href} draws its bar, with no SettingsHeader left`, () => {
+      drawsTheBar(rel);
+      expect(code(read(rel)), rel).not.toMatch(/<SettingsHeader\b/);
+    });
+  }
+
   it("My Day at / draws its bar too", () => {
     drawsTheBar(MY_DAY_HOME);
     expect(imports("app/page.tsx", MY_DAY_HOME)).toBe(true);
@@ -175,14 +200,18 @@ describe("(b) every live pane opens with AppTopBar", () => {
     // The shapes the bar replaced: Calendar's own h1, Approvals' text-lg
     // h1, Email's folder h1 and the WhatsApp rail's name. A pane under the
     // bar titles itself with an h2.
-    for (const rel of new Set([...Object.values(APP_BAR_HOME), MY_DAY_HOME])) {
+    for (const rel of new Set([...Object.values(APP_BAR_HOME), ...Object.values(SUB_PAGE_HOME), MY_DAY_HOME])) {
       let src = code(read(rel));
-      // One named exception. A member without `admin:members:read` gets a
-      // denial card IN PLACE of Organisation, so no bar shows above it, and
-      // the card keeps the page's one h1 (`pageHeading.test.ts` pins it).
-      if (rel === "app/settings/organization/OrganizationAdmin.tsx") {
-        src = src.replace(/<h1 className="[^"]*">\s*Organisation is admin-only\s*<\/h1>/, "");
-      }
+      // Two named exceptions, the same card. A member without
+      // `admin:members:read` gets a denial card IN PLACE of Organisation or a
+      // member's page, so no bar shows above it, and the card keeps the
+      // page's one h1 (`pageHeading.test.ts` pins both cards).
+      const DENIAL: Record<string, RegExp> = {
+        "app/settings/organization/OrganizationAdmin.tsx":
+          /<h1 className="[^"]*">\s*Organisation is admin-only\s*<\/h1>/,
+        "app/settings/members/[email]/page.tsx": /<h1 className="[^"]*">\s*Admin only\s*<\/h1>/,
+      };
+      if (DENIAL[rel]) src = src.replace(DENIAL[rel], "");
       expect(src, rel).not.toMatch(/<h1[\s>]/);
     }
   });

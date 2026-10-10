@@ -21,7 +21,6 @@ import type { ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { useViewMode } from "@/components/ViewModeProvider";
 import {
   liveProviders,
   signInLine,
@@ -31,13 +30,11 @@ import {
 import { ConnectChoices } from "./ConnectChoices";
 
 /**
- * The app's title bar over the card, on desktop (owner, 2026-10-10). A member
- * with no mailbox is still in My Email, so the bar names it. The phone draws
- * the card alone, as before.
+ * The app's title bar over the card (owner, 2026-10-10). A member with no
+ * mailbox is still in My Email, so the bar names it. On a phone it is the
+ * compact bar.
  */
 function EmailFrame({ children }: { children: ReactNode }) {
-  const { isMobile } = useViewMode();
-  if (isMobile) return <>{children}</>;
   return (
     <div className="flex h-full w-full flex-col">
       <AppTopBar title="My Email" />

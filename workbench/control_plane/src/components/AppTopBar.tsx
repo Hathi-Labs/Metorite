@@ -10,6 +10,8 @@
  *
  *   [rail toggle] | [icon] <h1>App</h1> subtitle  [actions]        [tools …]
  *
+ * - `back` — a sub-page's way back to its app (Teams to Organisation). It
+ *   takes the rail toggle's place at the left end.
  * - `rail` — the toggle for the app's left rail. Omit it where there is none.
  *   The Email app's in-app toggle is the model the owner named.
  * - `icon` — the app's icon. By default it is the icon of the nav pane that
@@ -23,14 +25,16 @@
  * - `tools` — pushed to the right end: the bell, the assistant, refresh,
  *   settings.
  *
- * One height (`h-10`), one order and one look in every app. That sameness is
- * the point: the eye finds the name at the left and the tools at the right,
- * whichever app is open.
+ * One height (`h-10`, more only when the row wraps), one order and one look
+ * in every app. That sameness is the point: the eye finds the name at the
+ * left and the tools at the right, whichever app is open.
  *
  * `compact` is the phone bar. It has no rail and no divider, and the title is
  * what you are looking at, so it reads at body size and takes the free width.
  * On a phone the bar is ALWAYS the compact one, so an app that passes no
- * `compact` still gets the phone's shape there, not the desktop row.
+ * `compact` still gets the phone's shape there, not the desktop row. The
+ * compact bar keeps the scope line, muted, after the name, and it gives way
+ * first.
  *
  * History. Until 2026-09-24 the bar had no component, and Projects and My
  * Tasks each drew their own. From 2026-10-08 (NS-1) the desktop bar portalled
@@ -45,6 +49,7 @@
  */
 
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import Icon from "@/components/Icon";
@@ -60,6 +65,12 @@ export interface AppTopBarRail {
   noun: string;
 }
 
+export interface AppTopBarBack {
+  href: string;
+  /** Read by a screen reader, and the tooltip: "Back to Organisation". */
+  label: string;
+}
+
 export interface AppTopBarProps {
   title: ReactNode;
   subtitle?: ReactNode;
@@ -69,6 +80,8 @@ export interface AppTopBarProps {
    */
   icon?: string | null;
   rail?: AppTopBarRail;
+  /** A sub-page's way back, drawn at the left end, before the name. */
+  back?: AppTopBarBack;
   actions?: ReactNode;
   tools?: ReactNode;
   /** The phone bar: no rail, no divider, the title at body size. */
@@ -101,6 +114,7 @@ export function AppTopBar({
   subtitle,
   icon,
   rail,
+  back,
   actions,
   tools,
   compact = false,
@@ -109,12 +123,25 @@ export function AppTopBar({
   const { isMobile } = useViewMode();
   const glyph = icon === undefined ? appBarIcon(pathname) : icon;
 
+  // The name and the scope line, one spelling in both bars. ⚠️ The order of
+  // giving way is the point (round 2, measured at 1024px). The scope line
+  // shrinks first, to nothing. Only then does the name give way, and it
+  // truncates with an ellipsis: `max-w-full` holds it to the box it is in, so
+  // it never paints over the control beside it.
+  const name = (
+    <div className="flex min-w-0 items-baseline">
+      <h1 className="max-w-full shrink-0 truncate text-sm font-medium text-foreground">{title}</h1>
+      {subtitle ? (
+        <span className="ml-2 min-w-0 truncate text-xs text-muted-foreground">{subtitle}</span>
+      ) : null}
+    </div>
+  );
+
   if (compact || isMobile) {
     return (
       <div data-app-bar="compact" className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-          {title}
-        </h1>
+        {back ? <BackLink back={back} /> : null}
+        <div className="flex min-w-0 flex-1">{name}</div>
         {actions || tools ? (
           <div className="flex shrink-0 items-center gap-0.5">
             {actions}
@@ -125,11 +152,18 @@ export function AppTopBar({
     );
   }
 
+  // ⚠️ The row WRAPS when it runs out of room (round 2). The tools go to a
+  // second line, right-aligned, and the bar grows. Nothing leaves the screen
+  // and nothing sits under the name. A "More" menu was the other choice. It
+  // was not taken, because the tools carry their own anchored popovers (the
+  // bell's list, Calendar's settings), and a menu would unmount them on every
+  // resize. `components/ui` has no menu primitive that can hold them.
   return (
     <div
       data-app-bar="desktop"
-      className="flex h-10 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card px-2"
+      className="flex min-h-10 min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-card px-2 py-1"
     >
+      {back ? <BackLink back={back} /> : null}
       {rail ? (
         <>
           <Button
@@ -144,22 +178,34 @@ export function AppTopBar({
           <div className="h-4 w-px shrink-0 bg-border" aria-hidden />
         </>
       ) : null}
-      {/* The name, then the scope line. The scope line gives way first, so
-          the name and the tools always show. */}
-      <div className="flex min-w-0 items-center gap-2 pl-1">
+      <div data-app-bar-name className="flex min-w-0 items-center gap-2 pl-1">
         {glyph ? (
           <Icon name={glyph} size={15} className="shrink-0 text-muted-foreground" />
         ) : null}
-        <h1 className="shrink-0 whitespace-nowrap text-sm font-medium text-foreground">{title}</h1>
-        {subtitle ? (
-          <span className="min-w-0 truncate text-xs text-muted-foreground">{subtitle}</span>
-        ) : null}
+        {name}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
       {tools ? (
-        <div className="ml-auto flex shrink-0 items-center gap-1">{tools}</div>
+        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1">{tools}</div>
       ) : null}
     </div>
+  );
+}
+
+/** The way back out of a sub-page, such as Teams back to Organisation. */
+function BackLink({ back }: { back: AppTopBarBack }) {
+  return (
+    <>
+      <Link
+        href={back.href}
+        aria-label={back.label}
+        title={back.label}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground tech-transition hover:bg-secondary hover:text-foreground"
+      >
+        <Icon name="ArrowLeft" size={15} />
+      </Link>
+      <div className="h-4 w-px shrink-0 bg-border" aria-hidden />
+    </>
   );
 }
 

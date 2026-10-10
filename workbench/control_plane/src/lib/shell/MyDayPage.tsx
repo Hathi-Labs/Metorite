@@ -31,7 +31,6 @@ import NextActionsCard from "@/app/tasks/components/NextActionsCard";
 import { useAccess } from "@/components/AccessProvider";
 import { AppTopBar } from "@/components/AppTopBar";
 import PageHeader from "@/components/PageHeader";
-import { useViewMode } from "@/components/ViewModeProvider";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { visibleSections } from "@/lib/nav";
@@ -63,7 +62,6 @@ export default function MyDay() {
   const { data: session } = useSession();
   const now = useMinute();
   const [launcherOpen, setLauncherOpen] = useState(false);
-  const { isMobile } = useViewMode();
   // This page renders only with the flag on, so its pane is My Day.
   const home = homePane(true);
 
@@ -89,7 +87,9 @@ export default function MyDay() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-    {isMobile ? null : <AppTopBar title={home.label} icon={home.icon} />}
+    {/* The compact bar on a phone (AppTopBar decides), so the page keeps
+        its one h1 there too. */}
+    <AppTopBar title={home.label} icon={home.icon} />
     <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-testid="my-day">
       <div>

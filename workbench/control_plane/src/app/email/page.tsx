@@ -840,34 +840,43 @@ export default function EmailPage() {
           closeDrawer();
         }}
       />
-      {/* ═══ DESKTOP: the app's title bar (owner, 2026-10-10) ═══
+      {/* ═══ The app's title bar (owner, 2026-10-10) ═══
           The accounts toggle, the app's name and the scope, then the app's
           tools at the right end. It spans the whole app, over the accounts
           rail too, and every Email scene keeps it. The list keeps its own
-          header below: the folder, its unread count and the filter. */}
-      {!isMobile && (
+          header below: the folder, its unread count and the filter.
+          On a phone the inbox draws its own compact bar further down, so
+          this one shows there only over an automation or chat scene. */}
+      {(!isMobile || automationFeature) && (
         <AppTopBar
           rail={{ open: leftOpen, onToggle: () => setLeftOpen((v) => !v), noun: "accounts" }}
           title="My Email"
           subtitle={
             viewAll ? (
               <>All inboxes · {pooledCount} mailboxes</>
-            ) : selectedAccount ? (
+            ) : selectedAccount && accounts.length > 1 ? (
+              // The scope, for two or more mailboxes only (§11.4), as before.
               <>
-                {accounts.length > 1 ? <MailboxChip account={selectedAccount} /> : null}{" "}
+                <MailboxChip account={selectedAccount} />{" "}
                 {selectedAccount.emailAddress}
               </>
             ) : null
           }
           tools={
             <>
-              <IconBtn
-                icon={themedIcon("Columns2")}
-                label={listOpen ? "Hide email list" : "Show email list"}
-                onClick={() => setListOpen((v) => !v)}
-                active={listOpen}
-              />
-              <div className="w-px h-4 bg-border" />
+              {/* The list toggle only where there is a list: never over an
+                  automation or chat scene, where it would do nothing. */}
+              {automationFeature ? null : (
+                <>
+                  <IconBtn
+                    icon={themedIcon("Columns2")}
+                    label={listOpen ? "Hide email list" : "Show email list"}
+                    onClick={() => setListOpen((v) => !v)}
+                    active={listOpen}
+                  />
+                  <div className="w-px h-4 bg-border" />
+                </>
+              )}
               <MailboxActions selectedEmail={selectedEmail} />
               {/* With the shell bar on, ⌘K is the command bar's, and this
                   button would open a second palette (§6.7 rule 1). */}
@@ -1071,44 +1080,46 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* ── MOBILE: inbox top bar ── */}
+        {/* ── MOBILE: the inbox's compact title bar ──
+            The one bar of the phone (`AppTopBar`, round 2). Its title is what
+            you are looking at, the folder, and a tap opens the mailboxes.
+            The scope line and the unread count follow it. */}
         {isMobile && mobileView === "inbox" && (
-          <div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0 bg-card">
-            <button
-              onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent("cc-mobile-nav", { detail: "email-accounts" })
-                );
-              }}
-              className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity"
-            >
-              {viewAll ? (
-                <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
-                  <AppIcon name="Inbox" size={13} />
-                </span>
-              ) : selectedAccount ? (
-                <MailboxAvatar account={selectedAccount} />
-              ) : null}
-              <div className="min-w-0">
-                <div className="text-xs font-medium text-foreground">
-                  {folderLabel(selectedFolder)}
-                </div>
-                <div className="text-[10px] text-muted-foreground truncate">
-                  {viewAll ? `All inboxes · ${pooledCount} mailboxes` : selectedAccount?.emailAddress ?? ""}
-                </div>
-              </div>
-            </button>
-            <div className="flex items-center gap-1">
-              {unreadCount > 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full">
-                  {unreadCount} unread
-                </span>
-              )}
-              <Button variant="ghost" size="icon-sm" layout="" onClick={() => useEmailStore.getState().syncScope()} disabled={!selectedAccountId || syncing} aria-label="Refresh" title="Refresh">
-                <AppIcon name="RefreshCw" size={16} className={syncing ? "animate-spin" : ""} />
-              </Button>
-            </div>
-          </div>
+          <AppTopBar
+            compact
+            title={
+              <button
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent("cc-mobile-nav", { detail: "email-accounts" })
+                  );
+                }}
+                className="inline-flex max-w-full items-center gap-2 align-middle hover:opacity-80 transition-opacity"
+              >
+                {viewAll ? (
+                  <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                    <AppIcon name="Inbox" size={12} />
+                  </span>
+                ) : selectedAccount ? (
+                  <MailboxAvatar account={selectedAccount} />
+                ) : null}
+                <span className="truncate">{folderLabel(selectedFolder)}</span>
+              </button>
+            }
+            subtitle={viewAll ? `All inboxes · ${pooledCount} mailboxes` : selectedAccount?.emailAddress}
+            tools={
+              <>
+                {unreadCount > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full">
+                    {unreadCount} unread
+                  </span>
+                )}
+                <Button variant="ghost" size="icon-sm" layout="" onClick={() => useEmailStore.getState().syncScope()} disabled={!selectedAccountId || syncing} aria-label="Refresh" title="Refresh">
+                  <AppIcon name="RefreshCw" size={16} className={syncing ? "animate-spin" : ""} />
+                </Button>
+              </>
+            }
+          />
         )}
 
         {/* ── MOBILE: search ──

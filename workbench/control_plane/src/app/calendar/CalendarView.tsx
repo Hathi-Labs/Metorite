@@ -413,9 +413,10 @@ export function CalendarView() {
 
   // The day's tools: due soon, the rituals, the planner, the settings and
   // the mode switch. The settings popover anchors to the box that holds them.
-  // Review and "Fit what's left" show their words from 2xl only: with every
-  // tool up, the bar must still fit one row beside an open sidebar at 1280.
-  // Each keeps its icon and its title.
+  // Due soon, Start day, Review and "Fit what's left" show their words from
+  // 2xl only, so the common 1280 to 1440 case stays one clean row with every
+  // tool up. Each keeps its icon, its aria-label and its title. Narrower than
+  // that, the app bar wraps its tools to a second line (`AppTopBar`).
   const dayTools = (
     <>
       {dueSoon.length > 0 && (
@@ -424,7 +425,8 @@ export function CalendarView() {
           className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
         >
           <Icon name="AlertTriangle" className="h-3 w-3" />
-          {dueSoon.length} due soon
+          {dueSoon.length}
+          <span className="sr-only 2xl:not-sr-only">due soon</span>
         </span>
       )}
       {/* (Re)start the day — the ritual is never locked out: skipped the
@@ -434,10 +436,11 @@ export function CalendarView() {
           type="button"
           onClick={() => setStartupOpen(true)}
           title="Start (or restart) your day — breathe · review · commit the One Thing"
+          aria-label="Start day"
           className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
         >
           <Icon name="Sun" className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Start day</span>
+          <span className="hidden 2xl:inline">Start day</span>
         </button>
       )}
       {hasTodayActivity && (
@@ -445,6 +448,7 @@ export function CalendarView() {
           type="button"
           onClick={() => setReviewOpen(true)}
           title="End-of-day review — what got done, what carries forward, estimate accuracy"
+          aria-label="Review"
           className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
         >
           <Icon name="ClipboardCheck" className="h-3.5 w-3.5" />
@@ -456,6 +460,7 @@ export function CalendarView() {
           type="button"
           onClick={() => setPlanMode("replan")}
           title="Fit what's left: reshuffle today's not-done tasks into the time you have left, and move anything that no longer fits back to your list. Adds no new tasks."
+          aria-label="Fit what's left"
           className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
         >
           <Icon name="CalendarClock" className="h-3.5 w-3.5" />
@@ -535,7 +540,7 @@ export function CalendarView() {
               <span className="whitespace-nowrap text-xs font-medium text-foreground">{title}</span>
             </>
           }
-          tools={<div className="relative flex items-center gap-2">{dayTools}</div>}
+          tools={<div className="relative flex flex-wrap items-center justify-end gap-2">{dayTools}</div>}
         />
       )}
 

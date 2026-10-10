@@ -92,7 +92,9 @@ describe("the app bar's shape", () => {
       tools: createElement("span", null, "TOOL"),
     });
     // One row, h-10, marked for the browser suite.
-    expect(html).toMatch(/^<div data-app-bar="desktop" class="flex h-10 [^"]*"/);
+    // One row, at least h-10, marked for the browser suite. It WRAPS when it
+    // runs out of room (round 2), so a tool never leaves the screen.
+    expect(html).toMatch(/^<div data-app-bar="desktop" class="flex min-h-10 [^"]*flex-wrap[^"]*"/);
     const at = (needle: string) => {
       const i = html.indexOf(needle);
       expect(i, needle).toBeGreaterThan(-1);
@@ -126,6 +128,31 @@ describe("the app bar's shape", () => {
   it("never portals into the shell bar: the slot API is gone", () => {
     const src = code(read("components/AppTopBar.tsx"));
     expect(src).not.toMatch(/createPortal|useShellSlots|from "@\/lib\/shell\/ShellBar"/);
+  });
+
+  it("gives way in order: the scope line first, then the name with an ellipsis", () => {
+    const html = bar({ title: "Organisation", subtitle: "Acme · 3 active of 4" });
+    // The name keeps its width until the scope line is gone, and then it is
+    // held to its box (`max-w-full`) and truncates. It never overflows into
+    // the control beside it (round 2, measured at 1024px).
+    expect(html).toMatch(/<h1 class="max-w-full shrink-0 truncate [^"]*">Organisation<\/h1>/);
+    expect(html).toMatch(/<span class="ml-2 min-w-0 truncate [^"]*">Acme · 3 active of 4<\/span>/);
+    // The tools may wrap among themselves at the right end.
+    const tools = bar({ title: "X", tools: createElement("span", null, "TOOL") });
+    expect(tools).toMatch(/<div class="ml-auto flex min-w-0 max-w-full flex-wrap [^"]*"><span>TOOL<\/span><\/div>/);
+  });
+
+  it("a sub-page's back link sits at the left end, before the name", () => {
+    const html = bar({ title: "Teams", back: { href: "/settings/organization", label: "Back to Organisation" } });
+    expect(html).toMatch(/<a [^>]*href="\/settings\/organization"/);
+    expect(html).toContain('aria-label="Back to Organisation"');
+    expect(html.indexOf("Back to Organisation")).toBeLessThan(html.indexOf("<h1"));
+  });
+
+  it("the phone bar keeps the scope line, after the name", () => {
+    const html = bar({ compact: true, title: "Approvals", subtitle: "3 waiting" });
+    expect(html).toMatch(/^<div data-app-bar="compact"/);
+    expect(html.indexOf(">Approvals</h1>")).toBeLessThan(html.indexOf(">3 waiting</span>"));
   });
 
   it("the phone bar has no rail and titles what you are looking at", () => {

@@ -66,8 +66,8 @@ const RAW_HEADING_BUDGET = 27;
 const HEADING_COMPONENTS = ["PageHeader.tsx", "SettingsHeader.tsx"];
 
 /**
- * The app bar. It holds its `<h1>` in two branches, the desktop bar and the
- * phone bar, and it renders exactly one of them.
+ * The app bar. Since round 2 (2026-10-10) its desktop and phone bars draw ONE
+ * spelling of the name, so the file holds exactly one `<h1>`.
  */
 const APP_BAR = "AppTopBar.tsx";
 
@@ -142,7 +142,7 @@ describe("the heading comes from a component", () => {
       .filter((f) => f !== "app/tasks/components/FocusMode.tsx");
     expect(offenders).toEqual([]);
     const bar = stripComments(fs.readFileSync(path.join(SRC, "components", APP_BAR), "utf8"));
-    expect(bar.match(/<h1[\s>]/g) ?? []).toHaveLength(2);
+    expect(bar.match(/<h1[\s>]/g) ?? []).toHaveLength(1);
   });
 
   it.each(["app/tasks/page.tsx", "app/projects/page.tsx"])(

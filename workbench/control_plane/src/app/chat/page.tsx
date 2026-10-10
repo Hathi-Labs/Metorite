@@ -1178,7 +1178,16 @@ function ChatPageInner() {
             noun: "conversations",
           }}
           title="Chat"
-          subtitle={activeSession?.name}
+          // Folded, the rail no longer shows how many conversations there
+          // are, so the scope line says it.
+          subtitle={
+            sessionPanelOpen
+              ? activeSession?.name
+              : [
+                  activeSession?.name,
+                  `${sessions.length} conversation${sessions.length === 1 ? "" : "s"}`,
+                ].filter(Boolean).join(" · ")
+          }
           // WS-51 S5: with the rail folded, the bar still says that a run
           // goes on or that a reply waits. The folded strip used to say it.
           actions={
