@@ -225,3 +225,107 @@ test.describe("chat cards roll up, and an approval at the bottom draws in view",
     await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
   });
 });
+
+/**
+ * The owner's feedback of 2026-10-10: "the option to roll up is on the
+ * right-hand side, and the option to open the accordion is on the left-hand
+ * side". There is one toggle now. It is the card's own title row, inside its
+ * border, and its chevron stays in one place in both states. The vitest twin
+ * is "one toggle, one place, inside the card" in `src/lib/cardRollup.test.ts`.
+ */
+test.describe("one toggle, one place, inside the card", () => {
+  test.setTimeout(120_000);
+
+  const CARD = '[data-rollup-card="tool:t-batch"]';
+  const TOGGLE = `${CARD} [data-rollup-toggle]`;
+  const CHEVRON = `${TOGGLE} [data-rollup-chevron]`;
+
+  test("the title row toggles the card, and the chevron does not move", async ({ page }) => {
+    await startTurn(page);
+    await release(page); // the newer card: the receipt rolls up
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "closed");
+
+    // One toggle per card, and no "Roll up" control anywhere.
+    await expect(page.locator(TOGGLE)).toHaveCount(1);
+    await expect(page.locator(`${CARD} [aria-expanded]`)).toHaveCount(1);
+    await expect(page.getByText("Roll up", { exact: true })).toHaveCount(0);
+
+    // The toggle is the first row inside the receipt's own border.
+    const inside = () =>
+      page.locator(TOGGLE).evaluate((btn) => {
+        const frame = btn.parentElement!;
+        const b = btn.getBoundingClientRect();
+        const f = frame.getBoundingClientRect();
+        return {
+          first: frame.firstElementChild === btn,
+          bordered: getComputedStyle(frame).borderTopWidth !== "0px",
+          within: b.left >= f.left && b.right <= f.right && b.top >= f.top && b.bottom <= f.bottom,
+        };
+      });
+    expect(await inside()).toEqual({ first: true, bordered: true, within: true });
+
+    // The chevron is ONE element: keep a handle to it across both states.
+    const chevron = await page.locator(CHEVRON).elementHandle();
+    const at = () =>
+      chevron!.evaluate((el) => {
+        // `offsetLeft` ignores the turn, so a turn still under way does not
+        // read as a move.
+        const h = el as HTMLElement;
+        const left = h.offsetLeft + (h.offsetParent?.getBoundingClientRect().left ?? 0);
+        return { left: Math.round(left), first: el.parentElement?.firstElementChild === el, live: el.isConnected };
+      });
+    const shut = await at();
+    expect(shut.first && shut.live).toBe(true);
+
+    // A click on the header opens the card. The chevron is the same node,
+    // at the same x.
+    await page.locator(TOGGLE).click();
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
+    await expect(page.locator(TOGGLE)).toHaveAttribute("aria-expanded", "true");
+    expect(await page.locator(CHEVRON).evaluate((el, h) => el === h, chevron)).toBe(true);
+    const open = await at();
+    expect(open).toEqual(shut);
+    expect(await inside()).toEqual({ first: true, bordered: true, within: true });
+    await expect(page.locator(TOGGLE)).toHaveCount(1);
+
+    // The same click closes it again.
+    await page.locator(TOGGLE).click();
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "closed");
+    expect(await at()).toEqual(shut);
+
+    // The keyboard: Enter and Space toggle it.
+    await page.locator(TOGGLE).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
+    await page.keyboard.press("Space");
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "closed");
+
+    // The toggle names its panel.
+    const controls = await page.locator(TOGGLE).getAttribute("aria-controls");
+    expect(controls).toBeTruthy();
+    await expect(page.locator(`[id="${controls}"]`)).toHaveCount(1);
+  });
+
+  test("a row's open-link icon opens the task, and the card does not toggle", async ({ page }) => {
+    await startTurn(page);
+    // Newest, the receipt is open. Hold the task page's request, so the
+    // page stays to be measured.
+    const held = page.waitForRequest((r) => r.url().includes("/projects?task="));
+    await page.route(/\/projects\?task=/, () => {});
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
+    await page.evaluate((sel) => {
+      const w = window as unknown as Record<string, unknown>;
+      const flips: string[] = [];
+      w.__flips = flips;
+      const root = document.querySelector(sel)!;
+      new MutationObserver(() => flips.push(root.getAttribute("data-rollup") ?? "")).observe(root, {
+        attributes: true,
+        attributeFilter: ["data-rollup"],
+      });
+    }, RECEIPT_CARD);
+    await page.locator(`${CARD} [aria-label="Open in Projects"]`).first().click();
+    await held; // the link works
+    expect(await page.evaluate(() => (window as unknown as { __flips: string[] }).__flips)).toEqual([]);
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
+  });
+});
