@@ -2179,6 +2179,30 @@ def _openapi_to_tool_defs(plugin_name: str, spec: dict[str, Any]) -> list[dict[s
 # GitHub OAuth Device Flow
 # ---------------------------------------------------------------------------
 
+async def _github_org_store() -> tuple[Any, str]:
+    """The key store, and the GitHub OAuth client id for the bound organization.
+
+    WS-54 IN-0 fix round 1. Configure stores ``GITHUB_CLIENT_ID`` as the
+    ``github:client_id`` row of the organization and no longer writes the env.
+    So the device flow reads that row first. The env value, which only the
+    operator sets, is the fallback. A failed read also falls back, because a
+    client id is public, and the poll still stores the token for this
+    organization only. One helper holds the store for start and poll, so the
+    flow adds no new store accessor line to the ceiling of
+    ``test_credential_tenant_threading.py`` (38).
+    """
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
+    client_id = ""
+    try:
+        client_id = await store.get("github:client_id", organization_id=current_tenant()) or ""
+    except Exception as exc:
+        _log.warning("github.client_id_unreadable", error=str(exc))
+    if not client_id.strip():
+        client_id = getattr(get_settings(), "github_client_id", "") or ""
+    return store, client_id.strip()
+
+
 @router.post("/github/device/start", dependencies=[_REQUIRE_MANAGE])
 async def github_device_start(
     user: UserContext = Depends(get_current_user),
@@ -2188,11 +2212,11 @@ async def github_device_start(
     Returns the user_code and verification_uri to show in the UI.
     The frontend polls /github/device/poll until the user approves.
 
-    Requires GITHUB_CLIENT_ID to be configured (via /configure first).
+    Requires GITHUB_CLIENT_ID: the row of the organization (via /configure)
+    first, then the value that the operator set on the box.
     """
-    settings = get_settings()
-    client_id: str = getattr(settings, "github_client_id", "")
-    if not client_id.strip():
+    _store, client_id = await _github_org_store()
+    if not client_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="GITHUB_CLIENT_ID is not configured. Save it via /integrations/configure first.",
@@ -2242,9 +2266,8 @@ async def github_device_poll(
     answers 503. IN-7 makes this a member or org connection.
     """
     _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
-    settings = get_settings()
-    client_id: str = getattr(settings, "github_client_id", "")
-    if not client_id.strip():
+    store, client_id = await _github_org_store()
+    if not client_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="GITHUB_CLIENT_ID is not configured.",
@@ -2270,8 +2293,6 @@ async def github_device_poll(
         # 🔒 IN-0: the store of this organization, never the env. The env and
         # the env file have one GITHUB_TOKEN for the whole deployment, so that
         # write gave this member's token to every organization on the box.
-        from acb_llm.key_store import get_key_store
-        store = get_key_store()
         try:
             await store.put(
                 "github:token", token, credential_type="integration",

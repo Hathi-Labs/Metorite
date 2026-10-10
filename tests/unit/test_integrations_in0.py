@@ -217,6 +217,8 @@ class RecordingStore:
         self.fail = fail
         self.puts: list[tuple[str, str, dict[str, Any]]] = []
         self.deletes: list[tuple[str, dict[str, Any]]] = []
+        self.gets: list[tuple[str, dict[str, Any]]] = []
+        self.held: dict[str, str] = {}
 
     async def put(self, provider: str, api_key: str, **kw: Any) -> None:
         if self.fail:
@@ -225,6 +227,10 @@ class RecordingStore:
 
     async def delete(self, provider: str, **kw: Any) -> None:
         self.deletes.append((provider, kw))
+
+    async def get(self, provider: str, **kw: Any) -> str:
+        self.gets.append((provider, kw))
+        return self.held.get(provider, "")
 
     async def get_by_type(self, credential_type: str, **_: Any) -> dict[str, str]:
         return {}
@@ -799,3 +805,73 @@ async def test_put_keys_stores_the_name_the_startup_copy_reads(
     out = await integrations.put_integration_key(req, user=USER)
     assert out["env_var"] == key
     assert [p for p, _, _ in store.puts] == [_startup_provider()[key]]
+
+
+# ── Fix round 1, P2: the device flow reads the client id of the org ─────────
+
+
+class _RecordingGithub(_FakeGithub):
+    """Records the ``client_id`` of each POST to GitHub."""
+
+    sent: list[str] = []
+
+    async def post(self, url: str, *_: Any, data: dict[str, Any] | None = None, **__: Any,
+                   ) -> httpx.Response:
+        _RecordingGithub.sent.append((data or {}).get("client_id", ""))
+        if url.endswith("/login/device/code"):
+            return httpx.Response(200, json={
+                "user_code": "U", "verification_uri": "https://github.com/login/device",
+                "device_code": "D", "expires_in": 900, "interval": 5,
+            })
+        return httpx.Response(200, json={"access_token": "gho_In0Token123"})
+
+
+@pytest.fixture()
+def github(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    _RecordingGithub.sent = []
+    monkeypatch.setattr(integrations.httpx, "AsyncClient", _RecordingGithub)
+    return _RecordingGithub.sent
+
+
+class TestTheDeviceFlowReadsTheOrgClientId:
+    async def test_start_uses_the_client_id_of_the_org(
+        self, store, tenant, github, monkeypatch,
+    ) -> None:
+        monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
+        get_settings.cache_clear()
+        store.held["github:client_id"] = "Iv1.org-a-client"
+        out = await integrations.github_device_start(user=USER)
+        assert out["device_code"] == "D"
+        assert github == ["Iv1.org-a-client"]
+        assert store.gets == [("github:client_id", {"organization_id": tenant})]
+
+    async def test_start_falls_back_to_the_operator_value(
+        self, store, tenant, github, monkeypatch,
+    ) -> None:
+        monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.operator-client")
+        get_settings.cache_clear()
+        await integrations.github_device_start(user=USER)
+        assert github == ["Iv1.operator-client"]
+
+    async def test_start_is_422_when_neither_holds_one(
+        self, store, tenant, github, monkeypatch,
+    ) -> None:
+        monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
+        get_settings.cache_clear()
+        with pytest.raises(HTTPException) as caught:
+            await integrations.github_device_start(user=USER)
+        assert caught.value.status_code == 422
+        assert github == []
+
+    async def test_poll_uses_the_client_id_of_the_org(
+        self, store, tenant, github, monkeypatch, byok_on,
+    ) -> None:
+        monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
+        get_settings.cache_clear()
+        store.held["github:client_id"] = "Iv1.org-a-client"
+        out = await integrations.github_device_poll(
+            integrations.DevicePollRequest(device_code="d"), user=USER,
+        )
+        assert out["status"] == "authorized"
+        assert github == ["Iv1.org-a-client"]
+        assert [(p, v) for p, v, _ in store.puts] == [("github:token", "gho_In0Token123")]
