@@ -184,15 +184,19 @@ export function parseCardBody(context: string | undefined): CardBody {
  *
  * The tools write `title` as a question about "this" thing ("Create this
  * task?") and put the thing's fenced name first in `detail`. Those join
- * into one plain line: `Create task «Fix the extruder»`. Any other card
+ * into one plain line: `Create task: «Fix the extruder»`. Any other card
  * keeps its title, and its whole detail goes under it.
+ *
+ * ⚠️ The colon is load-bearing (owner, 2026-10-10). The card draws a fenced
+ * name as plain text, so without it the act and the name read as one
+ * sentence: "Create task Show each model call's tier…".
  */
 export function cardSummary(title: string, detail?: string): { summary: string; rest?: string } {
   const parts = (detail ?? "").split(" · ").map((p) => p.trim()).filter(Boolean);
   const m = /^(.+?) this (.+?)\?$/.exec(title.trim());
   if (m && parts.length > 0 && parts[0].includes("«")) {
     const rest = parts.slice(1).join(" · ");
-    return { summary: `${m[1]} ${m[2]} ${parts[0]}`, rest: rest || undefined };
+    return { summary: `${m[1]} ${m[2]}: ${parts[0]}`, rest: rest || undefined };
   }
   return { summary: title, rest: detail?.trim() || undefined };
 }

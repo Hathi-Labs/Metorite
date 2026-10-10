@@ -49,6 +49,19 @@ const PUBLIC_PAGES = new Set([
   "/signin",
   "/signin/code",
   "/favicon.ico",
+  // The app's icons and its manifest. The sign-in page shows them to a person
+  // with no session, and a browser fetches the manifest with no cookie. They
+  // are fixed brand files (`brand/make_icons.py`) and carry no member data.
+  // The two dot icons are here too, so a tab that a sign-out left hidden
+  // cannot show a broken one.
+  "/icon.svg",
+  "/apple-icon.png",
+  "/manifest.webmanifest",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-maskable-512.png",
+  "/favicon-needs.png",
+  "/favicon-reply.png",
   // WS-17 EM-T3c: where an IT admin lands after approving Metorite in
   // Microsoft. That admin has no Metorite session. The page reads one token
   // from a fixed set, makes no fetch and renders fixed copy only.

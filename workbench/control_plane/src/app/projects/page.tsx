@@ -195,6 +195,7 @@ import {
   showsDashboard,
   spaceOf,
 } from "./lib/tree";
+import { forgetFold, markHidden, openFolds, resumeFold } from "./lib/treeFold";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
@@ -2714,6 +2715,9 @@ function ProjectsWorkspace() {
       });
       setCreating(undefined);
       setTreeKey((k) => k + 1);
+      // The draft held its parent open. The new child must stay in view
+      // when the draft goes, or a closed rail reads as a failed create.
+      if (creating.parent) openFolds([creating.parent.id]);
       // A child is not selectable until the refreshed tree carries it, so
       // only a new root is selected here — selecting a stale row would show
       // an empty board and read as a failed create.
@@ -2797,6 +2801,8 @@ function ProjectsWorkspace() {
       await projectsApi.moveNode(node.id, parentId);
       setMovingNode(null);
       setTreeKey((k) => k + 1);
+      // The node lands in view: its new parent and that parent's path open.
+      if (parentId) openFolds(pathTo(roots, parentId).map((n) => n.id));
       undoApi.record({
         label: `moved ${node.name}`,
         undo: async () => {
@@ -3092,6 +3098,9 @@ function ProjectsWorkspace() {
         planned.plan.parentId,
         planned.plan.position,
       );
+      // The dropped node lands in view, as a "Move to…" does.
+      const into = planned.plan.parentId;
+      if (into) openFolds(pathTo(roots, into).map((n) => n.id));
       setTreeKey((k) => k + 1);
       undoApi.record({
         label: `moved ${node?.name ?? "a project"}`,
@@ -4635,6 +4644,22 @@ function ProjectsWorkspace() {
 }
 
 export default function ProjectsPage() {
+  // The rail's row folds (`app/projects/lib/treeFold.ts`, owner 2026-10-10):
+  // kept while the member works here, dropped after the tab was away for 30
+  // minutes, and dropped on leaving for another app.
+  useEffect(() => {
+    resumeFold();
+    const onVisible = () => {
+      if (document.visibilityState === "hidden") markHidden();
+      else resumeFold();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      forgetFold();
+    };
+  }, []);
+
   // `useSearchParams` needs a Suspense boundary in the App Router.
   return (
     <Suspense fallback={renderState("loading", LOADING_COPY, "page")}>

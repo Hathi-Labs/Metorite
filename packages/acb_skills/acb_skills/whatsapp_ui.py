@@ -47,6 +47,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from acb_skills import whatsapp_cards as cards
+from acb_skills import whatsapp_engine as engine
 from acb_skills import whatsapp_render as render
 
 #: The tools a WhatsApp run does not get: the WEB DELIVERY tools only.
@@ -366,11 +367,102 @@ def _list_of(data: dict[str, Any], key: str, *, required: bool = True) -> list[A
     return value
 
 
+#: The chart kinds the old SVG renderer draws: the fallback when the engine is
+#: off or cannot draw (WAC-10f).
+_OLD_KINDS = ("bar", "line", "progress", "donut")
+
+
+def _join(values: Any) -> str:
+    return ", ".join(map(str, values or []))
+
+
+def _chart_rendition(kind: str, title: str, data: dict[str, Any]) -> str:
+    """The thread's text of a chart: its kind, its title and its numbers.
+
+    It never raises: an odd shape gives the head alone. The thread keeps it,
+    so the next turn knows what the image showed (``thread_record``).
+    """
+    head = f"[Chart, {kind}: {title}]"
+    try:
+        series = data.get("series")
+        if isinstance(series, list) and kind in ("bar", "line", "area", "radar"):
+            axis = data.get("axes") if kind == "radar" else data.get("labels")
+            return f"{head} {_join(axis)}\n" + "\n".join(
+                f"{s.get('name')}: {_join(s.get('values'))}" for s in series if isinstance(s, dict))
+        if kind in ("bar", "line", "funnel", "donut", "progress"):
+            return head + " " + ", ".join(
+                f"{lab}: {val}" for lab, val in zip(data.get("labels") or [], data.get("values") or [],
+                                                    strict=False))
+        if kind == "waterfall":
+            return head + " " + ", ".join(
+                f"{s.get('label')}: {'total' if s.get('total') else s.get('value')}"
+                for s in data.get("steps") or [] if isinstance(s, dict))
+        if kind == "heatmap":
+            return f"{head} {_join(data.get('x'))}\n" + "\n".join(
+                f"{y}: {_join(r)}" for y, r in zip(data.get("y") or [], data.get("values") or [],
+                                                   strict=False))
+        if kind in ("scatter", "box"):
+            key = "points" if kind == "scatter" else "values"
+            return head + " " + "; ".join(
+                f"{g.get('name')}: {len(g.get(key) or [])} {key}"
+                for g in data.get("groups") or [] if isinstance(g, dict))
+        if kind == "calendar":
+            days = data.get("days") or []
+            return f"{head} {len(days)} days, total {sum(float(d[1]) for d in days):g}"
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+    return head
+
+
+def _engine_png(spec: dict[str, Any]) -> bytes | None:
+    """The chart from the chart engine (WAC-10f), or None to fall back.
+
+    A bad spec raises ``RenderError`` with the engine's reason, so the model
+    can fix the data. An engine that cannot draw (off, missing, broken) falls
+    back to the old renderer, and never costs the member the chart.
+    """
+    if not engine.enabled():
+        return None
+    try:
+        return engine.render_png(_with_hues(spec))
+    except engine.EngineUnavailable:
+        return None
+
+
+def _with_hues(spec: dict[str, Any]) -> dict[str, Any]:
+    """The spec with each status word as one of the six hue names.
+
+    The engine knows the hue NAMES only. The rule from a word ("On hold",
+    "Shipped") to a hue is ``statusAccent.ts``'s, which ``cards.hue``
+    mirrors under its own fence, so a chart and a card never disagree
+    (review, 2026-10-11).
+    """
+    out = dict(spec)
+    if isinstance(spec.get("tones"), list):
+        out["tones"] = [cards.hue(t) for t in spec["tones"]]
+    if isinstance(spec.get("rows"), list):
+        out["rows"] = [{**r, "status": cards.hue(r["status"])}
+                       if isinstance(r, dict) and r.get("status") is not None else r
+                       for r in spec["rows"]]
+    return out
+
+
 def _chart(data: dict[str, Any]) -> OutMessage:
-    kind = data.get("type") or "bar"
+    kind = str(data.get("type") or "bar").strip().lower()
     title = _text(data, "title", limit=80)
-    subtitle = _text(data, "subtitle", limit=120, required=False) or None
     caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+    png = _engine_png({**data, "type": kind})
+    if png is None and kind not in _OLD_KINDS:
+        raise _Refused(f'chart "type" must be one of: {", ".join(_OLD_KINDS)}')
+    if png is None:
+        png = render.to_png(_old_chart_svg(kind, title, data))
+    rendition = _chart_rendition(kind, title, data) + (f"\n{caption}" if caption else "")
+    return OutMessage("image", rendition, png=png, caption=caption or None)
+
+
+def _old_chart_svg(kind: str, title: str, data: dict[str, Any]) -> str:
+    """The old SVG renderer's chart: bar, line, progress or donut."""
+    subtitle = _text(data, "subtitle", limit=120, required=False) or None
     labels = [str(x) for x in (_list_of(data, "labels") or [])]
     values = _list_of(data, "values") or []
     unit = data.get("unit") if isinstance(data.get("unit"), str) else ""
@@ -381,14 +473,10 @@ def _chart(data: dict[str, Any]) -> OutMessage:
     elif kind == "progress":
         svg = render.progress_svg(title, labels, values, subtitle=subtitle,
                                   totals=_list_of(data, "totals", required=False))
-    elif kind == "donut":
+    else:
         svg = cards.donut_svg(title, labels, values, subtitle=subtitle,
                               tones=_list_of(data, "tones", required=False))
-    else:
-        raise _Refused('chart "type" must be "bar", "line", "progress" or "donut"')
-    pairs = ", ".join(f"{lab}: {val}" for lab, val in zip(labels, values, strict=True))
-    rendition = f"[Chart, {kind}: {title}] {pairs}" + (f"\n{caption}" if caption else "")
-    return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
+    return svg
 
 
 def _table(data: dict[str, Any]) -> OutMessage:
@@ -458,11 +546,17 @@ def _gantt(data: dict[str, Any]) -> OutMessage:
     title, subtitle = _head(data)
     rows = _list_of(data, "rows") or []
     today = data.get("today") if isinstance(data.get("today"), str) else None
-    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
     lines = [f"{r.get('label')}: {r.get('start')} to {r.get('end', r.get('start'))}"
              + (f", {r.get('progress')}%" if r.get("progress") is not None else "")
              for r in rows]
-    return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
+    rendition = f"[Schedule: {title}]\n" + "\n".join(lines)
+    png = _engine_png({**data, "type": "gantt"})  # the chart language (WAC-10f)
+    if png is not None:
+        caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+        return OutMessage("image", rendition + (f"\n{caption}" if caption else ""),
+                          png=png, caption=caption or None)
+    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
+    return _image(data, svg, rendition)
 
 
 #: A family or a flag sequence is longer than one code point, and no emoji
@@ -559,6 +653,9 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - a short choice or the next question -> "buttons"
     - 2 to 8 headline numbers -> "stats"; a breakdown -> "chart" donut
     - numbers per item -> "chart" bar; a trend -> line; done/total -> progress
+    - a mix over time -> area; stages -> funnel; a running total -> waterfall;
+      spread -> box; x against y -> scatter; when -> heatmap or calendar;
+      many axes -> radar
     - work by status -> "board"; dates and milestones -> "timeline"
     - one day of the calendar -> "agenda"; a project schedule -> "gantt"
     - rows with 3+ columns -> "table"; anything else rich -> "link"
@@ -568,8 +665,14 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - list: {"body", "button": "View tasks", "rows": [{"title" (24),
       "description" (72)}] x 1-10} or "sections": [{"title", "rows"}]
     - link: {"body", "label", "url": "https://app.metorite.com/<page>"}
-    - chart: {"type": "bar"|"line"|"progress"|"donut", "labels", "values",
-      "unit", "totals" (progress), "tones" (donut)}
+    - chart: {"type", ...}. bar, line, funnel, donut: "labels", "values"
+      (bar and line: or "series": [{"name", "values"}]), "unit", "tones".
+      area: "labels", "series". progress: "labels", "values" (done),
+      "totals". scatter: "groups": [{"name", "points": [[x, y]]}].
+      heatmap: "x", "y", "values" (a row of numbers per y). radar: "axes",
+      "series", "max". box: "groups": [{"name", "values"}]. waterfall:
+      "steps": [{"label", "value"} or {"label", "total": true}]. calendar:
+      "days": [["2026-10-01", 3]]
     - table: {"columns" (6), "rows": [[cell]] (20)}
     - stats: {"tiles": [{"label", "value", "delta", "good": "up"|"down",
       "hint", "tone"}] x 1-8}

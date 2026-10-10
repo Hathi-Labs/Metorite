@@ -1,6 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-10e built (2026-10-11): quoted replies and reactions
+**Status:** WAC-10f built (2026-10-11): one chart language for WhatsApp
+(§13.8). WAC-10e live (2026-10-11): quoted replies and reactions
 (§13.7). WAC-10c built (2026-10-10): cards, views and quick commands
 (§13), on top of WAC-10a, the run profile and its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
 two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. WAC-4 is next. The board
@@ -712,6 +713,8 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-10a** ✅ live 2026-10-10 (Meta test number) | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
 | **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
 | **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
+| **WAC-10f** ✅ built 2026-10-11 | One chart language (§13.8): the web app's chart engine draws WhatsApp charts on the server, in the product's look. 13 kinds, from a short spec. Falls back to the old renderer | AGENT-SAFE | §13.8, F1 to F5. Fences: `src/lib/charts/charts.test.ts`, `tests/unit/test_wac_chart_engine.py` |
+| **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1096,3 +1099,110 @@ again: that costs one short line, never a second answer.
 | E7 | A long job tells the member first: the AI's line, or code's line past 20 s. Never both, and never on a quick run | `test_the_ai_says_first_that_a_long_job_takes_a_while`, `test_a_long_run_with_no_early_message_gets_one_from_code`, `test_the_timer_stays_quiet_after_the_ais_own_early_message`, `test_a_quick_run_sends_no_early_message` |
 
 All seven fences are in `tests/unit/test_wac_react.py`.
+
+### 13.8 WAC-10f: one chart language (owner, 2026-10-11)
+
+The owner asked for charts with one design language, in the quality of the
+Instinct examples, made in a way that spends few AI tokens. The owner also
+asked for the same charts as live HTML and JavaScript in the web chat. The
+owner approved the sampler on 2026-10-11 ("good work on the charts. I like
+them.").
+
+**One engine, two surfaces.** `workbench/control_plane/src/lib/charts/` holds
+the chart language:
+
+| File | Job |
+|---|---|
+| `theme.mjs` | The colours and the type, from the tokens of `lib/theme/themes.ts` |
+| `kinds.mjs` | `chartOption`: each kind checks its data, then a short spec in, a full ECharts option out |
+| `render.mjs` | The server half: ECharts SVG, then resvg with Geist, to a PNG |
+
+The web chat imports `kinds.mjs` and draws the option live (WAC-10g). The
+WhatsApp bot runs `render.mjs` as a child process and sends the PNG. So the
+two surfaces show one chart, not two charts that look alike.
+
+**Why a short spec.** The AI writes only the data. Code adds the grid, the
+type, the colour and the labels. Measured on 2026-10-11, a 12-point line costs
+about 54 tokens as a spec, 362 as an ECharts option, and 1665 as an SVG.
+
+**Why a child process and not a route.** The gateway already runs on the box
+that holds the web app's packages. A child process reads JSON on stdin and
+writes JSON on stdout. It opens no port, so it adds no door to the box. Its
+environment is the BH-1 allowlist of `acb_common.child_env`, not the
+gateway's own, so a compromised chart package reads no secret. The files are plain JavaScript,
+because the box runs Node 20, which cannot strip TypeScript types.
+
+**The kinds.** bar, line, area, donut, progress, scatter, heatmap, radar,
+box, waterfall, funnel, calendar and gantt. A bar takes series and stacking,
+and turns sideways for long labels. A progress of 4 rows or fewer draws as
+rings. `whatsapp_engine.KINDS` and `kinds.mjs` hold one list.
+
+**It fails soft.** `WHATSAPP_CHART_ENGINE` turns the engine on (default off).
+The engine can be off, or Node, the file or the packages can be missing. A
+child can also time out, crash or answer in a wrong shape. In each case the
+old SVG renderer draws bar, line, progress and donut. A new kind is then
+refused, and the refusal names the four old kinds. A bad spec comes back with
+the engine's reason, so the model fixes the data. A fault inside the engine is never a
+spec error: it falls back like a missing engine. Each fallback logs
+`whatsapp_engine.unavailable` with its reason, and each drawing logs
+`whatsapp_engine.rendered`.
+
+**One status vocabulary.** The engine knows the six hue names only. The
+gateway turns each status word into a hue with `whatsapp_cards.hue`, the
+fenced mirror of `statusAccent.ts`, before the spec reaches the engine. So
+"On hold" is amber on a chart, as it is on a card.
+
+**Bounded.** At most 2 children run at once, for at most 20 seconds each. One
+call draws at most 6 charts, a drawing is at most 2400 pixels tall, and a
+calendar spans at most 400 days.
+
+**Acceptance (WAC-10f).**
+
+| # | Check | Fence |
+|---|---|---|
+| F1 | Each chart colour is a token of `themes.ts`, or a `--cat-n` hue | `charts.test.ts` `wac10f-one-palette` |
+| F2 | Each kind builds, and draws a PNG | `charts.test.ts` `wac10f-every-kind-draws`, `test_every_kind_draws_through_the_child_process` |
+| F3 | A bad spec is refused with what to fix, and the model gets that reason | `charts.test.ts` `wac10f-spec-refusals`, `test_a_bad_spec_reaches_the_model_as_a_fix` |
+| F4 | The tool offers exactly the kinds that the engine draws | `test_the_tool_offers_exactly_the_kinds_the_engine_draws` |
+| F5 | An engine that is off or broken never costs a chart of the four old kinds | `test_a_broken_engine_falls_back_to_the_old_renderer`, `test_with_the_engine_off_the_old_kinds_still_draw_and_a_new_one_is_refused` |
+
+The Python fences are in `tests/unit/test_wac_chart_engine.py`. The tests
+that need Node and the packages skip where the packages are not installed.
+
+**Next.** WAC-10g draws the same spec live in the web chat, as a `chart`
+template, with tooltips and a legend. WAC-10h draws the KPI tiles, the board,
+the timeline and the agenda in the same language.
+
+### 13.9 WAC-10g: the same charts, live in the web chat (owner, 2026-10-11)
+
+The owner asked for the charts as live HTML and JavaScript in Metorite's own
+chat, not as static images.
+
+**One template.** `emit_generative_ui` gets the template `chart`. Its data is
+the spec of §13.8, word for word, so the AI writes one shape for both
+surfaces. `LiveChart.tsx` builds the option with `kinds.mjs` and draws it in
+the page with ECharts. It adds a tooltip on hover and a legend that hides a
+series. The chart also follows the member's colour mode and the width of the
+chat column.
+
+**One bar chart.** The old `barChart` template now draws through the same
+engine. Its data maps onto a bar spec (`barChartSpec`), so the chat holds no
+second, hand-built bar chart.
+
+**Small bundle.** `lib/charts/echarts.ts` imports only the series and the
+components that the kinds use. `LiveChart` loads it on first use, so a chat
+with no chart never downloads it.
+
+**Text, never markup.** Each live tooltip uses ECharts' `richText` mode. A
+label is the model's text, and the default HTML tooltip would put it into the
+page as markup. Rich text draws it as text.
+
+**Acceptance (WAC-10g).**
+
+| # | Check | Fence |
+|---|---|---|
+| G1 | The chat offers `chart`, and `barChart` draws through the engine | `LiveChart.test.ts` `wac10g-one-chart` |
+| G2 | A live chart has a tooltip, no footer and the page's font. A bad spec shows its reason | `LiveChart.test.ts` `wac10g-live` |
+| G3 | The browser registry holds every series and component that a kind uses | `LiveChart.test.ts` `wac10g-every-kind-loads` |
+| G4 | Every live tooltip is rich text | `charts.test.ts` "a live tooltip draws text, never HTML" |
+| G5 | The template catalog, the registry, the shapes and the docstring name `chart` | `tests/unit/test_genui_catalog_lockstep.py` |

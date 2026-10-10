@@ -5,7 +5,8 @@
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
 > agent to build it. D95 is decided (§16).
 > **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-0, the
-> kill switch, default OFF (2026-10-11). The other slices are not built yet.
+> kill switch, default OFF (2026-10-11). CRM-Z1, the `crm_sources` seam and the
+> Zoho read adapter (2026-10-11). The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -386,6 +387,9 @@ Confirmed 2026-10-11 against Zoho's developer documentation:
 - the limits of the Bulk Read API
 - the lifetime of a Notification API channel
 - the shape of a deep link to a record, for each data centre
+- whether the v2 record reads return `next_page_token` (CRM-Z1 sends it when
+  it comes, and pages by number when it does not)
+- that a stage name is unique across the pipelines of a module
 
 **What follows from the budget.** The mirror spends the customer's own credits,
 so it must be a polite guest. The default sync budget is **10 % of the daily
@@ -418,7 +422,7 @@ later contract release removes it.
 | Connect | An org admin clicks Connect, consents at Zoho, and returns. The callback checks the signed state (the email seam, `transport/signing.py`), stores the blob and sets the mode to Mirror |
 | Import | The first import reads fields, pipelines and users, then every record. It shows a progress bar with an estimate and resumes after a pause (the D-EM-16 rule from Email) |
 | Owner map | A Zoho user maps to a member by email. An unmatched owner keeps the name and shows "Not in Metorite" |
-| Incremental | Every 10 minutes by default, per org. `If-Modified-Since` on a cursor per entity, plus the deleted list |
+| Incremental | Every 10 minutes by default, per org. `If-Modified-Since` on a cursor per entity, plus the deleted list. A tenant that hides `Modified_Time` (Fracktal's) gets offset paging, so CRM-Z5 needs a periodic reconcile for it. The deleted list pages by offset too, and needs the same reconcile |
 | Sync now | A button for an org admin. It refuses while a cycle runs for that org |
 | Health | Each cycle writes one `crm_sync_runs` row. Settings → CRM reads it |
 | Failure | A refresh failure sets `needs_reconnect`, stops the loop for that org and puts a need in the admin's bell. It never retries a dead token |
@@ -708,7 +712,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | Id | What | Gate | Done when |
 |---|---|---|---|
 | **CRM-Z0** | Verify the four open Zoho facts (§5.2). Write the runbook to register the client | 🟢 AGENT-SAFE (docs). 🔴 registration is the owner's | §5.2 lists each fact with its source. The runbook is in `docs/` |
-| **CRM-Z1** | `crm_sources/` with the protocol and the Zoho adapter: data centre, paging, rate limits, credits. No global credential | 🟢 AGENT-SAFE | `test_crm_sources_no_global_creds.py` passes. A 429 and a `TOO_MANY_REQUESTS` back off, measured with a fake server |
+| **CRM-Z1** ✅ built 2026-10-11 | `crm_sources/` with the protocol and the Zoho adapter: data centre, paging, rate limits, credits. No global credential | 🟢 AGENT-SAFE | `test_crm_sources_no_global_creds.py` passes. A 429 and a `TOO_MANY_REQUESTS` back off, measured with a fake server |
 | **CRM-Z2** | `integration_connections` and `crm_settings.connection_id`. The `purpose` argument on the signing seam. Revoke in the protocol. Connect, callback, refresh, disconnect, reconnect. Behind `CRM_MIRROR` (OFF) | 🟢 AGENT-SAFE to build. 🔴 needs the owner's client | A tampered state is refused. A refresh failure sets `needs_reconnect`. The blob never appears in a log or response (fence) |
 | **CRM-Z3** | The mirror columns, `crm_field_defs`, and pipelines if Zoho needs them | 🟢 AGENT-SAFE | R8: an upsert on `(organization_id, ext_source, ext_id)` is idempotent. Two orgs import one Zoho id with no collision |
 | **CRM-Z4** | The first import, with progress, estimate and resume. The owner map | 🟢 AGENT-SAFE | A paused import resumes with no duplicate. Counts per entity match the source |

@@ -225,6 +225,9 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
     "the Metorite comet's own gradient, copied once from brand/metorite-logo.svg and " +
     "its -dark twin. A brand mark keeps its colours under every accent, or it stops " +
     "being the mark",
+  "app/manifest.ts":
+    "the web manifest's splash and frame colours: the browser reads this JSON " +
+    "outside the page, where no CSS token exists, so it can only take a literal",
   "app/email/lib/mockData.ts": "fixtures",
   "app/tasks/lib/mockData.ts": "fixtures",
 };
