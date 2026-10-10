@@ -287,7 +287,13 @@ function CrmPageInner() {
           isMobile ? (
             <button
               type="button"
-              onClick={() => openDrawer(<CrmRail tab={view.tab} onSelect={chooseView} />)}
+              onClick={() =>
+                openDrawer(
+                  <nav aria-label="CRM views" className="p-2">
+                    <CrmRail tab={view.tab} onSelect={chooseView} />
+                  </nav>
+                )
+              }
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
               <span className="truncate">{viewLabel(view.tab)}</span>

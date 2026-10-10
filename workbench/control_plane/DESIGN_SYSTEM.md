@@ -492,8 +492,8 @@ own the rule. Fences:
 Email"*.
 
 Tasks matches. Email's heading drift closed on 2026-10-10, when Email took
-`AppTopBar`. CRM uses the old Settings blob. That is drift, not a third
-legitimate shape. It is H-148.
+`AppTopBar`. The CRM's drift closed on 2026-10-11 (WS-53 CRM-U1). The CRM
+now opens with `AppTopBar` and a rail of `RailRow`s, and the tabs are gone.
 
 Layout: header → tabs/filters → `flex-1 overflow-y-auto` content, optional
 `w-[380px]` desktop side panel (bottom sheet on mobile).
