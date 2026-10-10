@@ -4,6 +4,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import RailRow from "@/components/ui/RailRow";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
@@ -337,18 +338,13 @@ export function AccountSidebar({
           </div>
           <div className="mt-1 space-y-0.5">
             {AUTOMATION_ITEMS.map(({ key, label, icon: Icon }) => (
-              <button
+              <RailRow
                 key={key}
-                onClick={() => onOpenAutomation?.(key)}
-                className={`flex items-center gap-2.5 w-full px-2 py-1.5 rounded-md transition-colors text-left ${
-                  activeAutomation === key
-                    ? "bg-primary/15 text-primary"
-                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                }`}
-              >
-                <Icon size={13} className="flex-shrink-0" />
-                <span className="text-xs">{label}</span>
-              </button>
+                label={label}
+                selected={activeAutomation === key}
+                onSelect={() => onOpenAutomation?.(key)}
+                icon={<Icon size={14} className="flex-shrink-0" />}
+              />
             ))}
           </div>
         </div>
@@ -363,30 +359,18 @@ export function AccountSidebar({
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5 scrollbar-hide">
         {shownFolders.map(({ label, key, count, type }) => {
           const IconComponent = getFolderIcon(key, type);
+          // A rail row (owner, 2026-10-10). A provider label can be long, and
+          // this row did not cut it at all: it ran under the count. Now it cuts
+          // with an ellipsis and shows whole in a tip.
           return (
-            <button
+            <RailRow
               key={key}
-              onClick={() => onFolderSelect(key)}
-              className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-md transition-colors text-left ${
-                selectedFolder === key
-                  ? "bg-primary/15 text-primary"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-              }`}
-            >
-              <IconComponent size={14} className="flex-shrink-0" />
-              <span className="flex-1 text-xs">{label}</span>
-              {count > 0 && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                    selectedFolder === key
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {count}
-                </span>
-              )}
-            </button>
+              label={label}
+              selected={selectedFolder === key}
+              onSelect={() => onFolderSelect(key)}
+              icon={<IconComponent size={14} className="flex-shrink-0" />}
+              meta={count > 0 ? count : null}
+            />
           );
         })}
       </div>
