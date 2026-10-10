@@ -82,6 +82,11 @@ export interface AssistantRailProps {
    */
   scopes?: readonly ScopeEntry[];
   onClose?: () => void;
+  /**
+   * False while the page keeps the rail mounted but hidden: the dock under a
+   * task (WS-51 S5). The chat then does not count as open. Default true.
+   */
+  visible?: boolean;
 }
 
 export function AssistantRail({
@@ -92,6 +97,7 @@ export function AssistantRail({
   selectedTaskIds,
   scopes,
   onClose,
+  visible = true,
 }: AssistantRailProps) {
   const { data: nextAuthSession } = useSession();
   const userId: string = nextAuthSession?.user?.email ?? "dev@fracktal.in";
@@ -337,6 +343,7 @@ export function AssistantRail({
             key={activeSession.id}
             agentName={PROJECTS_AGENT}
             sessionId={activeSession.id}
+            visible={visible}
             compact
             {...governedModelProps(tier.covered, chatModel, false)}
             persona={persona}

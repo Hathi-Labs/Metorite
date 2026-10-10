@@ -221,7 +221,7 @@ export function ActivityList({
     );
   }
   return (
-    <ul aria-label="Live assistants" className="flex flex-col py-1">
+    <ul aria-label="Assistant activity" className="flex flex-col py-1">
       {rows.map((row) => {
         const pane = paneForAgent(row.agentName, sections);
         const agent = agentLabel(row.agentName);

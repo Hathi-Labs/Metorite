@@ -97,6 +97,26 @@ export function pruneUnread(map: UnreadMap, now: number): Record<string, UnreadE
 let _cacheKey: string | null = null;
 let _cacheRaw: string | null = null;
 let _cache: UnreadMap = EMPTY_MAP;
+/** The cached view holds no expired entry until this time, epoch ms. */
+let _cacheValidUntil = Infinity;
+
+/** The entries younger than the TTL, and when the next one expires. */
+function _fresh(map: UnreadMap, now: number): { view: UnreadMap; validUntil: number } {
+  let validUntil = Infinity;
+  const kept: Record<string, UnreadEntry> = {};
+  let dropped = false;
+  for (const [id, e] of Object.entries(map)) {
+    const ends = e.at + UNREAD_TTL_MS;
+    if (now >= ends) {
+      dropped = true;
+      continue;
+    }
+    kept[id] = e;
+    if (ends < validUntil) validUntil = ends;
+  }
+  if (!dropped) return { view: map, validUntil };
+  return { view: Object.keys(kept).length ? Object.freeze(kept) : EMPTY_MAP, validUntil };
+}
 
 function _storageOn(): boolean {
   return typeof window !== "undefined" && typeof localStorage !== "undefined";
@@ -105,9 +125,10 @@ function _storageOn(): boolean {
 /**
  * The bound member's unread map. A stable reference while the stored text is
  * the same, so `useSyncExternalStore` can read it. Empty while no member
- * scope is bound: an unknown viewer reads nobody's map.
+ * scope is bound: an unknown viewer reads nobody's map. An entry older than
+ * the TTL does not count, even before a write prunes it.
  */
-export function getUnread(): UnreadMap {
+export function getUnread(now: number = Date.now()): UnreadMap {
   const key = chatKey("unread");
   if (!key || !_storageOn()) return EMPTY_MAP;
   let raw: string | null = null;
@@ -116,10 +137,12 @@ export function getUnread(): UnreadMap {
   } catch {
     raw = null;
   }
-  if (key === _cacheKey && raw === _cacheRaw) return _cache;
+  if (key === _cacheKey && raw === _cacheRaw && now < _cacheValidUntil) return _cache;
+  const fresh = _fresh(key === _cacheKey && raw === _cacheRaw ? _cache : parseUnread(raw), now);
   _cacheKey = key;
   _cacheRaw = raw;
-  _cache = parseUnread(raw);
+  _cache = fresh.view;
+  _cacheValidUntil = fresh.validUntil;
   return _cache;
 }
 
@@ -201,7 +224,10 @@ export function markChatOpen(threadId: string): () => void {
   if (!threadId) return () => {};
   _open.set(threadId, (_open.get(threadId) ?? 0) + 1);
   if (_open.get(threadId) === 1) _publishOpen();
-  if (_tabVisible()) clearUnread(threadId);
+  if (_tabVisible()) {
+    clearUnread(threadId);
+    heartbeatOpenChats();
+  }
   let released = false;
   return () => {
     if (released) return;
@@ -211,6 +237,7 @@ export function markChatOpen(threadId: string): () => void {
       _open.set(threadId, n);
     } else {
       _open.delete(threadId);
+      _dropHeartbeat(threadId);
       _publishOpen();
     }
   };
@@ -237,6 +264,66 @@ export function subscribeOpenChats(listener: () => void): () => void {
   };
 }
 
+// ── Open in another tab ──────────────────────────────────────────────────────
+//
+// A chat that shows in a visible tab writes a heartbeat into the member's own
+// namespace (`chatKey("open")`), on each poll of that tab. Another tab of the
+// same browser reads it, and a run that ends in that chat is read there: no
+// unread mark here, and no toast. A hidden tab writes nothing, so its beat
+// goes stale and the chat counts as not looked at.
+
+/** A beat younger than this means "open and visible in some tab". */
+export const OPEN_ELSEWHERE_TTL_MS = 12_000;
+
+function _readBeats(): Record<string, number> {
+  const key = chatKey("open");
+  if (!key || !_storageOn()) return {};
+  try {
+    const data = JSON.parse(localStorage.getItem(key) ?? "{}") as unknown;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+    const out: Record<string, number> = {};
+    for (const [id, t] of Object.entries(data as Record<string, unknown>)) {
+      if (typeof t === "number" && Number.isFinite(t)) out[id] = t;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function _writeBeats(beats: Record<string, number>, now: number): void {
+  const key = chatKey("open");
+  if (!key || !_storageOn()) return;
+  const kept = Object.fromEntries(Object.entries(beats).filter(([, t]) => now - t < OPEN_ELSEWHERE_TTL_MS));
+  try {
+    if (Object.keys(kept).length === 0) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(kept));
+  } catch {
+    /* storage off: another tab may toast a chat open here, and nothing breaks */
+  }
+}
+
+/** Refresh the beat of each chat open in this tab, while the tab shows. */
+export function heartbeatOpenChats(now: number = Date.now()): void {
+  if (_open.size === 0 || !_tabVisible()) return;
+  const beats = _readBeats();
+  for (const id of _open.keys()) beats[id] = now;
+  _writeBeats(beats, now);
+}
+
+function _dropHeartbeat(threadId: string): void {
+  const beats = _readBeats();
+  if (!(threadId in beats)) return;
+  delete beats[threadId];
+  _writeBeats(beats, Date.now());
+}
+
+/** True when a chat shows in a visible tab of this browser, by its beat. */
+export function openElsewhere(threadId: string, now: number = Date.now()): boolean {
+  const t = _readBeats()[threadId];
+  return typeof t === "number" && now - t < OPEN_ELSEWHERE_TTL_MS;
+}
+
 // ── Finished runs ────────────────────────────────────────────────────────────
 
 /** A run as the tracker saw it in the last list. */
@@ -244,32 +331,38 @@ export type RunSeen = {
   threadId: string;
   agentName: string;
   title: string | null;
-  /** The run's start time from the server, or null for a run of this tab. */
+  /**
+   * The run's identity: its start time from the server, or for a question
+   * with no live run, `ask:<thread>:<kind>`. Null for a run of this tab.
+   */
   run: string | null;
+  /** A question with no live run behind it (S2 `parked`). It never "finishes". */
+  parked: boolean;
 };
 
 /** A run that ended, for the toast. */
-export type FinishedRun = { threadId: string; agent: string; title: string | null };
+export type FinishedRun = {
+  threadId: string;
+  agent: string;
+  title: string | null;
+  /** It left the list just after an outage: a restart likely stopped it. */
+  interrupted?: boolean;
+};
 
 /**
- * The runs that left the list. A run counts only when the server listed it
- * once. A run that only this tab knew can drop out of the tab's set when its
- * view unmounts, while it still runs, and that is no finish.
+ * How many complete polls in a row must lack a run before it counts as
+ * ended. One lost poll is common during a deploy (`lib/gatewayFetch.ts`
+ * records two in a row), so one miss is never enough.
  */
-export function leftRuns(
-  prev: ReadonlyMap<string, RunSeen>,
-  next: ReadonlyMap<string, RunSeen>,
-  seenOnServer: ReadonlySet<string>,
-): RunSeen[] {
-  const out: RunSeen[] = [];
-  for (const [id, run] of prev) {
-    if (!next.has(id) && seenOnServer.has(id)) out.push(run);
-  }
-  return out;
-}
+export const MISSES_TO_FINISH = 2;
+
+/** A run that leaves the list this soon after an outage was interrupted. */
+export const RESTART_WINDOW_MS = 90_000;
 
 let _gen: number | null = null;
 let _prev = new Map<string, RunSeen>();
+/** Runs that missed one or more complete polls, with the count of misses. */
+const _missing = new Map<string, { run: RunSeen; misses: number }>();
 const _seenOnServer = new Set<string>();
 /** Runs that ended while the tab was hidden. Their toast waits for the tab. */
 const _toastQueue = new Map<string, FinishedRun>();
@@ -280,11 +373,14 @@ export type ObservedRun = {
   agentName?: string | null;
   title?: string | null;
   startedAt?: string | null;
+  state?: "running" | "needs_input";
+  askKind?: string | null;
 };
 
 export type ObserveInput = {
   /** `liveRunsGeneration()`: a new member resets the tracker. */
   generation: number;
+  /** A COMPLETE list. The poller never publishes a partial one. */
   server: readonly ObservedRun[];
   localIds: Iterable<string>;
   localAgent: (threadId: string) => string | undefined;
@@ -292,12 +388,21 @@ export type ObserveInput = {
   /** The tab is visible. */
   visible: boolean;
   now: number;
+  /** `liveRunsDegradedAt()`: when a poll last failed or came back partial. */
+  degradedAt?: number;
 };
 
+/** A run's identity, stable across polls and across tabs. */
+export function runIdentity(r: ObservedRun): string {
+  return r.startedAt ? r.startedAt : `ask:${r.threadId}:${r.askKind ?? ""}`;
+}
+
 /**
- * Compare this list with the last one. Each run that ended marks its chat
- * unread, unless the member looks at that chat now. Returns the runs to toast
- * now. A run of a hidden tab waits for `onTabVisible`.
+ * Compare this list with the last ones. A run that is missing from
+ * `MISSES_TO_FINISH` complete lists in a row has ended, and it marks its chat
+ * unread, unless the member looks at that chat now, here or in another tab.
+ * Returns the runs to toast now. A run of a hidden tab waits for
+ * `onTabVisible`.
  */
 export function observeRuns(input: ObserveInput): FinishedRun[] {
   if (input.generation !== _gen) {
@@ -305,9 +410,15 @@ export function observeRuns(input: ObserveInput): FinishedRun[] {
     // every run ended. Start again, and finish nothing.
     _gen = input.generation;
     _prev = new Map();
+    _missing.clear();
     _seenOnServer.clear();
     _toastQueue.clear();
   }
+  // No member scope yet: nowhere to mark a finish. Hold the last list as it
+  // is, so the runs that end now still count once the scope binds.
+  if (!chatKey("unread")) return [];
+  if (input.visible) heartbeatOpenChats(input.now);
+
   const next = new Map<string, RunSeen>();
   for (const r of input.server) {
     if (next.has(r.threadId)) continue;
@@ -317,38 +428,61 @@ export function observeRuns(input: ObserveInput): FinishedRun[] {
       threadId: r.threadId,
       agentName: named ?? r.agentName ?? "unknown",
       title: r.title ?? input.localTitle(r.threadId) ?? null,
-      run: r.startedAt ?? null,
+      run: runIdentity(r),
+      parked: r.state === "needs_input" && !r.startedAt,
     });
   }
   for (const id of input.localIds) {
     if (next.has(id)) continue;
-    const before = _prev.get(id);
+    const before = _prev.get(id) ?? _missing.get(id)?.run;
     next.set(id, {
       threadId: id,
       agentName: input.localAgent(id) ?? before?.agentName ?? "unknown",
       title: input.localTitle(id) ?? before?.title ?? null,
       run: before?.run ?? null,
+      parked: false,
     });
   }
-  const left = leftRuns(_prev, next, _seenOnServer);
+
+  const ended: RunSeen[] = [];
+  // A run back in the list was never gone.
+  for (const id of next.keys()) _missing.delete(id);
+  // A run missing again: one more miss.
+  for (const [id, m] of [..._missing]) {
+    m.misses += 1;
+    if (m.misses >= MISSES_TO_FINISH) {
+      _missing.delete(id);
+      ended.push(m.run);
+    }
+  }
+  // A run missing for the first time. Only a run the server listed once can
+  // end: a run that only this tab knew can drop out of its set while it runs.
+  // A question with no live run never ends: an answer or an expiry is no reply.
+  for (const [id, run] of _prev) {
+    if (next.has(id) || _missing.has(id) || !_seenOnServer.has(id) || run.parked) continue;
+    if (MISSES_TO_FINISH <= 1) ended.push(run);
+    else _missing.set(id, { run, misses: 1 });
+  }
   _prev = next;
-  for (const run of left) _seenOnServer.delete(run.threadId);
-  return _settle(left, input.visible, input.now);
+  for (const run of ended) _seenOnServer.delete(run.threadId);
+  const interrupted =
+    typeof input.degradedAt === "number" && input.degradedAt > 0 && input.now - input.degradedAt < RESTART_WINDOW_MS;
+  return _settle(ended, input.visible, input.now, interrupted);
 }
 
-function _settle(left: readonly RunSeen[], visible: boolean, now: number): FinishedRun[] {
-  if (left.length === 0 || !chatKey("unread")) return [];
-  const map: Record<string, UnreadEntry> = { ...getUnread() };
+function _settle(left: readonly RunSeen[], visible: boolean, now: number, interrupted: boolean): FinishedRun[] {
+  if (left.length === 0) return [];
+  const map: Record<string, UnreadEntry> = { ...getUnread(now) };
   const toasts: FinishedRun[] = [];
   for (const run of left) {
     const id = run.threadId;
     const open = isChatOpen(id);
-    if (open && visible) {
-      // The member watched it end. It is read.
+    if ((open && visible) || (!open && openElsewhere(id, now))) {
+      // The member watched it end, here or in another tab. It is read.
       delete map[id];
       continue;
     }
-    const finished: FinishedRun = { threadId: id, agent: run.agentName, title: run.title };
+    const finished: FinishedRun = { threadId: id, agent: run.agentName, title: run.title, interrupted };
     // Another tab of this browser saw the same run end, and showed its toast.
     const sameRun = map[id] && run.run !== null && map[id].run === run.run;
     const alreadyToasted = Boolean(sameRun && map[id].toasted);
@@ -375,12 +509,13 @@ function _settle(left: readonly RunSeen[], visible: boolean, now: number): Finis
  */
 export function onTabVisible(now: number = Date.now()): FinishedRun[] {
   for (const id of _open.keys()) clearUnread(id, now);
+  heartbeatOpenChats(now);
   if (_toastQueue.size === 0) return [];
-  const cur = getUnread();
+  const cur = getUnread(now);
   const toasts: FinishedRun[] = [];
   for (const [id, run] of _toastQueue) {
     const e = cur[id];
-    if (e && !e.toasted && !isChatOpen(id)) toasts.push(run);
+    if (e && !e.toasted && !isChatOpen(id) && !openElsewhere(id, now)) toasts.push(run);
   }
   _toastQueue.clear();
   if (toasts.length) {
@@ -394,21 +529,53 @@ export function onTabVisible(now: number = Date.now()): FinishedRun[] {
 /** How long the finished toast stays: long enough to reach Open. */
 export const FINISHED_TOAST_MS = 8_000;
 
-/** The toast of a finished run: "<Agent> finished", the chat title, and Open. */
-export function finishedToast(run: FinishedRun): {
+export type FinishedToast = {
   key: string;
   title: string;
   description?: string;
   actionLabel: string;
   timeout: number;
-} {
+};
+
+/** The toast of one finished run: "<Agent> finished", the chat title, and Open. */
+export function finishedToast(run: FinishedRun): FinishedToast {
   const title = run.title?.trim();
   return {
     key: `run-finished:${run.threadId}`,
-    title: `${agentLabel(run.agent)} finished`,
+    title: run.interrupted ? `${agentLabel(run.agent)} was interrupted` : `${agentLabel(run.agent)} finished`,
     description: title || undefined,
     actionLabel: "Open",
     timeout: FINISHED_TOAST_MS,
+  };
+}
+
+/** More finished runs than this in one batch show ONE summary toast. */
+export const TOAST_EACH_MAX = 2;
+
+/** The key of the summary toast. A second batch replaces it in place. */
+export const SUMMARY_TOAST_KEY = "run-finished:summary";
+
+export type ToastPlan =
+  | { kind: "each"; toasts: { run: FinishedRun; toast: FinishedToast }[] }
+  | { kind: "summary"; toast: FinishedToast };
+
+/**
+ * The toasts of one batch. Up to `TOAST_EACH_MAX` runs get one toast each.
+ * More get one summary, "N assistants finished", whose Open shows the
+ * activity panel, where every one of them waits as a "New reply" row.
+ */
+export function toastPlan(runs: readonly FinishedRun[]): ToastPlan {
+  if (runs.length <= TOAST_EACH_MAX) {
+    return { kind: "each", toasts: runs.map((run) => ({ run, toast: finishedToast(run) })) };
+  }
+  return {
+    kind: "summary",
+    toast: {
+      key: SUMMARY_TOAST_KEY,
+      title: `${runs.length} assistants finished`,
+      actionLabel: "Open",
+      timeout: FINISHED_TOAST_MS,
+    },
   };
 }
 
@@ -534,6 +701,7 @@ export function pillModel(rows: readonly ActivityRow[], open: ReadonlySet<string
 export function _resetRunSignalsForTests(): void {
   _gen = null;
   _prev = new Map();
+  _missing.clear();
   _seenOnServer.clear();
   _toastQueue.clear();
   _open.clear();
@@ -541,6 +709,7 @@ export function _resetRunSignalsForTests(): void {
   _cacheKey = null;
   _cacheRaw = null;
   _cache = EMPTY_MAP;
+  _cacheValidUntil = Infinity;
   _savedTitle = null;
   _savedIcons = null;
   _addedIcon = null;

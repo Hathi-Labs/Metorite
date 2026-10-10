@@ -21,9 +21,11 @@ import {
   VISIBLE_MS,
   _resetLiveRunsForTests,
   getLiveRuns,
+  liveRunsDegradedAt,
   pollIntervalMs,
   subscribeLiveRuns,
 } from "./liveRuns";
+import { RUNS_PARTIAL_HEADER } from "./activeSessionsPath";
 import { bindIdentity } from "./dataCache";
 
 type FakeDoc = EventTarget & { visibilityState: "visible" | "hidden" };
@@ -142,6 +144,45 @@ describe("one poller for the whole app", () => {
         state: "running", askKind: null, lastStep: null,
       },
     ]);
+    off();
+  });
+
+  // WS-51 S5. An outage must never read as "every run ended".
+  it("keeps the last list on a partial answer, a failed answer and a throw, and records the outage", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator" }, { threadId: "t2", agentName: "orchestrator" }];
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    expect(getLiveRuns()).toHaveLength(2);
+    expect(liveRunsDegradedAt()).toBe(0);
+
+    // The gateway or the BFF marks the list partial.
+    fetchMock.mockImplementationOnce(async () => ({
+      ok: true,
+      headers: new Headers({ [RUNS_PARTIAL_HEADER]: "1" }),
+      json: async () => [],
+    }));
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns()).toHaveLength(2);
+    expect(liveRunsDegradedAt()).toBeGreaterThan(0);
+
+    fetchMock.mockImplementationOnce(async () => ({ ok: false, json: async () => [] }));
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns()).toHaveLength(2);
+
+    fetchMock.mockImplementationOnce(async () => {
+      throw new Error("offline");
+    });
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns()).toHaveLength(2);
+
+    // A complete answer is published.
+    payload = [{ threadId: "t1", agentName: "orchestrator" }];
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(getLiveRuns().map((r) => r.threadId)).toEqual(["t1"]);
     off();
   });
 

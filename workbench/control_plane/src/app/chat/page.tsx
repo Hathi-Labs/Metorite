@@ -1183,12 +1183,12 @@ function ChatPageInner() {
                 {sessions.length}
               </span>
             )}
-            {sessions.some((s) => activeRunIds.has(s.id)) && (
-              <span
-                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-success motion-safe:animate-pulse"
-                title="An agent is running"
+            <span className="mt-1.5 inline-flex">
+              <SessionRunDot
+                running={sessions.some((s) => activeRunIds.has(s.id))}
+                unread={sessions.some((s) => unreadIds.has(s.id))}
               />
-            )}
+            </span>
             <span className="mt-3 flex flex-1 items-center justify-center">
               <span
                 className="text-[10px] font-semibold tracking-widest"

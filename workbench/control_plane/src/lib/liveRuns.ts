@@ -18,6 +18,7 @@
  * hidden-tab interval.
  */
 
+import { RUNS_PARTIAL_HEADER } from "@/lib/activeSessionsPath";
 import { onClear } from "@/lib/dataCache";
 
 /**
@@ -71,6 +72,8 @@ let _onVisibility: (() => void) | null = null;
 let _generation = 0;
 /** How many surfaces want each run's step (WS-51 S3): the open panel. */
 let _stepWanters = 0;
+/** When a poll last failed or came back partial, epoch ms. 0 is never. */
+let _degradedAt = 0;
 
 /**
  * The poll's address. The step costs the server a stream read per run, so the
@@ -133,7 +136,12 @@ async function _poll(): Promise<void> {
   const generation = _generation;
   try {
     const res = await fetch(pollUrl(), { signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (res.ok && generation === _generation) {
+    // A partial list (WS-51 S5) may lack runs that still run. Keep the last
+    // list: a reader that compares lists must never see an outage as "every
+    // run ended".
+    const partial = Boolean(res.headers?.get?.(RUNS_PARTIAL_HEADER));
+    if (!res.ok || partial) _degradedAt = Date.now();
+    if (res.ok && !partial && generation === _generation) {
       const data = (await res.json()) as unknown;
       // Checked again after the body: the member may change while it reads.
       if (Array.isArray(data) && generation === _generation) {
@@ -154,6 +162,7 @@ async function _poll(): Promise<void> {
     }
   } catch {
     // Server unreachable — keep the last known list.
+    _degradedAt = Date.now();
   } finally {
     _inflight = false;
     _schedule(pollIntervalMs());
@@ -209,6 +218,15 @@ export function liveRunsGeneration(): number {
   return _generation;
 }
 
+/**
+ * When a poll last failed or came back partial, epoch ms, or 0. A run that
+ * leaves the list just after an outage was likely stopped by a restart, not
+ * finished (WS-51 S5, `lib/runSignals.ts`).
+ */
+export function liveRunsDegradedAt(): number {
+  return _degradedAt;
+}
+
 /** The last list the server returned. A stable reference while unchanged. */
 export function getLiveRuns(): readonly LiveRun[] {
   return _runs;
@@ -228,6 +246,7 @@ export function _resetLiveRunsForTests(): void {
   _runs = EMPTY;
   _key = "";
   _stepWanters = 0;
+  _degradedAt = 0;
   if (_onVisibility && typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", _onVisibility);
   }

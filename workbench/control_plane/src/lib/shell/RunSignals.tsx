@@ -40,23 +40,23 @@ import {
 } from "@/hooks/useActiveSessions";
 import { shouldPollWorkspace } from "@/lib/access";
 import { getSessionAgent } from "@/lib/chatStore";
-import { liveRunsGeneration, wantLiveSteps } from "@/lib/liveRuns";
+import { liveRunsDegradedAt, liveRunsGeneration, wantLiveSteps } from "@/lib/liveRuns";
 import { chatLink } from "@/lib/runActivity";
 import {
   applyTabSignal,
   clearUnread,
-  finishedToast,
   getOpenChats,
   getUnread,
   observeRuns,
   onTabVisible,
   pillModel,
   subscribeUnread,
+  toastPlan,
   type FinishedRun,
   type TabDocument,
 } from "@/lib/runSignals";
 
-import { useHeldHrefs } from "./ActivityControl";
+import { openActivity, useHeldHrefs } from "./ActivityControl";
 
 function tabVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
@@ -81,12 +81,24 @@ export function RunSignalsHost() {
   const toast = useToast();
   const router = useRouter();
 
-  // One toast per finished run. "Open" takes the open-chat job's link, the
-  // same link as a row of the activity panel.
+  // One toast per finished run, up to two. "Open" takes the open-chat job's
+  // link, the same link as a row of the activity panel. Three or more in one
+  // batch show ONE summary, whose "Open" shows the activity panel.
   const showFinished = useCallback(
     (runs: readonly FinishedRun[], held: ReadonlySet<string>) => {
-      for (const run of runs) {
-        const t = finishedToast(run);
+      const plan = toastPlan(runs);
+      if (plan.kind === "summary") {
+        const t = plan.toast;
+        toast.show({
+          key: t.key,
+          variant: "success",
+          title: t.title,
+          timeout: t.timeout,
+          action: { label: t.actionLabel, onClick: () => openActivity() },
+        });
+        return;
+      }
+      for (const { run, toast: t } of plan.toasts) {
         toast.show({
           key: t.key,
           variant: "success",
@@ -111,6 +123,7 @@ export function RunSignalsHost() {
       localTitle,
       visible: tabVisible(),
       now: Date.now(),
+      degradedAt: liveRunsDegradedAt(),
     });
     if (toasts.length) showFinished(toasts, heldHrefs);
   }, [workspace, serverRuns, localActive, heldHrefs, showFinished]);
@@ -236,6 +249,7 @@ export function AgentPillView({ model, href }: { model: NonNullable<ReturnType<t
         ) : null}
         <Icon name="ChevronRight" size={14} className="shrink-0 text-muted-foreground" />
         {needs ? null : (
+          // `bg-primary` follows the accent on purpose: this line is progress, not a status.
           <span aria-hidden className="agent-pill-track absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-primary/15">
             <span className="agent-pill-progress block h-full w-1/3 rounded-full bg-primary" />
           </span>

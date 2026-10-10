@@ -266,6 +266,96 @@ def test_redis_down_returns_an_empty_list(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# WS-51 S5: a degraded list says that it is partial
+# ---------------------------------------------------------------------------
+#
+# The browser marks a chat unread when its run leaves this list. A list that
+# lacks runs because Redis, Postgres or the question read failed must say so,
+# or one outage reads as "every run ended" (review of #818). Each degraded
+# branch sets `X-Runs-Partial: 1`, and a healthy list does not.
+
+
+def _list_with_response(user):
+    from fastapi import Response
+    from gateway.routes.chat import list_active_sessions
+
+    resp = Response()
+    rows = asyncio.run(list_active_sessions(user=user, steps=False, response=resp))
+    return rows, resp.headers.get("X-Runs-Partial")
+
+
+def test_the_route_takes_the_response_from_fastapi():
+    import inspect
+    import typing
+
+    from fastapi import Response
+    from gateway.routes import chat
+
+    hints = typing.get_type_hints(chat.list_active_sessions)
+    assert hints["response"] is Response
+    assert "response" in inspect.signature(chat.list_active_sessions).parameters
+
+
+def test_redis_down_marks_the_list_partial(monkeypatch):
+    async def _broken():
+        raise ConnectionError("redis is down")
+
+    monkeypatch.setattr(stream_relay, "_get_client", _broken)
+    rows, partial = _list_with_response(_user(_ALICE, str(uuid.uuid4())))
+    assert rows == []
+    assert partial == "1"
+
+
+def test_db_down_marks_the_list_partial(fake_redis, db_down):
+    org = str(uuid.uuid4())
+    _start("t-alice", org, _ALICE)
+    _start("t-bob", org, _BOB)
+    rows, partial = _list_with_response(_user(_ALICE, org))
+    assert _ids(rows) == {"t-alice"}
+    assert partial == "1"
+
+
+def test_a_failed_question_read_marks_the_list_partial(fake_redis, db_down, monkeypatch):
+    from orchestrator import pending_ask
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("pending asks unreadable")
+
+    monkeypatch.setattr(pending_ask, "durable_asks_enabled", lambda: True)
+    monkeypatch.setattr(pending_ask, "waiting_asks", _boom)
+    org = str(uuid.uuid4())
+    _start("t-alice", org, _ALICE)
+    rows, partial = _list_with_response(_user(_ALICE, org))
+    assert partial == "1"
+    assert all(r["state"] == "running" for r in rows)
+
+
+def test_a_complete_list_is_not_marked(fake_redis, monkeypatch):
+    """No error anywhere: no header. Postgres answers with no rows."""
+    import acb_graph
+    from contextlib import contextmanager
+
+    class _Rows:
+        def fetchall(self):
+            return []
+
+    class _Session:
+        def execute(self, *_a, **_kw):
+            return _Rows()
+
+    @contextmanager
+    def _ok(_org):
+        yield _Session()
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _ok)
+    org = str(uuid.uuid4())
+    _start("t-alice", org, _ALICE)
+    rows, partial = _list_with_response(_user(_ALICE, org))
+    assert _ids(rows) == {"t-alice"}
+    assert partial is None
+
+
+# ---------------------------------------------------------------------------
 # Hermetic: a run start writes the index, and its end removes it
 # ---------------------------------------------------------------------------
 

@@ -65,9 +65,10 @@ const NS_PREFIX = "cc-chat::";
 
 /**
  * What a namespaced key holds. `unread` is the member's chats with a reply
- * they have not read (WS-51 S5, `lib/runSignals.ts`).
+ * they have not read, and `open` the heartbeat of the chats that show in a
+ * visible tab (WS-51 S5, `lib/runSignals.ts`).
  */
-export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder" | "unread";
+export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder" | "unread" | "open";
 
 /**
  * The window event that says the unread map changed in THIS tab. Another tab

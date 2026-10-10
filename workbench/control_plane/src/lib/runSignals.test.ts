@@ -40,6 +40,10 @@ import { activityRows, chatLink, runBadge, runStatusText, type ActivityRow } fro
 import {
   FAVICON_NEEDS,
   FAVICON_REPLY,
+  MISSES_TO_FINISH,
+  OPEN_ELSEWHERE_TTL_MS,
+  RESTART_WINDOW_MS,
+  SUMMARY_TOAST_KEY,
   UNREAD_MAX,
   UNREAD_TTL_MS,
   _resetRunSignalsForTests,
@@ -51,10 +55,13 @@ import {
   markChatOpen,
   observeRuns,
   onTabVisible,
+  openElsewhere,
   parseUnread,
   pillModel,
   pillText,
   pruneUnread,
+  runIdentity,
+  toastPlan,
   type IconLink,
   type ObserveInput,
   type TabDocument,
@@ -115,9 +122,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-type Run = { threadId: string; agentName?: string; title?: string | null; startedAt?: string | null };
+type Run = {
+  threadId: string;
+  agentName?: string;
+  title?: string | null;
+  startedAt?: string | null;
+  state?: "running" | "needs_input";
+  askKind?: string | null;
+};
 
-/** One poll result, seen by the tracker. */
+/** One COMPLETE poll result, seen by the tracker. */
 function see(server: Run[], over: Partial<ObserveInput> = {}) {
   return observeRuns({
     generation: 1,
@@ -131,14 +145,34 @@ function see(server: Run[], over: Partial<ObserveInput> = {}) {
   });
 }
 
+/**
+ * The polls that END a run: it must be missing from `MISSES_TO_FINISH`
+ * complete polls in a row. Returns the toasts of the last one.
+ */
+function end(server: Run[], over: Partial<ObserveInput> = {}) {
+  let out: ReturnType<typeof see> = [];
+  for (let i = 0; i < MISSES_TO_FINISH; i++) {
+    const got = see(server, over);
+    if (i < MISSES_TO_FINISH - 1) expect(got, "a run ended after one missed poll").toEqual([]);
+    out = got;
+  }
+  return out;
+}
+
 const A: Run = { threadId: "t-a", agentName: "task-manager", title: "Plan the week", startedAt: ago(3) };
 const B: Run = { threadId: "t-b", agentName: "orchestrator", title: "Draft", startedAt: ago(1) };
+const C: Run = { threadId: "t-c", agentName: "email-assistant", title: "Replies", startedAt: ago(2) };
+/** A parked question: no live run, so no start time (S2). */
+const PARKED: Run = { threadId: "t-p", agentName: "task-manager", title: "Approve", state: "needs_input", askKind: "confirmation" };
 
 // ── 1. The unread rule ───────────────────────────────────────────────────────
 
 describe("a run that ends marks its chat unread", () => {
-  it("marks the chat when its run leaves the list, with its agent and title", () => {
+  it("marks the chat when its run is gone from two complete polls, with its agent and title", () => {
     see([A, B]);
+    expect(getUnread()).toEqual({});
+    see([B]);
+    // One missed poll is not an end.
     expect(getUnread()).toEqual({});
     see([B]);
     const unread = getUnread();
@@ -148,14 +182,14 @@ describe("a run that ends marks its chat unread", () => {
 
   it("stores it in the member's own chat namespace, built by chatKey", () => {
     see([A]);
-    see([]);
+    end([]);
     expect(storage.keys()).toEqual([`cc-chat::${OWNER}::unread`]);
     expect(chatKey("unread")).toBe(`cc-chat::${OWNER}::unread`);
   });
 
   it("is scoped by member and by org", () => {
     see([A]);
-    see([]);
+    end([]);
     expect(Object.keys(getUnread())).toEqual(["t-a"]);
     // The same person in another org reads another map.
     bindChatScope(OWNER_ELSEWHERE);
@@ -171,14 +205,23 @@ describe("a run that ends marks its chat unread", () => {
   it("writes and reads nothing while no member is bound", () => {
     bindChatScope(null);
     see([A]);
-    see([]);
+    end([]);
     expect(storage.keys()).toEqual([]);
     expect(getUnread()).toEqual({});
   });
 
+  it("a finish while no member is bound waits for the scope, and is not lost", () => {
+    see([A]);
+    bindChatScope(null);
+    end([]);
+    bindChatScope(OWNER);
+    end([]);
+    expect(Object.keys(getUnread())).toEqual(["t-a"]);
+  });
+
   it("opening the chat clears it", () => {
     see([A, B]);
-    see([]);
+    end([]);
     expect(Object.keys(getUnread()).sort()).toEqual(["t-a", "t-b"]);
     const release = markChatOpen("t-a");
     expect(Object.keys(getUnread())).toEqual(["t-b"]);
@@ -191,7 +234,7 @@ describe("a run that ends marks its chat unread", () => {
   it("a chat the member watches end is read: no mark", () => {
     const release = markChatOpen("t-a");
     see([A]);
-    see([]);
+    end([]);
     expect(getUnread()).toEqual({});
     release();
   });
@@ -199,7 +242,7 @@ describe("a run that ends marks its chat unread", () => {
   it("an open chat of a HIDDEN tab is marked, and the tab showing again clears it", () => {
     const release = markChatOpen("t-a");
     see([A], { visible: false });
-    see([], { visible: false });
+    end([], { visible: false });
     expect(Object.keys(getUnread())).toEqual(["t-a"]);
     onTabVisible(NOW);
     expect(getUnread()).toEqual({});
@@ -208,27 +251,27 @@ describe("a run that ends marks its chat unread", () => {
 
   it("a new member empties the list, and that is no finish", () => {
     see([A, B]);
-    see([], { generation: 2 });
+    end([], { generation: 2 });
     expect(getUnread()).toEqual({});
   });
 
   it("a run that only this tab knew can leave its set while it runs: no finish", () => {
     see([], { localIds: ["t-local"] });
-    see([]);
+    end([]);
     expect(getUnread()).toEqual({});
   });
 
   it("a run that the server listed, then this tab alone, ends when both drop it", () => {
     see([A], { localIds: ["t-a"] });
-    see([], { localIds: ["t-a"] });
+    end([], { localIds: ["t-a"] });
     expect(getUnread()).toEqual({});
-    see([], { localIds: [] });
+    end([], { localIds: [] });
     expect(Object.keys(getUnread())).toEqual(["t-a"]);
   });
 
   it("a deleted chat keeps no dot", () => {
     see([A]);
-    see([]);
+    end([]);
     deleteSession("t-a");
     expect(getUnread()).toEqual({});
   });
@@ -246,6 +289,19 @@ describe("a run that ends marks its chat unread", () => {
     expect(kept[`t-${UNREAD_MAX}`]).toBeUndefined();
   });
 
+  it("an expired entry does not count on read, before any write prunes it", () => {
+    storage.setItem(
+      chatKey("unread") as string,
+      JSON.stringify({
+        "t-old": { at: NOW - UNREAD_TTL_MS - 1, agent: "x", title: null, run: null, toasted: true },
+        "t-new": { at: NOW - 1000, agent: "x", title: null, run: null, toasted: true },
+      }),
+    );
+    expect(Object.keys(getUnread(NOW))).toEqual(["t-new"]);
+    // The same stored text, read later: the young one expires too.
+    expect(getUnread(NOW + UNREAD_TTL_MS)).toEqual({});
+  });
+
   it("trusts no stored entry it cannot read", () => {
     expect(parseUnread("not json")).toEqual({});
     expect(parseUnread("[1,2]")).toEqual({});
@@ -255,12 +311,71 @@ describe("a run that ends marks its chat unread", () => {
   });
 });
 
+// ── 1b. An outage is not an end ──────────────────────────────────────────────
+
+describe("an outage marks nothing and toasts nothing", () => {
+  it("one empty list between two full ones: no toast, no mark", () => {
+    see([A, B]);
+    expect(see([])).toEqual([]);
+    expect(see([A, B])).toEqual([]);
+    expect(see([A, B])).toEqual([]);
+    expect(getUnread()).toEqual({});
+    expect(storage.keys()).toEqual([]);
+  });
+
+  it("one partial list (a Postgres error keeps only own runs): no toast, no mark", () => {
+    see([A, B, C]);
+    expect(see([A])).toEqual([]);
+    expect(see([A, B, C])).toEqual([]);
+    expect(getUnread()).toEqual({});
+  });
+
+  it("a list that drops the parked questions: no toast, no mark, even when they stay gone", () => {
+    see([A, PARKED]);
+    expect(end([A])).toEqual([]);
+    expect(see([A, PARKED])).toEqual([]);
+    expect(end([A])).toEqual([]);
+    expect(getUnread()).toEqual({});
+  });
+
+  it("a parked question has a stable identity across polls and tabs", () => {
+    expect(runIdentity(PARKED)).toBe("ask:t-p:confirmation");
+    expect(runIdentity(A)).toBe(A.startedAt);
+  });
+
+  it("the poller publishes no partial list: it keeps the last one", () => {
+    const src = read("lib/liveRuns.ts");
+    expect(src).toMatch(/const partial = Boolean\(res\.headers\?\.get\?\.\(RUNS_PARTIAL_HEADER\)\);/);
+    expect(src).toMatch(/if \(res\.ok && !partial && generation === _generation\)/);
+  });
+
+  it("the BFF passes the gateway's mark on, and marks its own lost call", () => {
+    const src = read("app/api/chat/active-sessions/route.ts");
+    expect(src).toContain("if (!res.ok) return partialEmpty();");
+    expect(src).toMatch(/catch \{\s*return partialEmpty\(\);/);
+    expect(src).toContain("res.headers.get(RUNS_PARTIAL_HEADER)");
+    // Never a 5xx: that raises "Metorite is updating" in the shell.
+    expect(src).not.toMatch(/status: 5\d\d/);
+  });
+
+  it("a run that ends just after an outage says 'interrupted', not 'finished'", () => {
+    see([A]);
+    const got = end([], { degradedAt: NOW - 20_000 });
+    expect(got).toEqual([{ threadId: "t-a", agent: "task-manager", title: "Plan the week", interrupted: true }]);
+    expect(finishedToast(got[0]).title).toBe("Task manager was interrupted");
+    see([B]);
+    const later = end([], { degradedAt: NOW - RESTART_WINDOW_MS - 1 });
+    expect(later[0].interrupted).toBe(false);
+    expect(finishedToast(later[0]).title).toBe("Assistant finished");
+  });
+});
+
 // ── 2. One toast for each finished run ───────────────────────────────────────
 
 describe("the finished toast", () => {
   it("shows once for a run that ends, and never again for the same list", () => {
     see([A, B]);
-    expect(see([B])).toEqual([{ threadId: "t-a", agent: "task-manager", title: "Plan the week" }]);
+    expect(end([B])).toEqual([{ threadId: "t-a", agent: "task-manager", title: "Plan the week", interrupted: false }]);
     expect(see([B])).toEqual([]);
     expect(see([B])).toEqual([]);
     expect(getUnread()["t-a"].toasted).toBe(true);
@@ -269,23 +384,23 @@ describe("the finished toast", () => {
   it("never shows for the open chat, in a visible tab or a hidden one", () => {
     const release = markChatOpen("t-a");
     see([A]);
-    expect(see([])).toEqual([]);
+    expect(end([])).toEqual([]);
     see([A], { visible: false });
-    expect(see([], { visible: false })).toEqual([]);
+    expect(end([], { visible: false })).toEqual([]);
     expect(onTabVisible(NOW)).toEqual([]);
     release();
   });
 
   it("waits for a hidden tab, then shows once when it shows", () => {
     see([A], { visible: false });
-    expect(see([], { visible: false })).toEqual([]);
-    expect(onTabVisible(NOW)).toEqual([{ threadId: "t-a", agent: "task-manager", title: "Plan the week" }]);
+    expect(end([], { visible: false })).toEqual([]);
+    expect(onTabVisible(NOW)).toEqual([{ threadId: "t-a", agent: "task-manager", title: "Plan the week", interrupted: false }]);
     expect(onTabVisible(NOW)).toEqual([]);
   });
 
   it("a chat opened before the tab shows gets no late toast", () => {
     see([A], { visible: false });
-    see([], { visible: false });
+    end([], { visible: false });
     const release = markChatOpen("t-a");
     expect(onTabVisible(NOW)).toEqual([]);
     release();
@@ -298,16 +413,52 @@ describe("the finished toast", () => {
       JSON.stringify({ "t-a": { at: NOW - 2000, agent: "task-manager", title: "Plan the week", run: A.startedAt, toasted: true } }),
     );
     see([A]);
-    expect(see([])).toEqual([]);
+    expect(end([])).toEqual([]);
     expect(getUnread()["t-a"].at).toBe(NOW - 2000);
+  });
+
+  it("a chat open and visible in ANOTHER tab gets no toast and no mark", () => {
+    // The other tab's heartbeat, fresh.
+    storage.setItem(chatKey("open") as string, JSON.stringify({ "t-a": NOW - 3000 }));
+    see([A]);
+    expect(end([])).toEqual([]);
+    expect(getUnread()).toEqual({});
+    // A stale beat (that tab hid or closed) is no view.
+    storage.setItem(chatKey("open") as string, JSON.stringify({ "t-b": NOW - OPEN_ELSEWHERE_TTL_MS - 1 }));
+    see([B]);
+    expect(end([])).toHaveLength(1);
+  });
+
+  it("a chat open here writes the heartbeat while the tab shows, and drops it on close", () => {
+    const release = markChatOpen("t-a");
+    see([], { now: NOW });
+    expect(openElsewhere("t-a", NOW + 1000)).toBe(true);
+    release();
+    expect(openElsewhere("t-a", NOW + 1000)).toBe(false);
   });
 
   it("a NEW run of the same chat gets its own toast", () => {
     see([A]);
-    expect(see([])).toHaveLength(1);
+    expect(end([])).toHaveLength(1);
     const again = { ...A, startedAt: ago(0) };
     see([again]);
-    expect(see([])).toHaveLength(1);
+    expect(end([])).toHaveLength(1);
+  });
+
+  it("three or more in one batch show ONE summary toast that opens the panel", () => {
+    see([A, B, C]);
+    const got = end([]);
+    expect(got).toHaveLength(3);
+    const plan = toastPlan(got);
+    expect(plan.kind).toBe("summary");
+    if (plan.kind === "summary") {
+      expect(plan.toast).toMatchObject({ key: SUMMARY_TOAST_KEY, title: "3 assistants finished", actionLabel: "Open" });
+    }
+    const two = toastPlan(got.slice(0, 2));
+    expect(two.kind).toBe("each");
+    if (two.kind === "each") expect(two.toasts.map((t) => t.toast.key)).toEqual(["run-finished:t-a", "run-finished:t-b"]);
+    const src = read("lib/shell/RunSignals.tsx");
+    expect(src).toMatch(/plan\.kind === "summary"[\s\S]*?onClick: \(\) => openActivity\(\)/);
   });
 
   it("says '<Agent> finished', names the chat, and offers Open", () => {
@@ -603,7 +754,25 @@ describe("the badge, the panel and the chat lists show a new reply", () => {
     expect(src).toMatch(/<SessionRunDot running=\{activeRunIds\.has\(s\.id\)\} unread=\{unreadIds\.has\(s\.id\)\}/);
   });
 
-  it("an open chat clears its mark: AgentChat holds its thread open", () => {
-    expect(read("components/AgentChat.tsx")).toMatch(/^\s*useChatOpen\(sessionId\);$/m);
+  it("an open chat clears its mark: AgentChat holds its thread open while it shows", () => {
+    const chat = read("components/AgentChat.tsx");
+    expect(chat).toMatch(/^\s*useChatOpen\(visible \? sessionId : null\);$/m);
+    expect(chat).toMatch(/^\s*visible = true,$/m);
+  });
+
+  it("the Projects dock hidden under a task does not hold its chat open", () => {
+    const rail = read("app/projects/components/AssistantRail.tsx");
+    expect(rail).toMatch(/^\s*visible = true,$/m);
+    expect(rail).toMatch(/sessionId=\{activeSession\.id\}\s*visible=\{visible\}/);
+    expect(read("app/projects/page.tsx")).toMatch(/<AssistantRail\s*\{\.\.\.railPlace\}\s*visible=\{dockState !== "hidden"\}/);
+  });
+
+  it("the folded /chat rail draws the one dot", () => {
+    const page = read("app/chat/page.tsx");
+    expect(page).toMatch(/<SessionRunDot\s*running=\{sessions\.some\(\(s\) => activeRunIds\.has\(s\.id\)\)\}\s*unread=\{sessions\.some\(\(s\) => unreadIds\.has\(s\.id\)\)\}/);
+  });
+
+  it("the panel's list names all of its rows", () => {
+    expect(read("lib/shell/ActivityControl.tsx")).toContain('aria-label="Assistant activity"');
   });
 });
