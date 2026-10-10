@@ -24,16 +24,24 @@ export function StatusChip({
   accent,
   label,
   trailing,
+  ariaLabel,
   className = "",
 }: {
   accent: StatusAccent;
   label: string;
   /** A chevron, a count — whatever the wrapping control needs to show. */
   trailing?: React.ReactNode;
+  /**
+   * The pill's whole name, when the word alone does not say it is a status
+   * ("Status: Backlog"). The pill then reads as one labelled image. The name
+   * also shows on hover, because a long name truncates at 84 px.
+   */
+  ariaLabel?: string;
   className?: string;
 }) {
   return (
     <span
+      {...(ariaLabel ? { role: "img", "aria-label": ariaLabel, title: ariaLabel } : {})}
       className={[
         "inline-flex items-center gap-1 rounded-full border border-transparent px-1.5 py-0.5 text-[10px] font-medium",
         accent.soft,
