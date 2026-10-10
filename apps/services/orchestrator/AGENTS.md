@@ -148,6 +148,9 @@ tools so no agent repo needs to declare them:
 - github_search / github_repo_search                       (github_tools.py)
 Injection targets: _tools (GitHubCopilotAgent), tools (MAF Agent), _default_options.tools (legacy).
 Tool guidance is appended to _default_options.system_message via _build_injected_tools_addendum().
+The house voice goes in FIRST, before any tool work: _apply_voice() puts acb_llm.voice.voice_prompt(AGENT)
+right after the agent's own instructions, on every runtime shape (WS-52, specs/agent_writing_voice.md).
+floor_opt_out cannot remove it. Fence: tests/unit/test_agent_voice.py.
 User context (_set_memory_user_id) is set by gateway route agent.py before each run.
 4. DETACHED EXECUTION: the gateway wraps the generator in stream_relay.run_detached(),
    which drains it in a background asyncio task pushing all events to Redis

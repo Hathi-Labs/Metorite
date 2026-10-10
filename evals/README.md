@@ -12,6 +12,7 @@ Three complementary layers, from cheapest/most-deterministic to most realistic:
 | [`email_insights/`](email_insights/README.md) | WS-17 EM-T14b-1. 43 synthetic mails for the Insights finance job, and the expected facts of each. The real checks of `insights_extract.py` run on each answer, and four bars score the facts. A scripted run adds a fifth bar, and must be exact | The sweep: yes, and EM-T14b-2 adds it. `--scripted`: no | The scripted run, the bars and their mutations: the unit job |
 | [`email_narrowing/`](email_narrowing/README.md) | WS-48 N2. Five questions of email-assistant on 300 synthetic mails, each one two ways: today's path and `narrow_and_read`. It records tokens and credits on each tier. It passes on recall 100 percent and a cost of at most 40 percent. Q5 is the expected miss of the lexical search | `--scripted`: no. `--compare`: the real decide door on this machine | `--scripted`: `skill-eval.yml`. The pass rule and its mutations: the unit job |
 | [`whatsapp_narrowing/`](whatsapp_narrowing/README.md) | WS-48 N4. Five questions of whatsapp-assistant on 410 synthetic messages, each one two ways: today's path and `narrow_and_read`. It records tokens and credits on each tier. It passes on recall 100 percent and a cost of at most today's path. It does NOT meet the email bar of 40 percent, and it prints that. Q5 is the expected miss of the lexical search | `--scripted`: no. `--compare`: the real decide door on this machine | `--scripted`: `skill-eval.yml`. The pass rule and its mutations: the unit job |
+| [`agent_voice/`](agent_voice/README.md) | WS-52 S1. Twelve cases over the five surfaces of the house voice (chat, title, description, email, summary). `acb_llm.voice.voice_lint` scores each answer, by rule. `--live` asks each case with and without the voice and writes the baseline | `--scripted`: no. `--live`: yes, a manual run | `--scripted`: the unit job (`test_agent_voice_eval.py`) |
 
 ## Golden workflow fixtures (`trajectories/workflows/*.json`)
 
@@ -48,6 +49,7 @@ evals/
   email_insights/       WS-17 EM-T14b-1: the synthetic mails of Insights, the scripted answers, the runner
   email_narrowing/      WS-48 N2: the synthetic mailbox, the two paths, the cost measure, the runner
   whatsapp_narrowing/   WS-48 N4: the synthetic chats, the two paths, the cost measure, the runner
+  agent_voice/          WS-52 S1: the twelve voice cases, the scripted answers, the runner
 ```
 
 ## Running locally
