@@ -45,8 +45,10 @@ describe("the comet is the bar's last item", () => {
     expect(noId(html).endsWith(`<i data-zone="activity"></i>${noId(sig)}</div></header>`)).toBe(true);
   });
 
-  it("ShellFrame passes BarSignature to the row", () => {
-    expect(code(read("lib/shell/ShellBar.tsx"))).toMatch(/signature=\{signed \? <BarSignature \/> : null\}/);
+  it("ShellFrame passes BarSignature to the row, unless our comet already leads", () => {
+    const src = code(read("lib/shell/ShellBar.tsx"));
+    expect(src).toMatch(/signature=\{signed \? <BarSignature \/> : null\}/);
+    expect(src).toMatch(/const signed = !ourMarkLeads\(branding\);/);
   });
 });
 
