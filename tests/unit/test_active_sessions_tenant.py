@@ -315,23 +315,9 @@ def test_db_down_marks_the_list_partial(fake_redis, db_down):
     assert partial == "1"
 
 
-def test_a_failed_question_read_marks_the_list_partial(fake_redis, db_down, monkeypatch):
-    from orchestrator import pending_ask
-
-    def _boom(*_a, **_kw):
-        raise RuntimeError("pending asks unreadable")
-
-    monkeypatch.setattr(pending_ask, "durable_asks_enabled", lambda: True)
-    monkeypatch.setattr(pending_ask, "waiting_asks", _boom)
-    org = str(uuid.uuid4())
-    _start("t-alice", org, _ALICE)
-    rows, partial = _list_with_response(_user(_ALICE, org))
-    assert partial == "1"
-    assert all(r["state"] == "running" for r in rows)
-
-
-def test_a_complete_list_is_not_marked(fake_redis, monkeypatch):
-    """No error anywhere: no header. Postgres answers with no rows."""
+@pytest.fixture
+def db_empty(monkeypatch):
+    """A healthy Postgres that holds no chat row, so no branch is degraded."""
     import acb_graph
     from contextlib import contextmanager
 
@@ -348,6 +334,25 @@ def test_a_complete_list_is_not_marked(fake_redis, monkeypatch):
         yield _Session()
 
     monkeypatch.setattr(acb_graph, "tenant_session", _ok)
+
+
+def test_a_failed_question_read_marks_the_list_partial(fake_redis, db_empty, monkeypatch):
+    from orchestrator import pending_ask
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("pending asks unreadable")
+
+    monkeypatch.setattr(pending_ask, "durable_asks_enabled", lambda: True)
+    monkeypatch.setattr(pending_ask, "waiting_asks", _boom)
+    org = str(uuid.uuid4())
+    _start("t-alice", org, _ALICE)
+    rows, partial = _list_with_response(_user(_ALICE, org))
+    assert partial == "1"
+    assert all(r["state"] == "running" for r in rows)
+
+
+def test_a_complete_list_is_not_partial(fake_redis, db_empty):
+    """No error anywhere: no header. Postgres answers with no rows."""
     org = str(uuid.uuid4())
     _start("t-alice", org, _ALICE)
     rows, partial = _list_with_response(_user(_ALICE, org))
