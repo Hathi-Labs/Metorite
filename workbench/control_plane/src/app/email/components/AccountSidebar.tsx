@@ -4,6 +4,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import OverflowTip from "@/components/ui/OverflowTip";
 import RailRow from "@/components/ui/RailRow";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
@@ -229,7 +230,8 @@ export function AccountSidebar({
                   <MailboxAvatar account={account} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
-                      <span className="text-xs font-medium truncate">{mailboxLabel(account)}</span>
+                      {/* A long address cuts here, and the tip shows it whole. */}
+                      <OverflowTip text={mailboxLabel(account)} className="text-xs font-medium" />
                       {separateMark(account, accounts) && (
                         // A separate mailbox says so in words, beside its chip:
                         // All inboxes leaves it out (EM-T8g-2 item 1).

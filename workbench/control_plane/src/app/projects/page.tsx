@@ -1434,27 +1434,17 @@ function ProjectsWorkspace() {
     }
     openDrawer(
       <div className="p-2">
-        <div className="mb-2 flex items-center gap-1 px-2">
-          <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {sheet === "tree" ? "Spaces" : "View"}
-          </p>
-          {sheet === "tree" ? (
-            // The rail's + button has to exist here too, or a new space is
-            // a thing you can only create on a desktop. The field itself
-            // opens as a ROW in the tree below — see `DraftRow`.
-            <button
-              type="button"
-              aria-label="New space"
-              onClick={() => {
-                setCreating({ parent: null, kind: "project", label: "New space", level: "space" });
-                setSheet(null);
-              }}
-              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
-            >
-              <Icon name="Plus" className="h-4 w-4" />
-            </button>
-          ) : null}
-        </div>
+        {/* ⚠️ The tree sheet has NO header of its own (2026-10-10). It drew a
+            "Spaces" heading and a "New space" +, and `ProjectNav` below
+            draws the same heading and the same + under the app entries. The
+            drawer read "SPACES" twice. `ProjectNav`'s + is the one door. */}
+        {sheet === "tree" ? null : (
+          <div className="mb-2 flex items-center gap-1 px-2">
+            <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              View
+            </p>
+          </div>
+        )}
         {sheet === "tree" ? (
           <ProjectNav
             roots={visibleRoots}
