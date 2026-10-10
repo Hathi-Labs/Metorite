@@ -4575,6 +4575,7 @@ function ProjectsWorkspace() {
           >
             <AssistantRail
               {...railPlace}
+              visible={dockState !== "hidden"}
               view={noProjectChrome ? null : mode}
               onClose={() => {
                 setChatDocked(false);

@@ -45,6 +45,7 @@ import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
+import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   accountLinks,
@@ -235,6 +236,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             bar's right end when the bar is on. Near the top, beside the
             sidebar head that holds the control, when it is off. */}
         <ActivityHost placement={frame === "classic" ? "top" : "end"} />
+        {/* WS-51 S5: unread marks, the finished toast, and the hidden tab's
+            title and favicon. It draws nothing. */}
+        <RunSignalsHost />
         <FocusSession />
         {/* D-PM-38 (S5) — the store's subtask question. Global, like the
             store: Focus Mode and the Calendar complete tasks too. */}
@@ -286,6 +290,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* WS-51 S3: the one activity panel, as a bottom sheet. The Menu
             drawer holds the control, with the shell bar flag on or off. */}
         <ActivityHost placement="sheet" />
+        {/* WS-51 S5: the same signals, and the agent pill above the bottom
+            nav while a run goes on. */}
+        <RunSignalsHost />
+        <AgentPill />
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
@@ -399,10 +407,12 @@ function MobileBottomNavInner({
   );
   const {
     total: activeCount, byApp: runCounts, needsTotal, needsByApp: needsCounts,
+    unreadTotal, unreadByApp: unreadCounts,
   } = useRunActivity(drawerHrefs);
-  // One rule for every run badge (WS-51 S2): a run that waits on the member
-  // turns it amber, over the green running count (`lib/runActivity.ts`).
-  const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0);
+  // One rule for every run badge (WS-51 S2, S5): a run that waits on the
+  // member turns it amber, an unread reply blue, and a running count green
+  // (`lib/runActivity.ts`).
+  const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);
 
   const menuContent = (
     <>
@@ -538,7 +548,7 @@ function MobileBottomNavInner({
   );
 
   const isChatPage = pathname?.startsWith("/chat") ?? false;
-  const tabBadge = runBadge(activeCount, needsTotal);
+  const tabBadge = runBadge(activeCount, needsTotal, unreadTotal);
   const isEmailPage = pathname?.startsWith("/email") ?? false;
   const isTasksPage = pathname?.startsWith("/tasks") ?? false;
   // Notes actions live on the library page; the meeting/session sub-pages have
