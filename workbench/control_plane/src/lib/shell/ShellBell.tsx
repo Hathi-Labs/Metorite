@@ -24,9 +24,17 @@
  * groups, the rows and the acts are the same code. A Done here is the My
  * Tasks store's gesture, with its subtask question and its Undo.
  *
- * **The count** is the number of rows that need the member, the feed's
- * `count`, less the rows an act just took off. It is not a sum of unread
- * mail. The badge prints "99+" past 99, and nothing at 0.
+ * **The count** is the number of rows that need the member: the feed's
+ * `total`, every row the sources gave before the feed's cut to 30, less the
+ * rows an act just took off. It is not a sum of unread mail. Each source gives
+ * 15 rows at most, so it is a floor. The badge prints "99+" past 99, and
+ * nothing at 0. When the feed was cut, the panel says "Showing 30 of 47".
+ *
+ * **A Done closes the panel.** Its Undo is THE toast, and the toast's
+ * viewport sits under a dialog's scrim (`Toast.tsx`, and `DESIGN_SYSTEM.md`
+ * §4a forbids a higher layer). The dialog also hides the toast from a screen
+ * reader. So the panel gets out of the way, and the Undo is in reach for
+ * every member. A Mark read has no Undo, so the panel stays.
  *
  * ⚠️ It is narrower than the Projects `NotificationBell` it replaces with the
  * flag on: unread notifications only, 15 for each source, no "Mark all
@@ -36,7 +44,7 @@
  */
 
 import Link from "next/link";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { UndoToastFallback } from "@/app/tasks/components/UndoToast";
 import { useAccess } from "@/components/AccessProvider";
@@ -184,7 +192,7 @@ export function ShellBell({
   if (!allowed) return null;
   return (
     <BellButton
-      count={needs.count}
+      count={needs.total}
       open={open}
       onOpen={() => {
         onBeforeOpen?.();
@@ -207,9 +215,18 @@ const TICK_MS = 30_000;
 export const BELL_POLL_MS = 60_000;
 
 /**
+ * What the panel says under a list the feed cut: "Showing 30 of 47", or
+ * nothing when the list is whole.
+ */
+export function shownOfTotal(shown: number, total: number | undefined): string | null {
+  return total !== undefined && total > shown ? `Showing ${shown} of ${total}` : null;
+}
+
+/**
  * The panel: a `Modal` around `NeedsList`, as the activity panel beside it
  * is. Focus moves in, Tab stays in it, Escape and an outside press close it,
- * and focus returns to the bell. A row's link closes it as it goes.
+ * and focus returns to the bell. A row's link closes it as it goes, and so
+ * does a Done (see the header: its Undo must be in reach).
  */
 export function BellPanel({
   open,
@@ -236,6 +253,23 @@ export function BellPanel({
     };
   }, [open]);
   const home = homePane();
+  // A Done closes the panel FIRST, then runs the one act. No focus moves
+  // inside a closing panel (`from` is null): focus goes back to the bell.
+  const panelNeeds = useMemo<NeedsYou>(
+    () => ({
+      ...needs,
+      act: (item, from) => {
+        if (item.act === "done") {
+          onClose();
+          needs.act(item, null);
+        } else {
+          needs.act(item, from);
+        }
+      },
+    }),
+    [needs, onClose],
+  );
+  const cut = shownOfTotal(needs.items?.length ?? 0, needs.total);
   return (
     <Modal
       open={open}
@@ -258,9 +292,9 @@ export function BellPanel({
         }}
       >
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          <NeedsList needs={needs} now={now} />
+          <NeedsList needs={panelNeeds} now={now} />
         </div>
-        <footer className="flex items-center border-t border-border px-4 py-2">
+        <footer className="flex items-center justify-between gap-3 border-t border-border px-4 py-2">
           <Link
             href="/"
             data-leave-focus=""
@@ -269,6 +303,11 @@ export function BellPanel({
             Open {home.label}
             <Icon name="ArrowRight" size={12} />
           </Link>
+          {cut ? (
+            <span data-needs-cut="" className="text-xs text-muted-foreground">
+              {cut}
+            </span>
+          ) : null}
         </footer>
       </div>
     </Modal>
@@ -280,9 +319,10 @@ export function BellPanel({
  * on. It also reads the feed again once a minute while the tab is in view,
  * and once each time the panel opens.
  *
- * It mounts `UndoToastFallback` too. A page that holds My Tasks' Undo
- * (My Tasks, the Calendar, My Day) says it already. On every other page this
- * says it, so a Done from the bell offers the store's Undo everywhere.
+ * It mounts `UndoToastFallback` too. A page that mounts `UndoToast` (My
+ * Tasks, the Calendar and My Day, and no other) says the Undo already. On
+ * every other page, Projects among them, this says it, so a Done from the
+ * bell offers the store's Undo everywhere.
  */
 export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   const allowed = useBellAllowed();

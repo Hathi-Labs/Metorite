@@ -15,8 +15,9 @@ import { stubApi } from "./visual/harness";
  *   2. Flag on: the bell is in the shell bar with the feed's count, and
  *      neither My Tasks nor Projects mounts a bell of its own.
  *   3. The panel lists the same rows as My Day's "Needs you" card.
- *   4. Done in the panel takes the row out of the panel AND the card, and
- *      the store's Undo shows.
+ *   4. Done closes the panel, takes the row out of the card too, and a real
+ *      click on the store's Undo puts it back. The panel's scrim would cover
+ *      the toast, so the panel must close first.
  *   5. Escape closes the panel, and focus goes back to the bell.
  *   6. Phone: the Menu drawer holds the bell, and it opens the same list.
  */
@@ -157,7 +158,7 @@ test.describe("desktop", () => {
     await expect(page.getByRole("button", { name: /^Notifications/ })).toHaveCount(0);
   });
 
-  test("the panel lists My Day's rows, Done takes a row out of both, and Escape returns focus", async ({ page }) => {
+  test("the panel lists My Day's rows, and Escape closes it and returns focus", async ({ page }) => {
     await setup(page, { dock: true, myDay: true });
     await page.goto("/");
     await expect(card(page).getByText("Send the quote")).toBeVisible();
@@ -173,19 +174,29 @@ test.describe("desktop", () => {
     expect(await titles(panel(page))).toEqual(cardRows);
     await expect(panel(page).getByRole("link", { name: /Open My Day/ })).toBeVisible();
 
-    // Done, through the My Tasks store's own gesture.
-    await panel(page).getByRole("button", { name: "Mark Send the quote done" }).click();
-    await expect(panel(page).getByText("Send the quote")).toHaveCount(0);
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 2 items");
-    // The store's Undo, as on My Day.
-    await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
-
     await page.keyboard.press("Escape");
     await expect(panel(page)).toHaveCount(0);
     await expect(bell(page)).toBeFocused();
+  });
+
+  test("Done closes the panel, takes the row out of both, and its Undo is pressable", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    await page.goto("/");
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+    await bell(page).click();
+    // Done, through the My Tasks store's own gesture.
+    await panel(page).getByRole("button", { name: "Mark Send the quote done" }).click();
+    // The panel gets out of the way, so the toast is not under its scrim.
+    await expect(panel(page)).toHaveCount(0);
+    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 2 items");
     // The card is the same list, so the row left it too.
     await expect(card(page).getByText("Send the quote")).toHaveCount(0);
     await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
+    // A REAL click on the store's Undo. Playwright fails it if anything
+    // covers the button, which `toBeVisible()` never checks.
+    await page.getByRole("button", { name: "Undo" }).click({ timeout: 5_000 });
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
   });
 
   test("Mark read takes a notification out of both, through the Projects route", async ({ page }) => {

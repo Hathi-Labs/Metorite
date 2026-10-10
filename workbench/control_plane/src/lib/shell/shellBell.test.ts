@@ -3,10 +3,11 @@
  *
  * Five claims, each one a way the slice breaks:
  *
- *   1. The badge prints the feed's `count`, capped at "99+", and nothing at 0.
+ *   1. The badge prints the feed's `total`, capped at "99+", and nothing at 0.
  *      The spoken name says "Needs you, N items".
- *   2. The live bell takes its number from the feed's `count`, not from the
- *      rows it holds. A feed of 42 with two rows on hand says 42.
+ *   2. The live bell takes its number from the feed's `total`, not from
+ *      `count` or the rows it holds. A feed of 42 with two rows sent says 42,
+ *      and the panel says "Showing 2 of 42".
  *   3. The flag decides it. Off, the shell bar draws no bell, and Projects and
  *      My Tasks still mount `NotificationBell`. On, the bar draws the bell,
  *      and neither app mounts its own.
@@ -20,7 +21,7 @@
  * Mutations, run by hand (2026-10-10):
  *   - drop `dockOn ?` in `ShellFrame`: "flag off: the shell bar draws no bell" fails;
  *   - drop `shellDockOn() ?` at a NotificationBell mount: the app test fails;
- *   - take the badge from `items.length`: "takes its number from the feed's count" fails.
+ *   - take the badge from `needs.count`: "takes its number from the feed's total" fails.
  */
 import { readFileSync } from "node:fs";
 
@@ -53,7 +54,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { needsKey, type NeedsItem } from "./needs";
-import { BellButton, ShellBell, bellBadge, bellLabel } from "./ShellBell";
+import { BellButton, ShellBell, bellBadge, bellLabel, shownOfTotal } from "./ShellBell";
 import { shellDockOn } from "./dockFlag";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
@@ -125,8 +126,8 @@ describe("the badge and the spoken name", () => {
 });
 
 describe("the live bell reads the feed", () => {
-  it("takes its number from the feed's count, not from the rows on hand", () => {
-    put(needsKey(), { count: 42, items: [row("a"), row("b")], sources: { tasks: "ok" } });
+  it("takes its number from the feed's total, not from the rows sent", () => {
+    put(needsKey(), { count: 2, total: 42, items: [row("a"), row("b")], sources: { tasks: "ok" } });
     const html = renderToStaticMarkup(createElement(ShellBell));
     expect(html).toContain('aria-label="Needs you, 42 items"');
     expect(html).toMatch(/>42<\/span>/);
@@ -136,6 +137,13 @@ describe("the live bell reads the feed", () => {
     const src = code(read("./NeedsYouCard.tsx"));
     expect(src).toMatch(/useCachedResource<NeedsFeed>\(enabled \? needsKey\(\) : null/);
     expect(code(read("./ShellBell.tsx"))).toMatch(/useNeedsYou\(allowed\)/);
+  });
+
+  it("says when the feed was cut, and nothing when the list is whole", () => {
+    expect(shownOfTotal(30, 47)).toBe("Showing 30 of 47");
+    expect(shownOfTotal(3, 3)).toBeNull();
+    expect(shownOfTotal(3, undefined)).toBeNull();
+    expect(code(read("./ShellBell.tsx"))).toMatch(/shownOfTotal\(needs\.items\?\.length \?\? 0, needs\.total\)/);
   });
 
   it("draws nothing for a member who holds no source of the feed", () => {
@@ -190,8 +198,11 @@ describe("the flag decides where the bell is", () => {
       ["../../app/tasks/page.tsx", 2],
     ] as const) {
       const src = code(read(rel));
+      // Read once, in state, so the dev override cannot split the server
+      // render from the browser's.
+      expect(src, rel).toMatch(/const \[dockOn\] = useState\(\(\) => shellDockOn\(\)\);/);
       const all = src.match(/<NotificationBell\b/g) ?? [];
-      const gated = src.match(/shellDockOn\(\) \? (?:null|undefined) : <NotificationBell\b/g) ?? [];
+      const gated = src.match(/dockOn \? (?:null|undefined) : <NotificationBell\b/g) ?? [];
       expect(all.length, rel).toBe(mounts);
       expect(gated.length, `${rel}: a NotificationBell mount outside the flag`).toBe(mounts);
     }
@@ -212,7 +223,9 @@ describe("one list for the bell and the card", () => {
     expect(card).toMatch(/<HomeCard[^>]*>\s*<NeedsList needs=\{needs\} now=\{now\} \/>/);
     const bell = code(read("./ShellBell.tsx"));
     expect(bell).toMatch(/^import \{[^}]*\bNeedsList\b[^}]*\} from "\.\/NeedsYouCard";/m);
-    expect(bell).toMatch(/<NeedsList needs=\{needs\} now=\{now\} \/>/);
+    expect(bell).toMatch(/<NeedsList needs=\{panelNeeds\} now=\{now\} \/>/);
+    // The panel's needs are the reader's, with only the act wrapped.
+    expect(bell).toMatch(/\.\.\.needs,\s*act: \(item, from\) =>/);
   });
 
   it("the bell holds no row, group or act of its own", () => {
@@ -224,7 +237,9 @@ describe("one list for the bell and the card", () => {
 
   it("the rows an act took off live in one store, shared by every reader", () => {
     const card = code(read("./NeedsYouCard.tsx"));
-    expect(card).toMatch(/useSyncExternalStore\(subscribeActs, \(\) => removedIds/);
+    expect(card).toMatch(/useSyncExternalStore\(subscribeActs, actsSnapshot, \(\) => EMPTY_ACTS\)/);
+    expect(card).toMatch(/useEffect\(\(\) => acquireReader\(\), \[\]\)/);
+    expect(card).toMatch(/pruneActs\(feed\.data\.items\.map/);
     expect(card).toMatch(/rowMover\(item\.id, removeRow, setRowError, from\)/);
     // No reader keeps a private copy any more.
     expect(card).not.toMatch(/useState<ReadonlySet<string>>/);
@@ -235,6 +250,14 @@ describe("one list for the bell and the card", () => {
     const bell = code(read("./ShellBell.tsx"));
     expect(bell).toContain('data-needs-panel=""');
     expect(bell).toContain('data-leave-focus=""');
+  });
+
+  it("a Done closes the panel first, so its Undo toast is in reach", () => {
+    // The toast's viewport sits under a dialog's scrim, and the dialog hides
+    // it from a screen reader. `e2e/shell-bell.spec.ts` presses the Undo.
+    expect(code(read("./ShellBell.tsx"))).toMatch(
+      /if \(item\.act === "done"\) \{\s*onClose\(\);\s*needs\.act\(item, null\);/,
+    );
   });
 
   it("the bell's host says the store's Undo on a page that holds none", () => {

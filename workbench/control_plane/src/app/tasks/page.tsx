@@ -57,6 +57,10 @@ import { askRailSession } from "@/lib/railSessions";
 // API is wired later. See project-docs/specs/task_manager_app.md.
 export default function TasksPage() {
   const { isMobile } = useViewMode();
+  // NS-6: with the shell's one bell on, this app mounts no bell of its own.
+  // Read once, as the shell reads its flags: the dev override is in
+  // `localStorage`, which the server render cannot see.
+  const [dockOn] = useState(() => shellDockOn());
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const selectedView = useTaskStore((s) => s.selectedView);
   const selectView = useTaskStore((s) => s.selectView);
@@ -279,7 +283,7 @@ export default function TasksPage() {
           tools={
             <>
               <AppSearchButton onOpen={openSearch} />
-              {shellDockOn() ? null : <NotificationBell onOpenTask={openHit} />}
+              {dockOn ? null : <NotificationBell onOpenTask={openHit} />}
             </>
           }
         />
@@ -345,7 +349,7 @@ export default function TasksPage() {
             <AppSearchButton onOpen={openSearch} />
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
-            {shellDockOn() ? null : <NotificationBell onOpenTask={openHit} />}
+            {dockOn ? null : <NotificationBell onOpenTask={openHit} />}
             <AssistantToggle
               open={assistantOpen}
               onToggle={() => setAssistantOpen((v) => !v)}

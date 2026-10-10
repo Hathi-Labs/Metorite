@@ -346,4 +346,8 @@ async def shell_needs(
         items.extend(rows[:PER_APP])
 
     feed = _sort(items)[:size]
-    return {"count": len(feed), "items": feed, "sources": sources}
+    # ``count`` is the rows sent, as before. ``total`` is every row the
+    # sources gave before the cut to ``size``, so the shell's bell can say 47
+    # when it shows 30 (NS-6). Each source gives ``PER_APP`` at most, so
+    # ``total`` is a floor, not a full count of what waits.
+    return {"count": len(feed), "total": len(items), "items": feed, "sources": sources}

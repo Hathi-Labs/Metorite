@@ -545,6 +545,10 @@ function ProjectsWorkspace() {
   // layout here.
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
+  // NS-6: with the shell's one bell on, this app mounts no bell of its own.
+  // Read once, as the shell reads its flags: the dev override is in
+  // `localStorage`, which the server render cannot see.
+  const [dockOn] = useState(() => shellDockOn());
   /** Desktop only: the left rail collapses, at Tasks' width. */
   const [railOpen, setRailOpen] = useState(true);
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
@@ -4397,7 +4401,7 @@ function ProjectsWorkspace() {
           compact
           title={title}
           actions={projectActions(true)}
-          tools={shellDockOn() ? undefined : <NotificationBell onOpenTask={openTaskById} />}
+          tools={dockOn ? undefined : <NotificationBell onOpenTask={openTaskById} />}
         />
 
         {workArea}
@@ -4439,7 +4443,7 @@ function ProjectsWorkspace() {
             <AppSearchButton onOpen={() => setSearching(true)} />
             {/* NS-6: with the shell's one bell on, this app mounts no bell
                 of its own. Off, nothing changes. NS-9 deletes it. */}
-            {shellDockOn() ? null : <NotificationBell onOpenTask={openTaskById} />}
+            {dockOn ? null : <NotificationBell onOpenTask={openTaskById} />}
             {/* The assistant sits at the right end of the top bar, where My
                 Tasks puts it (owner ask, 2026-09-24). One component for both
                 apps. It lived in the project header's action row until then,

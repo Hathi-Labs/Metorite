@@ -213,7 +213,7 @@ class TestTheFeatureGate:
 
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
-        assert answer == {"count": 0, "items": [],
+        assert answer == {"count": 0, "total": 0, "items": [],
                           "sources": {"tasks": "absent", "projects": "absent",
                                       "email": "absent"}}
         assert fakes.calls == []
@@ -362,6 +362,21 @@ class TestTheCaps:
         assert run(member(*ALL), limit=500)["count"] == 45
         assert run(member(*ALL), limit=2)["count"] == 2
         assert run(member(*ALL), limit=0)["count"] == 1
+
+    def test_total_counts_each_sources_capped_rows_before_the_cut(self, fakes):
+        # NS-6: the bell's badge reads ``total``. 20 rows from each source,
+        # capped at 15 each, are 45 before the feed's cut. ``count`` stays the
+        # rows sent, as before.
+        fakes.tasks[ME] = [_task(f"t-{n}", "x", NOW - timedelta(hours=n + 1))
+                           for n in range(20)]
+        fakes.notes[ME] = [dict(fakes.notes[ME][0], id=f"n-{n}") for n in range(20)]
+        fakes.threads["a-mine"] = [
+            _thread(f"th-{n}", f"m-{n}", "s", NOW - timedelta(hours=n)) for n in range(20)]
+        answer = run(member(*ALL))
+        assert answer["count"] == len(answer["items"]) == 30
+        assert answer["total"] == 3 * shell.PER_APP == 45
+        assert run(member(*ALL), limit=2)["total"] == 45
+        assert run(member(*ALL), limit=500)["count"] == run(member(*ALL), limit=500)["total"] == 45
 
 
 class TestAFailingAppIsLeftOut:

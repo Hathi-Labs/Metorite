@@ -22,9 +22,9 @@
  * **The shell's bell draws the SAME list** (NS-6, `ShellBell.tsx`). This file
  * holds the list once, `NeedsList`, and the card and the bell's panel both
  * render it. So the groups, the rows and the acts cannot drift between the
- * two. The rows an act took off live in one store here, shared by every
- * reader of the feed, so a Done in the bell leaves My Day's card at once.
- * Fence: `shellBell.test.ts`.
+ * two. The rows an act took off live in one store, `needsActs.ts`, shared
+ * by every reader of the feed, so a Done in the bell leaves My Day's card at
+ * once. Fences: `shellBell.test.ts` and `needsActs.test.ts`.
  */
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
@@ -32,79 +32,34 @@ import { useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { onClear } from "@/lib/dataCache";
 import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { CardError, HomeCard, keepRemoved, rowMover } from "./HomeCard";
+import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { appIcon, emptyNeedsLine, failedLines, rowTime, shownNeeds } from "./myDay";
 import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
+import {
+  EMPTY_ACTS,
+  acquireReader,
+  actsSnapshot,
+  pruneActs,
+  removeRow,
+  setRowError,
+  subscribeActs,
+} from "./needsActs";
 
 const DANGER = accentForHue("red");
-
-// ── The rows an act took off, for every reader of the feed ───────────────────
-//
-// My Day's card and the shell's bell each read the feed. If each held its own
-// "removed" set, a Done in the bell would leave the card's row in place until
-// the feed read again. One small store, memory only, as `ActivityControl`'s
-// open state is.
-
-const NO_IDS: ReadonlySet<string> = new Set();
-const NO_ERRORS: Readonly<Record<string, string>> = {};
-
-let removedIds: ReadonlySet<string> = NO_IDS;
-let rowErrors: Readonly<Record<string, string>> = NO_ERRORS;
-const actListeners = new Set<() => void>();
-
-function emitActs(): void {
-  actListeners.forEach((l) => l());
-}
-
-function subscribeActs(listener: () => void): () => void {
-  actListeners.add(listener);
-  return () => {
-    actListeners.delete(listener);
-  };
-}
-
-function removeRow(id: string, gone: boolean): void {
-  if (gone === removedIds.has(id)) return;
-  const next = new Set(removedIds);
-  if (gone) next.add(id);
-  else next.delete(id);
-  removedIds = next;
-  emitActs();
-}
-
-function setRowError(id: string, message: string | null): void {
-  if ((rowErrors[id] ?? null) === message) return;
-  const next = { ...rowErrors };
-  if (message) next[id] = message;
-  else delete next[id];
-  rowErrors = next;
-  emitActs();
-}
-
-/** Forget each removed row that the newest answer no longer holds. */
-function pruneRemoved(held: Iterable<string>): void {
-  const kept = keepRemoved(removedIds, held);
-  if (kept === removedIds) return;
-  removedIds = kept;
-  emitActs();
-}
-
-// A new member on this browser starts with nothing hidden.
-onClear(() => {
-  removedIds = NO_IDS;
-  rowErrors = NO_ERRORS;
-  emitActs();
-});
 
 export interface NeedsYou {
   /** The feed's rows, minus the ones an act just removed. */
   items: NeedsItem[] | undefined;
   /** The count for the summary line, minus the removed rows. */
   count: number | undefined;
+  /**
+   * Every row the sources gave before the feed's own cut (`total`), minus
+   * the removed rows. The bell's badge reads it. It is `count` or more.
+   */
+  total: number | undefined;
   sources: NeedsFeed["sources"];
   loading: boolean;
   error: string | null;
@@ -121,15 +76,18 @@ export interface NeedsYou {
  */
 export function useNeedsYou(enabled: boolean): NeedsYou {
   const feed = useCachedResource<NeedsFeed>(enabled ? needsKey() : null, () => fetchNeeds());
-  const removed = useSyncExternalStore(subscribeActs, () => removedIds, () => NO_IDS);
-  const errors = useSyncExternalStore(subscribeActs, () => rowErrors, () => NO_ERRORS);
+  const { removed, errors } = useSyncExternalStore(subscribeActs, actsSnapshot, () => EMPTY_ACTS);
 
-  // A new answer from the server forgets each removed row it no longer
-  // holds. Without this, a task that comes back later (reopened in Projects)
-  // would stay hidden here until a reload. It only drops ids the answer does
-  // not hold, so no drawn row changes, and an effect is early enough.
+  // The shared store keeps marks only while a reader is mounted
+  // (`needsActs.ts` rule 1), so an error or a hidden row never outlives
+  // the page that showed it.
+  useEffect(() => acquireReader(), []);
+
+  // A new answer from the server forgets each mark it no longer holds, and
+  // each mark older than the hold window (`needsActs.ts` rules 2 and 3).
+  // Without this, a task reopened in Projects would stay hidden here.
   useEffect(() => {
-    if (feed.data) pruneRemoved(feed.data.items.map((i) => i.id));
+    if (feed.data) pruneActs(feed.data.items.map((i) => i.id));
   }, [feed.data]);
 
   // A done is the My Tasks store's own gesture: it may ask the subtask
@@ -148,6 +106,7 @@ export function useNeedsYou(enabled: boolean): NeedsYou {
   return {
     items,
     count: feed.data ? Math.max(0, feed.data.count - gone) : undefined,
+    total: feed.data ? Math.max(0, feed.data.total - gone) : undefined,
     sources: feed.data?.sources ?? {},
     loading: feed.loading,
     error: feed.error,
