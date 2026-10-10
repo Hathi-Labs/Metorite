@@ -31,6 +31,20 @@ export type RunCappedHandler = (pendingText: string) => void;
 /** The id of the one run-cap notice in a thread. A second refusal replaces it. */
 export const RUN_CAP_NOTICE_ID = "run-cap-notice";
 
+/**
+ * The composer after a run-cap refusal (WS-51 D-3). The refused words are
+ * never lost: an empty composer takes them, and text the member typed since
+ * keeps its place, with the refused words after a blank line. Words that are
+ * already there are not added twice.
+ */
+export function mergeCappedText(current: string, refused: string): string {
+  const back = refused.trim();
+  if (!back) return current;
+  if (!current.trim()) return refused;
+  if (current.includes(back)) return current;
+  return current.replace(/\s+$/, "") + "\n\n" + refused;
+}
+
 export interface FailedTurn {
   threadId: string;
   userMsgId: string;

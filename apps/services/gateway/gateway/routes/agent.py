@@ -2433,14 +2433,19 @@ async def run_agent_stream_endpoint(
             ) from None
 
     # The other people in the room find out what was asked, and by whom, the
-    # moment it is asked — the run stream carries only the agent's side.
-    if room is not None and room.is_shared:
-        await publish_room_event(req.thread_id or "", {
+    # moment it is asked — the run stream carries only the agent's side. The
+    # preview is read HERE, before a Continue note changes `message`. It is
+    # published after the run cap below, so a refused send shows nobody a
+    # turn that never ran (review of #821).
+    _room_event = (
+        {
             "type": "USER_MESSAGE",
             "author": actor_email,
             "agentName": agent_name,
             "content": _room_preview(req),
-        })
+        }
+        if room is not None and room.is_shared else None
+    )
 
     # ── Steer instead of 409 (§4.6, §QM-1) ────────────────────────────────────
     # Before anything expensive — before memory assembly, before the executor —
@@ -2472,6 +2477,46 @@ async def run_agent_stream_endpoint(
                            "Wait for it to end, then edit your message.",
             },
         )
+
+    run_id = req.run_id or str(uuid.uuid4())
+    user_id: str = getattr(user, "email", "") or "anonymous"
+
+    # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ───────────────────
+    # At most CHAT_MAX_RUNS_PER_MEMBER live runs per member, and no org cap.
+    # Only ENGAGE starts a run, so a steer, a stop or a dropped turn never
+    # counts. This runs before the room event, the memory read, the Graphiti
+    # episode, the supersede and the mint, so a refused run saves no prompt,
+    # files no memory, mints no row and shows the room nothing. The member
+    # and the org come from the session. orchestrator/run_cap.py holds the
+    # rules.
+    _cap_thread = req.thread_id or f"{agent_name}:{run_id}"
+    from orchestrator.run_cap import (  # noqa: PLC0415
+        admit_member_run,
+        release_member_slot,
+    )
+    if _decision.route.name == "ENGAGE":
+        _admission = await admit_member_run(
+            organization_id=_room_org, member=_session_member(user),
+            thread_id=_cap_thread,
+        )
+        if not _admission.admitted:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "error": "too_many_runs",
+                    "limit": _admission.limit,
+                    "running": list(_admission.running),
+                },
+            )
+
+    async def _release_cap_slot() -> None:
+        await release_member_slot(
+            organization_id=_room_org, thread_id=_cap_thread,
+        )
+
+    if _room_event is not None:
+        await publish_room_event(req.thread_id or "", _room_event)
+
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -2488,40 +2533,11 @@ async def run_agent_stream_endpoint(
                 member=actor_email, agent_name=agent_name,
                 organization_id=_room_org,
             )
+        # An ENGAGE that the decision still turned into an answer (a
+        # recovery that steered) starts no run, so its reservation goes.
+        if _decision.route.name == "ENGAGE":
+            await _release_cap_slot()
         return _steered
-
-    run_id = req.run_id or str(uuid.uuid4())
-    user_id: str = getattr(user, "email", "") or "anonymous"
-
-    # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ───────────────────
-    # At most CHAT_MAX_RUNS_PER_MEMBER live runs per member, and no org cap.
-    # A steer returned above, so it never counts. This runs before the memory
-    # read, the Graphiti episode, the supersede and the mint, so a refused run
-    # saves no prompt, files no memory, and mints no row. The member and the
-    # org come from the session. orchestrator/run_cap.py holds the rules.
-    _cap_thread = req.thread_id or f"{agent_name}:{run_id}"
-    _cap_member = _session_member(user)
-    from orchestrator.run_cap import (  # noqa: PLC0415
-        admit_member_run,
-        release_member_slot,
-    )
-    _admission = await admit_member_run(
-        organization_id=_room_org, member=_cap_member, thread_id=_cap_thread,
-    )
-    if not _admission.admitted:
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "error": "too_many_runs",
-                "limit": _admission.limit,
-                "running": list(_admission.running),
-            },
-        )
-
-    async def _release_cap_slot() -> None:
-        await release_member_slot(
-            organization_id=_room_org, thread_id=_cap_thread,
-        )
 
     # ── Set user + agent context for memory tools ─────────────────────────
     # user_id scopes THIS user's private memory (remember/save_memory); the

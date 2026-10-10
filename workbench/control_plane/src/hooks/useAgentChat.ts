@@ -309,6 +309,10 @@ export function useAgentChat({
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
+          // A held send has not reached the server either, so it carries the
+          // same mark: a later run-cap refusal must leave no row (review of
+          // #821). The retry spreads the bubble, so the mark travels with it.
+          ...(modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
         holdForUpdate(threadId, text, { resume: opts?.resume });
@@ -385,6 +389,9 @@ export function useAgentChat({
       let gotResponse = false;
       // The run cap refused the send (WS-51 D-3): the turn left the thread.
       let capped = false;
+      // An app update held the send again. The server never took it, so the
+      // turn stays unconfirmed until the held send goes out.
+      let heldAgain = false;
       // The server answered with anything but the run cap, so the chat may
       // save the turn now. The finally does it too, for every other path.
       const confirmTurn = () => {
@@ -457,8 +464,9 @@ export function useAgentChat({
           }),
         });
         gotResponse = true;
-        // Only a 429 can be the run cap. Any other answer confirms the turn.
-        if (res.status !== 429) confirmTurn();
+        // Only a 429 can be the run cap, and an update outage is no answer.
+        // Any other answer confirms the turn.
+        if (res.status !== 429 && !isUpdateOutage({ status: res.status, gotResponse: true })) confirmTurn();
 
         // ── Stand down: this message was folded into a run already going ──
         // docs/multiplayer/README.md §4.6. A 202 means the gateway steered our
@@ -649,6 +657,7 @@ export function useAgentChat({
           holdForUpdate(threadId, userMsg.content, {
             userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
           });
+          heldAgain = true;
           return;
         }
         const lc = rawErr.toLowerCase();
@@ -695,7 +704,7 @@ export function useAgentChat({
         capped = outcome === "capped";
         if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
-        if (!capped) confirmTurn();
+        if (!capped && !heldAgain) confirmTurn();
         // If a reconnect/replay loop superseded us mid-stream it now owns the
         // message AND the shared loading/abort state. A superseded loop must NOT
         // reset isLoading/abortController or it would kill the live reconnect

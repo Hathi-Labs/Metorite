@@ -53,6 +53,7 @@ import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
 import ChatSendButton from "@/components/ChatSendButton";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
+import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
@@ -753,10 +754,11 @@ export default function AgentChat({
   }, [pendingInput]);
   /* eslint-enable react-hooks/set-state-in-effect */
   // WS-51 D-3: a send the run cap refused gives its words back. Text the
-  // member typed since then wins, so nothing they wrote is lost.
+  // member typed since then keeps its place, and the refused words follow
+  // it, so nothing they wrote is lost (`mergeCappedText`).
   useEffect(() => {
     restoreCappedRef.current = (text: string) => {
-      setInput((prev) => (prev.trim() ? prev : text));
+      setInput((prev) => mergeCappedText(prev, text));
       inputRef.current?.focus();
     };
   }, []);

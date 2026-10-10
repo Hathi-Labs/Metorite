@@ -24,7 +24,7 @@ import { ErrorCardView } from "@/components/ChatErrorCard";
 import { editRefusalReason, EDIT_TOO_MANY_RUNS } from "./chatEdit";
 import { isUpdateOutage } from "./chatRecovery";
 import { getSessionState, setSessionState, type ChatMessage } from "./chatStore";
-import { RUN_CAP_NOTICE_ID, settleFailedTurn } from "./chatTurnFailure";
+import { RUN_CAP_NOTICE_ID, mergeCappedText, settleFailedTurn } from "./chatTurnFailure";
 import {
   RUN_ERROR_WORDS,
   codeForGatewayRefusal,
@@ -122,6 +122,40 @@ describe("a send the cap refused", () => {
     expect(notices).toHaveLength(1);
   });
 
+  it("a held send that the cap refuses later leaves the thread too, and was never saveable", () => {
+    // Review of #821: a send held through an app update (#797) carries the
+    // mark from the start, and the retry spreads the bubble, so the mark
+    // travels to the send that the cap refuses.
+    const tid = "cap-thread-held";
+    const held: ChatMessage = {
+      id: "u-held", role: "user", content: "Plan the release", timestamp: 1,
+      pendingDelivery: true, awaitingServer: true,
+    };
+    const retried: ChatMessage = { ...held, pendingDelivery: false };
+    expect(retried.awaitingServer).toBe(true);
+    const draft: ChatMessage = { id: "a-held", role: "assistant", content: "", timestamp: 2, streaming: true };
+    setSessionState(tid, (prev) => ({ ...prev, messages: [retried, draft] }));
+    expect(settleFailedTurn({
+      threadId: tid, userMsgId: "u-held", assistantId: "a-held", content: "Plan the release",
+      rawErr: FRAME, status: 429,
+    })).toBe("capped");
+    expect(getSessionState(tid).messages.map((m) => m.id)).toEqual([RUN_CAP_NOTICE_ID]);
+  });
+
+  it("never loses the refused words when the composer has text", () => {
+    expect(mergeCappedText("", "Plan the release")).toBe("Plan the release");
+    expect(mergeCappedText("  ", "Plan the release")).toBe("Plan the release");
+    expect(mergeCappedText("Also check the budget", "Plan the release")).toBe(
+      "Also check the budget\n\nPlan the release",
+    );
+    expect(mergeCappedText("Also check the budget\n", "Plan the release")).toBe(
+      "Also check the budget\n\nPlan the release",
+    );
+    // Words already in the composer are not added twice.
+    expect(mergeCappedText("Plan the release", "Plan the release")).toBe("Plan the release");
+    expect(mergeCappedText("draft", "  ")).toBe("draft");
+  });
+
   it("is not an app update, so nothing is held", () => {
     expect(isUpdateOutage({ status: 429, gotResponse: true })).toBe(false);
   });
@@ -151,9 +185,7 @@ describe("the wiring", () => {
   it("the hook hands the refusal to the one seam, and confirms every other turn", () => {
     expect(hook).toContain("onRunCapped: onRunCappedRef.current,");
     expect(hook).toContain('capped = outcome === "capped";');
-    expect(hook).toContain("if (!capped) confirmTurn();");
-    // Only a 429 waits for the body before the turn is confirmed.
-    expect(hook).toContain("if (res.status !== 429) confirmTurn();");
+    expect(hook).toContain("if (!capped && !heldAgain) confirmTurn();");
     // The new turn waits for the server on the gateway path only.
     expect(hook).toMatch(/modeRef\.current === "copilot" \? \{ awaitingServer: true \}/);
   });
@@ -169,7 +201,19 @@ describe("the wiring", () => {
   it("the chat saves no turn that waits on the server, and restores the words", () => {
     expect(chat).toContain("!m.awaitingServer,");
     expect(chat).toContain("onRunCapped: restoreCappedText,");
-    expect(chat).toContain("setInput((prev) => (prev.trim() ? prev : text));");
+    expect(chat).toContain("setInput((prev) => mergeCappedText(prev, text));");
+  });
+
+  it("a held send keeps the mark until the server takes it (review of #821)", () => {
+    // The bubble that an app update holds is marked on the gateway path.
+    const holdBranch = hook.slice(hook.indexOf('if (plan === "hold") {'), hook.indexOf('if (plan === "requeue")'));
+    expect(holdBranch).toMatch(/modeRef\.current === "copilot" \? \{ awaitingServer: true \}/);
+    // A send that an outage holds again is not confirmed: no answer came.
+    expect(hook).toContain("heldAgain = true;");
+    expect(hook).toContain("if (!capped && !heldAgain) confirmTurn();");
+    expect(hook).toContain(
+      "if (res.status !== 429 && !isUpdateOutage({ status: res.status, gotResponse: true })) confirmTurn();",
+    );
   });
 
   it("the notice's button opens the activity panel, never a retry", () => {

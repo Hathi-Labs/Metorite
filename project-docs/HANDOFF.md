@@ -216,16 +216,18 @@ line — never reclaim a number by deleting the other entry.
   to `answered` swallows any error. A failed move leaves the row `parked`. So
   `/chat/active-sessions` and the badge say "needs your answer" to a member
   who already answered.
-- **Do this:** retry the move once, or record the request id and settle it
-  later, for example in the next sweep. Log the failure. Add a test to
-  `tests/unit/test_pending_ask_flow.py` with a move that fails once.
+- **Do this:** retry the move once. If the retry fails, record the request
+  id and settle it later, for example in the next sweep. Log the failure.
+  Add a test to `tests/unit/test_pending_ask_flow.py` with a move that fails
+  once.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
 ### H-290 · Give the long-header data-engine test a fixed memory budget · [AGENT]
-- **Check:** run `uv run pytest tests/unit/test_data_engine.py -k long_header --count 20`
-  (or a loop of 20 runs). One failure with "The load passed the memory cap of
-  the engine" means this is open.
+- **Check:** run the test 20 times in a shell loop:
+  `for i in $(seq 20); do uv run pytest tests/unit/test_data_engine.py -q -k long_header || echo FAIL; done`.
+  One `FAIL` with "The load passed the memory cap of the engine" means this
+  is open.
 - **Why.** On 2026-10-10 `test_a_long_header_keeps_each_answer_under_1_mb`
   failed the post-merge Unit tests of #816, and it passed on a rerun. A red
   post-merge job blocks the deploy, so this test blocks deploys at random.
@@ -233,8 +235,8 @@ line — never reclaim a number by deleting the other entry.
   (`_duckdb_memory_mb`, `sandbox/data_engine.py`). So the cap moves with the
   runner's memory, and a 400-column header of 5000-character names sits near
   it.
-- **Do this:** pin the memory budget in the test (patch `_duckdb_memory_mb`
-  to a fixed value that the load fits in), or make the header smaller while
+- **Do this:** pin the memory budget in the test. Patch `_duckdb_memory_mb`
+  to a fixed value that the load fits in. Or make the header smaller, while
   it still proves the cut. Do not mark the test flaky, and do not delete it.
 - **Authority:** `CLAUDE.md` §3 rule 8, the deploy gate
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
@@ -244,10 +246,13 @@ line — never reclaim a number by deleting the other entry.
   No hit means S7 is not built.
 - **Why.** The owner called web push "a good idea" on 2026-10-10. D-2 is
   decided: push is opt-in, per member. It is not built. The spec holds the
-  acceptance criteria and the fence: our VAPID keys through the secrets
-  path, a service worker, a settings toggle, a permission prompt only on a
-  click, two events for the member's own runs, no content in the payload,
-  subscriptions under RLS, and an unsubscribe at sign-out.
+  acceptance criteria and the fence:
+  - Our VAPID keys, through the secrets path.
+  - A service worker, a settings toggle, and a permission prompt only on a
+    click.
+  - Two events, for the member's own runs only, with no content in the
+    payload.
+  - Subscriptions under RLS, and an unsubscribe at sign-out.
 - **Do this:** build S7 as one slice behind a flag, default OFF.
 - **Authority:** `specs/chat_run_continuity.md` §4 S7, board row WS-51
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`

@@ -518,3 +518,35 @@ def test_a_refusal_after_the_cap_frees_the_reservation(route_world, fake_redis, 
     r = _client(_ALICE).post("/agent/run/stream", json=_body("t-busy"))
     assert r.status_code == 409
     assert "t-busy" not in fake_redis.store.get(_slots(), {})
+
+
+def test_a_refused_send_shows_the_room_nothing(route_world, fake_redis, monkeypatch):
+    """Review of #821: the room's USER_MESSAGE goes out after the cap, so a
+    refused send never shows the others a turn that did not run."""
+    from types import SimpleNamespace
+
+    from gateway.routes import agent
+
+    published: list[dict] = []
+
+    async def _publish(thread_id, event):
+        published.append(event)
+
+    room = SimpleNamespace(
+        can_send=True, is_shared=True, members=[_ALICE, _BOB],
+        unknown_session=False, resolve_failed=False,
+    )
+    monkeypatch.setattr(agent, "_resolve_room", lambda *_a, **_k: room)
+    monkeypatch.setattr(agent, "publish_room_event", _publish)
+    monkeypatch.setattr(agent, "_room_preview", lambda req: "Plan the release")
+    for i in range(5):
+        _live(fake_redis, f"t-{i}", _ALICE)
+    r = _client(_ALICE).post("/agent/run/stream", json=_body("t-room"))
+    assert r.status_code == 429, r.text
+    assert published == []
+
+    # A steer in the same room still tells the room.
+    route_world.route = "STEER"
+    r = _client(_ALICE).post("/agent/run/stream", json=_body("t-0"))
+    assert r.status_code == 202, r.text
+    assert [e["type"] for e in published] == ["USER_MESSAGE"]

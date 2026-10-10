@@ -710,7 +710,14 @@ and 0 turns the cap off. `orchestrator/run_cap.py` holds the rules.
 8. **No browser row.** On the gateway path a new turn waits for the server's
    answer before the chat saves it (`awaitingServer`). S4 already saves an
    accepted turn on the server, so this costs nothing, and a refused turn
-   leaves no row.
+   leaves no row. A send that an app update holds (#797) carries the same
+   mark until the server takes it (review of #821).
+9. **The composer.** The refused words go back to the composer. Text that
+   the member typed since keeps its place, and the refused words follow it
+   after a blank line (`mergeCappedText`).
+10. **The room.** The shared room's `USER_MESSAGE` event goes out after the
+    cap, so a refused send shows the other members nothing. A steer still
+    sends it.
 
 **Over-admission, and when.** The lock holds the cap exactly under a true
 race. Two cases can admit one run too many. The first is a lock wait that
@@ -733,10 +740,13 @@ in the client seam.
 
 **Known limits.**
 
-- In a shared room, the other members see the `USER_MESSAGE` event of a
-  refused send. The room event goes out before the steer decision, as for
-  every other refusal.
 - `/copilot/chat` has no client, so it is not capped. Its runs still count.
+- `POST /agent/run` and `/agent/run/async` are not capped, and their runs
+  are not in the index. The chat never sends them: `useAgentChat` sends only
+  `copilot` (to `/agent/run/stream`) or `litellm` (no agent run). The chat
+  route sends a body with `mode: "langgraph"` to `/agent/run`. No client
+  sends that mode, so only a hand-made request reaches it. The cap is a
+  fairness limit, not a security boundary, so this stays open.
 
 ---
 
