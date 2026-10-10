@@ -259,13 +259,18 @@ async def read_cursors(db: Any) -> dict[str, datetime | None]:
 async def write_cursor(
     db: Any, module: str, *, pulled_at: datetime | None, status: str,
 ) -> None:
-    """Persist one module's cursor. ``ON CONFLICT`` because it is a PK upsert."""
+    """Persist one module's cursor. ``ON CONFLICT`` because it is a PK upsert.
+
+    The key is ``(organization_id, module)`` since migration 241 (WS-53
+    CRM-T1). ``organization_id`` comes from the column DEFAULT, which is the
+    tenant the session bound.
+    """
     await db.execute(
         text(
             "INSERT INTO crm_sync_cursors "
             "(module, last_pulled_at, last_run_at, last_status) "
             "VALUES (:module, :last_pulled_at, :last_run_at, :last_status) "
-            "ON CONFLICT (module) DO UPDATE SET "
+            "ON CONFLICT (organization_id, module) DO UPDATE SET "
             "last_pulled_at = EXCLUDED.last_pulled_at, "
             "last_run_at = EXCLUDED.last_run_at, "
             "last_status = EXCLUDED.last_status"

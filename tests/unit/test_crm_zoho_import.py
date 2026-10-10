@@ -198,7 +198,7 @@ async def test_dry_run_still_reports_what_it_would_touch(
 async def test_every_record_upsert_carries_on_conflict_zoho_id(
     db: FakeCrmDB, zoho: FakeZoho,
 ) -> None:
-    """§7.1's ``ON CONFLICT (zoho_id)``. Static, because the fake models no
+    """§7.1's ``ON CONFLICT (organization_id, zoho_id)``. Static, because the fake models no
     conflict arm: a second run against it appends rather than converging, so
     only the SQL can say whether a replayed import duplicates the tenant."""
     _seed_pipeline(db)
@@ -213,7 +213,7 @@ async def test_every_record_upsert_carries_on_conflict_zoho_id(
         [insert] = [
             s for s in db.statements if s.startswith(f"INSERT INTO {table} (")
         ]
-        assert "ON CONFLICT (zoho_id) DO UPDATE SET" in insert, table
+        assert "ON CONFLICT (organization_id, zoho_id) DO UPDATE SET" in insert, table
         # The conflict arm must not rewrite the key it matched on.
         assert "zoho_id = EXCLUDED.zoho_id" not in insert
 
@@ -245,7 +245,7 @@ async def test_the_status_upsert_carries_on_conflict(
     await _run()
 
     [insert] = db.statements_touching("INSERT INTO crm_deal_statuses (")
-    assert "ON CONFLICT (name) DO NOTHING" in insert
+    assert "ON CONFLICT (organization_id, name) DO NOTHING" in insert
 
 
 async def test_the_activity_upsert_carries_on_conflict_zoho_id(
@@ -260,7 +260,7 @@ async def test_the_activity_upsert_carries_on_conflict_zoho_id(
     await _run()
 
     [insert] = db.statements_touching("INSERT INTO crm_activities (")
-    assert "ON CONFLICT (zoho_id) DO UPDATE SET" in insert
+    assert "ON CONFLICT (organization_id, zoho_id) DO UPDATE SET" in insert
 
 
 # ── §7.1's mapping table ────────────────────────────────────────────────────

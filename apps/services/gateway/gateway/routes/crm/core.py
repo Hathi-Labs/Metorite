@@ -1057,7 +1057,8 @@ async def update_row(
     )).fetchone()
 
 
-#: Columns an ``ON CONFLICT (zoho_id)`` upsert writes on INSERT and never
+#: Columns an ``ON CONFLICT (organization_id, zoho_id)`` upsert writes on
+#: INSERT and never
 #: rewrites on the conflict arm.
 #:
 #: ``zoho_id`` is the key it matched on. ``source`` is **provenance**: a row
@@ -1069,11 +1070,14 @@ INSERT_ONLY_COLUMNS: frozenset[str] = frozenset({"zoho_id", "source"})
 
 
 async def upsert_by_zoho_id(db: Any, table: str, values: dict[str, Any]) -> Any:
-    """Write a row keyed on its Zoho provenance — §7.1's ``ON CONFLICT (zoho_id)``.
+    """Write a row keyed on its Zoho provenance — §7.1's upsert.
 
     One statement, so a backfill replayed after a partial failure (or two
     cycles racing) cannot produce a second copy of the same Zoho record. The
-    ``UNIQUE`` on every ``zoho_id`` column is what makes the arm reachable.
+    key is ``(organization_id, zoho_id)``, the per-tenant unique index of
+    migration 241 (WS-53 CRM-T1). Two organizations may each hold the same
+    Zoho id. ``organization_id`` is never in *values*: the column DEFAULT
+    takes the tenant that the session bound, and the policy refuses another.
 
     ⚠️ It deliberately does **not** touch ``updated_at`` on the conflict arm.
     ``updated_at`` is the timestamp last-writer-wins compares against Zoho's
@@ -1094,7 +1098,7 @@ async def upsert_by_zoho_id(db: Any, table: str, values: dict[str, Any]) -> Any:
         text(
             f"INSERT INTO {table} ({', '.join(columns)}) "
             f"VALUES ({placeholders}) "
-            f"ON CONFLICT (zoho_id) DO UPDATE SET {assignments} "
+            f"ON CONFLICT (organization_id, zoho_id) DO UPDATE SET {assignments} "
             f"RETURNING *"
         ),
         _bindable(values),

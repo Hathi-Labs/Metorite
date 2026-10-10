@@ -853,7 +853,7 @@ async def test_the_cursor_upsert_is_keyed_on_the_module(
 
     inserts = db.statements_touching("INSERT INTO crm_sync_cursors")
     assert inserts
-    assert "ON CONFLICT (module) DO UPDATE SET" in inserts[0]
+    assert "ON CONFLICT (organization_id, module) DO UPDATE SET" in inserts[0]
 
 
 async def test_the_deleted_records_read_uses_the_PRE_cycle_cursor(
