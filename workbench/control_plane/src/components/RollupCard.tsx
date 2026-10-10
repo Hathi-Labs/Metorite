@@ -53,8 +53,6 @@ export interface RollupScope {
 
 export const RollupContext = createContext<RollupScope | null>(null);
 
-const noSubscribe = () => () => {};
-
 export interface RollupCardProps {
   /** Stable for the card's life, across a remount and a replay: a tool
    *  call's id, a generative-UI target. */
@@ -106,11 +104,13 @@ function RollupCardIn({
     return () => registry.unregister(id);
   }, [registry, id]);
 
-  const newest = useSyncExternalStore(
-    registry ? registry.subscribe : noSubscribe,
-    () => registry.newest() === id,
-    () => true,
-  );
+  // A card counts as the newest until the registry knows better. The server
+  // render reads the same registry, which is empty there.
+  const isNewest = () => {
+    const n = registry.newest();
+    return n === null || n === id;
+  };
+  const newest = useSyncExternalStore(registry.subscribe, isNewest, isNewest);
 
   // The body's height, measured. 0 is "not known" (a shut body measures 0).
   const [height, setHeight] = useState(0);
