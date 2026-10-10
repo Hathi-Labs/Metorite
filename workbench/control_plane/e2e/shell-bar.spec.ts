@@ -496,7 +496,8 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       localStorage.setItem("cc-sidebar-collapsed", "1");
     });
     await stub(page);
-    for (const path of ["/tasks", "/email", "/settings/organization"]) {
+    // Calendar carries the most tools of any bar, so it is the hardest fit.
+    for (const path of ["/tasks", "/email", "/calendar"]) {
       await page.goto(path);
       const row = appBar(page);
       await expect(row.getByRole("heading", { level: 1 })).toBeVisible();
