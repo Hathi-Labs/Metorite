@@ -1407,7 +1407,7 @@ function ConnectEmptyState() {
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 text-primary">
           <AppIcon name="MessageCircle" className="h-7 w-7" />
         </div>
-        <h1 className="text-lg font-semibold">Connect WhatsApp Business</h1>
+        <h2 className="text-lg font-semibold">Connect WhatsApp Business</h2>
         <p className="mx-auto mt-2 max-w-sm text-[13px] text-muted-foreground">
           Link your WhatsApp Business number through Meta&apos;s official Cloud
           API. A short guided setup tests your credentials against Meta before

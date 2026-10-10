@@ -72,9 +72,9 @@ export default function ConnectPage() {
           <Icon name="MessageCircle" className="h-5 w-5" />
         </span>
         <div>
-          <h1 className="text-[16px] font-semibold leading-tight">
+          <h2 className="text-[16px] font-semibold leading-tight">
             Connect WhatsApp
-          </h1>
+          </h2>
           <p className="text-[12px] text-muted-foreground">{subtitle}</p>
         </div>
       </div>

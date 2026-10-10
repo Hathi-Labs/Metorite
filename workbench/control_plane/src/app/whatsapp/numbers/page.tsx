@@ -86,7 +86,7 @@ export default function NumbersPage() {
     <div className="mx-auto h-full max-w-2xl overflow-y-auto p-4 md:p-6">
       <div className="mb-1 flex items-center gap-2">
         <Icon name="Smartphone" className="h-4 w-4 text-primary" />
-        <h1 className="text-[15px] font-semibold">Connected numbers</h1>
+        <h2 className="text-[15px] font-semibold">Connected numbers</h2>
       </div>
       <p className="mb-5 text-[12.5px] text-muted-foreground">
         Manage the WhatsApp numbers linked to this workspace. Disconnecting keeps

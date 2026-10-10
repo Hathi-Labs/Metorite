@@ -4,19 +4,20 @@
  * The shell bar: one row across the top of every desktop page
  * (`navigation_shell.md` §3.1, NS-1, flag `NEXT_PUBLIC_SHELL_BAR`).
  *
- *   [ the app's name and its own buttons ]  [ ✦ Search or ask anything  ⌘K ]  [ the app's tools ]
+ *   [ fold · logo ]          [ ✦ Search or ask anything  in <App>  ⌘K ]          [ activity ]
  *
  * With the shell nav on too, the bar spans the whole window and opens with a
  * `lead` zone that AppShell fills: the sidebar's fold control and the
  * organization's logo (owner, 2026-10-09, `desktopFrame` in `shellNav.ts`).
  *
- * **The app fills the two side slots. The shell owns the middle.** An app that
- * drew `AppTopBar` keeps doing so, and `AppTopBar` portals its title, its rail
- * toggle, its actions and its tools into these slots instead of drawing a row
- * of its own (`useShellSlots`). So Projects and My Tasks change nothing, and
- * no app loses height. A page with no `AppTopBar` shows its app's name and
- * icon in the left slot, so every page says where the member is, in the same
- * place.
+ * **The bar is CONSTANT. An app never renders into it** (owner, 2026-10-10).
+ * It holds only shell things: the lead zone, the command bar and the shell's
+ * activity control. It has no slot, no portal target and no app name, so it
+ * draws the same pixels on every page. Each app opens with its own title bar
+ * under it, `AppTopBar` (`components/AppTopBar.tsx`), which holds the app's
+ * name and tools. The "in <App>" chip inside the command bar stays: it is
+ * the command bar's own scope (§6.4 rule 3), not the app's chrome.
+ * Fence: `appBar.test.ts` beside this file.
  *
  * **This file holds the shell's ONE keyboard listener** (§5.2 rule 2,
  * `seams.test.ts`):
@@ -32,20 +33,12 @@
  * A list filter does that for "Search everywhere for …" (§6.7 rule 3).
  *
  * **The activity control** (WS-51 S3) is the shell's own, at the right end of
- * the bar, after the app's tools: every live assistant run, across apps
+ * the bar: every live assistant run, across apps
  * (`ActivityControl.tsx`). `AppShell` mounts its one panel, in every layout,
  * so the control works with this bar's flag off too (from the sidebar head).
  */
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
@@ -57,20 +50,6 @@ import { focusPageFilter, pageFilterTarget } from "./pageFilter";
 import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
 
 export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
-
-export interface ShellSlots {
-  left: HTMLElement | null;
-  right: HTMLElement | null;
-  /** An `AppTopBar` claims the slots while it is mounted. Returns the release. */
-  claim: () => () => void;
-}
-
-const SlotsContext = createContext<ShellSlots | null>(null);
-
-/** The shell's slots, or null when the shell bar is off. */
-export function useShellSlots(): ShellSlots | null {
-  return useContext(SlotsContext);
-}
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -86,21 +65,12 @@ export function ShellFrame({
   children: ReactNode;
   bar?: boolean;
   /**
-   * The bar's first zone, before the app's slot: the sidebar's fold control
-   * and the organization's logo, when the bar spans the whole width (owner,
-   * 2026-10-09). The shell fills it, never an app.
+   * The bar's first zone: the sidebar's fold control and the organization's
+   * logo, when the bar spans the whole width (owner, 2026-10-09). The shell
+   * fills it, never an app.
    */
   lead?: ReactNode;
 }) {
-  const [left, setLeft] = useState<HTMLElement | null>(null);
-  const [right, setRight] = useState<HTMLElement | null>(null);
-  const [claims, setClaims] = useState(0);
-  const claim = useCallback(() => {
-    setClaims((c) => c + 1);
-    return () => setClaims((c) => c - 1);
-  }, []);
-  const slots = useMemo<ShellSlots>(() => ({ left, right, claim }), [left, right, claim]);
-
   const [open, setOpen] = useState(false);
   const [seed, setSeed] = useState("");
   const openWith = useCallback((query: string) => {
@@ -147,14 +117,11 @@ export function ShellFrame({
   const { data: session } = useSession();
 
   return (
-    <SlotsContext.Provider value={slots}>
+    <>
       {/* The phone draws no row: its Menu drawer opens the same bar (§9). */}
       {bar ? (
         <ShellBarRow
           here={here}
-          claimed={claims > 0}
-          setLeft={setLeft}
-          setRight={setRight}
           onOpen={() => openWith("")}
           lead={lead}
           activity={<ActivityControl />}
@@ -169,7 +136,7 @@ export function ShellFrame({
         here={here}
         email={session?.user?.email ?? null}
       />
-    </SlotsContext.Provider>
+    </>
   );
 }
 
@@ -186,47 +153,33 @@ function useShortcutLabel(): string {
   return label;
 }
 
-function ShellBarRow({
+/**
+ * The row itself. Exported for `appBar.test.ts`, which renders it and checks
+ * that it holds no app name and no slot. Only `ShellFrame` mounts it.
+ */
+export function ShellBarRow({
   here,
-  claimed,
-  setLeft,
-  setRight,
   onOpen,
   lead,
   activity,
 }: {
+  /** The command bar's scope chip, "in <App>". Its only use of the app. */
   here: { label: string; icon: string } | null;
-  claimed: boolean;
-  setLeft: (el: HTMLElement | null) => void;
-  setRight: (el: HTMLElement | null) => void;
   onOpen: () => void;
   lead?: ReactNode;
-  /** The shell's own control at the right end, after the app's tools. */
+  /** The shell's own control at the right end. */
   activity?: ReactNode;
 }) {
   const shortcut = useShortcutLabel();
-  // ⚠️ With the brand zone, a side slot never gets LESS than its content, and
-  // the command bar gives way instead. The zone keeps its width when the
-  // sidebar folds, so at 1280px My Tasks' title, Capture and My day ran under
-  // the command bar (measured 2026-10-09). The bar stays centred while it fits.
-  const side = lead ? "min-w-max" : "min-w-0";
   return (
     <header
       data-shell-bar
       className={`flex h-11 shrink-0 items-center gap-3 border-b border-border bg-card ${lead ? "pr-2" : "px-2"}`}
     >
       {lead}
-      <div className={`flex ${side} flex-1 basis-0 items-center gap-2`}>
-        {/* The app's name for a page with no AppTopBar. Not an h1: such a
-            page already has its own heading. */}
-        {!claimed && here ? (
-          <span className="flex min-w-0 items-center gap-2 px-1 text-xs font-medium text-muted-foreground">
-            <Icon name={here.icon} size={14} className="shrink-0" />
-            <span className="truncate">{here.label}</span>
-          </span>
-        ) : null}
-        <div ref={setLeft} className="flex min-w-0 items-center gap-2 empty:hidden" />
-      </div>
+      {/* An empty zone on purpose: it centres the command bar. No app
+          renders here (owner, 2026-10-10). */}
+      <div aria-hidden className="min-w-0 flex-1 basis-0" />
 
       {/* A fake field, on purpose: it looks like the place to type, and a
           press opens the real one. Every member reads it as "search here". */}
@@ -249,9 +202,9 @@ function ShellBarRow({
         </kbd>
       </button>
 
-      <div className={`flex ${side} flex-1 basis-0 items-center justify-end gap-1`}>
-        {/* The app's tools portal here (`AppTopBar`), the bell among them. */}
-        <div ref={setRight} className="flex min-w-0 items-center justify-end gap-1 empty:hidden" />
+      {/* The shell's own control, the same on every page. An app's tools sit
+          at the right end of its own title bar, never here. */}
+      <div className="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1">
         {activity}
       </div>
     </header>

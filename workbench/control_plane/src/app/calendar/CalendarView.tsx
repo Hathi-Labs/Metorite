@@ -10,7 +10,9 @@
 // AppShell). Specs: calendar_timeboxing.md, calendar_focus_os.md,
 // calendar_ai_review.md.
 
+import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
+import { useViewMode } from "@/components/ViewModeProvider";
 import Icon from "@/components/Icon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -59,6 +61,7 @@ import { MonthGrid } from "./components/MonthGrid";
 import { UnscheduledRail } from "./components/UnscheduledRail";
 
 export function CalendarView() {
+  const { isMobile } = useViewMode();
   const items = useTaskStore((s) => s.items);
   const projects = useTaskStore((s) => s.projects);
   const updateItem = useTaskStore((s) => s.updateItem);
@@ -392,120 +395,146 @@ export function CalendarView() {
       ? Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i))
       : [anchor];
 
-  return (
-    <div className="relative flex h-full min-h-0 flex-col bg-background">
-      {/* Header: title, nav, mode toggle */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <Icon name="CalendarDays" className="h-5 w-5 shrink-0 text-primary" />
-        <h1 className="text-base font-semibold text-foreground">{title}</h1>
-        <div className="ml-2 flex items-center gap-0.5">
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
-            <Icon name="ChevronLeft" className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
-            Today
-          </Button>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
-            <Icon name="ChevronRight" className="h-4 w-4" />
-          </Button>
-        </div>
-        {/* Actions: share the row with the title on desktop (ml-auto), but on
-            mobile take a FULL second row so the pills never get squeezed into
-            wrapping against the date. */}
-        <div className="relative flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
-          {dueSoon.length > 0 && (
-            <span
-              title={`${dueSoon.length} unscheduled task(s) due within 2 weeks`}
-              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
-            >
-              <Icon name="AlertTriangle" className="h-3 w-3" />
-              {dueSoon.length} due soon
-            </span>
-          )}
-          {/* (Re)start the day — the ritual is never locked out: skipped the
-              morning banner, or want to re-pick the One Thing? Run it again. */}
-          {!dayClosed && (
-            <button
-              type="button"
-              onClick={() => setStartupOpen(true)}
-              title="Start (or restart) your day — breathe · review · commit the One Thing"
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-            >
-              <Icon name="Sun" className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Start day</span>
-            </button>
-          )}
-          {hasTodayActivity && (
-            <button
-              type="button"
-              onClick={() => setReviewOpen(true)}
-              title="End-of-day review — what got done, what carries forward, estimate accuracy"
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-            >
-              <Icon name="ClipboardCheck" className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Review</span>
-            </button>
-          )}
-          {canReplan && (
-            <button
-              type="button"
-              onClick={() => setPlanMode("replan")}
-              title="Fit what's left: reshuffle today's not-done tasks into the time you have left, and move anything that no longer fits back to your list. Adds no new tasks."
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-            >
-              <Icon name="CalendarClock" className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Fit what&apos;s left</span>
-            </button>
-          )}
+  // Back, Today and on. One group, so the phone bar and the desktop bar
+  // draw the same three buttons.
+  const dayNav = (
+    <div className="flex items-center gap-0.5">
+      <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
+        <Icon name="ChevronLeft" className="h-4 w-4" />
+      </Button>
+      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
+        Today
+      </Button>
+      <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
+        <Icon name="ChevronRight" className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+
+  // The day's tools: due soon, the rituals, the planner, the settings and
+  // the mode switch. The settings popover anchors to the box that holds them.
+  const dayTools = (
+    <>
+      {dueSoon.length > 0 && (
+        <span
+          title={`${dueSoon.length} unscheduled task(s) due within 2 weeks`}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning"
+        >
+          <Icon name="AlertTriangle" className="h-3 w-3" />
+          {dueSoon.length} due soon
+        </span>
+      )}
+      {/* (Re)start the day — the ritual is never locked out: skipped the
+          morning banner, or want to re-pick the One Thing? Run it again. */}
+      {!dayClosed && (
+        <button
+          type="button"
+          onClick={() => setStartupOpen(true)}
+          title="Start (or restart) your day — breathe · review · commit the One Thing"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="Sun" className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Start day</span>
+        </button>
+      )}
+      {hasTodayActivity && (
+        <button
+          type="button"
+          onClick={() => setReviewOpen(true)}
+          title="End-of-day review — what got done, what carries forward, estimate accuracy"
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="ClipboardCheck" className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Review</span>
+        </button>
+      )}
+      {canReplan && (
+        <button
+          type="button"
+          onClick={() => setPlanMode("replan")}
+          title="Fit what's left: reshuffle today's not-done tasks into the time you have left, and move anything that no longer fits back to your list. Adds no new tasks."
+          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+        >
+          <Icon name="CalendarClock" className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Fit what&apos;s left</span>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => setPlanMode("plan")}
+        title="Rebuild my day: reshuffle what's on your calendar into the time left, trim the overflow back to your list, and fill any remaining room from your Next Actions."
+        className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20"
+      >
+        <Icon name="Wand2" className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Rebuild my day</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setSettingsOpen((v) => !v)}
+        aria-label="Calendar settings"
+        title="Day window, capacity, energy windows"
+        className={[
+          "tech-transition rounded-md p-1.5",
+          settingsOpen
+            ? "bg-secondary text-foreground"
+            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+        ].join(" ")}
+      >
+        <Icon name="Settings2" className="h-4 w-4" />
+      </button>
+      <div className="ml-auto flex rounded-lg bg-secondary p-0.5 text-xs sm:ml-0">
+        {(["day", "week", "month"] as Mode[]).map((m) => (
           <button
+            key={m}
             type="button"
-            onClick={() => setPlanMode("plan")}
-            title="Rebuild my day: reshuffle what's on your calendar into the time left, trim the overflow back to your list, and fill any remaining room from your Next Actions."
-            className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20"
-          >
-            <Icon name="Wand2" className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Rebuild my day</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSettingsOpen((v) => !v)}
-            aria-label="Calendar settings"
-            title="Day window, capacity, energy windows"
+            onClick={() => setMode(m)}
             className={[
-              "tech-transition rounded-md p-1.5",
-              settingsOpen
-                ? "bg-secondary text-foreground"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+              "tech-transition rounded-md px-2.5 py-1 font-medium capitalize",
+              mode === m
+                ? "bg-card text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
             ].join(" ")}
           >
-            <Icon name="Settings2" className="h-4 w-4" />
+            {m}
           </button>
-          <div className="ml-auto flex rounded-lg bg-secondary p-0.5 text-xs sm:ml-0">
-            {(["day", "week", "month"] as Mode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={[
-                  "tech-transition rounded-md px-2.5 py-1 font-medium capitalize",
-                  mode === m
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-          {settingsOpen && (
-            <CalendarSettings
-              settings={settings}
-              onChange={(patch) => void updateSettings(patch)}
-              onClose={() => setSettingsOpen(false)}
-            />
-          )}
-        </div>
+        ))}
       </div>
+      {settingsOpen && (
+        <CalendarSettings
+          settings={settings}
+          onChange={(patch) => void updateSettings(patch)}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <div className="relative flex h-full min-h-0 flex-col bg-background">
+      {/* The app's title bar (owner, 2026-10-10): the name, then the day
+          you are on with its arrows, then the day's tools at the right end.
+          The arrows sit BEFORE the date, so a press never moves them. The
+          phone draws the compact bar with the date as its title, and the
+          tools on a row of their own. */}
+      {isMobile ? (
+        <>
+          <AppTopBar compact title={title} actions={dayNav} />
+          <div className="relative flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+            {dayTools}
+          </div>
+        </>
+      ) : (
+        <AppTopBar
+          title="Calendar"
+          actions={
+            <>
+              {dayNav}
+              <span className="whitespace-nowrap text-xs font-medium text-foreground">{title}</span>
+            </>
+          }
+          tools={<div className="relative flex items-center gap-2">{dayTools}</div>}
+        />
+      )}
 
       {/* Now / Next — always reflects the *real* current time (today), even when
           you're browsing another day/week. The antidote to time-blindness, and

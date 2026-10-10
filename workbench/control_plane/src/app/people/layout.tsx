@@ -40,8 +40,10 @@
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { AppTopBar, appBarPane } from "@/components/AppTopBar";
 import Tabs, { type TabDef } from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { hasCapability } from "@/lib/access";
 
 /**
@@ -145,6 +147,10 @@ export function visibleTabs(directory: boolean, hr: boolean): TabDef[] {
 export default function PeopleLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "";
   const { access, loading } = useAccess();
+  const { isMobile } = useViewMode();
+  // Two live panes share this layout: My Profile at `/people/me`, and People
+  // for the rest. The bar names the one the member opened.
+  const app = appBarPane(pathname)?.label ?? "People";
 
   const visible = visibleTabs(
     access.features.includes("people"),
@@ -156,6 +162,10 @@ export default function PeopleLayout({ children }: { children: ReactNode }) {
   // full-then-shrink shape `launch_surface.md` §8.1 forbids for the sidebar.
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* The app's title bar (owner, 2026-10-10). Each tab's page keeps its
+          own PageHeader under the tabs: it titles the page, as an h2, and
+          carries the sentence and the controls of that page. */}
+      {isMobile ? null : <AppTopBar title={app} />}
       {!loading && visible.length > 0 && (
         <Tabs
           tabs={visible}

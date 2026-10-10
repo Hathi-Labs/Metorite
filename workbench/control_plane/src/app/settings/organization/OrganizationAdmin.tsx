@@ -76,7 +76,7 @@ import type {
   PurgeResult,
   Role,
 } from "@/app/settings/members/types";
-import SettingsHeader from "@/components/SettingsHeader";
+import { AppTopBar } from "@/components/AppTopBar";
 
 const STATUS_STYLES: Record<Member["status"], string> = {
   active: "text-success",
@@ -438,50 +438,51 @@ export default function OrganizationAdmin() {
           setInviting(true);
         }}
       />
-      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <SettingsHeader
-          title="Organisation"
-          subtitle={
+      {/* The app's title bar (owner, 2026-10-10). It replaced a
+          SettingsHeader: the pane has no back link, so the bar carries the
+          name, the scope line and the roster's controls. */}
+      <AppTopBar
+        title="Organisation"
+        subtitle={
+          <>
+            {access.organization?.display_name ?? "Organization"} ·{" "}
+            {counts.active} active of {counts.all}
+          </>
+        }
+        tools={
+          /* Roster controls, on the roster tabs only. Teams/Roles/Invite make
+             no sense above the branding form, and an Invite button that is
+             always there is one an admin eventually clicks on the wrong
+             screen. */
+          tab === "branding" || tab === "seats" || tab === "email" ? null : (
             <>
-              {access.organization?.display_name ?? "Organization"} ·{" "}
-              {counts.active} active of {counts.all}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                icon="RefreshCw"
+                onClick={() => void load()}
+                title="Refresh"
+                aria-label="Refresh"
+              />
+              <Link
+                href="/settings/groups"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Teams
+              </Link>
+              <Link
+                href="/settings/roles"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Roles
+              </Link>
+              <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
+                Invite
+              </Button>
             </>
-          }
-          actions={
-        /* Roster actions, on the roster tabs only. Teams/Roles/Invite make no
-           sense above the branding form, and an Invite button that is always
-           there is one an admin eventually clicks on the wrong screen. */
-        <div
-          className="flex items-center gap-2"
-          hidden={tab === "branding" || tab === "seats" || tab === "email"}
-        >
-          <button
-            onClick={() => void load()}
-            className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-            title="Refresh"
-          >
-            <Icon name="RefreshCw" size={16} />
-          </button>
-          <Link
-            href="/settings/groups"
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
-          >
-            Teams
-          </Link>
-          <Link
-            href="/settings/roles"
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
-          >
-            Roles
-          </Link>
-          <Button size="lg" layout="flex items-center" onClick={() => setInviting(true)}>
-            <Icon name="Plus" size={15} />
-            Invite
-          </Button>
-        </div>
-          }
-        />
-      </div>
+          )
+        }
+      />
 
       <Tabs
         variant="underline"

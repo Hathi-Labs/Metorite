@@ -219,9 +219,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             so it scrolls away rather than eating vertical space on every
             screen. It renders nothing for an `active` org, which is the
             overwhelmingly common case. */}
-        {/* NS-1: with the shell bar on, one row across the top holds the
-            app's name, the command bar and the app's tools. Off, the page
-            column is exactly as it was. */}
+        {/* NS-1: with the shell bar on, one constant row across the top
+            holds the command bar. Each app draws its own title bar under it
+            (`AppTopBar`, owner 2026-10-10). Off, the page column is exactly
+            as it was. */}
         {frame === "column" ? (
           <div className="flex min-w-0 flex-1 flex-col">
             <ShellFrame>

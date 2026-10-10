@@ -17,12 +17,11 @@
  * failure `AGENTS.md` rule 1 names and which nothing in the conformance
  * suite could see — it checks eight regexes, and none of them is a heading.
  *
- * ⚠️ **This is the PAGE header, not the app bar.** Projects and Tasks open
- * with a slim `h-10` bar carrying a rail toggle, the app's name and
- * app-level actions. That is a different, deliberate shape for a rail-based
- * app, and this component does not replace it — it is what goes *inside* a
- * surface, above its content. A surface that has both gets the bar from its
- * layout and the header from here.
+ * ⚠️ **This is the PAGE header, not the app bar.** Every app opens with
+ * `AppTopBar`, a slim `h-10` bar that carries the app's name as its one
+ * `<h1>` (owner, 2026-10-10). This component is what goes *inside* the app,
+ * above one page's content, so its title is an `<h2>`. A surface that has
+ * both gets the bar from its layout and the header from here.
  *
  * **Three parts, and only the title is required:**
  *
@@ -66,7 +65,7 @@ export function PageHeader({
     >
       <div className="min-w-0">
         <div className="flex items-baseline gap-2">
-          <h1 className={`truncate ${HEADING_TITLE}`}>{title}</h1>
+          <h2 className={`truncate ${HEADING_TITLE}`}>{title}</h2>
           {meta ? (
             <span className="shrink-0 text-xs text-muted-foreground">{meta}</span>
           ) : null}

@@ -389,7 +389,7 @@ export default function WhatsAppCallsPage() {
   if (callable.length === 0) {
     return (
       <div className="mx-auto max-w-lg p-6">
-        <h1 className="mb-2 text-lg font-bold">WhatsApp calls</h1>
+        <h2 className="mb-2 text-lg font-bold">WhatsApp calls</h2>
         <div className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
           <p className="mb-2 font-medium text-foreground">
             No personal number is paired.
@@ -408,10 +408,10 @@ export default function WhatsAppCallsPage() {
   return (
     <div className="mx-auto max-w-3xl p-4 sm:p-6">
       <header className="mb-4">
-        <h1 className="flex items-center gap-2 text-lg font-bold text-foreground">
+        <h2 className="flex items-center gap-2 text-lg font-bold text-foreground">
           <Icon name="Phone" className="h-4 w-4 text-primary" />
           WhatsApp calls
-        </h1>
+        </h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
           Place 1:1 and group calls from your paired personal number. Audio is
           recorded on the bridge — the raw material for meeting notes. The most

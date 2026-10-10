@@ -5,6 +5,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { AppTopBar } from "@/components/AppTopBar";
 import { AccountSidebar } from "./components/AccountSidebar";
 import { EmailList } from "./components/EmailList";
 import { EmailToolbar } from "./components/EmailToolbar";
@@ -805,7 +806,7 @@ export default function EmailPage() {
   // reveal or focus in the panes can shift the email layout (owner report,
   // 2026-10-10).
   return (
-    <div className="flex h-full w-full bg-background overflow-clip select-none">
+    <div className="flex h-full w-full flex-col bg-background overflow-clip select-none">
       {/* The reader of `?email=<id>`. `useSearchParams` needs a Suspense
           boundary, and this one holds only the reader, so the page still
           renders on the server. */}
@@ -839,6 +840,54 @@ export default function EmailPage() {
           closeDrawer();
         }}
       />
+      {/* ═══ DESKTOP: the app's title bar (owner, 2026-10-10) ═══
+          The accounts toggle, the app's name and the scope, then the app's
+          tools at the right end. It spans the whole app, over the accounts
+          rail too, and every Email scene keeps it. The list keeps its own
+          header below: the folder, its unread count and the filter. */}
+      {!isMobile && (
+        <AppTopBar
+          rail={{ open: leftOpen, onToggle: () => setLeftOpen((v) => !v), noun: "accounts" }}
+          title="My Email"
+          subtitle={
+            viewAll ? (
+              `All inboxes · ${pooledCount} mailboxes`
+            ) : selectedAccount ? (
+              <>
+                {accounts.length > 1 ? <MailboxChip account={selectedAccount} /> : null}{" "}
+                {selectedAccount.emailAddress}
+              </>
+            ) : null
+          }
+          tools={
+            <>
+              <IconBtn
+                icon={themedIcon("Columns2")}
+                label={listOpen ? "Hide email list" : "Show email list"}
+                onClick={() => setListOpen((v) => !v)}
+                active={listOpen}
+              />
+              <div className="w-px h-4 bg-border" />
+              <MailboxActions selectedEmail={selectedEmail} />
+              {/* With the shell bar on, ⌘K is the command bar's, and this
+                  button would open a second palette (§6.7 rule 1). */}
+              {shellBarOn() ? null : (
+                <>
+                  <div className="w-px h-4 bg-border" />
+                  <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
+                    <span className="text-[10px] border border-border rounded px-1 leading-tight">
+                      ⌘K
+                    </span>
+                  </Button>
+                </>
+              )}
+            </>
+          }
+        />
+      )}
+
+      {/* `overflow-clip` for the reason the root gives (#824). */}
+      <div className="flex min-h-0 flex-1 overflow-clip">
       {/* Loading overlay */}
       {surface === "loading" && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
@@ -978,77 +1027,30 @@ export default function EmailPage() {
       <>
       {/* ═══ Main area ═══ */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* ── DESKTOP top bar ──
-            Three tracks: identity (panes + folder) left, SEARCH centred, actions
-            right. Both side tracks are basis-0 + grow, so free space splits
-            evenly and the search sits on the bar's true centre.
-            The side tracks' minimums matter: the actions are fixed-size icons
-            that cannot shrink, so that track is min-w-fit and always reserves
-            its width — otherwise the expanded search bar squeezes the track and
-            the icons overflow ON TOP of it, swallowing its clicks. The left
-            track keeps min-w-0 so a long folder name truncates instead. When
-            space runs out the search bar gives way (it is the only shrinkable
-            track), so centring degrades gracefully rather than overlapping. */}
+        {/* ── DESKTOP: the list's header ──
+            The folder, its unread count and the list filter. A PANE header
+            under the app's title bar, so the folder is an h2. The two side
+            tracks are basis-0 and grow, so the filter sits on the true centre
+            of the list and the reading pane. The filter is the only track
+            that shrinks, so it gives way rather than overlap. */}
         {!isMobile && (
-          <div className="flex items-center gap-3 px-3 py-2 border-b border-border flex-shrink-0 bg-card">
+          <div data-email-list-header className="flex items-center gap-3 px-3 py-2 border-b border-border flex-shrink-0 bg-card">
             <div className="flex items-center gap-1.5 flex-1 basis-0 min-w-0">
-              <IconBtn
-                icon={leftOpen ? themedIcon("PanelLeftClose") : themedIcon("PanelLeftOpen")}
-                label={leftOpen ? "Hide accounts" : "Show accounts"}
-                onClick={() => setLeftOpen((v) => !v)}
-              />
-              <div className="w-px h-4 bg-border" />
-              <IconBtn
-                icon={themedIcon("Columns2")}
-                label={listOpen ? "Hide email list" : "Show email list"}
-                onClick={() => setListOpen((v) => !v)}
-                active={listOpen}
-              />
-              <div className="w-px h-4 bg-border" />
-              <div className="flex items-center gap-1.5 ml-1 min-w-0">
-                <h1 className="text-sm font-medium text-foreground truncate">
-                  {folderLabel(selectedFolder)}
-                </h1>
-                {/* The scope of the list, for two or more mailboxes (§11.4). */}
-                {accounts.length > 1 && (viewAll ? (
-                  <span className="text-[11px] text-muted-foreground truncate flex-shrink-0">
-                    All inboxes · {pooledCount} mailboxes
-                  </span>
-                ) : selectedAccount ? (
-                  <>
-                    <MailboxChip account={selectedAccount} />
-                    <span className="text-[11px] text-muted-foreground truncate">
-                      {selectedAccount.emailAddress}
-                    </span>
-                  </>
-                ) : null)}
-                {unreadCount > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full flex-shrink-0">
-                    {unreadCount} unread
-                  </span>
-                )}
-              </div>
+              <h2 className="text-sm font-medium text-foreground truncate">
+                {folderLabel(selectedFolder)}
+              </h2>
+              {unreadCount > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary rounded-full flex-shrink-0">
+                  {unreadCount} unread
+                </span>
+              )}
             </div>
 
             <div className="flex justify-center flex-shrink min-w-0">
               <SearchBar />
             </div>
 
-            <div className="flex items-center gap-1 flex-1 basis-0 justify-end min-w-fit">
-              <MailboxActions selectedEmail={selectedEmail} />
-              {/* With the shell bar on, ⌘K is the command bar's, and this
-                  button would open a second palette (§6.7 rule 1). */}
-              {shellBarOn() ? null : (
-                <>
-                  <div className="w-px h-4 bg-border" />
-                  <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
-                    <span className="text-[10px] border border-border rounded px-1 leading-tight">
-                      ⌘K
-                    </span>
-                  </Button>
-                </>
-              )}
-            </div>
+            <div className="flex-1 basis-0" aria-hidden />
           </div>
         )}
 
@@ -1295,6 +1297,8 @@ export default function EmailPage() {
 
       </>
       )}
+
+      </div>
 
       <CommandPalette
         open={paletteOpen}

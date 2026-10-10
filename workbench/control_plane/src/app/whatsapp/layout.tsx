@@ -3,8 +3,10 @@
 // Shared WhatsApp app shell — a persistent sub-navigation across every WhatsApp
 // route (inbox + Pulse + settings + Numbers). Responsive, matching the rest of
 // Metorite:
-//   • Desktop: a persistent LEFT column (like email's AccountSidebar / tasks'
-//     ListsSidebar) — icon rail that widens to labels at md.
+//   • Desktop: the app's title bar on top (`AppTopBar`, owner 2026-10-10),
+//     with the rail toggle, the app's name and the section you are in. Under
+//     it, a LEFT column (like email's AccountSidebar / tasks' ListsSidebar),
+//     an icon rail that widens to labels at md. The toggle hides it.
 //   • Mobile: no in-page nav chrome. The section list lives in a slide-up
 //     drawer opened by the shell's "Sections" bottom-nav tab (which dispatches
 //     the `cc-mobile-nav` "wa-sections" event) — the same drawer pattern
@@ -15,7 +17,8 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { AppTopBar } from "@/components/AppTopBar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 
@@ -88,6 +91,9 @@ export default function WhatsAppLayout({ children }: { children: React.ReactNode
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const isActive = (t: Tab) => isTabActive(t, pathname);
+  // The sections rail, shown until the member hides it from the bar.
+  const [railOpen, setRailOpen] = useState(true);
+  const section = TABS.find(isActive)?.label;
 
   // The shell's "Sections" bottom-nav tab dispatches "wa-sections"; open the
   // section list in the slide-up drawer. Rebuilt on each open so its active
@@ -114,15 +120,15 @@ export default function WhatsAppLayout({ children }: { children: React.ReactNode
 
   // ── Desktop: persistent left column ─────────────────────────────────────
   return (
-    <div className="flex h-full min-h-0 bg-background text-foreground">
+    <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+      <AppTopBar
+        rail={{ open: railOpen, onToggle: () => setRailOpen((v) => !v), noun: "the sections" }}
+        title="My WhatsApp"
+        subtitle={section}
+      />
+      <div className="flex min-h-0 flex-1">
+      {railOpen && (
       <aside className="flex w-14 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:w-52">
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-3">
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
-            <AppIcon name="MessageSquare" className="h-3.5 w-3.5" />
-          </span>
-          <span className="hidden text-[13px] font-semibold md:block">WhatsApp</span>
-        </div>
-
         <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {TABS.map((t) => {
             const Icon = t.icon;
@@ -156,8 +162,10 @@ export default function WhatsAppLayout({ children }: { children: React.ReactNode
           </Link>
         </div>
       </aside>
+      )}
 
       <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
+      </div>
     </div>
   );
 }
