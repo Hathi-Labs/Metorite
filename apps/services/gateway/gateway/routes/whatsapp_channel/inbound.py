@@ -25,7 +25,10 @@ What this module does with the bot's group:
   the 200. The org comes from the phone's CURRENT link. A link message from
   an UNLINKED phone keeps the in-process redelivery record below, because
   that message has no org, so a tenant table cannot hold it.
-* **A button, list or reaction message** gets no action (WAC-4, WAC-10).
+* **A tap on a reply button or a list row** (WAC-10a) is recorded like a
+  text, with the tapped title as the text (:func:`tap_text`).
+* **A template button, a Flow reply or a reaction** gets no action (WAC-4,
+  WAC-11).
 
 The replies are FIXED texts (§5.4 table). Only the success reply holds org
 data, and it goes only to the phone that just proved it holds the code. The
@@ -85,12 +88,40 @@ _LINK_ME = re.compile(r"\A\s*link\s*me\s*:(?P<rest>.*)\Z", re.IGNORECASE | re.DO
 #: Crockford decoding: the letters a person can type for a digit.
 _CROCKFORD = str.maketrans({"O": "0", "I": "1", "L": "1"})
 
-#: Meta message types that WAC-2 does nothing with: a tap on a button or a
-#: list row (WAC-4 and WAC-10 own those), a reaction, and Meta's own notices.
+#: Meta message types that get no action: a template button (WAC-4 and WAC-7
+#: own those), a reaction, and Meta's own notices. An ``interactive`` message
+#: that is a tap gets out of this set (:func:`tap_text`). Any other
+#: interactive reply, a Flow's for one (WAC-11), still gets no action.
 _NO_ACTION_TYPES = frozenset({
     "interactive", "button", "reaction", "system", "unsupported", "order",
     "request_welcome",
 })
+
+#: The longest tap text kept. A real title is at most 24 + 72 characters.
+_TAP_MAX = 200
+
+
+def tap_text(raw: Any) -> str | None:
+    """The member's turn for a tap on a reply button or a list row (WAC-10a).
+
+    The text is the title the member tapped, and for a row its description
+    in brackets. It is untrusted input exactly like a typed text, and the id
+    is never read (§5.11 "The tap is untrusted input"). None for any other
+    interactive reply.
+    """
+    inter = raw.get("interactive") if isinstance(raw, dict) else None
+    if not isinstance(inter, dict):
+        return None
+    kind = inter.get("type")
+    reply = inter.get(kind) if kind in ("button_reply", "list_reply") else None
+    if not isinstance(reply, dict):
+        return None
+    title = " ".join(str(reply.get("title") or "").split())
+    if not title:
+        return None
+    desc = " ".join(str(reply.get("description") or "").split())
+    text = f"{title} ({desc})" if kind == "list_reply" and desc else title
+    return text[:_TAP_MAX]
 
 # ── The per-sender limit (§5.4) ─────────────────────────────────────────────
 #
@@ -435,7 +466,8 @@ async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
         _log.warning("whatsapp_channel.bot.sender_refused", length=len(wa_id))
         return None
     mtype = str((msg.raw or {}).get("type") or "text")
-    if mtype in _NO_ACTION_TYPES:
+    tap = tap_text(msg.raw) if mtype == "interactive" else None
+    if mtype in _NO_ACTION_TYPES and tap is None:
         _log.info("whatsapp_channel.bot.no_action", type=mtype[:20])
         return None
 
@@ -446,11 +478,12 @@ async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
     links = await _active_links_for_phone(wa_id)
     if not links:
         return Reply(wa_id, REPLY_UNKNOWN, "unknown")
-    # A linked phone (WAC-3). A text is recorded and runs after the 200. A
-    # voice note is WAC-5, so any other type gets no action yet.
-    body = str(msg.body_text or "").strip()
+    # A linked phone (WAC-3). A text is recorded and runs after the 200, and
+    # so is a tap on a button or a list row (WAC-10a), as its title. A voice
+    # note is WAC-5, so any other type gets no action yet.
+    body = tap if tap is not None else str(msg.body_text or "").strip()
     wamid = str(msg.wa_message_id or "").strip()
-    if mtype != "text" or not body or not wamid:
+    if (mtype != "text" and tap is None) or not body or not wamid:
         _log.info("whatsapp_channel.bot.linked_no_action",
                   phone_hint=wa_id[-4:], type=mtype[:20])
         return None

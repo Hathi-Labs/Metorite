@@ -287,10 +287,15 @@ def test_a_linked_phone_without_a_code_gets_no_fixed_reply_and_goes_to_the_run(
     assert recorded == [(world.phone_links, PHONE, "What is due today?")]
 
 
-def test_a_button_tap_gets_no_action(world: _World) -> None:
-    res = _post(_message("Confirm", mtype="interactive"))
+def test_a_button_tap_from_an_unknown_phone_is_a_text_and_redeems_nothing(
+    world: _World,
+) -> None:
+    """WAC-10a (§12.4): a tap is the member's text. From an unlinked phone it
+    gets the fixed reply, like any text, and it never reads a link code."""
+    res = _post(_message("Link me: ABCD2345", mtype="interactive"))
     assert res.status_code == 200
-    assert world.sent == [] and world.phone_reads == [] and world.code_reads == []
+    assert [text for _to, text in world.sent] == [UNKNOWN_TEXT]
+    assert world.code_reads == []
 
 
 def test_a_status_update_is_logged_and_nothing_else(world: _World) -> None:

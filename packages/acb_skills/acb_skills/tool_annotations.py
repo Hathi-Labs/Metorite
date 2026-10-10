@@ -118,6 +118,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "recall_org":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "save_agent_memory":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "save_org_memory":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
+    # `bot_run` sends it to the member who asked, so it reaches no third party.
+    "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
 }
 
 #: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
@@ -137,6 +140,9 @@ SANDBOX_TOOL_NAMES: frozenset[str] = frozenset({
 _H236_UNLISTED: frozenset[str] = frozenset({
     "emit_generative_ui", "load_artifact_kit", "recall_agent", "recall_org",
     "save_agent_memory", "save_org_memory",
+    # Not H-236's, and left out for the same reason: only a WhatsApp run holds
+    # it, so the block of every other agent stays byte-identical.
+    "whatsapp_ui",
 })
 
 #: Every name that :func:`annotate` registered: an agent's OWN tool. They
