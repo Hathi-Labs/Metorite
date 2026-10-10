@@ -249,6 +249,10 @@ def _merge_manifest(restart: list[str] | None = None, health: bool = True) -> di
     e["allowed_keys"] = ["FOO_TOKEN", "BAR_KEY"]
     e["required_keys"] = ["FOO_TOKEN"]
     e["validators"] = {"BAR_KEY": ["non_empty"]}
+    # These tests prove the restart loop over TWO units (order, per-unit checks,
+    # the rollback). The real app-env restarts the gateway only since
+    # 2026-10-10, so the two-unit list is set here, not read from the manifest.
+    e["restart"] = ["acb-gateway", "acb-whatsapp-bridge"]
     if restart is not None:
         e["restart"] = restart
         e["health"] = {u: v for u, v in e.get("health", {}).items() if u in restart}
