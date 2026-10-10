@@ -169,3 +169,27 @@ describe("the desktop frame (owner, 2026-10-09: one bar across the top)", () => 
     expect(desktopFrame(true, true)).toBe("full");
   });
 });
+
+describe("My apps: the member's pins, first in the sidebar (NS-7, §3.2)", () => {
+  it("draws the pins first, in pin order, and moves each one out of its team", () => {
+    const groups = shellSidebar(visibleSections(ALL, true), ["/chat", "/projects"]);
+    expect(groups[0]).toMatchObject({ id: "my-apps", label: "My apps" });
+    expect(shape(groups)).toEqual([
+      ["my-apps", ["/chat", "/projects"]],
+      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
+      ["across", ["/people"]],
+      ["admin", ["/approvals", "/settings/organization"]],
+    ]);
+  });
+
+  it("draws no pin the member does not hold, and no heading over nothing", () => {
+    const groups = shellSidebar(visibleSections(["tasks"], false), ["/projects", "/crm"]);
+    expect(groups.map((g) => g.id)).not.toContain("my-apps");
+    expect(shape(groups)).toEqual([["personal", ["/tasks", "/calendar"]]]);
+  });
+
+  it("without pins, keeps the shape it had", () => {
+    expect(shellSidebar(visibleSections(ALL, true), undefined)).toEqual(shellSidebar(visibleSections(ALL, true)));
+    expect(shellSidebar(visibleSections(ALL, true), [])).toEqual(shellSidebar(visibleSections(ALL, true)));
+  });
+});

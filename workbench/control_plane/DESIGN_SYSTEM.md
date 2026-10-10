@@ -42,6 +42,9 @@ one look, they do not replace it:
 An admin sets org-wide defaults for the same three and can lock personal
 overrides off.
 
+The browser keeps the mode, density and accent of a member for each signed-in
+account (`src/lib/theme/scope.ts`). An account switch does not carry them across.
+
 **The consequence for you:** a hardcoded value is not "a small inconsistency."
 It will *render fine* — and it will still be wrong in light mode, at compact
 density, and under a changed accent, which is where somebody who did not write
@@ -489,8 +492,8 @@ own the rule. Fences:
 Email"*.
 
 Tasks matches. Email's heading drift closed on 2026-10-10, when Email took
-`AppTopBar`. CRM uses the old Settings blob. That is drift, not a third
-legitimate shape. It is H-148.
+`AppTopBar`. The CRM's drift closed on 2026-10-11 (WS-53 CRM-U1). The CRM
+now opens with `AppTopBar` and a rail of `RailRow`s, and the tabs are gone.
 
 Layout: header → tabs/filters → `flex-1 overflow-y-auto` content, optional
 `w-[380px]` desktop side panel (bottom sheet on mobile).

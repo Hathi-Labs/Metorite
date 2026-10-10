@@ -59,6 +59,7 @@ import {
   shellSidebar,
 } from "@/lib/shell/shellNav";
 import { shouldPollWorkspace } from "@/lib/access";
+import { useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
@@ -133,6 +134,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // by any path, never on a sign-out button alone.
   useChatScope();
   useChatSignOutClear();
+  // NS-7: the layout read starts here, beside the access read, because the
+  // route needs only the session. The sidebar mounts once access resolves,
+  // and by then the answer is often in memory (`shellPrefs.ts`).
+  useShellPrefs();
 
   // The shell nav flag, read once as the Sidebar reads it: the dev override
   // must not flip mid-session, and the two must agree on the frame.
@@ -424,7 +429,11 @@ function MobileBottomNavInner({
   // NS-6: the one bell sits beside the activity control here, as on the bar.
   const [dockOn] = useState(() => shellDockOn());
   const [launcherOpen, setLauncherOpen] = useState(false);
-  const drawerSections = shellNav ? shellSidebar(navSections) : navSections;
+  // The member's pins (NS-7), the same "My apps" as the desktop sidebar.
+  const shell = useShellPrefs();
+  const drawerSections = shellNav
+    ? shellSidebar(navSections, shell.loading ? undefined : shell.layout.pins)
+    : navSections;
   // The run badge (WS-51 S1), from the one shared poller. Each drawer link
   // shows its app's count. The bottom bar shows the total on every page: on
   // the Chats tab on /chat, and on the Menu tab everywhere else, because the

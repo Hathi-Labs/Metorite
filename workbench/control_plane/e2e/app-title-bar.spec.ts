@@ -12,10 +12,10 @@ import { stubApi } from "./visual/harness";
  *
  *   1. Every live pane, My Day, and the four Settings sub-pages draw exactly
  *      one `<h1>` and exactly one app bar, at 1440 and at 390.
- *   2. At 1024 with the sidebar OPEN, Calendar (with every tool up), Email
- *      and Projects keep every control of the bar inside the window, and the
- *      name overlaps no control. Measured in round 2: Month ended at x=1095,
- *      and the h1 painted over "< Today".
+ *   2. At 1024 with the sidebar OPEN, Calendar (with every tool up), Email,
+ *      Projects and the CRM keep every control of the bar inside the window,
+ *      and the name overlaps no control. Measured in round 2: Month ended at
+ *      x=1095, and the h1 painted over "< Today".
  */
 
 const ADMIN = {
@@ -23,7 +23,7 @@ const ADMIN = {
   email: "admin@example.com",
   name: "Asha Rao",
   is_admin: true,
-  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals"],
+  features: ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals", "crm"],
   permissions: ["admin:members:read", "admin:members:manage"],
   capabilities: ["admin:members:read", "admin:members:manage"],
   roles: ["owner"],
@@ -55,6 +55,25 @@ const MEMBER_ACCESS = {
   integrations: [],
   granted: [],
   denied: [],
+};
+
+/** The CRM's reads, by path under `/api/crm/`. Anything else is an empty page. */
+const CRM_STAGE = { id: "st1", name: "Qualified", type: "open", color: "blue", position: 1, probability: 40 };
+const CRM: Record<string, unknown> = {
+  pipeline: {
+    lanes: [
+      {
+        status: CRM_STAGE,
+        count: 1,
+        weighted: 100000,
+        amount: 250000,
+        rows: [{ id: "d1", name: "Acme pilot", amount: 250000, status_id: "st1", owner_email: "admin@example.com" }],
+      },
+    ],
+  },
+  "statuses/deal": [CRM_STAGE],
+  "statuses/lead": [],
+  "lost-reasons": [],
 };
 
 /** Three tasks that put every Calendar tool up: due soon, done today, and replan. */
@@ -112,6 +131,13 @@ async function setup(page: Page, opts: { chatName?: string; memberName?: string 
     },
     { arrayPaths: /^(notes|chat|agent|apps|agents)\b/ },
   );
+  // The CRM reads its own BFF. A board with one lane and the vocabulary is
+  // enough for the bar and the rail to draw over real content.
+  await page.route("**/api/crm/**", (r) => {
+    const p = new URL(r.request().url()).pathname.replace(/^\/api\/crm\//, "");
+    const json = CRM[p] ?? { rows: [], total: 0 };
+    return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(json) });
+  });
   // Billing reads the Customer Console, which no test runs. It answers 503
   // there, and the page draws its unavailable state under its bar.
   await page.route("**/api/billing/**", (r) =>
@@ -128,6 +154,8 @@ const PAGES: Array<[string, string]> = [
   ["My Email", "/email"],
   ["My WhatsApp", "/whatsapp"],
   ["Projects", "/projects"],
+  // A `preview` pane that opens with the bar (WS-53 CRM-U1).
+  ["CRM", "/crm"],
   ["People", "/people"],
   ["Chat", "/chat"],
   ["Approvals", "/approvals"],
@@ -244,7 +272,7 @@ test.describe("at 1024 with the sidebar open, nothing leaves the bar", () => {
     });
   }
 
-  for (const [name, path] of [["My Email", "/email"], ["Projects", "/projects"]] as const) {
+  for (const [name, path] of [["My Email", "/email"], ["Projects", "/projects"], ["CRM", "/crm"]] as const) {
     test(name, async ({ page }) => {
       await setup(page);
       await page.goto(path);

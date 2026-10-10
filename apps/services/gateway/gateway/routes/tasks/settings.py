@@ -361,7 +361,9 @@ _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
 
 def upsert_settings_sql(
-    cols: list[str], placeholder: Callable[[str], str] | None = None,
+    cols: list[str],
+    placeholder: Callable[[str], str] | None = None,
+    update: list[str] | None = None,
 ) -> str:
     """The one write of a member's settings row, for the columns ``cols``.
 
@@ -370,11 +372,16 @@ def upsert_settings_sql(
     names the bound tenant and that arbiter. The old ``ON CONFLICT (user_id)``
     matches no constraint after 239.
     ``tests/unit/test_user_settings_per_org_r8.py`` is the fence.
+
+    ``update`` names the columns an existing row takes, and it defaults to
+    ``cols``. The shell's layout write (NS-7, ``routes/admin/me.py``) inserts
+    the calendar seed with a NEW row, and on an existing row it changes
+    ``shell_prefs`` only.
     """
     ph = placeholder or (lambda k: f":{k}")
     names = ", ".join(cols)
     vals = ", ".join(ph(k) for k in cols)
-    sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in cols)
+    sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in (update or cols))
     return (
         f"INSERT INTO user_settings (organization_id, user_id, {names}) "
         f"VALUES ({_BOUND_ORG}, :uid, {vals}) "

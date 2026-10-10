@@ -300,11 +300,20 @@ describe("one toggle, one place, inside the card", () => {
   });
 });
 
-describe("a short card has no toggle", () => {
+describe("a short card keeps its toggle, and never folds by itself", () => {
+  // Owner feedback, 2026-10-11: a three-task receipt lost its toggle when
+  // #843 made its rows one line. Every card with a body may fold by hand.
   it("by the rule", () => {
-    expect(showRollupToggle({ pending: false, long: false })).toBe(false);
+    expect(showRollupToggle({ pending: false, hasBody: true })).toBe(true);
     expect(rollupOpen({ pending: false, newest: false, long: false })).toBe(true);
   });
+
+  it("a card with no body has nothing to fold", () => {
+    expect(showRollupToggle({ pending: false, hasBody: false })).toBe(false);
+  });
+});
+
+describe("a card with no toggle draws plainly", () => {
 
   it("in the primitive: no button, and the body shows", () => {
     const html = renderToStaticMarkup(
@@ -330,7 +339,7 @@ describe("a pending approval card never rolls up", () => {
   it("not when it is older, long, or closed by hand", () => {
     expect(rollupOpen({ pending: true, newest: false, long: true })).toBe(true);
     expect(rollupOpen({ pending: true, newest: false, long: true, manual: "closed" })).toBe(true);
-    expect(showRollupToggle({ pending: true, long: true })).toBe(false);
+    expect(showRollupToggle({ pending: true, hasBody: true })).toBe(false);
   });
 
   it("the pin's sources say what waits: a queued approval is the inline group", () => {

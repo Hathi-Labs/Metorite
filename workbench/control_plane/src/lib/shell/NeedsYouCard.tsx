@@ -130,16 +130,19 @@ export function useNeedsYou(
 export default function NeedsYouCard({
   needs,
   now,
+  first,
   className = "",
 }: {
   needs: NeedsYou;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
+  /** The group the member's preset puts first (NS-7), such as replies. */
+  first?: string;
   className?: string;
 }) {
   return (
     <HomeCard title="Needs you" icon="Bell" testId="needs-you" className={className}>
-      <NeedsList needs={needs} now={now} />
+      <NeedsList needs={needs} now={now} first={first} />
     </HomeCard>
   );
 }
@@ -152,10 +155,16 @@ export default function NeedsYouCard({
 export function NeedsList({
   needs,
   now,
+  first,
 }: {
   needs: NeedsYou;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
+  /**
+   * The group the member's preset puts first (NS-7). My Day's card passes
+   * it. The bell's panel does not, so it keeps the server's order.
+   */
+  first?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   // The card and the bell's panel can both be on screen, so each list names
@@ -181,7 +190,7 @@ export function NeedsList({
       </div>
     );
   } else {
-    const { groups, hidden } = shownNeeds(needs.items, expanded);
+    const { groups, hidden } = shownNeeds(needs.items, expanded, undefined, first);
     body = (
       <div className="flex flex-col gap-2">
         {groups.map((group) => (

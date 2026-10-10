@@ -25,6 +25,7 @@
  */
 import type { NavPane, NavSection } from "@/lib/nav";
 import { myDayOn } from "@/lib/shell/myDayFlag";
+import { pinnedPanes } from "@/lib/shell/presets";
 
 /** The flag for the shell nav. Off, the sidebar and the drawer are as before. */
 export function shellNavOn(): boolean {
@@ -111,9 +112,23 @@ function byTeam(panes: readonly NavPane[]): NavSection[] {
   return groups.filter((g) => g.items.length > 0);
 }
 
-/** The sidebar's groups: every held pane whose door is the sidebar. */
-export function shellSidebar(sections: readonly NavSection[]): NavSection[] {
-  return byTeam(held(sections).filter((p) => (p.door ?? "sidebar") === "sidebar"));
+/** The id of the pins' group, first in the sidebar (NS-7). */
+export const MY_APPS = "my-apps";
+
+/**
+ * The sidebar's groups: every held pane whose door is the sidebar.
+ *
+ * With `pins` (NS-7, §3.2), "My apps" comes first and holds the member's
+ * pinned apps, in pin order. A pinned app moves there and leaves its team's
+ * group, so each app keeps ONE door (the rule of §3.3). `pinnedPanes` picks
+ * from `sections` alone, so a pin never draws a pane the member does not
+ * hold or that is not live.
+ */
+export function shellSidebar(sections: readonly NavSection[], pins?: readonly string[]): NavSection[] {
+  const doors = held(sections).filter((p) => (p.door ?? "sidebar") === "sidebar");
+  const mine = pins ? pinnedPanes(pins, sections).filter((p) => doors.includes(p)) : [];
+  const rest = byTeam(doors.filter((p) => !mine.includes(p)));
+  return mine.length ? [{ id: MY_APPS, label: "My apps", items: mine }, ...rest] : rest;
 }
 
 /** The account menu's panes, in their manifest order. */

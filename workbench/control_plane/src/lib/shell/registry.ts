@@ -308,6 +308,11 @@ export interface RankInput {
   context: string | null;
   /** Item keys the member opened, newest first. */
   recent: readonly string[];
+  /**
+   * Job ids in the member's preset order (NS-7, §8.1), for the empty bar
+   * only. A job the preset does not name follows the named ones.
+   */
+  order?: readonly string[];
 }
 
 /**
@@ -315,18 +320,24 @@ export interface RankInput {
  * because the bar is for doing (§6.2 puts Do first).
  *
  * With no words, the bar shows the member's recent items, then the jobs of
- * the app they are in, then the other jobs.
+ * the app they are in, then the other jobs in the preset's order (`order`).
  */
-export function rank({ items, query, context, recent }: RankInput): BarItem[] {
+export function rank({ items, query, context, recent, order = [] }: RankInput): BarItem[] {
   const recency = (k: string) => {
     const i = recent.indexOf(k);
     return i < 0 ? 0 : Math.max(1, 8 - i);
   };
   if (!query.trim()) {
     const recents = recent.map((k) => items.find((i) => i.key === k)).filter((i): i is BarItem => !!i);
+    // A job the preset names ranks by its place there. One it does not name
+    // keeps the list's own order, after them.
+    const place = (i: BarItem) => {
+      const at = order.indexOf(i.key.replace(/^do:/, ""));
+      return at < 0 ? order.length : at;
+    };
     const jobs = items
       .filter((i) => i.group === "do" && !recent.includes(i.key))
-      .sort((a, b) => Number(b.app === context) - Number(a.app === context));
+      .sort((a, b) => Number(b.app === context) - Number(a.app === context) || place(a) - place(b));
     return [...recents, ...jobs].slice(0, 8);
   }
   return items

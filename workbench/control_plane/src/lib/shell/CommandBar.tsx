@@ -101,6 +101,7 @@ export function CommandBar({
   panes,
   here,
   email,
+  jobOrder,
 }: {
   open: boolean;
   seed: string;
@@ -108,6 +109,8 @@ export function CommandBar({
   panes: NavPane[];
   here: NavPane | null;
   email: string | null;
+  /** The member's preset job order, for the empty bar (NS-7). */
+  jobOrder?: readonly string[];
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -217,7 +220,7 @@ export function CommandBar({
         router.push(item.href);
       }
     };
-    const ranked = rank({ items, query, context: token?.href ?? null, recent });
+    const ranked = rank({ items, query, context: token?.href ?? null, recent, order: jobOrder });
     const out: Row[] = [];
     for (const item of ranked.filter((i) => i.group === "do").slice(0, 5)) {
       out.push({ key: item.key, group: "Do", label: item.label, hint: item.hint, icon: item.icon, run: go(item) });
@@ -304,7 +307,7 @@ export function CommandBar({
       });
     }
     return out;
-  }, [items, query, token, recent, filterName, here, email, onClose, router, found, intent]);
+  }, [items, query, token, recent, jobOrder, filterName, here, email, onClose, router, found, intent]);
 
   // The highlight: the held row while it exists, else the first row.
   const held = activeKey ? rows.findIndex((r) => r.key === activeKey) : -1;

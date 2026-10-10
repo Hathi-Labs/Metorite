@@ -76,6 +76,12 @@ it, under the same send mark, so the at-most-once rules above hold for them.
 The thread keeps the text plus each element's rendition. A resend of a stored
 reply is that text only.
 
+**Reply and react like a person (WAC-10e).** With the profile, the first part
+of every answer quotes the member's message, so a late answer shows which
+message it answers. A reaction that the run queued goes on the member's
+message first, best effort. A plain thanks gets a 👍 from code, with no AI
+call and no text (``views.thanks``).
+
 **One process.** The thread locks and ``_LIVE_ROWS`` live in this gateway
 process, like the WAC-2 limiter. The row's claim is the guard that holds
 across processes.
@@ -92,7 +98,7 @@ import contextlib
 import hashlib
 import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
@@ -121,6 +127,10 @@ REPLY_CREDITS = (
     "Settings, Billing."
 )
 REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
+#: The early message that code sends when a run takes long and the AI did not
+#: say so itself (WAC-10e).
+REPLY_WORKING = ("Still on it. This one takes a little longer, and I will reply "
+                 "here when it is ready.")
 
 #: The channel instruction (§5.5 "The scope rule", D-WAC-5). Advisory: no unit
 #: test can prove a model's refusal (§9). It goes to the run as
@@ -166,7 +176,14 @@ SCOPE_RULE_NATIVE = (
     "whatsapp_ui. Never say \"tap\" unless you sent buttons or a list. Items "
     "the member may dig into go in a list.\n"
     "You cannot change data from WhatsApp. When the member asks for a change, "
-    "tell them to make it in the Metorite web app, and add a link button."
+    "tell them to make it in the Metorite web app, and add a link button.\n"
+    "React to the member's message when an emoji says it well (whatsapp_ui "
+    "kind \"react\"): 👍 noted, ✅ done, 🎉 good news, 🙏 thanks, 👀 looking into "
+    "it, 😕 bad news. Do it in the same step as your first other tool call. A "
+    "message that needs no answer gets the reaction and no text.\n"
+    "When a job takes more than about 15 seconds (an image, a calculation, "
+    "code, a page, a long search), FIRST call whatsapp_ui kind \"working\" with "
+    "one line: what you are doing and about how long it takes. Then do the job."
 )
 
 # ── The limits ──────────────────────────────────────────────────────────────
@@ -191,6 +208,9 @@ SWEEP_BATCH = 20
 _TYPING_TIMEOUT_S = 5
 #: A quick command's view (WAC-10c). Past this, the assistant answers instead.
 QUICK_TIMEOUT_S = 15
+#: A run this long with no early message gets :data:`REPLY_WORKING` (WAC-10e).
+#: Meta hides "typing…" after 25 seconds, so the member hears before that.
+WORKING_AFTER_S = 20
 
 #: The namespace of a thread id that a message opens (:func:`new_thread_id`).
 _THREAD_NS = uuid.UUID("5f3c1a2e-9d47-4b8e-a6c1-7e2d0b9f4a13")
@@ -1112,7 +1132,9 @@ async def _last_word(req: RunRequest, tries: int) -> None:
     """The last try of a ``running`` row: its stored reply, else the general
     text. Each one goes once, under the row's state change."""
     stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
-    if stored:
+    # "" is a stored answer too: a reaction only (WAC-10e). It closes the row
+    # with nothing sent, never with the general text.
+    if stored is not None:
         await _deliver(req, stored, _Attempt(tries=tries), frm="running",
                        last_try=True)
     elif await _end(req.message_id, "failed", "internal"):
@@ -1127,7 +1149,7 @@ async def _close_used_up(req: RunRequest) -> None:
     same send mark. Else the general text goes, once.
     """
     stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
-    if stored:
+    if stored is not None:  # "" is a reaction-only answer (`_last_word`)
         await _deliver(req, stored, _Attempt(tries=MAX_TRIES), frm="failed",
                        last_try=True)
     else:
@@ -1143,14 +1165,18 @@ def model_turn(turn: dict[str, str]) -> dict[str, str]:
     sent no image (owner screenshots, 2026-10-10). An answer of elements
     only reads as a short note.
     """
-    from acb_skills.whatsapp_ui import RENDITION_MARK, VIEW_MARK
+    from acb_skills.whatsapp_ui import RENDITION_MARK, VIEW_MARK, without_reactions
 
     content = str(turn.get("content") or "")
     if turn.get("role") != "assistant" or (
             RENDITION_MARK not in content and VIEW_MARK not in content):
         return turn
-    text = content.replace(VIEW_MARK, "").split(RENDITION_MARK, 1)[0].strip()
-    return {**turn, "content": text or "(I sent the member a WhatsApp card.)"}
+    text, _mark, records = content.replace(VIEW_MARK, "").partition(RENDITION_MARK)
+    if text.strip():
+        return {**turn, "content": text.strip()}
+    note = ("(I sent the member a WhatsApp card.)" if without_reactions(records)
+            else "(I reacted to the member's message.)")
+    return {**turn, "content": note}
 
 
 def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
@@ -1220,9 +1246,7 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         # WAC-10c: a quick command ("today", "calendar", a menu tap) is
         # answered by code, with no AI call. A view that fails falls back
         # to the assistant, so it never costs the member an answer.
-        name = (views.match(message)
-                if native and not _offered_ai_choice(history) else None)
-        view = await _quick_view(req, name) if name else None
+        view = await _quick_answer(req, message, history) if native else None
         if view is not None:
             reply, ui = view.text, list(view.ui)
         else:
@@ -1234,9 +1258,10 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
             try:
                 with refuse_cards(), (whatsapp_run(
                         AGENT, org=req.organization_id,
-                        views=views.runner(req.member_email, req.organization_id))
+                        views=views.runner(req.member_email, req.organization_id),
+                        notify=_notifier(req))
                         if native else contextlib.nullcontext()) as wa_run:
-                    result = await asyncio.wait_for(
+                    result = await _still_working(req, wa_run, asyncio.wait_for(
                         _executor()(
                             AGENT, payload,
                             run_id=run_id,
@@ -1248,7 +1273,7 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
                             session_user=req.member_email,
                         ),
                         timeout=RUN_TIMEOUT_S,
-                    )
+                    ))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1303,6 +1328,88 @@ def _resend_text(stored: str | None) -> str | None:
     from acb_skills.whatsapp_ui import resend_text
 
     return resend_text(stored)
+
+
+def _notifier(req: RunRequest) -> Callable[[str], Awaitable[bool]]:
+    """The early message of one run (WAC-10e, ``whatsapp_ui`` kind "working").
+
+    It quotes the member's message, then shows "typing…" again, because
+    Meta hides the indicator when a message arrives. Best effort: it never
+    raises. It is no part of the answer and goes before the send mark, so a
+    run that a later try repeats can send it again. That costs one short
+    line, never a second answer.
+    """
+    async def _notify(text: str) -> bool:
+        creds = flags.bot_credentials()
+        if creds is None:
+            return False
+        try:
+            from whatsapp_ingestion.providers.factory import build_provider
+
+            provider = build_provider("cloud_api", creds)
+            await asyncio.wait_for(
+                provider.send_text(req.wa_id, text, reply_to_wa_message_id=req.wamid),
+                timeout=_TYPING_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Like the answer: an unclear error (a timeout, a 5xx) may have
+            # delivered the line, so it counts as sent, and no second line
+            # follows (review, 2026-10-11).
+            sure = send_surely_failed(exc)
+            _log.info("whatsapp_channel.run.working_failed",
+                      error_type=type(exc).__name__, surely_not_sent=sure)
+            return not sure
+        _log.info("whatsapp_channel.run.working_sent", message_id=req.message_id)
+        await _show_typing(req)
+        return True
+
+    return _notify
+
+
+async def _still_working(req: RunRequest, wa_run: Any,
+                         job: Coroutine[Any, Any, Any]) -> Any:
+    """Await *job*. Past :data:`WORKING_AFTER_S` with no early message, tell
+    the member, in code and with no AI call, that the answer is on its way.
+    """
+    if wa_run is None or wa_run.notify is None:
+        return await job
+
+    async def _later() -> None:
+        await asyncio.sleep(WORKING_AFTER_S)
+        if not wa_run.notified:
+            wa_run.notified = True
+            wa_run.notified = await wa_run.notify(REPLY_WORKING)
+
+    timer = asyncio.create_task(_later())
+    try:
+        return await job
+    finally:
+        timer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await timer
+
+
+async def _quick_answer(req: RunRequest, message: str,
+                        history: list[dict[str, str]]) -> Any:
+    """The answer code gives with no AI call, or None (WAC-10c, WAC-10e).
+
+    A quick command's view, or for a plain thanks a 👍 and no text. Never
+    when the AI's own buttons asked the question (:func:`_offered_ai_choice`).
+    """
+    from gateway.routes.whatsapp_channel import views
+
+    if _offered_ai_choice(history):
+        return None
+    name = views.match(message)
+    view = await _quick_view(req, name) if name else None
+    if view is None and views.thanks(message):
+        from acb_skills.whatsapp_ui import reaction
+
+        view = views.View("thanks", "", [reaction(views.THANKS_REACTION)])
+        _log.info("whatsapp_channel.run.quick", view="thanks", elements=0,
+                  message_id=req.message_id)
+    return view
 
 
 async def _quick_view(req: RunRequest, name: str) -> Any:
@@ -1382,8 +1489,15 @@ async def _deliver(req: RunRequest, reply: str, attempt: _Attempt, *,
         attempt.marked = False
         _log.info("whatsapp_channel.run.not_sending", message_id=req.message_id)
         return
-    parts: list[Any] = [*split_reply(reply), *(ui or [])]
-    sent = await _send(req, parts, kind="answer", attempt=attempt)
+    # A reaction is no part (WAC-10e): it goes first, best effort, under the
+    # mark, so a try that runs again (a stored reply, text only) never sends
+    # it twice.
+    reactions = [m for m in (ui or []) if getattr(m, "kind", None) == "reaction"]
+    if reactions:
+        await _react(req, reactions[-1].emoji)
+    parts: list[Any] = [*split_reply(reply),
+                        *(m for m in (ui or []) if getattr(m, "kind", None) != "reaction")]
+    sent = await _send(req, parts, kind="answer", attempt=attempt) if parts else 0
     if sent == len(parts):
         to, code = "replied", None
     elif attempt.unsure:
@@ -1447,9 +1561,12 @@ async def _send(req: RunRequest, texts: list[Any], *, kind: str,
                      error_class=type(exc).__name__)
         return 0
     sent = 0
-    for part in texts:
+    # The first part quotes the member's message (WAC-10e), with the profile.
+    quote = req.wamid if flags.native_ui_enabled() else None
+    for index, part in enumerate(texts):
         try:
-            out_id = await _send_part(provider, req.wa_id, part)
+            out_id = await _send_part(provider, req.wa_id, part,
+                                      reply_to=quote if index == 0 else None)
         except asyncio.CancelledError:
             # A cancel while the request is in flight: Meta may have it.
             if attempt is not None:
@@ -1481,8 +1598,13 @@ async def _send(req: RunRequest, texts: list[Any], *, kind: str,
     return sent
 
 
-async def _send_part(provider: Any, wa_id: str, part: Any) -> str:
+async def _send_part(provider: Any, wa_id: str, part: Any, *,
+                     reply_to: str | None = None) -> str:
     """Send one part: a text, an interactive element, or an image.
+
+    *reply_to* quotes the member's message above the part, as a person's
+    swipe reply does (WAC-10e). Meta drops the quote, and still delivers the
+    part, when it cannot find that message.
 
     An image goes up to Meta's media store first, then out by its id. An
     upload alone shows the member nothing, so an upload error goes through
@@ -1490,14 +1612,39 @@ async def _send_part(provider: Any, wa_id: str, part: Any) -> str:
     "maybe sent", and the code then sends nothing again, which is the safe
     side.
     """
+    quote = {"reply_to_wa_message_id": reply_to} if reply_to else {}
     if isinstance(part, str):
-        return await provider.send_text(wa_id, part)
+        return await provider.send_text(wa_id, part, **quote)
     if part.kind == "text":  # a view's own text (WAC-10c)
-        return await provider.send_text(wa_id, part.rendition)
+        return await provider.send_text(wa_id, part.rendition, **quote)
     if part.kind == "interactive":
-        return await provider.send_interactive(wa_id, part.interactive)
+        return await provider.send_interactive(wa_id, part.interactive, **quote)
     media_id = await provider.upload_media(part.png, "image/png", "metorite.png")
-    return await provider.send_image(wa_id, media_id, caption=part.caption)
+    return await provider.send_image(wa_id, media_id, caption=part.caption, **quote)
+
+
+async def _react(req: RunRequest, emoji: str) -> bool:
+    """React with *emoji* to the member's message (WAC-10e).
+
+    Best effort, and never raises: a reaction is a nicety, so a refused one
+    never costs the member the answer, and it is never retried.
+    """
+    creds = flags.bot_credentials()
+    if creds is None:
+        return False
+    try:
+        from whatsapp_ingestion.providers.factory import build_provider
+
+        provider = build_provider("cloud_api", creds)
+        await asyncio.wait_for(provider.send_reaction(req.wa_id, req.wamid, emoji),
+                               timeout=_TYPING_TIMEOUT_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _log.info("whatsapp_channel.run.react_failed", error_type=type(exc).__name__)
+        return False
+    _log.info("whatsapp_channel.run.reacted", message_id=req.message_id)
+    return True
 
 
 # ── The sweep ───────────────────────────────────────────────────────────────
