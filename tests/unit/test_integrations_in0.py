@@ -966,3 +966,20 @@ class TestTheGuardedFetchesAskForNoEncoding:
         out = await integrations.test_mcp_server(req, user=USER)
         assert out["ok"] is True
         assert [r.headers.get("accept-encoding") for r in seen] == ["identity"]
+
+
+# ── Fix round 1: the public retired page escapes what it reflects ───────────
+
+
+async def test_the_retired_callback_escapes_the_service() -> None:
+    """The callback is in ``PUBLIC_ROUTES``, and it reflects the path value."""
+    payload = "<img src=x onerror=alert(1)>"
+    page = await oauth_routes.oauth_callback(service=payload, code="", state="", error="")
+    body = bytes(page.body).decode()
+    assert payload not in body
+    assert "&lt;img src=x onerror=alert(1)&gt;" in body
+
+
+def test_the_html_result_escapes_the_detail_too() -> None:
+    body = bytes(oauth_routes._html_result("s", ok=False, detail="<script>x</script>").body).decode()
+    assert "<script>" not in body

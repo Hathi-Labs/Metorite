@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -271,6 +272,13 @@ async def refresh_access_token(service: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _html_result(service: str, *, ok: bool, detail: str) -> HTMLResponse:
+    """A small HTML page. 🔒 It escapes ``service`` and ``detail``.
+
+    The callback is a public route and ``service`` is a path value, so the
+    raw value would be a reflected XSS (WS-54 IN-0 fix round 1).
+    """
+    service = html.escape(service)
+    detail = html.escape(detail)
     colour = "#16a34a" if ok else "#dc2626"
     title = "Connected" if ok else "Connection failed"
     body = (
