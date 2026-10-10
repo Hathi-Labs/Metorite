@@ -577,8 +577,12 @@ def test_a_failed_bot_group_logs_the_error_class_and_no_message(
     with capture_logs() as logs:
         res = _post(_message(f"Link me: {CODE}"))
     assert res.status_code == 500
-    (line,) = [e for e in logs if e["event"] == "whatsapp.webhook.bot_group_failed"]
+    # WAC-3 isolates each message: the message's line names the cause, and
+    # the group's line names the group failure. Neither holds a message.
+    (line,) = [e for e in logs if e["event"] == "whatsapp_channel.bot.message_failed"]
     assert line["error_type"] == "RuntimeError" and "error" not in line
+    (group,) = [e for e in logs if e["event"] == "whatsapp.webhook.bot_group_failed"]
+    assert group["error_type"] == "BotGroupFailed" and "error" not in group
     assert PHONE not in repr(logs)
     assert world.sent == []
 
