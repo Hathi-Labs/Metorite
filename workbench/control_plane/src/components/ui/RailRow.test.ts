@@ -176,6 +176,11 @@ describe("the utilities it relies on", () => {
   it("rail-row-chevron hides at rest and shows on hover or focus, and rail-row-icon gives way", () => {
     const chevron = block("rail-row-chevron");
     expect(chevron).toContain("opacity: 0");
+    // A transparent toggle must not catch the tap meant for the row's icon.
+    const [restRule, shownRule] = chevron.split("{").slice(1);
+    expect(restRule).toContain("pointer-events: none");
+    expect(shownRule).toContain("pointer-events: auto");
+    expect(chevron).toContain(".group[data-pinned] &");
     expect(chevron).toContain(".group:hover &");
     expect(chevron).toContain(".group:has(:focus-visible) &");
     expect(chevron).not.toContain("@media");

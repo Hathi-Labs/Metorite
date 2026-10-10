@@ -1061,19 +1061,30 @@ select optgroup {
  * icon, transparent at rest. On hover or keyboard focus in the row, the
  * chevron shows and the icon gives way. The chevron is a real button the
  * whole time, so Tab reaches it at rest, and reaching it shows it.
+ *
+ * ⚠️ At rest it takes NO pointer. A transparent toggle over the icon caught
+ * the tap on a touch laptop with no mouse, so a tap on what looks like an
+ * icon opened the row instead of selecting it. Now the first tap selects
+ * the row, the sticky hover of a touch screen shows the chevron, and a tap
+ * on the chevron opens the row. A phone does not use this utility at all:
+ * there the chevron is always shown and always takes the tap.
  */
 @utility rail-row-chevron {
   opacity: 0;
+  pointer-events: none;
 
   .group:hover &,
-  .group:has(:focus-visible) & {
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 
 @utility rail-row-icon {
   .group:hover &,
-  .group:has(:focus-visible) & {
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
     opacity: 0;
   }
 }
