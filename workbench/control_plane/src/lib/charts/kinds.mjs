@@ -95,9 +95,18 @@ function date(v, what) {
 
 // ── The look ────────────────────────────────────────────────────────────────
 
-/** @typedef {{ mode?: "dark" | "light", scale?: number, footer?: boolean }} Opts */
+/**
+ * @typedef {{ mode?: "dark" | "light", scale?: number, footer?: boolean,
+ *   font?: string, interactive?: boolean, animate?: boolean }} Opts
+ * `font` is the page's own font list (the web chat, where next/font renames
+ * Geist). `interactive` adds the tooltip a live chart shows on hover.
+ */
 
 const DAY = 86400000;
+/** A plot's height below its header. Each kind's height is the header
+ * (`c.top`, which a missing title shrinks) plus its body, so a chart with no
+ * title is shorter by exactly the header it lacks (WAC-10g review). */
+const BODY = 610;
 
 /** Short numbers: 1.2k, 34k, 1.5M. */
 export function fmt(v) {
@@ -112,14 +121,16 @@ export function fmt(v) {
 const plain = (s) => String(s).replace(/[{}|]/g, " ");
 
 function ctx(spec, opts) {
-  const t = theme(opts.mode);
+  const t = { ...theme(opts.mode), ...(opts.font ? { font: opts.font } : {}) };
   const k = opts.scale ?? 1;
   const u = (/** @type {number} */ n) => Math.round(n * k * 10) / 10;
   const unit = text(spec.unit ?? "", "unit", 8, false);
   const label = (v) => `${fmt(v)}${unit}`;
   const axisText = { color: t.muted, fontFamily: t.font, fontSize: u(24) };
   const hasSub = Boolean(spec.subtitle);
-  const top = hasSub ? 190 : 150;
+  // A chart with no title (the chat's barChart template may omit it) starts
+  // its grid near the top instead of under an empty heading.
+  const top = spec.title ? (hasSub ? 190 : 150) : 56;
   return { t, u, unit, label, axisText, top, k };
 }
 
@@ -130,7 +141,7 @@ function base(spec, opts, c) {
     animation: Boolean(opts.animate),
     textStyle: { fontFamily: c.t.font, color: c.t.fg },
     title: {
-      text: text(spec.title, "title", LIMITS.title), subtext: text(spec.subtitle ?? "", "subtitle", 120, false),
+      text: text(spec.title, "title", LIMITS.title, false), subtext: text(spec.subtitle ?? "", "subtitle", 120, false),
       left: c.u(56), top: c.u(48), itemGap: c.u(14),
       // A long title ends in "…" before the brand mark, never off the edge.
       textStyle: { fontFamily: c.t.font, fontSize: c.u(40), fontWeight: 600, color: c.t.fg,
@@ -203,7 +214,7 @@ const BUILD = {
     }));
     if (ss.length > 1) { o.legend = legend(c); o.grid.bottom = c.u(110); }
     if (long) o.grid.right = c.u(110);
-    return { o, h: long ? Math.max(560, 220 + ls.length * 64 + (ss.length > 1 ? 50 : 0)) : 760 };
+    return { o, h: long ? Math.max(c.top + 410, c.top + 70 + ls.length * 64 + (ss.length > 1 ? 50 : 0)) : c.top + BODY };
   },
 
   line(spec, opts, c) {
@@ -223,7 +234,7 @@ const BUILD = {
     }));
     o.grid.right = c.u(130);
     if (!one) { o.legend = legend(c); o.grid.bottom = c.u(110); }
-    return { o, h: 760 };
+    return { o, h: c.top + BODY };
   },
 
   area(spec, opts, c) {
@@ -240,7 +251,7 @@ const BUILD = {
       itemStyle: { color: tn[i] ?? c.t.series[i] },
     }));
     o.legend = legend(c); o.grid.bottom = c.u(110);
-    return { o, h: 760 };
+    return { o, h: c.top + BODY };
   },
 
   donut(spec, opts, c) {
@@ -252,7 +263,7 @@ const BUILD = {
     if (total <= 0) fail("a donut needs a total above zero");
     const tn = tones(c, spec, ls.length);
     const o = base(spec, opts, c);
-    const W = 1080 * c.k, H = 760 * c.k;
+    const W = 1080 * c.k, H = (c.top + BODY) * c.k;
     o.series = [{
       type: "pie", radius: ["50%", "72%"], center: ["31%", "58%"], padAngle: 2.5,
       itemStyle: { borderRadius: c.u(10) }, label: { show: false },
@@ -275,7 +286,7 @@ const BUILD = {
         return `{n|${name}}{p|${Math.round((v / total) * 100)}%}`;
       },
     };
-    return { o, h: 760 };
+    return { o, h: c.top + BODY };
   },
 
   progress(spec, opts, c) {
@@ -298,9 +309,9 @@ const BUILD = {
         { type: "bar", coordinateSystem: "polar", barWidth: bw, roundCap: true, barGap: "-100%",
           data: ls.map((_l, i) => ({ value: pct[i], itemStyle: { color: c.t.series[i] } })) },
       ];
-      const H = 720, step = 380 / ls.length;
+      const H = c.top + 570, step = 380 / ls.length;
       o.graphic.push(...ls.map((l, i) => ({
-        type: "group", left: "60%", top: c.u(220 + i * step + 20),
+        type: "group", left: "60%", top: c.u(c.top + 90 + i * step),
         children: [
           { type: "circle", shape: { cx: 0, cy: c.u(22), r: c.u(12) }, style: { fill: c.t.series[i] } },
           { type: "text", left: c.u(32), top: 0, style: { text: l, fill: c.t.muted, fontSize: c.u(26), fontFamily: c.t.font } },
@@ -346,7 +357,7 @@ const BUILD = {
       itemStyle: { opacity: 0.85, borderColor: c.t.card, borderWidth: c.u(2) },
     }));
     if (groups.length > 1) o.legend = legend(c, { top: c.u(c.top - 40), bottom: undefined, right: c.u(56), left: undefined });
-    return { o, h: 760 };
+    return { o, h: c.top + BODY };
   },
 
   heatmap(spec, opts, c) {
@@ -386,7 +397,7 @@ const BUILD = {
       name: s.name, value: s.values, lineStyle: { width: c.u(5), color: c.t.series[i] }, itemStyle: { color: c.t.series[i] },
       areaStyle: { color: alpha(c.t.series[i], 0.22) } })) }];
     if (ss.length > 1) o.legend = legend(c);
-    return { o, h: 860 };
+    return { o, h: c.top + 710 };
   },
 
   box(spec, opts, c) {
@@ -400,7 +411,7 @@ const BUILD = {
     o.series = [{ type: "boxplot", boxWidth: [c.u(40), c.u(90)],
       data: groups.map((g, i) => ({ value: quartiles(g.values), itemStyle: {
         color: alpha(c.t.series[i], 0.3), borderColor: c.t.series[i], borderWidth: c.u(4) } })) }];
-    return { o, h: 760 };
+    return { o, h: c.top + BODY };
   },
 
   waterfall(spec, opts, c) {
@@ -441,7 +452,7 @@ const BUILD = {
         ] };
       },
     }];
-    return { o, h: 760 };
+    return { o, h: c.top + BODY };
   },
 
   funnel(spec, opts, c) {
@@ -524,6 +535,11 @@ const BUILD = {
     o.series = [{
       type: "custom",
       data: rows.map((r, i) => [i, r.start, r.end, r.progress]),
+      tooltip: { formatter: (p) => {
+        const r = rows[p.value[0]], d = (ms) => new Date(ms).toISOString().slice(0, 10);
+        return `${r.label}
+${d(r.start)} to ${d(r.end - DAY)} · ${r.progress}%`;
+      } },
       renderItem: (_p, api) => {
         const r = rows[api.value(0)];
         const a = api.coord([api.value(1), api.value(0)]), z = api.coord([api.value(2), api.value(0)]);
@@ -542,6 +558,28 @@ const BUILD = {
     return { o, h: c.top + 130 + rows.length * 74 };
   },
 };
+
+/** Kinds that read best with one tooltip for the whole column. */
+const AXIS_TOOLTIP = new Set(["bar", "line", "area"]);
+
+/**
+ * The live chart's tooltip: the card's own surface and type.
+ *
+ * ⚠️ `richText`, never ECharts' default HTML tooltip. Every label is the
+ * model's text, and an HTML tooltip would put it into the page as markup.
+ * Rich text draws it as text, so a label can never become an element.
+ */
+function tooltip(kind, c) {
+  return {
+    renderMode: "richText",
+    trigger: AXIS_TOOLTIP.has(kind) ? "axis" : "item",
+    axisPointer: { type: kind === "bar" ? "shadow" : "line", shadowStyle: { color: alpha(c.t.muted, 0.08) },
+      lineStyle: { color: c.t.grid } },
+    backgroundColor: c.t.card, borderColor: c.t.grid, borderWidth: 1, padding: [8, 12],
+    textStyle: { color: c.t.fg, fontFamily: c.t.font, fontSize: 13 },
+    valueFormatter: (v) => (typeof v === "number" ? c.label(v) : v),
+  };
+}
 
 function quartiles(xs) {
   const v = [...xs].sort((a, b) => a - b);
@@ -565,5 +603,6 @@ export function chartOption(spec, opts = {}) {
   const scale = opts.scale ?? width / 1080;
   const c = ctx(spec, { ...opts, scale });
   const { o, h } = build(spec, { ...opts, scale }, c);
+  if (opts.interactive) o.tooltip = tooltip(kind, c);
   return { option: o, width, height: Math.round(h * scale) };
 }

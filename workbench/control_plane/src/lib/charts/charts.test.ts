@@ -123,7 +123,6 @@ describe("wac10f-spec-refusals", () => {
   const refused: [string, Record<string, unknown>, RegExp][] = [
     ["no type", { title: "t" }, /"type" must be one of/],
     ["an unknown type", { type: "pie3d", title: "t" }, /"type" must be one of/],
-    ["no title", { type: "bar", labels: ["a"], values: [1] }, /"title" is required/],
     ["values that miss a label", { type: "bar", title: "t", labels: ["a", "b"], values: [1] }, /one value per label/],
     ["text for a number", { type: "line", title: "t", labels: ["a"], values: ["lots"] }, /must be a number/],
     ["too many labels", { type: "bar", title: "t", labels: Array(40).fill("a"), values: Array(40).fill(1) }, /1 to 31/],
@@ -152,6 +151,16 @@ describe("wac10f-spec-refusals", () => {
   it("a fault inside the engine is a fault, never a spec error for the model", () => {
     expect(classify(new TypeError("boom"))).toEqual({ fault: "TypeError" });
     expect(classify(new ChartSpecError("fix this"))).toEqual({ error: "fix this" });
+  });
+  it("a live tooltip draws text, never HTML", () => {
+    for (const type of Object.keys(SPECS)) {
+      const { option } = chartOption({ type, ...SPECS[type] }, { interactive: true });
+      expect(option.tooltip.renderMode).toBe("richText");
+    }
+    const { option } = chartOption({ type: "gantt", ...SPECS.gantt, rows: [{ label: "<img src=x onerror=alert(1)>", start: "2026-09-01" }] }, { interactive: true });
+    const text = option.series[0].tooltip.formatter({ value: [0] });
+    expect(text).not.toContain("<br");
+    expect(text.startsWith("<img")).toBe(true); // drawn as text by richText, not parsed
   });
   it("hostile text stays text", () => {
     const png: Buffer = renderPng({ type: "bar", title: "<script>alert(1)</script>", labels: ["</text><x>"], values: [1] });
