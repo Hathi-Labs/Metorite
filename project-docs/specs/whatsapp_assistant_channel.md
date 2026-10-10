@@ -49,6 +49,13 @@ the process. `acb_skills.ask_tools.refuse_cards` makes every card tool deny at
 once. `chat_fold.persist_channel_reply` writes the reply row. Fences:
 `tests/unit/test_wac_bot_run.py` and `tests/unit/test_wac_bot_run_r8.py` (R8).
 
+*(Review round 1, 2026-10-10.)* One thread runs one message at a time, oldest
+first, so a second text runs right after the first. A failure after the claim
+gives the row back to the sweep, and the last try sends the general text once.
+A thread that gets a participant on the web is a shared room. The bot leaves
+it, and the next text opens a new thread. A redelivery writes nothing, and a
+bot write keeps the agent that the member chose.
+
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
 
@@ -521,7 +528,12 @@ and `updated_at`. The states are `received`, `running`, `replied`, `refused`,
   that nobody sees, and the tool would wait up to an hour. So in a WhatsApp run,
   a tool that asks for a card gets a deny at once. It writes nothing, and the
   run does not wait. The reply says to make the change in the web app. Capture
-  moves to WAC-4.
+  moves to WAC-4. *(Accepted 2026-10-10, WAC-3 review.)* The member's own
+  memory tools (`remember`, `save_memory` and `save_episode`) ask for no card,
+  so they still write the member's own memory from WhatsApp.
+- **A rate limit per member is due before WAC-9** *(WAC-3 review)*. WAC-3 runs
+  every text of a linked member, and only the org's AI credits cap the cost.
+  WAC-9 must not switch on an org before a limit on bot runs per member exists.
 - **A failed run gets one fixed reply**, chosen by `classify_run_error`. For the
   code `credits` the reply is: "Your organization is out of AI credits. An admin
   can add credits in Settings, Billing." Every other code gets: "Metorite could
