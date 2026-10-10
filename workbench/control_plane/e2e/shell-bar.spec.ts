@@ -450,6 +450,39 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     await expect(aside(page)).toHaveAttribute("data-collapsed", "false");
   });
 
+  // Owner, 2026-10-10: folded, the menu control must sit "in line with all
+  // the icons of the sidebar", and the logo must keep a gap from it.
+  for (const density of ["1", "0.875", "1.125"]) {
+    test(`both flags: the menu control is centred over the folded rail's icons (scale ${density})`, async ({ page }) => {
+      await shellOn(page);
+      await page.addInitScript((d) => {
+        localStorage.setItem("cc-shell-nav", "1");
+        localStorage.setItem("cc-sidebar-collapsed", "1");
+        document.documentElement.style.setProperty("--ui-scale", d);
+      }, density);
+      await stub(page);
+      await page.goto("/settings/appearance");
+      await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
+      const brand = bar(page).locator("[data-shell-brand]");
+      const fold = await box(brand.getByRole("button", { name: "Expand sidebar" }));
+      const foldCentre = fold.x + fold.width / 2;
+      // Every icon of the folded rail shares one centre line.
+      const centres = await aside(page)
+        .locator("nav a svg, nav button svg")
+        .evaluateAll((els) =>
+          els
+            .map((e) => e.getBoundingClientRect())
+            .filter((r) => r.width > 0 && r.height > 0)
+            .map((r) => r.x + r.width / 2),
+        );
+      expect(centres.length).toBeGreaterThan(2);
+      for (const c of centres) expect(Math.abs(c - foldCentre), `an icon at ${c} vs the control at ${foldCentre}`).toBeLessThanOrEqual(1);
+      // The logo keeps a gap from the control.
+      const logo = await box(brand.locator("a[href='/']"));
+      expect(logo.x - (fold.x + fold.width)).toBeGreaterThanOrEqual(8);
+    });
+  }
+
   // Measured 2026-10-09: at compact density the brand zone is 224px, and the
   // px-sized caption ran past it into the app's rail toggle. The logo gives
   // way instead, and "powered by Metorite" stays whole inside the zone.
