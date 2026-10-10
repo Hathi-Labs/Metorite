@@ -88,7 +88,28 @@ test.describe("rail rows", () => {
     await expect(meta).toBeVisible();
     await expect(meta).toContainText("6");
     await target.hover();
-    await expect(meta).toBeHidden();
+    // Hidden from sight only, so it stays in the accessible name: the box
+    // shrinks to the screen-reader clip rather than leaving the tree.
+    await expect.poll(() => meta.evaluate((el) => el.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+    await expect(target.locator("[data-rail-label]")).toHaveAccessibleName(/6 open tasks/);
+  });
+
+  test("a focused row keeps its count in its accessible name", async ({ page }) => {
+    // `display: none` on focus took "6 open tasks" out of the name a screen
+    // reader announces. The count now gives way from sight only.
+    await openProjects(page);
+    const target = row(page, "Finance & Accounts");
+    const label = target.locator("[data-rail-label]");
+    await expect(label).toHaveAccessibleName(/6 open tasks/);
+    // Reach it by KEY, so :focus-visible matches and the swap runs.
+    await label.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(label).toBeFocused();
+    await expect.poll(() =>
+      target.locator(".rail-row-meta").evaluate((el) => el.getBoundingClientRect().width),
+    ).toBeLessThanOrEqual(1);
+    await expect(label).toHaveAccessibleName(/6 open tasks/);
   });
 
   test("the name keeps the room the actions used to hold", async ({ page }) => {
@@ -257,7 +278,7 @@ test.describe("rail rows on a touch-capable display", () => {
 test.describe("the phone drawer", () => {
   test.setTimeout(120_000);
 
-  test("New space beside Spaces shows a focused draft row in the drawer", async ({ page }) => {
+  async function openDrawer(page: Page) {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/**", (route) => route.fulfill({ json: SAFE_EMPTY }));
     await page.route("**/api/projects/tree", (route) => route.fulfill({ json: RAIL_TREE }));
@@ -267,6 +288,40 @@ test.describe("the phone drawer", () => {
       window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail: "projects-tree" })),
     );
     await expect(page.getByText("Company Operations").first()).toBeVisible({ timeout: 20_000 });
+  }
+
+  test("a row that opens shows its glyph AND its chevron", async ({ page }) => {
+    // The swap hid the icon on a phone: a space lost its glyph and a parent
+    // project its run-state wheel. The phone has a chevron column instead.
+    await openDrawer(page);
+    const space = row(page, "Fracktal Care");
+    await expect(space.locator("[data-rail-toggle]")).toBeVisible();
+    await expect(space.locator("[data-rail-icon]")).toBeVisible();
+    expect(await opacityOf(space, "[data-rail-toggle]")).toBe(1);
+    expect(await opacityOf(space, "[data-rail-icon]")).toBe(1);
+    const [chevron, icon] = await Promise.all(
+      ["[data-rail-toggle]", "[data-rail-icon]"].map((sel) =>
+        space.locator(sel).first().evaluate((el) => el.getBoundingClientRect()),
+      ),
+    );
+    expect(chevron.right).toBeLessThanOrEqual(icon.left + 1);
+  });
+
+  test("an unselected row's ··· shows and opens its menu, and the drawer stays", async ({ page }) => {
+    await openDrawer(page);
+    const target = row(page, "Issue Escalations");
+    await expect(target).not.toHaveClass(/bg-primary\/10/);
+    const more = target.getByRole("button", { name: "Actions for Issue Escalations" });
+    await expect(more).toBeVisible();
+    const box = await more.boundingBox();
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+    await more.click();
+    await expect(page.getByText("Rename", { exact: true })).toBeVisible();
+    await expect(page.getByText("Company Operations").first()).toBeVisible();
+  });
+
+  test("New space beside Spaces shows a focused draft row in the drawer", async ({ page }) => {
+    await openDrawer(page);
     // One heading and one door: the drawer drew a second pair before.
     await expect(page.getByText("Spaces", { exact: true })).toHaveCount(1);
     const plus = page.locator('button[aria-label="New space"]:visible');
@@ -277,5 +332,34 @@ test.describe("the phone drawer", () => {
     await expect(field).toBeFocused();
     // Still in the drawer, beside the tree it will join.
     await expect(page.getByText("Company Operations").first()).toBeVisible();
+  });
+});
+
+test.describe("a row with no actions", () => {
+  test.setTimeout(90_000);
+
+  test("keeps its count on hover: a WhatsApp triage stream", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.route("**/api/**", (route) => route.fulfill({ json: SAFE_EMPTY }));
+    await page.route(/\/api\/whatsapp\/accounts(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: [{ id: "wa1", phone_number: "+91 98450 00000", phone_number_id: "pn1", waba_id: null,
+          display_name: "Fracktal Works", avatar_color: "", sync_status: "ok", sync_error: null,
+          history_import_phase: 0, quality_rating: null, is_default: true }],
+      }),
+    );
+    await page.route(/\/api\/whatsapp\/streams(\?.*)?$/, (route) =>
+      route.fulfill({ json: { needs_reply: 7, waiting: 3, groups: 12, all: 48, snoozed: 0 } }),
+    );
+    await page.route(/\/api\/whatsapp\/(labels|chats)(\?.*)?$/, (route) => route.fulfill({ json: [] }));
+    await page.goto("/whatsapp");
+    const stream = row(page, "Waiting on them");
+    await expect(stream).toBeVisible({ timeout: 20_000 });
+    const meta = stream.locator(".rail-row-meta");
+    await expect(meta).toHaveText("3");
+    await stream.hover();
+    await page.waitForTimeout(300);
+    expect(await meta.evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThan(4);
+    await expect(meta).toBeVisible();
   });
 });
