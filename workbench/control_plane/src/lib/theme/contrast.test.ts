@@ -61,6 +61,8 @@ const PAIRS: Pair[] = [
   { fg: "foreground", bg: "background", min: AA_NORMAL_TEXT },
   { fg: "cardForeground", bg: "card", min: AA_NORMAL_TEXT },
   { fg: "popoverForeground", bg: "popover", min: AA_NORMAL_TEXT },
+  // The whole-name hover tip (`OverflowTip`) carries words.
+  { fg: "tooltipForeground", bg: "tooltip", min: AA_NORMAL_TEXT },
   { fg: "mutedForeground", bg: "background", min: AA_NORMAL_TEXT },
   { fg: "mutedForeground", bg: "card", min: AA_NORMAL_TEXT },
   { fg: "primaryForeground", bg: "primary", min: AA_NORMAL_TEXT },

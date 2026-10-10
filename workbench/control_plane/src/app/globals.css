@@ -61,6 +61,12 @@
   --popover: hsl(220 13% 12%);
   --popover-foreground: hsl(210 40% 98%);
 
+  /* The hover tip that shows a whole name (`OverflowTip`). It is dark in
+     BOTH modes, as the owner's reference draws it. A lift above the rail
+     here, and a near-black panel on white in `.light`. */
+  --tooltip: hsl(220 13% 22%);
+  --tooltip-foreground: hsl(210 40% 98%);
+
   --primary: hsl(198 89% 50%);
   --primary-foreground: hsl(220 13% 8%);
 
@@ -174,6 +180,9 @@
   --popover: hsl(0 0% 100%);
   --popover-foreground: hsl(222.2 84% 4.9%);
 
+  --tooltip: hsl(222 47% 11%);
+  --tooltip-foreground: hsl(210 40% 98%);
+
   /* Deeper blue in light mode for proper contrast on white buttons */
   --primary: hsl(198 89% 35%);
   --primary-foreground: hsl(0 0% 100%);
@@ -255,6 +264,8 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-tooltip: var(--tooltip);
+  --color-tooltip-foreground: var(--tooltip-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -995,6 +1006,103 @@ select optgroup {
   &:focus-visible,
   &:has(:focus-visible) {
     opacity: 1;
+  }
+}
+
+/* ── A rail row's trailing zone (`components/ui/RailRow.tsx`) ─────────── */
+/*
+ * One zone at the right end of a row holds two things in turn. At rest it
+ * shows the row's `meta`, such as a count. On hover, on keyboard focus in
+ * the row, or while the row is pinned, it shows the row's actions.
+ *
+ * The actions also carry `reveal-on-hover`, so they keep the house reveal.
+ * These two utilities add what a row needs on top of it:
+ *
+ *   - At rest the actions take NO width. A row that keeps room for its
+ *     "···" and "+" takes about 60px from every name, which is what the
+ *     owner saw on 2026-10-10. `max-width: 0` keeps the buttons in the tab
+ *     order, which `display: none` would not.
+ *   - Hidden actions take no click. An invisible button at the row's end
+ *     swallows the tap that was meant to select the row.
+ *   - Keyboard focus ANYWHERE in the row reveals them, not only focus on the
+ *     actions themselves.
+ *   - `data-pinned` on the row holds them open: while the row's menu is open,
+ *     and for the selected row on a phone, where nothing can hover.
+ *
+ * No media query, for the reason the block above gives. Fences:
+ * `components/ui/RailRow.test.ts` and `e2e/rail-rows.spec.ts`.
+ */
+@utility rail-row-actions {
+  max-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] &,
+  &:has(:focus-visible) {
+    max-width: none;
+    overflow: visible;
+    pointer-events: auto;
+    opacity: 1;
+  }
+}
+
+/*
+ * The count gives its place to the actions, and ONLY on a row that has
+ * actions (`data-has-actions`). A row with none, such as an Email folder,
+ * keeps its count on hover and on focus. Nothing would take its place.
+ *
+ * ⚠️ Hidden from SIGHT only, never with `display: none`. The count is part
+ * of the label button's accessible name ("Finance & Accounts 6 open tasks").
+ * `display: none` took it out of the name the moment a keyboard focused the
+ * row. This is the screen-reader-only clip: no width, no paint, still read.
+ */
+@utility rail-row-meta {
+  .group[data-has-actions]:hover &,
+  .group[data-has-actions]:has(:focus-visible) &,
+  .group[data-has-actions][data-pinned] & {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/*
+ * The icon slot of a row that can open. The expand chevron sits over the
+ * icon, transparent at rest. On hover or keyboard focus in the row, the
+ * chevron shows and the icon gives way. The chevron is a real button the
+ * whole time, so Tab reaches it at rest, and reaching it shows it.
+ *
+ * ⚠️ At rest it takes NO pointer, so a hidden chevron never catches a
+ * press meant for the icon. ⚠️ That is NOT enough for a finger. Chromium
+ * sets `:hover` at the start of a tap, so the tap's click lands on the
+ * chevron this rule has just switched on (measured 2026-10-10). The touch
+ * half is `togglePress` in `RailRow.tsx`: a tap on a row that is not
+ * selected selects it. A phone does not use this utility at all, because
+ * there the chevron is always shown.
+ */
+@utility rail-row-chevron {
+  opacity: 0;
+  pointer-events: none;
+
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@utility rail-row-icon {
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
+    opacity: 0;
   }
 }
 

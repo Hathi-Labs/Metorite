@@ -96,6 +96,9 @@ export type ColorTokens = Record<CategoricalToken, string> & {
   cardForeground: string;
   popover: string;
   popoverForeground: string;
+  /** The hover tip of a whole name. Dark in both modes (`OverflowTip`). */
+  tooltip: string;
+  tooltipForeground: string;
   primary: string;
   primaryForeground: string;
   secondary: string;
@@ -144,6 +147,8 @@ export const REQUIRED_COLOR_TOKENS = [
   "cardForeground",
   "popover",
   "popoverForeground",
+  "tooltip",
+  "tooltipForeground",
   "primary",
   "primaryForeground",
   "secondary",

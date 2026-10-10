@@ -365,6 +365,31 @@ Seven rules on top of the three above. Each one exists because it was broken:
    `SettingsHeader` to an `<h2>`. Add a new live pane to `APP_BAR_HOME` in
    `appBar.test.ts` and to `PAGES` in the e2e, in the same PR.
    `appBar.test.ts` fails when the two lists differ.
+12. **A rail of named items uses `RailRow`. A truncated label gets
+   `OverflowTip`.** *(Owner direction, 2026-10-10, with ClickUp's sidebar as
+   the reference.)* Both live in `src/components/ui/`.
+   - A row shows its actions on hover and on keyboard focus only. At rest
+     the actions take no width, and the row shows its muted count.
+   - The count gives way only on a row with actions, and only from sight.
+     It stays in the row's accessible name.
+   - A row that opens shows its chevron in the icon's slot on hover and on
+     keyboard focus. The toggle stays a labelled button, so Tab reaches it.
+   - On a phone the chevron has its own column, and the icon stays. Each
+     row shows its `phoneActions`, one "···" that opens the row's menu.
+   - A cut name shows whole in a dark tip after 400 ms. A name that fits
+     shows no tip, and no row adds a native `title` to its name.
+   - The Projects tree, the My Tasks rail, the Email folders and the
+     WhatsApp triage rail use it. Do not draw a rail row by hand.
+
+   **Fences.** `src/components/ui/RailRow.test.ts`,
+   `RailRow.phone.test.ts` and `OverflowTip.test.ts` hold the markup and
+   the tip's rules. `src/lib/railRows.test.ts` fails when a rail on its list
+   stops drawing `RailRow`.
+
+   Add a new rail to that test's `RAILS` list in the same PR. That step is
+   review, and no test holds it. `e2e/rail-rows.spec.ts` measures the hover,
+   the tip, the width and the phone drawer. `DESIGN_SYSTEM.md` §6b holds the
+   shape.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

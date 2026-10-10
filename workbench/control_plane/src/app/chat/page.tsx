@@ -1,6 +1,7 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import OverflowTip from "@/components/ui/OverflowTip";
 import Icon from "@/components/Icon";
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
@@ -500,9 +501,12 @@ function SessionList({
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
                           <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} />
-                          <span className={`truncate flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}>
-                            {s.title ?? s.name}
-                          </span>
+                          {/* A cut title shows whole in a tip (owner, 2026-10-10). The
+                              row stays a two-line card, so only this line gets it. */}
+                          <OverflowTip
+                            text={s.title ?? s.name}
+                            className={`flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}
+                          />
                           {/* Shared rooms look different at a glance. A count
                               rather than a generic icon, because "who else is
                               in here" is the question the badge answers. */}

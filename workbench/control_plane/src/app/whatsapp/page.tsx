@@ -9,6 +9,7 @@
 // never as more always-on chrome on the queue.
 
 import Button from "@/components/ui/Button";
+import RailRow from "@/components/ui/RailRow";
 import AppIcon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -368,33 +369,20 @@ export default function WhatsAppPage() {
           const active = s.key === activeStream;
           const count = streamCount(s.key);
           const Icon = s.icon;
+          // A rail row (owner, 2026-10-10): the count is the row's muted
+          // meta, as on every other rail.
           return (
-            <button
+            <RailRow
               key={s.key}
-              onClick={() => {
+              label={s.label}
+              selected={active}
+              onSelect={() => {
                 setActiveStream(s.key);
                 setSelectedChat(null);
               }}
-              className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors ${
-                active
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-              <span className="flex-1 truncate text-xs">{s.label}</span>
-              {count > 0 && (
-                <span
-                  className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
-                    active
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {count}
-                </span>
-              )}
-            </button>
+              icon={<Icon className="h-3.5 w-3.5 shrink-0" />}
+              meta={count > 0 ? count : null}
+            />
           );
         })}
         {/* Native WhatsApp labels/lists the founder created, mirrored read-only
@@ -407,33 +395,20 @@ export default function WhatsAppPage() {
             {labels.map((l) => {
               const key = labelKey(l.wa_label_id);
               const active = key === activeStream;
+              // A label is named by the founder in WhatsApp, so it can be long.
+              // The row cuts it and shows it whole in a tip.
               return (
-                <button
+                <RailRow
                   key={l.wa_label_id}
-                  onClick={() => {
+                  label={l.name}
+                  selected={active}
+                  onSelect={() => {
                     setActiveStream(key);
                     setSelectedChat(null);
                   }}
-                  className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors ${
-                    active
-                      ? "bg-primary/15 text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                >
-                  <LabelDot color={l.color} />
-                  <span className="flex-1 truncate text-xs">{l.name}</span>
-                  {l.chat_count > 0 && (
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
-                        active
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-secondary text-muted-foreground"
-                      }`}
-                    >
-                      {l.chat_count}
-                    </span>
-                  )}
-                </button>
+                  icon={<LabelDot color={l.color} />}
+                  meta={l.chat_count > 0 ? l.chat_count : null}
+                />
               );
             })}
           </div>
