@@ -13,6 +13,7 @@
 import { NAV_SECTIONS } from "@/lib/nav";
 import { relativeTime } from "@/lib/taskCard";
 
+import { orderCards } from "./presets";
 import { KIND_ORDER, type NeedsApp, type NeedsItem, type NeedsKind, type SourceState } from "./needs";
 
 // ── The header ──────────────────────────────────────────────────────────────
@@ -303,6 +304,20 @@ export function cardsFor(features: readonly string[], isAdmin = false): MyDayCar
     today: lens,
     next: lens,
   };
+}
+
+/**
+ * The order My Day draws its cards in (NS-7). With the shell nav off, the
+ * page's own order. Otherwise the member's layout: the stored one, the
+ * browser's copy of it, or the role's preset when the read failed. While
+ * nothing is known the page holds the card area, so this order never
+ * changes under the member's eye.
+ */
+export function cardOrderFor<T extends string>(
+  held: readonly T[],
+  shell: { enabled: boolean; layout: { cards: readonly string[] } },
+): T[] {
+  return shell.enabled ? orderCards(held, shell.layout.cards) : [...held];
 }
 
 // ── Today's rows ────────────────────────────────────────────────────────────

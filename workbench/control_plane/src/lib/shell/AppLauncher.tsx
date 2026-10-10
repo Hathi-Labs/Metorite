@@ -24,7 +24,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
-import { EMPTY_SHELL, togglePin } from "@/lib/shell/presets";
+import { EMPTY_SHELL, PINNABLE, togglePin } from "@/lib/shell/presets";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
 import { saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
@@ -101,7 +101,7 @@ export default function AppLauncher({
                       href={p.href}
                       onClick={onClose}
                       aria-current={here ? "page" : undefined}
-                      className={`flex h-full items-start gap-3 rounded-lg border px-3 py-2.5 tech-transition ${canPin ? "pr-10" : ""} ${
+                      className={`flex h-full items-start gap-3 rounded-lg border px-3 py-2.5 tech-transition ${canPin && PINNABLE.has(p.href) ? "pr-10" : ""} ${
                         here
                           ? "border-primary/40 bg-primary/10"
                           : "border-border hover:border-primary/30 hover:bg-secondary"
@@ -123,7 +123,7 @@ export default function AppLauncher({
                     {/* ⚠️ The wrapper places the star. `.cc-control` sets its
                         own `position`, which beats an `absolute` class on
                         the button, and the star then drew under the tile. */}
-                    {canPin && (
+                    {canPin && PINNABLE.has(p.href) && (
                       <span className="absolute right-2 top-2">
                         <Button
                           variant="ghost"

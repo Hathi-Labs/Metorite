@@ -28,6 +28,7 @@ from gateway.routes.shell.intent import JOBS
 ROOT = Path(__file__).resolve().parents[2]
 NAV = ROOT / "workbench" / "control_plane" / "src" / "lib" / "nav.ts"
 PRESETS = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "presets.ts"
+REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "registry.ts"
 
 
 class _Result:
@@ -241,5 +242,15 @@ class TestOneVocabulary:
         source = PRESETS.read_text(encoding="utf-8")
         assert _ts_list(source, "CARD_KEYS") == me.SHELL_CARDS
 
-    def test_the_jobs_are_the_gateway_s_one_list(self) -> None:
-        assert me._job_ids() == {j.id for j in JOBS}
+    def test_the_jobs_are_the_command_bar_s(self) -> None:
+        """The PUT checks job ids against the gateway's list (`intent.py`).
+        The presets name the jobs of the workbench's list (`registry.ts`).
+        So this reads the TypeScript, as `TestOneJobList` does, and it fails
+        when the two lists drift."""
+        source = REGISTRY.read_text(encoding="utf-8")
+        match = re.search(r"export const JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
+        assert match, "JOBS not found in registry.ts"
+        ts_ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', match.group(1), re.M))
+        assert len(ts_ids) >= 10
+        assert me._job_ids() == ts_ids
+        assert {j.id for j in JOBS} == ts_ids

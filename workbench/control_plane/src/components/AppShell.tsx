@@ -134,6 +134,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // by any path, never on a sign-out button alone.
   useChatScope();
   useChatSignOutClear();
+  // NS-7: the layout read starts here, beside the access read, because the
+  // route needs only the session. The sidebar mounts once access resolves,
+  // and by then the answer is often in memory (`shellPrefs.ts`).
+  useShellPrefs();
 
   // The shell nav flag, read once as the Sidebar reads it: the dev override
   // must not flip mid-session, and the two must agree on the frame.

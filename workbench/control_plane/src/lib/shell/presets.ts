@@ -13,7 +13,7 @@
  * `SHELL_PRESETS`, `SHELL_CARDS`), and `test_auth_me_shell.py` fails when the
  * two lists differ.
  */
-import type { NavPane, NavSection } from "@/lib/nav";
+import { PANES, type NavPane, type NavSection } from "@/lib/nav";
 
 export type PresetId =
   | "founder"
@@ -248,6 +248,18 @@ export function pinnedPanes(pins: readonly string[], sections: readonly NavSecti
   }
   return out;
 }
+
+/**
+ * The panes a member may pin: every pane `nav.ts` declares by its own
+ * `href`. The six Center panes are derived from `lib/centers.ts`, and D49
+ * keeps them unlinked, so they are not pins. The gateway refuses any other
+ * href (`SHELL_PANES` in `routes/admin/me.py`), and
+ * `test_auth_me_shell.py::TestOneVocabulary` holds that list to `nav.ts`.
+ * So All apps shows a star only where the save can land.
+ */
+export const PINNABLE: ReadonlySet<string> = new Set(
+  PANES.filter((p) => !p.href.startsWith("/centers/")).map((p) => p.href),
+);
 
 /** The pins with `href` added at the end, or taken out. */
 export function togglePin(pins: readonly string[], href: string): string[] {

@@ -37,8 +37,8 @@ import { visibleSections } from "@/lib/nav";
 
 import AppLauncher from "./AppLauncher";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
-import { cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
-import { BUILT_CARDS, orderCards } from "./presets";
+import { cardOrderFor, cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
+import { BUILT_CARDS } from "./presets";
 import { homePane } from "./shellNav";
 import { useShellPrefs } from "./shellPrefs";
 
@@ -76,7 +76,11 @@ export default function MyDay() {
   // the page keeps its own order.
   const shell = useShellPrefs();
   const held = BUILT_CARDS.filter((k) => cards[k as keyof typeof cards]);
-  const order = shell.enabled ? orderCards(held, shell.layout.cards) : held;
+  const order = cardOrderFor(held, shell);
+  // ⚠️ With no known layout yet (a first visit, the read still out), the
+  // cards wait, as they wait for access. Drawing the role's order first and
+  // the member's after moved every card under the member's eye (round 2).
+  const layoutPending = shell.enabled && shell.loading;
 
   // The summary waits for both reads. A feed that failed says nothing here,
   // because "Nothing needs you" would be a claim the page cannot back. A
@@ -122,7 +126,7 @@ export default function MyDay() {
         </div>
       </div>
 
-      {accessLoading ? (
+      {accessLoading || layoutPending ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
           <Skeleton className="h-64 w-full rounded-xl xl:col-span-2" />
           <Skeleton className="h-40 w-full rounded-xl" />

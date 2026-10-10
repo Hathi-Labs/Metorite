@@ -41,10 +41,11 @@ import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/Toast";
 import { visibleSections } from "@/lib/nav";
 import { ANSWERS, EMPTY_SHELL, QUESTION, pinnedPanes, presetById, type PresetId } from "@/lib/shell/presets";
 import { shellNavOn } from "@/lib/shell/shellNav";
-import { CHANGE_LAYOUT, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
+import { CHANGE_LAYOUT, askedInThisPage, markAsked, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export const WELCOME_PARAM = "welcome";
 export const WELCOME_NEW_ORG = "new-org";
@@ -88,22 +89,25 @@ function WelcomeDialogInner() {
   const sections = visibleSections(loading ? null : access.features, access.is_admin);
 
   // ── When the question shows ─────────────────────────────────────────────
-  // `asking` latches when the server says "never asked". The latch matters:
-  // an answer shows at once (`saveShellPrefs` is optimistic), and the live
-  // value then reads "answered" while the dialog is still saying thank you.
-  const neverAsked = navOn && shell.enabled && shell.stored !== undefined && shell.stored.answered === null;
+  // Only on the SERVER's "never asked" (`fresh`), never on the browser copy,
+  // which may be out of date. `asking` latches: an answer shows at once
+  // (`saveShellPrefs` is optimistic), and the live value then reads
+  // "answered" while the founder's welcome still has a step to show. The
+  // page latch (`askedInThisPage`) stops a remount from asking twice.
+  const neverAsked = navOn && shell.enabled && shell.fresh !== undefined && shell.fresh.answered === null;
   const [asking, setAsking] = useState(false);
   const [reopened, setReopened] = useState(false);
   const [handled, setHandled] = useState(false);
-  if (neverAsked && !asking && !handled) setAsking(true);
+  if (neverAsked && !asking && !handled && !askedInThisPage()) setAsking(true);
+  useEffect(() => {
+    if (asking) markAsked();
+  }, [asking]);
   const [step, setStep] = useState<"ask" | "invite">("ask");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   // "Change my layout" in the account menu asks again.
   useEffect(() => {
     const onChange = () => {
-      setError(null);
       setStep("ask");
       setReopened(true);
     };
@@ -123,29 +127,41 @@ function WelcomeDialogInner() {
     setReopened(false);
     setHandled(true);
     setStep("ask");
-    setError(null);
     if (newOrg) router.replace(pathname);
   };
   const next = () => (newOrg ? setStep("invite") : close());
 
-  const save = async (value: Parameters<typeof saveShellPrefs>[0]) => {
-    setSaving(true);
-    setError(null);
-    try {
-      await saveShellPrefs(value);
-      next();
-    } catch {
-      setError("Your answer was not saved. Try again.");
-    } finally {
-      setSaving(false);
-    }
+  /**
+   * ⚠️ Every way out closes FIRST, and the write follows (round 2). A write
+   * that fails must never hold the member in the question: the dialog is
+   * already gone, the choice stays for this page (`keep`), and one toast
+   * says what happened. The server still holds "never asked", so a later
+   * visit asks again. That is the honest answer to a write that did not land.
+   */
+  const save = (value: Parameters<typeof saveShellPrefs>[0], again: boolean) => {
+    void saveShellPrefs(value, { keep: true }).catch(() => {
+      toast.show({
+        key: "shell-layout-save",
+        variant: "error",
+        title: again
+          ? "Couldn't save your layout. It shows until you reload."
+          : "Couldn't save that. We'll ask again next time.",
+      });
+    });
   };
-  const answer = (preset: PresetId) =>
-    void save({ ...EMPTY_SHELL, preset, answered: "answered" });
+  const answer = (preset: PresetId) => {
+    const again = reopened && !asking;
+    next();
+    save({ ...EMPTY_SHELL, preset, answered: "answered" }, again);
+  };
   // "Skip for now" is a choice, stored, so the member is not asked again. A
   // pin the member set before keeps its place.
-  const skip = () => void save({ ...EMPTY_SHELL, ...shell.stored, answered: "skipped" });
-  // Asked again from the menu, the way out keeps the layout as it is.
+  const skip = () => {
+    next();
+    save({ ...EMPTY_SHELL, ...shell.stored, answered: "skipped" }, false);
+  };
+  // Asked again from the menu, the way out keeps the layout as it is. On a
+  // first visit, Escape, the header's X and "Skip for now" are all a skip.
   const dismiss = () => (reopened && !asking ? close() : skip());
 
   const current = reopened ? shell.layout.preset.id : null;
@@ -162,7 +178,7 @@ function WelcomeDialogInner() {
     return (
       <Modal
         open
-        onClose={saving ? () => {} : dismiss}
+        onClose={dismiss}
         title={QUESTION}
         description={
           newOrg
@@ -185,7 +201,6 @@ function WelcomeDialogInner() {
                     size="none"
                     layout="flex items-center"
                     selected={current === a.preset}
-                    disabled={saving}
                     onClick={() => answer(a.preset)}
                     className="w-full gap-3 px-3 py-2.5 text-left"
                     data-answer={a.preset}
@@ -202,13 +217,8 @@ function WelcomeDialogInner() {
               );
             })}
           </ul>
-          {error && (
-            <p role="alert" className="text-xs text-destructive">
-              {error}
-            </p>
-          )}
           <div className="flex justify-end">
-            <Button variant="ghost" disabled={saving} onClick={dismiss}>
+            <Button variant="ghost" onClick={dismiss}>
               {reopened && !asking ? "Keep my layout" : "Skip for now"}
             </Button>
           </div>

@@ -9,6 +9,7 @@
  * store and write-through to localStorage for instant reads on mount.
  */
 
+import { clearCachedLayouts } from "@/lib/shell/shellCache";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
 
 export interface ChatSession {
@@ -299,8 +300,11 @@ export function clearSignedOutAccount(): void {
   try {
     const last = localStorage.getItem(LAST_SCOPE_KEY);
     if (last && last.includes("|")) {
-      const prefix = accountPrefix(last.slice(0, last.indexOf("|")));
+      const email = last.slice(0, last.indexOf("|"));
+      const prefix = accountPrefix(email);
       removeKeys(keysWhere((k) => k.startsWith(prefix)));
+      // The shell layout of the same account (NS-7), under the same scope.
+      clearCachedLayouts([email]);
     }
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
@@ -328,6 +332,8 @@ export function clearAccountNamespaces(emails: readonly string[]): void {
       const prefix = accountPrefix(email);
       removeKeys(keysWhere((k) => k.startsWith(prefix)));
     }
+    // The shell layouts of the same accounts (NS-7), in every organization.
+    clearCachedLayouts(emails);
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
     /* storage unavailable: nothing is stored */
