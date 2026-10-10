@@ -99,7 +99,11 @@ export function railRowClass({
     : tier === "group"
       ? "text-foreground hover:bg-muted"
       : "text-muted-foreground hover:bg-muted hover:text-foreground";
-  return `group relative flex ${height} items-center gap-1 rounded-md px-2 tech-transition ${tone}`;
+  // ⚠️ No `gap` on the row. A flex gap still charges its 4 px beside the
+  // zero-width actions zone and beside each indent step, which took 8 px of
+  // the room this row exists to give back (measured at a 256 px rail). The
+  // lead keeps its own margin instead.
+  return `group relative flex ${height} items-center rounded-md px-2 tech-transition ${tone}`;
 }
 
 export function RailRow({
@@ -141,7 +145,7 @@ export function RailRow({
         </span>
       ))}
       {lead || leadSpace ? (
-        <span className="flex w-4.5 shrink-0 items-center justify-center">{lead}</span>
+        <span className="mr-1 flex w-4.5 shrink-0 items-center justify-center">{lead}</span>
       ) : null}
       {editor ?? (
         <button
@@ -164,7 +168,7 @@ export function RailRow({
             {label}
           </span>
           {meta != null && meta !== false ? (
-            <span className="rail-row-meta shrink-0 pl-1 text-[11px] tabular-nums text-muted-foreground">
+            <span className="rail-row-meta shrink-0 text-[11px] tabular-nums text-muted-foreground">
               {meta}
             </span>
           ) : null}
@@ -172,6 +176,9 @@ export function RailRow({
       )}
       {actions && !editor ? (
         <span className="reveal-on-hover rail-row-actions flex shrink-0 items-center gap-0.5">
+          {/* The space before the actions, INSIDE the zone, so it folds away
+              with them at rest. */}
+          <span aria-hidden className="w-0.5 shrink-0" />
           {actions}
         </span>
       ) : null}
