@@ -466,7 +466,9 @@ async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
         _log.warning("whatsapp_channel.bot.sender_refused", length=len(wa_id))
         return None
     mtype = str((msg.raw or {}).get("type") or "text")
-    tap = tap_text(msg.raw) if mtype == "interactive" else None
+    # A tap counts only with the WhatsApp profile on (WAC-10a ships dark).
+    tap = (tap_text(msg.raw)
+           if mtype == "interactive" and flags.native_ui_enabled() else None)
     if mtype in _NO_ACTION_TYPES and tap is None:
         _log.info("whatsapp_channel.bot.no_action", type=mtype[:20])
         return None

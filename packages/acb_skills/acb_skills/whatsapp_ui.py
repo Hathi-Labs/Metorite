@@ -33,12 +33,14 @@ Fence: ``tests/unit/test_wac_native_ui.py``.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import re
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from acb_skills import whatsapp_render as render
 
@@ -76,9 +78,21 @@ SECTION_TITLE_MAX = 24
 MAX_ROWS = 10
 FOOTER_MAX = 60
 CAPTION_MAX = 1024
-#: A link button opens Metorite and nothing else, so a model that was talked
-#: into it cannot send the member to a phishing page.
-LINK_HOST = "metorite.com"
+#: A link button opens the Metorite app and nothing else, so a model that was
+#: talked into it cannot send the member to a phishing page. The host must be
+#: exactly this, with no port and no user part.
+LINK_HOST = "app.metorite.com"
+#: A browser (WHATWG) and Python's ``urlsplit`` read a backslash or an ``@``
+#: differently: ``https://evil.com\@app.metorite.com`` is evil.com to a phone.
+#: So a URL that holds one, a space or a control character is refused.
+_URL_REFUSED = re.compile(r"[\\@\s\x00-\x1f\x7f]")
+URL_MAX = 2000
+#: The most characters of one element's rendition that the thread keeps.
+RENDITION_MAX = 2000
+#: Between a reply's text and the renditions of its elements in the thread
+#: (U+2063, an invisible separator). A resend cuts the record here, so the
+#: member never gets the bracketed renditions as text (:func:`resend_text`).
+RENDITION_MARK = "⁣"
 
 
 @dataclass(frozen=True)
@@ -251,22 +265,40 @@ def _list(data: dict[str, Any]) -> OutMessage:
 def _link(data: dict[str, Any]) -> OutMessage:
     body = _text(data, "body", limit=BODY_MAX)
     label = _short(data.get("label") or "Open in Metorite", BUTTON_TITLE_MAX, "link")
-    url = data.get("url")
-    if not isinstance(url, str):
+    raw = data.get("url")
+    if not isinstance(raw, str) or not raw.strip():
         raise _Refused('"url" is required')
-    parts = urlsplit(url.strip())
-    host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not (host == LINK_HOST or host.endswith("." + LINK_HOST)):
-        raise _Refused(f"a link must open https://app.{LINK_HOST}. Other sites are refused")
+    url = safe_link(raw)
+    if url is None:
+        raise _Refused(f"a link must open a page of https://{LINK_HOST}. "
+                       "Other sites are refused")
     interactive = {
         "type": "cta_url",
         "body": {"text": body},
         "action": {"name": "cta_url",
-                   "parameters": {"display_text": label, "url": url.strip()}},
+                   "parameters": {"display_text": label, "url": url}},
     }
     _footer(data, interactive)
-    return OutMessage("interactive", f"{body}\n[Link: {label} -> {url.strip()}]",
+    return OutMessage("interactive", f"{body}\n[Link: {label} -> {url}]",
                       interactive=interactive)
+
+
+def safe_link(raw: str) -> str | None:
+    """*raw* rebuilt from its checked parts, or None when it is not a page of
+    ``https://app.metorite.com``. The URL that goes out is the rebuilt one,
+    so a part that Python and a browser read differently cannot pass."""
+    url = raw.strip()
+    if len(url) > URL_MAX or _URL_REFUSED.search(url):
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if (parts.scheme != "https" or parts.netloc.lower() != LINK_HOST
+            or port is not None or parts.username or parts.password):
+        return None
+    return urlunsplit(("https", LINK_HOST, parts.path or "/", parts.query, parts.fragment))
 
 
 def _list_of(data: dict[str, Any], key: str, *, required: bool = True) -> list[Any] | None:
@@ -295,7 +327,7 @@ def _chart(data: dict[str, Any]) -> OutMessage:
                                   totals=_list_of(data, "totals", required=False))
     else:
         raise _Refused('chart "type" must be "bar", "line" or "progress"')
-    pairs = ", ".join(f"{lab}: {val}" for lab, val in zip(labels, values))
+    pairs = ", ".join(f"{lab}: {val}" for lab, val in zip(labels, values, strict=True))
     rendition = f"[Chart, {kind}: {title}] {pairs}" + (f"\n{caption}" if caption else "")
     return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
 
@@ -330,7 +362,11 @@ def build(kind: str, data: dict[str, Any]) -> OutMessage:
         raise _Refused(f'"kind" must be one of: {", ".join(_BUILDERS)}')
     if not isinstance(data, dict):
         raise _Refused('"data" must be an object')
-    return builder(data)
+    msg = builder(data)
+    if len(msg.rendition) > RENDITION_MAX:
+        msg = OutMessage(msg.kind, msg.rendition[: RENDITION_MAX - 1] + "…",
+                         interactive=msg.interactive, png=msg.png, caption=msg.caption)
+    return msg
 
 
 # ── The tool ────────────────────────────────────────────────────────────────
@@ -368,8 +404,10 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False,
                 "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
     try:
-        message = build(str(kind or "").strip().lower(), data)
-    except (ValueError, TypeError) as exc:  # RenderError is a ValueError
+        # In a worker thread: drawing an image must never hold the gateway's
+        # event loop, which serves every tenant (`whatsapp_render` locks).
+        message = await asyncio.to_thread(build, str(kind or "").strip().lower(), data)
+    except (ValueError, TypeError, OverflowError) as exc:  # RenderError is a ValueError
         return {"ok": False, "error": str(exc)}
     run.outbox.append(message)
     return {"ok": True, "queued": len(run.outbox),
@@ -379,3 +417,24 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
 def rendition_of(messages: list[OutMessage]) -> str:
     """The thread text of the elements, in send order."""
     return "\n\n".join(m.rendition for m in messages)
+
+
+def thread_record(reply: str, messages: list[OutMessage]) -> str:
+    """What the thread keeps for one answer: the text, then the mark, then
+    each element's rendition. With no element it is the text alone."""
+    if not messages:
+        return reply
+    return (f"{reply}\n\n" if reply else "") + RENDITION_MARK + rendition_of(messages)
+
+
+def resend_text(stored: str | None) -> str | None:
+    """The text to send again from a stored record (:func:`thread_record`).
+
+    The text part, so the member never gets the renditions as text. An answer
+    of elements only has no text part, and then the renditions go, because
+    some answer is better than none.
+    """
+    if stored is None or RENDITION_MARK not in stored:
+        return stored
+    text, _mark, rest = stored.partition(RENDITION_MARK)
+    return text.strip() or rest.strip()

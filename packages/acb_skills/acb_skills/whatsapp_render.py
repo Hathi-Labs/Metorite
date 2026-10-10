@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import colorsys
 import math
+import threading
 from xml.sax.saxutils import escape
 
 # ── The look (light values of globals.css) ──────────────────────────────────
@@ -24,7 +25,7 @@ from xml.sax.saxutils import escape
 
 def _hsl(h: float, s: float, l: float) -> str:  # noqa: E741 - the CSS name
     r, g, b = colorsys.hls_to_rgb(h / 360, l / 100, s / 100)
-    return "#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255))
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
 BACKGROUND = "#ffffff"
@@ -60,24 +61,43 @@ class RenderError(ValueError):
     """The data cannot make this image. The message is for the model."""
 
 
+#: PyMuPDF is not safe to call from two threads at once, and the tool draws
+#: in a worker thread (``whatsapp_ui``). Every call into it holds this lock.
+_LOCK = threading.Lock()
+
+#: No line of an image is wider than this many characters at the smallest
+#: size, so longer text is cut BEFORE it is measured. A 4096-character label
+#: measured as it shrank once took minutes (WAC-10a review).
+TEXT_MAX = 160
+
+
 def _text_width(text: str, size: float, *, bold: bool = False) -> float:
     try:
         import pymupdf
 
-        return float(pymupdf.get_text_length(text, fontname="hebo" if bold else "helv",
-                                             fontsize=size))
+        with _LOCK:
+            return float(pymupdf.get_text_length(
+                text, fontname="hebo" if bold else "helv", fontsize=size))
     except Exception:  # an approximation is enough for layout
         return len(text) * size * 0.55
 
 
 def _fit(text: str, size: float, width: float, *, bold: bool = False) -> str:
-    """*text* cut with an ellipsis so it fits *width* at *size*."""
-    text = " ".join(str(text).split())
+    """*text* cut with an ellipsis so it fits *width* at *size*.
+
+    A binary search over the length, so a cut costs about 8 measurements.
+    """
+    text = " ".join(str(text).split())[:TEXT_MAX]
     if _text_width(text, size, bold=bold) <= width:
         return text
-    while text and _text_width(text + "…", size, bold=bold) > width:
-        text = text[:-1]
-    return text.rstrip() + "…"
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _text_width(text[:mid] + "…", size, bold=bold) <= width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…"
 
 
 def _t(x: float, y: float, text: str, *, size: float = 15, fill: str = FOREGROUND,
@@ -116,9 +136,13 @@ def _svg(parts: list[str], height: float) -> str:
 def _number(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RenderError(f"{field} must be numbers")
-    if not math.isfinite(value):
-        raise RenderError(f"{field} must be finite numbers")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:  # an int too large for a float
+        raise RenderError(f"{field} must be finite numbers") from exc
+    if not math.isfinite(number) or abs(number) > 1e15:
+        raise RenderError(f"{field} must be finite numbers below 10^15")
+    return number
 
 
 def fmt(value: float, unit: str = "") -> str:
@@ -151,7 +175,7 @@ def bar_svg(title: str, labels: list[str], values: list[float], *,
     track = WIDTH - PAD - value_w - x0
     zero = x0 + track * (-low / span)
     row = 34
-    for i, (label, v) in enumerate(zip(labels, nums)):
+    for i, (label, v) in enumerate(zip(labels, nums, strict=False)):
         cy = y + i * row
         parts.append(_t(PAD, cy + 20, _fit(str(label), 15, label_w), size=15))
         w = track * abs(v) / span
@@ -161,7 +185,7 @@ def bar_svg(title: str, labels: list[str], values: list[float], *,
         parts.append(_t(WIDTH - PAD, cy + 20, fmt(v, unit), size=15, bold=True,
                         anchor="end"))
     height = y + len(labels) * row + 40
-    return _svg(parts + [_footer(height)], height)
+    return _svg([*parts, _footer(height)], height)
 
 
 def line_svg(title: str, labels: list[str], values: list[float], *,
@@ -208,7 +232,7 @@ def line_svg(title: str, labels: list[str], values: list[float], *,
     parts.append(_t(right, bottom + 22, _fit(str(labels[-1]), 13, 200), size=13,
                     fill=MUTED, anchor="end"))
     height = bottom + 60
-    return _svg(parts + [_footer(height)], height)
+    return _svg([*parts, _footer(height)], height)
 
 
 def progress_svg(title: str, labels: list[str], values: list[float], *,
@@ -244,7 +268,7 @@ def progress_svg(title: str, labels: list[str], values: list[float], *,
             parts.append(f'<rect x="{PAD}" y="{cy + 26}" width="{max(track * pct / 100, 12):.1f}" '
                          f'height="12" rx="6" fill="{colour}"/>')
     height = y + len(labels) * row + 36
-    return _svg(parts + [_footer(height)], height)
+    return _svg([*parts, _footer(height)], height)
 
 
 def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
@@ -260,9 +284,11 @@ def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
     for r in rows:
         if not isinstance(r, (list, tuple)) or len(r) != len(columns):
             raise RenderError("each row must be a list with one cell per column")
-        cells.append(["" if c is None else (fmt(c) if isinstance(c, (int, float))
-                                            and not isinstance(c, bool) else str(c))
+        cells.append([("" if c is None else (fmt(_number(c, "cells"))
+                                             if isinstance(c, (int, float))
+                                             and not isinstance(c, bool) else str(c)))[:TEXT_MAX]
                       for c in r])
+    columns = [str(c)[:TEXT_MAX] for c in columns]
     numeric = [all(isinstance(r[j], (int, float)) and not isinstance(r[j], bool)
                    for r in rows if r[j] is not None)
                for j in range(len(columns))]
@@ -286,7 +312,7 @@ def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
     def _row(cy: float, values: list[str], *, bold: bool, fill: str) -> None:
         x = PAD
         for j, value in enumerate(values):
-            inner = widths[j] - 20
+            inner = max(widths[j] - 20, 12.0)
             text = _fit(value, 14, inner, bold=bold)
             if numeric[j]:
                 parts.append(_t(x + widths[j] - 10, cy + 22, text, size=14,
@@ -305,7 +331,7 @@ def table_svg(title: str, columns: list[str], rows: list[list[object]], *,
                          f'height="{row_h}" fill="{STRIPE}"/>')
         _row(cy, values, bold=False, fill=FOREGROUND)
     height = y + row_h * (len(cells) + 1) + 40
-    return _svg(parts + [_footer(height)], height)
+    return _svg([*parts, _footer(height)], height)
 
 
 # ── To a PNG ────────────────────────────────────────────────────────────────
@@ -319,11 +345,12 @@ def to_png(svg: str) -> bytes:
     except ImportError as exc:  # the gateway holds it, a bare install may not
         raise RenderError("this server cannot draw images") from exc
     try:
-        doc = pymupdf.open(stream=svg.encode("utf-8"), filetype="svg")
-        try:
-            pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(SCALE, SCALE), alpha=False)
-            return bytes(pix.tobytes("png"))
-        finally:
-            doc.close()
+        with _LOCK:
+            doc = pymupdf.open(stream=svg.encode("utf-8"), filetype="svg")
+            try:
+                pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(SCALE, SCALE), alpha=False)
+                return bytes(pix.tobytes("png"))
+            finally:
+                doc.close()
     except Exception as exc:
         raise RenderError("the image could not be drawn") from exc

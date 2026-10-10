@@ -26,6 +26,7 @@ R7 fences named here:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 import httpx
@@ -40,8 +41,10 @@ from tests.unit.test_wac_bot_run import (  # noqa: F401 - `world` is a fixture
     ANSWER,
     MEMBER,
     PHONE,
+    _later_sweeps,
     _message,
     _post_and_run,
+    _status_error,
     _World,
     world,
 )
@@ -123,19 +126,28 @@ async def test_bad_lists_are_refused(data: dict, says: str) -> None:
     assert box == []
 
 
-@pytest.mark.parametrize("url", [
-    "https://app.metorite.com/tasks", "https://metorite.com/", "https://x.app.metorite.com/a",
+@pytest.mark.parametrize(("url", "sent"), [
+    ("https://app.metorite.com/tasks", "https://app.metorite.com/tasks"),
+    ("https://APP.Metorite.com/tasks?view=today#t7", "https://app.metorite.com/tasks?view=today#t7"),
+    ("https://app.metorite.com", "https://app.metorite.com/"),
 ])
-async def test_a_link_opens_metorite(url: str) -> None:
+async def test_a_link_opens_the_metorite_app_as_a_rebuilt_url(url: str, sent: str) -> None:
     out, box = await _in_run("link", {"body": "Open it", "url": url})
     assert out["ok"] is True
     params = box[0].interactive["action"]["parameters"]
-    assert params == {"display_text": "Open in Metorite", "url": url}
+    assert params == {"display_text": "Open in Metorite", "url": sent}
 
 
 @pytest.mark.parametrize("url", [
     "http://app.metorite.com/tasks", "https://evil.com/", "https://metorite.com.evil.com/",
     "https://evilmetorite.com/", "javascript:alert(1)", "https://user@evil.com/@metorite.com",
+    # A browser reads these as evil.com, and Python's urlsplit as Metorite.
+    "https://evil.com\\@app.metorite.com/tasks", "https://evil.com@app.metorite.com/",
+    "https://evil.com:443@app.metorite.com/",
+    # Not the app host exactly.
+    "https://metorite.com/", "https://api.metorite.com/", "https://x.app.metorite.com/a",
+    "https://app.metorite.com:8443/", "https://app.metorite.com./tasks",
+    "https://app.metorite.com/ta sks", "https://app.metorite.com/\ttasks",
 ])
 async def test_a_link_anywhere_else_is_refused(url: str) -> None:
     out, box = await _in_run("link", {"body": "Open it", "url": url})
@@ -198,6 +210,58 @@ async def test_a_task_the_run_starts_sees_the_profile_and_closing_ends_it() -> N
         seen = await asyncio.create_task(asyncio.sleep(0, result=wui.current_run()))
         assert seen is run
     assert wui.current_run() is None
+
+
+async def test_long_labels_and_cells_draw_fast() -> None:
+    """WAC-10a review: a 4096-character label once held the event loop for
+    minutes. Text is cut before it is measured, and the fit is a search."""
+    import time
+
+    long = "Lorem ipsum dolor sit amet " * 160
+    start = time.monotonic()
+    out, _box = await _in_run("chart", {"type": "bar", "title": long[:80],
+                                        "labels": [long] * 12, "values": list(range(12))})
+    out2, _box2 = await _in_run("table", {"title": "t", "columns": [long] * 6,
+                                          "rows": [[long] * 6] * 20})
+    assert out["ok"] is True and out2["ok"] is True, (out, out2)
+    assert time.monotonic() - start < 10
+
+
+async def test_the_tool_draws_off_the_event_loop() -> None:
+    """The loop keeps turning while an image draws in a worker thread."""
+    ticks = 0
+
+    async def _tick() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    ticker = asyncio.create_task(_tick())
+    try:
+        await _in_run("table", {"title": "t", "columns": ["a", "b"],
+                                "rows": [["x" * 150, 1]] * 20})
+    finally:
+        ticker.cancel()
+    assert ticks > 1
+
+
+@pytest.mark.parametrize("values", [[10 ** 400], [1e300], [float("nan")]])
+async def test_a_number_a_chart_cannot_draw_is_refused(values: list) -> None:
+    out, box = await _in_run("chart", {"type": "bar", "title": "t", "labels": ["a"],
+                                       "values": values})
+    assert out["ok"] is False and box == []
+
+
+def test_a_resend_takes_the_text_and_never_the_renditions() -> None:
+    msg = wui.build("buttons", {"body": "More?", "buttons": ["Yes"]})
+    record = wui.thread_record("Two tasks are due.", [msg])
+    assert "[Buttons: Yes]" in record
+    assert wui.resend_text(record) == "Two tasks are due."
+    only = wui.thread_record("", [msg])
+    assert wui.resend_text(only) == msg.rendition, "an elements-only answer sends something"
+    assert wui.resend_text("plain") == "plain" and wui.resend_text(None) is None
+    assert wui.thread_record("plain", []) == "plain"
 
 
 def test_the_renderer_numbers_read_short() -> None:
@@ -293,6 +357,61 @@ def test_an_agent_the_run_calls_gets_no_ui_tool_and_no_web_tools(_no_db: None) -
     names = _names(agent)
     assert "whatsapp_ui" not in names
     assert not names & wui.WITHHELD_TOOLS
+
+
+def test_a_run_with_no_scope_still_loses_the_web_tools(_no_db: None) -> None:
+    """The executor's self-anneal retry injects with no ``tool_scope``. Only
+    the final-list union guards that path."""
+    agent = _FakeMafAgent("orchestrator")
+    with wui.whatsapp_run("orchestrator"):
+        ti._inject_agent_tools([agent], tool_scope=None, agent_name="orchestrator",
+                               agent_config={}, no_egress=False)
+    names = _names(agent)
+    assert "whatsapp_ui" in names
+    assert not names & wui.WITHHELD_TOOLS, sorted(names & wui.WITHHELD_TOOLS)
+
+
+def test_the_copilot_addendum_offers_no_withheld_tool(_no_db: None) -> None:
+    """The scope union: the addendum describes only the tools in scope."""
+    def _addendum(wa: bool) -> str:
+        agent = type("CopilotAgent", (), {})()
+        agent.name = "copilot-agent"
+        agent._tools = []
+        agent._default_options = {"system_message": {"mode": "append", "content": "Base."}}
+        ctx = wui.whatsapp_run("orchestrator") if wa else contextlib.nullcontext()
+        ti._build_injected_tools_addendum.cache_clear()
+        with ctx:
+            ti._inject_agent_tools([agent], tool_scope=_orchestrator_scope(),
+                                   agent_name="copilot-agent", agent_config={},
+                                   no_egress=False)
+        return agent._default_options["system_message"]["content"]
+
+    # A scope-gated entry. The addendum's fixed workspace section names
+    # write_artifact and emit_generative_ui whatever the scope, a known gap
+    # of a Copilot-shaped agent (spec §12.2). Every in-tree agent is MAF.
+    entries = ("- **manage_todo_list(", "### Task planning & progress tracking")
+    web, wa = _addendum(False), _addendum(True)
+    assert all(e in web for e in entries)
+    assert not any(e in wa for e in entries)
+
+
+def test_a_plain_maf_agent_gets_no_output_discipline_block(_no_db: None) -> None:
+    """The other MAF shape: ``tools`` and a string ``instructions``."""
+    from acb_skills.addendum import OUTPUT_DISCIPLINE_MARKERS
+
+    def _plain(wa: bool) -> str:
+        agent = type("PlainAgent", (), {})()
+        agent.name = "plain"
+        agent.tools = []
+        agent.instructions = "Base."
+        ctx = wui.whatsapp_run("orchestrator") if wa else contextlib.nullcontext()
+        with ctx:
+            ti._inject_agent_tools([agent], tool_scope=_orchestrator_scope(),
+                                   agent_name="plain", agent_config={}, no_egress=False)
+        return agent.instructions
+
+    assert any(m in _plain(False) for m in OUTPUT_DISCIPLINE_MARKERS)
+    assert not any(m in _plain(True) for m in OUTPUT_DISCIPLINE_MARKERS)
 
 
 # ── The run (the WAC-3 world, with the switch on) ──────────────────────────
@@ -467,28 +586,73 @@ def _tap(reply: dict[str, Any], kind: str = "button_reply") -> dict[str, Any]:
     return change
 
 
-async def test_a_button_tap_runs_as_its_title(world: _World) -> None:
+@pytest.fixture()
+def native(monkeypatch: pytest.MonkeyPatch) -> None:
+    _switch(monkeypatch, True)
+
+
+async def test_a_button_tap_runs_as_its_title(world: _World, native: None) -> None:
     await _post_and_run(_tap({"id": "b1", "title": "Yes"}))
     (call,) = world.agent.calls
     assert call["payload"]["message"] == "Yes"
     assert call["organization_id"] and call["session_user"] == MEMBER
 
 
-async def test_a_row_tap_runs_as_its_title_and_description(world: _World) -> None:
+async def test_a_row_tap_runs_as_its_title_and_description(
+    world: _World, native: None,
+) -> None:
     await _post_and_run(_tap({"id": "r2", "title": "Order the nozzle",
                               "description": "Due 5 pm"}, "list_reply"))
     assert world.agent.calls[0]["payload"]["message"] == "Order the nozzle (Due 5 pm)"
 
 
-async def test_a_flow_reply_or_an_empty_tap_gets_no_action(world: _World) -> None:
+async def test_a_flow_reply_or_an_empty_tap_gets_no_action(
+    world: _World, native: None,
+) -> None:
     await _post_and_run(_tap({"response_json": "{}"}, "nfm_reply"))
     await _post_and_run(_tap({"id": "b1", "title": "  "}))
     assert world.agent.calls == [] and world.sent == []
 
 
-async def test_a_tap_never_redeems_a_link_code(world: _World) -> None:
+async def test_a_tap_never_redeems_a_link_code(world: _World, native: None) -> None:
     world.links = []
     await _post_and_run(_tap({"id": "b1", "title": "Link me: ABCD2345"}))
     from gateway.routes.whatsapp_channel.inbound import REPLY_UNKNOWN
 
     assert [s for _to, s in world.sent] == [REPLY_UNKNOWN]
+
+
+async def test_with_the_switch_off_a_tap_gets_no_action(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, False)
+    await _post_and_run(_tap({"id": "b1", "title": "Yes"}))
+    assert world.agent.calls == [] and world.sent == []
+
+
+# ── A resend through the real run ───────────────────────────────────────────
+
+
+async def test_a_refused_first_send_resends_the_text_without_renditions(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _switch(monkeypatch, True)
+    prov = _provider(monkeypatch, world)
+    refuse = [True]
+    real_send = prov.send_text
+
+    async def _flaky(to: str, body: str) -> str:
+        if refuse[0]:
+            refuse[0] = False
+            raise _status_error(400)   # Meta refused: surely not sent
+        return await real_send(to, body)
+
+    prov.send_text = _flaky
+    world.agent = _UiAgent([_BUTTONS])
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert row["state"] == "received" and world.sent == []
+
+    await _later_sweeps(world, row, times=1)
+    assert [s for _to, s in world.sent] == [ANSWER]
+    assert len(world.agent.seen) == 1, "the agent ran again for a resend"

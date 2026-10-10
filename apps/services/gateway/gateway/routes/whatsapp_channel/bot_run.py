@@ -1099,7 +1099,7 @@ async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
 async def _last_word(req: RunRequest, tries: int) -> None:
     """The last try of a ``running`` row: its stored reply, else the general
     text. Each one goes once, under the row's state change."""
-    stored = await _stored_reply(req.chat_session_id, req.wamid)
+    stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
     if stored:
         await _deliver(req, stored, _Attempt(tries=tries), frm="running",
                        last_try=True)
@@ -1114,7 +1114,7 @@ async def _close_used_up(req: RunRequest) -> None:
     the reply and before ``sending``. Then that reply goes, once, under the
     same send mark. Else the general text goes, once.
     """
-    stored = await _stored_reply(req.chat_session_id, req.wamid)
+    stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
     if stored:
         await _deliver(req, stored, _Attempt(tries=MAX_TRIES), frm="failed",
                        last_try=True)
@@ -1160,13 +1160,13 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
     # crashed before `sending`) sends that reply again. The agent runs once.
     # The elements of that try are not stored, so a resend is text only: the
     # thread's reply holds each element's rendition (WAC-10a, §12).
-    reply = await _stored_reply(req.chat_session_id, req.wamid)
+    reply = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
     ui: list[Any] = []
     if reply is None:
         native = flags.native_ui_enabled()
         payload = build_payload(message, history, req.member_email, native=native)
         from acb_skills.ask_tools import refuse_cards
-        from acb_skills.whatsapp_ui import rendition_of, whatsapp_run
+        from acb_skills.whatsapp_ui import thread_record, whatsapp_run
 
         if native:
             await _show_typing(req)
@@ -1215,8 +1215,9 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
                 await _send(req, [REPLY_FAILED], kind="shared", attempt=attempt)
             return
         # The thread keeps the text AND what each element showed, so the
-        # next turn knows which buttons it offered.
-        record = "\n\n".join(p for p in (reply, rendition_of(ui)) if p)
+        # next turn knows which buttons it offered. A resend cuts the
+        # renditions off again (`_resend_text`).
+        record = thread_record(reply, ui)
         await _write_reply(req, record)
     else:
         _log.info("whatsapp_channel.run.resend_stored", run_id=run_id,
@@ -1224,6 +1225,14 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
 
     await _deliver(req, reply, attempt, frm="running",
                    last_try=attempt.tries >= MAX_TRIES, ui=ui)
+
+
+def _resend_text(stored: str | None) -> str | None:
+    """The text a resend sends from a stored reply: the text part only, not
+    the element renditions (``whatsapp_ui.resend_text``, WAC-10a)."""
+    from acb_skills.whatsapp_ui import resend_text
+
+    return resend_text(stored)
 
 
 async def _show_typing(req: RunRequest) -> None:
