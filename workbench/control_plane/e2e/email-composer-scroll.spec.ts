@@ -142,9 +142,11 @@ test.describe("The reply composer", () => {
         (s.textContent ?? "").includes("read the thread"));
       const holder = span?.offsetParent ?? null;
       const refine = document.querySelector('input[aria-label="Refine the draft"]');
+      const thread = document.querySelector("[data-email-thread]");
       return {
         found: !!span,
-        inAssistant: !!holder && !!refine && holder.contains(refine),
+        // Inside the thread, and holding the refine box: the AI panel.
+        inAssistant: !!holder && !!refine && !!thread && thread.contains(holder) && holder.contains(refine),
         isShell: !!holder?.hasAttribute("data-app-shell"),
       };
     });
