@@ -383,6 +383,7 @@ D-EA-6 limits what this returns today. The tree has no company profile route. Un
 - A class C tool with a human confirmation step.
 - Email and CRM tools through each module's own agent (D91.4), and never as a direct read.
 - Metering a connection against a quota that an admin sets.
+- The outbound twin: Metorite starts a Copilot, Jules or GitHub-based session for a task. `external_agent_dispatch.md` (WS-56) owns it. A run can report back through a run-scoped connection of this spec (DX-10).
 
 ## 15. Slices (every slice ships dark)
 
