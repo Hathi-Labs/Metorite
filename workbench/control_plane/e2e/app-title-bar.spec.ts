@@ -217,21 +217,28 @@ async function barFits(page: Page, width: number) {
 test.describe("at 1024 with the sidebar open, nothing leaves the bar", () => {
   test.use({ viewport: { width: 1024, height: 768 } });
 
-  test("Calendar, with every tool up", async ({ page }) => {
-    await setup(page);
-    await page.goto("/calendar");
-    const bar = page.locator('[data-app-bar="desktop"]');
-    await expect(bar.getByRole("heading", { level: 1, name: "Calendar" })).toBeVisible();
-    // The maximal state was reached: each of these is in the bar.
-    await expect(bar.getByText(/^1/).first()).toBeVisible();
-    for (const name of ["Start day", "Review", "Fit what's left", "Calendar settings", "Previous", "Next"]) {
-      await expect(bar.getByRole("button", { name }), name).toBeVisible();
-    }
-    await expect(bar.getByRole("button", { name: "Month" })).toBeVisible();
-    const fit = await barFits(page, 1024);
-    expect(fit.problems).toEqual([]);
-    expect(fit.controls).toBeGreaterThan(8);
-  });
+  // 1024, then a half-snapped 1920 window (960) and a small one (800), where
+  // the row must wrap rather than run off the screen.
+  for (const width of [1024, 960, 800]) {
+    test(`Calendar at ${width}, with every tool up`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 768 });
+      await setup(page);
+      await page.goto("/calendar");
+      const bar = page.locator('[data-app-bar="desktop"]');
+      await expect(bar.getByRole("heading", { level: 1, name: "Calendar" })).toBeVisible();
+      // The sidebar is open, as the member left it.
+      await expect(page.locator("aside[data-collapsed]")).toHaveAttribute("data-collapsed", "false");
+      // The maximal state was reached: each of these is in the bar.
+      await expect(bar.locator('[title*="due within 2 weeks"]')).toBeVisible();
+      for (const name of ["Start day", "Review", "Fit what's left", "Calendar settings", "Previous", "Next"]) {
+        await expect(bar.getByRole("button", { name }), name).toBeVisible();
+      }
+      await expect(bar.getByRole("button", { name: "Month" })).toBeVisible();
+      const fit = await barFits(page, width);
+      expect(fit.problems).toEqual([]);
+      expect(fit.controls).toBeGreaterThan(8);
+    });
+  }
 
   for (const [name, path] of [["My Email", "/email"], ["Projects", "/projects"]] as const) {
     test(name, async ({ page }) => {
