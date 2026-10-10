@@ -101,6 +101,9 @@ EXPECTED_SCOPED = {
     # Migration 234: the logo and the default look, keyed per organization
     # after two uploads failed on an unbound connection (2026-10-08).
     "org_settings",
+    # Migration 239 (H-256): one settings row for each organization of a
+    # member, keyed `(organization_id, user_id)`.
+    "user_settings",
     "org_group",
     "org_role",
     # WS-29a — the whole Projects app, keyed while it was empty (17 tables,
@@ -195,7 +198,10 @@ BASELINE_UNSCOPED = {
     # `gtd_*` task store: gtd_items, gtd_waiting, gtd_projects, gtd_spaces,
     # gtd_folders and gtd_contexts. The three survivors carry their new names.
     "my_tasks_horizons", "people_resumes",
-    "my_tasks_reviews", "calendar_rollover_log", "user_settings",
+    # ⚠️ `user_settings` LEFT this list on 2026-10-10. Migration 239 (H-256)
+    # put `organization_id` on the numbered ladder and keyed the table on
+    # `(organization_id, user_id)`.
+    "my_tasks_reviews", "calendar_rollover_log",
 # live_*
     "live_session",
 # meeting_*
@@ -438,6 +444,8 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
+    # 104 since 2026-10-10: `user_settings` left with migration 239 (H-256,
+    # one settings row for each organization of a member).
     # 105 since 2026-10-09: `org_settings` left with migration 234 (the logo
     # and the default look, keyed per organization).
-    assert len(BASELINE_UNSCOPED) == 105
+    assert len(BASELINE_UNSCOPED) == 104
