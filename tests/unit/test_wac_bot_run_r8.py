@@ -155,9 +155,12 @@ def _seed_link(admin_engine, *, org: str, email: str, phone: str) -> None:
 class _Agent:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.gate: asyncio.Event | None = None
 
     async def __call__(self, agent: str, payload: dict[str, Any], **kw: Any):
         self.calls.append({"agent": agent, "payload": dict(payload), **kw})
+        if self.gate is not None:
+            await self.gate.wait()
         return {"result": _ANSWER}
 
 
@@ -209,9 +212,14 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bot_run, "_executor", lambda: agent)
 
     sent: list[tuple[str, str]] = []
+    #: How many sends refuse before one goes out (Meta down).
+    refuse: list[int] = [0]
 
     class _Provider:
         async def send_text(self, to: str, body: str) -> str:
+            if refuse[0] > 0:
+                refuse[0] -= 1
+                raise RuntimeError("Meta is down")
             sent.append((to, body))
             return f"wamid.out.{uuid.uuid4().hex[:12]}"
 
@@ -226,6 +234,7 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
 
     ns = _NS()
     ns.p, ns.agent, ns.sent, ns.bot_run = granted, agent, sent, bot_run
+    ns.refuse = refuse
     try:
         yield ns
     finally:
@@ -765,3 +774,240 @@ async def test_the_turn_read_of_a_room_returns_nothing(bot) -> None:
             "organization_id) VALUES (:s, :e, 'member', CAST(:o AS uuid))"),
             {"s": room, "e": other, "o": p.org_a})
     assert await _in_scope(bot, _read) == (None, [])
+
+
+# ── Review round 2, A: at most one reply per message, on the real rows ─────
+
+
+def _db_down_after_sending(bot, monkeypatch: pytest.MonkeyPatch,
+                           target: str) -> list[bool]:
+    """Every row write fails once the row *target* is `sending` (the database
+    went away between the send and the end write). Returns the switch."""
+    b = bot.bot_run
+    real_move, real_end, real_retry = b._move, b._end, b._retry
+    down = [False]
+
+    async def _move(message_id, frm, to, code):
+        if down[0]:
+            raise RuntimeError("database gone")
+        ok = await real_move(message_id, frm, to, code)
+        if ok and to == "sending" and message_id == target:
+            down[0] = True
+        return ok
+
+    async def _end(message_id, state, code):
+        if down[0]:
+            raise RuntimeError("database gone")
+        return await real_end(message_id, state, code)
+
+    async def _retry(message_id, code):
+        if down[0]:
+            raise RuntimeError("database gone")
+        return await real_retry(message_id, code)
+
+    monkeypatch.setattr(b, "_move", _move)
+    monkeypatch.setattr(b, "_end", _end)
+    monkeypatch.setattr(b, "_retry", _retry)
+    return down
+
+
+async def _run_one(bot, req) -> None:
+    async def _go():
+        bot.bot_run.start(req)
+
+    await _in_scope(bot, _go)
+
+
+@pytest.mark.parametrize("tries_before", [0, 2])
+async def test_a_sent_reply_whose_end_write_fails_goes_out_once_ever(
+    bot, monkeypatch: pytest.MonkeyPatch, tries_before: int,
+) -> None:
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    req = await _recorded(bot, email=email, phone=phone, body="Once only")
+    if tries_before:
+        _age(bot, req.message_id, updated="0 seconds", tries=tries_before)
+    down = _db_down_after_sending(bot, monkeypatch, req.message_id)
+
+    await _run_one(bot, req)
+    assert bot.sent == [(phone, _ANSWER)]
+    assert _state(bot, req.message_id).state == "sending"
+
+    down[0] = False   # the database is back, and the sweeps run
+    _age(bot, req.message_id, updated="10 minutes")
+    # The module's database holds the rows of earlier tests, so this counts
+    # this row's texts, not the sweep's runs.
+    for _ in range(3):
+        await _in_scope(bot, bot.bot_run.sweep_once)
+    state = _state(bot, req.message_id)
+    assert (state.state, state.error_code) == ("replied", "send_unconfirmed")
+    mine = [s for s in bot.sent if s[0] == phone]
+    assert mine == [(phone, _ANSWER)], "one message got two texts"
+    runs = [c for c in bot.agent.calls if c["payload"]["message"] == "Once only"]
+    assert len(runs) == 1
+
+
+async def test_a_slow_last_try_past_the_stale_time_gets_no_general_text(
+    bot,
+) -> None:
+    """The run is live and its row looks used up and stale. The sweep of the
+    same process must not close it and send the general text."""
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    req = await _recorded(bot, email=email, phone=phone, body="Slow one")
+    _age(bot, req.message_id, updated="0 seconds", tries=2)
+    bot.agent.gate = asyncio.Event()
+
+    async def _go():
+        bot.bot_run.start(req)
+        for _ in range(200):
+            if bot.agent.calls:
+                break
+            await asyncio.sleep(0.02)
+        assert bot.agent.calls, "the run did not start"
+        _age(bot, req.message_id, updated="10 minutes")   # tries is 3 now
+        await bot.bot_run.sweep_once()
+        assert _state(bot, req.message_id).state == "running", (
+            "the sweep closed a live run")
+        bot.agent.gate.set()
+
+    await _in_scope(bot, _go)
+    assert bot.sent == [(phone, _ANSWER)], "a live run got the general text"
+    assert tuple(_state(bot, req.message_id)) == ("replied", 3, None)
+
+
+async def test_a_refused_first_part_is_resent_from_the_thread_by_the_sweep(
+    bot,
+) -> None:
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    bot.refuse[0] = 1
+    await _webhook(bot, (_change(phone, "Resend me"),))
+    (row,) = [r for r in _bot_rows(bot, phone) if r.direction == "in"]
+    assert (row.state, row.error_code, row.tries) == ("received", "send", 1)
+    assert bot.sent == []
+
+    _age(bot, str(row.id), updated="10 minutes")
+    await _in_scope(bot, bot.bot_run.sweep_once)
+    assert bot.sent == [(phone, _ANSWER)]
+    assert len(bot.agent.calls) == 1, "the agent ran again for a resend"
+    assert tuple(_state(bot, str(row.id))) == ("replied", 2, None)
+    replies = _admin_rows(bot, "SELECT count(*) FROM chat_message WHERE "
+                          "session_id = :s AND role = 'assistant'",
+                          s=row.chat_session_id)
+    assert replies[0][0] == 1
+
+
+# ── Review round 2, B: the member's own owner row is no room ───────────────
+
+
+async def test_the_members_own_owner_row_keeps_the_thread(bot) -> None:
+    """A web run on the WhatsApp thread writes `(thread, member, 'owner')`
+    (`routes/chat.py` `_ensure_session`). That is no room."""
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    await _webhook(bot, (_change(phone, "First"),))
+    thread = bot.agent.calls[0]["thread_id"]
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session_participant (session_id, subject, role, "
+            "organization_id) VALUES (:s, :e, 'owner', CAST(:o AS uuid))"),
+            {"s": thread, "e": email.upper(), "o": p.org_a})
+
+    await _webhook(bot, (_change(phone, "Second"),))
+    second = bot.agent.calls[1]
+    assert second["thread_id"] == thread, "the owner row forked the thread"
+    assert second["payload"]["messages"] == [
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": _ANSWER},
+    ]
+    states = [r.state for r in _bot_rows(bot, phone) if r.direction == "in"]
+    assert states == ["replied", "replied"]
+
+
+async def test_a_thread_open_to_the_org_is_a_room(bot) -> None:
+    """The room route can set visibility 'org' with no participant row."""
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    await _webhook(bot, (_change(phone, "Before"),))
+    room = bot.agent.calls[0]["thread_id"]
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE chat_session SET visibility = 'org' "
+                       "WHERE id = :s"), {"s": room})
+
+    await _webhook(bot, (_change(phone, "After"),))
+    second = bot.agent.calls[1]
+    assert second["thread_id"] != room
+    assert second["payload"]["messages"] == []
+
+
+# ── Review round 2, C: no reply into a room ────────────────────────────────
+
+
+async def test_a_thread_shared_during_the_run_gets_no_reply_written(bot) -> None:
+    p = bot.p
+    email, other, phone = _email(), _email("o"), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    req = await _recorded(bot, email=email, phone=phone, body="Mid-run")
+    bot.agent.gate = asyncio.Event()
+
+    async def _go():
+        bot.bot_run.start(req)
+        for _ in range(200):
+            if bot.agent.calls:
+                break
+            await asyncio.sleep(0.02)
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, "
+                "role, organization_id) VALUES (:s, :e, 'member', "
+                "CAST(:o AS uuid))"),
+                {"s": req.chat_session_id, "e": other, "o": p.org_a})
+        bot.agent.gate.set()
+
+    await _in_scope(bot, _go)
+    replies = _admin_rows(bot, "SELECT count(*) FROM chat_message WHERE "
+                          "session_id = :s AND role = 'assistant'",
+                          s=req.chat_session_id)
+    assert replies[0][0] == 0, "the answer was posted into a room"
+    state = _state(bot, req.message_id)
+    assert (state.state, state.error_code) == ("refused", "shared")
+    assert bot.sent == [(phone, _FAILED)]
+
+
+# ── Review round 2, D: a retry sees the thread as it was ───────────────────
+
+
+async def test_a_retry_history_leaves_out_a_newer_texts_turn_and_answer(
+    bot,
+) -> None:
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    older = await _recorded(bot, email=email, phone=phone, body="Older")
+    newer = await _recorded(bot, email=email, phone=phone, body="Newer")
+    # The newer text ran first (the older one's first try failed).
+    with p.admin_engine.begin() as c:
+        c.execute(text(f"UPDATE {_TABLE} SET tries = 1, error_code = 'internal' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": older.message_id})
+        c.execute(text(f"UPDATE {_TABLE} SET received_at = now() + "
+                       "interval '1 second' WHERE id = CAST(:i AS uuid)"),
+                  {"i": older.message_id})
+    await _run_one(bot, newer)
+    assert bot.agent.calls[0]["payload"]["message"] == "Newer"
+    retry = next(c for c in bot.agent.calls
+                 if c["payload"]["message"] == "Older")
+    assert retry["payload"]["messages"] == [], (
+        "the retry saw a newer text's turn or answer")

@@ -56,6 +56,13 @@ A thread that gets a participant on the web is a shared room. The bot leaves
 it, and the next text opens a new thread. A redelivery writes nothing, and a
 bot write keeps the agent that the member chose.
 
+*(Review round 2, 2026-10-10.)* Each message gets one reply at most, and at
+least one unless the channel fails. A row becomes `sending` in the database
+just before its first part goes out, and nothing runs a `sending` row again. A
+crash can lose the tail of a long reply, and it never sends a part twice. A
+thread is a room only when its visibility is not `private` or it has a
+participant who is not its member. The member's own `owner` row is no room.
+
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
 
