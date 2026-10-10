@@ -1,0 +1,18 @@
+{
+  "_note": "Hand-written by an agent, not recorded from a model. Some answers break the voice on purpose, so the scorer has work to do. expected_rules is what voice_lint must find, in any order.",
+  "answers": {
+    "V01": {"text": "Task #141 is in progress. Priya Raman owns it, and it is due on 14 Oct. On 8 Oct she wrote that it waits on the finance approval.", "expected_rules": []},
+    "V02": {"text": "Great question! INV-2207 from Kaveri Steel (Rs 1,84,000) is overdue — it was due on 2 Oct.", "expected_rules": ["opener", "em_dash"]},
+    "V03": {"text": "Run 4411 failed at the migrate step, because migration 238 adds a column, due_at, that already exists. Run 4410 passed. Make migration 238 skip the column when it exists, then deploy again.", "expected_rules": []},
+    "V04": {"text": "CSV export does nothing in Safari", "expected_rules": []},
+    "V05": {"text": "Email migration: moving to Google Workspace.", "expected_rules": ["title_full_stop", "title_subtitle"]},
+    "V06": {"text": "The CSV export button on the Reports page does nothing in Safari, and Chrome works. A customer reported it on 7 Oct. Done when the export downloads a file in Safari.", "expected_rules": []},
+    "V07": {"text": "We will leverage Google Workspace to streamline email for 40 people. It is not just a migration, but a new way of working.", "expected_rules": ["corporate_verb", "corporate_verb", "not_x_but_y", "filler"]},
+    "V08": {"text": "Hi Priya,\n\nThe PO number is PO-5531. Please raise the invoice against it.\n\nThanks", "expected_rules": []},
+    "V09": {"text": "Hi,\n\nI hope this email finds you well. I just wanted to check on the delivery proof for NF-882. Could you send it by 15 Oct?\n\nThanks", "expected_rules": ["hope_finds_you_well", "filler"]},
+    "V10": {"text": "Decided: the pilot launches with two customers on 20 Oct. Arjun owns the onboarding script.\nOpen: Meera confirms the pilot pricing. The API docs delay had no decision.", "expected_rules": []},
+    "V11": {"text": "Yesterday you completed 14 tasks. Three are now overdue: #141, #152 and #160. Kaveri Steel (INV-2207) and Nilgiri Freight (NF-882) sent urgent emails.", "expected_rules": []},
+    "V12": {"text": "The Design team closed 22 of 30 planned tasks. Two moved to week 42 with the brand review. Meera was on leave on 8 and 9 Oct, and no task is blocked. Overall, a really strong week.", "expected_rules": ["closer", "filler"]},
+    "V13": {"text": "4 pm works. Talk then.", "expected_rules": []}
+  }
+}

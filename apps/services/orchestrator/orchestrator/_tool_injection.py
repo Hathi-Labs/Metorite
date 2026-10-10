@@ -738,6 +738,83 @@ def _with_attachment_rule(instructions: str, holds_reader: bool) -> str:
     return instructions + "\n\n" + ATTACHMENT_FAILURE_RULE
 
 
+# ── The house voice (WS-52, ``specs/agent_writing_voice.md``) ──────────────
+# Every agent reads ``acb_llm.voice.voice_prompt(AGENT)`` once, right after
+# its own instructions and before every platform block, on both runtimes.
+# A sub-agent reads ``core_prompt()``, the core with no overlay, because it
+# answers its parent agent and not a member.
+# :func:`_apply_voice` is the ONE place that puts it there, and
+# :func:`_inject_agent_tools` calls it first, before any tool work, so a box
+# that collects no platform tool still gives the voice. The text is static,
+# so the prefix stays byte-stable and prompt caching covers it. It is not a
+# tool, so ``config.json: floor_opt_out`` cannot remove it. An agent may add
+# a stricter rule in its own instructions. Fence: ``test_agent_voice.py``.
+
+
+def _with_voice(text: str, *, sub_agent: bool = False) -> str:
+    """*text* with the house voice after it, once (the heading is the marker).
+
+    *sub_agent* gives the core alone (:func:`acb_llm.voice.core_prompt`).
+    """
+    from acb_llm.voice import (  # noqa: PLC0415
+        AGENT, VOICE_HEADING, core_prompt, voice_prompt,
+    )
+    if VOICE_HEADING in text:
+        return text
+    block = core_prompt() if sub_agent else voice_prompt(AGENT)
+    return f"{text}\n\n{block}" if text else block
+
+
+def _apply_voice(agents: list[Any], *, is_sub_agent: bool = False) -> None:
+    """Give every agent in *agents* the house voice, on each runtime shape.
+
+    * GitHubCopilotAgent (``_tools`` list): ``_default_options.system_message``.
+      The Copilot addendum is appended later, after the voice.
+    * Native MAF ``Agent``: ``default_options["instructions"]``.
+    * Older MAF shape: a string ``instructions`` attribute.
+
+    Best-effort per agent, like the rest of the injection: a frozen agent
+    keeps its prompt and logs a warning.
+    """
+    for agent in agents:
+        try:
+            if hasattr(agent, "_tools") and isinstance(agent._tools, list):
+                opts = getattr(agent, "_default_options", None)
+                if not isinstance(opts, dict):
+                    continue
+                sys_msg = opts.get("system_message")
+                if isinstance(sys_msg, dict):
+                    sys_msg["content"] = _with_voice(
+                        sys_msg.get("content") or "", sub_agent=is_sub_agent,
+                    )
+                elif isinstance(sys_msg, str):
+                    opts["system_message"] = {
+                        "mode": "append",
+                        "content": _with_voice(sys_msg, sub_agent=is_sub_agent),
+                    }
+                else:
+                    opts["system_message"] = {
+                        "mode": "append",
+                        "content": _with_voice("", sub_agent=is_sub_agent),
+                    }
+                continue
+            _do = getattr(agent, "default_options", None)
+            if isinstance(_do, dict):
+                _do["instructions"] = _with_voice(
+                    _do.get("instructions") or "", sub_agent=is_sub_agent,
+                )
+                continue
+            _instr = getattr(agent, "instructions", None)
+            if isinstance(_instr, str):
+                agent.instructions = _with_voice(_instr, sub_agent=is_sub_agent)
+        except Exception as _exc:  # noqa: BLE001
+            _log.warning(
+                "executor.voice_injection_failed",
+                agent=getattr(agent, "name", None) or type(agent).__name__,
+                error=str(_exc)[:200],
+            )
+
+
 def _ui_first_directive(*, compact: bool = False) -> str:
     """The proactive 'render UI by default' rule (generative_ui_2 Phase 2).
 
@@ -1395,7 +1472,12 @@ def _inject_agent_tools(
                                    merged into SessionConfig.tools at session creation)
                                    + appends tool guidance to ``_default_options.system_message``
         Legacy Copilot SDK path  — appends to ``agent._default_options.tools`` (list)
+
+    The house voice (WS-52) goes in first, for every agent and every shape,
+    right after the agent's own instructions (:func:`_apply_voice`). A
+    sub-agent gets the core with no overlay.
     """
+    _apply_voice(agents, is_sub_agent=is_sub_agent)
     _all_tools = _collect_injectable_platform_tools(agent_name)
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected

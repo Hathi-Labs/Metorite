@@ -37,6 +37,7 @@ are *loaded by* a service at runtime and are never deployed on their own.
 Identity + system prompt + tool set + integrations. Loaded via `build_agents()`
 and a `local_path` entry in `agent_registry.json` / the gateway `_AGENT_REGISTRY`.
 Run *inside* the orchestrator/gateway process — no server of their own.
+- **Every agent writes in one voice** (WS-52, `project-docs/specs/agent_writing_voice.md`). `acb_llm.voice` holds the contract and the surface overlays. `_tool_injection._apply_voice` puts it in each agent's system prompt once, after `instructions.md`, on the Copilot and the native MAF runtime. A new agent gets it with no edit. Do not copy the rules into an `instructions.md`. An agent may add a stricter rule there, and `floor_opt_out` cannot remove the voice. A direct drafting call outside the agent loop adds `voice_prompt(<surface>)` to its system prompt. Fence: `tests/unit/test_agent_voice.py`.
 - agent-orchestrator/ -- Wraps the built-in orchestrator Agent so it goes through the same `/agent/run/stream` path as all other agents. Eliminates the separate `/copilot/chat` code path in the frontend.
 - agent-task-manager/ -- My Tasks, the personal task agent. Held on the Copilot path until HANDOFF H-215 (`agent_architecture.md` §11.3.1). It is a shared agent, so D85 refuses its Copilot CLI shell. Its 29 `my_tasks_*` tools need none
 - agent-apis-config/ -- API discovery and configuration assistant. A native MAF `Agent` since 2026-10-03 (`agent_architecture.md` §11.3.1)
