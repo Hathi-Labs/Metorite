@@ -451,9 +451,9 @@ def test_the_consent_url_starts_at_the_us_server_and_holds_no_secret() -> None:
         ok({"error": "invalid_grant"}),
         ok({"error": "invalid_code"}),
         ok({"error": "invalid_grant"}, status=400),
-        ok({}, status=401),
+        ok({"error": "invalid_code"}, status=401),
     ],
-    ids=["invalid_grant", "invalid_code", "400", "401"],
+    ids=["invalid_grant", "invalid_code", "invalid_grant-400", "invalid_code-401"],
 )
 async def test_a_dead_refresh_token_raises_needs_reconnect_with_no_retry(
     leaks: list[str],
@@ -471,6 +471,48 @@ async def test_a_dead_refresh_token_raises_needs_reconnect_with_no_retry(
     assert REFRESH in fake.requests[0].content.decode()
     # The old credential stays as it was. The caller decides what to store.
     assert source.credential == credential()
+    leaks.extend(exc_texts(caught.value))
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        ok({}, status=400),
+        ok({}, status=401),
+        ok({"error": "invalid_client"}, status=400),
+        ok({"error": "invalid_redirect_uri"}, status=400),
+    ],
+    ids=["bare-400", "bare-401", "invalid_client", "invalid_redirect_uri"],
+)
+async def test_another_4xx_on_refresh_is_not_a_reconnect(
+    leaks: list[str],
+    answer: httpx.Response,
+) -> None:
+    """Only a dead refresh token asks an admin to connect again (fix round 1)."""
+    fake = Fake([answer])
+    source = fake.source()
+    with pytest.raises(SourceError) as caught:
+        await source.refresh()
+    assert not isinstance(caught.value, NeedsReconnect)
+    assert len(fake.requests) == 1
+    leaks.extend(exc_texts(caught.value))
+
+
+async def test_a_throttle_on_refresh_is_rate_limited(leaks: list[str]) -> None:
+    """Zoho's accounts server throttles with ``Access Denied`` and HTTP 400."""
+    throttle = ok(
+        {
+            "error": "Access Denied",
+            "error_description": "You have made too many requests continuously. "
+            "Please try again after some time.",
+            "status": "failure",
+        },
+        status=400,
+    )
+    fake = Fake([throttle])
+    with pytest.raises(RateLimited) as caught:
+        await fake.source().refresh()
+    assert len(fake.requests) == 1
     leaks.extend(exc_texts(caught.value))
 
 

@@ -33,6 +33,7 @@ import httpx
 from gateway.crm_sources.base import (
     NeedsReconnect,
     OAuthClientConfig,
+    RateLimited,
     SourceCredential,
     SourceError,
     UntrustedHost,
@@ -178,6 +179,13 @@ async def _token_call(
     return r.status_code, body if isinstance(body, dict) else {}
 
 
+def _is_token_throttle(error: str, body: Mapping[str, Any]) -> bool:
+    """Zoho's accounts server throttles with ``Access Denied`` and a text that
+    says "too many requests", often with HTTP 400."""
+    description = str(body.get("error_description") or "").lower()
+    return error.lower() == "access denied" and "too many requests" in description
+
+
 def _expiry(body: Mapping[str, Any], now: datetime) -> datetime:
     try:
         seconds = int(body.get("expires_in") or 3600)
@@ -235,8 +243,11 @@ async def refresh(
 ) -> SourceCredential:
     """A new access token for ``credential``. It returns a new credential.
 
-    ``invalid_grant``, ``invalid_code``, HTTP 400 and HTTP 401 raise
-    :class:`NeedsReconnect` at once. A dead token is never retried.
+    Only ``invalid_grant`` and ``invalid_code`` raise :class:`NeedsReconnect`,
+    and a dead token is never retried. The status code alone decides nothing.
+    A throttle (``Access Denied``, too many requests) raises
+    :class:`RateLimited`. Any other refusal, ``invalid_client`` for example,
+    raises :class:`SourceError`, because a new consent does not repair it.
     """
     status, body = await _token_call(
         credential.accounts_server,
@@ -250,10 +261,10 @@ async def refresh(
     )
     raw_error = str(body.get("error") or "")
     error = safe_code(raw_error)
-    if raw_error in _RECONNECT_ERRORS or status in (400, 401):
-        raise NeedsReconnect(
-            f"Zoho refused the refresh ({error or status}). An admin must connect again"
-        )
+    if raw_error in _RECONNECT_ERRORS:
+        raise NeedsReconnect(f"Zoho refused the refresh ({error}). An admin must connect again")
+    if _is_token_throttle(raw_error, body):
+        raise RateLimited("The Zoho accounts server throttled the refresh", tries=1)
     if status >= 300 or raw_error or not body.get("access_token"):
         raise SourceError(f"The Zoho token refresh failed ({error or status})")
     api_domain = credential.api_domain
