@@ -31,7 +31,12 @@ import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, withCustomEvent, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
-import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
+import {
+  RUN_CAP_NOTICE_ID,
+  settleFailedTurn,
+  type RunCappedHandler,
+  type SessionRefusedHandler,
+} from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
 import {
   holdForUpdate,
@@ -141,6 +146,12 @@ interface UseAgentChatOptions {
    * storage (`lib/railSessions.ts`), never for one the member opened.
    */
   onSessionRefused?: SessionRefusedHandler;
+  /**
+   * The run cap refused the send (WS-51 D-3, 429 `too_many_runs`). The turn
+   * has left the thread, and the surface puts these words back in its
+   * composer. Nothing is held, and nothing sends again by itself.
+   */
+  onRunCapped?: RunCappedHandler;
 }
 
 interface UseAgentChatReturn {
@@ -184,11 +195,14 @@ export function useAgentChat({
   thinkMode,
   onArtifact,
   onSessionRefused,
+  onRunCapped,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
+  const onRunCappedRef = useRef(onRunCapped);
+  useEffect(() => { onRunCappedRef.current = onRunCapped; }, [onRunCapped]);
 
   // Keep latest values in refs so sendMessage always uses current values
   // even if its useCallback closure hasn't been recreated yet.
@@ -295,6 +309,10 @@ export function useAgentChat({
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
+          // A held send has not reached the server either, so it carries the
+          // same mark: a later run-cap refusal must leave no row (review of
+          // #821). The retry spreads the bubble, so the mark travels with it.
+          ...(modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
         holdForUpdate(threadId, text, { resume: opts?.resume });
@@ -319,6 +337,10 @@ export function useAgentChat({
         : {
           id: nanoid(), role: "user", content: text, timestamp: turnTs,
           ...(supersedes ? { customEvents: [editedMarker(supersedes)] } : {}),
+          // WS-51 D-3: on the gateway path the server saves this turn at run
+          // start (S4). The chat saves it only once the server answers, so a
+          // send the run cap refuses leaves no row behind.
+          ...(!supersedes && modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
       const assistantId = nanoid();
       const assistantMsg: ChatMessage = {
@@ -345,7 +367,8 @@ export function useAgentChat({
         if (!held) {
           return {
             ...prev,
-            messages: [...prev.messages, userMsg, assistantMsg],
+            // A new send retires the last run-cap notice (WS-51 D-3).
+            messages: [...prev.messages.filter((m) => m.id !== RUN_CAP_NOTICE_ID), userMsg, assistantMsg],
             isLoading: true, error: null, abortController: controller,
           };
         }
@@ -364,6 +387,25 @@ export function useAgentChat({
       let failedStatus: number | null = null;
       // Did any response arrive? With none, the app never took the send.
       let gotResponse = false;
+      // The run cap refused the send (WS-51 D-3): the turn left the thread.
+      let capped = false;
+      // An app update held the send again. The server never took it, so the
+      // turn stays unconfirmed until the held send goes out.
+      let heldAgain = false;
+      // The server answered with anything but the run cap, so the chat may
+      // save the turn now. The finally does it too, for every other path.
+      const confirmTurn = () => {
+        if (!userMsg.awaitingServer) return;
+        setSessionState(threadId, (prev) => ({
+          ...prev,
+          messages: prev.messages.map((m) => {
+            if (m.id !== userMsg.id || !m.awaitingServer) return m;
+            const sent = { ...m };
+            delete sent.awaitingServer;
+            return sent;
+          }),
+        }));
+      };
       try {
         // Build the history sent to the model from the ACTIVE context window
         // (everything from the most recent compaction checkpoint onward), so a
@@ -422,6 +464,9 @@ export function useAgentChat({
           }),
         });
         gotResponse = true;
+        // Only a 429 can be the run cap, and an update outage is no answer.
+        // Any other answer confirms the turn.
+        if (res.status !== 429 && !isUpdateOutage({ status: res.status, gotResponse: true })) confirmTurn();
 
         // ── Stand down: this message was folded into a run already going ──
         // docs/multiplayer/README.md §4.6. A 202 means the gateway steered our
@@ -612,6 +657,7 @@ export function useAgentChat({
           holdForUpdate(threadId, userMsg.content, {
             userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
           });
+          heldAgain = true;
           return;
         }
         const lc = rawErr.toLowerCase();
@@ -653,9 +699,12 @@ export function useAgentChat({
           code: err instanceof ChatRunError ? err.code : null,
           ref: err instanceof ChatRunError ? err.ref : null,
           onSessionRefused: onSessionRefusedRef.current,
+          onRunCapped: onRunCappedRef.current,
         });
+        capped = outcome === "capped";
         if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
+        if (!capped && !heldAgain) confirmTurn();
         // If a reconnect/replay loop superseded us mid-stream it now owns the
         // message AND the shared loading/abort state. A superseded loop must NOT
         // reset isLoading/abortController or it would kill the live reconnect

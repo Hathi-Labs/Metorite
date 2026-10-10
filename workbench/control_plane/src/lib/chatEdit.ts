@@ -68,10 +68,14 @@ export const EDIT_NOT_LAST = "Someone replied after your message, so it can no l
 export const EDIT_NOT_YOURS = "You can only edit your own message.";
 export const EDIT_RUN_BUSY = "The assistant is still working. Stop it first.";
 export const EDIT_UNSENT = "Your edit was not sent. Try again.";
+/** WS-51 D-3: the member has the most live runs the cap allows. */
+export const EDIT_TOO_MANY_RUNS =
+  "You have too many assistants running. Wait for one to finish or stop one, then save the edit again.";
 
 /** The reason for a refused edit, from the status and the body the chat
  *  route returned (the gateway's `{"detail": {"error": <code>}}` inside). */
 export function editRefusalReason(status: number, body: string): string {
+  if (/too_many_runs/.test(body)) return EDIT_TOO_MANY_RUNS;
   if (/not_last/.test(body)) return EDIT_NOT_LAST;
   if (/not_yours/.test(body) || status === 403) return EDIT_NOT_YOURS;
   if (/run_in_progress/.test(body) || status === 202 || status === 409) return EDIT_RUN_BUSY;

@@ -40,6 +40,7 @@ export type RunErrorCode =
   | "interrupted"
   | "run_restarted"
   | "answer_in_other_account"
+  | "too_many_runs"
   | "unknown";
 
 export interface RunErrorWords {
@@ -142,6 +143,18 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: false,
     tone: "notice",
   },
+  // WS-51 D-3: the member already has the most runs the cap allows. Nothing
+  // was sent, saved or started, and the words go back to the composer. The
+  // button opens the activity panel, so the member can stop a run. It is not
+  // a retry, and nothing sends again by itself. `{limit}` is the cap, from
+  // the refusal's own body (`runCapFromRaw`).
+  too_many_runs: {
+    title: "Too many assistants running",
+    body: "You have {limit} assistants running. Wait for one to finish or stop one, then send again.",
+    retry: true,
+    tone: "notice",
+    action: "Open activity",
+  },
   unknown: {
     title: "Something went wrong",
     body: "Metorite could not finish this answer. Press Retry. If it happens again, tell your admin.",
@@ -154,7 +167,46 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
  * (WS-51 S2). A body with no placeholder is returned as it is.
  */
 export function noticeBody(words: RunErrorWords, raw: string): string {
+  if (words.body.includes("{limit}")) {
+    const cap = runCapFromRaw(raw);
+    return words.body.replace("{limit}", cap ? String(cap.limit) : "too many");
+  }
   return words.body.replace("{account}", raw.trim() || "the account that asked");
+}
+
+/** The run cap's refusal (WS-51 D-3), as the gateway sends it. */
+export interface RunCapRefusal {
+  limit: number;
+  /** The thread ids of the member's live runs. */
+  running: string[];
+}
+
+/**
+ * Read the gateway's 429 `too_many_runs` body: the bare JSON, or the chat
+ * route's SSE error frame that carries it. Anything else is null.
+ */
+export function runCapFromRaw(raw: string): RunCapRefusal | null {
+  let text = raw.trim();
+  const frame = /^data:\s*(\{[\s\S]*\})\s*$/.exec(text);
+  if (frame) {
+    try {
+      const evt = JSON.parse(frame[1]) as { content?: unknown };
+      text = String(evt.content ?? "").trim();
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const body = JSON.parse(text) as { error?: unknown; limit?: unknown; running?: unknown };
+    if (body?.error !== "too_many_runs") return null;
+    const limit = Number(body.limit);
+    return {
+      limit: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0,
+      running: Array.isArray(body.running) ? body.running.map(String) : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** What the error card draws. Stored in the thread as `__ERROR__<json>`. */
@@ -191,6 +243,18 @@ export function codeForStatus(status: number): RunErrorCode {
   if (status === 400 || status === 413 || status === 422) return "model_refused";
   if (status === 502 || status === 503) return "connection";
   return "unknown";
+}
+
+/**
+ * The code for a refusal from the gateway, read from its status AND body.
+ *
+ * A 429 is the AI service that is busy (`rate_limited`), except the run cap
+ * (WS-51 D-3), whose body names `too_many_runs`. The chat route calls this,
+ * so the frame it sends carries the right code.
+ */
+export function codeForGatewayRefusal(status: number, body: string): RunErrorCode {
+  if (status === 429 && runCapFromRaw(body)) return "too_many_runs";
+  return codeForStatus(status);
 }
 
 /**

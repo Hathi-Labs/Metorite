@@ -3,6 +3,7 @@
 import React from "react";
 import Button from "@/components/ui/Button";
 import { RUN_ERROR_WORDS, noticeBody, type RunErrorView } from "@/lib/runErrors";
+import { openActivity } from "@/lib/shell/ActivityControl";
 
 /**
  * The error card a failed turn leaves in the thread.
@@ -100,7 +101,14 @@ export function ErrorCardView({
   );
 }
 
-/** The card as the thread mounts it. */
+/**
+ * The card as the thread mounts it.
+ *
+ * The run-cap notice (WS-51 D-3) is the one card whose button is not a
+ * retry: it opens the activity panel, so the member can stop a run. It never
+ * re-sends the turn.
+ */
 export default function ErrorCard({ error, onRetry }: { error: RunErrorView; onRetry?: () => void }) {
-  return <ErrorCardView error={error} onRetry={onRetry} />;
+  const action = error.code === "too_many_runs" ? openActivity : onRetry;
+  return <ErrorCardView error={error} onRetry={action} />;
 }

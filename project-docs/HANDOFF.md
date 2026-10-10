@@ -124,7 +124,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-288 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
+### H-294 · BH-6 moved the root units to /usr/local/lib/acb, and the runbooks still name the checkout · [AGENT]
 - **Check:** run `rg -n "opt/acb/app/scripts/backup_db.sh|compose -f infra/docker-compose.yml" deploy/hostinger/README.md project-docs/specs/backup_and_restore.md README.md project-docs/specs/development_and_delivery_framework.md`. A hit means this is open.
 - **Why.** WS-49 BH-6 runs `acb-backup`, `acb-health-watchdog` and `acb.service` from the root
   copy at `/usr/local/lib/acb`, with `/etc/acb/root.env`. These runbooks still tell a person to
@@ -136,7 +136,155 @@ line — never reclaim a number by deleting the other entry.
      a run of `scripts/vps_apply.sh` has written the root copy. Change that last step to name
      `scripts/vps_apply.sh` first.
 - **Authority:** `specs/box_hardening.md` §5 BH-6
-- **Added:** 2026-10-10 · branch `sec-bh6-build`
+- **Added:** 2026-10-10 · branch `sec-bh6-build`. It was H-288, and main took
+  H-288 to H-293 first, so it moved to H-294 at the merge.
+### H-293 · Decide whether agent runs move to their own service, so a deploy stops none · [OWNER]
+- **Check:** run `rg -n "D-1" project-docs/specs/chat_run_continuity.md`. If
+  the §5 row still says **OWNER-GATE**, the decision is open.
+- **Why.** Today an agent run executes inside the `acb-gateway` process. So
+  each deploy restart of the gateway ends every live run. #797 and #805
+  recover a run that a restart ended: the reply so far is saved, and the
+  chat offers Continue. They cannot keep a run going.
+- **The option.** Run the agents in their own systemd service. The deploy
+  then restarts only the gateway for a gateway-only change, and the runs go
+  on. The cost is a second service to deploy, watch and size, and a hand-off
+  of each run from the gateway to it.
+- **Do this (owner):** decide D-1. An agent must refuse to build it until
+  then (`chat_run_continuity.md` §5).
+- **Authority:** `specs/chat_run_continuity.md` §5 D-1, board row WS-51
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-292 · Show the org's plan, credits and AI usage in Settings → Organization · [AGENT] · OWNER note
+- **Check:** run `rg -n "usage|credit|billing" workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx`.
+  No tab that names billing or usage means this is open.
+- **The owner's words (2026-10-10), kept as written in a text block:**
+
+  ```text
+  Document the requirement for being able to check the organization's pricing
+  in the organization's tab so that we can keep tabs on the pricing as well.
+  This can also be in the same place where we are assigning AI credits to
+  individual users of an organization, where an admin can do that. The admin
+  will also know how much individual users are using as well as how much the
+  entire organization is using.
+  ```
+- **The one place.** Settings → Organization in the customer's workbench
+  (`workbench/control_plane`), admin only. It is NOT the operator console. It
+  shows four things:
+  1. The org's plan and pricing: ₹500 per user per month plus AI credits
+     (`specs/launch_surface.md` §4), and the current rate card.
+  2. The AI credits that an admin gives each member.
+  3. The AI usage of each member.
+  4. The AI usage of the whole org.
+- **What exists (measured 2026-10-10).**
+  - The tab: `src/app/settings/organization/OrganizationAdmin.tsx`. Its tabs
+    are Members & roles, Seat assignments, Branding, Requests and Email. None
+    shows billing, credits or usage.
+  - A separate Billing page: `src/app/settings/billing/page.tsx`. It shows the
+    balance, the 30-day burn, seats, invoices and `SpendBreakdown.tsx`.
+  - The org total: `GET /me/billing` (`customer_console/main.py`, near line
+    9270, body `_billing_summary`). The gateway serves it as `GET
+    /billing/summary` (`gateway/routes/billing.py`).
+  - Usage by member, activity and app: D66 is built and wired.
+    `GET /my/usage/members`, `/my/usage/activity` and `/my/usage/apps`
+    (`customer_console/main.py`, near line 9800). The members read is admin
+    only. The workbench calls them through `src/app/api/billing/usage/*`, and
+    only `SpendBreakdown.tsx` on the Billing page draws them.
+  - The rate card: `credit_price` (Console migration 017, set on the operator
+    Pricing page), `tier_catalog` and `tier_rate_card` (migration 015, D67),
+    and `plan_catalog` (migration 001, `GET /billing/catalog`). The workbench
+    shows rupees with a fixed `RUPEES_PER_CREDIT = 10`
+    (`src/app/settings/billing/lib/billing.ts`), not the operator's price.
+- **What is missing.**
+  - **Credits per member do not exist.** The nearest thing is the CP-7 cap:
+    the `member_ai_cap` table (Console migration 001) and
+    `decide_member_cap` (`customer_console/credits.py`). No route writes the
+    table, and no screen sets it. H-73 holds it back on purpose: nothing
+    mints a member proof yet, and the policy for an unproven caller is an
+    owner call. So "assign credits to a member" is new work, and it rests on
+    H-73.
+  - The plan, the price and the rate card show nowhere for the customer.
+  - Nothing joins usage and pricing in the Organization tab.
+- **Related.** H-133 and H-134 are no longer in this file. #345 and #350
+  did their work, and #628 removed the two entries long before this one.
+  H-171 (the product's own AI is not metered) and H-287 (three AI paths write
+  no usage row) make the usage figures low until they close. H-136 (no spend
+  signal is pushed) and H-73 (the cap identity) stay open. The operator Money
+  page (WS-50, #779 and #801) is the operator's view of the same money.
+- **Board row or spec?** Spec work first. No row covers this panel. WS-30
+  ("Subscription Console", specced) and WS-31 CP-7 (the cap, slice 1 built)
+  each own a part. Write a short spec section that names the owner row, then
+  build. The usage half can ship first, because its reads exist.
+- **OWNER note.** Two display calls are the owner's (memory: consult before
+  strategy decisions). First, whether the customer sees the rupee price of a
+  credit, or credits only. Second, whether an admin may give a member more
+  credits than the org holds.
+- **Authority:** `specs/launch_surface.md` §4, `specs/customer_console.md`
+  (CP-7, D66), board rows WS-30 and WS-31
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-291 · Settle a parked question when its move to `answered` fails · [AGENT]
+- **Check:** run `rg -n -B2 -A4 'to="answered"' apps/services/orchestrator/orchestrator/pending_ask.py`.
+  If the move after `_answered(fut)` is still inside
+  `contextlib.suppress(Exception)` with no retry, this is open.
+- **Why.** `pending_ask.py`, near line 516: the run parks a question, and the
+  answer comes in during the park. The run goes on, but the move of the row
+  to `answered` swallows any error. A failed move leaves the row `parked`. So
+  `/chat/active-sessions` and the badge say "needs your answer" to a member
+  who already answered.
+- **Do this:** retry the move once. If the retry fails, record the request
+  id and settle it later, for example in the next sweep. Log the failure.
+  Add a test to `tests/unit/test_pending_ask_flow.py` with a move that fails
+  once.
+- **Authority:** `specs/chat_run_continuity.md` §4 S2
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-290 · Give the long-header data-engine test a fixed memory budget · [AGENT]
+- **Check:** run the test 20 times in a shell loop:
+  `for i in $(seq 20); do uv run pytest tests/unit/test_data_engine.py -q -k long_header || echo FAIL; done`.
+  One `FAIL` with "The load passed the memory cap of the engine" means this
+  is open.
+- **Why.** On 2026-10-10 `test_a_long_header_keeps_each_answer_under_1_mb`
+  failed the post-merge Unit tests of #816, and it passed on a rerun. A red
+  post-merge job blocks the deploy, so this test blocks deploys at random.
+  The engine sets DuckDB's `memory_limit` from the container
+  (`_duckdb_memory_mb`, `sandbox/data_engine.py`). So the cap moves with the
+  runner's memory, and a 400-column header of 5000-character names sits near
+  it.
+- **Do this:** pin the memory budget in the test. Patch `_duckdb_memory_mb`
+  to a fixed value that the load fits in. Or make the header smaller, while
+  it still proves the cut. Do not mark the test flaky, and do not delete it.
+- **Authority:** `CLAUDE.md` §3 rule 8, the deploy gate
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
+- **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
+  No hit means S7 is not built.
+- **Why.** The owner called web push "a good idea" on 2026-10-10. D-2 is
+  decided: push is opt-in, per member. It is not built. The spec holds the
+  acceptance criteria and the fence:
+  - Our VAPID keys, through the secrets path.
+  - A service worker, a settings toggle, and a permission prompt only on a
+    click.
+  - Two events, for the member's own runs only, with no content in the
+    payload.
+  - Subscriptions under RLS, and an unsubscribe at sign-out.
+- **Do this:** build S7 as one slice behind a flag, default OFF.
+- **Authority:** `specs/chat_run_continuity.md` §4 S7, board row WS-51
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
+
+### H-288 · Build WS-51 S6, the runs of the other signed-in accounts · [AGENT]
+- **Check:** run `rg -n "slot|accounts" workbench/control_plane/src/app/api/chat/active-sessions/route.ts`.
+  No read of a second account's cookie means S6 is open.
+- **Why.** The activity panel (S3) lists the runs of the signed-in account
+  only. A member with two accounts on one device cannot see the runs of the
+  other one.
+- **Do this:** the BFF reads `/chat/active-sessions` once for each signed-in
+  slot, with that slot's own cookie. A row keeps its account label. A tap on
+  a row of another account switches account (`lib/accountSwitch.ts`), then
+  opens the chat. No row of account B may reach A's tenant cache. The full
+  review loop runs, because this reads a second identity.
+- **Authority:** `specs/chat_run_continuity.md` §4 S6, board row WS-51
+- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
 ### H-287 · Three AI paths spend money and write no usage row · [AGENT]
 - **Check:** run `rg -n "litellm|_litellm" packages/acb_llm/acb_llm/context.py apps/services/gateway/gateway/routes/integrations.py`

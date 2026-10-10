@@ -12,7 +12,9 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
 | S6 — the activity of the other signed-in accounts | Spec only |
-| D-1 to D-3 — the deferred decisions | **OWNER-GATE** |
+| S7 — browser push for "needs your answer" and "finished" | Spec only. D-2 is decided: opt-in per member |
+| The run cap — 5 live runs per member (D-3) | **BUILT** 2026-10-10, branch `ws51-run-cap-and-todos`, no flag |
+| D-1 — a separate run worker | **OWNER-GATE** |
 
 **This spec owns** how a member sees and resumes an assistant run that they
 are not watching. That covers the run list, the badges, the "needs input"
@@ -52,8 +54,7 @@ The owner's words, kept as written:
 **Non-goals.**
 
 - A run worker that a deploy cannot stop. That is D-1, an owner decision.
-- Web push to a closed browser. That is D-2.
-- Caps on concurrent runs. That is D-3.
+- An org cap on concurrent runs. The owner refused it (D-3, §4.8).
 - A new chat surface. Every slice reads the chats that exist.
 - Any change to who may see a run. `SESSION_VISIBLE_SQL` and the tenant
   key `cc:<org>:liveruns` stay the only rules (#791).
@@ -630,6 +631,123 @@ reads a second identity.
 **Fence.** A vitest on the BFF route. It proves that each slot's request
 carries that slot's cookie only, and that a row keeps its account label.
 
+### S7 — browser push (decided 2026-10-10, not built)
+
+**The decision.** The owner called web push "a good idea" on 2026-10-10. So
+D-2 is decided: push is opt-in, per member. Nothing is built yet.
+
+**What.** A push to the member's device when one of their own runs needs an
+answer, or finishes, while no tab of theirs shows it.
+
+**Done when.**
+
+1. **The keys.** We generate the VAPID key pair once, and we store it through
+   the existing secrets path (`scripts/secrets.sh`). No key goes in the tree,
+   and no customer sets up a key.
+2. **The service worker.** One service worker receives the push and shows the
+   notification. A tap opens the chat through the S3 `open-chat` link.
+3. **The opt-in.** A member turns push on with a toggle in their own
+   settings. The browser asks for permission only after an explicit click on
+   that toggle, never on page load.
+4. **The events.** Only two events send a push: "needs your answer" (S2) and
+   "finished" (S5). Only the member's own runs send one. A run in a shared
+   room pushes to its actor only.
+5. **No content.** The payload holds the agent name and a fixed title, such
+   as "Projects assistant needs your answer". It holds no message text, no
+   question and no chat title, so the push service reads no content.
+6. **The subscriptions.** Each device subscription is a row, scoped to the
+   org under FORCE ROW LEVEL SECURITY (R5). Take the migration number at
+   build time (R1). R8 binds the policy.
+7. **Sign-out.** A sign-out deletes the subscription of that device, and the
+   service worker unsubscribes.
+
+**Fence (R7).** A `tests/unit/test_push_subscriptions.py` suite under R8: the
+policy, two tenants, and the delete at sign-out. A `src/lib/push.test.ts`
+vitest: no prompt without a click, and a payload with no content field.
+
+### §4.8 — the run cap (D-3, BUILT 2026-10-10)
+
+**The decision.** The owner, 2026-10-10: "Do not limit the organization
+because an organization might have many people, but possibly we can limit 5
+agent runs concurrently per user." So a member may have at most 5 live runs.
+There is no org cap.
+
+**As built.** No flag. The setting is `CHAT_MAX_RUNS_PER_MEMBER`, default 5,
+and 0 turns the cap off. `orchestrator/run_cap.py` holds the rules.
+
+1. **Where.** `POST /agent/run/stream` asks `admit_member_run` after the steer
+   decision. A steer into the member's own live run returns 202 before the
+   check, so it never counts. The check comes before the memory read, the
+   Graphiti episode, the supersede, the prompt save (S4) and the mint.
+2. **The count.** The member's own entries in `cc:<org>:liveruns` (#791),
+   read through `acb_common.tenant_redis`. An entry counts only while
+   `run_liveness` says `live` (#797). A run that ended, a dead process's run
+   and a parked question hold no slot. The thread about to start does not
+   count, because a new run on it replaces the old one.
+3. **One email, one org.** The index is per org. One email resolves to one
+   org today, so the per-org count is the per-member count. If a member of
+   two orgs arrives, that member could run 5 in each org. The fix is then a
+   second index keyed by member.
+4. **Who is exempt.** A caller with no member address (automation, cron, a
+   service) is not capped. An automation run on a member's behalf does not
+   count either. Those paths bind no session member, so their index entry
+   has no actor, and an entry with no actor matches nobody.
+5. **The refusal.** HTTP 429 with `{"error": "too_many_runs", "limit": 5,
+   "running": [thread ids]}`. Nothing is saved, filed or minted. The chat
+   route names the code `too_many_runs` from the body, so a plain 429 stays
+   `rate_limited`.
+6. **The race.** The run registers its index entry only when its stream
+   starts. So the check and a reservation are one step, under a per-member
+   `SET NX` lock with a 3 s TTL, as `cc:recover` does in #797. The
+   reservation (`cc:<org>:runslots`) holds a slot until the run registers, or
+   for 60 s. A refusal after the check releases it.
+7. **The client.** One notice in the run-error idiom: "You have 5 assistants
+   running. Wait for one to finish or stop one, then send again." Its button
+   is "Open activity", which opens the S3 panel. The turn leaves the thread,
+   and its words go back to the composer. A 429 is not an update outage, so
+   nothing is held and nothing retries. An edit that the cap refuses keeps
+   the old turn and says why.
+8. **No browser row.** On the gateway path a new turn waits for the server's
+   answer before the chat saves it (`awaitingServer`). S4 already saves an
+   accepted turn on the server, so this costs nothing, and a refused turn
+   leaves no row. A send that an app update holds (#797) carries the same
+   mark until the server takes it (review of #821).
+9. **The composer.** The refused words go back to the composer. Text that
+   the member typed since keeps its place, and the refused words follow it
+   after a blank line (`mergeCappedText`).
+10. **The room.** The shared room's `USER_MESSAGE` event goes out after the
+    cap, so a refused send shows the other members nothing. A steer still
+    sends it.
+
+**Over-admission, and when.** The lock holds the cap exactly under a true
+race. Two cases can admit one run too many. The first is a lock wait that
+runs out, because a holder stalled past the TTL. The second is a run that
+takes more than 60 s between the check and its stream start. A Redis error
+admits the run (fail open), as `register_live_run` does.
+
+**Fences (R7).**
+
+| Fence | What it holds |
+|---|---|
+| `tests/unit/test_run_cap.py` | The 6th refused and the 5th allowed. A steer not counted. Dead and ended runs. Other members, automation and a service caller. Reservations, their lapse and their release. Six concurrent sends admit five, through a fake Redis that yields. The route: a refused run reaches no memory, no mint and no run |
+| `tests/unit/test_chat_prompt_saved_at_start.py` | R8: a refused run leaves no member's turn, no agent row and no chat row in Postgres |
+| `src/lib/runCap.test.ts` | The code and its words, the frame, the turn that leaves the thread with one notice, the words back in the composer, no hold, and the wiring |
+| `tests/unit/test_run_errors.py` | `too_many_runs` is in both vocabularies |
+
+**Mutation record (2026-10-10).** Five mutants, five killed: no lock, no
+liveness rule, no actor filter, a mint before the refusal, and no cap branch
+in the client seam.
+
+**Known limits.**
+
+- `/copilot/chat` has no client, so it is not capped. Its runs still count.
+- `POST /agent/run` and `/agent/run/async` are not capped, and their runs
+  are not in the index. The chat never sends them: `useAgentChat` sends only
+  `copilot` (to `/agent/run/stream`) or `litellm` (no agent run). The chat
+  route sends a body with `mode: "langgraph"` to `/agent/run`. No client
+  sends that mode, so only a hand-made request reaches it. The cap is a
+  fairness limit, not a security boundary, so this stays open.
+
 ---
 
 ## 5. Deferred — owner decisions
@@ -637,10 +755,10 @@ carries that slot's cookie only, and that a row keeps its account label.
 | Id | Decision | Recommendation | Gate |
 |---|---|---|---|
 | D-1 | A separate run-worker service, so a deploy never stops a run | Build after S2, which makes a stop cheap to resume | **OWNER-GATE** |
-| D-2 | Opt-in web push for "needs input" | After S5 | **OWNER-GATE** |
-| D-3 | Caps on concurrent runs | 5 per member and 20 per org | **OWNER-GATE** |
+| D-2 | Opt-in web push for "needs input" | **DECIDED** 2026-10-10: opt-in per member. Slice S7, not built | AGENT-SAFE |
+| D-3 | Caps on concurrent runs | **DECIDED** 2026-10-10: 5 per member, no org cap. **BUILT** (§4.8) | AGENT-SAFE |
 
-An agent must refuse these by name until the owner decides.
+An agent must refuse D-1 by name until the owner decides.
 
 ---
 
@@ -665,7 +783,9 @@ An agent must refuse these by name until the owner decides.
 | `apps/services/gateway/gateway/routes/chat.py` | `GET /chat/active-sessions` (S2 adds `state`) |
 | `apps/services/gateway/gateway/routes/agent.py` | `POST /agent/respond-input` (S2) |
 | `apps/services/orchestrator/orchestrator/executor.py` | `_pending_user_input` (S2) |
-| `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs` |
+| `apps/services/orchestrator/orchestrator/stream_relay.py` | `run_detached`, `list_live_runs`, `drop_run_slot` |
+| `apps/services/orchestrator/orchestrator/run_cap.py` | The run cap: the count, the lock and the reservation (D-3) |
+| `workbench/control_plane/src/lib/chatTurnFailure.ts` | The capped turn leaves the thread with one notice (D-3) |
 
 ---
 

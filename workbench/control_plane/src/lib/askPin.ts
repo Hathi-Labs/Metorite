@@ -125,6 +125,22 @@ export function pendingAsk(src: AskSources): PendingAsk | null {
   return genUiAsk(src);
 }
 
+/**
+ * Every element that waits on the member, by its `data-chat-ask` target.
+ * The pin names one of them (`pendingAsk`). A card that waits never rolls
+ * up, so the roll-up asks this set (`components/RollupCard.tsx`). Same
+ * sources, same rules: there is no second notion of "waits".
+ */
+export function waitingTargets(src: AskSources): ReadonlySet<string> {
+  const out = new Set<string>();
+  if (src.confirmations.length > 0 || (src.elicitation && src.elicitation.questions.length > 0) || src.userInput) {
+    out.add(HITL_TARGET);
+  }
+  const g = genUiAsk(src);
+  if (g) out.add(g.target);
+  return out;
+}
+
 /** The bar's lead word for each kind. */
 export const PIN_LEAD: Record<PendingAsk["kind"], string> = {
   confirm: "Waiting for your approval",
