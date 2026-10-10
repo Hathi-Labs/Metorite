@@ -1049,6 +1049,13 @@ class Settings(BaseSettings):
     # typing indicator. OFF, the run is the WAC-3 run. Default OFF. Fence:
     # tests/unit/test_wac_native_ui.py.
     whatsapp_assistant_native_ui: bool = False
+    # WAC-10f (spec §13.8): WhatsApp charts drawn by the web app's chart
+    # engine (`src/lib/charts/render.mjs`, run as a child process), in the
+    # product's one chart language. OFF, the old SVG renderer draws the four
+    # old kinds. Default OFF. `whatsapp_chart_node` names the Node binary.
+    # Fence: tests/unit/test_wac_chart_engine.py.
+    whatsapp_chart_engine: bool = False
+    whatsapp_chart_node: str = "node"
 
     # ── Token accessors ────────────────────────────────────────────────────
 
