@@ -229,7 +229,7 @@ test.describe("the chevron takes the icon's slot", () => {
   test("no row keeps a chevron column: the name starts right after the icon", async ({ page }) => {
     await openProjects(page);
     await rest(page);
-    // Depth 1: 8 px row padding, one 12 px step, a 16 px icon, an 8 px gap.
+    // Depth 1: 8 px row padding, one 16 px step, a 16 px icon, an 8 px gap.
     // The old chevron column added 22 px to this.
     for (const name of ["Finance & Accounts", "Knowledge Base"]) {
       const target = row(page, name);
@@ -237,7 +237,7 @@ test.describe("the chevron takes the icon's slot", () => {
         const label = Array.from(el.querySelectorAll("span")).find((s) => s.textContent === n)!;
         return label.getBoundingClientRect().left - el.getBoundingClientRect().left;
       }, name);
-      expect(offset, name).toBeLessThanOrEqual(8 + 12 + 16 + 8 + 1);
+      expect(offset, name).toBeLessThanOrEqual(8 + 16 + 16 + 8 + 1);
     }
   });
 });

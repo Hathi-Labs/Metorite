@@ -70,6 +70,7 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { useAccess } from "@/components/AccessProvider";
 
 interface Props {
   task: TaskRow;
@@ -138,6 +139,8 @@ export function TaskPanel({
   personLabels,
   onPeopleSeen,
 }: Props) {
+  // A copied link names this organization, so it opens in the right account.
+  const orgId = useAccess().access.organization?.id ?? null;
   /**
    * Two columns, decided by the SURFACE rather than the viewport. `full` is
    * `max-w-3xl` (768px), the first stop with room for two readable columns.
@@ -231,7 +234,7 @@ export function TaskPanel({
             where the panel is always the whole screen). */}
         <TaskHeaderRow
           taskRef={taskRef(task) ?? "Task"}
-          linkFor={() => taskDeepLink(task, window.location.origin)}
+          linkFor={() => taskDeepLink(task, window.location.origin, orgId)}
           expand={
             onMode
               ? {

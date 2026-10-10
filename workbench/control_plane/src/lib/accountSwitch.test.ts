@@ -111,6 +111,45 @@ describe("rule 3: the org-scoped keys", () => {
   });
 });
 
+describe("org-aware links: where a switch and a sign-in land", () => {
+  // R7 fence `switch-target-is-local`. A link names the path, so a switch
+  // that went to any path it was handed would be an open redirect.
+  it("lands on a same-origin target, and still clears the org-scoped keys", async () => {
+    const go = vi.fn();
+    localStorage.setItem("cc-org-branding-v1", "logo of org A");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true })));
+    expect(await switchTo(1, go, "/projects?task=1")).toBe(true);
+    expect(go).toHaveBeenCalledWith("/projects?task=1");
+    expect(localStorage.getItem("cc-org-branding-v1")).toBeNull();
+  });
+
+  it.each(["//evil.example", "https://x", "/\\evil.example", "javascript:alert(1)", ""])(
+    "lands on / for the target %j",
+    async (target) => {
+      resetLeaving();
+      const go = vi.fn();
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true })));
+      expect(await switchTo(1, go, target)).toBe(true);
+      expect(go).toHaveBeenCalledWith("/");
+    },
+  );
+
+  it("Add another account forwards a same-origin callbackUrl, and drops any other", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true })));
+    const go = vi.fn();
+    const link = "/projects?task=t1&org=3f2a6c1e-9b7d-4e2a-8c1f-0a1b2c3d4e5f";
+    expect(await addAccount(go, link)).toBe(true);
+    const url = new URL(go.mock.calls[0][0] as string, "https://app.example");
+    expect(url.pathname).toBe("/signin");
+    expect(url.searchParams.get("add")).toBe("1");
+    expect(url.searchParams.get("callbackUrl")).toBe(link);
+
+    const go2 = vi.fn();
+    await addAccount(go2, "//evil.example");
+    expect(go2).toHaveBeenCalledWith("/signin?add=1");
+  });
+});
+
 describe("rule 4: sign out of all accounts", () => {
   it("clears every account's chat namespace, in both cases, and leaves strangers' alone", async () => {
     localStorage.setItem("cc-chat::a@one.test|org1::sessions", "1");

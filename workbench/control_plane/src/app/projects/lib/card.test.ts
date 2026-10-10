@@ -418,6 +418,15 @@ describe("taskDeepLink", () => {
   it("is origin-relative when no origin is given, and encodes the id", () => {
     expect(taskDeepLink({ id: "a b" })).toBe("/projects?task=a%20b");
   });
+
+  it("stamps the active org on a copied link, and nothing when it is unknown", () => {
+    // R7 fence `copied-link-names-org` (MT-1k, org-aware links).
+    const org = "3f2a6c1e-9b7d-4e2a-8c1f-0a1b2c3d4e5f";
+    expect(taskDeepLink(row(), "https://cc.example", org)).toBe(
+      `https://cc.example/projects?task=t1&org=${org}`,
+    );
+    expect(taskDeepLink(row(), "https://cc.example", null)).toBe("https://cc.example/projects?task=t1");
+  });
 });
 
 describe("the task SOURCE chip (WS-27bh)", () => {

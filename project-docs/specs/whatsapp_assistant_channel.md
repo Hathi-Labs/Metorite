@@ -1,7 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-10a built, dark (2026-10-10): the WhatsApp run profile and
-its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
+**Status:** WAC-10c built (2026-10-10): cards, views and quick commands
+(§13), on top of WAC-10a, the run profile and its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
 two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. WAC-4 is next. The board
 row is **WS-47**.
 
@@ -708,7 +708,8 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-7** | Proactive messages: the daily brief and the nudge, STOP and START (§5.8) | AGENT-SAFE to build, **OWNER-GATE** to switch on | A brief goes only to an opted-in, linked phone. STOP ends every Metorite-initiated message to that phone |
 | **WAC-8** | Org controls: the org setting, admin revoke, revoke on membership removal, link expiry | AGENT-SAFE | An org with the channel off gets no run and no new link. A removed member's link is `revoked` before their next message |
 | **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
-| **WAC-10a** ✅ built 2026-10-10, dark | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
+| **WAC-10a** ✅ live 2026-10-10 (Meta test number) | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
+| **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -912,3 +913,128 @@ changes no data. WAC-4 brings the Confirm and Cancel buttons for writes.
 | N8 | The live check on Meta's test number: a question about tasks returns a list, and a tap on a row returns that task |
 
 Fence: `tests/unit/test_wac_native_ui.py`. N8 is the manual step of §8.
+
+---
+
+## 13. Amendment of 2026-10-10: WAC-10c, cards, views and quick commands
+
+**The owner's ask (2026-10-10).** "Consider all the aspects of Metorite, and
+the questions a user might ask about the different apps. Find the best way to
+display them, in ASCII, images or whatever." And: "use generated code, so we
+do not spend AI tokens on repetitive or general tasks."
+
+### 13.1 Three ways to answer, cheapest first
+
+| Tier | When | AI cost |
+|---|---|---|
+| **1. Quick command** | The whole message is a command ("today", "due today", "overdue", "calendar", "approvals", "menu", "hi"), or a tap on a row of the menu | **None.** Code reads the data and builds the answer (`whatsapp_channel/views.py`) |
+| **2. View by name** | A free question that a view answers ("what's on my plate?") | One short tool call: `whatsapp_ui(kind="view", data={"name"})`. The model writes no rows |
+| **3. Composed answer** | Everything else | The model reads with its tools and calls `whatsapp_ui` with the data |
+
+A view can fail: a read, a render, or a timeout of 15 seconds. Then the
+assistant gets the message, so a member always gets an answer.
+
+### 13.2 The views
+
+Each view reads the SAME data as the web page, through the route code
+in-process, as the member (`acb_auth.deps.member_context`). A route function
+called in-process skips its router's feature gate, so each view checks the
+feature itself.
+
+| View | Reads | Shows |
+|---|---|---|
+| `menu` | The member's permissions | A list: My day, Due today, Overdue, Calendar, and Approvals for an admin |
+| `my_day` | The My Day feed (`shell_needs`) | A summary line, then a list in sections: Overdue, Approvals, Due today, From your projects, Needs your reply. A link when more than 10 rows wait |
+| `due_today`, `overdue` | The member's due work (`my_due_tasks`), feature `projects` | A count by project, then a list of tasks with the due time or the days late |
+| `calendar` | The day summary (`day_summary`), feature `tasks` | The One Thing, the overdue and unplanned counts, then an agenda image in the member's zone and a Calendar link |
+| `approvals` | The My Day feed, admins only | A list of agent actions that wait |
+
+### 13.3 What each app's questions look like on WhatsApp
+
+| App | A typical question | Display |
+|---|---|---|
+| My Day | "What needs me?" | View `my_day` (a list in sections) |
+| My Tasks | "What's due today?" "What's overdue?" | Views `due_today`, `overdue` |
+| My Tasks | "Tell me about task X" | A text card (bold title, priority mark, status, due, project, owner), then a link to `/projects?task=<id>` |
+| My Tasks | "How is my inbox?" | `stats` tiles: inbox, next, waiting, stale |
+| Calendar | "What's my day?" | View `calendar` (an agenda image) |
+| Calendar | "When am I free?" | Text with the free slots, or an `agenda` with `free` blocks |
+| Projects | "How is project X doing?" | `stats` tiles (open, overdue, done, at risk), then buttons for the next question |
+| Projects | "Show the board" | `board` image, 4 columns at most |
+| Projects | "What's the plan or timeline?" | `gantt` image, or `timeline` for milestones |
+| Projects | "Tasks by status" | `chart` donut |
+| Projects | "Who is overloaded?" | `chart` progress (committed of capacity per person) |
+| Projects | "Throughput this month" | `chart` line |
+| Projects | Any list of tasks | `list` (10 rows), or a `table` image for 3 or more columns |
+| People | "Who knows X?" "Who is free?" | `list` of people (name, role, free hours), then a link to `/people/<id>` |
+| My Email | "What needs a reply?" | `list` of emails (sender, subject, age), then a link to the email |
+| My Email | "Read the email from X" | Text: sender, subject, a short summary, then a link |
+| My Email | "Inbox overview" | `stats` tiles: unread, needs reply, top sender |
+| My WhatsApp | "Who is waiting on me?" | `list` of chats (name, intent, snippet) |
+| Approvals | "What waits for me?" | View `approvals` |
+| Anything rich | A form, a live chart, a long report | A link button to the page in Metorite |
+
+**The text card for one item** is WhatsApp text, with no AI-built image:
+
+```
+*Fix the extruder nozzle*
+🔥 Critical · ⏳ In progress · 📅 Fri 11 Oct
+📁 Snowflake X1 · 👤 Vijay · ⏱ 3 h left
+```
+
+The priority marks are D78's: 🔥 Critical, 🚨 Urgent, 📈 High-Leverage, ❗
+Important, 📤 Quick win, 🧪 Speculative, and none for Low.
+
+### 13.4 The cards
+
+`acb_skills/whatsapp_cards.py` draws six more images, beside the charts and
+the table of §12. They are KPI tiles (`stats`), a board, a timeline, a
+calendar day (`agenda`), a project schedule (`gantt`), and a breakdown
+(`chart` type `donut`). A status takes the hue that
+`statusAccent.ts` gives it (`whatsapp_cards.hue`).
+
+**The table layout was fixed the same day.** The spare width went to the
+first column. So in the owner's "Due today" image, the task titles sat far
+to the right of a short id column. Now the spare width goes to the widest text
+column, and only the wide columns shrink (`whatsapp_render.column_widths`).
+
+### 13.5 Acceptance (WAC-10c)
+
+| # | Done when |
+|---|---|
+| C1 | A quick command runs no agent, and its answer comes from the reads of §13.2 |
+| C2 | A view that fails hands the message to the assistant |
+| C3 | Each view checks its feature. A non-admin gets no approvals |
+| C4 | `whatsapp_ui` kind `view` sends a view by name, and resolves the member once |
+| C5 | Each card draws from valid data, and refuses bad data with a reason |
+| C6 | A status takes the web hue. The table gives spare width to the widest text column |
+| C7 | With `WHATSAPP_ASSISTANT_NATIVE_UI` off, a command goes to the assistant |
+| C8 | The live check: "today", "calendar" and "menu" answer on the test number, and the log shows `whatsapp_channel.run.quick` |
+
+Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py`.
+
+### 13.6 The review round of 2026-10-10
+
+An adversarial review, a verifier and the owner's own screenshots found
+these. Each one is fixed, and each fix has a fence in
+`tests/unit/test_wac_views_review.py`, `test_wac_cards.py` or
+`test_wac_native_ui.py`.
+
+| Found | Fix |
+|---|---|
+| A tap on a menu row arrives as "Title (description)", so it never matched a command, and the AI ran | `views.match` reads the title of a list tap |
+| Two rows that cut to one title made the list refuse, and the whole view failed | `whatsapp_ui` adds " (2)" to a repeated row title |
+| A source that timed out still gave "Nothing needs you ✅" | A failed source says the view may not be all. A failed approvals source hands the message to the AI |
+| 50 overdue tasks hid every task due later today | The due read takes 200 rows. At the cap, "due today" hands over to the AI and "overdue" says "200+" |
+| A full source showed its cap as the count | A source that gave its 15 rows shows "15+", with a link to the rest |
+| `member_context` resolves the org from the email, not from the link row | `views.member_context` refuses a context whose org is not the link's (D-WAC-3) |
+| A tap on the AI's own "Today" button opened the canned view | The quick path skips when the last reply offered the AI's own buttons or list. A view's reply carries an invisible mark (U+2064), so a menu tap still runs |
+| The model typed "[Table: …]" and "[Chart …]" as text and sent no image (owner screenshots) | The model no longer reads element records in its history. The reply guard (`whatsapp_ui.polish`) draws a typed table or chart, or cuts it |
+| The model said "tap any of these" and sent nothing to tap (owner screenshot) | The guard turns the reply's bullets into a list, or cuts the sentence |
+| The table shrink could push a column off the image | `column_widths` caps the wide columns at one width, so the sum is the image width |
+| `hue` claimed an exact match with the web and did not give one | `hue` applies the web's rules first. Its own health and priority words apply only where the web gives no hue |
+| The menu showed rows that the member cannot open | The menu shows a row only when the member holds its feature |
+
+**Each link names its org** (owner, 2026-10-10). A link button carries
+`org=<the link row's org id>`, which the server sets and the model cannot
+choose. The web app's switch to that org's account is WAC-10d.

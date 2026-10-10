@@ -1104,8 +1104,10 @@ async def resolve_access(
     participants' emails and :func:`resolve_session_access` folds it over
     session subjects — neither is somebody knocking at the front door, and
     filing them would fill the owner's queue with people who never tried to
-    sign in. Exactly one caller passes it: ``acb_auth.deps._with_resolved_access``,
-    which runs per authenticated request. See spec §6 done-when 3.
+    sign in. Exactly one function passes it: ``acb_auth.deps._resolve_and_bind``,
+    which runs per authenticated request, and for ``deps.member_context`` (a
+    WhatsApp member's own message, WS-47 WAC-10c, also the member knocking).
+    See spec §6 done-when 3.
     """
     global _tables_missing
 

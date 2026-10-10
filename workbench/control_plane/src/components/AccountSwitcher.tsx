@@ -107,8 +107,12 @@ function Avatar({ email, name, size = "md" }: { email: string; name?: string | n
   );
 }
 
-/** "Switching to …" over the whole page, until the reload lands. */
-function SwitchingCover({ email }: { email: string }) {
+/**
+ * "Switching to …" over the whole page, until the reload lands. With no
+ * email, it covers the read of the accounts that an org-aware link makes
+ * first (`components/OrgLinkGate.tsx`).
+ */
+export function SwitchingCover({ email }: { email: string | null }) {
   return (
     <div
       role="status"
@@ -117,7 +121,13 @@ function SwitchingCover({ email }: { email: string }) {
     >
       <Icon name="Loader2" size={22} className="animate-spin text-muted-foreground" />
       <p className="text-sm text-muted-foreground">
-        Switching to <span className="font-medium text-foreground">{email}</span>
+        {email ? (
+          <>
+            Switching to <span className="font-medium text-foreground">{email}</span>
+          </>
+        ) : (
+          "Opening the link…"
+        )}
       </p>
     </div>
   );

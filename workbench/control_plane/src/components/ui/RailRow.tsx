@@ -13,8 +13,11 @@
  *
  *     [indent + guides][icon  label ……………  meta][actions]
  *
- * - **indent** — one 12 px step per level, each with an optional thin
- *   vertical guide, so a nested level reads as nested.
+ * - **indent** — one 16 px step per level, each with an optional thin
+ *   vertical guide, so a nested level reads as nested. The guide sits 8 px
+ *   in, under the centre of the parent's 16 px icon, which leaves 8 px to the
+ *   child's icon. The step was 12 px until the owner found the icon "too
+ *   close to the vertical line" (2026-10-10): 4 px read as untidy.
  * - **icon** — the row's marker. On a row that can open (`expand`), the
  *   expand chevron takes the SAME slot on hover and on keyboard focus, and
  *   the icon hides. ClickUp does this, and it removes the chevron column,
@@ -61,8 +64,11 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import Button from "@/components/ui/Button";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
 
-/** One indent step, in px. The tree's own step before this primitive. */
-export const RAIL_INDENT_PX = 12;
+/**
+ * One indent step, in px: the `w-4` below. 12 px until 2026-10-10, when the
+ * owner found the icon too close to the guide line.
+ */
+export const RAIL_INDENT_PX = 16;
 
 /** A level that groups (a space, a section head) or an item in it. */
 export type RailRowTier = "group" | "item";
@@ -278,7 +284,7 @@ export function RailRow({
       className={`${railRowClass({ selected, tier, touch: isMobile })} ${className}`}
     >
       {Array.from({ length: depth }, (_, level) => (
-        <span key={level} aria-hidden className="relative w-3 shrink-0 self-stretch">
+        <span key={level} aria-hidden className="relative w-4 shrink-0 self-stretch">
           {guides ? <span className="absolute inset-y-0 left-2 w-px bg-border" /> : null}
         </span>
       ))}

@@ -28,6 +28,7 @@ import {
 
 import type { TagRow, TaskRow, TaskTypeRow } from "./api";
 import { taskCell } from "./matrix";
+import { withOrg } from "@/lib/orgLink";
 
 /**
  * `lower(tag name)` → the registry's stored colour.
@@ -203,7 +204,15 @@ export function taskRef(task: Pick<TaskRow, "task_number">): string | null {
  * (WS-28b) and the notification bell already emits — a third spelling would
  * be a link that opens nothing. `origin` is passed in rather than read from
  * `window` here, so the formatting stays pure and testable.
+ *
+ * `org` is the active organization's id. A link that a member COPIES passes
+ * it, so the link opens in the right account (`lib/orgLink.ts`). An in-app
+ * href leaves it out, because the page is already in that account.
  */
-export function taskDeepLink(task: Pick<TaskRow, "id">, origin = ""): string {
-  return `${origin}/projects?task=${encodeURIComponent(task.id)}`;
+export function taskDeepLink(
+  task: Pick<TaskRow, "id">,
+  origin = "",
+  org?: string | null,
+): string {
+  return withOrg(`${origin}/projects?task=${encodeURIComponent(task.id)}`, org);
 }

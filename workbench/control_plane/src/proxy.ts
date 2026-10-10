@@ -156,8 +156,12 @@ async function gate(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Sign in to continue" }, { status: 401 });
   }
 
+  // The WHOLE link comes back after the sign-in, query included. An
+  // org-aware link (`lib/orgLink.ts`) carries `?org=` and a record id there,
+  // so the path alone opened the wrong page. Auth.js's own redirect check
+  // keeps the callback on this origin. Fence: `proxy.test.ts`.
   const url = new URL("/signin", req.url);
-  url.searchParams.set("callbackUrl", pathname);
+  url.searchParams.set("callbackUrl", `${pathname}${req.nextUrl.search}`);
   return NextResponse.redirect(url);
 }
 

@@ -14,6 +14,12 @@
  * the folder rule here would be the second vocabulary `AGENTS.md` rule 4
  * refuses. `pickerTree.test.ts` pins that the two agree on every node.
  *
+ * A picker that places something ELSE passes its own rule. The project "Move
+ * to…" dialog passes `moveRefusal` (owner, 2026-10-10: the same wall of text
+ * there), because a folder may take a project where it may not take a task.
+ * The rule returns the REASON a row is refused, never a bare boolean, so the
+ * picker can say why in place.
+ *
  * ## Pure on purpose
  *
  * `vitest.config.ts` runs in `node`, so no JSX assertion is available. Every
@@ -33,16 +39,27 @@ export interface PickerNode {
   depth: number;
   /** The LEVEL, for the icon. Folders are transparent to it, as in `levelOf`. */
   level: NodeLevel;
-  /** A task may land here. False only for a folder (`destinations`). */
+  /** The thing being placed may land here: `refusal` is null. */
   pickable: boolean;
+  /** Why it may not, in the words the server uses. Null when it may. */
+  refusal: string | null;
   parentId: string | null;
   /** The ancestors' names, top first — the breadcrumb a search result shows. */
   path: string[];
   hasChildren: boolean;
 }
 
+/** The task rule's refusal, for a folder. `destinations` decides which rows. */
+export const FOLDER_HOLDS_NO_TASKS = "A folder holds projects, not tasks.";
+
+/**
+ * Why a row may not take the thing being placed, or null when it may. The
+ * default is the task rule (`destinations`).
+ */
+export type PickRule = (node: ProjectNode) => string | null;
+
 /** Every node, in tree order, with what the picker needs to draw and search it. */
-export function pickerNodes(roots: readonly ProjectNode[]): PickerNode[] {
+export function pickerNodes(roots: readonly ProjectNode[], rule?: PickRule): PickerNode[] {
   const out: PickerNode[] = [];
   // The open ancestors at each depth, as `destinations` walks down.
   const stack: PickerNode[] = [];
@@ -52,13 +69,15 @@ export function pickerNodes(roots: readonly ProjectNode[]): PickerNode[] {
     const generations =
       stack.filter((n) => nodeKind(n.node) === "project").length +
       (nodeKind(row.node) === "project" ? 1 : 0);
+    const refusal = rule ? rule(row.node) : row.legal ? null : FOLDER_HOLDS_NO_TASKS;
     const entry: PickerNode = {
       node: row.node,
       id: row.node.id,
       name: row.node.name,
       depth: row.depth,
       level: nodeLevel(nodeKind(row.node), generations),
-      pickable: row.legal,
+      pickable: refusal === null,
+      refusal,
       parentId: parent?.id ?? null,
       path: stack.map((n) => n.name),
       hasChildren: (row.node.children?.length ?? 0) > 0,
@@ -178,8 +197,9 @@ export interface SearchHit {
  *
  * Ranked in three bands and kept in tree order inside each, so the list does
  * not reshuffle on every keystroke: the name starts with a word, then the name
- * contains one, then only the path does. A folder never appears — it holds no
- * tasks, and its projects already match through their path.
+ * contains one, then only the path does. Only rows the rule allows appear.
+ * Under the task rule that leaves folders out — they hold no tasks, and their
+ * projects already match through their path.
  */
 export function searchRows(nodes: readonly PickerNode[], query: string): SearchHit[] {
   const tokens = queryTokens(query);
