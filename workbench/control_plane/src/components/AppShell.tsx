@@ -364,11 +364,21 @@ function BarBrand() {
   const { access, loading } = useAccess();
   const workspace = shouldPollWorkspace(access, loading);
   return (
-    <div data-shell-brand className="flex w-64 shrink-0 items-center gap-1.5 pl-2 pr-2">
-      {workspace ? <SidebarFoldButton /> : null}
+    <div data-shell-brand className="flex w-64 shrink-0 items-center pr-2">
+      {/* ⚠️ The control sits in a column exactly as wide as the folded rail
+          (`w-14`), centred, so it is on the same vertical line as the rail's
+          icons below it (owner, 2026-10-10: "in line with all the icons of the
+          sidebar"). The logo then starts after a gap, not pressed against it.
+          Fence: `e2e/shell-bar.spec.ts` "the menu control is centred over the
+          folded rail's icons". */}
+      <div data-shell-fold-column className="flex w-14 shrink-0 items-center justify-center">
+        {workspace ? <SidebarFoldButton /> : null}
+      </div>
       {/* 24px tall, one line: a 44px bar has no room for the sidebar's stack.
-          200px is the zone less its padding and the control. */}
-      <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={200} compact />
+          176px is the zone less the control's column, the gap and the padding. */}
+      <div className="ml-2 min-w-0">
+        <OrgBrandLockup fallbackCaption="Control Plane" height={24} maxWidth={176} compact />
+      </div>
     </div>
   );
 }
