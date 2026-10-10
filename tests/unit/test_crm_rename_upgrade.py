@@ -549,6 +549,88 @@ def test_an_existing_crm_upgrades_with_its_rows(eng, shape):
         conn.close()
 
 
+# -- (e2) Who owns a row with no tenant ------------------------------------
+#
+# The shared dev database holds many organizations and no `fracktalworks`.
+# A fill that stopped there broke `scripts/dev_db.sh` for every session. So the
+# order is: `fracktalworks`, then `default` (migration 130 seeds it), then the
+# only organization, and only then a stop that names the table.
+
+
+def _hide_slug(conn, slug: str) -> None:
+    """Rename an organization out of the way, inside the arm's transaction."""
+    conn.execute(text(
+        "UPDATE organization SET slug = slug || '-hidden-' || "
+        "substr(md5(random()::text), 1, 6) WHERE slug = :s"), {"s": slug})
+
+
+def _old_shape_with_orphans(conn) -> str:
+    """The ladder's old shape, two extra organizations, and one company row
+    with no tenant. Returns the company id."""
+    conn.execute(text("TRUNCATE " + ", ".join(CRM_TABLES) + " CASCADE"))
+    _restore_old_shape(conn, production=False)
+    for _ in range(2):
+        conn.execute(text(
+            "INSERT INTO organization (id, slug, display_name) VALUES "
+            "(gen_random_uuid(), :s, 'crm-t1 extra')"),
+            {"s": f"crm-t1-{uuid.uuid4().hex[:8]}"})
+    return str(conn.execute(text(
+        f"INSERT INTO {OLD_TABLE} (name) VALUES ('Orphan Ltd') RETURNING id"),
+    ).scalar_one())
+
+
+@_DB_GATE
+def test_with_no_fracktalworks_the_default_org_owns_the_orphans(eng):
+    conn = eng.connect()
+    trans = conn.begin()
+    try:
+        company = _old_shape_with_orphans(conn)
+        _hide_slug(conn, "fracktalworks")
+        default = conn.execute(text(
+            "SELECT id::text FROM organization WHERE slug = 'default'")).scalar()
+        if default is None:
+            default = str(conn.execute(text(
+                "INSERT INTO organization (id, slug, display_name) VALUES "
+                "(gen_random_uuid(), 'default', 'Default') RETURNING id"),
+            ).scalar_one())
+        assert conn.execute(text("SELECT count(*) FROM organization")).scalar() > 1
+
+        _run(conn, _no_txn(_text(_spine())))
+        _run(conn, _no_txn(_text(_tenancy())))
+
+        assert conn.execute(text(
+            f"SELECT organization_id::text FROM {NEW_TABLE} "
+            "WHERE id = CAST(:c AS uuid)"), {"c": company}).scalar_one() == default
+        # The 144 seeds landed with no tenant, and `default` owns them too.
+        assert conn.execute(text(
+            "SELECT count(*) FROM crm_deal_statuses "
+            "WHERE organization_id IS DISTINCT FROM CAST(:d AS uuid)"),
+            {"d": default}).scalar() == 0
+    finally:
+        trans.rollback()
+        conn.close()
+
+
+@_DB_GATE
+def test_with_no_clear_owner_241_stops_and_names_the_table(eng):
+    from sqlalchemy.exc import DBAPIError
+
+    conn = eng.connect()
+    trans = conn.begin()
+    try:
+        _old_shape_with_orphans(conn)
+        _hide_slug(conn, "fracktalworks")
+        _hide_slug(conn, "default")
+        _run(conn, _no_txn(_text(_spine())))
+        with pytest.raises(DBAPIError) as err:
+            _run(conn, _no_txn(_text(_tenancy())))
+        assert "crm_companies" in str(err.value)
+        assert "no organization_id" in str(err.value)
+    finally:
+        trans.rollback()
+        conn.close()
+
+
 # -- (f) A replay ------------------------------------------------------------
 
 
