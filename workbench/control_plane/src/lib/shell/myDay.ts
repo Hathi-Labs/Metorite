@@ -92,6 +92,7 @@ export function emptyNeedsLine(partial: boolean): string {
 /** The small plain label over each group, by kind. */
 export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
   overdue: "Overdue",
+  approval: "Waiting for your approval",
   due_today: "Due today",
   notification: "From your projects",
   needs_reply: "Waiting for your reply",
@@ -145,12 +146,14 @@ export function rowTime(item: Pick<NeedsItem, "kind" | "at">, nowMs = Date.now()
 /** The member-facing name of each source app. */
 export const APP_NAMES: Readonly<Record<NeedsApp, string>> = {
   tasks: "My Tasks",
+  approvals: "Approvals",
   projects: "Projects",
   email: "Email",
 };
 
 const APP_HREFS: Readonly<Record<NeedsApp, string>> = {
   tasks: "/tasks",
+  approvals: "/approvals",
   projects: "/projects",
   email: "/email",
 };
@@ -171,6 +174,7 @@ export function failedLines(sources: Partial<Record<NeedsApp, SourceState>>): st
 /** What a source's silence can hide, in the member's words. */
 const MISSING: Readonly<Record<NeedsApp, string>> = {
   tasks: "due tasks",
+  approvals: "approvals",
   projects: "notifications",
   email: "replies",
 };
@@ -241,14 +245,17 @@ export interface MyDayCards {
  * with `tasks` and no `projects` would otherwise get two error cards.
  *
  * Needs you shows when any source of the feed is open to the member. The
- * feed's tasks and Projects sources need `feature:projects`, and its email
- * source needs `feature:email` (`routes/shell/needs.py`, `PROVIDERS`).
+ * feed's tasks and Projects sources need `feature:projects`, its email
+ * source needs `feature:email`, and its approvals source needs
+ * `feature:approvals` (`routes/shell/needs.py`, `PROVIDERS`). So an approver
+ * with no other app gets the card for the "Waiting for your approval"
+ * group. The server gates each row, and the card draws what it sends.
  */
 export function cardsFor(features: readonly string[]): MyDayCards {
   const has = new Set(features);
   const lens = has.has("tasks") && has.has("projects");
   return {
-    needs: has.has("projects") || has.has("email"),
+    needs: has.has("projects") || has.has("email") || has.has("approvals"),
     today: lens,
     next: lens,
   };

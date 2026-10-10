@@ -3,9 +3,14 @@
 /**
  * "Needs you" — My Day's first card (`navigation_shell.md` §4.5 and §7.2).
  *
- * It draws the one needs feed, grouped in the server's order: Overdue, Due
- * today, From your projects, Waiting for your reply. The first seven rows
- * show, and "Show all" opens the rest in place.
+ * It draws the one needs feed, grouped in the server's order: Overdue,
+ * Waiting for your approval, Due today, From your projects, Waiting for your
+ * reply. The first seven rows show, and "Show all" opens the rest in place.
+ *
+ * The approval group is the "Waiting for you" card of §4.5, folded in here
+ * for the reason the reply rows are (NS-3 slice C). The feed sends it only
+ * to a member who holds `approvals`. A row opens Approvals and has no act,
+ * because approving runs an outward write.
  *
  * ⚠️ It holds the email "needs reply" rows too. §4.5 first named a separate
  * "Needs reply" card. One thread in two cards teaches the eye to skip both,

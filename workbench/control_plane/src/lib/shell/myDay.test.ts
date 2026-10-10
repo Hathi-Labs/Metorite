@@ -33,7 +33,14 @@ import type { NeedsItem, NeedsKind } from "./needs";
 
 const row = (id: string, kind: NeedsKind, extra: Partial<NeedsItem> = {}): NeedsItem => ({
   id,
-  app: kind === "notification" ? "projects" : kind === "needs_reply" ? "email" : "tasks",
+  app:
+    kind === "notification"
+      ? "projects"
+      : kind === "needs_reply"
+        ? "email"
+        : kind === "approval"
+          ? "approvals"
+          : "tasks",
   kind,
   title: `Row ${id}`,
   detail: null,
@@ -100,15 +107,23 @@ describe("the header", () => {
 
 describe("Needs you", () => {
   it("groups in the server's kind order, under plain labels", () => {
-    const items = [row("r", "needs_reply"), row("n", "notification"), row("o", "overdue"), row("d", "due_today")];
+    const items = [
+      row("r", "needs_reply"),
+      row("n", "notification"),
+      row("a", "approval"),
+      row("o", "overdue"),
+      row("d", "due_today"),
+    ];
     const groups = groupNeeds(items);
     expect(groups.map((g) => g.label)).toEqual([
       "Overdue",
+      "Waiting for your approval",
       "Due today",
       "From your projects",
       "Waiting for your reply",
     ]);
     expect(KIND_LABELS.needs_reply).toBe("Waiting for your reply");
+    expect(KIND_LABELS.approval).toBe("Waiting for your approval");
   });
 
   it("keeps the server's order inside a group, and drops an empty group", () => {
@@ -151,12 +166,18 @@ describe("Needs you", () => {
     ]);
     expect(failedLines({})).toEqual([]);
     expect(APP_NAMES.email).toBe("Email");
+    expect(failedLines({ approvals: "failed", email: "ok" })).toEqual([
+      "Approvals did not answer, so its approvals may be missing.",
+    ]);
+    // An approver without the feature reads "absent", which is no gap.
+    expect(failedLines({ approvals: "absent" })).toEqual([]);
   });
 
   it("draws each app with its own manifest icon", () => {
     expect(appIcon("tasks")).toBe("CheckSquare");
     expect(appIcon("projects")).toBe("FolderKanban");
     expect(appIcon("email")).toBe("Mail");
+    expect(appIcon("approvals")).toBe("ShieldCheck");
   });
 });
 
@@ -217,6 +238,10 @@ describe("which cards a member gets", () => {
     expect(cardsFor(["projects"])).toEqual({ needs: true, today: false, next: false });
     expect(cardsFor(["chat"])).toEqual({ needs: false, today: false, next: false });
     expect(cardsFor([])).toEqual({ needs: false, today: false, next: false });
+  });
+
+  it("gives an approver with no other app the Needs you card, for the approval group", () => {
+    expect(cardsFor(["approvals"])).toEqual({ needs: true, today: false, next: false });
   });
 
   it("asks for what the server asks for: the lens needs feature:projects", () => {

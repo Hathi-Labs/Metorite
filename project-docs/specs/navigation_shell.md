@@ -1,7 +1,7 @@
 # The shell — how a member finds an app, a job or an answer
 
 **Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slices 1
-and 2, NS-3 slices A and B, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
+and 2, NS-3 slices A, B and C, NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
@@ -24,9 +24,9 @@ and a phone draws the compact bar. Chat on a phone has none, and the Settings
 sub-pages take the bar. Round 3 added a fifth: only the actions and the tools
 wrap, so a long name never parts the rail toggle from the name.
 
-NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
-`NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
-production (§13.1).
+NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
+The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
+(2026-10-10) adds Approvals to the needs feed and to My Day.
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -297,8 +297,9 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    Since NS-3 slice B, the item reads "My Day" when the My Day flag is on
    (`homePane` in `shellNav.ts`). With the flag off, it still reads "Home".
 2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
-   because the bell and My Day carry its items. Neither is built (NS-3,
-   NS-6). Until they are, Approvals is an approver's only door to the queue,
+   because the bell and My Day carry its items. My Day carries them since
+   NS-3 slice C, and the bell is not built (NS-6). Until it is, Approvals is
+   an approver's only door to the queue from each app,
    and Chat is the assistant itself. Both stay in their team's group: AI
    Studio and Admin.
 3. **One line per item.** The old sidebar printed a second line under each
@@ -470,6 +471,14 @@ a reply. So the Needs you card shows those threads as its last group,
 "Waiting for your reply". One thread in two cards teaches the eye to skip
 both cards. For the same reason, Next actions leaves out each task that
 Needs you already shows. Fence: `src/lib/shell/myDay.test.ts`.
+
+**Waiting for you is a group of Needs you, not a card** *(NS-3 slice C,
+2026-10-10)*. The rule is the one for Needs reply. The pending actions show
+under "Waiting for your approval", right after Overdue. The feed sends them
+only to a member who holds `approvals`. So an approver with no other app gets
+the Needs you card, and every other member gets no approval row. Each row
+opens Approvals. Fences: `src/lib/shell/myDay.test.ts` and
+`src/lib/shell/myDayPage.test.ts`.
 
 **No second arithmetic.** A team card draws a number that a Projects read or a
 report section already computes. The shell computes nothing.
@@ -779,12 +788,14 @@ two:
   - My Tasks: due today and overdue, through the lens.
 
 **Built in NS-3 slice A (2026-10-09, dark).** `gateway/routes/shell/needs.py`
-serves `GET /shell/needs` on the router of `search.py`. Three providers are
-built. Each one checks its feature, then calls the app's own read:
+serves `GET /shell/needs` on the router of `search.py`. Slice A built three
+providers, and slice C (2026-10-10) built the fourth. Each one checks its
+feature, then calls the app's own read:
 
 | Source | Feature | Function |
 |---|---|---|
 | `tasks` | `feature:projects` | `my_due_tasks` in `routes/projects/personal.py` |
+| `approvals` | `feature:approvals` | `list_pending` in `action_broker/broker.py` |
 | `projects` | `feature:projects` | `list_notifications`, unread only |
 | `email` | `feature:email` | `list_accounts`, then `needs_reply_threads` in `routes/email/digest.py` for each mailbox |
 
@@ -810,8 +821,31 @@ leaves out a thread when the member snoozed its last message, or put it in
 the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
 an archived thread too.
 
-**Approvals is slice C, and it waits on H-201.** Until then the feed has no
-`approvals` source.
+**Approvals is slice C, built 2026-10-10 after H-201.** The provider checks
+`feature:approvals`, the feature that the router of `routes/actions.py`
+demands. `GET /actions/pending` also demands `require_internal_auth`. That
+check is the transport, and the BFF sends the internal token on this call
+too. The provider calls `list_pending`, the read of that route. The broker
+binds the tenant of the request itself (H-201). `pending_actions` has no
+approver column, so each member who holds the feature sees the queue of the
+organization, as Approvals shows it. A member without the feature gets no
+row, and the broker is not called.
+
+**An approval row has no act** (`act` is null). To approve runs an outward
+write, such as a mail, a CRM push or a broadcast. The member must read the
+proposal first, so My Day never approves in one click. The row opens
+`/approvals`. Approvals reads no link to one action, so the row opens the
+queue.
+
+**An approval row says what the action does, in plain words.** The title
+comes from the action name, for example "Change a record in Zoho CRM". The
+detail names the proposer, for example "Proposed by the email assistant
+agent". Neither prints an id.
+
+⚠️ **The approvals read is not bounded.** `list_pending` reads the whole
+queue of the organization, and the provider keeps 15 rows. It also answers
+an empty list when the database fails, so that failure reads `ok` with no
+row. Only an error that the read raises reads `failed`.
 
 **The contract.** My Day and the bell read this shape:
 
@@ -819,17 +853,20 @@ an archived thread too.
 - The answer is `{count, items, sources}`. `count` is the length of `items`.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
-- `id` is `tasks:<task id>`, `projects:<notification id>` or
-  `email:<account id>:<thread id>`.
-- `kind` is `overdue`, `due_today`, `notification` or `needs_reply`.
+- `id` is `tasks:<task id>`, `approvals:<pending action id>`,
+  `projects:<notification id>` or `email:<account id>:<thread id>`.
+- `kind` is `overdue`, `approval`, `due_today`, `notification` or
+  `needs_reply`.
 - `act` is `done`, `read` or null. `done` runs
   `POST /projects/tasks/{act_ref}/complete`. `read` runs
-  `POST /projects/notifications/read` with the id in `ids`.
+  `POST /projects/notifications/read` with the id in `ids`. An approval and
+  an email always have a null `act`.
 - `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
   that the member does not hold the feature.
 
-**The order.** Overdue rows come first, the oldest first. Then rows due today,
-then notifications with the newest first. Then needs-reply rows, with the
+**The order.** Overdue rows come first, the oldest first. Then approvals,
+with the action that waited longest first, because the work of an agent
+waits on it. Then rows due today, then notifications with the newest first. Then needs-reply rows, with the
 person who waits longest first. Each source gives 15 rows at most, so one app
 cannot fill the feed.
 
@@ -842,9 +879,12 @@ limit of one second. The `email` source reads `failed` only when every
 mailbox failed.
 
 Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
-a failed source and the SQL of the two reads. `tests/unit/test_shell_needs_r8.py`
+a failed source and the SQL of the two reads. It also holds the approvals
+gate, each org's queue and the plain words of each action. `tests/unit/test_shell_needs_r8.py`
 is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
-a member with more work than the cap.
+a member with more work than the cap. Its `TestTheApprovalsQueue` seeds a
+pending action in each org through `enqueue`. An approver sees the row of
+their own org and never the other. A member without the feature sees none.
 
 ---
 
@@ -1150,14 +1190,20 @@ Done when:
 5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
-### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, live · slice B BUILT 2026-10-09, dark
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on) · slice A BUILT 2026-10-09, live · slice B BUILT 2026-10-09, ON in production since 2026-10-10 (owner) · slice C BUILT 2026-10-10
 
 **Slice A is built.** `GET /shell/needs` serves three of the four providers
 of §7.2: My Tasks, Projects and Email. §7.2 records the contract. Done-when 2
 to 4 are met for those three, and the R8 run is in the pull request.
 
-Slice C adds Approvals after H-201. My Day itself (done-when 1 and 5) is
-slice B, below. It is dark, so no page that a member sees reads the feed yet.
+**Slice C is built (2026-10-10).** It adds the fourth provider, Approvals,
+after H-201, and the "Waiting for your approval" group of Needs you (§4.5,
+§7.2). So done-when 2 now holds for the four providers, and done-when 3 for
+the four negative tests. A member without the approvals gate gets no
+pending action, and the R8 run is in the pull request.
+
+My Day itself (done-when 1 and 5) is slice B, below. The owner turned it on
+in production on 2026-10-10.
 
 Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
 app exports, and `gateway/routes/shell/needs.py` with its providers.
@@ -1175,8 +1221,8 @@ Done when:
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
 
-**Slice B, built 2026-10-09, dark.** It builds My Day at `/`, behind
-`NEXT_PUBLIC_MY_DAY`. Done-when 1 and 5 hold for the page, and
+**Slice B, built 2026-10-09, ON in production since 2026-10-10 (owner).** It
+builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Done-when 1 and 5 hold for the page, and
 `src/lib/shell/myDayPage.test.ts` renders both branches. Done-when 2 to 4
 belong to slice A, the gateway feed.
 
@@ -1210,7 +1256,7 @@ belong to slice A, the gateway feed.
 - **Who gets a card.** A card asks for what the server asks for. Today and
   Next actions read `/projects/my/*`, and the Projects router demands
   `feature:projects`. So both cards need `tasks` and `projects`. Needs you
-  needs `projects` or `email`, the features of its sources.
+  needs `projects`, `email` or `approvals`, the features of its sources.
 - **One caveat, once.** When a source does not answer, the Needs you card
   names the gap and offers Retry. An example is "Email did not answer, so
   its replies may be missing". The summary then says nothing about needs.
@@ -1530,7 +1576,8 @@ table is the only fence (R7, advisory).
   and shows no price. The owner accepted the recommendation.
 - **Q2, answered by the owner on 2026-10-09.** Yes. `/` becomes My Day for
   every member, behind `NEXT_PUBLIC_MY_DAY`. To turn the flag on in
-  production stays owner-only (§13.1).
+  production stays owner-only (§13.1). The owner turned it on in production
+  on 2026-10-10.
 
 ### 13.3 Still open — each has a default an agent builds to
 

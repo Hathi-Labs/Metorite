@@ -18,12 +18,17 @@ fails it:
 * **The calls stay in step** with the app functions they call.
 * **The two app reads are bounded and reuse the app's rule** (the lens read
   and the email read, by their SQL text). R8 runs them for real.
+* **Approvals (slice C)** reads the queue of the bound tenant, through the
+  broker's own ``list_pending``. A member without ``feature:approvals`` gets
+  no row, and the broker is never called. A row has no act, and opens
+  ``/approvals``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -43,6 +48,8 @@ from gateway.routes.shell import needs as shell
 
 ME = "member@customer.example"
 OTHER = "other@customer.example"
+ORG = "org-mine"
+ORG_OTHER = "org-other"
 NOW = datetime.now(UTC)
 #: Later today in UTC, whatever the hour the suite runs at.
 LATER_TODAY = NOW + (datetime.combine(NOW.date() + timedelta(days=1), datetime.min.time(),
@@ -81,6 +88,25 @@ class Fakes:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, dict]] = []
+        #: The pending actions, by organization. The broker reads the
+        #: tenant the request bound, so the fake does too.
+        self.pending: dict[str, list[dict]] = {
+            ORG: [
+                {"id": "pa-new", "actor": "agent:email-assistant",
+                 "action": "crm.zoho_update", "target": "lead:z-1",
+                 "payload": {"args": {}}, "status": "pending",
+                 "created_at": NOW - timedelta(minutes=10)},
+                {"id": "pa-old", "actor": "user:priya@customer.example",
+                 "action": "whatsapp.broadcast", "target": "account:wa-1",
+                 "payload": {"targets": [{"chat_id": "c1"}, {"chat_id": "c2"}]},
+                 "status": "pending", "created_at": NOW - timedelta(hours=3)},
+            ],
+            ORG_OTHER: [
+                {"id": "pa-theirs", "actor": "agent:other", "action": "crm.zoho_delete",
+                 "target": "lead:z-9", "payload": {}, "status": "pending",
+                 "created_at": NOW},
+            ],
+        }
         self.active = 0
         self.max_active = 0
         self.fail: dict[str, BaseException] = {}
@@ -151,6 +177,17 @@ class Fakes:
         return [SimpleNamespace(model_dump=lambda a=a: dict(a))
                 for a in self.accounts.get(kw["user"].email, [])]
 
+    def list_pending(self):
+        # Sync, as the broker's read is. No user: it reads the bound tenant.
+        from acb_common.db import current_tenant
+
+        org = current_tenant()
+        self.calls.append(("list_pending", None, {"org": org}))
+        time.sleep(0.005)  # a read takes time, as the async fakes do
+        if "list_pending" in self.fail:
+            raise self.fail["list_pending"]
+        return [dict(r) for r in self.pending.get(org or "", [])]
+
     async def needs_reply_threads(self, user, account_id, limit):
         await self._enter("needs_reply_threads", user,
                           {"user": user, "account_id": account_id, "limit": limit})
@@ -176,11 +213,24 @@ def fakes(monkeypatch) -> Fakes:
     monkeypatch.setattr(notifications, "list_notifications", f.list_notifications)
     monkeypatch.setattr(accounts, "list_accounts", f.list_accounts)
     monkeypatch.setattr(digest, "needs_reply_threads", f.needs_reply_threads)
+    import action_broker
+
+    monkeypatch.setattr(action_broker, "list_pending", f.list_pending)
     return f
 
 
-def run(user: UserContext, limit: int = shell.DEFAULT_LIMIT) -> dict:
-    return asyncio.run(shell.shell_needs(limit=limit, user=user))
+def run(user: UserContext, limit: int = shell.DEFAULT_LIMIT, org: str | None = ORG) -> dict:
+    """The route, with ``org`` bound the way the auth dependency binds it."""
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+
+    async def _go() -> dict:
+        token = bind_tenant(org) if org else clear_tenant()
+        try:
+            return await shell.shell_needs(limit=limit, user=user)
+        finally:
+            release_tenant(token)
+
+    return asyncio.run(_go())
 
 
 def ids(answer: dict) -> list[str]:
@@ -214,9 +264,27 @@ class TestTheFeatureGate:
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
         assert answer == {"count": 0, "items": [],
-                          "sources": {"tasks": "absent", "projects": "absent",
-                                      "email": "absent"}}
+                          "sources": {"tasks": "absent", "approvals": "absent",
+                                      "projects": "absent", "email": "absent"}}
         assert fakes.calls == []
+
+    def test_a_member_without_approvals_gets_no_pending_action(self, fakes):
+        # NS-3 done-when 3. The queue has no approver column, so the gate of
+        # `routes/actions.py` is the only thing that keeps a member out.
+        answer = run(member(*ALL))
+        assert answer["sources"]["approvals"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "approvals"]
+        assert not [i for i in ids(answer) if i.startswith("approvals:")]
+        assert "list_pending" not in {name for name, _, _ in fakes.calls}
+
+    def test_the_approvals_provider_checks_the_feature_of_the_actions_route(self):
+        # The feature that `routes/actions.py`'s router demands, read from it.
+        from gateway.routes import actions
+
+        gate = actions.router.dependencies[0].dependency
+        held = [c.cell_contents for c in (gate.__closure__ or ())]
+        assert "feature:approvals" in held
+        assert shell.PROVIDERS["approvals"][0] == "approvals"
 
     def test_a_signed_out_caller_is_refused(self, fakes):
         anon = UserContext(email=None, role=UserRole.EMPLOYEE)
@@ -254,12 +322,31 @@ class TestAnotherMembersRowsNeverArrive:
         run(user)
         assert fakes.calls and all(u is user for _, u, _ in fakes.calls)
 
+    def test_another_orgs_pending_action_never_appears(self, fakes):
+        answer = run(member(*ALL, "approvals"))
+        assert answer["sources"]["approvals"] == "ok"
+        got = [i for i in ids(answer) if i.startswith("approvals:")]
+        assert got == ["approvals:pa-old", "approvals:pa-new"]
+        assert "approvals:pa-theirs" not in ids(answer)
+        # The broker read the tenant this request bound, and no other.
+        assert [kw["org"] for n, _, kw in fakes.calls if n == "list_pending"] == [ORG]
+
+    def test_the_other_org_sees_its_own_queue_and_not_mine(self, fakes):
+        # Non-vacuity: the row held out above is real for its own org.
+        assert ids(run(member("approvals"), org=ORG_OTHER)) == ["approvals:pa-theirs"]
+
+    def test_with_no_tenant_bound_no_pending_action_arrives(self, fakes):
+        answer = run(member("approvals"), org=None)
+        assert answer["items"] == []
+
 
 class TestTheAnswer:
     def test_the_rows_in_the_contracts_order(self, fakes):
-        assert ids(run(member(*ALL))) == [
+        assert ids(run(member(*ALL, "approvals"))) == [
             # overdue, oldest first
             "tasks:t-old", "tasks:t-late",
+            # approvals, the longest wait first: an agent's work waits on it
+            "approvals:pa-old", "approvals:pa-new",
             # due today
             "tasks:t-soon",
             # notification, newest first
@@ -323,10 +410,48 @@ class TestTheAnswer:
         for row in rows.values():
             assert datetime.fromisoformat(row["at"]).tzinfo is not None
 
+    def test_the_shape_of_an_approval(self, fakes):
+        rows = {i["id"]: i for i in run(member(*ALL, "approvals"))["items"]}
+        assert rows["approvals:pa-new"] == {
+            "id": "approvals:pa-new", "app": "approvals", "kind": "approval",
+            "title": "Change a record in Zoho CRM",
+            "detail": "Proposed by the email assistant agent",
+            "href": "/approvals", "at": rows["approvals:pa-new"]["at"],
+            # Approving runs an outward write, so My Day never does it in
+            # one click. The member reads the proposal in Approvals.
+            "act": None, "act_ref": None}
+        assert rows["approvals:pa-old"]["title"] == "Send a WhatsApp broadcast to 2 chats"
+        assert rows["approvals:pa-old"]["detail"] == "Proposed by priya"
+        assert datetime.fromisoformat(rows["approvals:pa-old"]["at"]).tzinfo is not None
+
+    @pytest.mark.parametrize(("action", "actor", "title", "detail"), [
+        ("app.publish_review", "app:invoices", "Review an app before it publishes",
+         "Proposed by the invoices app"),
+        ("app.mail_send", "app:invoices:me@x.test", "Run mail send for an app",
+         "Proposed by the invoices app"),
+        ("workflow.resume_run", "workflow:Onboarding", "Resume a paused workflow",
+         "Proposed by the Onboarding workflow"),
+        ("workflow.resume_run", "workflow:0b6f7d4e-2c1a-4f7e-9d3b-1a2b3c4d5e6f",
+         "Resume a paused workflow", "Proposed by a workflow"),
+        ("crm.zoho_create", "crm:zoho-sync", "Create a record in Zoho CRM",
+         "Proposed by the Zoho CRM sync"),
+        ("zoho.email", "", "Zoho email", "Proposed by Somebody"),
+    ])
+    def test_each_action_reads_as_plain_words_and_prints_no_id(
+        self, fakes, action, actor, title, detail,
+    ):
+        fakes.pending[ORG] = [{"id": "pa-1", "actor": actor, "action": action,
+                               "target": "lead:0b6f7d4e", "payload": {},
+                               "status": "pending", "created_at": NOW}]
+        row = run(member("approvals"))["items"][0]
+        assert (row["title"], row["detail"]) == (title, detail)
+        assert "0b6f7d4e" not in row["title"] + row["detail"]
+
     def test_the_count_is_the_length_of_the_list(self, fakes):
         answer = run(member(*ALL))
         assert answer["count"] == len(answer["items"]) == 7
-        assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok"}
+        assert answer["sources"] == {"tasks": "ok", "approvals": "absent",
+                                     "projects": "ok", "email": "ok"}
 
 
 class TestTheCaps:
@@ -352,6 +477,15 @@ class TestTheCaps:
         asked = [kw["limit"] for name, _, kw in fakes.calls if name == "needs_reply_threads"]
         assert asked == [shell.PER_APP]
 
+    def test_the_approvals_are_capped_and_the_longest_wait_comes_first(self, fakes):
+        fakes.pending[ORG] = [
+            {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
+             "target": "t", "payload": {}, "status": "pending",
+             "created_at": NOW - timedelta(minutes=n)} for n in range(30)]
+        got = run(member("approvals"), limit=50)["items"]
+        assert len(got) == shell.PER_APP
+        assert got[0]["id"] == "approvals:pa-29"
+
     def test_the_limit_defaults_to_30_and_stops_at_50(self, fakes):
         fakes.tasks[ME] = [_task(f"t-{n}", "x", NOW - timedelta(hours=n + 1))
                            for n in range(20)]
@@ -368,16 +502,17 @@ class TestAFailingAppIsLeftOut:
     @pytest.mark.parametrize(
         ("broken", "source"),
         [("my_due_tasks", "tasks"), ("list_notifications", "projects"),
-         ("needs_reply_threads", "email"), ("list_accounts", "email")],
+         ("needs_reply_threads", "email"), ("list_accounts", "email"),
+         ("list_pending", "approvals")],
     )
     @pytest.mark.parametrize("error", [HTTPException(status_code=404, detail="gone"),
                                        RuntimeError("db down")])
     def test_its_source_reads_failed_and_the_rest_answer(self, fakes, broken, source, error):
         fakes.fail[broken] = error
-        answer = run(member(*ALL))
+        answer = run(member(*ALL, "approvals"))
         assert answer["sources"][source] == "failed"
         assert source not in {i["app"] for i in answer["items"]}
-        others = {k for k in ("tasks", "projects", "email") if k != source}
+        others = {k for k in ("tasks", "approvals", "projects", "email") if k != source}
         assert {answer["sources"][k] for k in others} == {"ok"}
         assert {i["app"] for i in answer["items"]} == others
 
@@ -403,13 +538,13 @@ class TestAFailingAppIsLeftOut:
 
     def test_a_slow_app_is_left_out(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 0.001)
-        answer = run(member(*ALL))
+        answer = run(member(*ALL, "approvals"))
         assert answer["items"] == []
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 0.0)
-        answer = run(member(*ALL))
+        answer = run(member(*ALL, "approvals"))
         assert set(answer["sources"].values()) == {"failed"}
         assert fakes.calls == []
 
@@ -426,6 +561,14 @@ class TestTheCallsStayInStep:
         params = inspect.signature(_real_my_due_tasks).parameters
         assert list(params) == ["user", "limit"]
         assert params["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_the_approvals_read_takes_no_member_and_no_org(self):
+        # The broker reads `current_tenant()` (H-201). An org passed in would
+        # be one taken from somewhere other than the auth dependency.
+        from action_broker.broker import list_pending
+
+        assert list(inspect.signature(list_pending).parameters) == []
+        assert "_bound_tenant(" in inspect.getsource(list_pending)
 
     def test_the_email_read_takes_the_member_a_mailbox_and_a_limit(self):
         assert list(inspect.signature(_real_needs_reply_threads).parameters) == [

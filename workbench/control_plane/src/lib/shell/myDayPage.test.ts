@@ -19,6 +19,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { NO_ACCESS } from "@/lib/access";
 
+import type { NeedsItem } from "./needs";
+
 const access = { features: ["tasks", "projects", "email"] as string[] };
 
 vi.mock("@/components/AccessProvider", () => ({
@@ -98,6 +100,15 @@ describe("/ with the My Day flag", () => {
     expect(html).not.toContain('data-testid="next-actions"');
   });
 
+  it("gives an approver with no other app the Needs you card alone", async () => {
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    access.features = ["approvals"];
+    const html = await renderHome();
+    expect(html).toContain('data-testid="needs-you"');
+    expect(html).not.toContain('data-testid="today"');
+    expect(html).not.toContain('data-testid="next-actions"');
+  });
+
   it("explains itself to a member who holds nothing", async () => {
     vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
     access.features = [];
@@ -122,6 +133,50 @@ describe("/ with the My Day flag", () => {
     const { readFileSync } = await import("node:fs");
     const page = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
     expect(page).toMatch(/useSyncExternalStore\(noSubscribe, myDayOn, myDayOnServer\)/);
+  });
+
+  it("draws an approval under its own label, opening Approvals, with no act", async () => {
+    // NS-3 slice C. The row is the "Waiting for you" card of §4.5, as a
+    // group of Needs you. It comes after Overdue and before Due today.
+    const { default: NeedsYouCard } = await import("./NeedsYouCard");
+    const item = (id: string, kind: NeedsItem["kind"], app: NeedsItem["app"], href: string): NeedsItem => ({
+      id,
+      app,
+      kind,
+      title: `Row ${id}`,
+      detail: kind === "approval" ? "Proposed by the email assistant agent" : null,
+      href,
+      at: null,
+      act: kind === "approval" ? null : "done",
+      act_ref: kind === "approval" ? null : id,
+    });
+    const items = [
+      item("tasks:o", "overdue", "tasks", "/projects?task=o"),
+      item("approvals:pa1", "approval", "approvals", "/approvals"),
+      item("tasks:d", "due_today", "tasks", "/projects?task=d"),
+    ];
+    const html = renderToStaticMarkup(
+      createElement(NeedsYouCard, {
+        now: null,
+        needs: {
+          items,
+          count: items.length,
+          sources: { tasks: "ok", approvals: "ok" },
+          loading: false,
+          error: null,
+          refresh: () => {},
+          errors: {},
+          act: () => {},
+        },
+      }),
+    );
+    const at = (text: string) => html.indexOf(text);
+    expect(at("Waiting for your approval")).toBeGreaterThan(at("Overdue"));
+    expect(at("Due today")).toBeGreaterThan(at("Waiting for your approval"));
+    expect(html).toContain('href="/approvals"');
+    expect(html).toContain("Proposed by the email assistant agent");
+    // The two task rows keep their Done. The approval row has no act.
+    expect(html.match(/data-row-act=""/g)).toHaveLength(2);
   });
 
   it("never reads the notification list, the bell's read (seams.test.ts)", async () => {

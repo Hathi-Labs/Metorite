@@ -23,8 +23,8 @@ import { PROJECTS_CACHE, notificationsApi } from "@/app/projects/lib/api";
 import { type CompletionStore, type DoneRow, markDoneFromHome } from "@/app/tasks/lib/completeFromHome";
 import { cacheKey } from "@/lib/dataCache";
 
-export type NeedsApp = "tasks" | "projects" | "email";
-export type NeedsKind = "overdue" | "due_today" | "notification" | "needs_reply";
+export type NeedsApp = "tasks" | "approvals" | "projects" | "email";
+export type NeedsKind = "overdue" | "approval" | "due_today" | "notification" | "needs_reply";
 export type NeedsAct = "done" | "read";
 export type SourceState = "ok" | "failed" | "absent";
 
@@ -47,8 +47,13 @@ export interface NeedsFeed {
   sources: Partial<Record<NeedsApp, SourceState>>;
 }
 
-/** The server's order of the kinds. The feed arrives in it. */
-export const KIND_ORDER: readonly NeedsKind[] = ["overdue", "due_today", "notification", "needs_reply"];
+/**
+ * The server's order of the kinds. The feed arrives in it. An approval comes
+ * right after an overdue task, because an agent's work waits on it. An
+ * approval row has no act: approving runs an outward write, so the member
+ * opens Approvals and reads the proposal first.
+ */
+export const KIND_ORDER: readonly NeedsKind[] = ["overdue", "approval", "due_today", "notification", "needs_reply"];
 
 /** How many rows the feed asks for. The BFF and the gateway both cap it. */
 export const NEEDS_LIMIT = 30;

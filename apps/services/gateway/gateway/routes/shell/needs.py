@@ -17,20 +17,35 @@ The pattern is ``search.py``'s, on the same router:
   out of time is left out, and its source reads ``failed``. It never fails
   the feed.
 
-The three providers, and the function each one calls:
+The four providers, and the function each one calls:
 
-=========  ===================  ===========================================
-Source     Feature              Function
-=========  ===================  ===========================================
+=========  ====================  ==========================================
+Source     Feature               Function
+=========  ====================  ==========================================
 tasks      ``feature:projects``  ``projects.personal.my_due_tasks``: one
                                  bounded read of the lens, due today and
                                  overdue, the oldest deadline first.
+approvals  ``feature:approvals`` ``action_broker.list_pending``: the queue
+                                 of the bound tenant, the longest wait
+                                 first (NS-3 slice C).
 projects   ``feature:projects``  ``projects.notifications.list_notifications``,
                                  unread only.
 email      ``feature:email``     ``email.transport.accounts.list_accounts``,
                                  then ``email.digest.needs_reply_threads``
                                  for each mailbox, the longest wait first.
-=========  ===================  ===========================================
+=========  ====================  ==========================================
+
+⚠️ **Approvals is the gate of ``routes/actions.py`` and nothing more.** Its
+router demands ``feature:approvals``, and ``GET /actions/pending`` adds
+``require_internal_auth``. That second check is the transport: the BFF sends
+the internal token on every call, and on this call too. ``pending_actions``
+has no approver column, so each member who holds the feature sees the queue
+of the organization, as the Approvals app shows it. The broker binds the
+tenant itself (H-201), and the provider adds no rule of its own (§5.2 rule 7).
+
+⚠️ **An approval row has no act.** Approving runs an outward write: a mail, a
+CRM push, a broadcast. The member reads the proposal in Approvals first, so
+My Day never approves in one click.
 
 ⚠️ **My Tasks needs ``feature:projects``, not ``feature:tasks``.** The lens
 routes live on the Projects router, and that router demands ``projects``.
@@ -62,6 +77,9 @@ own time limit. The source reads ``failed`` only when every mailbox failed.
   (``app/projects/lib/notifications.ts`` ``linkTo``).
 * an email: ``/email?email=<message id>&account=<account id>``
   (``app/email/lib/emailLink.ts`` ``emailLink``).
+* an approval: ``/approvals``. The Approvals app reads no link to one
+  action (``app/approvals/page.tsx`` reads no search value), so the row
+  opens the queue.
 
 **The one-click acts** (``act``), each through the OWNING app's route:
 
@@ -71,7 +89,8 @@ own time limit. The source reads ``failed`` only when every mailbox failed.
   ``{"ids": [act_ref]}``. The Projects bell marks a row read through it
   (``app/projects/lib/api.ts`` ``notificationsApi.markRead``).
 
-An email row has no act. A reply needs the app.
+An email row has no act. A reply needs the app. An approval row has no act
+either, for the reason above.
 
 The answer is plain words: a row says what it is, where it opens, and
 nothing else. An id travels only inside ``id``, ``href`` and ``act_ref``.
@@ -81,6 +100,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -115,11 +135,13 @@ TOTAL_BUDGET_S = 4.0
 #: only narrow the feed.
 HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 
-#: The order of the feed, by kind (§7.2 contract).
-KIND_ORDER = {"overdue": 0, "due_today": 1, "notification": 2, "needs_reply": 3}
+#: The order of the feed, by kind (§7.2 contract). An approval comes right
+#: after an overdue task, because an agent's work waits on it.
+KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
+              "needs_reply": 4}
 #: Within a kind: True is newest first, False is oldest first.
-NEWEST_FIRST = {"overdue": False, "due_today": False, "notification": True,
-                "needs_reply": False}
+NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
+                "notification": True, "needs_reply": False}
 
 Item = dict[str, Any]
 
@@ -279,9 +301,90 @@ async def _email(user: UserContext) -> list[Item]:
     return _sort(out)[:PER_APP]
 
 
-#: source → (the feature its app's router demands, the provider).
+# ── Approvals: the pending actions of the member's organization ─────────────
+
+#: An action's plain words, by its name. The names are the ones each
+#: registered handler takes (``register_action_handler``).
+_ACTION_WORDS = {
+    "app.publish_review": "Review an app before it publishes",
+    "workflow.resume_run": "Resume a paused workflow",
+    "whatsapp.broadcast": "Send a WhatsApp broadcast",
+    "crm.zoho_create": "Create a record in Zoho CRM",
+    "crm.zoho_update": "Change a record in Zoho CRM",
+    "crm.zoho_delete": "Delete a record in Zoho CRM",
+}
+#: The proposers whose name says nothing to a member.
+_PROPOSER_WORDS = {"crm:zoho-sync": "the Zoho CRM sync"}
+#: An id, which a title never prints.
+_LOOKS_LIKE_ID = re.compile(r"^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$",
+                            re.IGNORECASE)
+
+
+def _words(name: str) -> str:
+    return " ".join(re.split(r"[._\-\s]+", name)).strip()
+
+
+def _action_title(row: dict[str, Any]) -> str:
+    """What the action does, in plain words. It prints no id."""
+    action = str(row.get("action") or "").strip()
+    title = _ACTION_WORDS.get(action)
+    if title is None:
+        if action.startswith("app.") and len(action) > len("app."):
+            # An app's own tool (``routes/apps/tools.py``).
+            title = f"Run {_words(action[len('app.'):])} for an app"
+        else:
+            words = _words(action)
+            title = (words[:1].upper() + words[1:]) if words else "An action"
+    if action == "whatsapp.broadcast":
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        targets = payload.get("targets")
+        if isinstance(targets, list) and targets:
+            title += f" to {len(targets)} chat" + ("" if len(targets) == 1 else "s")
+    return title
+
+
+def _proposer(actor: Any) -> str:
+    """Who proposed the action, as the Approvals queue names the actor."""
+    raw = str(actor or "").strip()
+    if raw in _PROPOSER_WORDS:
+        return _PROPOSER_WORDS[raw]
+    kind, _, rest = raw.partition(":")
+    name = rest.split(":")[0].strip()
+    if kind == "agent" and name:
+        return f"the {_words(name)} agent"
+    if kind == "app" and name:
+        return f"the {name} app"
+    if kind == "workflow" and name:
+        return "a workflow" if _LOOKS_LIKE_ID.match(name) else f"the {name} workflow"
+    if kind == "user" and name:
+        return _who(name)
+    return _who(raw)
+
+
+async def _approvals(user: UserContext) -> list[Item]:
+    import action_broker
+
+    # The app's own read, as ``GET /actions/pending`` calls it. The broker
+    # binds the tenant this request bound (H-201), and the queue has no
+    # approver column. The read is sync, so it runs in a thread, which
+    # takes this context and its tenant with it.
+    rows = await asyncio.to_thread(action_broker.list_pending)
+    out = []
+    for row in rows:
+        action_id = str(row["id"])
+        out.append(_item(
+            id=f"approvals:{action_id}", app="approvals", kind="approval",
+            title=_action_title(row), detail=f"Proposed by {_proposer(row.get('actor'))}",
+            href="/approvals", at=row.get("created_at"),
+        ))
+    return _sort(out)[:PER_APP]
+
+
+#: source → (the feature its app's router demands, the provider). The order
+#: here is the order the providers run in, not the order of the feed.
 PROVIDERS: dict[str, tuple[str, Callable[[UserContext], Awaitable[list[Item]]]]] = {
     "tasks": ("projects", _tasks),
+    "approvals": ("approvals", _approvals),
     "projects": ("projects", _projects),
     "email": ("email", _email),
 }

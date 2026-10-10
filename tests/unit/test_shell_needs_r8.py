@@ -20,6 +20,11 @@ one row of the other organization:
   Zero.
 * **The other organization.** Its task, assigned to the member's address,
   never returns: RLS and the lens's tenant bind each hold it out.
+* **Approvals** (`TestTheApprovalsQueue`, NS-3 slice C). Each org's queue
+  is seeded through the broker's own `enqueue`, as the app role, under
+  `bind_tenant`. An approver of the member's org sees that org's pending
+  actions, and the other org's never. A member without `feature:approvals`
+  gets none. The other org's row is real: its own approver sees it.
 * **The two bounded reads** (`TestTheLensDueRead`). A third member holds more
   due work than the cap. The lens read gives the oldest deadlines first and
   stops at the cap. It leaves out what the Python rule calls not mine to act
@@ -27,8 +32,8 @@ one row of the other organization:
   on an open lane and a WAITING task. The email read gives the threads that
   waited longest, and stops at the cap.
 
-Each source must read ``ok``. A provider that FAILED also returns no row, so
-an empty answer alone would pass on a broken build.
+Each source a member holds must read ``ok``. A provider that FAILED also
+returns no row, so an empty answer alone would pass on a broken build.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -36,6 +41,7 @@ an empty answer alone would pass on a broken build.
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -46,6 +52,7 @@ from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
 from gateway.routes.shell import needs as shell
 from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
 
 # The catalog, the app role, the seed helpers and the binding, shared rather
 # than copied. Fixtures are used by name, so the import is load-bearing.
@@ -70,10 +77,15 @@ ZONED = f"needs-zoned-{TAG}@ns3.test"
 ZONE = "Pacific/Kiritimati"
 
 
-def _member(email: str) -> UserContext:
+#: The sources of a member with Projects and Email, and no Approvals.
+SOURCES = {"tasks": "ok", "approvals": "absent", "projects": "ok", "email": "ok"}
+
+
+def _member(email: str, *extra: str) -> UserContext:
+    features = {"feature:projects", "feature:email", *(f"feature:{f}" for f in extra)}
     return UserContext(
         email=email, role=UserRole.EMPLOYEE,
-        access=EffectiveAccess(role_granted=frozenset({"feature:projects", "feature:email"})),
+        access=EffectiveAccess(role_granted=frozenset(features)),
     )
 
 
@@ -290,19 +302,19 @@ def busy(promoted):  # noqa: F811
     return out
 
 
-async def _needs(p, monkeypatch, user: UserContext) -> dict:
+async def _needs(p, monkeypatch, user: UserContext, org: str | None = None) -> dict:
     # Room for a cold database. The `sources` check proves each provider ran.
     monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 30.0)
     monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 90.0)
     monkeypatch.setattr(shell, "MAILBOX_TIMEOUT_S", 30.0)
-    async with _as_member(p, p.org_b):
+    async with _as_member(p, org or p.org_b):
         return await shell.shell_needs(limit=50, user=user)
 
 
 class TestTheFeedOnARealDatabase:
     async def test_the_members_own_needs_return_in_order(self, promoted, seeded, monkeypatch):  # noqa: F811
         answer = await _needs(promoted, monkeypatch, _member(ME))
-        assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok"}
+        assert answer["sources"] == SOURCES
         assert [i["id"] for i in answer["items"]] == [
             f"tasks:{seeded['overdue']}",
             f"tasks:{seeded['today']}",
@@ -325,7 +337,7 @@ class TestTheFeedOnARealDatabase:
 
     async def test_another_members_rows_never_return(self, promoted, seeded, monkeypatch):  # noqa: F811
         answer = await _needs(promoted, monkeypatch, _member(ME))
-        assert set(answer["sources"].values()) == {"ok"}
+        assert answer["sources"] == SOURCES
         got = " ".join(i["id"] + " " + i["title"] for i in answer["items"])
         for key in ("their_private", "their_assigned", "elsewhere", "note_theirs",
                     "theirs", "mail_theirs"):
@@ -336,7 +348,7 @@ class TestTheFeedOnARealDatabase:
         # Non-vacuity: the rows held out above are real and readable by their
         # owner, so the negative case is not an empty table.
         answer = await _needs(promoted, monkeypatch, _member(OTHER))
-        assert set(answer["sources"].values()) == {"ok"}
+        assert answer["sources"] == SOURCES
         got = [i["id"] for i in answer["items"]]
         assert f"tasks:{seeded['their_private']}" in got
         assert f"tasks:{seeded['their_assigned']}" in got
@@ -346,12 +358,88 @@ class TestTheFeedOnARealDatabase:
         assert f"projects:{seeded['note_mine']}" not in got
 
 
+@contextmanager
+def _bound(org: str):
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(org)
+    try:
+        yield
+    finally:
+        release_tenant(token)
+
+
+@pytest.fixture
+def queue(promoted, app_engine, monkeypatch):  # noqa: F811
+    """One pending action in each org, written by the broker's own
+    ``enqueue`` as the NON-privileged role, under ``bind_tenant``. The
+    broker's sync sessions open as that role for the whole test, so the
+    feed's read of the queue is the app role's too."""
+    from acb_graph import db as graph_db
+    from action_broker import AuthorityTier, enqueue, propose
+
+    factory = sessionmaker(bind=app_engine, expire_on_commit=False, future=True)
+    monkeypatch.setattr(graph_db, "_session_factory", lambda: factory)
+    tag = uuid.uuid4().hex[:8]
+    ids: dict[str, str] = {}
+    for key, org, actor, action in (
+        ("mine", promoted.org_b, "agent:email-assistant", "crm.zoho_update"),
+        ("elsewhere", promoted.org_a, "agent:other-org", "crm.zoho_delete"),
+    ):
+        proposal = propose(actor, action, f"lead:{tag}-{key}", {"args": {}},
+                           authority=AuthorityTier.SUGGEST)
+        with _bound(org):
+            row_id = enqueue(proposal)
+        assert row_id == str(proposal.id), f"the {key} enqueue wrote nothing"
+        ids[key] = row_id
+    return ids
+
+
+class TestTheApprovalsQueue:
+    async def test_an_approver_sees_their_orgs_queue_and_not_the_other_orgs(
+        self, promoted, seeded, queue, monkeypatch,  # noqa: F811
+    ):
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"))
+        assert answer["sources"]["approvals"] == "ok"
+        got = [i for i in answer["items"] if i["app"] == "approvals"]
+        assert f"approvals:{queue['mine']}" in [i["id"] for i in got]
+        assert f"approvals:{queue['elsewhere']}" not in [i["id"] for i in got]
+        assert "other org" not in " ".join(i["detail"] or "" for i in got)
+        mine = next(i for i in got if i["id"] == f"approvals:{queue['mine']}")
+        assert (mine["kind"], mine["href"], mine["act"], mine["act_ref"]) == (
+            "approval", "/approvals", None, None)
+        assert mine["title"] == "Change a record in Zoho CRM"
+        assert mine["detail"] == "Proposed by the email assistant agent"
+        # The order: an approval sits right after the overdue rows.
+        kinds = [i["kind"] for i in answer["items"]]
+        assert kinds.index("approval") > kinds.index("overdue")
+        assert kinds.index("approval") < kinds.index("due_today")
+
+    async def test_a_member_without_the_gate_gets_no_pending_action(
+        self, promoted, seeded, queue, monkeypatch,  # noqa: F811
+    ):
+        answer = await _needs(promoted, monkeypatch, _member(ME))
+        assert answer["sources"] == SOURCES
+        assert not [i for i in answer["items"] if i["app"] == "approvals"]
+
+    async def test_the_other_orgs_row_is_real_for_its_own_approver(
+        self, promoted, queue, monkeypatch,  # noqa: F811
+    ):
+        # Non-vacuity: the row held out above is in the table, and the
+        # approver of its own org reads it.
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"),
+                              org=promoted.org_a)
+        got = [i["id"] for i in answer["items"] if i["app"] == "approvals"]
+        assert f"approvals:{queue['elsewhere']}" in got
+        assert f"approvals:{queue['mine']}" not in got
+
+
 class TestTheLensDueRead:
     async def test_the_oldest_deadlines_first_and_only_work_still_mine(
         self, promoted, busy, monkeypatch,  # noqa: F811
     ):
         answer = await _needs(promoted, monkeypatch, _member(BUSY))
-        assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok"}
+        assert answer["sources"] == SOURCES
         tasks = [i["id"] for i in answer["items"] if i["app"] == "tasks"]
         assert tasks == [f"tasks:{t}" for t in busy["expected_tasks"]]
         assert len(tasks) == shell.PER_APP
