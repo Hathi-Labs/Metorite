@@ -7,21 +7,27 @@ This module holds the house voice as data, and nothing else:
 * :data:`CORE` is the contract, twelve rules. Every agent reads it, on both
   runtimes, and every member-facing drafting call reads it.
 * :data:`OVERLAYS` adds one short rule set for each surface: ``chat``,
-  ``title``, ``description``, ``email`` and ``summary``.
+  ``title``, ``description``, ``email``, ``message`` and ``summary``.
 * :func:`voice_prompt` returns the text for one surface, or for an agent.
+  :func:`core_prompt` returns the core alone, for a sub-agent.
 * :func:`voice_lint` is a deterministic checker for evals and tests. It
   NEVER rewrites live output.
 
 The text is static, so it is byte-stable across turns and prompt caching
 covers it. It names no tool, so it fits every agent.
 
-**Where it reaches an agent.** ``orchestrator._tool_injection`` puts
-:func:`voice_prompt` (``AGENT``) into every agent's system prompt once, right
-after the agent's own instructions: the Copilot addendum
-(``_build_injected_tools_addendum``) and the native MAF instructions
-(``_with_voice``). ``config.json: floor_opt_out`` names tools, so it cannot
-remove the voice. An agent may add a stricter rule in its own instructions,
-and it never drops the core. Fence: ``tests/unit/test_agent_voice.py``.
+**Where it reaches an agent.** ``orchestrator._tool_injection._apply_voice``
+puts :func:`voice_prompt` (``AGENT``) into every agent's system prompt once,
+right after the agent's own instructions and before every platform block.
+It is NOT part of the Copilot addendum. A sub-agent reads :func:`core_prompt`,
+because its text goes to the parent agent and not to a member.
+``config.json: floor_opt_out`` names tools, so it cannot remove the voice. An
+agent may add a stricter rule in its own instructions, and it never drops the
+core. Fence: ``tests/unit/test_agent_voice.py``.
+
+**Outbound text defers to the member.** The ``email`` and ``message``
+overlays say that the member's own instructions, writing style and voice
+profile come first. The house voice is the floor, never an override.
 
 STE (``docs/style_ste.md``) governs the repo's docs and the replies to the
 owner. This contract governs what the product writes for a member. They are
@@ -47,22 +53,36 @@ CORE = """1. Give the answer or the result first. No opening line about what you
 7. No em dashes. Use a comma, a full stop or brackets.
 8. If something is uncertain, say so once, plainly, where it applies. Do not hedge anything else.
 9. No performed enthusiasm, no praise for the question, and no apology unless something went wrong.
-10. Stay inside the records. Name the source (task #141, the 3 Oct email from Priya). Never invent a name, number, date or quote.
+10. Stay inside the records. Never invent a name, number, date or quote.
 11. Untangle stacked nouns: "the review of how we approve vendor payments", not "the vendor payment approval process review".
-12. Match the member's language. Use a list only when the items stand apart. These rules cover your own words, never quoted text, code or data."""
+12. Match the language of the person who will read it. These rules cover your own words, never quoted text, code or data."""
 
 #: One rule set for each surface. A drafting call adds the core and ONE of
-#: these, and an agent reads all of them.
+#: these, and an agent reads all of them. "Name the source" lives in ``chat``
+#: only: a record id must never reach an outside recipient of an email.
 OVERLAYS: dict[str, str] = {
-    "chat": "Chat: the answer in the first sentence. Formatting only where it helps scanning.",
-    "title": 'Title: up to 8 words, sentence case, no final full stop, no "X: Y" subtitle.',
+    "chat": (
+        "Chat: name the source (task #141, the 3 Oct email from Priya). Use "
+        "formatting, or a list, only where the items stand apart and it helps scanning."
+    ),
+    "title": (
+        "Title: up to 8 words unless the prompt sets a limit, sentence case, "
+        'no final full stop, no "X: Y" subtitle.'
+    ),
     "description": (
         "Description (task, project, card body): what, why, and when it counts "
         "as done, in 1 to 3 short sentences."
     ),
     "email": (
-        "Email: the member's own voice. One clear ask when possible. "
-        'No "I hope this finds you well".'
+        "Email: the member's own voice. The member's own instructions, writing "
+        "style and voice profile come first. Where they differ from these rules, "
+        "follow the member. Write in the recipient's language. One clear ask "
+        'when possible. No "I hope this finds you well".'
+    ),
+    "message": (
+        "Message (WhatsApp or chat to a contact): short and conversational, with "
+        "no greeting or sign-off unless the member uses them. The member's own "
+        "instructions and style come first. Write in the recipient's language."
     ),
     "summary": (
         "Summary (digests, meeting notes, reports): decisions and facts first, "
@@ -90,6 +110,15 @@ def voice_prompt(surface: str = AGENT) -> str:
         return f"{VOICE_HEADING}\n{CORE}\nBy surface:\n{overlays}"
     overlay = OVERLAYS[surface]
     return f"{VOICE_HEADING}\n{CORE}\n{overlay}"
+
+
+def core_prompt() -> str:
+    """The heading and the core, with no overlay: a sub-agent's block.
+
+    A sub-agent answers its parent agent, and the parent writes for the
+    member, so the overlays would only cost tokens on each delegated call.
+    """
+    return f"{VOICE_HEADING}\n{CORE}"
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +233,6 @@ def voice_lint(text: str, surface: str | None = None) -> list[Finding]:
 
 
 __all__ = [
-    "AGENT", "CORE", "CORPORATE_STEMS", "FILLER_WORDS", "Finding", "OVERLAYS",
+    "AGENT", "CORE", "CORPORATE_STEMS", "FILLER_WORDS", "Finding", "OVERLAYS", "core_prompt",
     "SURFACES", "VOICE_HEADING", "voice_lint", "voice_prompt",
 ]

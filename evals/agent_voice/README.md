@@ -9,7 +9,7 @@ the live baseline yet, because no model was reachable from the build machine.
 ## What it measures
 
 Each case asks for text on one surface: chat, title, description, email or
-summary. `acb_llm.voice.voice_lint` scores each answer, by rule. The score is
+summary, or message. `acb_llm.voice.voice_lint` scores each answer, by rule. The score is
 a count of findings, so a lower count is better. The checker cannot see every
 rule. Spec §6.5 lists what it misses.
 
@@ -17,7 +17,7 @@ rule. Spec §6.5 lists what it misses.
 
 | File | What it holds |
 |---|---|
-| `cases.json` | Twelve cases: three chat, two title, two description, two email and three summary. Each case has its records and its ask |
+| `cases.json` | Thirteen cases: three chat, two title, two description, two email, one message and three summary. Each case has its records and its ask |
 | `scripted_answers.json` | One hand-written answer for each case, and the rules that the checker must find in it |
 | `run.py` | The runner |
 

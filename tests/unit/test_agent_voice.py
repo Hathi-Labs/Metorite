@@ -29,7 +29,15 @@ from typing import Any
 import orchestrator._tool_injection as ti
 import pytest
 from acb_llm import voice
-from acb_llm.voice import AGENT, CORE, OVERLAYS, VOICE_HEADING, voice_lint, voice_prompt
+from acb_llm.voice import (
+    AGENT,
+    CORE,
+    OVERLAYS,
+    VOICE_HEADING,
+    core_prompt,
+    voice_lint,
+    voice_prompt,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,10 +54,12 @@ AGENTS: tuple[tuple[str, str, str], ...] = (
 )
 
 #: The ceilings, in the run-context tokenizer that ``test_tool_schema_diet``
-#: uses (chars/4 plus the message envelope). Measured 2026-10-10: the core
-#: 347, the agent block 478. In tiktoken ``o200k_base``: 325 and 457.
-CORE_TOKEN_CEILING = 360
-AGENT_BLOCK_TOKEN_CEILING = 500
+#: uses (chars/4 plus the message envelope). Measured 2026-10-10 after review
+#: round 1: the core 327, the sub-agent block 333, the agent block 577. In
+#: tiktoken ``o200k_base``: 303, 310 and 538.
+CORE_TOKEN_CEILING = 340
+SUB_AGENT_BLOCK_TOKEN_CEILING = 345
+AGENT_BLOCK_TOKEN_CEILING = 600
 
 
 @pytest.fixture(autouse=True)
@@ -126,10 +136,9 @@ def test_the_spec_copies_the_text_of_record() -> None:
     spec = (ROOT / "project-docs/specs/agent_writing_voice.md").read_text(encoding="utf-8")
     section = spec.split("## 3. The contract", 1)[1]
     fence = "`" * 3
-    block = section.split(fence + "text\n", 1)[1].split("\n" + fence, 1)[0]
-    assert block == CORE
-    for overlay in OVERLAYS.values():
-        assert overlay.split(": ", 1)[1] in section, overlay
+    blocks = [b.split("\n" + fence, 1)[0] for b in section.split(fence + "text\n")[1:3]]
+    assert blocks[0] == CORE
+    assert blocks[1] == "\n".join(OVERLAYS.values())
 
 
 def test_the_core_stays_under_its_token_ceiling() -> None:
@@ -138,6 +147,46 @@ def test_the_core_stays_under_its_token_ceiling() -> None:
 
 def test_the_agent_block_stays_under_its_token_ceiling() -> None:
     assert _tokens(voice_prompt(AGENT)) <= AGENT_BLOCK_TOKEN_CEILING
+
+
+def test_the_sub_agent_block_is_the_core_alone() -> None:
+    text = core_prompt()
+    assert text == f"{VOICE_HEADING}\n{CORE}"
+    assert _tokens(text) <= SUB_AGENT_BLOCK_TOKEN_CEILING
+
+
+def test_no_record_id_rule_reaches_an_outbound_draft() -> None:
+    """"Name the source" belongs to chat. An email to an outside
+    recipient must never be told to cite task #141 (review round 1)."""
+    assert "Name the source" not in CORE and "#141" not in CORE
+    assert "name the source" in OVERLAYS["chat"]
+    for name in ("email", "message"):
+        assert "#141" not in voice_prompt(name), name
+    assert "Never invent a name, number, date or quote" in CORE
+
+
+def test_the_reader_sets_the_language() -> None:
+    assert "Match the language of the person who will read it" in CORE
+    assert "member's language" not in CORE
+    for name in ("email", "message"):
+        assert "recipient's language" in OVERLAYS[name], name
+
+
+def test_outbound_overlays_defer_to_the_member() -> None:
+    """The house voice is the floor. The member's own instructions, style
+    and voice profile win where they differ (review round 1)."""
+    assert "instructions, writing style and voice profile come first" in OVERLAYS["email"]
+    assert "follow the member" in OVERLAYS["email"]
+    assert "instructions and style come first" in OVERLAYS["message"]
+
+
+def test_a_prompt_limit_wins_over_the_title_overlay() -> None:
+    assert "unless the prompt sets a limit" in OVERLAYS["title"]
+
+
+def test_the_chat_overlay_does_not_repeat_rule_one() -> None:
+    assert "first sentence" not in OVERLAYS["chat"]
+    assert "Use a list" not in CORE
 
 
 def test_the_voice_obeys_its_own_dash_rule() -> None:
@@ -272,6 +321,9 @@ def test_a_new_native_agent_gets_the_voice_after_its_instructions(
     text = _prompt(agent)
     assert text.startswith("You are a new agent.\n\n" + VOICE_HEADING)
     assert text.count(CORE) == 1
+    # A sub-agent pays for the core only: no overlay reaches it.
+    overlays_in = [n for n, o in OVERLAYS.items() if o in text]
+    assert overlays_in == ([] if is_sub_agent else list(OVERLAYS))
 
 
 def test_an_older_maf_agent_gets_the_voice(_approve_all: None) -> None:

@@ -13,13 +13,13 @@ import copy
 from evals.agent_voice import run
 
 
-def test_there_are_twelve_cases_over_every_surface() -> None:
+def test_there_are_thirteen_cases_over_every_surface() -> None:
     from acb_llm.voice import SURFACES
 
     cases = run.load_cases()
-    assert len(cases) == 12
+    assert len(cases) == 13
     assert {c["surface"] for c in cases} == set(SURFACES)
-    assert len({c["id"] for c in cases}) == 12
+    assert len({c["id"] for c in cases}) == 13
 
 
 def test_the_scripted_run_passes() -> None:

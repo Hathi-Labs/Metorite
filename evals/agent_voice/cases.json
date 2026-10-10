@@ -70,5 +70,11 @@
     "surface": "summary",
     "records": "Week 41: the Design team closed 22 of 30 planned tasks. Two tasks slipped to week 42 because the brand review moved. Meera was on leave on 8 and 9 Oct. No task is blocked.",
     "ask": "Write the weekly report for the Design team."
+  },
+  {
+    "id": "V13",
+    "surface": "message",
+    "records": "WhatsApp chat with Arjun (contact). Arjun on 9 Oct 2026: 'Can we move tomorrow's call to 4 pm?' The member is free at 4 pm on 11 Oct 2026.",
+    "ask": "Draft the member's WhatsApp reply to Arjun."
   }
 ]
