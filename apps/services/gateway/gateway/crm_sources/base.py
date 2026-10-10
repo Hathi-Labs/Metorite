@@ -174,7 +174,8 @@ class CrmSource(Protocol):
         scopes: Sequence[str],
     ) -> SourceCredential: ...
 
-    # 2. Refresh the credential. Raise NeedsReconnect when the refresh fails.
+    # 2. Refresh the credential. Raise NeedsReconnect only for a dead refresh
+    # token, RateLimited for a throttle, and SourceError for any other failure.
     async def refresh(self) -> SourceCredential: ...
 
     # 3. The field definitions and the pipelines of each entity.
