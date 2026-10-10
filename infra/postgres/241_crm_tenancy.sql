@@ -116,11 +116,14 @@ ALTER TABLE crm_auto_lead_cursors
 
 -- ── 2. Who owns each existing row ───────────────────────────────────────────
 --
--- The organization `fracktalworks` owns a row with no tenant, if it exists.
--- Else the only organization does, if exactly one exists. Else the file stops
--- and names the table: with two or more organizations a guess could put rows
--- in the wrong customer. On production every row already has its tenant (the
--- seed rows belong to `default`), so this changes nothing there.
+-- Only a table with rows that have no tenant needs an owner. The owner is
+-- `fracktalworks` if it exists. Else it is `default`, which migration 130
+-- seeds. Else it is the only organization, if exactly one exists. Else the
+-- file stops and names the table, because a guess could put rows in the wrong
+-- customer. The `default` step keeps a shared dev database working: it holds
+-- many test organizations and no `fracktalworks`. On production every row
+-- already has its tenant (the seed rows belong to `default`), so this changes
+-- nothing there.
 
 DO $fill$
 DECLARE
@@ -136,6 +139,9 @@ DECLARE
     orgs     bigint;
 BEGIN
     SELECT id INTO owner_id FROM organization WHERE slug = 'fracktalworks';
+    IF owner_id IS NULL THEN
+        SELECT id INTO owner_id FROM organization WHERE slug = 'default';
+    END IF;
     SELECT count(*) INTO orgs FROM organization;
     IF owner_id IS NULL AND orgs = 1 THEN
         SELECT id INTO owner_id FROM organization;
@@ -149,7 +155,7 @@ BEGIN
         IF owner_id IS NULL THEN
             RAISE EXCEPTION
                 '241: % has % row(s) with no organization_id. No organization '
-                'is named fracktalworks and % organizations exist, so the '
+                'is named fracktalworks or default and % organizations exist, so the '
                 'owner is not clear. Set organization_id on those rows by '
                 'hand, then apply this file again.', t, orphans, orgs;
         END IF;
