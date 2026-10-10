@@ -25,6 +25,10 @@ an ``interactive`` message, and ``inbound`` turns its title into the member's
 text turn. So a tap is untrusted input exactly like typed text, and no id from
 the phone ever selects an org or a record (§5.11 "The tap is untrusted input").
 
+**A reaction is not an element (WAC-10e).** Kind "react" queues one emoji
+for the member's own message. ``bot_run`` sends it first and best effort, so
+a refused reaction never costs the member the answer.
+
 **Reads only, as in WAC-3.** Buttons and rows ask or narrow a question. A
 write still goes to the web app until WAC-4.
 
@@ -43,6 +47,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from acb_skills import whatsapp_cards as cards
+from acb_skills import whatsapp_engine as engine
 from acb_skills import whatsapp_render as render
 
 #: The tools a WhatsApp run does not get: the WEB DELIVERY tools only.
@@ -108,11 +113,19 @@ class OutMessage:
     so the next turn knows which buttons it offered.
     """
 
-    kind: str  # "interactive", "image", or "text" (a view's own text)
+    kind: str  # "interactive", "image", "text" (a view's own text) or "reaction"
     rendition: str
     interactive: dict[str, Any] | None = None
     png: bytes | None = None
     caption: str | None = None
+    #: The emoji of a "reaction". It goes ON the member's message (WAC-10e).
+    emoji: str | None = None
+
+    @property
+    def counts(self) -> bool:
+        """True for an element that counts toward :data:`MAX_MESSAGES`. A
+        view's text and a reaction are not elements."""
+        return self.kind not in ("text", "reaction")
 
 
 @dataclass
@@ -126,6 +139,11 @@ class WhatsAppRun:
     views: Callable[[str], Awaitable[Any]] | None = None
     #: The org of the phone's link row. Each link button carries it.
     org: str | None = None
+    #: Sends one text to the member NOW, before the answer (WAC-10e, kind
+    #: "working"). ``bot_run`` gives it. It returns False when nothing went.
+    notify: Callable[[str], Awaitable[bool]] | None = None
+    #: True once the member heard that the job takes a while.
+    notified: bool = False
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -134,14 +152,16 @@ _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
 @contextlib.contextmanager
 def whatsapp_run(agent: str, *,
                  views: Callable[[str], Awaitable[Any]] | None = None,
-                 org: str | None = None) -> Iterator[WhatsAppRun]:
+                 org: str | None = None,
+                 notify: Callable[[str], Awaitable[bool]] | None = None,
+                 ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
     value it found.
     """
-    run = WhatsAppRun(agent=agent, views=views, org=org)
+    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify)
     token = _RUN.set(run)
     try:
         yield run
@@ -347,11 +367,102 @@ def _list_of(data: dict[str, Any], key: str, *, required: bool = True) -> list[A
     return value
 
 
+#: The chart kinds the old SVG renderer draws: the fallback when the engine is
+#: off or cannot draw (WAC-10f).
+_OLD_KINDS = ("bar", "line", "progress", "donut")
+
+
+def _join(values: Any) -> str:
+    return ", ".join(map(str, values or []))
+
+
+def _chart_rendition(kind: str, title: str, data: dict[str, Any]) -> str:
+    """The thread's text of a chart: its kind, its title and its numbers.
+
+    It never raises: an odd shape gives the head alone. The thread keeps it,
+    so the next turn knows what the image showed (``thread_record``).
+    """
+    head = f"[Chart, {kind}: {title}]"
+    try:
+        series = data.get("series")
+        if isinstance(series, list) and kind in ("bar", "line", "area", "radar"):
+            axis = data.get("axes") if kind == "radar" else data.get("labels")
+            return f"{head} {_join(axis)}\n" + "\n".join(
+                f"{s.get('name')}: {_join(s.get('values'))}" for s in series if isinstance(s, dict))
+        if kind in ("bar", "line", "funnel", "donut", "progress"):
+            return head + " " + ", ".join(
+                f"{lab}: {val}" for lab, val in zip(data.get("labels") or [], data.get("values") or [],
+                                                    strict=False))
+        if kind == "waterfall":
+            return head + " " + ", ".join(
+                f"{s.get('label')}: {'total' if s.get('total') else s.get('value')}"
+                for s in data.get("steps") or [] if isinstance(s, dict))
+        if kind == "heatmap":
+            return f"{head} {_join(data.get('x'))}\n" + "\n".join(
+                f"{y}: {_join(r)}" for y, r in zip(data.get("y") or [], data.get("values") or [],
+                                                   strict=False))
+        if kind in ("scatter", "box"):
+            key = "points" if kind == "scatter" else "values"
+            return head + " " + "; ".join(
+                f"{g.get('name')}: {len(g.get(key) or [])} {key}"
+                for g in data.get("groups") or [] if isinstance(g, dict))
+        if kind == "calendar":
+            days = data.get("days") or []
+            return f"{head} {len(days)} days, total {sum(float(d[1]) for d in days):g}"
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+    return head
+
+
+def _engine_png(spec: dict[str, Any]) -> bytes | None:
+    """The chart from the chart engine (WAC-10f), or None to fall back.
+
+    A bad spec raises ``RenderError`` with the engine's reason, so the model
+    can fix the data. An engine that cannot draw (off, missing, broken) falls
+    back to the old renderer, and never costs the member the chart.
+    """
+    if not engine.enabled():
+        return None
+    try:
+        return engine.render_png(_with_hues(spec))
+    except engine.EngineUnavailable:
+        return None
+
+
+def _with_hues(spec: dict[str, Any]) -> dict[str, Any]:
+    """The spec with each status word as one of the six hue names.
+
+    The engine knows the hue NAMES only. The rule from a word ("On hold",
+    "Shipped") to a hue is ``statusAccent.ts``'s, which ``cards.hue``
+    mirrors under its own fence, so a chart and a card never disagree
+    (review, 2026-10-11).
+    """
+    out = dict(spec)
+    if isinstance(spec.get("tones"), list):
+        out["tones"] = [cards.hue(t) for t in spec["tones"]]
+    if isinstance(spec.get("rows"), list):
+        out["rows"] = [{**r, "status": cards.hue(r["status"])}
+                       if isinstance(r, dict) and r.get("status") is not None else r
+                       for r in spec["rows"]]
+    return out
+
+
 def _chart(data: dict[str, Any]) -> OutMessage:
-    kind = data.get("type") or "bar"
+    kind = str(data.get("type") or "bar").strip().lower()
     title = _text(data, "title", limit=80)
-    subtitle = _text(data, "subtitle", limit=120, required=False) or None
     caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+    png = _engine_png({**data, "type": kind})
+    if png is None and kind not in _OLD_KINDS:
+        raise _Refused(f'chart "type" must be one of: {", ".join(_OLD_KINDS)}')
+    if png is None:
+        png = render.to_png(_old_chart_svg(kind, title, data))
+    rendition = _chart_rendition(kind, title, data) + (f"\n{caption}" if caption else "")
+    return OutMessage("image", rendition, png=png, caption=caption or None)
+
+
+def _old_chart_svg(kind: str, title: str, data: dict[str, Any]) -> str:
+    """The old SVG renderer's chart: bar, line, progress or donut."""
+    subtitle = _text(data, "subtitle", limit=120, required=False) or None
     labels = [str(x) for x in (_list_of(data, "labels") or [])]
     values = _list_of(data, "values") or []
     unit = data.get("unit") if isinstance(data.get("unit"), str) else ""
@@ -362,14 +473,10 @@ def _chart(data: dict[str, Any]) -> OutMessage:
     elif kind == "progress":
         svg = render.progress_svg(title, labels, values, subtitle=subtitle,
                                   totals=_list_of(data, "totals", required=False))
-    elif kind == "donut":
+    else:
         svg = cards.donut_svg(title, labels, values, subtitle=subtitle,
                               tones=_list_of(data, "tones", required=False))
-    else:
-        raise _Refused('chart "type" must be "bar", "line", "progress" or "donut"')
-    pairs = ", ".join(f"{lab}: {val}" for lab, val in zip(labels, values, strict=True))
-    rendition = f"[Chart, {kind}: {title}] {pairs}" + (f"\n{caption}" if caption else "")
-    return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
+    return svg
 
 
 def _table(data: dict[str, Any]) -> OutMessage:
@@ -439,14 +546,75 @@ def _gantt(data: dict[str, Any]) -> OutMessage:
     title, subtitle = _head(data)
     rows = _list_of(data, "rows") or []
     today = data.get("today") if isinstance(data.get("today"), str) else None
-    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
     lines = [f"{r.get('label')}: {r.get('start')} to {r.get('end', r.get('start'))}"
              + (f", {r.get('progress')}%" if r.get("progress") is not None else "")
              for r in rows]
-    return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
+    rendition = f"[Schedule: {title}]\n" + "\n".join(lines)
+    png = _engine_png({**data, "type": "gantt"})  # the chart language (WAC-10f)
+    if png is not None:
+        caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+        return OutMessage("image", rendition + (f"\n{caption}" if caption else ""),
+                          png=png, caption=caption or None)
+    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
+    return _image(data, svg, rendition)
+
+
+#: A family or a flag sequence is longer than one code point, and no emoji
+#: is longer than this.
+EMOJI_MAX = 10
+_ZWJ = "‍"
+_KEYCAP = "⃣"
+_SELECTORS = frozenset({0xFE0E, 0xFE0F})
+_SKIN = range(0x1F3FB, 0x1F400)
+_REGIONAL = range(0x1F1E6, 0x1F200)
+#: The tag letters and the cancel tag of a subdivision flag (England).
+_TAGS = range(0xE0020, 0xE0080)
+#: The emoji outside the main emoji blocks (U+1F000 to U+1FAFF). A curated
+#: list, so a degree sign, a Braille blank or a box line is never an emoji.
+_BMP_EMOJI = frozenset(
+    "©®‼⁉™ℹ↔↕↖↗↘↙↩↪⌚⌛⌨⏏⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳⏸⏹⏺Ⓜ▪▫▶◀◻◼◽◾☀☁☂☃☄☎☑☔☕☘☝☠☢☣☦☪☮"
+    "☯☸☹☺♀♂♟♠♣♥♦♨♻♾♿⚒⚓⚔⚕⚖⚗⚙⚛⚜⚠⚡⚧⚪⚫⚰⚱⚽⚾⛄⛅⛈⛎⛏⛑⛓⛔⛩⛪⛰⛱⛲⛳⛴⛵⛷⛸⛹⛺⛽✂"
+    "✅✈✉✊✋✌✍✏✒✔✖✝✡✨✳✴❄❇❌❎❓❔❕❗❣❤➕➖➗➡➰➿⤴⤵⬅⬆⬇⬛⬜⭐⭕〰〽㊗㊙")
+
+
+def _emoji_part(part: str) -> bool:
+    """One emoji between two zero width joiners: a flag, a keycap, or a base
+    with its selectors, a skin tone and tag letters."""
+    first = ord(part[0])
+    if first in _REGIONAL:
+        return len(part) == 2 and ord(part[1]) in _REGIONAL
+    if part[0] in "0123456789#*":
+        return part[1:] in (_KEYCAP, "️" + _KEYCAP)
+    if not (0x1F000 <= first <= 0x1FAFF and first not in _SKIN) \
+            and part[0] not in _BMP_EMOJI:
+        return False
+    return all(ord(c) in _SELECTORS or ord(c) in _SKIN or ord(c) in _TAGS
+               for c in part[1:])
+
+
+def _emoji(raw: Any) -> str:
+    """One emoji, or :class:`ValueError`. Meta takes any emoji, and refuses
+    text, so text, a run of emoji or a hidden mark never reaches it."""
+    value = str(raw or "").strip()
+    parts = value.split(_ZWJ)
+    if not value or len(value) > EMOJI_MAX or not all(p and _emoji_part(p) for p in parts):
+        raise _Refused('"emoji" must be one emoji, such as 👍')
+    return value
+
+
+def reaction(emoji: str) -> OutMessage:
+    """A reaction on the member's message (WAC-10e). Not an element: it never
+    counts toward :data:`MAX_MESSAGES`, and a later one replaces it."""
+    value = _emoji(emoji)
+    return OutMessage("reaction", f"[Reaction: {value}]", emoji=value)
+
+
+def _react(data: dict[str, Any]) -> OutMessage:
+    return reaction(data.get("emoji"))
 
 
 _BUILDERS = {
+    "react": _react,
     "buttons": _buttons,
     "list": _list,
     "link": _link,
@@ -485,6 +653,9 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - a short choice or the next question -> "buttons"
     - 2 to 8 headline numbers -> "stats"; a breakdown -> "chart" donut
     - numbers per item -> "chart" bar; a trend -> line; done/total -> progress
+    - a mix over time -> area; stages -> funnel; a running total -> waterfall;
+      spread -> box; x against y -> scatter; when -> heatmap or calendar;
+      many axes -> radar
     - work by status -> "board"; dates and milestones -> "timeline"
     - one day of the calendar -> "agenda"; a project schedule -> "gantt"
     - rows with 3+ columns -> "table"; anything else rich -> "link"
@@ -494,8 +665,14 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - list: {"body", "button": "View tasks", "rows": [{"title" (24),
       "description" (72)}] x 1-10} or "sections": [{"title", "rows"}]
     - link: {"body", "label", "url": "https://app.metorite.com/<page>"}
-    - chart: {"type": "bar"|"line"|"progress"|"donut", "labels", "values",
-      "unit", "totals" (progress), "tones" (donut)}
+    - chart: {"type", ...}. bar, line, funnel, donut: "labels", "values"
+      (bar and line: or "series": [{"name", "values"}]), "unit", "tones".
+      area: "labels", "series". progress: "labels", "values" (done),
+      "totals". scatter: "groups": [{"name", "points": [[x, y]]}].
+      heatmap: "x", "y", "values" (a row of numbers per y). radar: "axes",
+      "series", "max". box: "groups": [{"name", "values"}]. waterfall:
+      "steps": [{"label", "value"} or {"label", "total": true}]. calendar:
+      "days": [["2026-10-01", 3]]
     - table: {"columns" (6), "rows": [[cell]] (20)}
     - stats: {"tiles": [{"label", "value", "delta", "good": "up"|"down",
       "hint", "tone"}] x 1-8}
@@ -510,6 +687,14 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - view: {"name"}: a ready view that the server reads and builds, with no
       rows from you. Names: my_day, due_today, overdue, calendar, approvals,
       menu. Prefer it whenever the question is one of these.
+    - react: {"emoji": "👍"}: one emoji ON the member's message, as a person
+      reacts. Not an element, and a later one replaces it. Call it in the
+      same step as your first other tool call.
+    - working: {"text"}: sent NOW, before your answer, once. Use it FIRST
+      when the job takes more than about 15 seconds (an image, a
+      calculation, code, a page, a long search): one line of what you are
+      doing and about how long it takes, e.g. "Building the chart, about 30
+      seconds." Not an element.
     A "tone" or "status" is a status word or a colour (green, amber, red,
     blue, violet, gray).
 
@@ -521,6 +706,17 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     run = _RUN.get()
     if run is None:
         return {"ok": False, "error": "whatsapp_ui works only in a WhatsApp chat"}
+    if str(kind or "").strip().lower() == "working":
+        return await _working(run, data)
+    if str(kind or "").strip().lower() == "react":
+        try:
+            message = reaction(data.get("emoji") if isinstance(data, dict) else None)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        run.outbox[:] = [m for m in run.outbox if m.kind != "reaction"]
+        run.outbox.append(message)
+        return {"ok": True, "note": "The reaction goes on the member's message. "
+                                    "A message that needs no answer needs no text."}
     if _elements(run) >= MAX_MESSAGES:
         return {"ok": False,
                 "error": f"this reply already has {MAX_MESSAGES} elements. Put the rest in text"}
@@ -537,9 +733,39 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
             "note": "It goes after your text. Refer to it in one line."}
 
 
+#: The longest "working" line. One line, read at a glance.
+WORKING_MAX = 300
+
+
+async def _working(run: WhatsAppRun, data: Any) -> dict[str, Any]:
+    """Tell the member NOW that the job takes a while (WAC-10e).
+
+    Sent at once through ``run.notify``, not queued, and only once a reply.
+    It is not part of the answer, so the answer still goes in full after it.
+    """
+    text = " ".join(str((data or {}).get("text") or "").split()) \
+        if isinstance(data, dict) else ""
+    if not text:
+        return {"ok": False, "error": '"text" is required: what you are doing, and how long'}
+    if len(text) > WORKING_MAX:
+        return {"ok": False, "error": f'"text" must be at most {WORKING_MAX} characters'}
+    if run.notified:
+        return {"ok": False, "error": "the member already knows. Carry on with the job"}
+    if run.notify is None:
+        return {"ok": False, "error": "no early message in this chat. Carry on"}
+    run.notified = True  # before the await, so two calls in one step send once
+    try:
+        sent = await run.notify(text)
+    except Exception:  # a nicety: never cost the member the answer
+        sent = False
+    run.notified = sent  # a failed one leaves the timer's own line free to go
+    return ({"ok": True, "note": "Sent. Now do the job, then answer in full."} if sent
+            else {"ok": False, "error": "the early message did not go. Carry on"})
+
+
 def _elements(run: WhatsAppRun) -> int:
-    """The elements queued so far. A view's text is not an element."""
-    return sum(1 for m in run.outbox if m.kind != "text")
+    """The elements queued so far. A view's text and a reaction are not."""
+    return sum(1 for m in run.outbox if m.counts)
 
 
 async def _send_view(run: WhatsAppRun, data: Any) -> dict[str, Any]:
@@ -590,7 +816,8 @@ def resend_text(stored: str | None) -> str | None:
 
     The text part, so the member never gets the renditions as text. An answer
     of elements only has no text part, and then the renditions go, because
-    some answer is better than none.
+    some answer is better than none. A reaction is never sent as text: an
+    answer that was a reaction only resends as "" (nothing goes out).
     """
     if stored is None:
         return None
@@ -598,7 +825,13 @@ def resend_text(stored: str | None) -> str | None:
     if RENDITION_MARK not in stored:
         return stored
     text, _mark, rest = stored.partition(RENDITION_MARK)
-    return text.strip() or rest.strip()
+    return text.strip() or without_reactions(rest)
+
+
+def without_reactions(records: str) -> str:
+    """The element records with each reaction record cut out."""
+    kept = [r for r in records.split("\n\n") if not r.startswith("[Reaction:")]
+    return "\n\n".join(kept).strip()
 
 
 # ── The reply guard (WAC-10c, owner screenshots of 2026-10-10) ───────────────
@@ -610,7 +843,8 @@ def resend_text(stored: str | None) -> str | None:
 # tappable becomes a list of the reply's own bullets, or loses the sentence.
 
 _RECORD_HEAD = re.compile(
-    r"^\s*\[(Table|Chart|Buttons|List|Link|Stats|Board|Timeline|Agenda|Schedule)\b",
+    r"^\s*\[(Table|Chart|Buttons|List|Link|Stats|Board|Timeline|Agenda|Schedule"
+    r"|Reaction)\b",
     re.IGNORECASE)
 _TAP_PROMISE = re.compile(r"\b(?:tap|tapping|select one|pick one)\b", re.IGNORECASE)
 _BULLET = re.compile(r"^\s*(?:[-•▪◦·]|\d+[.)])\s+(.+)$")
@@ -690,7 +924,7 @@ def polish(reply: str, messages: list[OutMessage]) -> tuple[str, list[OutMessage
 
 def _polish(reply: str, out: list[OutMessage]) -> tuple[str, list[OutMessage]]:
     def room() -> int:
-        return MAX_MESSAGES - sum(1 for m in out if m.kind != "text")
+        return MAX_MESSAGES - sum(1 for m in out if m.counts)
 
     kept: list[str] = []
     lines = reply.split("\n")

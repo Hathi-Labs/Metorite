@@ -99,6 +99,34 @@ def match(text: str) -> str | None:
     return COMMANDS.get(normalize(text))
 
 
+#: A thanks that needs no answer gets a reaction from code, with no AI call
+#: and no text (WAC-10e). Only a thanks: an "ok" or a 👍 can answer a
+#: question the AI asked, so the AI hears those.
+THANKS = frozenset({
+    "thanks", "thank you", "thanks a lot", "thank you so much", "thanks so much",
+    "thx", "ty", "tysm", "thank u", "many thanks", "cheers", "thanks again",
+})
+THANKS_EMOJI = frozenset({"🙏", "🙏🏻", "🙏🏼", "🙏🏽", "🙏🏾", "🙏🏿"})
+#: The reaction a thanks gets.
+THANKS_REACTION = "👍"
+
+
+#: What a thanks may carry besides its words: plain closing marks and a
+#: friendly emoji. A "?" or any other emoji ("thanks 😡") goes to the AI.
+_THANKS_EXTRA = re.compile(r"[\s.!,🙏🙂😊❤️\U0001F3FB-\U0001F3FF]+")
+
+
+def thanks(text: str) -> bool:
+    """True when the whole message is a thanks (:data:`THANKS`)."""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 40:
+        return False
+    if raw in THANKS_EMOJI:
+        return True
+    words = " ".join(_THANKS_EXTRA.sub(" ", raw).split()).replace("’", "'").lower()
+    return words in THANKS
+
+
 # ── The result ──────────────────────────────────────────────────────────────
 
 

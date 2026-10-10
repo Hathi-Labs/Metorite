@@ -212,6 +212,29 @@ class Settings(BaseSettings):
     # Flipping it is an OWNER-GATE act (work_plan.md §6 (b)).
     crm_auto_lead: bool = False
 
+    # ── The CRM kill switch (WS-53 CRM-0, 2026-10-11) ───────────────────────
+    #
+    # The `/crm` API serves an organization only when both settings allow it.
+    # Spec: project-docs/specs/crm_platform.md, the CRM-0 row.
+    #
+    # `crm_enabled` is the kill switch, default OFF. `crm_orgs` lists the
+    # organization ids that may reach `/crm`, with a comma between ids. `*`
+    # allows each organization with a bound tenant. An empty list allows no
+    # organization. An organization outside the list gets 404 on each `/crm`
+    # route, so the CRM agent gets the same 404.
+    #
+    # The one reader of both is `gateway.routes.crm.flags`. It takes the
+    # organization from the server-side `UserContext`, never from request
+    # input. `env_guard` refuses each `CRM_*` name on each Integrations write,
+    # so only the env file of the box sets them. Restart the gateway after a
+    # change.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. The switch stays OFF for
+    # each organization until CRM-T4 merges. Fence:
+    # tests/unit/test_crm_kill_switch.py.
+    crm_enabled: bool = False
+    crm_orgs: str = ""
+
     # ── Customer Console sign-in resolve (WS-31 CP-2b, spec customer_console.md
     # §6(f)) ────────────────────────────────────────────────────────────────
     #
@@ -1026,6 +1049,13 @@ class Settings(BaseSettings):
     # typing indicator. OFF, the run is the WAC-3 run. Default OFF. Fence:
     # tests/unit/test_wac_native_ui.py.
     whatsapp_assistant_native_ui: bool = False
+    # WAC-10f (spec §13.8): WhatsApp charts drawn by the web app's chart
+    # engine (`src/lib/charts/render.mjs`, run as a child process), in the
+    # product's one chart language. OFF, the old SVG renderer draws the four
+    # old kinds. Default OFF. `whatsapp_chart_node` names the Node binary.
+    # Fence: tests/unit/test_wac_chart_engine.py.
+    whatsapp_chart_engine: bool = False
+    whatsapp_chart_node: str = "node"
 
     # ── Token accessors ────────────────────────────────────────────────────
 
