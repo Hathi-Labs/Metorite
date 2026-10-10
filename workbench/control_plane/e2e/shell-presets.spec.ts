@@ -87,6 +87,8 @@ test("a first visit asks the question, and the answer sets the pins", async ({ p
   const store = await stub(page);
   await page.goto("/settings/appearance");
   await expect(question(page)).toBeVisible();
+  // An answer has the focus, never Close: Enter there would skip.
+  await expect(question(page).getByRole("button", { name: /Run the company/ })).toBeFocused();
   await question(page).getByRole("button", { name: /Build and ship the work/ }).click();
   await expect(question(page)).toHaveCount(0);
   expect(store.puts).toEqual([{ ...EMPTY, preset: "engineer", answered: "answered" }]);
@@ -124,6 +126,14 @@ test("the star in All apps pins an app, and unpins it", async ({ page }) => {
   const launcher = page.getByRole("dialog", { name: "All apps" });
   const star = launcher.getByRole("button", { name: "Pin My Email to My apps" });
   await expect(star).toHaveAttribute("aria-pressed", "false");
+  // The star sits in its tile's top right corner. `.cc-control` once moved
+  // it under the tile, where it read as the next tile's.
+  const tile = await launcher.getByRole("link", { name: /^My Email/ }).boundingBox();
+  const at = await star.boundingBox();
+  expect(at!.x).toBeGreaterThan(tile!.x + tile!.width / 2);
+  expect(at!.x + at!.width).toBeLessThanOrEqual(tile!.x + tile!.width);
+  expect(at!.y).toBeGreaterThanOrEqual(tile!.y);
+  expect(at!.y + at!.height).toBeLessThan(tile!.y + tile!.height / 2);
   await star.click();
   const unstar = launcher.getByRole("button", { name: "Unpin My Email from My apps" });
   await expect(unstar).toHaveAttribute("aria-pressed", "true");

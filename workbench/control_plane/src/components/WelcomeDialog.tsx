@@ -149,6 +149,14 @@ function WelcomeDialogInner() {
   const dismiss = () => (reopened && !asking ? close() : skip());
 
   const current = reopened ? shell.layout.preset.id : null;
+  // ⚠️ Focus an answer, never the header's Close button: Enter there would
+  // skip the question (the trap `AppLauncher` records). Asked again, the
+  // member's current preset; on a first visit, the first answer.
+  const focusPreset = current ?? ANSWERS[0].preset;
+  // `Button` takes no ref, so the dialog finds the answer by its mark. A
+  // miss falls back to the default (`null`).
+  const focusAnswer = () =>
+    document.querySelector<HTMLElement>(`[data-answer="${focusPreset}"]`) ?? null;
 
   if (questionOpen) {
     return (
@@ -163,6 +171,7 @@ function WelcomeDialogInner() {
         }
         icon="Sparkles"
         size="md"
+        initialFocus={focusAnswer}
       >
         <div className="flex flex-col gap-3 p-4" data-testid="layout-question">
           <ul className="flex flex-col gap-2">

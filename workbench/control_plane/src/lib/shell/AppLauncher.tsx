@@ -120,23 +120,27 @@ export default function AppLauncher({
                     {/* A sibling of the link, never inside it: a button in a
                         link is two controls in one, and a click on the star
                         must not open the app. */}
+                    {/* ⚠️ The wrapper places the star. `.cc-control` sets its
+                        own `position`, which beats an `absolute` class on
+                        the button, and the star then drew under the tile. */}
                     {canPin && (
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-pressed={pinned}
-                        aria-label={pinned ? `Unpin ${p.label} from My apps` : `Pin ${p.label} to My apps`}
-                        title={pinned ? "Unpin from My apps" : "Pin to My apps"}
-                        onClick={() => toggle(p.href)}
-                        className="absolute right-2 top-2"
-                        data-testid="launcher-pin"
-                      >
-                        <Icon
-                          name="Star"
-                          size={14}
-                          className={pinned ? "fill-current text-primary" : "text-muted-foreground"}
-                        />
-                      </Button>
+                      <span className="absolute right-2 top-2">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-pressed={pinned}
+                          aria-label={pinned ? `Unpin ${p.label} from My apps` : `Pin ${p.label} to My apps`}
+                          title={pinned ? "Unpin from My apps" : "Pin to My apps"}
+                          onClick={() => toggle(p.href)}
+                          data-testid="launcher-pin"
+                        >
+                          <Icon
+                            name="Star"
+                            size={14}
+                            className={pinned ? "fill-current text-primary" : "text-muted-foreground"}
+                          />
+                        </Button>
+                      </span>
                     )}
                   </li>
                 );
