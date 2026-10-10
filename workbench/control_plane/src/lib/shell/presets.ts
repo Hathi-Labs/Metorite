@@ -55,7 +55,15 @@ export interface Preset {
 }
 
 /**
- * The approved table (owner, 2026-10-10).
+ * The approved table (owner, 2026-10-10), less its Personal Center and Admin
+ * apps.
+ *
+ * ⚠️ **A Personal Center or Admin app is never a pin** (owner, 2026-10-11,
+ * `canPin`). The table named My Tasks, My Email, My WhatsApp, Calendar and
+ * Approvals as pins. They stay in their fixed homes, so no preset names
+ * them. The Accounts assistant pinned only My Tasks and My Email, so it has
+ * no pins now. Approvals still leads the Finance manager's My Day, because
+ * the card order is not a pin.
  *
  * ⚠️ Two pins of the table are not here. CRM IS here: it is a `preview`
  * pane, so it draws when the owner promotes it (H-21). **Invoices is not**,
@@ -67,14 +75,14 @@ export const PRESETS: readonly Preset[] = [
   {
     id: "founder",
     label: "Founder",
-    pins: ["/projects", "/approvals", "/email", "/chat"],
+    pins: ["/projects", "/chat"],
     cards: ["needs", "today", "team-pulse"],
     jobs: ["new-project", "invite", "capture"],
   },
   {
     id: "sales-manager",
     label: "Sales manager",
-    pins: ["/email", "/whatsapp", "/projects", "/crm"],
+    pins: ["/projects", "/crm"],
     cards: ["needs", "today", "next"],
     needsFirst: "needs_reply",
     jobs: ["compose", "whatsapp-reply", "capture"],
@@ -82,14 +90,14 @@ export const PRESETS: readonly Preset[] = [
   {
     id: "marketing-lead",
     label: "Marketing lead",
-    pins: ["/projects", "/email", "/chat"],
+    pins: ["/projects", "/chat"],
     cards: ["needs", "next", "today"],
     jobs: ["capture", "new-chat", "compose"],
   },
   {
     id: "finance-manager",
     label: "Finance manager",
-    pins: ["/approvals", "/email", "/projects"],
+    pins: ["/projects"],
     cards: ["needs", "today"],
     needsFirst: "approval",
     jobs: ["review-approvals", "compose"],
@@ -97,21 +105,21 @@ export const PRESETS: readonly Preset[] = [
   {
     id: "operations-manager",
     label: "Operations manager",
-    pins: ["/projects", "/people", "/calendar"],
+    pins: ["/projects", "/people"],
     cards: ["needs", "today", "next", "out-today"],
     jobs: ["new-project", "capture", "find-person"],
   },
   {
     id: "engineer",
     label: "Engineer",
-    pins: ["/tasks", "/projects", "/calendar", "/chat"],
+    pins: ["/projects", "/chat"],
     cards: ["next", "today", "needs"],
     jobs: ["capture", "plan-day", "new-chat"],
   },
   {
     id: "accounts-assistant",
     label: "Accounts assistant",
-    pins: ["/tasks", "/email"],
+    pins: [],
     cards: ["needs", "next"],
     jobs: ["capture", "compose"],
     desk: true,
@@ -119,7 +127,7 @@ export const PRESETS: readonly Preset[] = [
   {
     id: "new-hire",
     label: "New hire",
-    pins: ["/tasks", "/people", "/chat"],
+    pins: ["/people", "/chat"],
     cards: ["today", "next"],
     jobs: ["edit-profile", "find-person", "new-chat"],
   },
@@ -233,33 +241,57 @@ export function shellLayout(stored: StoredShell | null | undefined, roles: reado
 }
 
 /**
+ * The teams whose apps never move: their group is a fixed home (owner,
+ * 2026-10-11). Personal Center is the member's own work, and Admin runs the
+ * organisation. The owner said: "'My Email' should be under personal center
+ * always", and "shouldn't approvals also always appear under admin, not
+ * under my apps?". So only an Apps (`across`) or AI Studio (`studio`) pane
+ * can be a pin.
+ */
+export const FIXED_TEAMS: ReadonlySet<string> = new Set(["personal", "admin"]);
+
+/**
+ * Whether a pane may be a pin. This is THE one rule, and `pinnedPanes`,
+ * `PINNABLE`, All apps and the first sign-in dialog all read it.
+ *
+ * - A `setting` (My Profile, Appearance) is a page about the member, not an
+ *   app.
+ * - A pane of a `FIXED_TEAMS` team stays in its group.
+ * - The six Center panes are derived from `lib/centers.ts`, and D49 keeps
+ *   them unlinked. The gateway refuses them (`SHELL_PANES` in
+ *   `routes/admin/me.py`), and `test_auth_me_shell.py::TestOneVocabulary`
+ *   holds that list to `nav.ts`.
+ *
+ * ⚠️ The gateway still accepts a personal or an admin href. A live
+ * `user_settings.shell_prefs` row can hold one, saved before this rule, for
+ * example `/email` or `/approvals`. It draws nothing, and the app keeps its
+ * place in its own group. Fence: `presets.test.ts`.
+ */
+export function canPin(pane: NavPane): boolean {
+  return !pane.setting && !FIXED_TEAMS.has(pane.team) && !pane.href.startsWith("/centers/");
+}
+
+/**
  * The pinned apps to draw, in pin order. ⚠️ **The subset rule (§8.1).** It
  * picks only from `sections`, which is `visibleSections(features, isAdmin)`,
  * so it can never draw a pane the member does not hold or that is not live.
- * A `setting` (My Profile, Appearance) is a page about the member, not an
- * app, so it is never a pin.
+ * A pane that fails `canPin` draws nothing here.
  */
 export function pinnedPanes(pins: readonly string[], sections: readonly NavSection[]): NavPane[] {
   const held = new Map(sections.flatMap((s) => s.items).map((p) => [p.href, p]));
   const out: NavPane[] = [];
   for (const href of pins) {
     const pane = held.get(href);
-    if (pane && !pane.setting && !out.includes(pane)) out.push(pane);
+    if (pane && canPin(pane) && !out.includes(pane)) out.push(pane);
   }
   return out;
 }
 
 /**
- * The panes a member may pin: every pane `nav.ts` declares by its own
- * `href`. The six Center panes are derived from `lib/centers.ts`, and D49
- * keeps them unlinked, so they are not pins. The gateway refuses any other
- * href (`SHELL_PANES` in `routes/admin/me.py`), and
- * `test_auth_me_shell.py::TestOneVocabulary` holds that list to `nav.ts`.
- * So All apps shows a star only where the save can land.
+ * The hrefs a member may pin: every pane of `nav.ts` that passes `canPin`.
+ * So All apps shows a sidebar toggle only where a pin can draw.
  */
-export const PINNABLE: ReadonlySet<string> = new Set(
-  PANES.filter((p) => !p.href.startsWith("/centers/")).map((p) => p.href),
-);
+export const PINNABLE: ReadonlySet<string> = new Set(PANES.filter(canPin).map((p) => p.href));
 
 /** The pins with `href` added at the end, or taken out. */
 export function togglePin(pins: readonly string[], href: string): string[] {

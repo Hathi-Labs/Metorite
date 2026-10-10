@@ -102,7 +102,36 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
 
   it("never pins a page about the member, even when one is named", () => {
     const sections = visibleSections(ALL, true);
-    expect(pinnedPanes(["/people/me", "/settings/appearance", "/tasks"], sections).map((p) => p.href)).toEqual(["/tasks"]);
+    expect(pinnedPanes(["/people/me", "/settings/appearance", "/projects"], sections).map((p) => p.href)).toEqual([
+      "/projects",
+    ]);
+  });
+
+  // Owner, 2026-10-11: "'My Email' should be under personal center always".
+  // A live `user_settings.shell_prefs` row can hold a pin saved before that.
+  it("a stored pin of a personal app draws nothing in My apps, and the app stays in Personal Center", () => {
+    const sections = visibleSections(ALL, true);
+    const personal = PANES.filter((p) => p.team === "personal").map((p) => p.href);
+    expect(personal).toContain("/email");
+    const stored = [...personal, "/projects"];
+    expect(pinnedPanes(stored, sections).map((p) => p.href)).toEqual(["/projects"]);
+    const groups = shellSidebar(sections, stored);
+    const mine = groups.find((g) => g.id === "my-apps")!.items.map((p) => p.href);
+    expect(mine).toEqual(["/projects"]);
+    expect(groups.find((g) => g.id === "personal")!.items.map((p) => p.href)).toContain("/email");
+  });
+
+  // Owner, 2026-10-11: "shouldn't approvals also always appear under admin,
+  // not under my apps?". The NS-7 Founder and Finance presets stored it.
+  it("a stored /approvals pin draws nothing, and Approvals stays under Admin", () => {
+    const sections = visibleSections(ALL, true);
+    const admin = PANES.filter((p) => p.team === "admin").map((p) => p.href);
+    expect(admin).toContain("/approvals");
+    const stored = ["/approvals", ...admin, "/projects"];
+    expect(pinnedPanes(stored, sections).map((p) => p.href)).toEqual(["/projects"]);
+    const groups = shellSidebar(sections, stored);
+    expect(groups.find((g) => g.id === "my-apps")!.items.map((p) => p.href)).toEqual(["/projects"]);
+    expect(groups.find((g) => g.id === "admin")!.items.map((p) => p.href)).toContain("/approvals");
   });
 });
 
@@ -127,16 +156,29 @@ describe("the eight presets hold the approved table (owner, 2026-10-10)", () => 
   it("pins the table's apps, in its order", () => {
     const pins = Object.fromEntries(PRESETS.map((p) => [p.id, labels(p.pins)]));
     expect(pins).toEqual({
-      founder: ["Projects", "Approvals", "My Email", "Chat"],
-      "sales-manager": ["My Email", "My WhatsApp", "Projects", "CRM"],
-      "marketing-lead": ["Projects", "My Email", "Chat"],
+      founder: ["Projects", "Chat"],
+      "sales-manager": ["Projects", "CRM"],
+      "marketing-lead": ["Projects", "Chat"],
       // Invoices is in the table and not here: no Invoices pane exists yet.
-      "finance-manager": ["Approvals", "My Email", "Projects"],
-      "operations-manager": ["Projects", "People", "Calendar"],
-      engineer: ["My Tasks", "Projects", "Calendar", "Chat"],
-      "accounts-assistant": ["My Tasks", "My Email"],
-      "new-hire": ["My Tasks", "People", "Chat"],
+      "finance-manager": ["Projects"],
+      "operations-manager": ["Projects", "People"],
+      engineer: ["Projects", "Chat"],
+      // Its two pins were My Tasks and My Email, which stay in Personal Center.
+      "accounts-assistant": [],
+      "new-hire": ["People", "Chat"],
     });
+  });
+
+  it("names no Personal Center or Admin app as a pin (owner, 2026-10-11)", () => {
+    const fixed = new Set(PANES.filter((p) => p.team === "personal" || p.team === "admin").map((p) => p.href));
+    for (const p of PRESETS) for (const h of p.pins) expect(fixed.has(h), `${p.id} pins ${h}`).toBe(false);
+  });
+
+  it("keeps Approvals first in the Finance manager's My Day, though it is not a pin", () => {
+    const finance = presetById("finance-manager")!;
+    expect(finance.pins).not.toContain("/approvals");
+    expect(finance.needsFirst).toBe("approval");
+    expect(finance.jobs[0]).toBe("review-approvals");
   });
 
   it("orders the My Day cards and the jobs as the table does", () => {
@@ -243,11 +285,27 @@ describe("a star only where the save can land (round 2)", () => {
   // (`SHELL_PANES`, held to nav.ts by `test_auth_me_shell.py`). The six
   // Center panes are derived, D49 keeps them unlinked, and the PUT refuses
   // them. So with the preview apps on, a Center tile gets no star.
-  it("holds no Center pane, and every other pane", () => {
+  it("holds no Center pane, and every Apps and AI Studio pane", () => {
     expect([...PINNABLE].some((h) => h.startsWith("/centers/"))).toBe(false);
-    const literal = PANES.filter((p) => !p.href.startsWith("/centers/")).map((p) => p.href);
-    expect([...PINNABLE].sort()).toEqual([...literal].sort());
+    const open = PANES.filter(
+      (p) => !p.href.startsWith("/centers/") && (p.team === "across" || p.team === "studio"),
+    ).map((p) => p.href);
+    expect([...PINNABLE].sort()).toEqual([...open].sort());
     expect(PANES.some((p) => p.href.startsWith("/centers/"))).toBe(true);
+  });
+
+  // Owner, 2026-10-11. Personal Center and Admin are fixed homes, so All
+  // apps offers no sidebar toggle on their tiles.
+  it("holds no personal pane", () => {
+    const personal = PANES.filter((p) => p.team === "personal");
+    expect(personal.map((p) => p.href)).toContain("/email");
+    for (const p of personal) expect(PINNABLE.has(p.href), `${p.href} is pinnable`).toBe(false);
+  });
+
+  it("holds no admin pane", () => {
+    const admin = PANES.filter((p) => p.team === "admin");
+    expect(admin.map((p) => p.href)).toContain("/approvals");
+    for (const p of admin) expect(PINNABLE.has(p.href), `${p.href} is pinnable`).toBe(false);
   });
 
   it("holds every pin of every preset", () => {
