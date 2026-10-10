@@ -306,6 +306,28 @@ test.describe("one toggle, one place, inside the card", () => {
     await expect(page.locator(`[id="${controls}"]`)).toHaveCount(1);
   });
 
+  test("a press on the shut summary opens the card by hand, and it stays open when the focus leaves", async ({ page }) => {
+    // Measured in the visual review, 2026-10-10: the focus opened a shut
+    // card at the press, the summary under the pointer left the page, the
+    // click never landed, and the card shut again when the focus moved on.
+    await startTurn(page);
+    await release(page);
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "closed");
+    const summary = page.locator(`${TOGGLE} > span`).last();
+    await expect(summary).toContainText("#141");
+    await summary.click();
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
+    // The focus leaves the card.
+    await page.getByRole("textbox", { name: /^Message / }).focus();
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "open");
+    // A Tab onto a shut header does not open it: only Enter does.
+    await page.locator(TOGGLE).click();
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "closed");
+    await page.getByRole("textbox", { name: /^Message / }).focus();
+    await page.locator(TOGGLE).focus();
+    await expect(page.locator(RECEIPT_CARD)).toHaveAttribute("data-rollup", "closed");
+  });
+
   test("a row's open-link icon opens the task, and the card does not toggle", async ({ page }) => {
     await startTurn(page);
     // Newest, the receipt is open. Hold the task page's request, so the

@@ -178,13 +178,19 @@ function RollupCardIn({
     setManual(manualStateOf(id));
   }, [id]);
   const [animate, setAnimate] = useState(false);
-  // The focus is inside: an automatic fold waits (`lib/cardRollup.ts`).
-  const [focused, setFocused] = useState(false);
+  // The focus is inside: the card keeps the state it had when the focus came
+  // in, and an automatic change waits (`lib/cardRollup.ts`, `held`).
+  const [held, setHeld] = useState<boolean | undefined>(undefined);
 
   const pending = pendingProp || (!!askTarget && waiting.has(askTarget));
   const long = isLong(height, rows);
   const toggle = showRollupToggle({ pending, long });
-  const open = rollupOpen({ pending, manual, newest, long, focused });
+  const open = rollupOpen({ pending, manual, newest, long, held });
+  // What the member sees now, for the focus to hold. Read in a handler only.
+  const openRef = useRef(open);
+  useLayoutEffect(() => {
+    openRef.current = open;
+  });
 
   const onOpenChange = useCallback(
     (next: boolean) => {
@@ -202,9 +208,9 @@ function RollupCardIn({
       ref={rootRef}
       data-rollup-card={id}
       className={className}
-      onFocus={() => setFocused(true)}
+      onFocus={() => setHeld((h) => h ?? openRef.current)}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHeld(undefined);
       }}
     >
       <CollapsibleCard

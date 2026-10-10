@@ -11,6 +11,8 @@
  *   automatic rule" (run 2026-10-10: red);
  * - `AgentChat` stops wrapping the approval group -> "the approval group is
  *   a card of the transcript".
+ * - `rollupOpen` lets the focus open a card (`held || newest`) -> "focus on a
+ *   shut card's header holds it shut".
  * - `BatchReceiptCard` loses `header="own"` -> "one toggle, one place, inside
  *   the card". The wrapper then draws a second header outside the receipt's
  *   border, which is the owner's report.
@@ -381,8 +383,16 @@ describe("a manual open beats the automatic rule", () => {
   });
 
   it("an automatic fold waits while the focus is inside the card, and a toggle by hand does not", () => {
-    expect(rollupOpen({ pending: false, newest: false, long: true, focused: true })).toBe(true);
-    expect(rollupOpen({ pending: false, newest: false, long: true, focused: true, manual: "closed" })).toBe(false);
+    expect(rollupOpen({ pending: false, newest: false, long: true, held: true })).toBe(true);
+    expect(rollupOpen({ pending: false, newest: false, long: true, held: true, manual: "closed" })).toBe(false);
+  });
+
+  it("focus on a shut card's header holds it shut: only the click opens it", () => {
+    // A mouse press focuses the header before the click. If the focus opened
+    // the card, the click would land on an open card and shut it again.
+    expect(rollupOpen({ pending: false, newest: false, long: true, held: false })).toBe(false);
+    expect(rollupOpen({ pending: false, newest: true, long: true, held: false })).toBe(false);
+    expect(rollupOpen({ pending: false, newest: false, long: true, held: false, manual: "open" })).toBe(true);
   });
 
   it("the choice lives for the page's life, by the card's id", () => {
