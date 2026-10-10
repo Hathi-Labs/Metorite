@@ -126,3 +126,155 @@ export function runBadge(running: number, needsInput: number): RunBadge | null {
 export function badgeText(n: number): string {
   return n > 9 ? "9+" : String(n);
 }
+
+// ── The activity panel (WS-51 S3) ────────────────────────────────────────────
+//
+// One list across apps, read from the same runs as the badges. A row is a
+// server row (`/chat/active-sessions`, already filtered for this member and
+// org), or a run this tab streams that the server has not listed yet. No row
+// comes from anywhere else, so the panel shows nothing the badges do not count.
+
+/** One row of the activity panel. */
+export type ActivityRow = {
+  threadId: string;
+  agentName: string;
+  title: string | null;
+  startedAt: string | null;
+  state: "running" | "needs_input";
+  /** The run's latest step, plain text, from the server. */
+  lastStep: string | null;
+};
+
+/** The part of a server row that the panel reads. */
+export type ActivitySource = RunRef & {
+  title?: string | null;
+  startedAt?: string | null;
+  lastStep?: string | null;
+};
+
+/**
+ * The panel's rows, newest first. A run this tab streams that the server has
+ * not listed yet is the newest of all: it started a moment ago, here. A
+ * server row with no start time (a parked question) sorts last.
+ */
+export function activityRows(
+  server: readonly ActivitySource[],
+  localIds: Iterable<string>,
+  localAgent: (threadId: string) => string | undefined,
+  localTitle: (threadId: string) => string | null | undefined = () => null,
+): ActivityRow[] {
+  const rows: { row: ActivityRow; at: number }[] = [];
+  const seen = new Set<string>();
+  for (const r of server) {
+    if (seen.has(r.threadId)) continue;
+    seen.add(r.threadId);
+    const named = r.agentName && r.agentName !== "unknown" ? r.agentName : localAgent(r.threadId);
+    const t = r.startedAt ? Date.parse(r.startedAt) : NaN;
+    rows.push({
+      row: {
+        threadId: r.threadId,
+        agentName: named ?? r.agentName ?? "unknown",
+        title: r.title ?? localTitle(r.threadId) ?? null,
+        startedAt: r.startedAt ?? null,
+        state: r.state === "needs_input" ? "needs_input" : "running",
+        lastStep: r.lastStep ?? null,
+      },
+      at: Number.isFinite(t) ? t : -Infinity,
+    });
+  }
+  for (const id of localIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push({
+      row: {
+        threadId: id,
+        agentName: localAgent(id) ?? "unknown",
+        title: localTitle(id) ?? null,
+        startedAt: null,
+        state: "running",
+        lastStep: null,
+      },
+      at: Infinity,
+    });
+  }
+  rows.sort((a, b) => (b.at === a.at ? a.row.threadId.localeCompare(b.row.threadId) : b.at > a.at ? 1 : -1));
+  return rows.map((r) => r.row);
+}
+
+/** The agent's name for a person: "task-manager" → "Task manager". */
+export function agentLabel(agentName: string | null | undefined): string {
+  const raw = (agentName ?? "").trim();
+  if (!raw || raw === "unknown" || raw === "orchestrator") return "Assistant";
+  const words = raw.replace(/[-_]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** How long a run has run: "under 1 min", "2 min", "1 h 5 min", "3 d". */
+export function elapsedLabel(startedAt: string | null | undefined, now: number): string | null {
+  if (!startedAt) return null;
+  const t = Date.parse(startedAt);
+  if (!Number.isFinite(t)) return null;
+  const mins = Math.floor(Math.max(0, now - t) / 60_000);
+  if (mins < 1) return "under 1 min";
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return mins % 60 ? `${hours} h ${mins % 60} min` : `${hours} h`;
+  return `${Math.floor(hours / 24)} d`;
+}
+
+/** The step, cut to one short line. The server caps it too. */
+export const STEP_MAX_CHARS = 60;
+
+/** A row's status line: "Running · 2 min · Search tasks" or "Needs your answer". */
+export function runStatusText(row: Pick<ActivityRow, "state" | "startedAt" | "lastStep">, now: number): string {
+  if (row.state === "needs_input") return "Needs your answer";
+  const parts = ["Running"];
+  const elapsed = elapsedLabel(row.startedAt, now);
+  if (elapsed) parts.push(elapsed);
+  const step = row.lastStep?.trim();
+  if (step) parts.push(step.length > STEP_MAX_CHARS ? `${step.slice(0, STEP_MAX_CHARS - 1)}…` : step);
+  return parts.join(" · ");
+}
+
+/**
+ * The shell job that opens one chat in its app (`lib/shell/doJob.tsx`). The
+ * link is `<app>?do=open-chat&fill.session=<thread id>`, so it works from any
+ * page, and the app takes the job out of the address once it has opened it.
+ */
+export const OPEN_CHAT_JOB = "open-chat";
+
+/**
+ * The apps that open a chat in their own assistant. Each one renders
+ * `<ShellJob id={OPEN_CHAT_JOB}>`. Every other agent opens in Chat.
+ */
+export const CHAT_IN_APP: ReadonlySet<string> = new Set(["/projects", "/tasks", "/email"]);
+
+/**
+ * Where a tap on a row goes: the chat in its own app, or in Chat. A run on a
+ * pane the member cannot see opens in Chat, like the badge fold.
+ */
+export function chatLink(
+  agentName: string | null | undefined,
+  threadId: string,
+  visibleHrefs: ReadonlySet<string> | null = null,
+  sections: readonly NavSection[] = NAV_SECTIONS,
+): string {
+  let href = appForAgent(agentName, sections);
+  if (visibleHrefs && !visibleHrefs.has(href)) href = CHAT_HREF;
+  if (!CHAT_IN_APP.has(href)) href = CHAT_HREF;
+  return `${href}?do=${OPEN_CHAT_JOB}&fill.session=${encodeURIComponent(threadId)}`;
+}
+
+/** The pane a row belongs to, for its app name and icon. */
+export function paneForAgent(
+  agentName: string | null | undefined,
+  sections: readonly NavSection[] = NAV_SECTIONS,
+): { href: string; label: string; icon: string } | null {
+  const href = appForAgent(agentName, sections);
+  for (const section of sections) {
+    for (const pane of section.items) {
+      if (pane.href === href) return { href: pane.href, label: pane.label, icon: pane.icon };
+    }
+  }
+  return null;
+}

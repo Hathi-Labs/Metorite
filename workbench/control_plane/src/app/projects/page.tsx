@@ -16,6 +16,9 @@ import Button from "@/components/ui/Button";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
 import { ShellJob } from "@/lib/shell/doJob";
+import { CHAT_HREF, OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { askRailSession } from "@/lib/railSessions";
+import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import { useToast } from "@/components/ui/Toast";
 import { PROJECT_STATES } from "@/lib/statusAccent";
@@ -4118,6 +4121,24 @@ function ProjectsWorkspace() {
           bar offers the job only to a member who holds Projects. The tree
           must be on screen to show the row: the rail on a desktop, the tree
           sheet on a phone. In `overlays`, so both layouts mount it. */}
+      {/* WS-51 S3: a row of the activity panel opens its chat in the AI
+          chat slot, which opens the asked chat once it has restored. With
+          the chat slot off, the chat opens in Chat. */}
+      <ShellJob
+        id={OPEN_CHAT_JOB}
+        ready={!loading && mountSettled}
+        onOpen={(f) => {
+          if (!f.session) return;
+          if (!CHAT_LIVE) {
+            router.push(
+              `${CHAT_HREF}?do=${OPEN_CHAT_JOB}&fill.session=${encodeURIComponent(f.session)}`,
+            );
+            return;
+          }
+          askRailSession(PROJECTS_AGENT, f.session);
+          chooseApp("ai-chat");
+        }}
+      />
       <ShellJob
         id="new-project"
         ready={!loading && mountSettled}

@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import uuid
 from typing import Any, AsyncIterator
 
@@ -702,6 +703,100 @@ async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
             with contextlib.suppress(Exception):
                 await r.hdel(k, *dead)
     return out
+
+
+# ---------------------------------------------------------------------------
+# The live step of a run (WS-51 S3)
+# ---------------------------------------------------------------------------
+#
+# The activity panel shows "Running · 2 min · <step>". The step is read from the
+# TAIL of the run's own stream: one XREVRANGE with a small COUNT, never the whole
+# stream and never a new key. The caller reads it only for a thread that it has
+# already shown the member may see.
+#
+# The step is plain text. A tool name or a progress line can hold anything the
+# model wrote, so `plain_step` takes out tags, angle brackets and control
+# characters, folds whitespace and caps the length. The browser draws it as a
+# text node, never as HTML.
+#
+# Fence (R7): ``tests/unit/test_run_last_step.py``.
+
+LAST_STEP_MAX_CHARS = 60
+#: The newest events read from the stream. A long reply pushes many text
+#: deltas, so a small window answers "Writing a reply" and stays cheap.
+LAST_STEP_SCAN = 12
+
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def plain_step(text: Any, limit: int = LAST_STEP_MAX_CHARS) -> str | None:
+    """*text* as one short line of plain text, or None when nothing is left."""
+    if not isinstance(text, str):
+        return None
+    s = _TAG_RE.sub(" ", text)
+    s = "".join(" " if (ord(c) < 32 or ord(c) == 127 or c in "<>") else c for c in s)
+    s = " ".join(s.split())
+    if not s:
+        return None
+    if len(s) > limit:
+        s = s[: limit - 1].rstrip() + "…"
+    return s
+
+
+def _tool_words(name: str) -> str:
+    """``search_tasks`` → ``Search tasks``. Free text keeps its own case."""
+    words = name.replace("_", " ").replace("-", " ").strip()
+    return words[:1].upper() + words[1:] if words else words
+
+
+def step_from_events(events: list[dict[str, Any]]) -> str | None:
+    """The latest step in *events*, which are NEWEST FIRST.
+
+    The first event that names a step wins. A tool start names its tool, a
+    progress update its message, a text delta "Writing a reply" and a thinking
+    delta "Thinking". Arguments, results and every other event are skipped.
+    """
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        kind = ev.get("type")
+        if kind in ("TOOL_CALL_START", "SUB_AGENT_TOOL_CALL_START"):
+            name = ev.get("toolCallName")
+            if isinstance(name, str) and name.strip() and name.strip() != "tool":
+                step = plain_step(_tool_words(name))
+                if step:
+                    return step
+        elif kind == "PROGRESS_UPDATE":
+            step = plain_step(ev.get("message"))
+            if step:
+                return step
+        elif kind in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"):
+            return "Writing a reply"
+        elif kind == "THINKING_TEXT_MESSAGE_CONTENT":
+            return "Thinking"
+    return None
+
+
+async def latest_step(thread_id: str) -> str | None:
+    """The live step of *thread_id*, from the tail of its stream. Best-effort."""
+    if not thread_id:
+        return None
+    try:
+        r = await _get_client()
+        entries = await r.xrevrange(_stream_key(thread_id), "+", "-", count=LAST_STEP_SCAN)
+    except Exception:  # noqa: BLE001 — a missing step never fails the list
+        return None
+    events: list[dict[str, Any]] = []
+    for entry in entries or []:
+        try:
+            _eid, fields = entry
+            raw = fields.get("event") if isinstance(fields, dict) else None
+            ev = json.loads(raw) if raw else None
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    return step_from_events(events)
 
 
 async def stream_exists(thread_id: str) -> bool:

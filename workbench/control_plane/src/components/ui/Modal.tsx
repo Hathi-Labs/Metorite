@@ -130,12 +130,19 @@ const SIZES: Record<ModalSize, string> = {
  * `top` is for surfaces raised by a keystroke that the eye should find without
  * moving — the command palette and the shortcuts sheet — and matches what both
  * already did.
+ *
+ * `end` hangs under the right end of the shell bar, for a panel that a control
+ * in that corner opens (the activity panel, WS-51 S3). `sheet` rises from the
+ * bottom edge, for the same panel on a phone, where the shell's own menus are
+ * bottom sheets too.
  */
-export type ModalPlacement = "center" | "top";
+export type ModalPlacement = "center" | "top" | "end" | "sheet";
 
 const PLACEMENT: Record<ModalPlacement, string> = {
   center: "items-center justify-center p-4",
   top: "items-start justify-center p-4 pt-16",
+  end: "items-start justify-end p-2 pt-12",
+  sheet: "items-end justify-center px-2 pt-2 pb-safe-full",
 };
 
 /**

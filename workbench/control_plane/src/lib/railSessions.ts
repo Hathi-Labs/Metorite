@@ -139,3 +139,80 @@ export function refusalHandler(
   const id = pick.activeId;
   return (text: string) => recover(id, text);
 }
+
+// ── A link asks a rail to open one chat (WS-51 S3) ──────────────────────────
+//
+// The activity panel links a row to its app with the shell job `open-chat`
+// (`lib/runActivity.ts`, `chatLink`). The app's job opener opens its
+// assistant and calls `askRailSession`. The rail's `useAgentSessions` reads
+// the ask once it has restored, and opens that chat on purpose.
+//
+// ⚠️ An ask is READ, never taken. The Projects chat moves from the dock to the
+// full slot as it opens, so the rail that sees the ask first can unmount a
+// moment later. Each mounted rail opens an ask once, and an ask goes stale
+// after `RAIL_ASK_MS`, so a rail that mounts tomorrow ignores it.
+//
+// Memory only, and the ask names only a thread id. `findSession` looks the id
+// up in the bound member's own list, so an ask cannot open another member's
+// chat.
+
+/** How long an ask stays fresh: the merge wait, and a margin. */
+export const RAIL_ASK_MS = 15_000;
+
+export interface RailAsk {
+  agent: string;
+  id: string;
+  /** Unique per ask, so a rail opens each ask once. */
+  seq: number;
+  at: number;
+}
+
+const _asks = new Map<string, RailAsk>();
+const _askListeners = new Set<() => void>();
+let _askSeq = 0;
+
+/** Ask the rail of `agent` to open the chat `id`. */
+export function askRailSession(agent: string, id: string, now: number = Date.now()): void {
+  if (!agent || !id) return;
+  _askSeq += 1;
+  _asks.set(agent, { agent, id, seq: _askSeq, at: now });
+  _askListeners.forEach((l) => l());
+}
+
+/** The fresh ask for `agent` that this rail has not opened yet, or null. */
+export function railAsk(agent: string, seenSeq: number, now: number = Date.now()): RailAsk | null {
+  const ask = _asks.get(agent);
+  if (!ask || ask.seq <= seenSeq || now - ask.at > RAIL_ASK_MS) return null;
+  return ask;
+}
+
+export function subscribeRailAsks(listener: () => void): () => void {
+  _askListeners.add(listener);
+  return () => {
+    _askListeners.delete(listener);
+  };
+}
+
+/** Tests only. */
+export function _resetRailAsksForTests(): void {
+  _asks.clear();
+  _askListeners.clear();
+}
+
+/**
+ * The bound member's session `id`: from this browser's list, or else from
+ * the server's list. Null when the member has no such chat.
+ */
+export async function findSession(
+  id: string,
+  merge: () => Promise<ChatSession[]> = fetchAndMergeSessionsFromDb,
+): Promise<ChatSession | null> {
+  if (!id) return null;
+  const local = getSessions().find((s) => s.id === id);
+  if (local) return local;
+  try {
+    return (await merge()).find((s) => s.id === id) ?? null;
+  } catch {
+    return null;
+  }
+}

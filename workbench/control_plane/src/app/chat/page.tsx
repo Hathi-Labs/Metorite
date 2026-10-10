@@ -24,7 +24,8 @@ import { getAssistantSettings } from "@/app/email/lib/api";
 import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
-import { carriedText, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
+import { carriedText, findSession, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
+import { OPEN_CHAT_JOB } from "@/lib/runActivity";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
@@ -866,6 +867,22 @@ function ChatPageInner() {
     setRecoveryNotice(null);
   }, []);
 
+  // WS-51 S3: the activity panel's link opens one chat
+  // (`?do=open-chat&fill.session=<id>`). Only the member's own chat opens: the
+  // id is looked up in their list, from this browser or from the server. It
+  // opens on purpose, so a refusal shows as an error.
+  const openChatById = useCallback((id: string | undefined) => {
+    if (!id) return;
+    void findSession(id).then((found) => {
+      if (!found) return;
+      setShowPicker(false);
+      setSessions(getSessions());
+      setActiveSessionId(found.id);
+      setRestoredId(null);
+      setRecoveryNotice(null);
+    });
+  }, []);
+
   // A press of "+ New conversation" before the agent list answered.
   const newChatWaitingRef = useRef(false);
   const handleNewSession = useCallback(() => {
@@ -1117,6 +1134,13 @@ function ChatPageInner() {
         id="new-chat"
         ready={!!chatScopeId && loadedScope === chatScopeId}
         onOpen={() => handleNewSession()}
+      />
+      {/* WS-51 S3: a row of the activity panel. It waits for the same load,
+          which would otherwise replace the chat it opens. */}
+      <ShellJob
+        id={OPEN_CHAT_JOB}
+        ready={!!chatScopeId && loadedScope === chatScopeId}
+        onOpen={(f) => openChatById(f.session)}
       />
       {/* Agent picker modal */}
       {pickerShows && (

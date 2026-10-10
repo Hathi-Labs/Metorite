@@ -43,7 +43,8 @@ import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 import { DrawerAccountFoot, DrawerAccountHeader } from "@/components/AccountSwitcher";
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
-import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
+import { OPEN_ACTIVITY, OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
+import { ActivityControl } from "@/lib/shell/ActivityControl";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   accountLinks,
@@ -402,20 +403,32 @@ function MobileBottomNavInner({
           the organization, the signed-in address under it, and a tap opens
           the other accounts and the account actions. */}
       <DrawerAccountHeader onClose={close} />
-      {/* NS-1 on the phone: the one search. */}
+      {/* NS-1 on the phone: the one search. Beside it, the activity control
+          (WS-51 S3), as on the desktop bar: the phone draws no shell row, so
+          the drawer opens the shell's one panel, as a sheet. */}
       {shellBarOn() ? (
-        <div className="border-b border-border px-3 py-2">
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <button
             type="button"
             onClick={() => {
               close();
               window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query: "" } }));
             }}
-            className="flex h-10 w-full items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-sm text-muted-foreground"
+            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-sm text-muted-foreground"
           >
             <AppIcon name="Sparkles" size={16} className="shrink-0 text-primary" />
             Search or ask anything
           </button>
+          <ActivityControl
+            running={activeCount}
+            needsInput={needsTotal}
+            open={false}
+            onOpen={() => {
+              close();
+              window.dispatchEvent(new CustomEvent(OPEN_ACTIVITY));
+            }}
+            className="h-10 w-10 shrink-0"
+          />
         </div>
       ) : null}
       <nav className="flex flex-col overflow-y-auto">

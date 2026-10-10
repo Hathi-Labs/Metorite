@@ -30,6 +30,11 @@
  * Anything may open the bar with words already in it:
  * `window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query } }))`.
  * A list filter does that for "Search everywhere for …" (§6.7 rule 3).
+ *
+ * **The activity control** (WS-51 S3) is the shell's own, at the right end of
+ * the bar, after the app's tools: every live assistant run, across apps
+ * (`ActivityControl.tsx`). The phone opens the same panel from its Menu drawer
+ * with `OPEN_ACTIVITY`, so this frame mounts the one panel for both.
  */
 
 import {
@@ -45,12 +50,15 @@ import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
+import { useActivityRows, useRunActivity } from "@/hooks/useActiveSessions";
+import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
+import { ActivityControl, ActivityPanel } from "./ActivityControl";
 import { CommandBar } from "./CommandBar";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
-import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
+import { OPEN_ACTIVITY, OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
 
-export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
+export { FILL_PAGE_FILTER, OPEN_ACTIVITY, OPEN_COMMAND_BAR } from "./registry";
 
 export interface ShellSlots {
   left: HTMLElement | null;
@@ -140,6 +148,24 @@ export function ShellFrame({
   const here = contextPane(pathname, panes);
   const { data: session } = useSession();
 
+  // ── The activity control and its panel (WS-51 S3) ─────────────────────
+  // The S1 store only: no poll of its own, and no poll at all for a person
+  // with no workspace (`shouldPollWorkspace`, as the sidebar reads it).
+  const workspace = shouldPollWorkspace(access, loading);
+  const { total: running, needsTotal } = useRunActivity(null, workspace);
+  const activityRows = useActivityRows(workspace);
+  const heldKey = panes.map((p) => p.href).join(",");
+  const heldHrefs = useMemo(
+    () => new Set(heldKey ? heldKey.split(",") : []),
+    [heldKey],
+  );
+  const [activityOpen, setActivityOpen] = useState(false);
+  useEffect(() => {
+    const onOpen = () => setActivityOpen(true);
+    window.addEventListener(OPEN_ACTIVITY, onOpen);
+    return () => window.removeEventListener(OPEN_ACTIVITY, onOpen);
+  }, []);
+
   return (
     <SlotsContext.Provider value={slots}>
       {/* The phone draws no row: its Menu drawer opens the same bar (§9). */}
@@ -151,9 +177,26 @@ export function ShellFrame({
           setRight={setRight}
           onOpen={() => openWith("")}
           lead={lead}
+          activity={
+            workspace ? (
+              <ActivityControl
+                running={running}
+                needsInput={needsTotal}
+                open={activityOpen}
+                onOpen={() => setActivityOpen(true)}
+              />
+            ) : null
+          }
         />
       ) : null}
       {children}
+      <ActivityPanel
+        open={activityOpen}
+        onClose={() => setActivityOpen(false)}
+        rows={activityRows}
+        visibleHrefs={heldHrefs}
+        placement={bar ? "end" : "sheet"}
+      />
       <CommandBar
         open={open}
         seed={seed}
@@ -186,6 +229,7 @@ function ShellBarRow({
   setRight,
   onOpen,
   lead,
+  activity,
 }: {
   here: { label: string; icon: string } | null;
   claimed: boolean;
@@ -193,6 +237,8 @@ function ShellBarRow({
   setRight: (el: HTMLElement | null) => void;
   onOpen: () => void;
   lead?: ReactNode;
+  /** The shell's own control at the right end, after the app's tools. */
+  activity?: ReactNode;
 }) {
   const shortcut = useShortcutLabel();
   // ⚠️ With the brand zone, a side slot never gets LESS than its content, and
@@ -239,7 +285,11 @@ function ShellBarRow({
         </kbd>
       </button>
 
-      <div ref={setRight} className={`flex ${side} flex-1 basis-0 items-center justify-end gap-1`} />
+      <div className={`flex ${side} flex-1 basis-0 items-center justify-end gap-1`}>
+        {/* The app's tools portal here (`AppTopBar`), the bell among them. */}
+        <div ref={setRight} className="flex min-w-0 items-center justify-end gap-1 empty:hidden" />
+        {activity}
+      </div>
     </header>
   );
 }

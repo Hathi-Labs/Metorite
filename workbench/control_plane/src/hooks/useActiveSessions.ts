@@ -23,7 +23,8 @@
 import { useSyncExternalStore, useCallback, useMemo, useRef } from "react";
 import { subscribeAllSessions, getActiveSessionIdsStable, getSessionAgent } from "@/lib/chatStore";
 import { getLiveRuns, getServerLiveRuns, subscribeLiveRuns } from "@/lib/liveRuns";
-import { countRunsByApp, mergeRuns } from "@/lib/runActivity";
+import { activityRows, countRunsByApp, mergeRuns, type ActivityRow } from "@/lib/runActivity";
+import { getSessions } from "@/lib/sessions";
 
 const EMPTY = new Set<string>();
 
@@ -52,11 +53,13 @@ function useServerRuns(enabled = true) {
 export function useActiveSessions(): Set<string> {
   const localActive = useLocalActive();
   const serverRuns = useServerRuns();
-  // `getLiveRuns` hands back the same array while the list is unchanged, so
-  // this set keeps its reference too.
+  // Keyed by the ids alone. The list also changes when a run's step changes
+  // (WS-51 S3), and a consumer that puts this set in an effect's dependencies
+  // must not re-run for a step.
+  const idsKey = useMemo(() => serverRuns.map((r) => r.threadId).sort().join(","), [serverRuns]);
   const serverActiveIds = useMemo(
-    () => (serverRuns.length ? new Set(serverRuns.map((r) => r.threadId)) : EMPTY),
-    [serverRuns],
+    () => (idsKey ? new Set(idsKey.split(",")) : EMPTY),
+    [idsKey],
   );
   // Stable reference for the merged union (see the merge step below).
   const mergedRef = useRef<Set<string>>(EMPTY);
@@ -132,5 +135,29 @@ export function useThreadNeedsInput(threadId: string | null | undefined): boolea
   return useMemo(
     () => Boolean(threadId) && serverRuns.some((r) => r.threadId === threadId && r.state === "needs_input"),
     [serverRuns, threadId],
+  );
+}
+
+/** A session's title from this member's session list, for a run with none. */
+function localTitle(threadId: string): string | null {
+  try {
+    return getSessions().find((s) => s.id === threadId)?.title ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The activity panel's rows (WS-51 S3), newest first. It reads the one shared
+ * poller and this tab's own runs, the same two sources as `useRunActivity`,
+ * so the panel lists exactly the runs that the control counts. It starts no
+ * poll of its own. `enabled: false` reads nothing: no workspace yet.
+ */
+export function useActivityRows(enabled = true): ActivityRow[] {
+  const localActive = useLocalActive();
+  const serverRuns = useServerRuns(enabled);
+  return useMemo(
+    () => activityRows(serverRuns, enabled ? localActive : EMPTY, getSessionAgent, localTitle),
+    [serverRuns, localActive, enabled],
   );
 }

@@ -10,6 +10,8 @@ import { EmailList } from "./components/EmailList";
 import { EmailToolbar } from "./components/EmailToolbar";
 import { QuickFilters } from "./components/QuickFilters";
 import { ShellJob } from "@/lib/shell/doJob";
+import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { askRailSession } from "@/lib/railSessions";
 import { shellBarOn } from "@/lib/shell/registry";
 import { SearchBar } from "./components/SearchBar";
 import { MailboxActions } from "./components/MailboxActions";
@@ -820,6 +822,18 @@ export default function EmailPage() {
             aiFilled: ["to", "subject"].filter((k) => !!f[k]),
           })
         }
+      />
+      {/* WS-51 S3: a row of the activity panel opens its chat in the email
+          chat scene, which opens the asked chat once it has restored. */}
+      <ShellJob
+        id={OPEN_CHAT_JOB}
+        ready={surface !== "loading"}
+        onOpen={(f) => {
+          if (!f.session) return;
+          askRailSession("email-assistant", f.session);
+          setAutomationFeature("chat");
+          closeDrawer();
+        }}
       />
       {/* Loading overlay */}
       {surface === "loading" && (

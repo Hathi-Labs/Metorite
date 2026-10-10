@@ -37,6 +37,11 @@ export function shellBarOn(): boolean {
 
 /** Open the command bar, optionally with words in it (`detail.query`). */
 export const OPEN_COMMAND_BAR = "shell:open-command-bar";
+/**
+ * Open the activity panel, the list of every live assistant run (WS-51 S3).
+ * The phone's Menu drawer sends it, because the phone draws no shell row.
+ */
+export const OPEN_ACTIVITY = "shell:open-activity";
 /** Put words into the page's own filter (§6.7 rule 3, "Show all in …"). */
 export const FILL_PAGE_FILTER = "shell:fill-page-filter";
 

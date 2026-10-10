@@ -36,7 +36,22 @@ export type LiveRun = {
   state?: RunState;
   /** The kind of card that waits, when `state` is `needs_input`. */
   askKind?: string | null;
+  /**
+   * The run's latest step, such as "Search tasks" (WS-51 S3). Plain text that
+   * the server caps at 60 characters. The panel draws it as text, never HTML.
+   */
+  lastStep?: string | null;
 };
+
+/** The longest step this store keeps, whatever the server sends. */
+export const LAST_STEP_MAX = 60;
+
+function _step(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const s = v.replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  return s.length > LAST_STEP_MAX ? `${s.slice(0, LAST_STEP_MAX - 1)}…` : s;
+}
 
 export const VISIBLE_MS = 5_000;
 export const HIDDEN_MS = 30_000;
@@ -73,7 +88,7 @@ function _publish(runs: readonly LiveRun[]): void {
   // Same contents → same reference, so a subscriber that puts the list in a
   // dependency array does not loop (React #185, see useActiveSessions).
   const key = runs
-    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}`)
+    .map((r) => `${r.threadId}:${r.agentName}:${r.title ?? ""}:${r.state ?? "running"}:${r.startedAt ?? ""}:${r.lastStep ?? ""}`)
     .sort()
     .join("\n");
   if (key === _key) return;
@@ -105,6 +120,7 @@ async function _poll(): Promise<void> {
               startedAt: d.startedAt ?? null,
               state: d.state === "needs_input" ? ("needs_input" as const) : ("running" as const),
               askKind: typeof d.askKind === "string" ? d.askKind : null,
+              lastStep: _step(d.lastStep),
             })),
         );
       }
