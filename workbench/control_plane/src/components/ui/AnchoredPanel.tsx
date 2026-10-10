@@ -89,6 +89,24 @@ const PANEL_LAYERS: Record<PanelLayer, string> = {
   top: "z-[90]",
 };
 
+/**
+ * What the panel IS, which decides its surface.
+ *
+ * - `panel` (the default) is a popover a member works in: the card surface,
+ *   a scroll, and the `PREVENT_OUTSIDE_CLICK` marker.
+ * - `tip` is a hint that only shows text (`OverflowTip`). It draws the dark
+ *   `--tooltip` surface, it takes no pointer, and it carries NO marker. A
+ *   tip is not a popup a click can land in, and the marker would tell
+ *   `InfoTip`'s Escape rule that another popup is open.
+ */
+export type PanelVariant = "panel" | "tip";
+
+/** The surface classes of each variant. Exported for the markup test. */
+export const PANEL_SURFACES: Record<PanelVariant, string> = {
+  panel: "overflow-y-auto rounded-md border border-border bg-card shadow-md",
+  tip: "pointer-events-none rounded-md bg-tooltip text-tooltip-foreground shadow-md",
+};
+
 export interface AnchoredPanelProps {
   /** The element (or box) the panel hangs from. */
   anchor: PanelAnchor | null;
@@ -111,6 +129,8 @@ export interface AnchoredPanelProps {
   align?: "start" | "end";
   /** Which layer it paints on. See {@link PanelLayer}. */
   layer?: PanelLayer;
+  /** What the panel is. See {@link PanelVariant}. */
+  variant?: PanelVariant;
 }
 
 /** Where the panel sits, measured from the anchor's box. Pure, so it is testable. */
@@ -170,6 +190,7 @@ export function AnchoredPanel({
   panelProps,
   align = "start",
   layer = "popover",
+  variant = "panel",
 }: AnchoredPanelProps) {
   const [box, setBox] = useState<PanelBox | null>(null);
 
@@ -206,9 +227,9 @@ export function AnchoredPanel({
   return createPortal(
     <div
       {...panelProps}
-      {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
+      {...(variant === "panel" ? { [PREVENT_OUTSIDE_CLICK]: "" } : {})}
       style={panelStyle(box, align, maxHeight)}
-      className={`fixed ${PANEL_LAYERS[layer]} overflow-y-auto rounded-md border border-border bg-card shadow-md ${className}`}
+      className={`fixed ${PANEL_LAYERS[layer]} ${PANEL_SURFACES[variant]} ${className}`}
     >
       {children}
     </div>,

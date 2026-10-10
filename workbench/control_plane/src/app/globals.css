@@ -61,6 +61,12 @@
   --popover: hsl(220 13% 12%);
   --popover-foreground: hsl(210 40% 98%);
 
+  /* The hover tip that shows a whole name (`OverflowTip`). It is dark in
+     BOTH modes, as the owner's reference draws it. A lift above the rail
+     here, and a near-black panel on white in `.light`. */
+  --tooltip: hsl(220 13% 22%);
+  --tooltip-foreground: hsl(210 40% 98%);
+
   --primary: hsl(198 89% 50%);
   --primary-foreground: hsl(220 13% 8%);
 
@@ -174,6 +180,9 @@
   --popover: hsl(0 0% 100%);
   --popover-foreground: hsl(222.2 84% 4.9%);
 
+  --tooltip: hsl(222 47% 11%);
+  --tooltip-foreground: hsl(210 40% 98%);
+
   /* Deeper blue in light mode for proper contrast on white buttons */
   --primary: hsl(198 89% 35%);
   --primary-foreground: hsl(0 0% 100%);
@@ -255,6 +264,8 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-tooltip: var(--tooltip);
+  --color-tooltip-foreground: var(--tooltip-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -995,6 +1006,53 @@ select optgroup {
   &:focus-visible,
   &:has(:focus-visible) {
     opacity: 1;
+  }
+}
+
+/* ── A rail row's trailing zone (`components/ui/RailRow.tsx`) ─────────── */
+/*
+ * One zone at the right end of a row holds two things in turn. At rest it
+ * shows the row's `meta`, such as a count. On hover, on keyboard focus in
+ * the row, or while the row is pinned, it shows the row's actions.
+ *
+ * The actions also carry `reveal-on-hover`, so they keep the house reveal.
+ * These two utilities add what a row needs on top of it:
+ *
+ *   - At rest the actions take NO width. A row that keeps room for its
+ *     "···" and "+" takes about 60px from every name, which is what the
+ *     owner saw on 2026-10-10. `max-width: 0` keeps the buttons in the tab
+ *     order, which `display: none` would not.
+ *   - Hidden actions take no click. An invisible button at the row's end
+ *     swallows the tap that was meant to select the row.
+ *   - Keyboard focus ANYWHERE in the row reveals them, not only focus on the
+ *     actions themselves.
+ *   - `data-pinned` on the row holds them open: while the row's menu is open,
+ *     and for the selected row on a phone, where nothing can hover.
+ *
+ * No media query, for the reason the block above gives. Fences:
+ * `components/ui/RailRow.test.ts` and `e2e/rail-rows.spec.ts`.
+ */
+@utility rail-row-actions {
+  max-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] &,
+  &:has(:focus-visible) {
+    max-width: none;
+    overflow: visible;
+    pointer-events: auto;
+    opacity: 1;
+  }
+}
+
+@utility rail-row-meta {
+  .group:hover &,
+  .group:has(:focus-visible) &,
+  .group[data-pinned] & {
+    display: none;
   }
 }
 

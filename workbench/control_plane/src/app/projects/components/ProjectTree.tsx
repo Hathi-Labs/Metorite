@@ -11,17 +11,23 @@
  * on desktop and the shell drawer's sheet on a phone (WS-27ag). The selected
  * row wears the house active token, `bg-primary/10 text-primary` — the same one
  * the sidebar, the tabs and every other nav in the tree use.
+ *
+ * Every row is a `RailRow` (owner, 2026-10-10). The "···" and the "+" show on
+ * hover only, the open-task count shows at rest, and a cut name shows whole
+ * in a tip. `components/ui/RailRow.tsx` holds the rules.
  */
 import { ContextMenu } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
 import {
   type NodeProgress,
+  openCount,
   showsWheel,
   wheelLabel,
 } from "../lib/progressWheel";
 import { StateMark, stateMarkIcon } from "./StateMark";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import RailRow from "@/components/ui/RailRow";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
 import { createContext, useContext, useMemo, useState } from "react";
 
@@ -216,22 +222,23 @@ function DraftRow({
   };
   return (
     <li>
-      <div
-        className="flex items-center gap-1 rounded-md px-2 py-1.5 text-sm"
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-      >
-        <span className="w-[18px] shrink-0" />
-        <Icon
-          name={LEVEL_ICONS[draft.level]}
-          className={`${MARKER_SIZE} shrink-0 text-muted-foreground`}
-        />
+      <RailRow
+        label={draft.label}
+        depth={depth}
+        guides
+        leadSpace
+        editor={
         <form
-          className="min-w-0 flex-1"
+          className="flex min-w-0 flex-1 items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             commit();
           }}
         >
+          <Icon
+            name={LEVEL_ICONS[draft.level]}
+            className={`${MARKER_SIZE} shrink-0 text-muted-foreground`}
+          />
           <Input
             autoFocus
             inputSize="sm"
@@ -242,6 +249,7 @@ function DraftRow({
             // position stopped being visible.
             placeholder={draft.label}
             aria-label={draft.label}
+            className="min-w-0 flex-1"
             onChange={(e) => setName(e.target.value)}
             onBlur={commit}
             onKeyDown={(e) => {
@@ -255,7 +263,8 @@ function DraftRow({
             }}
           />
         </form>
-      </div>
+        }
+      />
     </li>
   );
 }
@@ -534,173 +543,174 @@ function Node({
       {litAfter ? (
         <div className="pointer-events-none absolute left-0 right-0 bottom-0 h-0.5 bg-primary" />
       ) : null}
-      <div
-        {...rowDragProps}
-        className={`flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${
-          dragging ? "opacity-40" : ""
-        } ${
-          litInto
-            ? "ring-1 ring-primary"
-            : isSelected
-              ? "bg-primary/10 text-primary"
-              : "text-foreground hover:bg-muted"
-        }`}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        onContextMenu={
-          actions
-            ? (e) => {
+      <RailRow
+        label={node.name}
+        depth={depth}
+        guides
+        tier={level === "space" ? "group" : "item"}
+        selected={isSelected && !litInto}
+        onSelect={() => onSelect(node)}
+        // The row's menu is open: keep its controls on screen under it.
+        pinned={menu != null || addMenu != null}
+        className={`${dragging ? "opacity-40" : ""} ${litInto ? "ring-1 ring-primary" : ""}`}
+        rowProps={{
+          ...rowDragProps,
+          onContextMenu: actions
+            ? (e: React.MouseEvent) => {
                 e.preventDefault();
                 setMenu({ x: e.clientX, y: e.clientY });
               }
-            : undefined
+            : undefined,
+        }}
+        lead={
+          children.length > 0 || draftHere ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              radius="keep"
+              className="rounded"
+              icon={expanded ? "ChevronDown" : "ChevronRight"}
+              aria-label={
+                expanded ? `Collapse ${node.name}` : `Expand ${node.name}`
+              }
+              onClick={() => setOpen((v) => !v)}
+            />
+          ) : undefined
         }
-      >
-        {children.length > 0 || draftHere ? (
-          <button
-            type="button"
-            aria-label={
-              expanded ? `Collapse ${node.name}` : `Expand ${node.name}`
-            }
-            onClick={() => setOpen((v) => !v)}
-            className="shrink-0 rounded p-0.5 hover:bg-background/60"
-          >
-            {expanded ? (
-              <Icon name="ChevronDown" className="h-3.5 w-3.5" />
-            ) : (
-              <Icon name="ChevronRight" className="h-3.5 w-3.5" />
-            )}
-          </button>
-        ) : (
-          <span className="w-[18px] shrink-0" />
-        )}
-        {renaming && actions ? (
-          <form
-            className="flex min-w-0 flex-1 items-center gap-1"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const next = draft.trim();
-              // An empty field and an unchanged one are both "never mind",
-              // not errors: the row is already named, so there is nothing to
-              // report and nothing to write.
-              if (next && next !== node.name) actions.onRename(node, next);
-              setRenaming(false);
-            }}
-          >
-            {hasRunState(level) ? (
-              <StateDot
-                state={run.state}
-                inherited={run.inherited}
-                projectName={node.name}
-                level={level}
-                progress={node}
-              />
-            ) : (
-              <LevelGlyph level={level} node={node} />
-            )}
-            <Input
-              autoFocus
-              inputSize="sm"
-              value={draft}
-              aria-label={`Rename ${node.name}`}
-              onChange={(e) => setDraft(e.target.value)}
-              // Deliberately NO `onBlur` cancel. Clicking Save blurs the field
-              // first, so a blur-cancel closes the form before the click can
-              // submit it — the button would be dead and only Enter would
-              // work. Escape and Save are the two ways out, both explicit.
-              onKeyDown={(e) => {
-                if (e.key !== "Escape") return;
-                // The same rule TagManager records: the substrate binds
-                // Escape on `document`, above React's root container, so an
-                // unstopped key would cancel the rename AND dismiss whatever
-                // surface the tree is drawn inside — the drawer, on a phone.
-                e.stopPropagation();
+        leadSpace
+        icon={
+          hasRunState(level) ? (
+            <StateDot
+              state={run.state}
+              inherited={run.inherited}
+              projectName={node.name}
+              level={level}
+              progress={node}
+            />
+          ) : (
+            <LevelGlyph level={level} node={node} />
+          )
+        }
+        // The open work under this node, from the `/tree` roll-up the row
+        // already carries. No count is drawn for an empty subtree, and none
+        // for a row from `/nodes`, which carries no roll-up.
+        meta={
+          openCount(node) ? (
+            <>
+              {openCount(node)}
+              <span className="sr-only"> open tasks</span>
+            </>
+          ) : null
+        }
+        editor={
+          renaming && actions ? (
+            <form
+              className="flex min-w-0 flex-1 items-center gap-1"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const next = draft.trim();
+                // An empty field and an unchanged one are both "never mind",
+                // not errors: the row is already named, so there is nothing to
+                // report and nothing to write.
+                if (next && next !== node.name) actions.onRename(node, next);
                 setRenaming(false);
               }}
-            />
-            <Button type="submit" size="sm">
-              Save
-            </Button>
-          </form>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onSelect(node)}
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          >
-            {hasRunState(level) ? (
-              <StateDot
-                state={run.state}
-                inherited={run.inherited}
-                projectName={node.name}
-                level={level}
-                progress={node}
-              />
-            ) : (
-              <LevelGlyph level={level} node={node} />
-            )}
-            {/* A space is the row people scan the sidebar FOR, so it is the
-                one level that carries weight. Everything below reads as its
-                contents rather than as more siblings. */}
-            <span
-              className={`truncate ${level === "space" ? "font-medium" : ""}`}
             >
-              {node.name}
-            </span>
-            {/* ⚠️ The "CU" (imported-from-ClickUp) provenance badge was removed
-                2026-08-24 (D52). `clickup_id` still EXISTS on the row — D52.3
-                keeps the column under R6 — but nothing writes it any more, so a
-                badge would only ever mark rows imported before the retirement.
-                It goes with the column, in the release that drops it. */}
-          </button>
-        )}
-        {actions && !renaming ? (
-          // The SAME menu the right-click opens, from a control you can see
-          // (owner directive 2026-09-06). A right-click is the fast path for
-          // people who already know the menu is there, and it is invisible to
-          // everyone else — so the actions had no discoverable entry at all.
-          //
-          // Always drawn, never hover-only: this same tree is the phone
-          // drawer's contents (WS-27ag), and a control that needs a hover is a
-          // control a touch device cannot reach.
-          <button
-            type="button"
-            aria-label={`Actions for ${node.name}`}
-            title="Actions"
-            onClick={(e) => {
-              // Anchored under the button rather than at the pointer, so the
-              // menu opens in the same place whichever way you asked for it.
-              const rect = e.currentTarget.getBoundingClientRect();
-              setMenu({ x: rect.left, y: rect.bottom + 2 });
-            }}
-            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background/60"
-          >
-            <Icon name="MoreHorizontal" className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
-        {onAddChild && !renaming && addOptions.length > 0 ? (
-          // A child is created HERE rather than from a dialog that asks
-          // "which parent?" — the answer is already on screen, and asking for
-          // it again is how a tree with fifty nodes gets mis-parented rows.
-          // One option acts on click; two open a menu; a subproject offers
-          // nothing at all, because it is the grammar's floor (migration 193).
-          <button
-            type="button"
-            aria-label={`${addOptions[0].label} under ${node.name}`}
-            title={addOptions.map((o) => o.label).join(" / ")}
-            onClick={(e) => {
-              if (addOptions.length === 1) {
-                onAddChild(node, addOptions[0]);
-                return;
-              }
-              const rect = e.currentTarget.getBoundingClientRect();
-              setAddMenu({ x: rect.left, y: rect.bottom + 2 });
-            }}
-            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background/60"
-          >
-            <Icon name="Plus" className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
-      </div>
+              {hasRunState(level) ? (
+                <StateDot
+                  state={run.state}
+                  inherited={run.inherited}
+                  projectName={node.name}
+                  level={level}
+                  progress={node}
+                />
+              ) : (
+                <LevelGlyph level={level} node={node} />
+              )}
+              <Input
+                autoFocus
+                inputSize="sm"
+                value={draft}
+                aria-label={`Rename ${node.name}`}
+                className="min-w-0 flex-1"
+                onChange={(e) => setDraft(e.target.value)}
+                // Deliberately NO `onBlur` cancel. Clicking Save blurs the field
+                // first, so a blur-cancel closes the form before the click can
+                // submit it — the button would be dead and only Enter would
+                // work. Escape and Save are the two ways out, both explicit.
+                onKeyDown={(e) => {
+                  if (e.key !== "Escape") return;
+                  // The same rule TagManager records: the substrate binds
+                  // Escape on `document`, above React's root container, so an
+                  // unstopped key would cancel the rename AND dismiss whatever
+                  // surface the tree is drawn inside — the drawer, on a phone.
+                  e.stopPropagation();
+                  setRenaming(false);
+                }}
+              />
+              <Button type="submit" size="sm">
+                Save
+              </Button>
+            </form>
+          ) : undefined
+        }
+        actions={
+          actions || (onAddChild && addOptions.length > 0) ? (
+            <>
+              {actions ? (
+                // The SAME menu the right-click opens, from a control you can
+                // see (owner directive 2026-09-06). A right-click is the fast
+                // path for people who already know the menu is there.
+                //
+                // ⚠️ On hover only since 2026-10-10 (owner, with ClickUp as
+                // the reference). It is still reachable without a hover: by
+                // keyboard focus in the row, by the right-click and the
+                // long-press menu, and on a phone the selected row keeps it
+                // on screen (`RailRow`).
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  className="rounded"
+                  icon="MoreHorizontal"
+                  aria-label={`Actions for ${node.name}`}
+                  title="Actions"
+                  onClick={(e) => {
+                    // Anchored under the button rather than at the pointer, so
+                    // the menu opens in the same place whichever way you asked.
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setMenu({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                />
+              ) : null}
+              {onAddChild && addOptions.length > 0 ? (
+                // A child is created HERE rather than from a dialog that asks
+                // "which parent?" — the answer is already on screen. One
+                // option acts on click; two open a menu; a subproject offers
+                // nothing at all, because it is the grammar's floor
+                // (migration 193).
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  className="rounded"
+                  icon="Plus"
+                  aria-label={`${addOptions[0].label} under ${node.name}`}
+                  title={addOptions.map((o) => o.label).join(" / ")}
+                  onClick={(e) => {
+                    if (addOptions.length === 1) {
+                      onAddChild(node, addOptions[0]);
+                      return;
+                    }
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setAddMenu({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                />
+              ) : null}
+            </>
+          ) : undefined
+        }
+      />
       {addMenu && onAddChild ? (
         <ContextMenu
           x={addMenu.x}

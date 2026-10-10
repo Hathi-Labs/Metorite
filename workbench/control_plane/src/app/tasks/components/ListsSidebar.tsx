@@ -5,6 +5,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import RailRow from "@/components/ui/RailRow";
 import { useToast } from "@/components/ui/Toast";
 import { categoricalAccent } from "@/lib/categorical";
 import type { LensArea } from "../lib/api";
@@ -198,37 +199,18 @@ function NavButton({
   count?: number;
   onClick: () => void;
 }) {
+  // A rail row (owner, 2026-10-10): the count is the row's muted `meta`, as
+  // the Projects tree draws its own, rather than a filled pill.
   return (
-    <button
-      type="button"
-      disabled={row.soon}
-      onClick={onClick}
-      className={[
-        "tech-transition flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left",
-        row.soon
-          ? "cursor-default text-muted-foreground/50"
-          : active
-            ? "bg-primary/10 text-primary"
-            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-      ].join(" ")}
-    >
-      <Icon name={row.icon} className="h-4 w-4 shrink-0" />
-      <span className="flex-1 truncate">{row.label}</span>
-      {row.soon ? (
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">
-          soon
-        </span>
-      ) : row.showCount && count ? (
-        <span
-          className={[
-            "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
-            active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-          ].join(" ")}
-        >
-          {count}
-        </span>
-      ) : null}
-    </button>
+    <RailRow
+      label={row.label}
+      selected={active}
+      onSelect={onClick}
+      buttonProps={{ disabled: row.soon }}
+      className={row.soon ? "cursor-default opacity-50" : ""}
+      icon={<Icon name={row.icon} className="h-4 w-4 shrink-0" />}
+      meta={row.soon ? "soon" : row.showCount && count ? count : null}
+    />
   );
 }
 
@@ -352,74 +334,57 @@ function AreasSection({
         const active = selectedAreaId === area.id;
         const count = openInArea(items, area.id);
         return (
-          <div
+          <RailRow
             key={area.id}
-            className={[
-              "group tech-transition flex w-full items-center gap-2 rounded-lg pr-1",
-              active
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-            ].join(" ")}
-          >
-            <button
-              type="button"
-              aria-pressed={active}
-              onClick={() => {
-                selectArea(area.id);
-                onNavigate?.();
-              }}
-              className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 text-left"
-            >
+            label={area.name}
+            selected={active}
+            buttonProps={{ "aria-pressed": active }}
+            onSelect={() => {
+              selectArea(area.id);
+              onNavigate?.();
+            }}
+            icon={
               <span
                 aria-hidden
                 className={`h-2 w-2 shrink-0 rounded-full ${categoricalAccent(area.name).dot}`}
               />
-              <span className="flex-1 truncate">{area.name}</span>
-              {count > 0 && (
-                <span
-                  className={[
-                    "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
-                    active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-                  ].join(" ")}
-                >
-                  {count}
-                </span>
-              )}
-            </button>
-            {/* Row actions. Hidden until hover or focus so the list reads as
-                a list. `reveal-on-hover` (globals.css) also shows them on a
-                touch display and on keyboard focus, which a bare Tailwind
-                hover variant never would — `revealOnHover.test.ts` fences it. */}
-            <span className="reveal-on-hover tech-transition flex shrink-0 items-center">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                radius="keep"
-                layout=""
-                icon="Pencil"
-                aria-label={`Rename ${area.name}`}
-                title="Rename"
-                className="rounded-md"
-                onClick={() => {
-                  setRenaming(area);
-                  setRenameTo(area.name);
-                }}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                radius="keep"
-                layout=""
-                icon="Trash2"
-                aria-label={`Remove ${area.name}`}
-                title="Remove"
-                className="rounded-md"
-                onClick={() => setRemoving(area)}
-              />
-            </span>
-          </div>
+            }
+            meta={count > 0 ? count : null}
+            // Hidden until hover or focus so the list reads as a list.
+            // `RailRow` holds the reveal, and on a phone the selected Area
+            // keeps them on screen.
+            actions={
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  layout=""
+                  icon="Pencil"
+                  aria-label={`Rename ${area.name}`}
+                  title="Rename"
+                  className="rounded-md"
+                  onClick={() => {
+                    setRenaming(area);
+                    setRenameTo(area.name);
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  layout=""
+                  icon="Trash2"
+                  aria-label={`Remove ${area.name}`}
+                  title="Remove"
+                  className="rounded-md"
+                  onClick={() => setRemoving(area)}
+                />
+              </>
+            }
+          />
         );
       })}
 
@@ -552,35 +517,24 @@ function LedProjectsSection({ onNavigate }: { onNavigate?: () => void }) {
         const active =
           selectedView === "projects" && selectedLedProjectId === project.id;
         return (
-          <button
+          <RailRow
             key={project.id}
-            type="button"
-            aria-pressed={active}
-            onClick={() => {
+            label={project.name}
+            selected={active}
+            buttonProps={{ "aria-pressed": active }}
+            onSelect={() => {
               selectLedProject(project.id);
               onNavigate?.();
             }}
-            className={[
-              "tech-transition flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left",
-              active
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-            ].join(" ")}
-          >
-            <Icon name="FolderKanban" className="h-4 w-4 shrink-0" />
-            <span className="flex-1 truncate">{project.name}</span>
-            {project.openTasks > 0 && (
-              <span
-                title={`${project.openTasks} open · ${project.myTasks.length} assigned to you`}
-                className={[
-                  "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
-                  active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-                ].join(" ")}
-              >
-                {project.openTasks}
-              </span>
-            )}
-          </button>
+            icon={<Icon name="FolderKanban" className="h-4 w-4 shrink-0" />}
+            meta={
+              project.openTasks > 0 ? (
+                <span title={`${project.openTasks} open · ${project.myTasks.length} assigned to you`}>
+                  {project.openTasks}
+                </span>
+              ) : null
+            }
+          />
         );
       })}
     </div>
