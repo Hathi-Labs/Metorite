@@ -221,6 +221,9 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
   "app/settings/appearance/page.tsx":
     "the theme picker: accent presets and swatches, i.e. colour as this page's DATA",
   "app/whatsapp/connect/page.tsx": "Meta brand blue on a 'Connect with Facebook' button",
+  "app/manifest.ts":
+    "the web manifest's splash and frame colours: the browser reads this JSON " +
+    "outside the page, where no CSS token exists, so it can only take a literal",
   "app/email/lib/mockData.ts": "fixtures",
   "app/tasks/lib/mockData.ts": "fixtures",
 };

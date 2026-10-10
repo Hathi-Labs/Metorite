@@ -25,8 +25,12 @@ import UpdateNotice from "@/lib/shell/UpdateNotice";
 import { themeBootScript } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
-  title: "Metorite Control Plane",
-  description: "Skill Studio, Chat, Agents and Integrations for the Fracktal AI Company Brain.",
+  title: "Metorite",
+  applicationName: "Metorite",
+  description: "Metorite, the AI company operating system.",
+  // The tab and home-screen icons are files beside this one (`favicon.ico`,
+  // `icon.svg`, `apple-icon.png`) and `manifest.ts`. `brand/make_icons.py`
+  // makes the rasters from the transparent master.
 };
 
 // Default mobile-friendly viewport. ViewModeProvider widens this to a desktop

@@ -251,7 +251,8 @@ describe("the card under the member's eye stays put", () => {
 describe("the card reads as a sentence, then rows", () => {
   it("the summary joins the title and the name", () => {
     expect(cardSummary("Create this task?", "«Fix the extruder» · status Open")).toEqual({
-      summary: "Create task «Fix the extruder»",
+      // The colon parts the act from the name (owner, 2026-10-10).
+      summary: "Create task: «Fix the extruder»",
       rest: "status Open",
     });
     // A title that is not "<verb> this <thing>?" stays as it is.
