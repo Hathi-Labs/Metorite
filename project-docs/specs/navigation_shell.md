@@ -39,6 +39,12 @@ rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
 release, by owner decision of 2026-10-10. §11 records this exception, and
 §8 holds the table that the owner approved.
 
+**BUILT 2026-10-11, by owner direction: the star model.** The sidebar has no
+"My apps" group now. Each category lists only the apps that the member
+starred. The first sign-in dialog has a second step to choose them. A row
+menu hides an app, and a category folds. It rides the same flag, so the
+merge is its release. §3.2b holds the model.
+
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -256,11 +262,14 @@ Five groups, in this order:
 2. **Personal Center.** My Tasks, Calendar and Email. Notes and WhatsApp join
    when they go live.
 3. **My apps.** The member's pins. A preset sets the first pins (§8).
+   ⚠️ **Superseded on 2026-10-11** by the star model (§3.2b). There is no
+   "My apps" group.
 4. **Across teams.** Projects, and Dashboards when it goes live.
 5. **All apps.** One button at the foot. It opens the launcher.
 
 The launcher lists every app the member holds, grouped by team. Each tile
-shows the name and the manifest's one-line purpose. A star pins or unpins.
+shows the name and the manifest's one-line purpose. A star shows the app in
+the sidebar or hides it (§3.2b).
 
 **Admin panes leave the sidebar.** Approvals and Organisation appear in the
 launcher under Admin, for a member who holds them. ⚠️ The owner reversed this
@@ -313,6 +322,8 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    put it third. A pinned app moves into "My apps" and leaves its team's
    group. So an app has one door only, as §3.3 asks. A member with no held
    pin gets no "My apps" heading.
+   ⚠️ **Superseded on 2026-10-11.** The owner removed "My apps" (§3.2b).
+   Personal Center is first, after Home, and no app moves between groups.
 2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
    because the bell and My Day carry its items. My Day carries them since
    NS-3 slice C, and the bell is not built (NS-6). Until it is, Approvals is
@@ -330,8 +341,9 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    app and not a page about the member. ⚠️ This item does not wait on a
    ticket. It replaces the §3.2 shape for Organisation.
 
-**Groups, in order:** Home, then My apps (NS-7), Personal Center, Across
-teams, AI Studio and Admin, each only when it has an item. Admin holds
+**Groups, in order:** Home, then Personal Center, Across teams, AI Studio
+and Admin, each only when it has a starred item (§3.2b). "Add apps" is the
+last item of the list. Admin holds
 Approvals, and Organisation for an admin. All apps and the account menu are
 at the foot.
 
@@ -339,6 +351,88 @@ at the foot.
 `shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
 The others are a member with three apps, one with none, and an unresolved
 viewer.
+
+### 3.2b The star model (owner, 2026-10-11)
+
+The owner said: "The higher-level categories should always remain in the
+left sidebar, unless there are no apps beneath them. Apps to display are
+enabled by clicking the star, or any other mechanism you provide." The owner
+then said that no "my apps" concept exists. Only the favourite apps show,
+each under its own category.
+
+**The model.**
+
+1. The sidebar shows the categories in `nav.ts` order. They are Personal
+   Center, Across teams, AI Studio and Admin.
+2. Each category lists only the apps that the member starred, in `nav.ts`
+   order. The star order does not change the order.
+3. The sidebar drops a category with no starred app. It shows every other
+   category.
+4. No app moves between categories, and no "My apps" group exists.
+5. Home always shows, and a member cannot star it away. My Profile and
+   Appearance stay in the account menu.
+6. A Center pane is never a star (D49). A star never grants: the list draws
+   only from `visibleSections`.
+
+**The storage.** `shell_prefs.pins` now holds the starred apps. The field
+keeps its NS-7 name, so no row and no migration changes (R6). A new field,
+`known`, holds the apps that the member could see at their last save. The
+gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
+`pins`.
+
+**Four rules for what shows** (`starredHrefs` in `presets.ts`):
+
+1. **No stored list shows every held app.** `pins` is null when the member
+   never answered or skipped. So the sidebar on the day of the merge is the
+   sidebar of the day before, for every member who did not answer.
+2. **A starred app shows.**
+3. **A new app shows until a save covers it.** An app that is not in
+   `known` is new to the member, because an admin granted it, or it went
+   live, after their last save. Without this rule, a new app would hide from every
+   member who ever saved. Each save writes `known` as every app that the
+   member can see now.
+4. **A row that NS-7 saved has no `known`.** The shell reads every app that
+   is not in `pins` as known. So the member keeps exactly the apps that they
+   pinned, and no app appears by surprise.
+
+**The defaults** (owner, "Personal + preset"). An answer stars every
+Personal Center app that the member holds, and the preset's apps (§8.1).
+A skip stores no stars, so every app shows. The role's preset still orders
+My Day's cards and the jobs of the empty command bar.
+
+**Ways to change what shows.**
+
+- **The star in All apps.** An outline star means that the sidebar does not
+  show the app. A filled star means that it shows. The tooltips say "Show in sidebar" and
+  "Shown in sidebar". The names are "Show <App> in sidebar" and "Hide <App>
+  from sidebar". The change shows at once, and it goes back when the server
+  refuses it.
+- **"Add apps",** the last item of the sidebar list. It opens All apps with
+  the line "Star the apps you want in your sidebar." It always shows, so a
+  member who starred nothing still sees where to start. Its row has the
+  geometry of the sidebar's own rows, so its icon lines up with theirs.
+- **The row menu.** Hover or keyboard focus on a row shows a "···" at its
+  end, and a right-click opens the same menu. The menu holds "Hide from
+  sidebar" and "Open in new tab". A hide shows a toast with Undo. The folded
+  rail has no "···", and a right-click there opens the menu. Home has no
+  menu. The phone drawer has no "···", so a phone member uses All apps.
+- **"Change my layout"** in the account menu asks the question again (§8.4).
+
+**Categories fold.** A category heading toggles its list, and a folded
+heading shows its count, such as "Across teams (2)". The browser keeps the
+folds for each account under `cc-sidebar-folds:<email>|<organizationId>`,
+and a sign-out clears them (`lib/shell/sidebarFolds.ts`). The sidebar never
+keeps the category of the current route folded. The folded rail does not fold
+categories. It draws a thin line between them.
+
+⚠️ **A decision taken here.** The heading keeps its own button, and it does
+not use the `Collapsible` primitive. The primitive draws a section title of
+another size, so it would change the look of the sidebar.
+
+Fences: `presets.test.ts` (the four rules, the defaults and the subset
+rule), `shellNav.test.ts` (the order and the dropped category),
+`sidebarFolds.test.ts`, `test_auth_me_shell.py` and
+`test_auth_me_shell_r8.py` (`known`), and `e2e/shell-presets.spec.ts`.
 
 ### 3.3 The account menu
 
@@ -1099,6 +1193,13 @@ not hold, or for an app that is not live yet, does not render.
 The Desk mode of the Accounts assistant waits on NS-8, which waits on a live
 data-entry app.
 
+⚠️ **Since 2026-10-11 the "Pinned apps" column is what an answer STARS**
+(§3.2b). An answer stars these apps and every Personal Center app that the
+member holds, by owner choice ("Personal + preset"). The column did not
+change. The owner first asked on that day to keep personal and admin apps
+out of the pins, and then replaced the pins with stars on the same day.
+So `presets.ts` keeps the table as it is above.
+
 **What NS-7 built from the table, and what it left out.**
 
 - **Invoices is not pinned.** No Invoices pane exists in `nav.ts`, so a pin
@@ -1226,7 +1327,8 @@ skip it. The question changes the starting layout and nothing else.
    asked", and the shell never asks a member twice. "Change my layout" in
    the account menu asks again.
 4. **Pins show as a "My apps" group at the top of the sidebar.** A star in
-   All apps pins an app or unpins it.
+   All apps pins an app or unpins it. ⚠️ **Superseded on 2026-10-11** by the
+   star model (§3.2b).
 
 **Built 2026-10-10 (NS-7).**
 
@@ -1244,9 +1346,35 @@ skip it. The question changes the starting layout and nothing else.
   store "skipped". When "Change my layout" asks again, the way out reads
   "Keep my layout" and writes nothing.
 - **An answer resets the pins to the new preset's pins.** A skip keeps any
-  pin that the member set before.
+  pin that the member set before. ⚠️ Superseded on 2026-10-11, below.
 - **Each answer names what it pins,** from the apps the member holds, such as
-  "Pins My Tasks, Projects, Calendar and Chat".
+  "Pins My Tasks, Projects, Calendar and Chat". ⚠️ Superseded on 2026-10-11,
+  below.
+
+**Built 2026-10-11: the second step** (owner direction).
+
+- **Step 1 is the question.** Its line reads "Tell us how you work, and
+  we'll set up your sidebar." Each answer names the apps that it adds, such
+  as "Your Personal Center, plus Projects and Chat".
+- **An answer opens step 2 in the same dialog,** "Choose the apps for your
+  sidebar". It lists every app that the member holds, by category, with a
+  box to tick (`Checkbox`). Home and the settings pages are not in it.
+- **The first ticks are the defaults:** every Personal Center app, and the
+  preset's apps. When "Change my layout" asks again and the member gives
+  the same answer, the ticks are their current stars. A different answer
+  gives that answer's defaults.
+- **The last line says where to change it later.** "You can change this any
+  time. Star apps in All apps (use + Add apps at the bottom of your
+  sidebar), or use Change my layout in your account menu."
+- **"Done" sends ONE `PUT`** with the answer, the preset, `pins` and
+  `known`. "Back" goes to step 1 and writes nothing.
+- **The X and Escape on step 2 keep the answer,** with the ticks it started
+  with. So an answer is never lost.
+- **A skip at step 1 closes the dialog,** with no step 2. It stores no
+  stars, so every app shows.
+- **Round 2 still holds.** Each way out closes first, a failed write shows
+  the toast, and the page latch holds. A founder sees the question, then the
+  apps, then the invite step, in one dialog.
 - Fences: `presets.test.ts` holds the answer map and the role defaults.
   `shellPrefs.test.ts` holds that only a real layout can say "never asked".
   `e2e/shell-presets.spec.ts` holds the browser half.
@@ -1688,6 +1816,8 @@ Done when, all met on 2026-10-10:
   refusal.
 - "My apps" is first in the sidebar and in the phone drawer
   (`shellSidebar`, §3.2a item 1). All apps has a star on each app.
+  ⚠️ Superseded on 2026-10-11 by the star model (§3.2b), which applies to
+  the sidebar and to the phone drawer.
 - My Day orders its cards by the preset. The empty command bar puts the
   preset's jobs after the jobs of the app the member is in.
 - `WelcomeDialog` asks the question (§8.4). "Change my layout" in the account
