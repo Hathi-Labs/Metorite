@@ -446,7 +446,20 @@ Naming both, because a third appears whenever the set is left implicit.
   toggle is the model.
 - An app's tools sit at the right end of its bar: the bell, the assistant,
   refresh and settings. No app tool goes in the shell bar.
-- On a phone the bar is the compact one: no rail, the title at body size.
+- On a phone the bar is the compact one: no rail, the title at body size,
+  and the subtitle muted after it. `AppTopBar` draws the compact bar on a
+  phone by itself.
+- A sub-page, such as Teams or Roles, opens with the bar too. Its `back` link
+  takes the rail toggle's place at the left end.
+- **When the row runs out of room, it wraps.** The tools go to a second line
+  at the right end, and the bar grows. Nothing leaves the screen. The subtitle
+  gives way first, and then the name truncates with an ellipsis. The name
+  never paints over a control.
+
+The wrap is the rule, not a "More" menu. The tools carry their own anchored
+popovers, such as the bell's list and Calendar's settings. A menu would close
+them on each resize, and `src/components/ui/` has no menu that can hold them.
+So an app keeps its bar short: Calendar shows four tool labels from `2xl` only.
 
 **A pane may keep its own header under the bar** when it titles a pane, such
 as Email's "Inbox" row with its filter. It is an `<h2>`, and it never repeats
@@ -455,10 +468,14 @@ bar cannot: a sentence about the page, a count, or the page's own controls.
 
 This reverses NS-1's merged row, in which the app bar portalled into slots in
 the shell bar. `navigation_shell.md` §3.1 and §5.2 in `project-docs/specs/`
-own the rule. Fences: `src/lib/shell/appBar.test.ts` (nothing renders into
-the shell bar, and every live pane renders `AppTopBar`),
-`src/components/AppTopBar.test.ts` (the shape) and
-`src/components/pageHeading.test.ts` (one `<h1>` per app).
+own the rule. Fences:
+
+- `src/lib/shell/appBar.test.ts` reads source. Nothing renders into the shell
+  bar, and each live pane and Settings sub-page renders `AppTopBar`.
+- `e2e/app-title-bar.spec.ts` counts one `<h1>` and one app bar on each page,
+  at 1440 and 390. It also checks the bar at 1024, 960 and 800.
+- `src/components/AppTopBar.test.ts` holds the shape.
+- `src/components/pageHeading.test.ts` holds the page headers to an `<h2>`.
 
 ⚠️ **Do not take the app bar as licence for a third shape.** Measured
 2026-09-21: the Projects bar's own comment claims *"Same shape as Tasks and

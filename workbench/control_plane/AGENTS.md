@@ -347,14 +347,21 @@ Seven rules on top of the three above. Each one exists because it was broken:
    The app's bar sits under it, with the app's name as its one `<h1>`. The
    rail toggle and the tools live in that bar, never in the rail and never
    in the shell bar. A page under the bar titles itself with an `<h2>`.
+   When the row runs out of room, it wraps its tools to a second line.
    `DESIGN_SYSTEM.md` §6a holds the shape. `navigation_shell.md` §5.2 rule 3
    holds the rule.
-   **Fence: `src/lib/shell/appBar.test.ts`.** It fails on a slot API, and on
-   a file outside `src/lib/shell/` that reaches into the shell bar. It fails
-   on a live pane whose route does not render `AppTopBar`. It also fails on
-   an app name in the shell bar's markup.
-   `src/components/pageHeading.test.ts` holds one `<h1>` per app. Add a new
-   live pane to `APP_BAR_HOME` in `appBar.test.ts`, in the same PR.
+   **Fences.** `src/lib/shell/appBar.test.ts` reads source. It fails on a
+   slot API, and on a file outside `src/lib/shell/` that reaches into the
+   shell bar. It fails on a live pane or a Settings sub-page with no
+   `AppTopBar`. It fails on an app name in the shell bar's markup.
+   `e2e/app-title-bar.spec.ts` opens each live pane, My Day and the four
+   Settings sub-pages at 1440 and at 390. It fails unless each page shows one
+   `<h1>` and one app bar. At 1024, 960 and 800 it fails on a bar control
+   out of the window or under the name. Chat on a phone is
+   the one named exception, with its reason in the spec.
+   `src/components/pageHeading.test.ts` holds `PageHeader` and
+   `SettingsHeader` to an `<h2>`. Add a new live pane to `APP_BAR_HOME` in
+   `appBar.test.ts` and to `PAGES` in the e2e, in the same PR.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that
