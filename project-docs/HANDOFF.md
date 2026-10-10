@@ -190,7 +190,8 @@ line — never reclaim a number by deleting the other entry.
     H-73.
   - The plan, the price and the rate card show nowhere for the customer.
   - Nothing joins usage and pricing in the Organization tab.
-- **Related.** H-133 and H-134 are done and deleted (#345, #350, then #628).
+- **Related.** H-133 and H-134 are no longer in this file. #345 and #350
+  did their work, and #628 removed the two entries long before this one.
   H-171 (the product's own AI is not metered) and H-287 (three AI paths write
   no usage row) make the usage figures low until they close. H-136 (no spend
   signal is pushed) and H-73 (the cap identity) stay open. The operator Money
