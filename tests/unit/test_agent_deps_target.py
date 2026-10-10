@@ -477,6 +477,10 @@ def test_no_unit_sets_pythonpath() -> None:
     assert AGENT_SITE_CONF in files
     for f in files:
         for ln in _conf_lines(f):
+            # UnsetEnvironment= REMOVES the name (WS-49 BH-6a). That is the
+            # opposite of setting it, so it is the one line that may name it.
+            if ln.strip().startswith("UnsetEnvironment="):
+                continue
             assert "PYTHONPATH" not in ln, f"{f.name} sets PYTHONPATH: {ln}"
 
 

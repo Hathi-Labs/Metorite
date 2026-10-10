@@ -248,9 +248,6 @@ async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> No
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft), \
@@ -288,9 +285,6 @@ async def test_compose_assist_improve_passes_reply_to_body() -> None:
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft), \
@@ -324,9 +318,6 @@ async def test_compose_assist_reply_empty_body_passes_user_instruction() -> None
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "sig"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft):
@@ -382,9 +373,6 @@ async def test_compose_assist_signature_only_body_is_a_fresh_draft() -> None:
             patch.object(_drafting, "_assert_account_owner", AsyncMock()), \
             patch.object(_drafting, "_load_assistant_about",
                          AsyncMock(return_value=("about", "Best,\nVijay"))), \
-            patch.object(_drafting, "_account_models",
-                         AsyncMock(return_value={"draft": "tier-powerful",
-                                                 "compose": "tier-fast"})), \
             patch.object(_drafting, "_build_reply_context",
                          AsyncMock(return_value=ctx)), \
             patch.object(_drafting, "_agent_draft_reply", fake_agent_draft), \

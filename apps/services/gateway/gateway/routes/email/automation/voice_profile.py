@@ -247,6 +247,7 @@ async def _llm_observe_batch(
         [{"role": "system", "content": sys_prompt},
          {"role": "user", "content": joined[:16000]}],
         max_tokens=1500,
+        feature="voice_profile",
     )
     return data if isinstance(data, dict) else {}
 
@@ -284,6 +285,7 @@ async def _llm_synthesize_profile(
         [{"role": "system", "content": sys_prompt},
          {"role": "user", "content": user}],
         max_tokens=2000, temperature=0.2,
+        feature="voice_profile",
     )
     if not isinstance(data, dict):
         return {}, ""
@@ -705,6 +707,7 @@ async def sample_voice_profile(
                 messages=[{"role": "system", "content": sys_prompt},
                           {"role": "user", "content": f"Scenario: {scenario}"}],
                 temperature=0.4, max_tokens=700,
+                feature="email.voice_profile",
             )
         sample = (resp.choices[0].message.content or "").strip()
     except Exception as exc:

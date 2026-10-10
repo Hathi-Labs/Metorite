@@ -15,8 +15,9 @@ matter. The ONE tool, ``narrow_and_read``, does three steps:
    of :data:`PICK_BOUND_S` (§3.3). The state is the query and the summaries,
    never a full body.
 3. **READ.** The adapter reads at most :data:`READ_CAP` kept items in full.
-   ``tier_policy.TOOL_HINTS`` maps the tool to ``analysis``, so for a covered
-   agent the next model request goes to ``tier-powerful`` (§3.6).
+   The turn's own tier reads them. Since the owner's one-model-per-turn rule
+   (2026-10-09), the ``analysis`` hint in ``tier_policy.TOOL_HINTS`` no
+   longer raises the next request. It is logged as ``ai_route.hint_ignored``.
 
 🔴 **PICK pays for itself, or the tool skips it** (:func:`pick_cost`, §3.3a,
 H-276). PICK spends about 160 tokens on each candidate. A short item, for
@@ -27,6 +28,14 @@ with no PICK step, and the count line says so. It skips only when READ can take
 every candidate (at most :data:`READ_CAP`), so a skip reads more and never cuts
 an item.
 
+🔴 **A whole span is read once, with no PICK** (§3.3a, H-279). When the
+filters alone choose every item of one span, for example every message of one
+chat since a date, the adapter sets ``Narrowed.span``. The tool then reads the
+span in one read (:class:`SpanSource`), newest first when it must cut, and
+the count line says how many older items it did not read, and how to read
+them. A kept item that the read holds in the block of another kept item is
+named in ``FullItem.covers``, so each item is read once and counted once.
+
 🔴 **A drop needs a confident ``no``** (:func:`keep`, §3.4). ``unsure``, a
 low ``no`` and no answer keep the item. The filter never drops in silence.
 
@@ -35,9 +44,14 @@ facade sends that batch to System 1 on ``tier-fast`` (``system_one.ask``) in
 one request. A ``DecideRequestInvalid`` is a caller bug, so it also logs
 ``narrowing.decide_invalid`` at ``error``.
 
-🔴 **A ``no_egress`` run never asks the decide door** (§4, Q4). The decide
-vendor is a separate sub-processor (D75.8), so every batch of such a run
-goes to System 1. That is why the tool may say ``open_world=False``.
+🔴 **A ``no_egress`` run and the decide door** (§4, Q4, amended by the owner
+on 2026-10-09). The decide vendor is a separate sub-processor (D75.8), and
+it already serves email rule matching. The owner allows a ``no_egress`` run
+to send it a typed question with short summaries. The PICK state is only
+that: the query and the clipped summaries. So while ``DECIDE_IN_NO_EGRESS``
+is on (the default), such a run asks the door too. With the switch off,
+every batch of such a run goes to System 1, as before. The tool keeps
+``open_world=False``, because the owner accepted that destination.
 
 🔴 **Every model call goes through our Router (D90, D57.7).** This module
 imports no vendor client. It calls ``acb_llm.decide`` and
@@ -89,6 +103,7 @@ __all__ = [
     "Narrowed",
     "PickCost",
     "SourceAdapter",
+    "SpanSource",
     "Verdict",
     "keep",
     "make_narrow_tool",
@@ -197,8 +212,10 @@ DROPPED_MAX_ENTRIES = 512
 DROPPED_LINES = 100
 
 #: The tool's risk (§4). It reads and changes nothing. Its only destinations
-#: are our Router and the platform's own gateway routes, and a ``no_egress``
-#: run asks no decide vendor. So ``open_world`` is False.
+#: are our Router, the platform's own gateway routes and the decide door. A
+#: ``no_egress`` run sends the door only a typed question with short
+#: summaries, which the owner accepted on 2026-10-09. So ``open_world`` is
+#: False.
 NARROW_RISK: dict[str, bool] = {
     "read_only": True,
     "destructive": False,
@@ -280,17 +297,33 @@ class Narrowed:
     candidates: Sequence[Candidate]
     total: int = 0
     more: bool = False
+    #: H-279. True when the candidates are EVERY item of one span of the
+    #: source, newest first: for example every message of one chat since a
+    #: date, found by filters only. The tool then runs no PICK. It reads the
+    #: span with the adapter's ``read_span`` (:class:`SpanSource`) in one read.
+    span: bool = False
+    #: H-279. The fixed next step that reads the older part of the span, when
+    #: the span read cannot read all of it. The count line prints it then. It
+    #: holds no tenant text, only a tool name and ids.
+    span_further: str = ""
 
 
 @dataclass(frozen=True)
 class FullItem:
-    """One kept item, read in full."""
+    """One kept item, read in full.
+
+    ``covers`` (H-279) names the OTHER kept ids whose text this item also
+    holds. An adapter that reads two kept items in one block (a span, or two
+    windows that overlap) gives one item, with the first id as ``id`` and the
+    rest in ``covers``. The tool counts each id as read once.
+    """
 
     id: str
     title: str = ""
     who: str = ""
     when: str = ""
     text: str = ""
+    covers: tuple[str, ...] = ()
 
 
 class FilterRefused(ValueError):
@@ -318,6 +351,21 @@ class SourceAdapter(Protocol):
     async def candidates(self, query: str, filters: Mapping[str, Any]) -> Narrowed: ...
 
     async def read(self, ids: Sequence[str]) -> list[FullItem]: ...
+
+
+@runtime_checkable
+class SpanSource(Protocol):
+    """An adapter that can read a whole span in one read (H-279, §3.3a).
+
+    ``read_span`` gets the candidates of a :class:`Narrowed` with ``span``
+    set, newest first. It reads the span in reading order, in blocks of at
+    most :data:`BODY_CLIP` characters and at most :data:`READ_CAP` blocks.
+    When it cannot read all of the span, it reads the NEWEST part. Each block
+    names the candidate ids that it holds (``id`` and ``covers``), and the
+    tool counts every other candidate as not read.
+    """
+
+    async def read_span(self, candidates: Sequence[Candidate]) -> list[FullItem]: ...
 
 
 # ── The flag (§9 N1) ─────────────────────────────────────────────────────────
@@ -563,10 +611,25 @@ async def _pick_batch(
     *,
     use_decide: bool,
     attribution: Mapping[str, Any],
+    short_only: bool = False,
 ) -> _Batch:
-    """Ask one batch. Never raises. A failure in both engines checks nothing."""
+    """Ask one batch. Never raises. A failure in both engines checks nothing.
+
+    *short_only* is a ``no_egress`` run (owner, 2026-10-09): the batch goes to
+    the door only when its state fits the ONE short bound of
+    ``decide_tools.short_context``. A longer state is not a short summary, so
+    it goes to System 1 and logs ``narrowing.pick_fallback`` with the reason
+    ``no_egress_not_short`` (review P1).
+    """
     keys = _keys(batch)
     state = _state(query, batch, keys)
+    if use_decide and short_only:
+        from acb_skills.decide_tools import NOT_SHORT, short_context
+
+        if not short_context(state):
+            _log.info("narrowing.pick_fallback", reason=NOT_SHORT,
+                      batch_size=len(batch), request=number)
+            use_decide = False
     if use_decide:
         reason: str
         try:
@@ -614,8 +677,12 @@ def _rate(tier: str) -> tuple[float, float]:
 
 
 def _read_tier() -> str:
-    """The tier of the request that reads the tool output (§3.6), as
-    ``tier_policy`` picks it after ``narrow_and_read``."""
+    """The tier of the request that reads the tool output (§3.6).
+
+    Since 2026-10-09 the turn keeps one tier, so the read runs on the turn's
+    tier. The estimate takes the tier of the tool's hint kind (an
+    ``analysis`` turn). ``tier-balanced`` and ``tier-powerful`` have the
+    same price in :data:`TIER_RATES`, so no decision of the check changes."""
     try:
         from acb_skills import tier_policy
 
@@ -713,9 +780,16 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
     batches = [
         list(candidates[i:i + per_request]) for i in range(0, len(candidates), per_request)
     ]
-    # 🔴 Q4: a `no_egress` run sends no decide request. The reader fails
-    # closed, so a frame with no run binding asks System 1 only.
-    use_decide = not no_egress_for_this_run()
+    # 🔴 Q4, amended by the owner on 2026-10-09: a `no_egress` run may ask the
+    # decide door too, while `DECIDE_IN_NO_EGRESS` is on. The state is the
+    # query and the clipped summaries only (`_state`), so it is a typed
+    # question with short summaries. With the switch off, a `no_egress` run
+    # (and a frame with no run binding, because the reader fails closed)
+    # asks System 1 only, as before.
+    from acb_skills.decide_tools import decide_in_no_egress
+
+    no_egress = no_egress_for_this_run()
+    use_decide = not no_egress or decide_in_no_egress()
     attribution: Mapping[str, Any] = {}
     if use_decide:
         from acb_llm.routed import run_attribution
@@ -729,6 +803,7 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
         async with gate:
             results[n] = await _pick_batch(
                 n + 1, query, batch, use_decide=use_decide, attribution=attribution,
+                short_only=no_egress,
             )
 
     tasks = [asyncio.create_task(_one(n, b)) for n, b in enumerate(batches)]
@@ -866,6 +941,8 @@ class Counts:
     more: bool = False
     #: The cost check skipped PICK, and READ took every candidate (H-276).
     pick_skipped: bool = False
+    #: The candidates are one whole span, read in one read with no PICK (H-279).
+    span: bool = False
 
     @property
     def overflow(self) -> bool:
@@ -883,6 +960,14 @@ NO_PICK = (
 )
 
 
+#: The middle of the count line of a span (H-279). A span is every item that
+#: the filters chose, so no model judged an item, and the line says so.
+SPAN_NO_PICK = (
+    ", as one span in reading order, with no PICK step. The filters chose every "
+    "item of one span, so no item was checked."
+)
+
+
 def count_line(c: Counts) -> str:
     """The first line of the tool output, in its fixed shape (§6.1)."""
     if c.total > c.candidates:
@@ -891,6 +976,17 @@ def count_line(c: Counts) -> str:
         of = f" of more than {c.candidates}"
     else:
         of = ""
+    if c.span:
+        # H-279: a span read takes the newest part when it must cut. Never cut
+        # in silence: the line says how many older matches it did not read.
+        if c.read >= c.candidates and not c.overflow:
+            return f"Read all {c.candidates} matches in full{SPAN_NO_PICK} Say that you read them all."
+        older = max(0, c.candidates - c.read)
+        older_text = f"More than {older}" if c.overflow else str(older)
+        return (
+            f"Read the newest {c.read}{of or f' of {c.candidates}'} matches in full"
+            f"{SPAN_NO_PICK} {older_text} older matches were not read."
+        )
     if c.pick_skipped:
         # H-276: say that NO item was checked, so neither the model nor the
         # member reads "kept" as "a model judged it relevant".
@@ -962,6 +1058,88 @@ async def _sort(
     return picked, kept, dropped, checked
 
 
+def _hold(items: Sequence[FullItem], wanted: Sequence[str]) -> tuple[list[FullItem], set[str]]:
+    """The items to show, in the order given, and the wanted ids they hold.
+
+    An item counts its own id and the ids in ``covers`` (H-279). An item with
+    an id that was not asked for, or that holds no id that is not held yet,
+    is left out, so no text shows twice and no id is counted twice.
+    """
+    want = set(wanted)
+    out: list[FullItem] = []
+    held: set[str] = set()
+    for item in items:
+        ids = ({item.id, *(item.covers or ())}) & want
+        if item.id not in want or not ids - held:
+            continue
+        out.append(item)
+        held |= ids
+    return out, held
+
+
+async def _read_kept(
+    adapter: SourceAdapter, source: str, to_read: Sequence[str],
+) -> tuple[list[FullItem], set[str]]:
+    """READ of the kept items (§3.6): the items in rank order, and the kept
+    ids they hold. An item can hold other kept ids too (H-279). A read that
+    fails holds nothing, and the counts still stand."""
+    if not to_read:
+        return [], set()
+    try:
+        got = await adapter.read(list(to_read))
+    except Exception as exc:  # the read fails: the counts still stand
+        _log.warning("narrowing.read_failed", source=source, error_type=type(exc).__name__)
+        return [], set()
+    by_id: dict[str, FullItem] = {}
+    for i in got or []:
+        by_id.setdefault(i.id, i)
+    return _hold([by_id[i] for i in to_read if i in by_id], to_read)
+
+
+async def _span_answer(
+    adapter: SpanSource, source: str, narrowed: Narrowed,
+    candidates: Sequence[Candidate], total: int, more: bool,
+) -> str | None:
+    """The answer for a span (H-279): ONE read of the span, and no PICK.
+
+    ``None`` when the span read fails or holds no candidate. The tool then
+    takes the steps of §3.3 to §3.6, so a failed span read costs no recall.
+    """
+    try:
+        # The blocks are in reading order, so the NEWEST are the last ones.
+        got = list(await adapter.read_span(candidates) or [])[-READ_CAP:]
+    except Exception as exc:  # the steps of §3.3 to §3.6 take over
+        _log.warning("narrowing.span_read_failed", source=source, error_type=type(exc).__name__)
+        return None
+    items, held = _hold(got, [c.id for c in candidates])
+    if not items:
+        _log.warning("narrowing.span_read_failed", source=source, error_type="empty")
+        return None
+    counts = Counts(
+        candidates=len(candidates), total=total, checked=0, kept=len(candidates),
+        dropped=0, not_checked=len(candidates), read=len(held), more=more, span=True,
+    )
+    _log.info(
+        "narrowing.done",
+        source=source, candidates=counts.candidates, total=counts.total,
+        checked=0, kept=counts.kept, dropped=0, not_checked=counts.not_checked,
+        read=counts.read, more=counts.more, engines={}, request_ids=[],
+        bound_hit=False, pick_skipped=True, span=True, blocks=len(items),
+    )
+    lines = [count_line(counts)]
+    further = _one_line(getattr(narrowed, "span_further", "") or "", 300)
+    if further and (counts.read < counts.candidates or counts.overflow):
+        lines.append(further)
+    if counts.overflow:
+        lines.append(
+            f"More than {counts.candidates} items matched. Narrow the filters to check the rest."
+        )
+    lines.append("")
+    lines.append(LEAD)
+    lines.extend(_item_block(i) for i in items)
+    return "\n".join(lines)
+
+
 async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> str:
     """The three steps for one call. Never raises."""
     if not (query or "").strip():
@@ -984,32 +1162,29 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
     total = max(int(narrowed.total or 0), len(found))
     more = bool(getattr(narrowed, "more", False))
 
+    # H-279: the filters chose one whole span. Read it once, with no PICK.
+    if getattr(narrowed, "span", False) and candidates and isinstance(adapter, SpanSource):
+        answer = await _span_answer(adapter, source, narrowed, candidates, total, more)
+        if answer is not None:
+            return answer
+
     cost = _cost_check(query, candidates)
     # H-276: a skip needs every match in hand (no overflow) as well, so it
     # reads MORE items than PICK would, and never fewer.
     skip = cost.skip and total <= len(candidates) and not more
     picked, kept, dropped, checked = await _sort(query, candidates, skip=skip)
 
-    items: list[FullItem] = []
-    to_read = [c.id for c in kept[:READ_CAP]]
-    if to_read:
-        try:
-            got = await adapter.read(to_read)
-            by_id = {i.id: i for i in got or []}
-            items = [by_id[i] for i in to_read if i in by_id]
-        except Exception as exc:  # the read fails: the counts still stand
-            _log.warning("narrowing.read_failed", source=source, error_type=type(exc).__name__)
+    items, read_ids = await _read_kept(adapter, source, [c.id for c in kept[:READ_CAP]])
     # WS-48 N2: a kept item under the cap that READ did not return failed its
     # read. The model gets its id, so that it can read it with another tool.
     # An item past the cap is a different case, with a different next step.
-    read_ids = {i.id for i in items}
     failed = [c for c in kept[:READ_CAP] if c.id not in read_ids]
     over_cap = max(0, len(kept) - READ_CAP)
 
     counts = Counts(
         candidates=len(candidates), total=total, checked=checked,
         kept=len(kept), dropped=len(dropped),
-        not_checked=len(candidates) - checked, read=len(items), more=more,
+        not_checked=len(candidates) - checked, read=len(read_ids), more=more,
         pick_skipped=skip,
     )
     call_id = _remember_dropped(dropped)

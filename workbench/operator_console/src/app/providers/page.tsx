@@ -1,12 +1,11 @@
 import { redirect } from "next/navigation";
 
-import { readAccounts, readProviderHealth, readProviderSpend } from "@/lib/read";
+import { readAccounts, readProviderHealth } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import SectionTabs from "../SectionTabs";
 import Shell, { Unconfigured } from "../Shell";
 import ProviderAdmin from "./ProviderAdmin";
 import ProviderHealthPanel from "./ProviderHealthPanel";
-import VendorSpend from "./VendorSpend";
 
 export const dynamic = "force-dynamic";
 
@@ -46,9 +45,8 @@ export default async function ProvidersPage() {
   // page render, and awaiting them one after the other doubles the wait for
   // no reason. A failure in either is carried by its own `Sourced` wrapper,
   // so one read failing never blanks the other half of the page.
-  const [accounts, spend, health] = await Promise.all([
+  const [accounts, health] = await Promise.all([
     readAccounts({ authToken: session.authToken }),
-    readProviderSpend({ authToken: session.authToken }),
     readProviderHealth({ authToken: session.authToken }),
   ]);
 
@@ -66,9 +64,11 @@ export default async function ProvidersPage() {
           predates the route says so here without blanking the rest. */}
       <ProviderHealthPanel rows={health.data} origin={health.origin} note={health.note} />
       <ProviderAdmin creds={accounts.data} />
-      {/* 🔴 BELOW the accounts, and that order is the argument of the page:
-          first what we can call, then what calling it costs. */}
-      <VendorSpend spend={spend.data} days={30} />
+      {/* What the vendors billed us moved to the Money page (WS-50 slice 4):
+          it is a bill, and a bill belongs with the money. */}
+      <p className="note">
+        What each vendor billed us is on the <a href="/money">Money</a> page.
+      </p>
     </Shell>
   );
 }

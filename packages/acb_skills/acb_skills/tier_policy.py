@@ -20,6 +20,14 @@ S2 adds the rest:
 
 * The table of §4.1 (:data:`KIND_TIERS`), the tool hints of §4.4
   (:data:`TOOL_HINTS`) and the effort mapping of §5, in :func:`choose`.
+
+The owner's amendment of 2026-10-09 (one model per turn, amends §4.4):
+
+* A turn picks its tier ONCE, at the start, from the turn kind and the
+  effort (Max, or Thinking from the member's words). Every main request of
+  the turn keeps that tier, so the prompt cache of the vendor stays warm.
+* A hinted tool no longer raises the NEXT request. :class:`ToolHintRecorder`
+  logs ``ai_route.hint_ignored`` for tuning, and the tier stays.
 * The turn-kind question of §4.3 (:func:`turn_kind`). It asks the System-1
   agent once, on ``tier-fast``, and waits at most 1.5 s.
 * :class:`TierPolicyMiddleware`, which sets ``options["model"]`` on each
@@ -45,7 +53,7 @@ import contextlib
 import re
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from acb_common import get_logger
@@ -102,9 +110,10 @@ KIND_TIERS: dict[str, str | None] = {
     "analysis": TIER_POWERFUL,
 }
 
-#: Tool name → kind (§4.4). After the model calls one of these, the NEXT
-#: model request of the turn goes to the kind's tier, because that request
-#: reads the tool's output and writes the answer. Each name is a real tool:
+#: Tool name → kind (§4.4). Since the owner's amendment of 2026-10-09, a
+#: hint does NOT move the tier of the turn. A call of one of these tools logs
+#: ``ai_route.hint_ignored`` with the tier the hint would have chosen, so the
+#: table stays the record for tuning the turn kind. Each name is a real tool:
 #: ``test_tier_policy.py`` fails on a name that no tool registry holds.
 TOOL_HINTS: dict[str, str] = {
     # Code: the sandbox shell, and the host code tools (D85 withholds those
@@ -126,7 +135,11 @@ TOOL_HINTS: dict[str, str] = {
 }
 
 #: Why a request got its tier. ``ai_route.chosen`` carries one of these.
-REASONS: tuple[str, ...] = ("default", "turn_kind", "tool_hint", "effort")
+#: ``tool_hint`` left on 2026-10-09: a hint no longer sets a tier.
+REASONS: tuple[str, ...] = ("default", "turn_kind", "effort")
+
+#: The log line of a hinted tool that the turn did not follow (2026-10-09).
+HINT_IGNORED = "ai_route.hint_ignored"
 
 # ── The turn-kind question (§4.3) ───────────────────────────────────────────
 
@@ -303,20 +316,6 @@ def tier_for_kind(kind: str, default: str) -> str:
     return default if target is None else _at_least(default, target)
 
 
-def hint_kind(names: Iterable[str]) -> str | None:
-    """The kind of the strongest hint among the tools *names*, else ``None``."""
-    best: str | None = None
-    best_rank = -1
-    for name in names:
-        kind = TOOL_HINTS.get(str(name or ""))
-        if kind is None:
-            continue
-        rank = _rank(KIND_TIERS.get(kind) or "") or 0
-        if rank > best_rank:
-            best, best_rank = kind, rank
-    return best
-
-
 @dataclass(frozen=True)
 class Choice:
     """The tier of one model request, with the kind and the reason."""
@@ -326,17 +325,23 @@ class Choice:
     reason: str
 
 
-def choose(
-    *, default: str, kind: str, effort: str | None, hint: str | None = None,
-) -> Choice:
-    """The tier of one main model request (§4.1, §4.4 and §5).
+def choose(*, default: str, kind: str, effort: str | None) -> Choice:
+    """The tier of a TURN: every main model request of it (§4.1 and §5).
 
-    * Max: every main request goes to ``tier-powerful`` (reason ``effort``).
-    * Otherwise the turn's *kind* sets the tier, never below *default*.
-    * *hint* is the kind of a hinted tool that the model called just before
-      this request. It raises THIS request only.
-    * Thinking: in a ``chat`` turn, a request after a hinted tool goes at
-      least one rung above the turn's tier (reason ``effort``).
+    One model per turn (owner, 2026-10-09, amends §4.4). The tier is set
+    once, at the start of the turn, and no tool call moves it:
+
+    * Max: ``tier-powerful`` for the whole turn (reason ``effort``).
+    * Otherwise the turn's *kind* sets the tier, never below *default*:
+      ``plan``, ``analysis`` and ``code`` take the stronger tier, and
+      ``chat`` keeps the agent's default.
+    * Thinking (from the API, or from the member's words) starts the turn
+      one rung above the agent's *default*, and the turn keeps it (owner,
+      2026-10-09). A ``plan``, ``analysis`` or ``code`` turn may already
+      start higher, so the turn takes the higher of the two. A tier off the
+      ladder stays (§4.2 rule 2). Thinking also sets ``reasoning_effort`` and
+      the System-1 threshold, as before.
+    * Auto: the kind's tier, as above.
 
     A System-1 request never comes here. Its tier is fixed (§5).
     """
@@ -345,17 +350,11 @@ def choose(
     if mode == "max":
         return Choice(_at_least(default, MAX_TIER), kind, "effort")
     base = tier_for_kind(kind, default)
-    reason = "default" if base == default else "turn_kind"
-    if hint is None:
-        return Choice(base, kind, reason)
-    raised = tier_for_kind(hint, base)
-    if mode == "thinking" and kind == "chat":
-        stepped = _at_least(raised, rung_up(base))
-        if stepped != raised:
+    if mode == "thinking":
+        stepped = _at_least(base, rung_up(default))
+        if stepped != base:
             return Choice(stepped, kind, "effort")
-    if raised != base:
-        return Choice(raised, kind, "tool_hint")
-    return Choice(base, kind, reason)
+    return Choice(base, kind, "default" if base == default else "turn_kind")
 
 
 # ── The turn kind (§4.3) ─────────────────────────────────────────────────────
@@ -508,7 +507,8 @@ class RunTierPolicy:
 
     It holds the agent's *default* tier, the turn's *kind* and the run's
     *effort*. :meth:`next_choice` gives the tier of the next main request,
-    and :meth:`note_tool` records a tool that the model called.
+    which is the turn's tier for every request (one model per turn, owner
+    2026-10-09). :meth:`note_tool` logs a hinted tool that the turn ignores.
     """
 
     agent: str
@@ -517,15 +517,14 @@ class RunTierPolicy:
     kind: str
     effort: str
     emit: Emit | None = None
-    _called: list[str] = field(default_factory=list)
     _requests: int = 0
 
     def run_choice(self) -> Choice:
-        """The choice for the whole run, with no hint."""
+        """The choice for the whole turn. No tool call changes it."""
         return choose(default=self.default, kind=self.kind, effort=self.effort)
 
     def run_tier(self) -> str:
-        """The tier of the whole run, with no hint (§4.5).
+        """The tier of the whole run (§4.5).
 
         The executor sets it once, as the run's model. A native agent's
         middleware then sets each request. A Copilot SDK agent cannot switch
@@ -547,20 +546,33 @@ class RunTierPolicy:
         """Count again from the first request, after a Tier 1 fault.
 
         The executor calls it when it falls back to Tier 2. Tier 2 then
-        numbers its own requests from 1, and no step gets two numbers.
+        numbers its own requests from 1, and no step gets two numbers. The
+        turn's tier stays, so the fallback keeps the same model.
         """
         self._requests = 0
-        self._called.clear()
 
     def note_tool(self, name: str) -> None:
-        """Record a tool call. The next request reads it, once."""
-        self._called.append(str(name or ""))
+        """Log a hinted tool call. It moves no tier (owner, 2026-10-09).
+
+        ``ai_route.hint_ignored`` holds the tool name, the hint's kind, the
+        turn's tier and the tier the hint would have chosen under D90. It is
+        for tuning the turn kind. A tool with no hint logs nothing. No line
+        holds tenant text.
+        """
+        tool = str(name or "")
+        hint = TOOL_HINTS.get(tool)
+        if hint is None:
+            return
+        turn = self.run_choice()
+        would = turn.tier if turn.reason == "effort" else tier_for_kind(hint, turn.tier)
+        _log.info(
+            HINT_IGNORED, agent=self.agent, run_id=self.run_id, tool=tool,
+            hint=hint, tier=turn.tier, would_tier=would, kind=turn.kind,
+        )
 
     def next_choice(self) -> Choice:
-        """The tier of the next main request. It takes the recorded calls."""
-        hint = hint_kind(self._called)
-        self._called.clear()
-        return choose(default=self.default, kind=self.kind, effort=self.effort, hint=hint)
+        """The tier of the next main request: the turn's tier, always."""
+        return self.run_choice()
 
     def record(self, choice: Choice) -> None:
         """Log ``ai_route.chosen`` and emit ``ai.route`` for one request."""
@@ -579,7 +591,9 @@ class RunTierPolicy:
 class TierPolicyMiddleware(ChatMiddleware):
     """Sets ``options["model"]`` on each main model request of ONE run.
 
-    It changes a copy of the request's options, never an agent object.
+    Every request of the turn gets the SAME tier (one model per turn, owner
+    2026-10-09). It changes a copy of the request's options, never an agent
+    object.
     """
 
     def __init__(self, policy: RunTierPolicy) -> None:
@@ -594,7 +608,7 @@ class TierPolicyMiddleware(ChatMiddleware):
 
 
 class ToolHintRecorder(FunctionMiddleware):
-    """Records the name of each tool the model calls, for the next request."""
+    """Logs each hinted tool the model calls. It moves no tier (2026-10-09)."""
 
     def __init__(self, policy: RunTierPolicy) -> None:
         self._policy = policy

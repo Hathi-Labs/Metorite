@@ -385,6 +385,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_zoho_sync_skipped", error=str(exc))
 
+    # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
+    # key, so a run it holds reads as alive and a run of a dead process reads
+    # as dead. The loop also sweeps: each run a dead process left is closed,
+    # and its partial reply is saved with an "interrupted by an update" marker
+    # (gateway.chat_recovery). The first sweep runs in the loop, so startup
+    # never waits on it. Fence: tests/unit/test_chat_deploy_recovery.py.
+    try:
+        from orchestrator.run_liveness import start_instance_heartbeat
+
+        from gateway.chat_recovery import persist_interrupted
+
+        start_instance_heartbeat(on_interrupted=persist_interrupted)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("gateway.run_liveness_skipped", error=str(exc)[:200])
+
     # Anthropic prompt-cache warming (specs/llm_caching_memory.md Phase 6).
     # Fire the orchestrator's stable prefix at any Anthropic-backed tier with
     # max_tokens=0 so the first real user request is a cache HIT, not a cold
@@ -393,6 +408,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _asyncio.ensure_future(_prewarm_prompt_cache())
 
     yield
+
+    # First on the way out: delete this process's heartbeat key, so the next
+    # process sees the chat runs this one held as dead at once, and closes
+    # them, rather than after the key's TTL.
+    try:
+        from orchestrator.run_liveness import stop_instance_heartbeat
+        await stop_instance_heartbeat()
+    except Exception:
+        pass
 
     # Stop background email sync scheduler
     try:
@@ -1488,6 +1512,19 @@ try:
     # Separate router: the feature gate's dependency needs an HTTP Request,
     # which FastAPI never supplies to a WebSocket route. See core.ws_router.
     app.include_router(_whatsapp_ws_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-47 WAC-1 — Chat on WhatsApp, the member's link code
+    # (whatsapp_assistant_channel.md §5.2). A router of its own, gated on
+    # `feature:chat`, and NOT on the `/whatsapp` router above, whose
+    # `feature:whatsapp` gate belongs to the inbox app. Ships dark behind
+    # WHATSAPP_ASSISTANT_ENABLED + WHATSAPP_ASSISTANT_ORGS: off ⇒ 404, nothing
+    # written. `test_wac_link_code.py` fails if this mount is lost.
+    from gateway.routes.whatsapp_channel import router as _whatsapp_channel_router
+
+    app.include_router(_whatsapp_channel_router)
 except Exception:  # pragma: no cover
     pass
 

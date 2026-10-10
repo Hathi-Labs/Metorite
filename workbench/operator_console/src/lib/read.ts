@@ -538,7 +538,7 @@ export async function readProviderHealth(
 ): Promise<Sourced<VendorHealth[]>> {
   const owed =
     "This Console does not serve GET /providers/health yet. It arrives with " +
-    "migration 035. Until then nothing here watches the vendor balances.";
+    "the vendor balance update. Until then nothing here watches the vendor balances.";
   let predates = false;
   const r = await attempt(
     async () => {
@@ -554,9 +554,10 @@ export async function readProviderHealth(
 
 export async function readProviderSpend(
   deps: Deps,
+  rangeQ?: string,
 ): Promise<Sourced<ProviderSpend[]>> {
   const r = await attempt(
-    () => providerSpend(deps),
+    () => providerSpend(deps, rangeQ),
     (p) =>
       ((p as { providers?: WireSpend[] }).providers ?? []).map((s) => ({
         provider: s.provider,
@@ -570,7 +571,7 @@ export async function readProviderSpend(
     sample: [],
     empty: [],
     owed:
-      "Live since migration 031. `measured` is the part a vendor STATED, so " +
+      "`Measured` is the part a vendor STATED, so " +
       "it is what an invoice reconciles against — the rest we costed " +
       "ourselves from `model_profile` and it can be stale.",
   });

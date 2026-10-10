@@ -36,6 +36,10 @@ export type RunErrorCode =
   | "cancelled"
   | "run_in_progress"
   | "signed_out"
+  | "updating"
+  | "interrupted"
+  | "run_restarted"
+  | "answer_in_other_account"
   | "unknown";
 
 export interface RunErrorWords {
@@ -43,6 +47,11 @@ export interface RunErrorWords {
   body: string;
   /** False where pressing Retry cannot help, so the card offers none. */
   retry: boolean;
+  /** `notice`: nothing failed for good, so the card draws as a status, not
+   *  an error, and has no raw text to fold. Absent means `error`. */
+  tone?: "notice";
+  /** The button's words, where "Retry" is not the right verb. */
+  action?: string;
 }
 
 /** The member's words for each code. Product words, no class names. */
@@ -104,12 +113,49 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     body: "Your session ended. Sign in again, then send your message again.",
     retry: false,
   },
+  // A restart (incident 2026-10-09, `lib/chatRecovery.ts`). Three notices,
+  // not errors: nothing is lost, and each one says what happens next.
+  updating: {
+    title: "Metorite is updating",
+    body: "Your message will send when it is back. You can also press Retry.",
+    retry: true,
+    tone: "notice",
+  },
+  interrupted: {
+    title: "The assistant was interrupted by an update",
+    body: "Its reply so far is saved. Press Continue to pick up where it stopped.",
+    retry: true,
+    tone: "notice",
+    action: "Continue",
+  },
+  run_restarted: {
+    title: "The assistant restarted",
+    body: "Your answer will be sent as a new message.",
+    retry: false,
+    tone: "notice",
+  },
+  // WS-51 S2: the card belongs to another signed-in account. Nothing was
+  // sent. `{account}` is the account's address, from the notice's `raw`.
+  answer_in_other_account: {
+    title: "This question is for another account",
+    body: "Your answer was not sent. Switch to {account} to answer it.",
+    retry: false,
+    tone: "notice",
+  },
   unknown: {
     title: "Something went wrong",
     body: "Metorite could not finish this answer. Press Retry. If it happens again, tell your admin.",
     retry: true,
   },
 };
+
+/**
+ * The body of a notice, with `{account}` filled in from its `raw` text
+ * (WS-51 S2). A body with no placeholder is returned as it is.
+ */
+export function noticeBody(words: RunErrorWords, raw: string): string {
+  return words.body.replace("{account}", raw.trim() || "the account that asked");
+}
 
 /** What the error card draws. Stored in the thread as `__ERROR__<json>`. */
 export interface RunErrorView {

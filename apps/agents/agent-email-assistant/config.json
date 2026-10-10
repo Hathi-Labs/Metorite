@@ -29,6 +29,21 @@
     "emit_generative_ui",
     "call_agent"
   ],
+  "floor_opt_out": [
+    "call_agent_background",
+    "call_agents_parallel",
+    "code_task",
+    "get_errors",
+    "get_workflow_run",
+    "list_integrations",
+    "list_workflows",
+    "load_artifact_kit",
+    "load_design_system",
+    "manage_todo_list",
+    "run_diagnostics",
+    "run_script",
+    "run_workflow"
+  ],
   "own_tool_scope": [
     "list_accounts",
     "query_inbox",
@@ -45,6 +60,7 @@
     "create_label",
     "draft_reply",
     "send_email",
+    "forward_email",
     "send_draft",
     "list_artifacts",
     "categorize_senders",

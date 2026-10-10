@@ -114,8 +114,9 @@ export type NavPane = {
   /**
    * Where the pane's door is, with the shell nav on (`shellNavOn`).
    * `sidebar`, the default, puts it in its team's group. `account` puts it in
-   * the account menu at the sidebar's foot, for a page about the member or
-   * the organization rather than a place to work.
+   * the account menu at the sidebar's foot, for a page about the member
+   * rather than a place to work. Organisation is an app in Admin, not an
+   * account page (owner, 2026-10-09).
    */
   door?: "sidebar" | "account";
   /**
@@ -123,6 +124,13 @@ export type NavPane = {
    * opens from the account menu and never shows in All apps.
    */
   setting?: true;
+  /**
+   * The agent this app's assistant runs (`navigation_shell.md` §5.1, the
+   * `agent` field). The run badge (WS-51 S1, `lib/runActivity.ts`) counts a
+   * live run of this agent on this pane. The first pane that names an agent
+   * owns it, and an agent no pane names counts on Chat.
+   */
+  agent?: string;
 };
 
 /**
@@ -182,6 +190,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Your tasks, and your view of the company's",
         feature: "tasks",
         launch: "live",
+        agent: "task-manager",
       },
       // Calendar — D54 (2026-08-24, board WS-39 S2). Lifted out of `/tasks`,
       // where it had been a view mode rather than a destination.
@@ -255,6 +264,7 @@ export const NAV_SECTIONS: NavSection[] = [
         // WS-17 EM-T3b). A member connects Microsoft 365 from inside the app,
         // with no setup step. `launch_surface.md` §2 moved in the same change.
         launch: "live",
+        agent: "email-assistant",
       },
       {
         href: "/whatsapp",
@@ -321,6 +331,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Departments, projects and team tasks",
         feature: "projects",
         launch: "live",
+        agent: "projects-assistant",
       },
       {
         href: "/crm",
@@ -403,6 +414,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "User-created applications",
         feature: "build.apps",
         launch: "preview",
+        agent: "app-builder",
       },
       {
         href: "/build/agents",
@@ -436,10 +448,13 @@ export const NAV_SECTIONS: NavSection[] = [
         // The one admin destination for the organization: members & roles,
         // seat assignments and branding as tabs (launch_surface.md §6.2).
         // `/settings/members` redirects here. British spelling is the owner's.
+        // ⚠️ Its door is the SIDEBAR, in Admin (owner, 2026-10-09). Slice 1 put
+        // it in the account menu, and an admin then found it only by opening
+        // their own account. It is a place an admin works in, so it is an
+        // app (`navigation_shell.md` §3.2a item 4).
         href: "/settings/organization",
         team: "admin",
         blurb: "Members, roles, seats and your brand",
-        door: "account",
         label: "Organisation",
         icon: "Building2",
         note: "Members & roles · seat assignments · branding",

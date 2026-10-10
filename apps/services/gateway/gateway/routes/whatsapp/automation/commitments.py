@@ -265,6 +265,7 @@ async def draft_nudge(
         resp, _used = await acompletion_with_fallback(
             model=_NUDGE_MODEL, fallback_model=_NUDGE_FALLBACK,
             messages=messages, temperature=0.4, max_tokens=200,
+            feature="whatsapp.nudge",
         )
         content = (resp.choices[0].message.content or "").strip()
     except Exception as exc:

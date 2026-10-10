@@ -375,6 +375,21 @@ class Settings(BaseSettings):
     # credit spend (spec §11). Fence: tests/unit/test_system_one_tool.py.
     system_one_on_decide: bool = False
 
+    # ── A `no_egress` run may ask `tier-decide` (owner, 2026-10-09) ─────────
+    #
+    # ON (the default, by the owner's decision): a `no_egress` run may send a
+    # TYPED question with short fields to `tier-decide`. That is the System-1
+    # `decide` (while `SYSTEM_ONE_ON_DECIDE` is on) and the PICK step of
+    # `narrow_and_read`. The decide vendor is already a sub-processor, for
+    # email rule matching. A free-form request, the turn-kind question and a
+    # long context stay on our chat tiers. OFF: a `no_egress` run sends no
+    # decide request, as before 2026-10-09. This is the ONE switch that undoes
+    # the amendment. The one reader is
+    # `acb_skills.decide_tools.decide_in_no_egress`, and a broken read reads
+    # as OFF. Spec: data_narrowing_pipeline.md Q4, ai_tier_routing.md §6.6.
+    # Fence: tests/unit/test_decide_in_no_egress.py.
+    decide_in_no_egress: bool = True
+
     # ── The cap and the budget of the email model calls (WS-17 EM-T4b) ─────
     #
     # They bind the model calls of the email automation only, the calls
@@ -398,6 +413,36 @@ class Settings(BaseSettings):
     email_llm_concurrency: int = 0
     email_llm_daily_calls: int = 2000
     email_llm_budget_mode: str = "log"
+
+    # ── One triage pass in each sync cycle (WS-17 EM-T16 PR-A, D-EM-62) ─────
+    #
+    # True does two things. (1) A sync cycle that ran the `on_new_mail` hook
+    # does not run the `classify_threads` hook, so the Reply Zero backfill
+    # runs once in each cycle. (2) In `on` of `email.thread_status`, an
+    # undecided status ask of the backfill stores a back-off mark in tenant
+    # Redis for 30 minutes, and the backfill skips a thread with a mark.
+    # False is the default, and then both paths are the same as before.
+    # The one reader is `email_ingestion.post_sync.triage_once_per_cycle`.
+    #
+    # A value of `true` on a box is gate `enforcement-flip`. Spec:
+    # email_app_master_plan.md §10.4.17 PR-A. Fences:
+    # tests/unit/test_email_triage_once.py and test_email_ai_cost.py.
+    email_triage_once_per_cycle: bool = False
+
+    # ── No rule match when the conversation status decides (WS-17 EM-T16 PR-B)
+    #
+    # True: in `on` of `email.thread_status`, the rules job and the Reply
+    # Zero backfill ask no rule match for a known conversation whose status
+    # reaches the bar and has an enabled rule. That rule is then the one live
+    # match, as it is today, and its APPLIED line is the History. No line
+    # records the skip. False is the default, and then each
+    # mode is the same as before PR-B. Its own flag, not the flag of PR-A.
+    # The one reader is `email_ingestion.post_sync.status_skips_rule_match`.
+    #
+    # A value of `true` on a box is gate `enforcement-flip`. Spec:
+    # email_app_master_plan.md §10.4.17 PR-B. Fence:
+    # tests/unit/test_email_automation_tenancy.py (the EM-T16 PR-B section).
+    email_status_skips_rule_match: bool = False
 
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
@@ -758,6 +803,23 @@ class Settings(BaseSettings):
     # `orchestrator.native_session_store.finish_turn`.
     maf_session_max_bytes: int = 2 * 1024 * 1024
 
+    # ── A durable "needs input" (WS-51 S2, chat_run_continuity.md §4 S2) ────
+    #
+    # `CHAT_DURABLE_ASKS`, default OFF. OFF means no change: no row is written,
+    # no run parks, and `/chat/active-sessions` reports every run as
+    # `running`. ON writes one `chat_pending_ask` row for each card a run
+    # waits on. After `CHAT_ASK_PARK_SECONDS` with no answer, the run saves its
+    # reply and ends, and the row stays `parked`. A late answer then starts a
+    # new run. The one reader is `orchestrator.pending_ask.durable_asks_enabled`.
+    # Fence: tests/unit/test_pending_ask_flow.py.
+    chat_durable_asks: bool = False
+    # How long a run waits on a card before it parks, in seconds. The spec
+    # says "about ten minutes". With the flag OFF, `ASK_USER_TIMEOUT` (1 h)
+    # still bounds the wait.
+    chat_ask_park_seconds: int = 600
+    # How long a parked question stays answerable, in hours.
+    chat_ask_ttl_hours: int = 168
+
     # Copilot SDK chat (coworker sessions via /copilot/chat)
     # Auth order: LITELLM_MASTER_KEY → gateway /v1  |  GITHUB_TOKEN → api.githubcopilot.com
     # Model must be available in whichever provider is active.
@@ -913,6 +975,40 @@ class Settings(BaseSettings):
     # embedding history costs tokens + a background sweep. Turn on once migration
     # 111 has run. Reuses email_embedding_model/dim (one embedder for the app).
     whatsapp_semantic_search_enabled: bool = False
+
+    # ── The WhatsApp assistant channel (WS-47 WAC-1, 2026-10-09) ────────────
+    #
+    # A member chats with Metorite from their own WhatsApp, through ONE bot
+    # number that belongs to the platform (D-WAC-1). These three are platform
+    # configuration on the box, never tenant data. Spec:
+    # project-docs/specs/whatsapp_assistant_channel.md §5.1.
+    #
+    # `whatsapp_assistant_enabled` is the kill switch, default OFF.
+    # `whatsapp_assistant_orgs` lists the organization ids that may link a
+    # phone, with a comma between ids. An empty list allows no organization,
+    # and there is no `*`. `whatsapp_assistant_display_number` is the bot's
+    # phone number, digits only with the country code and no "+", for the
+    # `wa.me` link. A value that is not 8 to 15 digits reads as unset.
+    #
+    # The one reader of all five is
+    # `gateway.routes.whatsapp_channel.flags`. It takes the organization from
+    # `current_tenant()`, never from request input. `env_guard` refuses each
+    # `WHATSAPP_*` name on each Integrations write, so only the env file of
+    # the box sets them. Restart the gateway after a change.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_wac_link_code.py.
+    whatsapp_assistant_enabled: bool = False
+    whatsapp_assistant_orgs: str = ""
+    whatsapp_assistant_display_number: str = ""
+    # WAC-2: the webhook sends a batch for this Meta phone number id to the
+    # bot path, and never to the WS-20 inbox. The bot replies with this
+    # System User token. Both are platform configuration (§5.1). The one
+    # reader is `whatsapp_channel.flags`. 🔴 The token is a secret: no log
+    # line, no answer and no error text may carry it. Fence:
+    # tests/unit/test_wac_bot_inbound.py.
+    whatsapp_assistant_phone_number_id: str = ""
+    whatsapp_assistant_access_token: str = ""
 
     # ── Token accessors ────────────────────────────────────────────────────
 

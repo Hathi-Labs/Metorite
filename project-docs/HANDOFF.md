@@ -49,6 +49,35 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-283 · Prove the first `credit_draw` row on production · [AGENT]
+- **Check:** on the box, query the Console database:
+  `SELECT count(*), max(created_at) FROM credit_draw;`. A count above zero
+  means the write path runs in production, and this entry is done.
+- **Why.** Migration 036 (WS-50, PR #779) applied on 2026-10-09 at 14:46 UTC,
+  and the table exists. No billed AI call happened before the session ended,
+  so no row proves the write path yet. The R8 suite proves it on a scratch
+  database only.
+- **Do this:** after the first billed call, run the Check. If `usage_event`
+  has billed rows after 2026-10-09 14:46 UTC and `credit_draw` has none, the
+  write path is broken: read `store.record_draws` and the charge path.
+- **Authority:** `CLAUDE.md` §3 rule 8 (verify by evidence)
+- **Added:** 2026-10-09 · WS-50
+
+### H-284 · Two revenue figures the Money page cannot show yet · [AGENT]
+- **Check:** `rg -n "price_paid_inr" apps/services/customer_console/customer_console/main.py`
+  inside `ManualActivationRequest`. No hit means gap 1 is open.
+  `rg -n "def all_lots|credits_paid_total" apps/services/customer_console`
+  with no hit means gap 2 is open.
+- **Gap 1.** Start paid plan (`/billing/subscriptions/activate`) can include
+  credits, and it writes a `manual` purchase lot with no price. PR #786 fixed
+  the same gap on `/credits/grant` only. The Money page values those credits
+  at the current price and labels them an estimate.
+- **Gap 2.** "Cash received" (D94 rule 3) needs every lot, spent or not.
+  `/billing/summary` returns only open lots (`store.open_lots`), so the
+  Billing tab cannot total what a customer has paid us.
+- **Authority:** `specs/operator_console_money.md` §3, D94
+- **Added:** 2026-10-09 · WS-50
+
 ### H-150 · The right-click menu on a task cannot be opened on a phone · [AGENT]
 
 - **What happens.** At 390px the board draws its cards, and a right-click
@@ -95,6 +124,86 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-287 · Three AI paths spend money and write no usage row · [AGENT]
+- **Check:** run `rg -n "litellm|_litellm" packages/acb_llm/acb_llm/context.py apps/services/gateway/gateway/routes/integrations.py`
+  and `rg -n "v1/embeddings" apps/services/gateway/gateway/main.py`. If
+  `acompletion_stream_text` still calls `acompletion` directly, this is open.
+- **Why.** The Operator dashboard sees only a call that writes a
+  `usage_event` row. Three paths call litellm directly and write none, so no
+  attribution can reach them:
+  1. `acompletion_stream_text` (`acb_llm/context.py`). It serves the
+     streaming email draft and the compose assist.
+  2. `POST /v1/embeddings` (`gateway/main.py`). `email_embeddings` and
+     `tasks/capability` use it.
+  3. The direct `_litellm.acompletion` loop in `gateway/routes/integrations.py`.
+- **Do this:** route each one through the Router, as H-171 did for
+  `acompletion_with_fallback`. Keep D57.7: a routed call that fails, fails.
+  `acompletion_stream_text` already takes `feature=`, so its name is ready.
+- **Authority:** `customer_console.md` §4.3a, H-171
+- **Added:** 2026-10-10 · branch `ai-call-attribution`
+
+### H-286 · Reply Zero lists snoozed and junk threads as needing a reply, and the digest and My Day do not · [AGENT]
+- **Check:** run `rg -n "excluded = " apps/services/gateway/gateway/routes/email/automation/replyzero.py`.
+  If the active buckets still exclude only `'trash', 'archive'`, this is open.
+- **Why.** The email app has two rules for "needs a reply". The digest's
+  `_LIVE_THREAD` (`routes/email/digest.py`) leaves out a thread when its last
+  message is in trash, junk or the archive, or the member snoozed it. The shell's needs
+  feed reads the same rule (`needs_reply_threads`, WS-44 NS-3). Reply Zero
+  (`replyzero.reply_zero`) leaves out only trash and archive. So a member sees
+  a snoozed or junk thread in the Reply list, and not in the digest count or
+  on My Day.
+- **Do this:** the email app decides which rule is right. If Reply Zero
+  should match, make its active buckets read `digest._LIVE_THREAD`, and do
+  not write a third copy. Fence it with a snoozed and a junk case in the
+  Reply Zero suite.
+- **Authority:** `email_app_master_plan.md` (Reply Zero), `navigation_shell.md` §7.2
+- **Added:** 2026-10-09 · WS-44 NS-3 slice A
+
+### H-285 · Stop the webhook classify from running beside the scheduler classify · [AGENT]
+- **Check:** run `rg -n "H-285" apps/services/email_ingestion apps/services/gateway/gateway/routes/email`.
+  No hit means this is open.
+- **Why.** EM-T16 PR-A runs the Reply Zero classify once in each sync cycle.
+  The Graph webhook calls `process_new_mail` directly, and that call also
+  classifies. So a webhook classify can run at the same time as the classify
+  of the scheduler. Both read the same rows, and both can ask about the same
+  thread. PR-A did not change that path.
+- **Do.**
+  1. Measure how often a webhook classify and a scheduler classify of one
+     mailbox overlap. Use the `decide` log lines and their `message_id`.
+  2. If they overlap, let one classify of a mailbox run at a time. Reuse the
+     lock of the mailbox (`hold_mailbox`) or its idea. Do not add a second
+     lock beside it.
+  3. Fence it in `tests/unit/test_email_triage_once.py`.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.17 PR-A, "The risks
+  that PR-A accepts" · D-EM-62
+- **Added:** 2026-10-09 · branch `email-em-t16-pra` (EM-T16 PR-A). It was
+  H-283. #789 took H-283 and H-284 on `main` first, so this entry moved to
+  H-285 at the merge.
+
+### H-282 · Remove the retired email model fields, then their columns · [AGENT]
+- **Check:** run `rg -n "draft_model|compose_model|chat_model" apps/services/gateway/gateway/routes/email/automation/assistant.py`,
+  then `rg -n "^    (draft|compose|chat|rule)_model" infra/postgres/schema.generated.sql`.
+  A hit in either means this is open.
+- **Why.** D-EM-61 (2026-10-09) took the email tier choice from the member.
+  EM-T15 kept the three request fields and the columns for one release (R6).
+  The PUT ignores each value and logs once, so the log shows a client that
+  still sends one. Pydantic ignores an unknown field, so the removal causes
+  no 422.
+- **Do.**
+  1. Wait one release after EM-T15 deploys.
+  2. On the box, count `email.assistant_settings.model_field_ignored` in the
+     gateway journal for that release. Zero lines means no client sends the
+     fields.
+  3. Delete the three fields, `RETIRED_MODEL_FIELDS` and
+     `_log_retired_model_fields` from `automation/assistant.py`. Update
+     `test_email_no_tier_choice.py` and `test_email_assistant_settings.py`.
+  4. In a later release, drop `draft_model`, `compose_model`, `chat_model`
+     and `rule_model` from `email_assistant_settings` with a guarded
+     migration. Take the migration number at build time (R1).
+- **Authority:** `specs/email_app_master_plan.md` §10.4.16 (EM-T15, D-EM-61) ·
+  `specs/ai_tier_routing.md` §8
+- **Added:** 2026-10-09 · branch `email-no-tier-settings` (EM-T15).
+
 ### H-275 · Measure the WhatsApp narrowing on a real run · [OWNER]
 - **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
   No line with a measured recall and a date under §9 N4 means this is open.
@@ -130,23 +239,6 @@ line — never reclaim a number by deleting the other entry.
   3. If it does not, record the gap in `customer_console.md` and keep the
      constants. `test_narrowing_pick_cost.py` pins them to the eval card.
 - **Authority:** `data_narrowing_pipeline.md` §3.3a · D93
-- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
-
-### H-279 · A WhatsApp question about one whole chat costs more on `narrow_and_read` · [AGENT]
-- **Check:** `rg -n "KNOWN_COSTS_MORE: .*Q2" evals/whatsapp_narrowing/run.py`.
-  A hit means this is open.
-- **Why.** In the scripted WhatsApp eval, Q2 asks for every message of one
-  group in three weeks. It costs 1.45 times today's path. NARROW finds 27
-  messages, more than the READ cap of 25, so PICK must run. The READ windows
-  of one chat also overlap, so READ gives some lines twice. With no PICK at
-  all, and a READ cap of 30, Q2 costs 1.447 times today. The eval names Q2 in
-  `KNOWN_COSTS_MORE`, so the rule of H-276 accepts it up to 1.45 and no more.
-- **Do.** Choose one of these, measure it on the eval, and remove Q2 from
-  `KNOWN_COSTS_MORE`:
-  1. READ merges the overlapping windows of one chat into one block.
-  2. The instructions tell the model to read one whole chat with
-     `read_whatsapp_chat`, and not with `narrow_and_read`.
-- **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
 - **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
 ### H-281 · Old auto-synced tool wrappers in the agent clones still give a script the whole env · [AGENT] · security
@@ -663,7 +755,7 @@ line — never reclaim a number by deleting the other entry.
   5. Set the webhook to `https://api.metorite.com/whatsapp/webhook`, and
      subscribe to `messages`.
   6. Add a payment method, submit the templates of §5.8, and publish the app.
-  7. Put the four values of §5.1 in the box `.env`. Never paste them in chat.
+  7. Put the five values of §5.1 in the box `.env`. Never paste them in chat.
 - **The same Meta app also serves the WhatsApp inbox (WS-20 §12).** For that, add the Embedded Signup configuration, the four webhook fields and the Tech Provider App Review of `specs/whatsapp_message_manager.md` §12.5. Do both in one pass.
 - **Authority:** `specs/whatsapp_assistant_channel.md` §6 · `specs/whatsapp_message_manager.md` §12.5 · board rows WS-47 and WS-20.
 - **Added:** 2026-10-06 · the WS-47 spec session.
@@ -1508,8 +1600,9 @@ line — never reclaim a number by deleting the other entry.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
 - **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
 - **Done, by orchestrator report on 2026-10-02:** `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` are on the box since 16:31 UTC. The first live `decide.decided` line came at 16:50:47 UTC.
-- **First, PR-B3 of EM-T4a-2 must merge.** Until then the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6).
-- **Next, after EM-T5b-2 in full merges and after PR-B3:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
+- **Measured on the box, 2026-10-09:** `DECIDE_ENABLED=true`, `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on` and `DECIDE_FEATURE_ORGS=*`. So `email.thread_status` is already `on`, and it is no longer next.
+- ⚠️ **Drift (D-EM-62).** The thread status went `on` before PR-B3 of EM-T4a-2 merged. Until PR-B3 merges, the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6). EM-T16 PR-0 is PR-B3, and its merge closes the drift (§10.4.17).
+- **Next, after EM-T16 PR-C merges:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. D-EM-62 approves this step. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
@@ -1520,8 +1613,8 @@ line — never reclaim a number by deleting the other entry.
   7. Say whether the shadow window may start before EM-T4b, the shared cap. The 2026-10-02 note of this entry tied each mode to that cap. With one live mailbox, the runner asks about one email at a time.
 - ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37 writes one (H-36). A reseller call passes through both.
 - **Then:** the agents run the shadow window of `email_app_master_plan.md` §10.4.8.
-- **Authority:** D-EM-7 to D-EM-9 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
-- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit
+- **Authority:** D-EM-7 to D-EM-9 · D-EM-62 · `work_plan.md` §6.1 WS-31 (i) · `customer_console.md` §6A.14
+- **Added:** 2026-09-23 · **rewritten 2026-10-02** by the EM-T5b audit · **corrected 2026-10-09** by the EM-T16 spec
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The
@@ -4351,6 +4444,24 @@ line — never reclaim a number by deleting the other entry.
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
   A hit means this is open.
+- **Done, the Action Broker queue (2026-10-09).** `enqueue`, `list_pending`,
+  `_load_proposal` and `_mark` in `action_broker/broker.py` open
+  `acb_graph.tenant_session(org)`. The tenant comes from `current_tenant()`.
+  With no tenant, a read gives no row and the broker refuses a write. This
+  also closes the queue half of leak-audit S2-7. The fence is
+  `tests/unit/test_action_broker_tenancy_r8.py`. Do not do it again.
+- **Still open from the broker work.** Two kinds of caller bind no tenant,
+  so the broker refuses their queue write. The RLS policy refused it before
+  too. A third note follows them.
+  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). With
+    `ACTION_BROKER_ENFORCE` off it never reaches the queue.
+  - A CRON or webhook workflow run (`workflows/service.py` and
+    `workflows/tools.py`). A manual run has the request's tenant. A trigger
+    run would inherit the tenant of the request that emits its event, but
+    `triggers.py` reads `workflow_triggers` unbound, so no trigger run starts.
+  - A manual `POST /crm/sync/zoho` runs the cycle in the request. So its
+    queue row goes to the admin's tenant. The sync configuration has no
+    tenant yet. When it gets one, bind that tenant.
 - **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
   artifact context is a ContextVar, and `artifact_context()` is its one
   reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
@@ -4446,7 +4557,6 @@ line — never reclaim a number by deleting the other entry.
     and `mcp_servers` (no policy).
   - `routes/integrations_skills.py` reads `agent_skill_setting`.
     Tenant-scoped.
-  - `action_broker/broker.py` writes `pending_actions`. Tenant-scoped.
   - `acb_skills/loader.py` writes `pending_commit`. Tenant-scoped.
   - Already bound behind `ACB_GRAPH_TENANT_BIND`, no work: `executor.py`,
     `mutation.py`, `_tool_injection.py` and `acb_audit/log.py`.

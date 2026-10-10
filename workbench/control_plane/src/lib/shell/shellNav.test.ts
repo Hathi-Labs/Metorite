@@ -9,7 +9,10 @@ import { PANES, visibleSections, type NavPane, type NavSection } from "@/lib/nav
 import {
   MY_ACCESS,
   TEAM_GROUPS,
+  HOME_PANE,
   accountLinks,
+  desktopFrame,
+  homePane,
   isActive,
   launcherGroups,
   shellSidebar,
@@ -19,13 +22,21 @@ const ALL = PANES.map((p) => p.feature).filter((f): f is string => !!f);
 const shape = (sections: NavSection[]) => sections.map((s) => [s.id, s.items.map((p) => p.href)]);
 
 describe("the sidebar holds places to work, by team", () => {
-  it("for a fully granted admin: four groups, and no page about the member", () => {
+  it("for a fully granted admin: four groups, Organisation in Admin, and no page about the member", () => {
     expect(shape(shellSidebar(visibleSections(ALL, true)))).toEqual([
       ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
       ["across", ["/projects", "/people"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals"]],
+      ["admin", ["/approvals", "/settings/organization"]],
     ]);
+  });
+
+  // Owner, 2026-10-09: "organization should be an app under admin if I have
+  // access to organization". A member who is not an admin never sees it.
+  it("for a member who is not an admin: no Organisation anywhere in the sidebar", () => {
+    const hrefs = shellSidebar(visibleSections(ALL, false)).flatMap((s) => s.items.map((p) => p.href));
+    expect(hrefs).not.toContain("/settings/organization");
+    expect(hrefs).toContain("/approvals");
   });
 
   it("keeps Chat and Approvals in the sidebar until NS-6 builds the dock and the bell", () => {
@@ -64,16 +75,15 @@ describe("the sidebar holds places to work, by team", () => {
 });
 
 describe("the account menu holds pages about the member", () => {
-  it("for an admin: My Profile, My access, Appearance, then Organisation", () => {
-    expect(accountLinks(visibleSections(ALL, true)).map((l) => l.label)).toEqual([
-      "My Profile",
-      "My access",
-      "Appearance",
-      "Organisation",
-    ]);
+  it("for an admin: My Profile, My access and Appearance, and NOT Organisation", () => {
+    const links = accountLinks(visibleSections(ALL, true));
+    expect(links.map((l) => l.label)).toEqual(["My Profile", "My access", "Appearance"]);
+    // Organisation is an app in Admin now (owner, 2026-10-09), so it has one
+    // door, the sidebar. A second door here would be two places for one page.
+    expect(links.map((l) => l.href)).not.toContain("/settings/organization");
   });
 
-  it("for a member who is not an admin: no Organisation", () => {
+  it("for a member who is not an admin: the same three rows", () => {
     expect(accountLinks(visibleSections(ALL, false)).map((l) => l.href)).toEqual([
       "/people/me",
       MY_ACCESS.href,
@@ -114,6 +124,24 @@ describe("All apps lists every app the member holds, never a preference", () => 
   });
 });
 
+describe("the first item is Home, or My Day with that flag on (NS-3)", () => {
+  it("keeps the name Home while My Day is off", () => {
+    expect(homePane(false)).toBe(HOME_PANE);
+    expect(homePane(false).label).toBe("Home");
+  });
+
+  it("names it My Day, at the same place, with the flag on", () => {
+    const pane = homePane(true);
+    expect(pane.label).toBe("My Day");
+    expect(pane.href).toBe("/");
+    expect(pane.icon).toBe(HOME_PANE.icon);
+  });
+
+  it("reads the flag itself when no answer is given, and it is off by default", () => {
+    expect(homePane().label).toBe("Home");
+  });
+});
+
 describe("which item is the current one", () => {
   it("matches Home on Home only", () => {
     expect(isActive("/", "/")).toBe(true);
@@ -124,5 +152,20 @@ describe("which item is the current one", () => {
     expect(isActive("/people/access", "/people")).toBe(true);
     expect(isActive("/peoplex", "/people")).toBe(false);
     expect(isActive(null, "/people")).toBe(false);
+  });
+});
+
+describe("the desktop frame (owner, 2026-10-09: one bar across the top)", () => {
+  it("with no shell bar: the classic frame, whatever the nav flag says", () => {
+    expect(desktopFrame(false, false)).toBe("classic");
+    expect(desktopFrame(false, true)).toBe("classic");
+  });
+
+  it("with the bar and no shell nav: the bar over the page column, as NS-1 built it", () => {
+    expect(desktopFrame(true, false)).toBe("column");
+  });
+
+  it("with both flags: one bar across the whole width, which carries the logo", () => {
+    expect(desktopFrame(true, true)).toBe("full");
   });
 });

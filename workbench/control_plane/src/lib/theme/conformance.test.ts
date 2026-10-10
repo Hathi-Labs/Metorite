@@ -360,7 +360,11 @@ describe("solid controls go through the Button primitive", () => {
   // this ratchet only holds if a file that got better cannot keep its old
   // budget for the next regression to spend.
   // 24 since 2026-09-24: My Tasks' DeleteConfirmModal moved onto ConfirmDialog.
-  const SOLID_BUTTON_DEBT = 24;
+  // 23 since 2026-10-09: ElicitationCard's Submit is a `Button` now.
+  // 22 since 2026-10-09: the edit composer's own coral Send pill is gone. It
+  // draws the composer's one Send button (`components/ChatSendButton.tsx`).
+  // 21 since the same day: that Send button is the `Button` primitive now.
+  const SOLID_BUTTON_DEBT = 21;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -423,10 +427,8 @@ describe("no raw Tailwind palette colours", () => {
   const PALETTE_DEBT: Record<string, number> = {
     "app/agents/page.tsx": 6,
     "app/artifacts/page.tsx": 13,
-    "app/chat/page.tsx": 5,
     // ComposePanel left, and EmailDetail went from 3 to 2, in WS-17 EM-G3c-2:
     // the error of a send is `text-destructive`.
-    "app/email/components/EmailAssistantChat.tsx": 1,
     "app/email/components/EmailDetail.tsx": 2,
     "app/email/components/EmailList.tsx": 3,
     "app/email/components/MessageTimelineModal.tsx": 1,
@@ -446,7 +448,6 @@ describe("no raw Tailwind palette colours", () => {
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
     "app/observability/page.tsx": 26,
-    "app/tasks/components/AssistantRail.tsx": 1,
     // 24 since 2026-09-24: `CELL_TONE` went, and the level is the shared
     // PriorityChip. 16 since H-193 took the amber out of the Weight toggle and
     // the schedule suggestion. What is left is the other toggles and delegate.
@@ -462,12 +463,11 @@ describe("no raw Tailwind palette colours", () => {
     "app/workflows/lib/types.ts": 50,
     "components/AddAgentWizard.tsx": 15,
     // 13 since WS-17 EM-T8f-3: the mark of the mailbox picker is text-primary.
-    "components/AgentChat.tsx": 13,
+    "components/AgentChat.tsx": 12,
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
-    "components/FileUploadButton.tsx": 8,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
     "components/TodoPanel.tsx": 1,
@@ -862,7 +862,7 @@ describe("selects and file pickers go through the primitives", () => {
     "app/email/components/automation/DigestSettingsDialog.tsx": 2,
     "app/email/components/automation/ai-settings/HistoryTab.tsx": 1,
     "app/email/components/automation/ai-settings/RulesTab.tsx": 3,
-    "app/email/components/automation/ai-settings/SettingsTab.tsx": 3,
+    "app/email/components/automation/ai-settings/SettingsTab.tsx": 2, // D-EM-61 took the model select
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
     "app/notes/components/MeetingPrep.tsx": 1,
     "app/notes/components/NotesSettingsModal.tsx": 1,

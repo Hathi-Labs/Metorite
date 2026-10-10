@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from acb_common import get_logger, get_settings  # type: ignore[import-untyped, unused-ignore]
+from acb_common.pg_text import storable  # type: ignore[import-untyped, unused-ignore]
 from agent_framework import (
     AgentSession,
     CharacterEstimatorTokenizer,
@@ -572,11 +573,16 @@ async def _session_body(turn: SessionTurn, token_budget: int) -> tuple[str, int]
     Only the message history is kept. Every other state key of the run (a
     provider's own state, for example) is left out, so nothing but the turns
     is stored.
+
+    The dict passes through ``acb_common.pg_text.storable`` before the dump
+    (incident 2026-10-09). ``session_json`` is ``jsonb``, and a tool result
+    that holds a NUL dumps as ``\\u0000``, which ``jsonb`` refuses.
     """
     messages = await compact_history(_history(turn.session), token_budget)
     stored = AgentSession(session_id=turn.session.session_id)
     stored.state[HISTORY_SOURCE_ID] = {"messages": messages}
-    return json.dumps(stored.to_dict(), ensure_ascii=False), len(messages)
+    body = storable(stored.to_dict())
+    return json.dumps(body, ensure_ascii=False), len(messages)
 
 
 def _is_foreign_key_error(exc: BaseException) -> bool:

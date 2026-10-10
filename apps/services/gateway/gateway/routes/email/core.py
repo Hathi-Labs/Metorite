@@ -107,6 +107,10 @@ class EmailMessageModel(BaseModel):
     # is always false. :func:`_html_remote` is the one rule.
     html_remote: bool = False
     body_truncated: bool = False
+    # True when ``GET /email/messages/{id}?trim=true`` cut the quoted thread,
+    # the signature or a legal footer from ``body_text`` (WS-17, 2026-10-09,
+    # ``quoting.strip_for_reading``). Without ``trim`` it is always false.
+    body_trimmed: bool = False
     snippet: str = ""
     has_attachments: bool = False
     attachments: list[AttachmentModel] = []
@@ -759,12 +763,39 @@ def _safe_json(content: str) -> Any | None:
     return None
 
 
+#: The names of the email model calls on the usage report (AI-call
+#: attribution, 2026-10-10). A call binds ``agent=email.<feature>``. The five
+#: ``decide`` features of ``gateway.decide_features.FEATURES`` keep their
+#: names. Spec: ``customer_console.md`` §4.3a. Fence:
+#: ``tests/unit/test_usage_attribution.py::TestEveryEmailCallNamesItsFeature``.
+EMAIL_AI_FEATURES: frozenset[str] = frozenset({
+    "rule_match", "thread_status", "cold_check", "sender_pin", "draft",
+    "compose_assist", "draft_consult", "reply_memory", "voice_profile",
+    "digest", "template_fill", "rules_generate", "insights_screen",
+})
+
+
+def email_feature_agent(feature: str | None) -> str | None:
+    """``email.<feature>`` for a name in :data:`EMAIL_AI_FEATURES`, else None.
+
+    An unknown name binds nothing, so the call keeps the name the job bound
+    (``email.automation``). It never fails a model call over a report.
+    """
+    if feature in EMAIL_AI_FEATURES:
+        return f"email.{feature}"
+    if feature:
+        _log.warning("email.ai_feature_unknown", feature=str(feature)[:40])
+    return None
+
+
 async def _llm_json(
     model: str,
     messages: list[dict[str, Any]],
     *,
     max_tokens: int,
     temperature: float = 0.0,
+    feature: str | None = None,
+    **extra: Any,
 ) -> tuple[Any, str, str]:
     """The single seam for the email package's "ask the LLM, get JSON" calls.
 
@@ -786,10 +817,22 @@ async def _llm_json(
     daily budget of the mailbox. In ``enforce`` past the limit it raises
     ``LLMBudgetExhausted`` and makes no call. Outside the scope it does
     nothing. The signature does not change: the scope carries the account.
+
+    ``extra`` holds the options of the request that the Router forwards, for
+    example ``thinking``. ``acompletion_with_fallback`` sends only the keys
+    that ``acb_llm.routed._FORWARDABLE`` names to the Router. A caller with
+    no option sends the same request as before.
+
+    ``feature`` is a name of :data:`EMAIL_AI_FEATURES`, as ``rule_match``. The
+    call reports the agent ``email.<feature>`` for itself alone, unless a chat
+    agent such as ``email-assistant`` runs it (AI-call attribution,
+    2026-10-10). It changes nothing else about the call.
     """
     from acb_llm.context import acompletion_with_fallback
     from email_ingestion.llm_cap import llm_slot
 
+    # Built before the slot, which holds the leaf model await only (EM-T4b).
+    agent = email_feature_agent(feature)
     async with llm_slot():
         resp, used = await acompletion_with_fallback(
             model=model,
@@ -797,6 +840,8 @@ async def _llm_json(
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            feature=agent,
+            **extra,
         )
     content = resp.choices[0].message.content or ""
     return _safe_json(content), content, used

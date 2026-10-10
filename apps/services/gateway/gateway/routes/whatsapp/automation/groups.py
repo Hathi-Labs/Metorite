@@ -158,6 +158,7 @@ async def summarize_group(db: Any, account_id: str, chat_id: str) -> dict[str, A
         resp, _used = await acompletion_with_fallback(
             model=_SUMMARY_MODEL, fallback_model=_FALLBACK_MODEL,
             messages=messages, temperature=0.2, max_tokens=400,
+            feature="whatsapp.group_summary",
             response_format={"type": "json_object"},
         )
         parsed = parse_summary_response(resp.choices[0].message.content)
@@ -212,7 +213,9 @@ async def summarize_stale_groups(account_id: str) -> int:
             text("SELECT user_id FROM wa_accounts WHERE id = :aid"),
             {"aid": account_id},
         )).scalar()
-        with job_member_scope(str(owner) if owner else None, app="whatsapp"):
+        with job_member_scope(
+            str(owner) if owner else None, app="whatsapp", agent="whatsapp.automation",
+        ):
             return await _summarize_stale_groups(db, account_id)
     finally:
         await db.close()

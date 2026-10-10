@@ -31,6 +31,7 @@ from .base import (
     EmailMessage,
     EstimateCallback,
     ProviderAttachmentFailed,
+    ProviderMailTooLarge,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
@@ -191,6 +192,27 @@ def _retry_after(exc: BaseException) -> float:
     except (TypeError, ValueError):
         delay = 1.0
     return min(max(delay, 0.0), _MAX_RETRY_AFTER_SECS)
+
+
+class OutlookMailTooLarge(ProviderMailTooLarge):
+    """Graph refused a mail with a 413 (``email_app_master_plan.md`` §15).
+
+    ``/me/sendMail`` takes its files inline, as base64 in the JSON body, and
+    Graph refuses a body over about 4 MB. The send route and the forward
+    route answer 413. The text holds no URL."""
+
+
+def _graph_too_large(resp: httpx.Response) -> bool:
+    """True for a Graph answer that says the mail is too large."""
+    if resp.status_code == 413:
+        return True
+    if resp.status_code != 400:
+        return False
+    try:
+        code = str((resp.json().get("error") or {}).get("code") or "")
+    except Exception:
+        return False
+    return "SizeExceeded" in code or "TooLarge" in code
 
 
 class CatchUpIncomplete(RuntimeError):
@@ -1092,8 +1114,51 @@ class OutlookProvider(BaseEmailProvider):
         else:
             resp = await client.post("/me/sendMail", json={"message": message})
 
+        if _graph_too_large(resp):
+            raise OutlookMailTooLarge(
+                sum(len(a.get("content") or b"") for a in attachments or []), None)
         resp.raise_for_status()
         return "sent"  # Graph API doesn't return the sent message ID
+
+    #: Graph forwards a message with its files at the server, at any size.
+    forwards_natively = True
+
+    async def forward_message(
+        self,
+        provider_message_id: str,
+        to: list[str],
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        comment: str = "",
+        subject: str | None = None,
+    ) -> str | None:
+        """Forward a message with Graph's own ``POST /me/messages/{id}/forward``.
+
+        Graph copies every file of the original into the forward at the
+        server, so a forward of any size sends no file through Metorite and
+        meets no limit of a JSON body (``email_app_master_plan.md`` §15).
+
+        The recipients ride in the ``message`` parameter, whose writable
+        properties include ``ccRecipients`` and ``bccRecipients``. That is the
+        shape Graph documents for a forward with more than ``toRecipients``.
+        ``comment`` goes above the forwarded mail. Graph answers 202 with no
+        body, so there is no id of the sent mail.
+        """
+        message: dict[str, Any] = {"toRecipients": self._recipient_list(to)}
+        if cc:
+            message["ccRecipients"] = self._recipient_list(cc)
+        if bcc:
+            message["bccRecipients"] = self._recipient_list(bcc)
+        if subject:
+            message["subject"] = subject
+        resp = await self._graph_send(
+            "POST", f"/me/messages/{provider_message_id}/forward",
+            json={"comment": comment or "", "message": message},
+        )
+        if _graph_too_large(resp):
+            raise OutlookMailTooLarge(0, None)
+        resp.raise_for_status()
+        return None
 
     @staticmethod
     def _recipient_list(addrs: list[str] | None) -> list[dict[str, Any]]:

@@ -34,8 +34,11 @@ export const dynamic = "force-dynamic";
 
 const GATEWAY_PATH = "/settings/branding";
 
-/** Comfortably above the gateway's 128 KB raw ceiling, once base64-inflated. */
-const MAX_BODY_BYTES = 256 * 1024;
+/** One image: comfortably above the gateway's 128 KB raw ceiling, once base64-inflated. */
+const MAX_IMAGE_CHARS = 256 * 1024;
+/** The body: two images (the logo and its dark-mode version) and a style. */
+const MAX_BODY_BYTES = 2 * MAX_IMAGE_CHARS + 4 * 1024;
+const DARK_STYLES = new Set(["same", "white", "plate", "own"]);
 
 /** Empty branding — what the shell renders our own mark from. */
 const NO_BRANDING = { logo: null, updatedBy: "", updatedAt: "" };
@@ -96,18 +99,30 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ detail: "Body must be JSON" }, { status: 400 });
   }
 
-  const logoBase64 = (body as Record<string, unknown> | null)?.logoBase64;
+  const fields = (body as Record<string, unknown> | null) ?? {};
+  const logoBase64 = fields.logoBase64;
   if (typeof logoBase64 !== "string" || logoBase64.length === 0) {
     return NextResponse.json(
       { detail: "No image was included in the upload." },
       { status: 400 },
     );
   }
-  if (logoBase64.length > MAX_BODY_BYTES) {
+  // The dark-mode version and its style (owner request, 2026-10-09). Only
+  // these three fields go on, each checked for shape; the gateway checks the
+  // images themselves and that the pair agrees.
+  const logoDarkBase64 = fields.logoDarkBase64 ?? null;
+  if (logoDarkBase64 !== null && (typeof logoDarkBase64 !== "string" || logoDarkBase64.length === 0)) {
+    return NextResponse.json({ detail: "The dark-mode image was not readable." }, { status: 400 });
+  }
+  const darkStyle = fields.darkStyle ?? "same";
+  if (typeof darkStyle !== "string" || !DARK_STYLES.has(darkStyle)) {
+    return NextResponse.json({ detail: "That dark-mode style is not one Metorite knows." }, { status: 400 });
+  }
+  if (logoBase64.length > MAX_IMAGE_CHARS || (logoDarkBase64?.length ?? 0) > MAX_IMAGE_CHARS) {
     return NextResponse.json({ detail: "That image is too large." }, { status: 413 });
   }
 
-  return forward("PUT", JSON.stringify({ logoBase64 }));
+  return forward("PUT", JSON.stringify({ logoBase64, logoDarkBase64, darkStyle }));
 }
 
 export async function DELETE(): Promise<NextResponse> {

@@ -2,7 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { AccountSidebar } from "./components/AccountSidebar";
@@ -31,6 +31,7 @@ import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
 import { StorageNotice } from "./components/StorageNotice";
 import { StorageStep } from "./components/StorageStep";
 import { SyncBanner } from "./components/SyncBanner";
+import { EmailDeepLink } from "./components/EmailDeepLink";
 import Modal from "@/components/ui/Modal";
 import {
   useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
@@ -124,6 +125,7 @@ export default function EmailPage() {
     pendingSend,
     taskCaptureNotice,
     taskCapturePopupEmailId,
+    taskCapturePopupAccountId,
     closeTaskCapturePopup,
     notifyTaskCaptured,
     pendingChatPrompt,
@@ -215,23 +217,10 @@ export default function EmailPage() {
   }, [accounts.length]);
 
   // Deep link: /email?account=<id>&email=<id> opens a SPECIFIC message —
-  // the link tasks put on email-origin items ("Open"). The account param is
-  // consumed by the store's initial-account pick; the email param is ours:
-  // open once the right account is active (openEmailById fetches the
-  // message even if it isn't in the loaded folder page).
-  const deepLinkedEmailRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!selectedAccountId) return;
-    let emailParam: string | null = null;
-    try {
-      emailParam = new URL(window.location.href).searchParams.get("email");
-    } catch {
-      return;
-    }
-    if (!emailParam || deepLinkedEmailRef.current === emailParam) return;
-    deepLinkedEmailRef.current = emailParam;
-    useEmailStore.getState().openEmailById(emailParam);
-  }, [selectedAccountId]);
+  // the link tasks put on email-origin items ("Open"), and the link the email
+  // assistant cites (`lib/emailLink.ts`). The account param is consumed by the
+  // store's initial-account pick. `<EmailDeepLink>` below reads the email
+  // param, and again each time it changes while the page is open.
 
   // Fetch emails when account or folder changes
   useEffect(() => {
@@ -812,6 +801,12 @@ export default function EmailPage() {
 
   return (
     <div className="flex h-full w-full bg-background overflow-hidden select-none">
+      {/* The reader of `?email=<id>`. `useSearchParams` needs a Suspense
+          boundary, and this one holds only the reader, so the page still
+          renders on the server. */}
+      <Suspense fallback={null}>
+        <EmailDeepLink ready={!!selectedAccountId} />
+      </Suspense>
       {/* NS-1: the command bar's "Write an email" opens a new message, once
           the mailboxes it sends from have loaded. A filled job (NS-4b) brings
           its fields; the member checks them and sends. */}
@@ -1292,7 +1287,7 @@ export default function EmailPage() {
       {/* Add-to-Tasks clarify popup */}
       {taskCapturePopupEmailId && (() => {
         const popupEmail = emails.find((e) => e.id === taskCapturePopupEmailId);
-        const acctId = popupEmail?.accountId ?? selectedAccountId;
+        const acctId = taskCapturePopupAccountId ?? popupEmail?.accountId ?? selectedAccountId;
         if (!acctId) return null;
         return (
           <TaskCaptureModal

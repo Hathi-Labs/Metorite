@@ -87,6 +87,61 @@ curl -s https://metorite.com | grep -c "app.metorite.com/signup" # >= 1
 ## 5. Ownership
 
 This spec is the single owner of the apex surface. `work_plan.md` WS-33 is the
-board row. CP-2c (`customer_console.md`) owns the URL the CTA points at;
-D41/D40 own hostname topology; MT-1f owns per-tenant subdomains. No other doc
+board row. CP-2c (`customer_console.md`) owns the URL the CTA points at.
+D41/D40 own hostname topology. MT-1f owns per-tenant subdomains. No other doc
 may describe this page.
+
+## 6. Version 2 — the product tour (owner directive, 2026-10-09)
+
+**The owner widened the scope on 2026-10-09.** The apex page now markets each
+live app, in the way Zoho markets its suite. Two §1 non-goals are lifted:
+"real marketing content" and "screenshots that would need refreshing". The
+other §1 non-goals stay: no SEO work, no blog, no CMS, no analytics, no cookie
+banner.
+
+### 6.1 Owner decisions (2026-10-09)
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | How does the page show the product? | Real screenshots of the app |
+| 2 | One page or one page per app? | One long home page. Pages per app can follow later |
+| 3 | Does the page show the price? | No. A visitor sees the price at sign-up |
+| 4 | Which message? | "All your work in one app": email, WhatsApp, projects and tasks in one workspace, with AI that helps run it |
+
+### 6.2 What the page holds
+
+1. A hero with the message, the sign-up call to action, and one screenshot.
+2. A grid of the live apps, where each tile links to its section.
+3. One section for each live app, with a screenshot and three or four features.
+   The live set is `launch_surface.md` §2. A `preview` app does not appear.
+4. A section on the AI, a section on security and isolation, and the sign-up band.
+
+**The page claims only live features.** A feature behind a flag that is OFF,
+or a feature that is planned, does not appear.
+
+### 6.3 Screenshots
+
+- **The screenshots come from a demo workspace with fictional data.** No
+  screenshot may show a customer's data, a real person, or a real phone number
+  or email address. The demo company is "Kite & Co. Interiors".
+  `scripts/demo_seed/` builds the demo workspace on a local stack, and its
+  README says how to take the screenshots again.
+- **The images live in `site/img/`.** The page loads them with a relative path
+  from the same origin. They are WebP files.
+- **A screenshot goes stale when the app changes.** That is the accepted cost
+  of decision 1. Take the screenshots again when an app section changes.
+
+### 6.4 Rules that still bind
+
+The zero-surface rules of §1 and `site/AGENTS.md` still bind: no `<script>`, no
+cookies, no analytics, and no origin other than `https://app.metorite.com`.
+Each HTML page stays under 100 KB.
+
+### 6.5 The fence (R7)
+
+`tests/unit/test_marketing_site.py` adds four checks for version 2:
+
+- every local `src` resolves to a file that exists under `site/`
+- every `<img>` has a non-empty `alt`
+- every file in `site/img/` is WebP, PNG, SVG or JPEG, and is under 300 KB
+- all of `site/img/` together stays under 3 MB

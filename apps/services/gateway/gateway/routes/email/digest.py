@@ -126,9 +126,17 @@ async def _digest_top_senders(
 # the quiet re-sync to bring it straight back (and the needs-reply count never
 # moved). It reappears — here and in the inbox — the moment snoozed_until
 # passes, with no scheduler involved.
+# An ARCHIVED last message is out too: archive is the member saying "dealt
+# with", and Reply Zero (`replyzero.reply_zero`) also hides an archived thread
+# from its active buckets. So the digest and the shell's needs feed
+# (`needs_reply_threads`) agree on every rule here. ⚠️ Reply Zero's list does
+# NOT agree on two: it hides only trash and archive, so it still lists a junk
+# thread and a snoozed thread as needing a reply (HANDOFF H-286). Every user
+# of this predicate reads an ACTIVE bucket (NEEDS_REPLY, AWAITING). A read of
+# DONE, where an archived thread belongs, must not reuse it.
 _LIVE_THREAD = ("NOT EXISTS (SELECT 1 FROM email_messages tem "
                 "WHERE tem.id = ts.last_message_id "
-                "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk') "
+                "AND (LOWER(COALESCE(tem.folder, '')) IN ('trash', 'junk', 'archive') "
                 "OR tem.snoozed_until > now()))")
 
 
@@ -165,7 +173,7 @@ _PRIORITY_SCORE = (
 
 async def _digest_thread_list(
     db: Any, account_id: str, status: str, limit: int,
-    *, prioritized: bool = False,
+    *, prioritized: bool = False, with_time: bool = False,
 ) -> list[dict[str, Any]]:
     """Live threads in one status, with enough identity for the dashboard to
     open the thread: thread_id, the last message id, and the counterparty
@@ -175,7 +183,11 @@ async def _digest_thread_list(
     ``prioritized`` (the dashboard's needs-reply queue) orders by an urgency
     score — importance + unread + capped age — instead of pure age, so the row
     you should act on first is on top. Everything else stays OLDEST first
-    (aging is the point of a brief / of "who's kept me waiting longest")."""
+    (aging is the point of a brief / of "who's kept me waiting longest").
+
+    ``with_time`` adds ``last_message_at``, the ISO time of the last message,
+    for a caller that shows when the thread went quiet (the shell's needs
+    feed, through :func:`needs_reply_threads`). Off, the rows do not change."""
     order = (f"{_PRIORITY_SCORE} DESC, ts.last_message_at ASC"
              if prioritized else "ts.last_message_at ASC")
     rows = (await db.execute(text(
@@ -187,7 +199,8 @@ async def _digest_thread_list(
                    LOWER(COALESCE(em.importance, '')) = 'high' AS high,
                    em.is_read AS is_read,
                    GREATEST(0, EXTRACT(DAY FROM now() - ts.last_message_at))::int
-                     AS age_days
+                     AS age_days,
+                   ts.last_message_at AS last_at
             FROM email_thread_status ts
             LEFT JOIN email_messages em ON ts.last_message_id = em.id
             WHERE ts.account_id = :aid AND ts.status = '{status}'
@@ -205,7 +218,7 @@ async def _digest_thread_list(
         ours = (r.from_email or "").lower() in selves
         who = ((r.to_name or r.to_email) if ours
                else (r.from_name or r.from_email)) or ""
-        out.append({
+        item = {
             "subject": (r.subject or "(no subject)"),
             "age_days": r.age_days,
             "thread_id": r.thread_id,
@@ -214,8 +227,30 @@ async def _digest_thread_list(
             "who": who,
             "important": bool(r.high),
             "unread": (r.is_read is False),
-        })
+        }
+        if with_time:
+            item["last_message_at"] = (
+                r.last_at.isoformat() if r.last_at is not None else None)
+        out.append(item)
     return out
+
+
+async def needs_reply_threads(
+    user: UserContext, account_id: str, limit: int,
+) -> list[dict[str, Any]]:
+    """The live needs-reply threads of ONE mailbox the member owns, the one
+    who has waited longest first, at most ``limit`` (navigation_shell.md
+    §7.2, the shell's needs feed).
+
+    The same rows the digest's Needs-reply count counts: ``_LIVE_THREAD``
+    leaves out a thread whose last message is in trash, junk or the archive,
+    or is snoozed. The owner check runs first, so a mailbox of another member is
+    404 before any read. It writes nothing and starts no backfill. Not a
+    route: the shell calls it after its own ``feature:email`` check."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        return await _digest_thread_list(
+            db, account_id, "NEEDS_REPLY", limit, with_time=True)
 
 
 async def _digest_backlog_aging(
@@ -485,6 +520,89 @@ def _render_digest_html(
     )
 
 
+#: The tenant Redis namespace of the cached morning brief (WS-17, 2026-10-09).
+BRIEF_CACHE_NAMESPACE = "email-brief"
+#: A brief lives for one UTC day. The day is part of the key too, so a brief
+#: never crosses midnight. The TTL only frees the memory.
+BRIEF_CACHE_TTL_SECS = 26 * 3600
+#: The model and the system prompt of the brief.
+_BRIEF_MODEL = "tier-fast"
+_BRIEF_SYSTEM = (
+    "You write ONE short sentence orienting someone to their inbox "
+    "for the day — what's most pressing and who it's with. Name 1-3 "
+    "specific items (a person or subject), newest-pressing first. No "
+    "greeting, no preamble, under 25 words. "
+    'Respond ONLY JSON {"brief": "<sentence>"}.')
+
+
+def _brief_cache_key(account_id: str, user_prompt: str) -> Any:
+    """The cache key of one brief: the mailbox, the UTC day and a hash of
+    the model input.
+
+    🔴 **Why the input is in the key.** The dashboard asked the model again
+    on EACH load, with no cache. The input is the top six threads that need a
+    reply and the top six commitments, so the same input gives the same
+    sentence. New mail that changes those rows changes the hash, so the next
+    load asks again, and an unchanged inbox reads the cache. Build it inside
+    ``organization_scope``: ``key`` puts the bound organization in front.
+    """
+    import hashlib
+
+    from acb_common.tenant_redis import key
+
+    # The model and the system prompt are in the hash too, so a deploy that
+    # changes either one does not serve a brief of the old prompt (review
+    # round 1).
+    source = f"{_BRIEF_MODEL}\n{_BRIEF_SYSTEM}\n{user_prompt}"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    return key(BRIEF_CACHE_NAMESPACE, str(account_id), day, digest)
+
+
+def _brief_org() -> str | None:
+    """The organization of the brief cache: the tenant that the request or
+    the sync loop bound for ``_tenant_session``. Never a value from input
+    (R5). None means no cache, and the brief asks the model as before."""
+    from acb_common.db import current_tenant
+
+    return current_tenant()
+
+
+async def _cached_brief(account_id: str, user_prompt: str) -> str | None:
+    """The cached brief, or None for a miss. A Redis failure is a miss."""
+    org = _brief_org()
+    if not org:
+        return None
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+        with organization_scope(org):
+            raw = await get_tenant_redis().get(
+                _brief_cache_key(account_id, user_prompt))
+    except Exception:  # the cache is best effort
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    return raw if isinstance(raw, str) and raw else None
+
+
+async def _remember_brief(account_id: str, user_prompt: str, brief: str) -> None:
+    """Cache a brief for the day. Best effort. An empty brief is not cached,
+    so a failed answer is asked again on the next load."""
+    org = _brief_org()
+    if not org or not brief:
+        return
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+        with organization_scope(org):
+            await get_tenant_redis().setex(
+                _brief_cache_key(account_id, user_prompt),
+                BRIEF_CACHE_TTL_SECS, brief)
+    except Exception:  # the cache is best effort
+        pass
+
+
 async def _digest_brief(
     db: Any, account_id: str, backlog: list[dict], commitments: list[dict],
 ) -> str:
@@ -521,20 +639,23 @@ async def _digest_brief(
     user_prompt = (
         "Needs a reply:\n" + (reply_lines or "- (none)")
         + "\n\nCommitments due:\n" + (due_lines or "- (none)"))
+    # One model call for each mailbox, UTC day and input, not one for each
+    # dashboard load (WS-17, 2026-10-09). See `_brief_cache_key`.
+    cached = await _cached_brief(account_id, user_prompt)
+    if cached is not None:
+        return cached
     try:
         data, _content, _used = await _llm_json(
-            "tier-fast",
-            [{"role": "system", "content": (
-                "You write ONE short sentence orienting someone to their inbox "
-                "for the day — what's most pressing and who it's with. Name 1-3 "
-                "specific items (a person or subject), newest-pressing first. No "
-                "greeting, no preamble, under 25 words. "
-                'Respond ONLY JSON {"brief": "<sentence>"}.')},
+            _BRIEF_MODEL,
+            [{"role": "system", "content": _BRIEF_SYSTEM},
              {"role": "user", "content": user_prompt}],
             max_tokens=160,
+            feature="digest",
         )
         if isinstance(data, dict):
-            return str(data.get("brief", "")).strip()[:280]
+            brief = str(data.get("brief", "")).strip()[:280]
+            await _remember_brief(account_id, user_prompt, brief)
+            return brief
         return ""
     except Exception as exc:  # noqa: BLE001
         try:

@@ -14,9 +14,30 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/acb/app
-EnvironmentFile=/opt/acb/app/.env
-ExecStart=/usr/bin/docker compose -f infra/docker-compose.yml --profile core up -d --remove-orphans
-ExecStop=/usr/bin/docker compose -f infra/docker-compose.yml down
+# 🔴 **WS-49 BH-6a fix round 1 (F1): NO EnvironmentFile here, on purpose.**
+# /opt/acb/app/.env is acb-writable, and this unit runs as root. Docker reads
+# $HOME/.docker/config.json, and it searches the cli-plugins dir there BEFORE
+# the system dirs. So a HOME from .env made root docker run an acb-written
+# plugin (proved under systemd 255). Blocking HOME and PATH one by one does
+# not close it. So:
+#   - the unit loads no env file, and `env -i` starts docker with ONLY a
+#     pinned PATH and HOME=/root
+#   - compose reads .env itself, through --env-file, for interpolation only
+#     (POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB for the core
+#     profile). An explicit --env-file also replaces the infra/.env lookup.
+#   - `-p acb` is the project name of infra/docker-compose.yml (`name: acb`).
+#     Without it, a COMPOSE_PROJECT_NAME line in .env renames the project,
+#     because compose reads COMPOSE_* from the --env-file (measured on
+#     Compose v5.6.0). --profile and -f already win over COMPOSE_PROFILES and
+#     COMPOSE_FILE, and compose does not take DOCKER_HOST from the file.
+# `docker compose config` is the same under the old and the new shape, for a
+# .env without `$` or ` #` in a value (tests/unit/test_backup_env_values.py
+# and the BH-6a report). No UnsetEnvironment= list: with no env file and
+# `env -i`, nothing from .env reaches the process.
+# Fence: tests/unit/test_backup_env_values.py (no root unit that runs docker
+# loads an env file under /opt/acb).
+ExecStart=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb -f infra/docker-compose.yml --profile core up -d --remove-orphans
+ExecStop=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/docker compose --env-file /opt/acb/app/.env -p acb -f infra/docker-compose.yml down
 
 [Install]
 WantedBy=multi-user.target

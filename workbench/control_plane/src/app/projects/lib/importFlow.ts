@@ -84,9 +84,26 @@ export interface PlanStatus {
   name: string;
   tasks: number;
   lists: number;
+  /** The stage the rules propose for this source name. */
   proposed: Stage;
   category: Stage;
+  /** The Metorite status it lands in. */
   becomes: string;
+  /** I-10: the status the rules propose. Absent on a run planned before I-10. */
+  proposed_name?: string;
+  /** I-10: `becomes` is a status of the target set, so its stage is fixed. */
+  existing?: boolean;
+  /**
+   * I-10b: no lane, synonym, stage rule or earlier record gave the stage, so
+   * the plan only guessed it. Absent before I-10b, which means false.
+   */
+  guessed?: boolean;
+}
+
+/** One status of the set an import writes into (I-10, §6.3). */
+export interface TargetStatus {
+  name: string;
+  category: Stage;
 }
 
 export interface PlanWarning {
@@ -140,7 +157,22 @@ export interface ImportPlan {
   warnings: PlanWarning[];
   losses: PlanLoss[];
   people: PlanPerson[];
+  /**
+   * Every member the people step may choose, in full (`plan._members`).
+   * Absent on a run planned before 2026-10-09.
+   */
+  members?: { email: string; name: string }[];
   statuses: PlanStatus[];
+  /**
+   * I-10: the set the statuses land in, in its own order — the seed of a new
+   * space, or the set of the existing space. Absent before I-10.
+   */
+  target_statuses?: TargetStatus[];
+  /**
+   * The names of the target set's intake lanes. No import target takes one:
+   * it becomes "<name> (imported)" (§6.3, the I-10 review P1-b).
+   */
+  reserved_statuses?: string[];
   closed_tasks: number;
   completed_at_estimated: number;
   done_status_added: number;
@@ -334,7 +366,7 @@ export function keepOnReopen(run: ImportRun | null, reportSeen: boolean): boolea
 /** The I-8 choices the wizard holds beside people and stages. */
 export interface WizardChoices {
   grant?: string;
-  /** Source status name → the name it takes in Metorite. */
+  /** Source status name → the Metorite status it becomes (I-10). */
   statusNames?: Record<string, string>;
   containers?: Record<string, ContainerChoice>;
   columns?: Record<string, ColumnChoice>;
@@ -348,13 +380,17 @@ export function mappingFrom(
   target: ImportMapping["target"],
   choices: WizardChoices = {},
 ): ImportMapping {
+  // I-10: every row sends the status it becomes, by name, so a later import
+  // that continues this tree keeps the same names (§6.3).
   const statuses: ImportMapping["statuses"] = {};
-  for (const status of run.plan.statuses) {
-    const category = stages[status.name] ?? status.category;
-    const typed = choices.statusNames?.[status.name];
-    const becomes = typed !== undefined ? cleanName(typed) || status.name : status.becomes;
-    statuses[status.name] = { category, name: becomes !== status.name ? becomes : null };
-  }
+  const resolved = resolveStatuses(
+    run.plan.statuses,
+    run.plan.target_statuses ?? [],
+    choices.statusNames ?? {},
+    stages,
+    run.plan.reserved_statuses ?? [],
+  );
+  for (const row of resolved) statuses[row.source] = { category: row.stage, name: row.target };
   // A row the admin left on the proposal is NOT saved, so a later import
   // proposes again. Saving "unassigned" for everyone with no member made the
   // next upload keep them unassigned even after they joined People (I-9).
@@ -449,39 +485,304 @@ export function treeTotals(rows: readonly TreeRow[]): { lists: number; skippedLi
   return { lists, skippedLists, tasks };
 }
 
-// ── statuses: rename and merge (I-8, §6.3) ───────────────────────────────────
+// ── statuses: a target for each, and the summary (I-10, §6.3, §7.7) ─────────
+
+/** Stage order inside one status set, as the gateway's `layout.STAGE_ORDER`. */
+export const STAGE_ORDER: readonly Stage[] = ["backlog", "todo", "in_progress", "done", "cancelled"];
+
+/** What one ClickUp status becomes, with the admin's edits applied. */
+export interface ResolvedStatus {
+  /** The ClickUp status name. */
+  source: string;
+  /** The Metorite status it lands in. */
+  target: string;
+  stage: Stage;
+  /** The target set holds this status, so its stage is fixed. */
+  existing: boolean;
+  /**
+   * I-10b: the stage is the plan's guess, and the admin has not picked one.
+   * The mark clears when the admin picks a stage for the row.
+   */
+  guessed: boolean;
+}
+
+const fold = (name: string) => cleanName(name).toLowerCase();
+/** What a target takes when an intake lane holds its name (`plan.IMPORTED`). */
+export const IMPORTED = " (imported)";
+
+/**
+ * Each row's target, as the gateway's `plan._statuses` decides it: the
+ * admin's chosen status, else the plan's. A name the target set holds,
+ * without case, IS that status, with its spelling and its stage.
+ */
+export function resolveStatuses(
+  statuses: readonly PlanStatus[],
+  targetSet: readonly TargetStatus[],
+  names: Record<string, string>,
+  stages: Record<string, Stage>,
+  reserved: readonly string[] = [],
+  /**
+   * The rows whose stage the admin PICKED in the stage picker (I-10b build
+   * rule 1). Only a pick clears the "Guessed" mark. A stage the wizard seeds
+   * by itself, for example to keep a merge in one stage, does not.
+   */
+  picked: Readonly<Record<string, boolean>> = {},
+): ResolvedStatus[] {
+  const held = new Map(targetSet.map((t) => [fold(t.name), t]));
+  const pen = new Set(reserved.map(fold));
+  return statuses.map((s) => {
+    let target = cleanName(names[s.name] ?? "") || s.becomes || s.name;
+    // The gateway's `plan.off_the_pen`: an intake lane's name is taken, and
+    // no import task lands in that lane (§6.3, the I-10 review P1-b).
+    if (pen.has(fold(target)) && !held.has(fold(target))) target = `${target.slice(0, 64 - IMPORTED.length)}${IMPORTED}`;
+    const hit = held.get(fold(target));
+    if (hit) return { source: s.name, target: hit.name, stage: hit.category, existing: true, guessed: false };
+    return {
+      source: s.name,
+      target,
+      stage: stages[s.name] ?? s.category,
+      existing: false,
+      guessed: Boolean(s.guessed) && !picked[s.name],
+    };
+  });
+}
+
+/** What one "Becomes" choice changes in the wizard's state. */
+export interface TargetChoice {
+  /** The status the row becomes. */
+  name: string;
+  /** The row shows a name box: the admin chose "New status…". */
+  creating: boolean;
+  /**
+   * A stage to seed, or undefined to keep the row's own. Seeded only to join
+   * a status another row adds, so the merge holds one stage. It is NOT a
+   * pick, so it never clears the "Guessed" mark (the PR #803 review, P2-1).
+   */
+  stage?: Stage;
+}
+
+/** The pure half of the "Becomes" picker's `onChange`. */
+export function targetChoice(
+  status: PlanStatus,
+  value: string,
+  resolved: readonly ResolvedStatus[],
+): TargetChoice {
+  if (value === NEW_STATUS) return { name: newStatusName(status.name), creating: true };
+  const name = value.slice(targetValue("").length);
+  const other = resolved.find(
+    (r) => !r.existing && r.source !== status.name && fold(r.target) === fold(name),
+  );
+  return { name, creating: false, stage: other?.stage };
+}
+
+/** One Map row: the plan's row and what it resolves to, paired by name. */
+export interface StatusRowPair {
+  status: PlanStatus;
+  row: ResolvedStatus;
+}
+
+/**
+ * The Map rows in the order they show (I-10b build rule 7): a row whose
+ * stage needs a check goes first, and the rest keep the plan's order. Each
+ * plan row pairs with its resolved row by `source`, NEVER by index, so the
+ * sort cannot give a row another row's target.
+ */
+export function orderedStatusRows(
+  statuses: readonly PlanStatus[],
+  resolved: readonly ResolvedStatus[],
+): StatusRowPair[] {
+  const bySource = new Map(resolved.map((r) => [r.source, r]));
+  const pairs = statuses.flatMap((status) => {
+    const row = bySource.get(status.name);
+    return row ? [{ status, row }] : [];
+  });
+  // ⚠️ On the PLAN's `guessed`, which never changes while the step is open.
+  // On the live mark, a row jumped away the moment the admin picked its
+  // stage, and the next click landed on another row (PR #803, P2-2).
+  return pairs
+    .map((pair, i) => ({ pair, i }))
+    .sort((a, b) => Number(Boolean(b.pair.status.guessed)) - Number(Boolean(a.pair.status.guessed)) || a.i - b.i)
+    .map(({ pair }) => pair);
+}
 
 /**
  * Source status name → the OTHER source names that land in the same Metorite
  * status. Names compare without case, as the gateway merges them.
  */
-export function statusMerges(
-  statuses: readonly PlanStatus[],
-  names: Record<string, string>,
-): Record<string, string[]> {
-  const landing = (s: PlanStatus) => (cleanName(names[s.name] ?? "") || s.becomes || s.name).toLowerCase();
+export function statusMerges(resolved: readonly ResolvedStatus[]): Record<string, string[]> {
   const groups = new Map<string, string[]>();
-  for (const s of statuses) groups.set(landing(s), [...(groups.get(landing(s)) ?? []), s.name]);
+  for (const r of resolved) groups.set(fold(r.target), [...(groups.get(fold(r.target)) ?? []), r.source]);
   const out: Record<string, string[]> = {};
-  for (const s of statuses) out[s.name] = (groups.get(landing(s)) ?? []).filter((n) => n !== s.name);
+  for (const r of resolved) out[r.source] = (groups.get(fold(r.target)) ?? []).filter((n) => n !== r.source);
   return out;
 }
 
 /**
- * The statuses whose merge partners have another stage. The gateway refuses
- * such a plan, so the Map step marks each one where the admin can fix it.
+ * The statuses whose merge partners land with another stage. Only a NEW
+ * status can clash, because an existing one gives every row its own stage.
+ * The gateway refuses such a plan, so the row says how to fix it.
  */
-export function stageClashes(
-  statuses: readonly PlanStatus[],
-  merges: Record<string, string[]>,
-  stages: Record<string, Stage>,
-): Set<string> {
-  const stageOf = new Map(statuses.map((s) => [s.name, stages[s.name] ?? s.category]));
+export function stageClashes(resolved: readonly ResolvedStatus[], merges: Record<string, string[]>): Set<string> {
+  const stageOf = new Map(resolved.map((r) => [r.source, r.stage]));
   const out = new Set<string>();
-  for (const s of statuses) {
-    if ((merges[s.name] ?? []).some((other) => stageOf.get(other) !== stageOf.get(s.name))) out.add(s.name);
+  for (const r of resolved) {
+    if ((merges[r.source] ?? []).some((other) => stageOf.get(other) !== r.stage)) out.add(r.source);
   }
   return out;
+}
+
+/**
+ * The I-8 merge mark: the statuses that share a target with a status the
+ * rules put in ANOTHER stage. Nothing is wrong, but some tasks change stage,
+ * so the row says so.
+ */
+export function stageShifts(statuses: readonly PlanStatus[], merges: Record<string, string[]>): Set<string> {
+  const proposed = new Map(statuses.map((s) => [s.name, s.proposed]));
+  const out = new Set<string>();
+  for (const s of statuses) {
+    if ((merges[s.name] ?? []).some((other) => proposed.get(other) !== s.proposed)) out.add(s.name);
+  }
+  return out;
+}
+
+/** One chip of the summary: a status the import lands tasks in. */
+export interface SummaryChip {
+  name: string;
+  stage: Stage;
+  /** The import adds this status. */
+  isNew: boolean;
+  /**
+   * A lane of the target set that no ClickUp status lands in. It is still in
+   * the set after the import, so the board shows it, plainly (PR #803, P2-3).
+   */
+  unused?: boolean;
+}
+
+export interface StatusSummary {
+  /** "Your 10 ClickUp statuses become 6 statuses in Fracktal." */
+  line: string;
+  /** In stage order: the target set's order first, then first sight. */
+  chips: SummaryChip[];
+  /** One line per merge: "Closed, done and completed become Done." */
+  merges: string[];
+  /**
+   * I-10b: the summary is a small board. All five stages, in the order of
+   * the Settings screen, each with the statuses the set will hold: the
+   * targets, and the lanes of the target set that no row hits (`unused`).
+   * So the board equals what Settings shows later. A stage with nothing in
+   * it is a stage the set truly lacks.
+   */
+  stages: { stage: Stage; chips: SummaryChip[] }[];
+  /** I-10b: how many rows hold a guessed stage, and the line that says so. */
+  guesses: number;
+  check: string | null;
+}
+
+/**
+ * The summary the Statuses section opens on (§7.7): show the result, and
+ * hide the work. `where` names the space, or is null when there are several.
+ */
+export function statusSummary(
+  resolved: readonly ResolvedStatus[],
+  targetSet: readonly TargetStatus[],
+  where: string | null,
+): StatusSummary {
+  const setIndex = new Map(targetSet.map((t, i) => [fold(t.name), i]));
+  const byTarget = new Map<string, { chip: SummaryChip; sources: string[]; seen: number }>();
+  resolved.forEach((r, i) => {
+    const key = fold(r.target);
+    const found = byTarget.get(key);
+    if (found) found.sources.push(r.source);
+    else byTarget.set(key, { chip: { name: r.target, stage: r.stage, isNew: !r.existing }, sources: [r.source], seen: i });
+  });
+  const rank = (key: string, seen: number) => setIndex.get(key) ?? targetSet.length + seen;
+  const ordered = [...byTarget.entries()].sort(
+    ([ka, a], [kb, b]) =>
+      STAGE_ORDER.indexOf(a.chip.stage) - STAGE_ORDER.indexOf(b.chip.stage) || rank(ka, a.seen) - rank(kb, b.seen),
+  );
+  const from = resolved.length;
+  const to = ordered.length;
+  const line =
+    `Your ${from} ClickUp ${from === 1 ? "status becomes" : "statuses become"} ` +
+    `${to} ${to === 1 ? "status" : "statuses"}${where ? ` in ${where}` : ""}.`;
+  const merges = ordered
+    .filter(([, g]) => g.sources.length > 1)
+    .map(([, g]) => {
+      const text = `${joinWords(g.sources)} become ${g.chip.name}.`;
+      return text.charAt(0).toUpperCase() + text.slice(1);
+    });
+  const chips = ordered.map(([, g]) => g.chip);
+  // The board holds the whole resulting set: the targets, and every lane of
+  // the target set that no row hits, in the set's own order (PR #803, P2-3).
+  const board = [
+    ...ordered.map(([key, g]) => ({ chip: g.chip, rank: rank(key, g.seen) })),
+    ...targetSet
+      .filter((t) => !byTarget.has(fold(t.name)))
+      .map((t) => ({
+        chip: { name: t.name, stage: t.category, isNew: false, unused: true },
+        rank: setIndex.get(fold(t.name)) ?? 0,
+      })),
+  ].sort((a, b) => a.rank - b.rank);
+  const guesses = resolved.filter((r) => r.guessed).length;
+  const check = guesses
+    ? `${guesses} ${guesses === 1 ? "status needs" : "statuses need"} a check: the stage is a guess. ` +
+      "Open Review mapping to choose it."
+    : null;
+  return {
+    line,
+    chips,
+    merges,
+    stages: STAGE_ORDER.map((stage) => ({
+      stage,
+      chips: board.filter(({ chip }) => chip.stage === stage).map(({ chip }) => chip),
+    })),
+    guesses,
+    check,
+  };
+}
+
+/** "a", "a and b", "a, b and c". */
+function joinWords(words: readonly string[]): string {
+  if (words.length < 2) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/** The "Becomes" picker's value for a target, and for "New status…". */
+export const NEW_STATUS = "__new_status__";
+export const targetValue = (name: string) => `t:${name}`;
+export const GROUP_IN_SPACE = "In this space";
+export const GROUP_ADDED = "Added by this import";
+
+/**
+ * The options of one row's "Becomes" picker (§7.7), in three groups: the
+ * statuses of the target set, the new statuses the rows make, and "New
+ * status…", which opens a name box and a stage picker in the row.
+ */
+export function becomesOptions(
+  resolved: readonly ResolvedStatus[],
+  targetSet: readonly TargetStatus[],
+  stageLabel: (stage: Stage) => string,
+): SelectOption[] {
+  const out: SelectOption[] = targetSet.map((t) => ({
+    value: targetValue(t.name),
+    label: t.name,
+    hint: stageLabel(t.category),
+    group: GROUP_IN_SPACE,
+  }));
+  const seen = new Set<string>();
+  for (const r of resolved) {
+    if (r.existing || seen.has(fold(r.target))) continue;
+    seen.add(fold(r.target));
+    out.push({ value: targetValue(r.target), label: r.target, hint: stageLabel(r.stage), group: GROUP_ADDED });
+  }
+  out.push({ value: NEW_STATUS, label: "New status…" });
+  return out;
+}
+
+/** The name a new status starts with: the ClickUp name, with a capital. */
+export function newStatusName(source: string): string {
+  const name = cleanName(source).slice(0, 64);
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 // ── who can see a new space (§5.3) ───────────────────────────────────────────
@@ -551,6 +852,29 @@ export function unmatchedPeopleNote(people: readonly PlanPerson[], chosen: Recor
   );
 }
 
+/**
+ * The choices for one person on the people step: "Leave unassigned", then
+ * every member. The list comes from the plan, which holds the same set the
+ * server accepts. `fallback` serves a run planned before the plan carried it.
+ * A member chosen earlier who has left the list stays visible, so the
+ * control never shows a value it cannot name.
+ */
+export function memberOptions(
+  plan: Pick<ImportPlan, "members"> | null | undefined,
+  fallback: readonly SelectOption[],
+  person: Pick<PlanPerson, "member">,
+  unassigned: string,
+): SelectOption[] {
+  const listed: SelectOption[] = plan?.members
+    ? plan.members.map((m) => ({ value: m.email, label: m.name || m.email, hint: m.email }))
+    : [...fallback];
+  const options: SelectOption[] = [{ value: unassigned, label: "Leave unassigned" }, ...listed];
+  if (person.member && !options.some((o) => o.value === person.member)) {
+    options.push({ value: person.member, label: person.member });
+  }
+  return options;
+}
+
 /** How the people step says where a proposal came from. */
 export function matchLabel(person: PlanPerson): string {
   if (person.match === "email") return "Matched by email";
@@ -582,9 +906,16 @@ export function reportLines(
   if (report.comments_written) out.push(`Added ${plural(report.comments_written, "comment")}.`);
   if (report.completed_at_estimated)
     out.push(`Estimated the completion date of ${plural(report.completed_at_estimated, "closed task")}.`);
-  if (report.done_status_added) out.push(`Added a Done status to ${plural(report.done_status_added, "list")}.`);
+  // I-10: D79 counts the status SETS that gained a Done, one per space, or
+  // per list that an earlier import gave a set of its own.
+  if (report.done_status_added)
+    out.push(
+      `Added a Done status to ${plural(report.done_status_added, "space or list", "spaces and lists")}.`,
+    );
   if (report.lanes_added)
-    out.push(`Added ${plural(report.lanes_added, "status")} to lists that were already in Metorite.`);
+    out.push(
+      `Added ${plural(report.lanes_added, "status")} to spaces and lists that were already in Metorite.`,
+    );
   if (report.tasks_skipped)
     out.push(`Skipped ${plural(report.tasks_skipped, "task")} the earlier ClickUp connector wrote.`);
   if (report.tasks_moved) out.push(`${plural(report.tasks_moved, "task")} had moved, and kept status and people.`);

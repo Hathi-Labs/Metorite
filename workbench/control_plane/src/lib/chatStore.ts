@@ -72,7 +72,10 @@ export interface ChatMessage {
   /** Agent's structured todo list (VS Code Todos panel parity). */
   todos?: { id: string; title: string; status: string }[];
   agentState?: Record<string, unknown>;
-  customEvents?: { name: string; value: unknown }[];
+  /** `segmentCutoff`: the count of text segments when the event arrived, so a
+   *  card draws before the text that streamed after it (`genUiFlow` in
+   *  `lib/chatPlacement.ts`). Absent on a run with no segment ids. */
+  customEvents?: { name: string; value: unknown; segmentCutoff?: number }[];
   /** Who authored this turn: a person's email, or an agent's registered name. */
   authorEmail?: string;
   /** Whose FACE to render — deliberately separate from `role`.
@@ -86,6 +89,10 @@ export interface ChatMessage {
   redacted?: boolean;
   /** Capabilities the producing run held that the reader does not. */
   redactedCaps?: string[];
+  /** A member's turn that has not reached a run yet: held while the app
+   *  updates, or steered into a run that has not taken it. A repeat of the
+   *  same words collapses into it (`lib/chatRecovery.ts`). Never saved. */
+  pendingDelivery?: boolean;
 }
 
 // ── Session state ────────────────────────────────────────────────────────────
@@ -110,10 +117,21 @@ export interface SessionStreamState {
    *  - "recovering": reconnecting or polling for content after disconnect
    *  - "unknown": can't determine status (e.g. Redis unavailable) */
   runStatus: "idle" | "running" | "recovering" | "unknown";
+  /** True while the app updates: the gateway did not take a send, and the
+   *  chat shows ONE "Metorite is updating" notice (`lib/chatRecovery.ts`). */
+  outage: boolean;
+  /** The member's sends held during an update, each once, in order. They go
+   *  out when `/api/health` says the gateway is back. */
+  pendingSends: string[];
+  /** The held sends that are a Continue: they go out with `resume`. */
+  pendingResume: string[];
 }
 
 function _defaultState(): SessionStreamState {
-  return { messages: [], isLoading: false, error: null, abortController: null, recovering: false, lastEventId: null, runStatus: "idle" };
+  return {
+    messages: [], isLoading: false, error: null, abortController: null, recovering: false,
+    lastEventId: null, runStatus: "idle", outage: false, pendingSends: [], pendingResume: [],
+  };
 }
 
 // ── Module-level store ───────────────────────────────────────────────────────
@@ -191,6 +209,43 @@ export function getActiveSessionIdsStable(): Set<string> {
   _cachedActiveIds = fresh;
   _cachedActiveIdsStr = str;
   return fresh;
+}
+
+// ── Which agent each session runs (WS-51 S1) ─────────────────────────────────
+//
+// The nav's run badge counts a live run on its app (`lib/runActivity.ts`).
+// The server names the agent of a run with a session row. A run this tab just
+// started may have no row yet, and the server then says "unknown". The hook
+// that streams the session knows its agent, and records it here.
+
+const _sessionAgents = new Map<string, string>();
+
+export function setSessionAgent(id: string, agentName: string): void {
+  if (agentName) _sessionAgents.set(id, agentName);
+}
+
+export function getSessionAgent(id: string): string | undefined {
+  return _sessionAgents.get(id);
+}
+
+/**
+ * Clear `isLoading` for a loop that gives up its stream, but only when that
+ * loop still owns the session's loading state (`controller` is the current
+ * one). A newer send or reattach keeps its own state.
+ *
+ * Why: the reattach loop in `useAgentChat` is aborted on unmount. Its catch
+ * and finally skip every write once cancelled, so `isLoading` stayed true with
+ * a dead controller. The store outlives the component, so the run badge then
+ * counted a run that this tab no longer watched, until a reload. A run that
+ * still runs stays counted: the server's list reports it.
+ *
+ * Returns true when it cleared the state. Fence: `chatStore.test.ts`.
+ */
+export function releaseLoading(id: string, controller: AbortController): boolean {
+  const cur = _store.get(id);
+  if (!cur || !cur.isLoading || cur.abortController !== controller) return false;
+  setSessionState(id, (prev) => ({ ...prev, isLoading: false, abortController: null }));
+  return true;
 }
 
 // ── Stream ownership (single-writer-per-message) ─────────────────────────────

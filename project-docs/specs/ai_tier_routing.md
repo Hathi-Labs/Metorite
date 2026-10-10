@@ -24,6 +24,19 @@ selector of `/chat` leave. The executor reads the effort from the member's
 words. The boxes in §5 and §7.2 carry the amendment. Branch `ws45-no-pickers`
 builds it, and it ships dark behind the two flags that exist.
 
+**Amended by the owner (2026-10-09), two decisions.** First, a `no_egress`
+run may send a typed question with short fields to `tier-decide`. The boxes
+in §5, §6.1 and §6.6 carry it, and Projects now asks two small choices that
+way. Second, one model serves each turn. The turn picks its tier at the start, and
+a tool hint no longer moves a later request of that turn. The boxes in §4.4
+and §5 carry it. Branch `decide-projects-one-tier` builds both.
+
+**Amended by D-EM-61 (owner, 2026-10-09), §7.1 and §8.** No member chooses
+the tier of an email AI task, with the flag on or off. The email settings lose
+all three model rows, and no email surface reads `chat_model`. An uncovered
+email chat runs on `tier-powerful`, which the code chooses. A covered one
+still sends no model. `email_app_master_plan.md` §10.4.16 (EM-T15) owns it.
+
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
 
@@ -609,6 +622,34 @@ fails on a name that no registry holds.
 request in the same turn goes to the hint's tier. That request reads the tool's
 output and writes the answer, so it is the step that needs the stronger model.
 
+> **Amended by the owner, 2026-10-09: one model per turn.** The text above
+> stays as the record of D90. A turn now picks its tier once, at the start,
+> and keeps it for every main request of the turn. So the prompt cache of the
+> vendor stays warm for the whole turn.
+>
+> - The turn kind (§4.3) and the effort set the tier. `plan`, `analysis` and
+>   `code` take `tier-powerful`. `chat` keeps the agent's default.
+> - A hinted tool does not move the next request. The executor logs
+>   `ai_route.hint_ignored` with the agent, the run, the tool, the kind of
+>   the hint, the tier of the turn and the tier that the hint would choose.
+>   The line holds no tenant text. It is for tuning the turn kind.
+> - `TOOL_HINTS` stays as the record of the hints. `tool_hint` is no longer a
+>   reason of `ai_route.chosen`.
+> - Max keeps `tier-powerful` for the whole turn, as before.
+> - Thinking starts the turn one rung above the agent's default, and the
+>   turn keeps that tier. A `plan`, `analysis` or `code` turn may already
+>   start higher, so the turn takes the higher of the two. Thinking also sets
+>   `reasoning_effort` to `medium` and the System-1 threshold to 0.80. *(The
+>   owner chose this on 2026-10-09, after #760. #760 had moved no tier for
+>   Thinking.)*
+> - Why: a switch in the middle of a turn sends the next request to another
+>   model. That model holds no cache of the prompt, so it reads about 45k
+>   tokens again at the full price.
+>
+> Fences: `TestChoose` and `test_a_hinted_tool_keeps_the_turn_tier_and_is_logged`
+> in `tests/unit/test_tier_policy.py`, and item 4 of
+> `tests/unit/test_tier_policy_agents.py`.
+
 ### 4.5 How the executor switches the tier per request
 
 - A new chat middleware, `TierPolicyMiddleware`, lives in
@@ -620,7 +661,8 @@ output and writes the answer, so it is the step that needs the stronger model.
 - It reads the turn kind and the last tool call from run state.
 - It logs one line for each request: `ai_route.chosen`, with the agent, the
   run, the tier, the kind and the reason (`default`, `turn_kind`, `tool_hint`
-  or `effort`). The line holds no tenant text.
+  or `effort`). The line holds no tenant text. *(Amended by the owner,
+  2026-10-09: `tool_hint` is no longer a reason. See the box in §4.4.)*
 - **A Copilot SDK agent cannot switch per request.** task-manager and
   app-builder get the turn-kind tier for the whole run, set once at
   `_apply_model_for_maf_agent`. D84 ports them later.
@@ -689,6 +731,19 @@ nudges the policy, and it sets the reasoning effort as today.
 > The text above stays as the record of D90. Q3 (no fourth label) does not
 > change. Fences: `tests/unit/test_tier_policy_effort_from_text.py` and
 > `src/lib/tierRoutingControls.test.ts`.
+
+> **Amended by the owner, 2026-10-09.** Two lines above change. The Thinking
+> row of the table now reads: a Thinking turn starts one rung above the
+> agent's default, and keeps that tier for the whole turn (§4.4). For
+> example, `tier-balanced` becomes `tier-powerful`, and `tier-fast` becomes
+> `tier-balanced`. A `plan`, `analysis` or `code` turn takes the higher of
+> the two tiers. A tool hint no longer moves a request. Auto does not change,
+> and Max stays on `tier-powerful`. Thinking still sets `reasoning_effort`
+> and the threshold. Fences: `TestChoose` in `tests/unit/test_tier_policy.py`
+> and `TestARealRun` in `tests/unit/test_tier_policy_effort_from_text.py`.
+> The D93 sentence "A `no_egress` run stays on `tier-fast` too" also changes,
+> and the box in §6.6 gives the new rule.
+
 - **Max costs more credits.** Every main request bills at the Powerful rate.
   The selector shows no price (D88's rule for the bar applies here too).
 - **The Copilot stream path sends `low` for Auto** (`executor.py:4251-4268`).
@@ -722,6 +777,11 @@ nudges the policy, and it sets the reasoning effort as today.
 > turn-kind question. In a `no_egress` run, every item stays on `tier-fast`,
 > so the egress class of §6.6 holds.
 
+> **Amended by the owner, 2026-10-09.** The D93 sentence "In a `no_egress`
+> run, every item stays on `tier-fast`" changes. A `no_egress` run may now
+> send a SHORT typed item to `tier-decide`, while `DECIDE_IN_NO_EGRESS` is on.
+> The switch ships ON. §6.6 gives the rule and the bound.
+
 > **D93, the cost.** A decide request holds at most 16 questions, so a batch of 17 to 20 items
 > goes out as 2 requests. Each decide request is one `usage_event` row on
 > `tier-decide`, and each fallback is one row on `tier-fast` (§6.5). The text
@@ -752,8 +812,8 @@ decide(question, context, kind="choice", options="", items="")
   `question`, a `kind` and `options`. When `items` is set, the tool ignores
   `question`, `kind` and `options`, and it asks every item in ONE request.
 
-The System-1 agent answers in this fixed shape, through `response_format`
-with a JSON schema:
+The System-1 agent answers in this fixed shape, in JSON mode (see the
+amendment below):
 
 ```text
 {"answers": [{"id": str, "choice": str, "confidence": number 0..1, "reason": str}]}
@@ -762,6 +822,17 @@ with a JSON schema:
 - `choice` must be one of the item's options. For `yes_no` the options are
   `yes` and `no`.
 - `reason` holds at most 120 characters.
+
+> **Amended 2026-10-09 (production fault).** The request uses JSON mode,
+> `{"type": "json_object"}`, and not a JSON schema. With the schema, the
+> Router answered 400 to every System-1 request from 2026-10-05 to
+> 2026-10-08, so no turn-kind question got an answer. Every other JSON caller
+> of the platform sends `json_object`. The instructions of `system-one` now
+> carry the shape above. `system_one.parse_answers` checks it, and a reply
+> that is not the shape gives `UNAVAILABLE`, never a guess. Each failure logs
+> `system_one.failed` with a reason code, for example `reason=http_400`.
+> Fence: `test_the_request_asks_for_json_mode_and_names_no_schema` in
+> `tests/unit/test_system_one_tool.py`.
 
 ### 6.4 What the calling model reads
 
@@ -838,6 +909,67 @@ check below passes. Here is how the System-1 callable passes each one:
   `COVERED_PROJECTS_TOOLS_TIER_ROUTED` beside `COVERED_PROJECTS_TOOLS`, with
   this section as the reason. The plain pin does not move.
 
+> **Amended by the owner, 2026-10-09: a typed question in a `no_egress`
+> run.** This box amends the D93 rule above and `data_narrowing_pipeline.md`
+> Q4.
+>
+> - **What the owner allows.** A `no_egress` run may send a typed question
+>   (`yes_no`, `choice` or `score`) with short fields to `tier-decide`. The
+>   decide vendor is already a sub-processor, for email rule matching (D75).
+>   Free-form work stays on our chat tiers.
+> - **The bound.** `decide_tools` sends an item of a `no_egress` run to
+>   `tier-decide` only when the context holds at most 500 characters (about
+>   two sentences), the question at most 400 and each option at most 120. A longer item goes to
+>   `tier-fast`. The tool then logs `decide_tool.system_one_fallback` with
+>   the reason `no_egress_not_short`. The turn-kind question always stays on
+>   `tier-fast`.
+> - **One bound for every path.** `decide_tools.short_context` holds the
+>   bound. The PICK step of `narrow_and_read` asks it for each batch, and the
+>   Projects twin check asks it for its context. A PICK batch of 16 summaries
+>   is longer than the bound, so it goes to System 1 and logs
+>   `narrowing.pick_fallback` with the same reason.
+> - ⚠️ **What the bound does not do.** It measures length, not content. The
+>   model writes the context of the `decide` tool, so up to 500 characters
+>   of raw member text can reach `tier-decide` while `SYSTEM_ONE_ON_DECIDE`
+>   is on. The owner accepted this on 2026-10-09: two sentences is a short
+>   summary. The bound was 1500 in #760.
+> - **The Projects choices fit the bound.** A name question sends at most
+>   about 120 characters. A twin context holds clipped titles and task
+>   numbers, so about two pairs fit. In a `no_egress` run, the check asks
+>   the best pair of each title first, then the pairs that still fit. The
+>   log line `projects.typed_choice` counts the pairs it leaves out. Any
+>   other run asks every pair.
+> - Fences: `test_a_501_character_context_goes_to_tier_fast` and
+>   `test_a_500_character_context_goes_to_tier_decide` in
+>   `tests/unit/test_decide_in_no_egress.py`.
+> - **The switch.** `DECIDE_IN_NO_EGRESS` is the one switch that undoes this,
+>   and it ships ON. With it off, a `no_egress` run sends no decide request,
+>   as before. `decide_tools.decide_in_no_egress` is the one reader, and a
+>   broken read reads as off. `SYSTEM_ONE_ON_DECIDE` still gates the
+>   System-1 `decide`, and it ships OFF.
+> - **The egress class.** The System-1 `decide` keeps `open_world=False`, by
+>   the decision of the owner. A covered run can now reach two destinations:
+>   our Router and the decide door. The Jev `decide` stays
+>   `open_world=True`, because its context has no bound.
+> - **Projects asks the same engine inside its tools.**
+>   `decide_tools.ask_typed` sends ONE typed question for each of two small
+>   choices. A name with no exact match (a project, a status, a task type or
+>   a person) gets a `choice` question over the close names and `unsure`. A
+>   create gets a `yes_no` question for each open task with a close title.
+>   The context holds names, titles and task numbers, and never a
+>   description. `skill_projects/choices.py` holds both. They run only for
+>   an agent that `AI_TIER_ROUTING` covers.
+> - **The card shows what a model chose.** A status, a type and a person show
+>   on the card by name, as before. A project that a name resolved shows
+>   first on the `create_task` card, and in its detail line.
+> - **The safe answer.** An `unsure`, a confidence under the threshold of §5
+>   and a failure of both engines give the refusal of before, with the real
+>   names. A twin is a flag on the card. It never blocks a create.
+>
+> Fences: `tests/unit/test_decide_in_no_egress.py`,
+> `tests/unit/test_projects_typed_choices.py` and `TestNoEgress` in
+> `tests/unit/test_narrowing_pick.py`.
+
 ### 6.7 Its output is data
 
 The context is tenant content, and an injection can sit inside it. Five rules
@@ -879,6 +1011,9 @@ bound what an injection can do.
   (`src/app/email/components/automation/ai-settings/SettingsTab.tsx`) and of
   the Tasks settings (`src/app/tasks/components/TaskSettingsModal.tsx`). S4
   removes both controls.
+- **D-EM-61 (2026-10-09)** removes every model row of the email settings, the
+  draft and compose rows too, with the flag on or off. The Tasks rows do not
+  change.
 
 ### 7.2 What stays, and what is new
 
@@ -942,7 +1077,7 @@ contract.
 | `AgentRunRequest.model` | The executor ignores it for a covered agent, and logs `ai_route.model_ignored` with the value | The chat stops sending it | Remove it from `route.ts` after one release with zero `ai_route.model_ignored` lines from the chat. The gateway field stays for API callers until H-44 decides |
 | `payload.think_mode` | Unchanged | Unchanged | Never. It stays |
 | `localStorage` `cc-model-<agent>`, `cc-model-usage` | Unchanged | The chat stops reading them, and deletes them once on mount | Nothing left |
-| `email_assistant_settings.chat_model` | Unchanged | The email chat stops reading it for a covered agent | The column stays. A drop is a later decision (R6) |
+| `email_assistant_settings.chat_model` | Unchanged | The email chat stops reading it for a covered agent. D-EM-61 (2026-10-09): no case reads it | The column stays. A drop is a later decision (R6). HANDOFF carries it with the other two email model columns |
 | `user_settings.chat_model` (Tasks) | Unchanged | The Tasks chat stops reading it for a covered agent | Same |
 | `PROJECTS_AGENT_MODEL` and the other agent env vars | They become the Balanced rung of the policy | Unchanged | Unchanged. They are D-AI-4's default |
 | `copilot_chat_model` setting | The executor ignores it for a covered agent | Unchanged | H-44 decides |
@@ -994,9 +1129,12 @@ needs restoring.
 | The UI flag off changes nothing | `AgentChat.picker.test.ts`. The flag-off markup is the same for each coverage value. An answer with `ai.route` events draws the same as one with none | vitest |
 | The executor ignores a client model for a covered agent | `tests/unit/test_tier_policy.py` (new) | pytest |
 | The policy table lives in one place | `test_tier_policy.py`. Each kind maps to a tier in the slate, and each `TOOL_HINTS` name exists in a tool registry | pytest |
-| A tool hint raises the NEXT request only | `test_tier_policy.py`, through a real `OpenAIChatCompletionClient` on an `httpx.MockTransport`, as in `test_native_maf_wire.py` | pytest |
+| A tool hint moves no request. The turn keeps one tier, and the hint logs `ai_route.hint_ignored` (owner, 2026-10-09) | `test_tier_policy.py`, through a real `OpenAIChatCompletionClient` on an `httpx.MockTransport`, as in `test_native_maf_wire.py`, and item 4 of `test_tier_policy_agents.py` | pytest |
+| A `no_egress` run sends only a short typed item to `tier-decide`, and the switch off sends none (owner, 2026-10-09) | `tests/unit/test_decide_in_no_egress.py` | pytest |
+| A Projects tool resolves a name or flags a twin with one typed question, and an `unsure` keeps the refusal (owner, 2026-10-09) | `tests/unit/test_projects_typed_choices.py` | pytest |
 | Max sends every main request to `tier-powerful`, and a decision stays on `tier-fast` | `test_tier_policy.py` | pytest |
-| The System-1 request names `tier-fast`, holds no tools and carries a JSON schema | `tests/unit/test_system_one_tool.py` (new), on the wire | pytest |
+| The System-1 request names `tier-fast`, holds no tools and asks for JSON mode, with no JSON schema (amended 2026-10-09) | `tests/unit/test_system_one_tool.py`, on the wire | pytest |
+| A System-1 failure logs its reason code, and the Router's refusal line names the status, the vendor, the error class and a closed word list, with no content (2026-10-09) | `test_system_one_tool.py` `TestTheFailureReasonIsLogged`, and `tests/unit/test_router_refusal_log.py` | pytest |
 | A batch is one request | `test_system_one_tool.py` | pytest |
 | A choice outside the options reads as `unsure` | `test_system_one_tool.py` | pytest |
 | The reason is capped, cleaned and framed as data | `test_system_one_tool.py` | pytest |
@@ -1030,7 +1168,8 @@ Each ticket is one PR. Each one ships dark.
 
 1. With `AI_TIER_ROUTING=projects-assistant`, a projects-assistant run holds
    `decide`. One call sends one request. Its `model` is `tier-fast`, it holds
-   no `tools`, and its `response_format` has the type `json_schema`.
+   no `tools`, and its `response_format` has the type `json_object`
+   (amended 2026-10-09, §6.3).
 2. That run holds the System-1 `decide` with `DECIDE_ENABLED` off.
 3. Another agent on the same box holds the Jev `decide` only when
    `DECIDE_ENABLED` is on, as today.

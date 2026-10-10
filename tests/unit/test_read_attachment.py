@@ -276,7 +276,7 @@ def test_a_parse_past_its_deadline_stops(suffix: str, make) -> None:
 
 def test_an_unknown_type_is_refused() -> None:
     with pytest.raises(at.AttachmentRefused, match=r"I read \.docx"):
-        at.extract_text(b"PK", ".pptx")
+        at.extract_text(b"PK", ".exe")
 
 
 # ── 3. It runs no process ───────────────────────────────────────────────────
@@ -499,9 +499,9 @@ def test_a_malformed_attachment_gives_one_clean_sentence(ws) -> None:
 
 
 def test_an_unsupported_type_is_named_without_a_read(ws) -> None:
-    _attach(ws, SID_A, "deck.pptx", b"PK")
-    out = _read(ws, SID_A, "deck.pptx")
-    assert out.startswith("I cannot read deck.pptx.")
+    _attach(ws, SID_A, "deck.key", b"PK")
+    out = _read(ws, SID_A, "deck.key")
+    assert out.startswith("I cannot read deck.key.")
     assert at.SUPPORTED_SENTENCE in out
 
 

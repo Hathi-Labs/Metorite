@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 139
+-- Tables in this phase: 141
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -78,6 +78,9 @@ UPDATE audit_event SET organization_id = (SELECT id FROM organization WHERE slug
  WHERE organization_id IS NULL;
 
 UPDATE chat_message SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE chat_pending_ask SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE chat_session SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -426,6 +429,9 @@ UPDATE wa_sync_log SET organization_id = (SELECT id FROM organization WHERE slug
  WHERE organization_id IS NULL;
 
 UPDATE wa_templates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE whatsapp_member_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE workflow_modules SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

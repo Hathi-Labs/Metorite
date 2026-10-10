@@ -273,6 +273,59 @@ describe("the card reads as a sentence, then rows", () => {
     expect(isHiddenField("parent_id", "not a uuid")).toBe(false);
   });
 
+  // Mutation caught: the label kept the list hyphen ("- From", "- To").
+  // Follow-up 3 of #766: the email cards write their targets as list rows.
+  it("a list row reads by its key, without the hyphen", () => {
+    const send = parseCardBody(
+      "The mailbox and each recipient:\n- From: Fracktal · dana@fracktal.in\n- To: geo@fracktal.test",
+    );
+    expect(send.fields.map((f) => f.label)).toEqual(["From", "To"]);
+    expect(send.fields[0].value).toBe("Fracktal · dana@fracktal.in");
+    expect(send.notes).toEqual(["The mailbox and each recipient:"]);
+    const draft = parseCardBody(
+      "Each recipient of this draft:\n- To: a@b.test\n- Cc: c@b.test\n- Bcc: d@b.test",
+    );
+    expect(draft.fields.map((f) => f.label)).toEqual(["To", "Cc", "Bcc"]);
+    // A key with no hyphen keeps its label, and a hyphen inside a key stays.
+    expect(parseCardBody("status: Open\nfollow-up: soon").fields.map((f) => f.label)).toEqual([
+      "Status",
+      "Follow-up",
+    ]);
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: "Send this email?",
+        context: "The mailbox and each recipient:\n- From: Box\n- To: geo@fracktal.test",
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(html).toContain(">From</dt>");
+    expect(html).not.toContain(">- From<");
+  });
+
+  // Mutation caught: every note drawn after the rows. The screenshots of
+  // follow-up 5 of #766 showed "Each recipient of this draft:" under the list.
+  it("a note that ends with a colon leads into the rows, and any other note follows them", () => {
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: "Send this draft?",
+        context: "Each recipient of this draft:\n- To: a@b.test\n- Bcc: d@b.test",
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(html.indexOf("Each recipient of this draft:")).toBeLessThan(html.indexOf(">To</dt>"));
+    const projects = renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: "Create this task?",
+        context: "This change is recorded as yours.\ntitle: «Task 1»",
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(projects.indexOf("This change is recorded as yours.")).toBeGreaterThan(projects.indexOf(">Title</dt>"));
+  });
+
   it("an email body stays text, in the UI font", () => {
     const body = parseCardBody("Hi Bob,\n\nThe report is attached.\nThanks: Ann");
     expect(body.fields).toEqual([]);

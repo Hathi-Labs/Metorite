@@ -21,15 +21,13 @@ import {
 import { autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
   AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
-  DraftConfidence, KnowledgeEntry, LLMConfigResponse, LearnedPattern,
+  DraftConfidence, KnowledgeEntry, LearnedPattern,
   LearnedRulePattern, RuleGuidance, VoiceProfile, WEEKDAYS,
 } from "../../../lib/types";
 import { SignatureEditor } from "../../SignatureEditor";
 import { DigestSettingsDialog } from "../DigestSettingsDialog";
 import { Modal, SectionHeader, SettingCard, Toggle } from "../ui";
 import { VoiceProfileDialog } from "./VoiceProfileDialog";
-import { useTierRouted } from "@/hooks/useTierRouted";
-import { visibleModelRows } from "@/lib/tierRouting";
 import {
   Empty, Field, IconAction, INPUT_BASE, INPUT_CLS, Spinner, summary,
 } from "./common";
@@ -131,13 +129,10 @@ function OrgDomainsCard({
 
 export function SettingsTab({ accountId }: { accountId: string | null }) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
-  // WS-45 S4 (D90): the chat model row leaves for a covered email-assistant.
-  const tier = useTierRouted("email-assistant");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [llm, setLlm] = useState<LLMConfigResponse | null>(null);
   const [dialog, setDialog] = useState<
     | "followup"
     | "digest"
@@ -163,13 +158,6 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
       cancelled = true;
     };
   }, [accountId]);
-
-  useEffect(() => {
-    fetch("/api/settings/llm")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setLlm(d))
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (!accountId) {
@@ -416,94 +404,9 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             domains={s.org_domains || []}
             onChange={(next) => persistPatch({ org_domains: next })}
           />
-          {/* No rules model (D-EM-7): the rules run on the `decide` tier,
-              and no member can change it. */}
-          {/* WS-45 S4 (§7.1): no chat reads the chat model of a covered
-              email-assistant, so its row leaves. The column stays (R6). */}
-          {visibleModelRows([
-            {
-              key: "draft_model" as const,
-              title: "Draft writing model",
-              description:
-                "Writes background reply drafts, follow-ups, and rule draft actions. A powerful tier is recommended for reply quality — nobody is waiting on these.",
-              value: s.draft_model,
-              def: "tier-powerful",
-            },
-            {
-              key: "compose_model" as const,
-              title: "Manual draft model",
-              description:
-                "The composer's \"Draft with AI\" button — you wait on this one, so a fast tier is recommended (reasoning tiers can take 30s+ per click).",
-              value: s.compose_model,
-              def: "tier-fast",
-            },
-            {
-              key: "chat_model" as const,
-              title: "Email chat model",
-              description:
-                "The model the assistant chat panel uses inside the email app.",
-              value: s.chat_model,
-              def: "tier-balanced",
-            },
-          ], "chat_model", tier.covered).map((cfg) => (
-            <SettingCard
-              key={cfg.key}
-              title={cfg.title}
-              description={cfg.description}
-              right={
-                <select
-                  value={cfg.value || cfg.def}
-                  onChange={(e) =>
-                    persistPatch({ [cfg.key]: e.target.value })
-                  }
-                  className={`${INPUT_CLS} w-56 py-1`}
-                >
-                  {llm ? (
-                    <>
-                      {llm && (
-                        <optgroup label="Tiers (auto-routing)">
-                          {llm.tiers.map((t) => (
-                            <option key={t.tier_name} value={t.tier_name}>
-                              {t.tier_name}
-                              {t.tier_name === cfg.def ? " (default)" : ""}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {/* ⚠️ A RAW-MODEL OPTGROUP WAS HERE, and D32.7 is why
-                          it is not. **Customers never see a model.** Tiers are
-                          the only vocabulary, and the
-                          Console answers a bare model id with a 400 rather
-                          than coercing it — so a value picked here would stop
-                          working the day `ROUTER_SERVING_ENABLED` flips.
-
-                          This is H-72's defect on a second surface. /tasks was
-                          the urgent one because /tasks is LIVE; /email is
-                          `preview` (WS-17), so this closes the same hole
-                          before anyone can fall into it.
-
-                          ⚠️ This stops NEW ones. It does not heal a value
-                          already saved: that still shows below, because hiding
-                          it would leave somebody staring at a picker that
-                          disagrees with what their email AI actually runs on.
-                          Which tier an existing model id should become is a
-                          product decision (H-72). */}
-                      {cfg.value &&
-                        !llm?.tiers.some((t) => t.tier_name === cfg.value) && (
-                          <option value={cfg.value}>
-                            {cfg.value} (not a tier — ask us)
-                          </option>
-                        )}
-                    </>
-                  ) : (
-                    <option value={cfg.value || cfg.def}>
-                      {cfg.value || cfg.def} (default)
-                    </option>
-                  )}
-                </select>
-              }
-            />
-          ))}
+          {/* No model and no tier is a member choice (D-EM-7, D-EM-61).
+              Our code picks the tier of each email AI task, so the Advanced
+              section ends with the domains card. Fence: noTierChoice.test.ts. */}
         </div>
 
         {/* ── Danger zone ── */}

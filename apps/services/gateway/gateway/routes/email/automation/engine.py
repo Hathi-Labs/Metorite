@@ -862,6 +862,7 @@ async def _llm_pick_rule(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_prompt}],
                 max_tokens=800,
+                feature="rule_match",
             )
             if isinstance(data, dict) and isinstance(data.get("index"), int):
                 idx = data["index"]
@@ -948,6 +949,7 @@ async def _llm_pick_rules(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_prompt}],
                 max_tokens=1500,
+                feature="rule_match",
             )
             out: list[dict[str, Any]] = []
             seen: set[int] = set()
@@ -1545,7 +1547,7 @@ class ClassifyRead:
     """What Block R of a job read for one email (WS-17 EM-T4a-2 PR-B1).
 
     ``match`` is the read of the rule match. ``first`` is what
-    ``replyzero.status_before_match`` learned in ``on``, or None (a
+    ``replyzero.read_status_first`` read in ``on``, with no verdict, or None (a
     ``replyzero.StatusFirst``, typed ``Any`` because replyzero imports this
     module). ``resolve`` says whether Block W runs the resolver.
     ``conversation`` is ``replyzero._thread_is_conversation``, read outside
@@ -1565,11 +1567,13 @@ async def read_classification(
     """The READ half of :func:`classify_matches` for a job (WS-17 EM-T4a-2
     PR-B1). It takes ``db`` and opens no block. A job calls it in Block R.
 
-    It runs the status-first step of fix round 3, then
-    :func:`read_rule_match`. A missing status in ``on`` raises
-    ``DecisionUnavailable`` before the rule match is read or paid. In ``on``
-    of ``email.thread_status`` that step still asks its model here, inside
-    Block R, until PR-B3 (§10.4.6). The rule match asks nothing here.
+    It runs the read of the status-first step of fix round 3
+    (``replyzero.read_status_first``), then :func:`read_rule_match`. Neither
+    asks a model here. PR-B3 (§10.4.6): in ``on`` of
+    ``email.thread_status``, the job asks the status-first plan with no block
+    open (``replyzero.ask_status_first``), before the rule-match ask. A
+    missing status then raises ``DecisionUnavailable`` before the rule match
+    is paid.
 
     PR-B2: outside ``on``, it also reads whether the thread is a
     conversation, so the job knows in Block R whether it asks the status.
@@ -1577,12 +1581,12 @@ async def read_classification(
     # Lazy: replyzero imports this module (see classify_matches).
     from gateway.routes.email.automation.replyzero import (
         _thread_is_conversation,
-        status_before_match,
+        read_status_first,
     )
 
     row_id = getattr(message_row, "id", None)
     thread_id = getattr(message_row, "thread_id", None)
-    first = (await status_before_match(db, account_id, message_row)
+    first = (await read_status_first(db, account_id, message_row)
              if resolve else None)
     match = await read_rule_match(
         db, account_id, email, multi_rule=multi_rule,

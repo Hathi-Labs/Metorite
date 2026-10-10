@@ -233,7 +233,9 @@ class TestARealRun:
         assert [i["id"] for i in _items(wire.bodies[0])] == ["turn", "effort"]
         # The run's effort is Thinking: reasoning effort medium, never Max's high.
         assert [b.get("reasoning_effort") for b in model.bodies] == ["medium"]
-        assert [b["model"] for b in model.bodies] == ["tier-balanced"]
+        # Owner, 2026-10-09 (after #760): a Thinking chat turn starts one rung
+        # above the agent's default (`tier-balanced`), for the whole turn.
+        assert [b["model"] for b in model.bodies] == ["tier-powerful"]
         lines = _effort_lines(logs)
         assert len(lines) == 1
         assert (lines[0]["effort"], lines[0]["source"]) == ("thinking", "system_one")

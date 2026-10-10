@@ -183,7 +183,7 @@ async def _route_incoming_turn(
     will ever apply. ``run_detached``'s own guard still stands behind that, so
     engaging on a bad read cannot destroy a transcript — it raises instead.
     """
-    from orchestrator.steer import Route, TurnDecision, route_turn
+    from orchestrator.steer import Route, TurnDecision, is_bare_stop, route_turn
 
     if not thread_id:
         return TurnDecision(Route.ENGAGE, "no_thread")
@@ -196,12 +196,81 @@ async def _route_incoming_turn(
         _log.warning("agent.turn_route_probe_failed", thread_id=thread_id[:12])
         return TurnDecision(Route.ENGAGE, "probe_failed")
 
+    # ── A dead run is never steered into (incident 2026-10-09) ───────────────
+    # ``cc:active`` outlives the process that held the run. When the owner
+    # process has no heartbeat key, close the run here (its partial reply is
+    # saved with an "interrupted" marker) and route as if nothing ran. A bare
+    # "stop" to a dead run has nothing left to stop.
+    #
+    # ONE recovery at a time (``cc:recover:{tid}``). A request that loses the
+    # claim waits for the winner, then routes as usual: into the winner's new
+    # run as a steer, so a second run never starts (two held sends that flush
+    # together are the likely case).
+    from orchestrator.run_liveness import (  # noqa: PLC0415
+        recovery_in_progress, run_liveness, wait_out_recovery,
+    )
+
+    async def _reread() -> tuple[bool, str]:
+        a = await is_active(thread_id)
+        return a, (await get_run_source(thread_id) if a else "")
+
+    try:
+        if await recovery_in_progress(thread_id):
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+        if active and await run_liveness(thread_id) == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            stop = is_bare_stop(text)
+            rec = await recover_dead_run(thread_id, why="owner_gone", hold=not stop)
+            if rec is not None:
+                if stop:
+                    return TurnDecision(Route.DROP, "dead_run_stopped")
+                return TurnDecision(Route.ENGAGE, "dead_run_recovered")
+            await wait_out_recovery(thread_id)
+            active, source = await _reread()
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.turn_recovery_failed", thread_id=thread_id[:12])
+
     return route_turn(
         author_kind="human" if actor else "agent",
         text=text,
         run_active=active,
         target_run_kind=_run_kind_for_source(source),
     )
+
+
+async def _resume_note_for(
+    thread_id: str, member: str, organization_id: str | None,
+) -> str | None:
+    """The server's Continue note, built from the thread's saved partial reply.
+
+    Reads the last assistant row of the thread under the caller's tenant.
+    ``None`` unless that row carries the restart marker: any member who can
+    send may set ``resume: true``, so the flag counts only for an answer a
+    restart cut. The caller then sends the message as it came.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from gateway.chat_recovery import (  # noqa: PLC0415
+        compose_resume_note, row_was_interrupted,
+    )
+
+    try:
+        from gateway.routes.chat import _get_messages  # noqa: PLC0415
+
+        rows = await asyncio.to_thread(
+            _get_messages, thread_id, (member or "").strip() or "anonymous",
+            limit=20, organization_id=organization_id,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.resume_partial_unread", thread_id=thread_id[:12])
+        return None
+    last = next((r for r in reversed(rows or []) if r.get("role") == "assistant"), None)
+    if last is None or not row_was_interrupted(last):
+        _log.info("agent.resume_refused_no_marker", thread_id=thread_id[:12])
+        return None
+    return compose_resume_note(str(last.get("content") or ""))
 
 
 #: Sources whose runs nobody is standing in. A person's message arriving during
@@ -338,6 +407,36 @@ async def _apply_turn_decision(
 
     text = str(req.payload.get("message") or req.payload.get("user_query") or "")
     signal = await send_steer(thread_id, actor, text, run_id=req.run_id)
+
+    # ── A steer that NO process heard (incident 2026-10-09) ──────────────────
+    # The owner may still have a heartbeat (it is in its graceful stop) while
+    # its control listener is already gone. Nothing will ever apply this
+    # steer. So close the dead run, take THIS steer back out of the store (the
+    # message itself carries it), and start the next run in this request. The
+    # ENGAGE branch replays the steers stored earlier, such as a "Continue"
+    # that an earlier request left behind.
+    #
+    # "Nobody heard it" alone proves nothing (a listener can be a moment from
+    # subscribing on another worker). The run must ALSO have lost its owner's
+    # heartbeat. And only the request that wins the recovery claim engages: a
+    # loser keeps its steer stored for replay, as before.
+    if signal.get("undelivered"):
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        if await run_liveness(thread_id) == "dead":
+            from orchestrator.steer import Route as _Route  # noqa: PLC0415
+            from orchestrator.steer import TurnDecision as _Decision  # noqa: PLC0415
+            from orchestrator.steer import discard_signal  # noqa: PLC0415
+
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            rec = await recover_dead_run(thread_id, why="steer_undelivered", hold=True)
+            if rec is not None:
+                await discard_signal(thread_id, str(signal.get("id") or ""))
+                return await _apply_turn_decision(
+                    _Decision(_Route.ENGAGE, "dead_run_recovered"),
+                    req, agent_name, actor, room,
+                )
 
     # The room sees WHO redirected the run and when. Deliberately on
     # `cc:room:` and not on the run stream: run events are folded into the
@@ -1353,19 +1452,19 @@ async def list_agents(
     dynamic = _load_dynamic_agents()
     dynamic_names = {a["name"] for a in dynamic}
     # Static agents not overridden by dynamic entries come first
-    static = [a for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
+    # A COPY of each entry. The loop below writes each declared runtime into
+    # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
+    # write into the shared dict changed the label of the process on the first
+    # GET /agent (WS-43n review): task-manager and app-builder declare "maf"
+    # in config.json and are labelled "github-copilot" here, on purpose.
+    static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
-    # or have NULL in the DB column.  Rule: only entries registered FROM a
-    # GitHub repo URL are "github-copilot"; everything else (local path,
-    # unknown) is plain MAF.
+    # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for
+    # every source. A repo URL no longer implies the Copilot SDK. An entry
+    # that names a runtime keeps it, and its config.json still wins below.
     for a in dynamic:
         if not a.get("agent_runtime"):
-            a["agent_runtime"] = (
-                "github-copilot"
-                if (a.get("repo_name") or a.get("repo_url"))
-                and not a.get("local_path")
-                else "maf"
-            )
+            a["agent_runtime"] = "maf"
     merged = static + dynamic
 
     # Honor each agent's declared config.json runtime (authoritative over the
@@ -1589,6 +1688,12 @@ async def register_agent(
     repo_url: str = (req.repo_url or "").strip().rstrip("/")
     repo_name: str = ""
 
+    # WS-43n (maf_coding_engine.md §15.5): the repo's own config.json
+    # "runtime" is the one source of the runtime. The request carries no
+    # runtime field. So config.json is read on EVERY registration, not only
+    # when the request leaves the metadata empty.
+    declared_runtime: str | None = None
+
     # Detect local path: req.local_path set, or repo_url is an absolute path
     raw_input = req.local_path or (repo_url if Path(repo_url).is_absolute() else None)
     if raw_input:
@@ -1599,81 +1704,131 @@ async def register_agent(
                 detail=f"Local path does not exist: {raw_input}",
             )
         local_path = str(resolved)
-        # Auto-read config.json from disk if metadata is missing
-        if not description or not integrations:
-            config_file = resolved / "config.json"
-            if config_file.exists():
-                try:
-                    cfg: dict = json.loads(config_file.read_text(encoding="utf-8"))
+        config_file = resolved / "config.json"
+        if config_file.exists():
+            try:
+                cfg: dict = json.loads(config_file.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict):
+                    declared_runtime = _normalize_runtime(cfg.get("runtime"))
+                    # Fill only the metadata that the request left empty.
                     description = description or cfg.get("description", "")
                     tags = tags or cfg.get("tags", [])
                     integrations = integrations or cfg.get("integrations", [])
                     optional_integrations = optional_integrations or cfg.get("optional_integrations", [])
-                    _log.info("agent.config_read_local", name=req.name, path=local_path)
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning("agent.config_parse_failed", name=req.name, error=str(exc))
+                _log.info("agent.config_read_local", name=req.name, path=local_path)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("agent.config_parse_failed", name=req.name, error=str(exc))
     else:
         # GitHub URL
         repo_name = repo_url.removeprefix("https://github.com/").removeprefix("http://github.com/")
-        if not description or not integrations:
-            settings = get_settings()
-            gh_token: str = getattr(settings, "github_token", "") or ""
-            headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
-            if gh_token:
-                headers["Authorization"] = f"token {gh_token}"
-            last_status: int = 0
-            try:
-                async with httpx.AsyncClient(timeout=8) as client:
-                    cfg = {}
-                    for branch in ("main", "master", "HEAD"):
-                        url = (
-                            "https://raw.githubusercontent.com"
-                            f"/{repo_name}/{branch}/config.json"
-                        )
-                        resp = await client.get(url, headers=headers)
-                        last_status = resp.status_code
-                        if resp.status_code == 200:
-                            try:
-                                cfg = resp.json()
-                            except Exception:  # noqa: BLE001
-                                cfg = {}
-                            break
-                    if cfg:
-                        description = description or cfg.get("description", "")
-                        tags = tags or cfg.get("tags", [])
-                        integrations = integrations or cfg.get(
-                            "integrations", []
-                        )
-                        optional_integrations = (
-                            optional_integrations
-                            or cfg.get("optional_integrations", [])
-                        )
-                        _log.info(
-                            "agent.config_fetched",
-                            name=req.name,
-                            repo=repo_name,
-                        )
-                    elif last_status in (403, 404):
-                        _log.warning(
-                            "agent.config_not_found_or_forbidden",
-                            name=req.name,
-                            repo=repo_name,
-                            status=last_status,
-                            hint=(
-                                "Repo may be private or the GitHub token "
-                                "may not have access to this organisation."
-                            ),
-                        )
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "agent.config_fetch_failed",
-                    name=req.name,
-                    error=str(exc),
-                )
+        # WS-43n: config.json is fetched on every registration, for its
+        # "runtime". The fetch fails CLOSED: when GitHub cannot answer, the
+        # gateway cannot tell a Copilot repo from a MAF one, so it registers
+        # nothing. A 404 means the repo declares nothing, so it gets "maf".
+        # A 403 also registers as before, because the loader cannot clone a
+        # repo that the token cannot read.
+        settings = get_settings()
+        gh_token: str = getattr(settings, "github_token", "") or ""
+        headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+        last_status: int = 0
+        cfg = {}
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                for branch in ("main", "master", "HEAD"):
+                    url = (
+                        "https://raw.githubusercontent.com"
+                        f"/{repo_name}/{branch}/config.json"
+                    )
+                    resp = await client.get(url, headers=headers)
+                    last_status = resp.status_code
+                    if resp.status_code == 200:
+                        try:
+                            cfg = resp.json()
+                        except Exception:  # noqa: BLE001
+                            cfg = {}
+                        break
+                    # Only a 404 tries the next branch. Any other status
+                    # stops here, so a 5xx on main is not hidden by a 404 on
+                    # master and HEAD.
+                    if resp.status_code != 404:
+                        break
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "agent.config_fetch_failed",
+                name=req.name,
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    f"Could not read config.json from {repo_name!r}, so the "
+                    "agent runtime is unknown. Try again."
+                ),
+            ) from exc
+        if last_status not in (200, 403, 404):
+            _log.warning(
+                "agent.config_fetch_failed",
+                name=req.name,
+                repo=repo_name,
+                status=last_status,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    f"GitHub answered {last_status} for the config.json of "
+                    f"{repo_name!r}, so the agent runtime is unknown. Try again."
+                ),
+            )
+        if cfg and isinstance(cfg, dict):
+            declared_runtime = _normalize_runtime(cfg.get("runtime"))
+            description = description or cfg.get("description", "")
+            tags = tags or cfg.get("tags", [])
+            integrations = integrations or cfg.get("integrations", [])
+            optional_integrations = (
+                optional_integrations
+                or cfg.get("optional_integrations", [])
+            )
+            _log.info(
+                "agent.config_fetched",
+                name=req.name,
+                repo=repo_name,
+            )
+        elif last_status in (403, 404):
+            _log.warning(
+                "agent.config_not_found_or_forbidden",
+                name=req.name,
+                repo=repo_name,
+                status=last_status,
+                hint=(
+                    "Repo may be private or the GitHub token "
+                    "may not have access to this organisation."
+                ),
+            )
 
-    # agent_runtime: only agents registered FROM a GitHub repo URL run via the
-    # GitHub Copilot SDK (GitHubCopilotAgent). Local-path agents are plain MAF.
-    agent_runtime = "github-copilot" if (repo_name and not local_path) else "maf"
+    # WS-43n (D84, D92): a repo whose config.json DECLARES the Copilot
+    # runtime gets a 400 with the migration text of §15.5. A repo that
+    # declares nothing gets "maf". If such a repo still builds a Copilot
+    # agent, the loader logs its deprecation line and the executor finds it
+    # by the object (``is_copilot_agent``) until WS-43r refuses it. Agents
+    # registered before this change keep their row and still run.
+    if declared_runtime == "github-copilot":
+        from acb_skills.loader import COPILOT_MIGRATION_TEXT
+
+        _log.info(
+            "agent.register_refused_copilot",
+            name=req.name,
+            source="local" if local_path else "github",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Agent {req.name!r}: its config.json declares the runtime "
+                "\"github-copilot\". " + COPILOT_MIGRATION_TEXT
+            ),
+        )
+    agent_runtime = "maf"
 
     entry: dict = {
         "name": req.name,
@@ -1900,7 +2055,7 @@ def fold_message_id(assistant_message_id: str | None, thread_id: str) -> str:
 
 def _mint_run_row(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
-    organization_id: str | None,
+    organization_id: str | None, prompt: PromptToSave | None = None,
 ) -> None:
     """Create the agent row of a run before its stream opens (WS-27bm S14, §20).
 
@@ -1913,6 +2068,12 @@ def _mint_run_row(
     The mint only inserts. When a row with this id exists, the mint changes
     nothing. It is best effort. On a failure it logs ``agent.mint_failed``
     and the run goes on, because the fold still inserts the row at the end.
+
+    WS-51 S4: *prompt* is the member's turn, which goes in FIRST, in the
+    same worker call and after the same ``_ensure_session``. One call keeps
+    one time budget on the path to the first byte. A failed prompt write
+    logs ``agent.prompt_save_failed`` and the mint still runs. The browser
+    save still writes the turn.
     """
     import time
 
@@ -1926,12 +2087,25 @@ def _mint_run_row(
     try:
         # The parent session must exist before the message FK insert. It
         # takes the email as the session stores it, the same as the fold.
-        # S15 (§21): both writes bind the run's tenant, which the route
+        # S15 (§21): every write binds the run's tenant, which the route
         # resolved from the server-side identity. No tenant fails closed.
         _ensure_session(
             thread_id, (member or "").strip(), agent_name,
             organization_id=organization_id,
         )
+    except Exception as exc:  # The mint must never stop a run.
+        _log.warning(
+            "agent.mint_failed",
+            thread_id=thread_id[:12], message_id=message_id[:40],
+            error=str(exc)[:200],
+        )
+        return
+    if prompt is not None:
+        _write_prompt_row(
+            thread_id, prompt, member=member, agent_name=agent_name,
+            organization_id=organization_id,
+        )
+    try:
         _upsert_messages(
             thread_id,
             [MessageRecord(
@@ -1953,20 +2127,24 @@ def _mint_run_row(
 
 #: How long the run waits for its mint before it opens the stream (S14 fix
 #: round 1). The mint is best effort, so a slow database must not hold the
-#: first byte of the reply.
+#: first byte of the reply. WS-51 S4: the prompt save shares this budget.
 _MINT_TIMEOUT_S = 2.0
 
 
 async def _mint_run_row_bounded(
     thread_id: str, message_id: str, *, member: str, agent_name: str,
-    organization_id: str | None,
+    organization_id: str | None, prompt: PromptToSave | None = None,
 ) -> None:
-    """``_mint_run_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
+    """``_mint_run_row`` in ONE worker thread, bounded by ``_MINT_TIMEOUT_S``.
+
+    The member's turn (*prompt*) and the agent row share the one call and
+    the one budget, so a stalled database holds the first byte for 2 s at
+    most, and holds one worker, not two.
 
     On a timeout it logs ``agent.mint_failed`` with the reason ``timeout``,
     and the run goes on. The thread can still finish later. The mint only
-    inserts, so a late mint changes no row that a checkpoint or the fold
-    wrote first.
+    inserts, and the prompt upsert is idempotent by id, so a late write
+    changes no row that a checkpoint, the browser or the fold wrote first.
     """
     import asyncio
 
@@ -1975,7 +2153,7 @@ async def _mint_run_row_bounded(
             asyncio.to_thread(
                 _mint_run_row, thread_id, message_id,
                 member=member, agent_name=agent_name,
-                organization_id=organization_id,
+                organization_id=organization_id, prompt=prompt,
             ),
             _MINT_TIMEOUT_S,
         )
@@ -1985,6 +2163,142 @@ async def _mint_run_row_bounded(
             thread_id=thread_id[:12], message_id=message_id[:40],
             reason="timeout",
         )
+        if prompt is not None:
+            _log.warning(
+                "agent.prompt_save_failed",
+                thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+                reason="timeout",
+            )
+
+
+#: The longest browser message id that the run route saves (WS-51 S4). A
+#: browser id is a nanoid of 21 characters.
+_PROMPT_ID_MAX = 128
+
+
+class PromptToSave(BaseModel):
+    """The member's turn that the run route saves for the browser (WS-51 S4)."""
+
+    message_id: str
+    content: str
+    timestamp_ms: int
+    custom_events: list[Any] = []
+
+
+def prompt_to_save(
+    *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
+    actor: str, room: Any, supersedes: str = "",
+) -> PromptToSave | None:
+    """The turn to save at run start, or ``None`` when the server saves nothing.
+
+    WS-51 S4 (``chat_run_continuity.md`` §4). The browser saves the member's
+    turn too, a moment later. The server writes the SAME row id, so the
+    browser's save updates that row and never adds a second one. So the server
+    saves only when the browser named its id. An old bundle, or an API caller,
+    sends no id, and keeps the old behaviour.
+
+    The author is never in this record. ``_upsert_messages`` stamps a human
+    turn with the caller, from the session. A caller who may not send in the
+    room (``can_send``) saves nothing, and so does a room that the lookup could
+    not resolve.
+
+    The time is the browser's own stamp of the turn, which the browser save
+    writes too. Its earlier turns carry the browser clock, so a server clock
+    could sort this turn above the reply before it. With no stamp, the server
+    clock is used.
+    """
+    import time
+
+    mid = (message_id or "").strip()
+    words = text or ""
+    if not thread_id or not mid or len(mid) > _PROMPT_ID_MAX or not words.strip():
+        return None
+    if not (actor or "").strip():
+        return None
+    if room is None or getattr(room, "resolve_failed", False):
+        return None
+    if not getattr(room, "can_send", False):
+        return None
+    ts = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
+    if not 0 < ts < 2**53:
+        ts = int(time.time() * 1000)
+    # An edit keeps its "Edited" marker after a reload, as the browser's own
+    # save writes it (lib/chatEdit.ts `editedMarker`).
+    marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
+    return PromptToSave(
+        message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
+    )
+
+
+def _write_prompt_row(
+    thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
+    organization_id: str | None,
+) -> bool:
+    """Write the member's turn (WS-51 S4). True on a write. Never raises.
+
+    The caller has made the chat row (``_ensure_session``). The write goes
+    through the one upsert seam, ``_upsert_messages``, bound to the run's
+    tenant, which the route took from the server-side identity. The seam
+    passes the text through ``storable`` and stamps the author from
+    ``member``. The id comes from the browser, so the seam declines it when
+    it names a row that is not this member's own turn: an agent row, a
+    system row, or another member's turn.
+
+    It is best effort, as the mint is. On a failure it logs
+    ``agent.prompt_save_failed`` and the run goes on, because the browser save
+    still writes the turn.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    try:
+        declined = _upsert_messages(
+            thread_id,
+            [MessageRecord(
+                id=prompt.message_id, role="user", content=prompt.content,
+                timestamp=prompt.timestamp_ms,
+                custom_events=list(prompt.custom_events),
+            )],
+            actor_email=member, agent_name=agent_name,
+            organization_id=organization_id,
+        )
+        return not declined
+    except Exception as exc:  # The save must never stop a run.
+        _log.warning(
+            "agent.prompt_save_failed",
+            thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+            error=str(exc)[:200],
+        )
+        return False
+
+
+def _save_steered_prompt(
+    thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
+    organization_id: str | None,
+) -> bool:
+    """Save a steered turn (WS-51 S4). It runs AFTER the 202 is sent.
+
+    The route adds it as a background task, so a slow database never holds
+    the answer to a steer. A steer starts no run, so no mint shares this
+    call. The chat row is made first when it is missing.
+    """
+    from gateway.routes.chat import _ensure_session
+
+    try:
+        _ensure_session(
+            thread_id, (member or "").strip(), agent_name,
+            organization_id=organization_id,
+        )
+    except Exception as exc:  # A background save must never raise.
+        _log.warning(
+            "agent.prompt_save_failed",
+            thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+            error=str(exc)[:200],
+        )
+        return False
+    return _write_prompt_row(
+        thread_id, prompt, member=member, agent_name=agent_name,
+        organization_id=organization_id,
+    )
 
 
 async def _extract_run_memory(
@@ -2077,6 +2391,47 @@ async def run_agent_stream_endpoint(
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
     await _prepare_if_new_thread(room, req.thread_id, _room_org)
 
+    # ── An edited message SUPERSEDES the last one (owner, 2026-10-09) ────────
+    # Step 1 of 3, and it changes no row. Refuse an edit the rules forbid,
+    # then stop the member's OWN run, so the edit starts a run of its own and
+    # never folds into the old one as a steer. Steps 2 and 3 are below: the
+    # route refuses an edit it would steer, and the rows go only after
+    # `_refuse_if_another_run_is_active`, so a refusal deletes nothing.
+    # gateway/chat_supersede.py holds the rules.
+    _supersede_note = ""
+    _superseded_ids: list[str] = []
+    _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
+    _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
+    _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    # WS-51 S4: the member's turn, as they typed it. The server saves it
+    # below, before the run starts, so a tab closed at once keeps it. The
+    # words are read HERE, before a Continue note, a replayed steer or the
+    # supersede note changes `message`.
+    _prompt = prompt_to_save(
+        thread_id=req.thread_id, message_id=_new_user_id,
+        text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
+        timestamp=req.payload.pop("user_message_ts", None),
+        actor=actor_email, room=room, supersedes=_supersedes,
+    )
+    _edit_shared = bool(room is not None and room.is_shared)
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            check_supersede,
+            settle_active_run,
+        )
+        try:
+            await asyncio.to_thread(
+                check_supersede, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+            await settle_active_run(req.thread_id, actor_email)
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+
     # The other people in the room find out what was asked, and by whom, the
     # moment it is asked — the run stream carries only the agent's side.
     if room is not None and room.is_shared:
@@ -2091,16 +2446,48 @@ async def run_agent_stream_endpoint(
     # Before anything expensive — before memory assembly, before the executor —
     # decide what this message DOES. Four outcomes; only one of them starts a
     # run. See _route_incoming_turn / orchestrator.steer.route_turn.
+    # ── Continue after a restart (incident 2026-10-09) ───────────────────────
+    # The chat's Continue button sends ``resume: true``. The words the model
+    # reads are the SERVER's, built from the saved partial reply, so a client
+    # cannot write that instruction. See gateway.chat_recovery.
+    if req.payload.pop("resume", None) and req.thread_id:
+        _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
+        if _note is not None:
+            req.payload["message"] = _note
+
     _incoming_text = str(
         req.payload.get("message") or req.payload.get("user_query") or ""
     )
     _decision = await _route_incoming_turn(
         req.thread_id or "", actor_email, _incoming_text,
     )
+    # Edit, step 2: an edit is never a steer. A run that started since step 1
+    # (another member's) refuses the edit, and no row has gone yet.
+    if _supersedes and _decision.route.name != "ENGAGE":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "run_in_progress",
+                "message": "A run is in progress on this conversation. "
+                           "Wait for it to end, then edit your message.",
+            },
+        )
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
     if _steered is not None:
+        # WS-51 S4: a steer is stored for the live run (#797), and the
+        # member's words show on a reload too, as their own turn. The spec
+        # is silent here, so the turn is saved with its actor. A stop and a
+        # dropped turn save nothing.
+        # It runs as a background task, after the 202 is sent, so a slow
+        # database never holds the answer to a steer.
+        if _decision.route.name == "STEER" and _prompt is not None:
+            background_tasks.add_task(
+                _save_steered_prompt, req.thread_id or "", _prompt,
+                member=actor_email, agent_name=agent_name,
+                organization_id=_room_org,
+            )
         return _steered
 
     run_id = req.run_id or str(uuid.uuid4())
@@ -2312,6 +2699,9 @@ async def run_agent_stream_endpoint(
                 for r in rows
                 if r.get("role") in ("user", "assistant")
                 and str(r.get("content") or "").strip()
+                # WS-51 S4: the current turn is saved before the run, and
+                # it reaches the model as `message`. Not twice.
+                and not (_new_user_id and r.get("id") == _new_user_id)
             ]
 
         req.payload["_history_loader"] = _load_history_from_store
@@ -2346,6 +2736,19 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
         )
+        if _superseded_ids:
+            # A cancelled run on another worker can fold its row after the
+            # edit deleted it. Delete the superseded rows again, by id.
+            from gateway.chat_supersede import delete_rows  # noqa: PLC0415
+            try:
+                await asyncio.to_thread(
+                    delete_rows, thread_id, _superseded_ids,
+                    organization_id=_room_org,
+                )
+            except Exception:  # noqa: BLE001 — best effort, never fail the fold
+                _log.warning(
+                    "agent.supersede_redelete_failed", thread_id=thread_id[:12],
+                )
         # Memory extraction at the SAME run boundary (review P1-9): the Next
         # translator only extracted while its reader was alive, so turns
         # completed after a browser-gone/reconnect contributed nothing to
@@ -2359,13 +2762,39 @@ async def run_agent_stream_endpoint(
     _actor = (getattr(user, "email", "") or "").strip()
     await _refuse_if_another_run_is_active(thread_id, _actor)
 
+    # Edit, step 3: every refusal is behind us, so the old turn and its
+    # replies go now, in one locked transaction that decides again. The note
+    # is composed from their stored tool events.
+    if _supersedes and req.thread_id:
+        from gateway.chat_supersede import (  # noqa: PLC0415
+            SupersedeRefused as _EditRefused,
+            compose_supersede_note,
+            supersede_rows,
+        )
+        try:
+            _plan = await asyncio.to_thread(
+                supersede_rows, req.thread_id, _supersedes,
+                actor=actor_email, keep_ids=_edit_keep, shared=_edit_shared,
+                organization_id=_room_org,
+            )
+        except _EditRefused as _refused:
+            raise HTTPException(
+                status_code=_refused.status, detail=_refused.detail(),
+            ) from None
+        _supersede_note = compose_supersede_note(_plan)
+        _superseded_ids = _plan.removed_ids
+
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a
     # steered or refused turn mints nothing.
+    # WS-51 S4: the same worker call first saves the member's turn, under the
+    # browser's own id. It comes after the supersede above, so an edit's old
+    # turn is gone first. One call and one time budget, so a stalled database
+    # holds the first byte for one budget, not two.
     await _mint_run_row_bounded(
         thread_id, _persist_message_id,
         member=_mem_user, agent_name=agent_name,
-        organization_id=_room_org,
+        organization_id=_room_org, prompt=_prompt,
     )
 
     _think_mode = _resolve_think_mode(req)
@@ -2380,6 +2809,18 @@ async def run_agent_stream_endpoint(
     # sourcing the tenant from it is a tenant-spoofing hole (R11,
     # user_management_contract.md; §0.9.3). No DB write is converted this slice.
     _organization_id = getattr(user, "organization_id", None)
+
+    # The supersede note goes in LAST, after memory search, the Graphiti
+    # episode and the extraction input read the message: memory files the
+    # member's words, never the platform's note. `message` is what every
+    # runtime reads as the current turn (the Copilot SDK path, the MAF string
+    # path and a MAF native session alike), so the note reaches the model on
+    # each of them.
+    if _supersede_note:
+        _edited = str(req.payload.get("message") or "")
+        req.payload["message"] = (
+            f"{_supersede_note}\n\n{_edited}" if _edited else _supersede_note
+        )
 
     agent_gen = run_agent_stream(
         agent_name,
@@ -2411,6 +2852,14 @@ async def run_agent_stream_endpoint(
                 # never req.payload. Binds the detached drain task's own scope so
                 # the on_complete persist hook sees the right tenant (R11).
                 organization_id=_organization_id,
+                # What the restart sweep needs to save this run's partial
+                # reply if this process dies (orchestrator.run_liveness).
+                record={
+                    "messageId": _persist_message_id,
+                    "agent": agent_name,
+                    "runId": run_id,
+                    "model": req.model,
+                },
             ):
                 yield f"data: {json.dumps(evt)}\n\n"
         except SupersedeRefused:
@@ -2458,6 +2907,68 @@ async def run_agent_stream_endpoint(
             "Connection": "keep-alive",
         },
     )
+
+
+async def _late_answer_from_row(
+    req: UserInputResponseRequest, user: UserContext,
+) -> tuple[str | None, bool]:
+    """``(message to resend, the card has a row)`` for an answer no run took.
+
+    WS-51 S2 (``CHAT_DURABLE_ASKS``, default OFF; OFF returns
+    ``(None, False)`` and the route keeps its old path). The row is read under
+    the CALLER's tenant, which ``get_current_user`` bound from the session,
+    never from the request (R5e). A row of another org is invisible under
+    FORCE row level security, so a member of a second org finds no row and
+    answers nothing.
+
+    The row moves to ``answered`` in one statement, so two late answers to
+    one card resend once. The loser gets ``(None, True)``, the old 409.
+    Fence: ``tests/unit/test_pending_ask_flow.py``.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return None, False
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org or not req.thread_id:
+        return None, False
+    try:
+        row = await asyncio.to_thread(pending_ask.read_ask, org, req.request_id)
+    except Exception:  # noqa: BLE001 — the old path still answers
+        _log.warning("agent.pending_ask_read_failed", exc_info=True)
+        return None, False
+    if row is None:
+        return None, False
+    # Only the member who was asked answers a card whose run has ended
+    # (review of #813). A thread with no chat row passes the room gate for
+    # any member of the org, so the room alone is not enough.
+    me = (getattr(user, "email", "") or "").strip().lower()
+    if not me or str(row.get("actor_email") or "") != me:
+        return None, True
+
+    from gateway.chat_recovery import card_answer_from_ask  # noqa: PLC0415
+
+    resend = await card_answer_from_ask(req.thread_id, row, req.answer)
+    if resend is None:
+        return None, True
+    try:
+        moved = await asyncio.to_thread(
+            pending_ask.move_ask, org, req.request_id,
+            to="answered", from_states=pending_ask.WAITING, answer=req.answer,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("agent.pending_ask_answer_failed", exc_info=True)
+        return None, True
+    if moved is None:
+        return None, True
+    _log.info(
+        "agent.pending_ask_answered_late",
+        request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+        state=str(row.get("state") or ""),
+    )
+    return resend, True
 
 
 @router.post(
@@ -2509,19 +3020,52 @@ async def respond_user_input(
     )
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
+    _command: dict[str, Any] = {
+        "cmd": "respond_input",
+        "request_id": req.request_id,
+        "answer": req.answer,
+        "was_freeform": req.was_freeform,
+    }
     if not delivered:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
-        delivered = await dispatch_control(
-            req.thread_id,
-            {
-                "cmd": "respond_input",
-                "request_id": req.request_id,
-                "answer": req.answer,
-                "was_freeform": req.was_freeform,
-            },
-        )
+        delivered = await dispatch_control(req.thread_id, _command)
     if not delivered:
+        # ── A card answer across a restart (incident 2026-10-09) ─────────────
+        # The run that asked may have died with its process. Then a bare 409
+        # drops the answer. Instead, close the dead run and hand the answer
+        # back, with the question it answers, as a message the browser sends.
+        # That message starts the next run (it ENGAGEs, the run is closed).
+        from orchestrator.stream_relay import delivery_of  # noqa: PLC0415
+
+        from gateway.chat_recovery import card_answer_after_restart  # noqa: PLC0415
+
+        # WS-51 S2: the card's durable row, when it has one. A PARKED run
+        # ended on purpose, so its answer always starts a new run, and the
+        # question comes from the row, which outlives the stream.
+        resend, has_row = await _late_answer_from_row(req, user)
+        if not has_row:
+            resend = await card_answer_after_restart(
+                req.thread_id, req.request_id, req.answer,
+                delivery=delivery_of(_command),
+            )
+        if resend is not None:
+            _log.info(
+                "agent.user_input_after_restart",
+                request_id=req.request_id[:12], thread_id=req.thread_id[:12],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "run_restarted",
+                    "message": (
+                        "The assistant restarted. Your answer will be sent "
+                        "as a new message."
+                    ),
+                    "resumeMessage": resend,
+                    "threadId": req.thread_id,
+                },
+            )
         # The run may have ended or the request id is stale.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -2601,6 +3145,20 @@ async def reconnect_agent_stream(
         _since = since
         if _since.startswith("local-"):
             _since = "0-0"
+
+        # A dead run never holds a reconnect open (incident 2026-10-09). Its
+        # flag outlives its process, and Phase 2 below would then wait on it
+        # for up to an hour, with the chat showing "Reconnecting…". Close it
+        # first: the replay then carries its "interrupted" marker and ends.
+        try:
+            from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+            if await is_active(thread_id) and await run_liveness(thread_id) == "dead":
+                from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+                await recover_dead_run(thread_id, why="reconnect")
+        except Exception:  # noqa: BLE001 — never block a replay on this check
+            _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
 
         # Track the replay cursor so Phase 2 subscribes from the exact spot —
         # subscribing from "$" would silently drop any events pushed between

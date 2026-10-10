@@ -2829,3 +2829,199 @@ main.wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/* ── Explain: the ⓘ beside a number (WS-50 slice 2, D94) ─────────────────
+   A visible icon that opens on hover, focus and tap. `title` attributes hid
+   every explanation until a person suspected it was there. The popover is
+   `position: fixed` (set inline from the icon's box), so a `.tablewrap`
+   cannot clip it. */
+.explain {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 5px;
+}
+button.explain-btn {
+  margin: 0;
+  padding: 0;
+  width: 15px;
+  height: 15px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--muted);
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 13px;
+  text-align: center;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: help;
+}
+button.explain-btn:hover:not(:disabled),
+button.explain-btn[aria-expanded="true"] {
+  filter: none;
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+button.explain-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+.explain-pop {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: normal;
+}
+.explain-title { font-size: 13px; font-weight: 700; }
+.explain-means { color: var(--text); }
+.explain-formula {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+}
+.explain-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.explain-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.explain-note { font-size: 12px; color: var(--warn); }
+
+/* An estimated figure says so beside its value. */
+.est {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  text-transform: none;
+}
+
+/* The money strip: the answer before the detail. Built on `.stats`. */
+.stat .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.stat.loss {
+  border-color: var(--danger-line);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel);
+}
+.stat.loss .num { color: var(--danger); }
+.moneynotes { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.moneynotes li { margin: 2px 0; }
+th .explain { margin-left: 4px; }
+/* A bridge over the 6px gap, so a pointer moving from the icon into the
+   popover does not leave the wrapper and close it. */
+.explain-pop::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+/* ── The customer's life (WS-50 slice 3) ────────────────────────────────
+   Where the customer is on the path, and the one next act. */
+.panel.lifecycle { padding-top: 14px; padding-bottom: 12px; }
+.lifebar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lifestep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--faint);
+}
+.lifestep + .lifestep::before {
+  content: "";
+  width: 28px;
+  height: 1px;
+  margin: 0 10px 0 4px;
+  background: var(--border-strong);
+}
+.lifedot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--r-pill);
+  border: 2px solid var(--border-strong);
+}
+.lifestep.done { color: var(--muted); }
+.lifestep.done .lifedot { background: var(--muted); border-color: var(--muted); }
+.lifestep.current { color: var(--text); font-weight: 600; }
+.lifestep.current .lifedot { background: var(--accent); border-color: var(--accent); box-shadow: var(--ring); }
+.lifenext { margin: 10px 0 0; font-size: 13.5px; }
+.tabs.customertabs { margin: 14px 0 6px; }
+
+/* ── The period picker (WS-50 slice 7) ──────────────────────────────────
+   Presets are links in the segmented look; a custom range is a GET form. */
+.rangebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: 4px 0 14px;
+}
+.rangebar .segmented a {
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.rangebar .segmented a:hover { color: var(--text); }
+.rangebar .segmented a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.rangeform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.rangeform label { display: flex; align-items: center; gap: 6px; margin: 0; text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 400; }
+.rangeform input[type="date"] { width: auto; padding: 5px 8px; font-size: 13px; }
+.rangeform button { margin: 0; padding: 6px 12px; font-size: 13px; }
+.rangebar .field-hint { flex-basis: 100%; margin: 0; }

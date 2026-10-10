@@ -578,12 +578,23 @@ class TestTheRefusals:
         with pytest.raises(at.AttachmentRefused, match=r"This Excel workbook .*too deeply"):
             _read(_one_sheet_raw(xml))
 
+    @pytest.mark.parametrize(("data", "says"), [
+        (at._OLE_MAGIC + bytes(504), "It has a password, or it is an older file"),
+        (b"not a zip", "Its name ends in .xlsx, but its content is a different kind"),
+    ], ids=["password-ole", "not-a-zip"])
+    def test_a_locked_or_renamed_workbook_is_refused_by_its_first_bytes(
+        self, data: bytes, says: str,
+    ) -> None:
+        """Attachment formats: the magic-byte check names the cause."""
+        with pytest.raises(at.AttachmentRefused) as err:
+            _read(data)
+        assert str(err.value).startswith("I could not read this file as an Excel workbook.")
+        assert says in str(err.value)
+
     @pytest.mark.parametrize("data", [
-        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504,
-        b"not a zip",
         xb.package({"xl/other.xml": b"<x/>"}),
         _one_sheet_raw(b'<worksheet xmlns="x"><sheetData><row>unclosed'),
-    ], ids=["password-ole", "not-a-zip", "no-workbook", "broken-xml"])
+    ], ids=["no-workbook", "broken-xml"])
     def test_a_broken_or_locked_workbook_is_refused_cleanly(self, data: bytes) -> None:
         with pytest.raises(at.AttachmentRefused) as err:
             _read(data)

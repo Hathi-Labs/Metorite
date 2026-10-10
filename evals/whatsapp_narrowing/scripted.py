@@ -33,7 +33,8 @@ from evals.email_narrowing.scripted import (  # noqa: F401 — one session for b
     Session,
     tier_after,
 )
-from evals.whatsapp_narrowing.dataset import Dataset, Question
+from evals.whatsapp_narrowing.dataset import Dataset, Question, message_text
+from evals.whatsapp_narrowing.stub_api import who_of
 
 #: The chat reads that today's model asks for in one request (an assumption).
 READS_PER_TURN = 5
@@ -42,7 +43,6 @@ GROUP_READ_LIMIT = 100
 
 _CHAT = re.compile(r"chat_id=([0-9a-f-]{36})")
 _MESSAGE = re.compile(r"message_id=([0-9a-f-]{36})")
-_ITEM = re.compile(r"^--- item ([0-9a-f-]{36}):([0-9a-f-]{36}) \|", re.MULTILINE)
 
 
 def _answer(ds: Dataset, q: Question, ids: list[str], checked: str) -> str:
@@ -88,12 +88,32 @@ async def play_before(
     return shown
 
 
+def marked(ds: Dataset, out: str) -> list[str]:
+    """The ids of the messages whose line the output shows as KEPT (``>>``).
+
+    H-279: one item can hold several kept messages (a whole chat, or two
+    windows that merge), so the header ids alone do not name every message
+    that the model read. A kept line is ``>> [time] who: text``. This check
+    builds it from the fixture, and not from the adapter, so an adapter that
+    drops or cuts the text of a kept line fails recall.
+    """
+    lines = [ln for ln in out.splitlines() if ln.startswith(">> [")]
+    found: list[str] = []
+    for m in ds.messages + ds.stranger_messages:
+        when = m["sent_at"][:16].replace("T", " ")
+        head = f">> [{when}] {who_of(m)}: "
+        text = " ".join(message_text(m).split())
+        if any(ln.startswith(head) and text in ln for ln in lines):
+            found.append(m["id"])
+    return found
+
+
 async def play_after(session: Session, ds: Dataset, q: Question) -> tuple[list[str], str]:
     """The narrowing path. Returns the message ids that it read in full, and
     the tool output."""
     filters = json.dumps(q.narrow_filters())
     [out] = await session.turn([("narrow_and_read", {"query": q.spec.prompt, "filters": filters})])
-    ids = [message for _chat, message in _ITEM.findall(out)]
+    ids = marked(ds, out)
     first = out.splitlines()[0] if out else ""
     session.answer(_answer(ds, q, ids, first))
     return ids, out

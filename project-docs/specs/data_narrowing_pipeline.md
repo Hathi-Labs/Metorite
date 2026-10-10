@@ -12,6 +12,13 @@
 branch `ws48-n4-whatsapp`). `NARROWING_AGENTS` ships empty, and
 `SYSTEM_ONE_ON_DECIDE` ships OFF. The N2, N3 and N4 build notes are under §9.
 
+**Amended by the owner (2026-10-09), Q4.** A `no_egress` run may send a
+typed question with short summaries to `tier-decide`. The decide vendor is
+already a sub-processor, for email rule matching. `DECIDE_IN_NO_EGRESS` is the
+one switch that undoes it, and it ships ON. §3.3 item 7, §4, §8, §9 N3 item 5,
+§9 N5 item 3 and §12 Q4 carry the amendment. `ai_tier_routing.md` §6.6 holds
+the full box.
+
 Verified against code on 2026-10-07 at `main` `82d09830b`. Every file path
 and line in this spec was read at that commit. Re-verify each anchor at
 dispatch, because the code is the fact.
@@ -262,6 +269,13 @@ filters only. PICK still gets the member's question as `query`.)*
    Q2). The whole pick step has one bound of 30 s.
 7. In a `no_egress` run, the tool sends every batch to System 1 on
    `tier-fast`. It sends no decide request (§4, Q4).
+   *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on, a
+   `no_egress` run may send a batch to the decide door too. The batch goes
+   only when its state fits the short bound of 500 characters
+   (`decide_tools.short_context`). A longer batch goes to System 1. A batch
+   with one full summary is already longer, so almost every batch of such a
+   run stays on `tier-fast`. With the switch off, the rule above holds.
+   The bound was 1500 in #760, and the owner set 500 on 2026-10-09.)*
 
 ### 3.3a The cost check of PICK — PICK pays for itself, or it is skipped
 
@@ -311,8 +325,65 @@ So the tool checks the cost before PICK. ONE function holds the rule,
 today's path.** Each gated question, and the gated questions together, must
 cost no more after than before. An eval can name a question that already costs
 more, with the highest ratio that the rule accepts and the HANDOFF id of its
-fix. That question fails the rule when its ratio goes up. The WhatsApp eval
-names Q2 at 1.45, under H-279. The email eval names none.
+fix. That question fails the rule when its ratio goes up. Since H-279,
+neither eval names a question, so the rule holds for every gated question.
+
+#### A whole span is read once, and windows that overlap merge (H-279)
+
+*(Added by H-279, 2026-10-08.)* A question about one whole chat, for example
+"what did the Dealers North group say in the last 3 weeks", has filters and no
+search words. NARROW then finds every message of that chat since a date. Such
+a question can have more candidates than the READ cap, so the cost check could
+not skip PICK. And the READ windows of one chat overlap, so READ gave some
+lines twice. The WhatsApp eval measured 1.45 times today's path on its Q2.
+
+The fix lives in the shared seam and in the adapter, and in no instruction:
+
+1. **The adapter marks a span.** `Narrowed.span` is True when the candidates
+   are EVERY item of one span of the source. The WhatsApp adapter sets it when
+   each condition holds:
+   - the search has no words, so the filters alone chose the rows.
+   - each filter key is `account_id`, `chat_id`, `contact`, `group` or
+     `after` (`narrow_source.SPAN_KEYS`). `from_me` and `has_media` choose a
+     part of a chat, and `before` a span that does not end now.
+   - every candidate is in one chat.
+   - with `contact`, the chat name holds it. The route also matches a
+     sender's name, and then the rows are a part of the chat.
+   - with more than 200 matches, `chat_id` names the chat. The 200 rows are
+     only the newest, so an older match can be in a second chat that
+     `contact` or `group` also chose.
+2. **A span skips PICK and the windows.** The tool calls the adapter's
+   `read_span` (`narrowing.SpanSource`). The WhatsApp adapter sends ONE GET of
+   the route of `read_whatsapp_chat`, with `limit` and no `around`. The route
+   gives the newest `limit` messages, oldest first (H-277). The limit is the
+   candidate count, at most 100 (`SPAN_LIMIT`).
+3. **The span is a cap, never a silent cut.** The read takes the NEWEST
+   messages. The count line says how many older matches it did not read, and
+   the next line names the call that reads them:
+
+   ```text
+   Read the newest 100 of 140 matches in full, as one span in reading order, with no PICK step. The filters chose every item of one span, so no item was checked. 40 older matches were not read.
+   To read the older messages, call read_whatsapp_chat with chat_id="<chat>" and limit=160.
+   ```
+
+   The limit of the next step is the match count plus 20 (`SPAN_SLACK`),
+   because new messages can reach the chat between NARROW and READ.
+
+   When the read takes every match, the line starts "Read all 27 matches in
+   full, as one span in reading order" and ends "Say that you read them all."
+4. **The blocks hold whole lines.** The adapter puts the span in blocks of at
+   most 6000 characters, the body clip, so the tool cuts no line. At most 25
+   blocks remain, the newest.
+5. **Each item is counted once.** `FullItem.covers` names the other kept ids
+   that one block holds. The tool counts a message as read only when a block
+   holds it. A match that the read did not give is "not read", never read.
+6. **A failed span read costs no recall.** The tool logs
+   `narrowing.span_read_failed` and takes the steps of §3.3 to §3.6.
+7. **READ windows of one chat that overlap merge.** Two windows of one chat
+   that share a message become one block, in reading order, with each kept
+   message marked `>>`. The block takes the id of the kept message of the best
+   rank, and `covers` names the others. A merged block over 6000 characters is
+   not merged, so no kept line is cut.
 
 ### 3.4 The keep rule
 
@@ -409,6 +480,10 @@ class SourceAdapter(Protocol):
   door. The decide vendor is a separate sub-processor (D75.8). So a decide
   request would add a destination to a covered run. WS48-F1 holds the rule,
   and Q4 asks the owner about it.
+  *(Amended by the owner, 2026-10-09. The owner answered Q4: the decide
+  door is an accepted destination for a typed question with short
+  summaries. So the tool keeps `open_world=False`, and a `no_egress` run asks
+  the door while `DECIDE_IN_NO_EGRESS` is on.)*
 - Each adapter lives beside its agent and uses that agent's own gateway
   helper. An adapter never opens a database session.
 
@@ -426,6 +501,13 @@ and it may change a filter key to match its route.
 `is_read`, and `words`, which sets `q` (§3.2). An adapter refuses a bad value
 by name through `narrowing.FilterRefused`, because the route drops a date
 that it cannot parse with no error.)*
+
+*(Amended by H-279, 2026-10-08. Two optional parts join the interface.
+`Narrowed.span` and `Narrowed.span_further` mark a whole span and its next
+step. An adapter that can read a span also has `read_span(candidates)`, the
+`SpanSource` protocol. `FullItem.covers` names the other kept ids that one
+item holds. Each part has a default, so the email adapter does not change.
+§3.3a holds the rule.)*
 
 *(Amended by WS-48 N4, 2026-10-08. The WhatsApp row as built: NARROW is
 `GET /whatsapp/search` with `hybrid=true`, `websearch=true` and `limit=201`.
@@ -480,6 +562,13 @@ follows. It never prints a total that nobody counted.)*
 count line has a second shape: "Read all 7 matches in full, with no PICK
 step." It names no check and no keep, because no model judged an item. When a
 read fails, it reads "Read 6 of 7 matches in full".)*
+
+*(Amended by H-279, 2026-10-08. A whole span has a third shape: "Read all
+27 matches in full, as one span in reading order, with no PICK step." When
+the span read must cut, it reads "Read the newest 100 of 140 matches", and it
+ends with "40 older matches were not read." The next line names the call
+that reads them (§3.3a). "Read N in full" counts the kept items that a block
+holds, and no longer the blocks.)*
 
 - "Checked" counts the questions that got an answer.
 - "Kept" includes the items that were not checked. So "Checked" plus "not
@@ -582,14 +671,15 @@ reads the credits from `usage_event`.
 
 | Id | Rule | Test |
 |---|---|---|
-| WS48-F1 | `keep()` drops only a confident `no`. An `unsure`, a low `no` and a missing answer keep the item. In a `no_egress` run, the PICK step sends no decide request | `tests/unit/test_narrowing_pick.py` (new) |
+| WS48-F1 | `keep()` drops only a confident `no`. An `unsure`, a low `no` and a missing answer keep the item. In a `no_egress` run with `DECIDE_IN_NO_EGRESS` off, the PICK step sends no decide request. With the switch on, it does (owner, 2026-10-09) | `tests/unit/test_narrowing_pick.py` (new) |
 | WS48-F2 | Each failure of the decide facade falls back to System 1 for that batch only, and logs `narrowing.pick_fallback`. A `DecideRequestInvalid` also logs at `error` | `tests/unit/test_narrowing_pick.py` |
 | WS48-F3 | One decide request holds at most 16 questions, and its state holds no full body. The test parses the request on the wire | `tests/unit/test_narrowing_pick.py` |
 | WS48-F4 | Only `narrowing.py` defines `narrow_and_read`. Each agent that holds the tool builds it with `make_narrow_tool`, and its instructions hold the count line rule | `tests/unit/test_narrowing_one_seam.py` (new), an AST scan of `apps/` and `packages/` |
 | WS48-F5 | An adapter opens no database session and imports no `sqlalchemy` | `tests/unit/test_narrowing_one_seam.py` |
-| WS48-F6 | A typed System-1 question goes to `tier-decide`. A failure falls back to `tier-fast` and logs. A `no_egress` run and the turn-kind question stay on `tier-fast` | `tests/unit/test_system_one_tool.py` (extended by N3) |
+| WS48-F6 | A typed System-1 question goes to `tier-decide`. A failure falls back to `tier-fast` and logs. The turn-kind question stays on `tier-fast`. A `no_egress` run sends only a short typed item to `tier-decide`, and none with `DECIDE_IN_NO_EGRESS` off (owner, 2026-10-09) | `tests/unit/test_decide_in_no_egress.py`, and `tests/unit/test_system_one_tool.py` (extended by N3) |
 | WS48-F7 | PICK runs only when it pays (§3.3a). A skip needs 25 candidates or fewer and no overflow, reads every candidate, and its count line says "with no PICK step". The rates are the eval card | `tests/unit/test_narrowing_pick_cost.py` (H-276) |
-| WS48-F8 | The narrowing path never costs more than today's path, on each gated question and on all of them together | `tests/unit/test_email_narrowing_eval.py` and `tests/unit/test_whatsapp_narrowing_eval.py` (H-276) |
+| WS48-F8 | The narrowing path never costs more than today's path, on each gated question and on all of them together. No question has an exception since H-279 | `tests/unit/test_email_narrowing_eval.py` and `tests/unit/test_whatsapp_narrowing_eval.py` (H-276, H-279) |
+| WS48-F9 | A whole chat is ONE read with no PICK, and only filters that choose whole chats make one. A cut span says how many older matches it did not read, and how to read them. Windows of one chat that overlap merge, and no block cuts a line | `tests/unit/test_whatsapp_whole_chat.py` (H-279) |
 
 Existing fences that bind this work:
 `tests/unit/test_no_direct_ai_vendor_calls.py`,
@@ -755,6 +845,9 @@ OWNER-GATE. It moves credit spend for a live org (CLAUDE.md §3a rule 3).
 5. **In a run where `no_egress_for_this_run()` is true, every item stays on
    `tier-fast`.** The egress class of `ai_tier_routing.md` §6.6 does not
    change (open question Q4).
+   *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on,
+   such a run sends a short typed item to `tier-decide`, and a long one
+   stays on `tier-fast`. `ai_tier_routing.md` §6.6 gives the bound.)*
 6. The turn-kind question of `tier_policy.turn_kind` stays on `tier-fast`.
 7. The line that the calling model reads keeps the shape of
    `ai_tier_routing.md` §6.4. A decide answer has no reason, so the line
@@ -949,6 +1042,36 @@ dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
   goes through the REAL tool and the REAL route on Postgres. The tool shows
   messages 11 to 30, in order.
 
+**Build notes (2026-10-08, branch `ws48-wa-whole-chat`, H-279).**
+
+- **The choice.** H-279 named two fixes: merge the windows, or tell the model
+  to read a whole chat with `read_whatsapp_chat`. The dispatch refused a fix
+  in the instructions alone. So the fix is in the seam and the adapter, and
+  it has two parts. Part (a) reads one whole chat in one read, with no PICK
+  (§3.3a). Part (b) merges windows that overlap. Part (a) alone fixes Q2. The
+  eval also showed overlap on Q1 (9 of 66 lines twice), so part (b) is there
+  too.
+- **Why part (a), and not only part (b).** Q2 has 27 candidates, and the READ
+  cap is 25. With merged windows only, PICK still runs on Q2, and PICK is the
+  dear part. A whole chat needs no PICK, because the filters chose every
+  message of it.
+- **No route and no SQL change.** The span read uses `limit`, a parameter of
+  the thread route since before N4, and the newest-first order of H-277. So
+  R8 binds nothing new. `test_whatsapp_thread_newest.py` holds the route on
+  Postgres.
+- **The eval reads the output.** One block can now hold many kept messages,
+  so the header ids no longer name every message that the model read. The
+  scripted after path counts a message as read only when its kept line
+  (`>>`), with its time, sender and whole text, is in the output.
+- **The scripted WhatsApp run after H-279.** These are stub numbers. Q2 goes
+  from 1.445 to 0.951, and Q1 from 0.419 to 0.397. Q3, Q4 and Q5 do not
+  move. The gated ratio goes from 0.622 to 0.544. The best case for today
+  goes from 0.878 to 0.768. Recall stays 1.0 on Q1 to Q4. No gated question
+  runs PICK.
+- **The ratchet moves.** `KNOWN_COSTS_MORE` is empty. The cost bar goes from
+  0.65 to 0.57, a small headroom over 0.544. The email eval does not move:
+  its gated ratio is 0.3351.
+
 ### N5 · The CRM adapter and the Projects adapter — AGENT-SAFE
 
 **Files:** `apps/agents/agent-crm/narrow_source.py` (new),
@@ -965,6 +1088,8 @@ tool in each agent, and `tests/unit/test_crm_narrow_source.py` and
    `test_projects_ui_actions.py`.
 3. In a covered (`no_egress`) projects-assistant run, the PICK step stays
    on `tier-fast` (Q4), and WS48-F6 proves it.
+   *(Amended by the owner, 2026-10-09. While `DECIDE_IN_NO_EGRESS` is on,
+   the PICK step of that run asks the decide door. WS48-F1 proves it.)*
 
 **Verification:**
 
@@ -1012,6 +1137,9 @@ uv run pytest tests/unit/test_narrowing_pick.py tests/unit/test_narrowing_one_se
 uv run pytest tests/unit/test_narrowing_pick_cost.py tests/unit/test_email_narrowing_eval.py \
   tests/unit/test_whatsapp_narrowing_eval.py tests/unit/test_whatsapp_thread_newest.py -q -rs
 
+# H-279
+uv run pytest tests/unit/test_whatsapp_whole_chat.py tests/unit/test_whatsapp_narrowing_eval.py -q -rs
+
 # The evals (N2, N4)
 uv run python -m evals.email_narrowing.run --scripted
 uv run python -m evals.whatsapp_narrowing.run --scripted
@@ -1047,6 +1175,6 @@ it.
 | Q1 | How does a member see what was dropped? A chat command, a "Show dropped" control under the answer, or only when they ask? | Only when they ask. The model calls `dropped_of` (§6.3). No UI control |
 | Q2 | How many PICK requests may run at the same time? The Router has no rate limiter of its own. Only the vendor's 429 limits it (`provider_balance.py:104-107`) | 4 at one time, and the 30 s bound of the step |
 | Q3 | Does NARROW need semantic recall, so that a message with no shared word is found? It needs a change to `/email/search` and an R8 test | No. N2 measures the gap on the fixture mailbox, and the PR reports it |
-| Q4 | In a `no_egress` run, may a typed question go to `tier-decide`? Its vendor is a separate sub-processor, so the egress class of `ai_tier_routing.md` §6.6 would change | No. A `no_egress` run stays on `tier-fast` |
+| Q4 | In a `no_egress` run, may a typed question go to `tier-decide`? Its vendor is a separate sub-processor, so the egress class of `ai_tier_routing.md` §6.6 would change | No. A `no_egress` run stays on `tier-fast`. **Answered by the owner, 2026-10-09: yes**, for a typed question with short summaries, behind `DECIDE_IN_NO_EGRESS` (ON). Free-form work stays on our chat tiers |
 | Q5 | Are the caps right: 200 candidates, 25 items read in full, 6000 characters for each body? | Yes, until N2's eval says otherwise |
 | Q6 | Is 0.70 the right drop threshold for a decide answer? It is a probability from Jev, and not a System-1 confidence | Yes, until N2's eval says otherwise |

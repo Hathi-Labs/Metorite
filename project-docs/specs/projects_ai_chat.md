@@ -31,7 +31,10 @@ attached `.docx`, PDF or text file again, and no code runs. The security
 fix of §14.8 (a remote image in agent Markdown loads only on a click) was
 built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
 2026-10-04, in review: the uploads and the S8 documents of the chat are
-private to their thread.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+private to their thread. §24.9 (a card keeps its place in the stream, and
+a recommended option says so) was built 2026-10-09 on a branch, not
+merged. §21.18 (a NUL in a tool result fails no save) was built
+2026-10-09.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -3316,7 +3319,7 @@ The `-rs` output must show no R8 skip.
 ## 21. Chat is saved on production (S15)
 
 **Status: BUILT 2026-09-29, with fix round 1 (§21.11, §21.12). H-201 part 1
-BUILT 2026-09-30 (§21.13).** This slice repairs a live defect in production.
+BUILT 2026-09-30 (§21.13). §21.18 BUILT 2026-10-09.** This slice repairs a live defect in production.
 A read-only diagnosis of production on 2026-09-29 is the audit
 (GO-NARROWED). `chat_message` had never held a row in production, so every
 member's chat history lived only in one browser.
@@ -4489,6 +4492,112 @@ uv run pytest tests/unit/test_delegated_artifact_card.py \
 
 The `-rs` output must show no skip.
 
+### 21.18 A NUL in a tool result fails no save (incident 2026-10-09)
+
+**Status: BUILT 2026-10-09.** A live defect, GO-NARROWED. No migration and
+no new table.
+
+**What happened.** On 2026-10-09 a member of a beta organization ran
+task-manager in a Tasks chat. The built-in `view` tool of the Copilot CLI
+read an Excel file as text. Its result held the raw bytes of the ZIP
+container, `PK\x03\x04\x14\x00`. Postgres refuses U+0000 in `text` and the
+escape `\u0000` in `jsonb`. So `POST /chat/sessions/{id}/messages` answered
+500 for 42 seconds, the fold failed too, and the reply was not saved.
+
+**Rules.**
+
+1. **One rule for a value that Postgres cannot store.**
+   `acb_common.pg_text.storable` changes each NUL and each lone surrogate to
+   U+FFFD. A writer calls it on the Python value, before `json.dumps` and
+   before the bind. Do not write a second copy of the rule.
+2. **The chat writers call it.** `_upsert_messages` calls it for the route,
+   the fold and the mint. `_upsert_session`, `_patch_session`,
+   `run_trace._persist_row` and `native_session_store._session_body` call it
+   too. The ids of a message do not change, because the client finds its rows
+   by them.
+3. **U+FFFD, not a deletion.** The reader sees where the text changed. Each
+   offset in the text stays correct, because the length does not change.
+   Python's decoder and `sandbox/data_engine.py` use the same character.
+4. **The model does not read a binary file as text.**
+   `permission_policy._decide_read` reads the first 8 KB of a file in the
+   workspace. A NUL or a known magic number refuses the read with the reason
+   `read_binary_file`. The model reads the name, the kind and the size of the
+   file. For a `.docx`, `.xlsx` or `.pdf` file, the text also names
+   `read_attachment`.
+5. **The binary refusal holds in `enforce` and in `audit`.** It is not a
+   permission refusal. An approval only gives the model the same bytes again.
+   The containment check runs first, so the check never opens a path outside
+   the workspace.
+6. **The check always approves an image name** (fix rounds 1 and 2). The
+   `view` tool of the CLI asks the native `imageHelpersIsBinaryImageFile`.
+   That function answers by the suffix alone, in any case, for `png`, `jpg`,
+   `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tif`, `tiff`, `heic` and `avif`.
+   The tool then sends the file to the model as an image, and its text result
+   holds no NUL. So the check keys on the same suffixes and does not open the
+   file. A screenshot that a member attaches stays visible. The check still
+   refuses PNG bytes under a name with no image suffix, because the CLI reads
+   that file as text.
+   ⚠️ **The list follows CLI 1.0.66.** Production fetches the CLI runtime of
+   its SDK pin, 1.0.11 today (`scripts/vps_apply.sh`, the H-181 fetch). A CLI
+   upgrade must check the list again against `imageHelpersIsBinaryImageFile`.
+   `test_the_image_suffixes_are_exactly_the_cli_set` pins it.
+7. **A file with a UTF-16 or UTF-32 byte order mark is text** (fix round 1).
+   Its NULs are part of the text. Rule 1 guards the save of a NUL that comes
+   through. UTF-16 text with no mark stays refused (fix round 2). Its sentence
+   says that the file looks like UTF-16 text with no byte order mark, and it
+   tells the agent to ask the member for a UTF-8 copy.
+8. **A key collision keeps the first value** (fix round 1). Two dict keys can
+   become one key after the change. `storable` keeps the value of the first
+   key in the order of the dict and drops the later ones. It logs one
+   `pg_text.key_collision` warning with the count, and never a key or a
+   value.
+
+**What this change does not do.**
+
+- **`/v1/chat/completions`.** The log shows one failure of this route in the
+  incident. Neither hop writes message text. The gateway logs usage numbers,
+  and the Router writes `usage_event` and ledger rows of numbers and ids. So
+  this change has nothing to repair there. The cause of that one failure is
+  not known without its log line on the box.
+- **The browser retry.** It has a limit. The 3-second rate came from the
+  checkpoints of the stream route `app/api/agent/chat/route.ts`, one POST
+  every 3 seconds while the stream runs. `gatewayFetch` retries a write only
+  on `ECONNREFUSED`, and `postMessagesWithRetry` retries once. The member
+  sees no error when a save fails, and that is a separate finding.
+- **Other writers of model output.** `workflow_runs`, the email rule runner,
+  the notes summaries and Mem0 do not call `storable`. They are not on the
+  chat path, and Workflows is a preview app. Each one is a candidate for a
+  later change.
+- **The MAF file tools.** `TenantFileStore.read` decodes strict UTF-8, so a
+  ZIP gives an error text and no bytes. A UTF-8 file that holds a NUL still
+  reads, and rule 1 guards its save.
+
+**Acceptance.**
+
+1. A tool result that holds a NUL saves through the real route and the real
+   fold, on the phase-4 catalog as the app role. The GET returns U+FFFD and
+   no NUL.
+2. An errored run with that result writes its `agent_run` row.
+3. A read of a binary file in the workspace returns the sentence and not the
+   bytes, in `enforce` and in `audit`.
+4. A text file, a missing file and a path outside the workspace keep the
+   decision that they had before.
+5. The check approves a read of `screen.PNG`, `photo.webp` and a `.png` name
+   that holds ZIP bytes. It approves a UTF-16 or UTF-32 file with a byte
+   order mark.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_chat_nul_persist.py -q -rs
+```
+
+The `-rs` output must show no skip. On the code before this change, 17 of
+the 23 cases failed. The R8 fold case logged the exact error of the incident.
+Fix round 1 added 14 cases. On the code of the first round, 12 of them failed,
+and the other 2 are cases that must stay refused. The file now has 37 cases.
+
 ## 22. Chat attachments, read on the platform (H-229)
 
 **Status: BUILT 2026-10-04.** HANDOFF H-229. D85 (`maf_coding_engine.md`
@@ -5294,9 +5403,12 @@ too.
 
 ### 24.4 What the agents are told
 
-Five agents carry one section, "Where each part of your answer goes", word for
-word: `agent-projects`, `agent-email-assistant`, `agent-crm`,
-`agent-whatsapp-assistant` and `agent-orchestrator`. It says:
+⚠️ **Changed on 2026-10-09 (§25).** The Projects and email agents no longer
+carry the section. Each one holds `emit_generative_ui`, so each one reads
+`PLACEMENT_RULE` from the injected directive, exactly once. A second copy
+cost every model request its tokens. Three agents still carry the section,
+word for word: `agent-crm`, `agent-whatsapp-assistant` and
+`agent-orchestrator`. The same change can drop it there too. The section says:
 
 - The chat shows each read under its step. So never draw a read's result
   again as a card.
@@ -5364,7 +5476,7 @@ status, one after another.
 | A read draws in its step, and a write in the flow. The owner's turn has four steps that open, and no read card | `src/lib/chatPlacement.test.ts` |
 | The pin shows for a waiting element, and an answer, a run end or a later message clears it | `src/lib/askPin.test.ts` |
 | `task_dataset` draws as a table, with no pipe and no mark | `src/lib/datasetTable.test.ts` |
-| Five agents carry the one section, word for word | `tests/unit/test_chat_placement_instructions.py` |
+| Three agents carry the one section, word for word. The Projects and email agents do not, and their built instructions hold `PLACEMENT_RULE` exactly once (§25) | `tests/unit/test_chat_placement_instructions.py` |
 | The injected directive ends with the rule | `tests/unit/test_genui_proactive_directive.py` |
 | At most one answer card per answer, and no card that repeats a read | `evals/projects_ops/checkers.py` `one_answer_card`, `no_read_recarded`, held by `tests/unit/test_projects_ops_eval.py` |
 | Several new tags or types are ONE card with a checkbox for each, and the server decides each row (H-273) | `tests/unit/test_projects_create_vocab.py`, `test_projects_field_parity.py` (the row exception), eval task PO-11 |
@@ -5431,3 +5543,208 @@ label stays text, because a label carries no link.
 
 **Advisory.** No test reads the "More columns to the right" cue, because it
 needs a real layout. The visual review looked at it.
+
+### 24.9 A card keeps its place in the stream (2026-10-09)
+
+**Status: 🔨 BUILT on branch `email-chat-forward-links`, not merged.**
+
+The owner clicked an option of an orchestrator picker, and "it doesn't seem
+to do anything". The production log showed that `respond-input` answered 200
+and that the run finished 6 s later. A browser replay
+(`e2e/genui-option-picker.spec.ts`) found two causes in what the chat drew.
+
+1. **The lock did not show.** Each option of `optionPicker` had the motion
+   `ccFadeUp … both`. A `both` fill keeps the last frame, `opacity: 1`, and an
+   animation value wins over the inline `opacity: 0.5`. So no option dimmed,
+   and no word said that the answer went.
+2. **The follow-up drew above the card.** `MessageBubble.tsx` drew all the
+   text of the turn first and the generative-UI cards after it. The words
+   that the run wrote after the click went between the old answer and the
+   card, out of the member's view.
+
+The rule, which this section adds beside §24.2 rule 1 and which leaves the
+text of §24.2 as it is: **an element that needs the member stays in the order
+the turn streamed, and text that came after it draws below it.**
+
+- Each `generative_ui` event carries `segmentCutoff`, the count of text
+  segments when it arrived. The live hook, the chat proxy and the gateway
+  fold (`chat_fold.py`) stamp it the same way, so a reload keeps the order.
+- `genUiFlow` in `lib/chatPlacement.ts` turns the stamps into text and card
+  blocks. A stamped card is in the flow from the moment it arrives, so the
+  follow-up never remounts it and its choice stays on screen.
+- A picked option shows at once: `aria-pressed`, a check mark, the other
+  options dimmed, and a "Sent" badge. A picker with no handler takes no click
+  and says why.
+- The `ask_questions` card sends the answer as a message on a 4xx, as the
+  picker does. The bubble memo compares `onHitlRespond`, so a bubble never
+  keeps a stale handler.
+- A recommended option shows the word **Recommended** on the shared `Badge`,
+  in the `warning` tone, in the picker, the comparison and the question card.
+
+Fences: `chatPlacement.test.ts` (the blocks, the order, the memo),
+`genUITemplates.test.ts` and `elicitationCard.test.ts` (the word, the toggle,
+the motion), and `e2e/genui-option-picker.spec.ts` (each click path in a real
+browser, with 200 and with 409).
+
+**Review round 1 (2026-10-09).**
+
+- **A cached turn keeps its text** (P1-a). The local cache kept the stamps and
+  not the segments, so the flow drew the cards and dropped the answer. Now
+  `genUiFlow` answers `null` (the old layout) for a turn with no segment, and
+  the cache keeps the segments of a turn whose card is stamped, under 32,000
+  characters (`segmentsForCache`). The cache has no byte budget, and a quota
+  error skips the whole write.
+- **A card before the first text is stamped `0`** (P2-c). It had no stamp, and
+  drew after all the text. All three writers stamp it now.
+- **One slot for the cards** in both layouts, so a card keeps its place in the
+  tree when the first text arrives after it.
+- **An answered picker stays answered** (P2-c). `emit_generative_ui` returns
+  its `request_id` with the answer, and the chat reads the turn's tool results
+  (`lib/askAnswers.ts`). This session's own answers, and an answer that a
+  `confirmation_resolved` event names, count too. A card with an answer draws
+  as sent and takes no click after any remount or reload. A timed-out or
+  cancelled card stays open, and a click on it goes out as a message.
+
+⚠️ **Not done here.** `AgentChat`'s history read compares the server rows with
+the messages of its first render, so a slow read can replace a live turn. The
+replay hit that race on a cold compile.
+
+## 25. The fixed prefix of each request (2026-10-09)
+
+**Status.** Built 2026-10-09, branch `agent-prefix-slim`. It changes what the
+Projects and email agents hold, and it adds no flag. Each agent loses only
+tools that it called once or never in 14 days, and text that said a thing
+twice.
+
+### 25.1 The cost
+
+Each model request of a run sends the same prefix: the system prompt and the
+schema of each tool. A Projects turn makes 5.7 requests, and an email turn
+makes 7.0 (the audit of 2026-10-08). So the run pays each token of the prefix
+about six times in one turn.
+
+The counts below come from one harness. It builds each agent with its own
+`build_agents()`, applies `own_tool_scope` and the real `_inject_agent_tools`,
+and counts with tiktoken `o200k_base`. The registry is the static one.
+
+| Agent and run | Before: prompt, tools, total, count | After: prompt, tools, total, count | Saved per request | Saved per turn |
+|---|---|---|---|---|
+| projects-assistant, direct | 8,544, 31,671, 40,215, 116 | 6,507, 25,688, 32,195, 104 | 8,020 | about 45,700 (× 5.7) |
+| email-assistant, direct | 4,449, 23,387, 27,836, 70 | 3,677, 16,937, 20,614, 57 | 7,222 | about 50,600 (× 7.0) |
+| email-assistant, delegated, no egress | 3,354, 14,648, 18,002, 46 | 3,149, 9,081, 12,230, 36 | 5,772 | about 40,400 (× 7.0) |
+
+### 25.2 What changed
+
+1. **The catalog of `emit_generative_ui` comes on demand.** The docstring
+   keeps what the tool does, when to draw a card (§24), the four modes and
+   the template names. The data shapes moved to
+   `write_artifact.GENUI_TEMPLATE_SHAPES`, and the rules of the react and
+   html modes moved to `GENUI_MODE_GUIDES`. `genui_guide` returns them when
+   the model asks. A template with no `data` gets its shape. An empty or
+   unknown name gets every shape. A code mode with no `code` gets its rules.
+   The tool draws nothing for a request. The schema went from 3,691 to 791
+   tokens in o200k, for every agent and not only these two. The ratchet of
+   `test_tool_schema_diet.py` counts with the run-context tokenizer, which
+   reads it as 641.
+2. **An agent opts out of floor tools.** `config.json: floor_opt_out` names
+   the floor tools and the workflow tools that the agent does not want
+   (`_tool_injection._floor_opt_out`). The names leave the scope and the
+   final tool list, as the D85 withheld names do. No agent can opt out of
+   `ask_questions` or `emit_generative_ui` (`_FLOOR_KEEP`). The injection
+   ignores a name outside the allowed set, and logs a warning.
+3. **The registry block lists each agent but the reader, on one line.**
+   `_registry_block_for` drops the agent's own entry. `_registry_line` keeps
+   the first sentence of a description. A first sentence shorter than 80
+   characters takes the next one, because it often names only the agent.
+   The line stops at 160 characters. The block of Projects went from 708 to
+   285 tokens.
+4. **The instructions lost the text that the tools already say.** "What you
+   can see" became "Reading", which keeps only the rules that no tool says.
+   The tool lists of "What you can draw" and "What you can change" left. The
+   placement section left both agents (§24.4). The output rule names
+   `load_design_system` only for an agent that holds it.
+5. **Fewer rounds for Projects.** The section "Fewer rounds" tells the model
+   to send independent reads as parallel calls in one request. It says that
+   a write tool finds a status, a type, a field or a person by name, so no
+   read of `vocabulary` comes first. A tag is the exception: a tag name that
+   the project lacks becomes a new tag, so the model reads `vocabulary`
+   before it puts a tag on a task. W1 reads the space and the people in one
+   request.
+
+### 25.3 The tools that left
+
+The counts are the calls in the audit of 2026-10-08, over 14 days. "Not
+held" means that the agent did not get the tool before the change either.
+
+| Tool | Projects | Email |
+|---|---|---|
+| `load_artifact_kit` | removed, 0 calls | removed, 0 calls |
+| `load_design_system` | removed, 0 calls | removed, 0 calls |
+| `run_diagnostics` | removed, 0 calls | removed, 0 calls |
+| `get_errors` | removed, 0 calls | removed, 0 calls |
+| `list_integrations` | removed, 0 calls | removed, 0 calls |
+| `call_agents_parallel` | removed, 0 calls | removed, 0 calls |
+| `call_agent_background` | removed, 0 calls | removed, 0 calls |
+| `list_workflows`, `run_workflow`, `get_workflow_run` | removed, 0 calls | removed, 0 calls |
+| `manage_todo_list` | removed, 1 call | removed, 1 call |
+| `recall_notes` | removed, 0 calls | kept |
+| `code_task`, `run_script` | not held (D85) | removed, 0 calls |
+| `github_search`, `github_repo_search` | not held | not held |
+
+Each agent keeps `ask_questions`, `emit_generative_ui`, `write_artifact`,
+`call_agent` (12 calls from Projects), the memory tools of its scope, the web
+tools, `share_artifact` and `save_note`. `tests/unit/test_floor_opt_out.py`
+pins both lists.
+
+### 25.4 Each write tool finds names — checked in the code
+
+| Name | Where it resolves | Tools |
+|---|---|---|
+| Status | `writes._resolve_status` and `_one_named`, or the bulk route per task | `create_task`, `create_tasks`, `update_task`, `triage_intake`, `update_status`, `delete_status`, `bulk_update` |
+| Task type | `writes._resolve_type` | `create_task`, `create_tasks`, `update_task`, `update_type`, `delete_type` |
+| Field | `writes.field_values` and `_field_of` | `create_task`, `create_tasks`, `update_task`, `move_task`, `update_field`, `delete_field` |
+| Tag, to change or delete | `_one_named` | `update_tag`, `delete_tag`, `merge_tags` |
+| Person | `writes._resolve_assignee_name`, through the picker | `create_task`, `create_tasks`, `assign`, `bulk_update`, `create_project`, `update_project`, `propose_plan`, `save_view`, `set_my_overlay` |
+
+A name that matches no row gets a refusal that lists the real names. Two
+matches get a question for the member. A project id and a task id are not
+names. They come from the app's context or from one read.
+
+⚠️ **The `tags` of a task are not checked.** `create_task`, `create_tasks`,
+`update_task` and `bulk_update` send them as text, and the gateway
+(`routes/projects/tags.py` `apply_task_tags`) registers a name that the
+project lacks. So "frontend" beside "front-end" makes a second tag, with
+no refusal. The instructions keep a read of `vocabulary` before a tag, and
+the `vocabulary` docstring says the same (review round 1).
+
+### 25.5 Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| An opted-out tool is absent, on every branch, and the rest stay | `tests/unit/test_floor_opt_out.py` |
+| No agent opts out of `ask_questions` or `emit_generative_ui` | `tests/unit/test_floor_opt_out.py` |
+| The two agents opt out of exactly the tools of 25.3 | `tests/unit/test_floor_opt_out.py` |
+| An agent never reads its own registry entry, and each entry is one line | `tests/unit/test_floor_opt_out.py` |
+| The tool's shapes are the catalog's, and the loader returns each template | `tests/unit/test_genui_catalog_lockstep.py` |
+| The schema of `emit_generative_ui` stays under 700, and the floor under 6,700 | `tests/unit/test_tool_schema_diet.py` |
+| The covered Projects run holds its pinned tools | `tests/unit/test_delegation_no_egress.py` `COVERED_PROJECTS_TOOLS` |
+
+**Advisory.** Nothing tests that a model sends parallel reads, or skips the
+read of `vocabulary`. The scripted evals replay fixed sequences. Only a model
+sweep can measure the requests of a turn.
+
+### 25.6 What is left
+
+- **The own tools are most of what is left.** The 91 own tools of Projects
+  carry about 23,000 of the 25,656 schema tokens. A narrowing of
+  `own_tool_scope` is an owner decision (`email_app_master_plan.md`
+  §10.4.14), so this change does not make it.
+- **Three agents still carry the placement section** (§24.4).
+- **Projects keeps `save_note` and lost `recall_notes`.** The audit showed no
+  call of `recall_notes`, so the agent can write a note and never read it
+  back. Take `save_note` out too, or give `recall_notes` back, when its use
+  is known.
+- **The Copilot addendum still names two opted-out tools.** Its sections with
+  no gate name `load_design_system` and `load_artifact_kit`, and the static
+  risk block names each platform tool. Only a Copilot agent reads them, and
+  both agents here are native MAF agents.

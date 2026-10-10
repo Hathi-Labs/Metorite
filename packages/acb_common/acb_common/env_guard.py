@@ -141,6 +141,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
+    # Owner, 2026-10-09: a `no_egress` run may send a typed question to the
+    # decision model. It moves what a sub-processor receives, so only the
+    # operator writes it (data_narrowing_pipeline.md Q4).
+    "DECIDE_IN_NO_EGRESS",
     # WS-44 NS-4b: the command bar's coordinator. It sends the member's words
     # to the decision model and spends credits, so only the operator writes it
     # (navigation_shell.md NS-4b).
@@ -203,6 +207,8 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # Flags and switches.
     "EMAIL_", "DECIDE_", "BYOK_", "CRM_", "INGESTION_", "ACTION_BROKER_",
     "WORKFLOW_", "WHATSAPP_", "MEETING_BOT_", "MIGRATION_", "SKIP_",
+    # The chat run switches (WS-51 S2: CHAT_DURABLE_ASKS and its knobs).
+    "CHAT_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
@@ -215,6 +221,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # BH2_ROLLBACK_SCRIPT would choose the script that the deploy runs.
     "DEPLOY_", "RELEASE_", "VPS_", "CADDY_", "SMOKE_", "GH_", "MB_", "OC_",
     "WB_", "E2E_", "CHECKOUT_", "VERSION_", "BH2_",
+    # The local demo workspace for the marketing screenshots
+    # (scripts/demo_seed, marketing_site.md §6.3). It never runs on the box.
+    "DEMO_",
     # The process environment and the toolchain. ``BASH`` covers BASH_ENV,
     # BASHOPTS, BASH_XTRACEFD and every BASH_FUNC_ export.
     "LC_", "BASH", "PYTHON", "UV_", "PIP_", "LD_", "DYLD_", "NODE_",

@@ -57,9 +57,11 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as day_time
 from decimal import Decimal
 from typing import Annotated, Any, Literal, NoReturn
+from zoneinfo import ZoneInfo
 
 import anyio
 from fastapi import (
@@ -67,6 +69,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -643,6 +646,16 @@ class CreditGrantRequest(BaseModel):
     credits: Decimal = Field(ge=Decimal("-9999999999"), le=Decimal("9999999999"))
     reason: str = LEDGER_REASON_PURCHASE
     ref: str | None = None
+    #: 🔴 WS-50 slice 3: what the customer PAID for these credits, in rupees.
+    #: Before this field a manual grant made a purchase lot with no price, so
+    #: the operator console could not say what those credits earned and had
+    #: to guess at the current credit price. Optional, so an old caller stays
+    #: legal (R6), and legal only on a reason that SELLS credits.
+    #: ⚠️ Two decimal places, the precision of `credit_lot.price_paid_inr`
+    #: (NUMERIC(12,2)), so the lot and the audit row cannot disagree.
+    price_paid_inr: Decimal | None = Field(
+        default=None, ge=Decimal(0), le=Decimal("9999999999"), decimal_places=2
+    )
 
     @field_validator("reason")
     @classmethod
@@ -653,6 +666,20 @@ class CreditGrantRequest(BaseModel):
                 f"{sorted(LEDGER_REASONS)} (subscription_console.md SC-4g (v))"
             )
         return value
+
+    @model_validator(mode="after")
+    def _price_only_on_a_sale(self) -> CreditGrantRequest:
+        # A price on a free grant would make a free lot read as bought, and a
+        # price on a negative row has no lot to sit on.
+        if self.price_paid_inr is not None:
+            if self.reason not in (LEDGER_REASON_MANUAL, LEDGER_REASON_PURCHASE):
+                raise ValueError(
+                    "price_paid_inr is only for credits the customer paid for "
+                    f"(reason 'manual' or 'purchase'), not {self.reason!r}"
+                )
+            if self.credits <= 0:
+                raise ValueError("price_paid_inr needs a positive credit amount")
+        return self
 
 
 class ManualActivationRequest(BaseModel):
@@ -3893,7 +3920,12 @@ def list_provider_credentials(staff: Operator, include_revoked: bool = False) ->
 
 
 @app.get("/providers/spend")
-def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict[str, Any]:
+def provider_spend(
+    staff: Operator,
+    days: int = store.SPEND_WINDOW_DAYS,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
+) -> dict[str, Any]:
     """What each vendor cost US over the window. **Operator-only.**
 
     🔴 **The console could see what customers spend and not what we owe.** Every
@@ -3908,9 +3940,9 @@ def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict
     # A window nobody can widen without meaning to. The read is a full scan of
     # the usage partition, and an unbounded `days` is how a console page times
     # out against a year of rows.
-    window = max(1, min(int(days), 365))
+    window, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
-        rows = store.spend_by_provider(conn, days=window)
+        rows = store.spend_by_provider(conn, days=window, start=lo, end=hi)
     return {
         "days": window,
         "providers": [
@@ -4661,6 +4693,9 @@ _ORG_PURGE_KEEPS_TABLES: tuple[str, ...] = (
     # account is gone. It holds no personal data — a source, an amount, a
     # price and a date.
     "credit_lot",
+    # Migration 036. Which lots each charge spent: financial history, no
+    # personal data, and its `lot_id` references the kept `credit_lot`.
+    "credit_draw",
     "payment_order",
     "usage_event",
     "usage_rollup",
@@ -4674,6 +4709,7 @@ _ORG_PURGE_KEEPS: tuple[str, ...] = (
     "seat_grant",
     "credit_ledger",
     "credit_lot (what the credits cost, for a later refund argument)",
+    "credit_draw (which lots each charge spent)",
     "payment_order",
     "usage_event (user_email scrubbed)",
     "usage_rollup",
@@ -6393,6 +6429,7 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 delta=req.credits,
                 reason=req.reason,
                 ref=ref,
+                price_paid_inr=req.price_paid_inr,
             )
         except IntegrityError:
             # The SELECT above cannot hold under concurrency: two grants
@@ -6411,11 +6448,19 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 ),
             ) from None
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
+        # Quantized to paise, the precision the lot stores, so the two agree.
+        paid_inr = (
+            None if req.price_paid_inr is None else str(req.price_paid_inr.quantize(Decimal("0.01")))
+        )
         _audit(
             conn,
             org_id,
             "credits.grant",
-            {"delta": str(req.credits), "reason": req.reason},
+            {
+                "delta": str(req.credits),
+                "reason": req.reason,
+                "price_paid_inr": paid_inr,
+            },
             actor=staff.actor,
         )
 
@@ -7119,6 +7164,25 @@ def _record_completion(
         _log.exception("router.metering_failed")
 
 
+def _log_refusal(event: str, failed: router_mod.UpstreamFailed) -> None:
+    """ONE refusal log line: the status, the vendor, the error class and hints.
+
+    🔴 **The fields go IN the message text, and in ``extra`` too.** This
+    logger has a plain formatter, so ``extra`` alone never reached the journal.
+    On 2026-10-08 the journal showed a bare ``router.provider_error`` 18 times,
+    and nobody could read why. ``router_mod.describe_failure`` builds the
+    fields from a status, a type name and a closed word list, so the line
+    holds no text of the vendor's message.
+    """
+    fields = router_mod.describe_failure(failed)
+    _log.warning(
+        "%s upstream_status=%s vendor=%s error_class=%s hints=%s",
+        event, fields["upstream_status"], fields["vendor"],
+        fields["error_class"], fields["hints"],
+        extra=fields,
+    )
+
+
 def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     """Map an upstream failure onto something a caller can branch on.
 
@@ -7141,7 +7205,7 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
-    _log.warning("router.provider_error", extra={"upstream_status": status})
+    _log_refusal("router.provider_error", failed)
     if isinstance(status, int) and 400 <= status < 600:
         return HTTPException(
             status_code=(502 if status >= 500 or status in (401, 402, 403) else status),
@@ -7456,7 +7520,7 @@ def _open_stream_or_release(
     try:
         return _open_stream_chain(attempts, kwargs_for, on_failover, *watch)
     except router_mod.UpstreamFailed as failed:
-        _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
+        _log_refusal("router.stream_open_failed", failed)
         _release_call_hold(org_id, request_id)
         return None
     except BaseException:
@@ -9486,6 +9550,30 @@ class OrgUsageRow(BaseModel):
     #: BY DEFINITION, so a large count beside a small token total is itself
     #: the signal that the provider's SHAPE broke and not our arithmetic.
     unbilledTokens: int = 0
+    #: 🔴 **What the customer PAID for, of the credits they spent** (migration
+    #: 036, `operator_console_money.md` §3). Credits drawn from a purchase lot
+    #: in the window, and their value at the price each lot was SOLD at.
+    paidCredits: str = "0"
+    paidValueInr: str = "0"
+    #: Drawn from a purchase lot with no price on record. The console values
+    #: them at the current credit price and labels the figure an estimate.
+    unpricedPaidCredits: str = "0"
+    #: Drawn from a trial, promo, grant or refund lot. Given away: we pay the
+    #: vendor for these calls and receive nothing.
+    freeCredits: str = "0"
+    #: No lot covered these credits, so the balance went below zero.
+    unbackedCredits: str = "0"
+    #: Lifetime figures from `credit_lot`. The console uses them to estimate
+    #: the part of the window that predates `credit_draw` (see `drawsSince`).
+    lifePaidUsed: str = "0"
+    lifePaidValueInr: str = "0"
+    #: Of `lifePaidUsed`, the credits from a purchase lot with no price.
+    #: `lifePaidValueInr` excludes them, so an average must too.
+    lifeUnpricedPaidUsed: str = "0"
+    lifeFreeUsed: str = "0"
+    #: Credits billed over the last `analytics.BURN_WINDOW_DAYS` days: the
+    #: numerator of `runwayDays`, so the console can show the arithmetic.
+    creditsLast7Days: str = "0"
 
 
 class OrgUsageView(BaseModel):
@@ -9512,6 +9600,18 @@ class OrgUsageView(BaseModel):
     unbilledOrgs: int = 0
     unbilledCallsTotal: int = 0
     unbilledTokensTotal: int = 0
+    #: WS-50 slice 7: the inclusive India dates of a chosen range, or NULL for
+    #: the default "last windowDays days".
+    rangeFrom: str | None = None
+    rangeTo: str | None = None
+    #: When `credit_draw` got its first row, fleet-wide (migration 036). A
+    #: window that starts earlier is partly ESTIMATED from the lifetime lot
+    #: mix, and the console says so. NULL means no draw is recorded yet.
+    drawsSince: str | None = None
+    #: The saved credit price in force now, so the console can state money
+    #: in rupees (D94). NULL until the owner saves one on /pricing.
+    inrPerCredit: str | None = None
+    usdToInr: str | None = None
 
 
 class UsageDayRow(BaseModel):
@@ -9526,10 +9626,49 @@ class UsageSeriesView(BaseModel):
     spikes: list[str]
 
 
+def _usage_window(
+    days: int,
+    start: date | None,
+    end: date | None,
+) -> tuple[int, datetime | None, datetime | None]:
+    """The window a usage read covers: (days, start, end). WS-50 slice 7.
+
+    With no ``start``, the last ``days`` days as before, and ``start`` and
+    ``end`` stay None so every query keeps its old predicate. With a range,
+    both dates are INCLUSIVE calendar days in India (`store.RANGE_TZ`): the
+    window runs from midnight on ``start`` to midnight after ``end``.
+
+    ⚠️ **A 422 for a range that cannot be answered.** An end before the
+    start, or a span over `store.USAGE_MAX_DAYS`, is refused rather than
+    clamped. A clamped range quietly answers a question nobody asked.
+    """
+    if start is None:
+        if end is not None:
+            raise HTTPException(status_code=422, detail="'to' needs a 'from' date as well")
+        return max(1, min(int(days), store.USAGE_MAX_DAYS)), None, None
+    last = end or datetime.now(ZoneInfo(store.RANGE_TZ)).date()
+    if last < start:
+        raise HTTPException(
+            status_code=422,
+            detail="'to' is before 'from'" if end is not None else "'from' is after today",
+        )
+    span = (last - start).days + 1
+    if span > store.USAGE_MAX_DAYS:
+        raise HTTPException(
+            status_code=422, detail=f"a range is at most {store.USAGE_MAX_DAYS} days"
+        )
+    tz = ZoneInfo(store.RANGE_TZ)
+    lo = datetime.combine(start, day_time.min, tzinfo=tz)
+    hi = datetime.combine(last + timedelta(days=1), day_time.min, tzinfo=tz)
+    return span, lo, hi
+
+
 @app.get("/admin/usage/orgs")
 def admin_usage_by_org(
     _: Operator,
     days: int = store.SPEND_WINDOW_DAYS,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
 ) -> OrgUsageView:
     """Every organization's AI usage, with margin, runway and the silent flag.
 
@@ -9537,9 +9676,9 @@ def admin_usage_by_org(
     `NUMERIC(14,4)`, and `float` is the standard way to make a total disagree
     with the sum of its rows.
     """
-    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    days, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
-        page = store.usage_by_org(conn, days=days)
+        page = store.usage_by_org(conn, days=days, start=lo, end=hi)
         rows = page["rows"]
         balances = store.credit_balance_by_org(conn)
         # The burn window is its own read rather than a slice of the first —
@@ -9560,10 +9699,19 @@ def admin_usage_by_org(
         # 🔴 UNCAPPED, for the reason `last_seen_by_org` is. A leak bills zero
         # by definition, so the leaking organization sorts last and falls off
         # the page — the worse the leak, the more certainly it hides.
-        unbilled = store.unbilled_fleet_total(conn, days=days)
+        unbilled = store.unbilled_fleet_total(conn, days=days, start=lo, end=hi)
+        draws = store.draws_by_org(conn, days=days, start=lo, end=hi)
+        # The same row `/catalog/tiers` and the breakdown read.
+        price = conn.execute(
+            text(
+                "SELECT inr_per_credit, usd_to_inr FROM credit_price "
+                "WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
+            )
+        ).fetchone()
 
     now = datetime.now(UTC)
     annotated = analytics.annotate_orgs(rows, balances, burn, now)
+    no_draws: dict[str, Decimal] = {}
     # A3 over EVERYBODY. The per-row flag survives for the visible page;
     # this list is what stops the cap from hiding the quiet-but-funded.
     silent_slugs = sorted(
@@ -9571,6 +9719,8 @@ def admin_usage_by_org(
     )
     return OrgUsageView(
         windowDays=days,
+        rangeFrom=None if start is None else start.isoformat(),
+        rangeTo=None if hi is None else (hi - timedelta(days=1)).date().isoformat(),
         # 🔴 Truncation is REPORTED, never silent. Rows sort by spend, so the
         # quiet customers the LEFT JOIN exists to include are the ones the cap
         # removes. The console says "100 of 563" rather than looking complete.
@@ -9580,6 +9730,9 @@ def admin_usage_by_org(
         unbilledOrgs=unbilled["orgs"],
         unbilledCallsTotal=unbilled["calls"],
         unbilledTokensTotal=unbilled["tokens"],
+        drawsSince=draws["since"],
+        inrPerCredit=None if price is None else str(price[0]),
+        usdToInr=None if price is None else str(price[1]),
         rows=[
             OrgUsageRow(
                 slug=r["slug"],
@@ -9597,10 +9750,28 @@ def admin_usage_by_org(
                 refusals=r["refusals"],
                 unbilledCalls=r["unbilled_calls"],
                 unbilledTokens=r["unbilled_tokens"],
+                **_draw_fields(draws["rows"].get(r["slug"], no_draws)),
+                creditsLast7Days=str(burn.get(r["slug"], Decimal(0))),
             )
             for r in annotated
         ],
     )
+
+
+def _draw_fields(d: dict[str, Decimal]) -> dict[str, str]:
+    """`store.draws_by_org`'s row, as the strings `OrgUsageRow` carries."""
+    names = {
+        "paidCredits": "paid_credits",
+        "paidValueInr": "paid_value_inr",
+        "unpricedPaidCredits": "unpriced_paid_credits",
+        "freeCredits": "free_credits",
+        "unbackedCredits": "unbacked_credits",
+        "lifePaidUsed": "life_paid_used",
+        "lifePaidValueInr": "life_paid_value_inr",
+        "lifeUnpricedPaidUsed": "life_unpriced_paid_used",
+        "lifeFreeUsed": "life_free_used",
+    }
+    return {out: str(d.get(key, Decimal(0))) for out, key in names.items()}
 
 
 @app.get("/admin/usage/daily")
@@ -9608,16 +9779,18 @@ def admin_usage_daily(
     _: Operator,
     days: int = store.SPEND_WINDOW_DAYS,
     org_slug: str | None = None,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
 ) -> UsageSeriesView:
     """AI usage per day, for the platform or for one organization.
 
     ⚠️ The series fills every gap. A client must not add a second gap fill —
     two of them disagree the first time one is changed.
     """
-    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    days, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug) if org_slug else None
-        series = store.usage_daily(conn, days=days, org_id=org_id)
+        series = store.usage_daily(conn, days=days, org_id=org_id, start=lo, end=hi)
 
     return UsageSeriesView(
         windowDays=days,
@@ -9787,6 +9960,8 @@ def admin_usage_breakdown(
     _: Operator,
     org_slug: str,
     days: int = store.SPEND_WINDOW_DAYS,
+    start: Annotated[date | None, Query(alias="from")] = None,
+    end: Annotated[date | None, Query(alias="to")] = None,
 ) -> OrgBreakdownView:
     """One customer's spend by app, by agent and by person, with OUR cost.
 
@@ -9806,14 +9981,14 @@ def admin_usage_breakdown(
     fixed at `SPEND_WINDOW_DAYS`, and passing a different window here keeps all
     three reads on the same one.
     """
-    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    days, lo, hi = _usage_window(days, start, end)
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug)
-        apps = store.usage_by_app(conn, org_id=org_id, days=days)
-        members = store.usage_by_member(conn, org_id=org_id, days=days)
-        cost_app = store.usage_cost_by(conn, org_id=org_id, by="app", days=days)
-        cost_agent = store.usage_cost_by(conn, org_id=org_id, by="app_agent", days=days)
-        cost_member = store.usage_cost_by(conn, org_id=org_id, by="member", days=days)
+        apps = store.usage_by_app(conn, org_id=org_id, days=days, start=lo, end=hi)
+        members = store.usage_by_member(conn, org_id=org_id, days=days, start=lo, end=hi)
+        cost_app = store.usage_cost_by(conn, org_id=org_id, by="app", days=days, start=lo, end=hi)
+        cost_agent = store.usage_cost_by(conn, org_id=org_id, by="app_agent", days=days, start=lo, end=hi)
+        cost_member = store.usage_cost_by(conn, org_id=org_id, by="member", days=days, start=lo, end=hi)
         # The same row `/catalog/tiers` reads for the fleet's realised margin.
         price = conn.execute(
             text(

@@ -6,9 +6,12 @@
 # (BACKUP_S3_TIMEOUT_SECS), so a hung upload cannot hold the unit past its
 # TimeoutStartSec. `timeout` signals the whole process group, rclone included.
 #
-# Usage: backup_offbox.sh <tonight's backup dir> <stamp> <app dir>
-# Env:   BACKUP_S3_*, BACKUP_GPG_*, BACKUP_FILE_DIRS, BACKUP_MEETING_BOT_VOLUME
-#        and BACKUP_OFFBOX_ENV_FILE. backup_db.sh's header describes each one.
+# Usage: backup_offbox.sh <tonight's backup dir> <stamp> <app dir> [<key file>]
+#        <key file> defaults to /etc/acb/backup-offbox.env. backup_db.sh
+#        passes its pinned path. No env name can move it.
+# Env:   BACKUP_FILE_DIRS and BACKUP_MEETING_BOT_VOLUME, both VALIDATED.
+#        Every BACKUP_S3_* and BACKUP_GPG_* name comes from the key file ONLY,
+#        never from the env (BH-6a). backup_db.sh's header describes each one.
 # Exit:  0 when the night is up AND the bucket retention ran clean, else 1.
 #
 # 🔴 **The bucket key is for root ONLY.** A Supabase S3 key is PROJECT-WIDE: it
@@ -17,9 +20,11 @@
 # 0600), and only acb-backup.service loads that file. /opt/acb/app/.env is the
 # env file of acb-gateway (User=acb) and of the WhatsApp bridge, and the
 # gateway's in-process Copilot CLI inherits that env (H-270). This script
-# refuses to run as any user but root, refuses a key file that is not
-# root:root 0600, and refuses when /opt/acb/app/.env holds a BACKUP_S3_*,
-# BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE line.
+# refuses to run as any user but root, and refuses a key file that is not
+# root:root 0600. It reads the key file itself, and drops the same names from
+# the env it inherits first: the unit also loads /opt/acb/app/.env, which acb
+# can write (BH-6a). backup_db.sh turns a BACKUP_S3_*, BACKUP_GPG_* or
+# BACKUP_OFFBOX_ENV_FILE line in that file into an ERROR.
 # ⚠️ That closes the PASSIVE paths only: the inherited env, /proc/<pid>/environ
 # and env dumps in logs or crash reports. `acb` is equivalent to root on this
 # box: passwordless sudo, the docker group, and it owns this very script. So
@@ -31,19 +36,56 @@
 # and gpg encrypts it to the owner's PUBLIC key. The box never holds the
 # private key. The key is checked in full BEFORE anything is staged.
 set -euo pipefail
+# PATH first, before any external command (BH-6a). Up to the clean start
+# below, this script runs builtins only.
+PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+export PATH
+unset CDPATH
 
-dest="${1:?usage: backup_offbox.sh <backup dir> <stamp> <app dir>}"
-stamp="${2:?usage: backup_offbox.sh <backup dir> <stamp> <app dir>}"
-app_dir="${3:?usage: backup_offbox.sh <backup dir> <stamp> <app dir>}"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+dest="${1:?usage: backup_offbox.sh <backup dir> <stamp> <app dir> [<key file>]}"
+stamp="${2:?usage: backup_offbox.sh <backup dir> <stamp> <app dir> [<key file>]}"
+app_dir="${3:?usage: backup_offbox.sh <backup dir> <stamp> <app dir> [<key file>]}"
+key_env_file="${4:-/etc/acb/backup-offbox.env}"
+case "${BASH_SOURCE[0]}" in
+  */*) here="${BASH_SOURCE[0]%/*}" ;;
+  *) here=. ;;
+esac
+here="$(cd "$here" && pwd)"
 # shellcheck source=scripts/offbox_lib.sh
 . "$here/offbox_lib.sh"
+# 🔴 The ALLOW list (fix round 1). This script runs as root, as the child of
+# backup_db.sh (whose env is already clean) or by hand. Either way it starts
+# again under `env -i` with only the two names it reads, so tar, gpg, zstd and
+# docker see no TAR_OPTIONS, proxy or loader name. rclone gets its own, still
+# smaller, allow list (offbox_env_only_rclone).
+if [ "$EUID" = "0" ] || [ "${BACKUP_ENV_GUARD:-0}" = "1" ]; then
+  offbox_clean_env_reexec "$here/backup_offbox.sh" BACKUP_FILE_DIRS BACKUP_MEETING_BOT_VOLUME \
+    -- "$dest" "$stamp" "$app_dir" "$key_env_file"
+fi
+offbox_rclone_allowlist=1
 
+# 🔴 The ONE shape of the dir this script stages in and deletes (BH-6a):
+# <absolute dir>/<stamp>/offbox.work. Checked before the trap is set, so a
+# bad argument can never reach the `rm -rf` of the cleanup.
+if ! [[ "$stamp" =~ $offbox_stamp_re ]] || [ "${dest#/}" = "$dest" ] \
+   || [ "${dest%/"$stamp"}/$stamp" != "$dest" ] || [ "${dest%/"$stamp"}" = "" ]; then
+  echo "ERROR: refusing to stage in '$dest'. It must be <absolute dir>/<stamp>." >&2
+  echo "       Nothing was uploaded." >&2
+  exit 1
+fi
 work="$dest/offbox.work"
 gpg_home="$work/gnupg"
+# rm_work — `rm -rf` of the staging dir, and of nothing else.
+rm_work() {
+  case "$work" in
+    /*/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z/offbox.work)
+      rm -rf -- "$work" ;;
+    *) echo "ERROR: refusing to delete '$work'." >&2; return 1 ;;
+  esac
+}
 cleanup() {
   gpgconf --homedir "$gpg_home" --kill all >/dev/null 2>&1 || true
-  rm -rf "$work"
+  rm_work
 }
 trap cleanup EXIT
 # A signal from `timeout` or systemd becomes an exit, so the trap runs.
@@ -55,36 +97,22 @@ fail() {
   exit 1
 }
 
-# ── 1. The settings ───────────────────────────────────────────────────────────
-offbox_settings || fail "the BACKUP_S3_* settings are not valid (see above)."
-if ! keep="$(offbox_uint "${BACKUP_S3_KEEP-14}")" || [ "$keep" -lt 1 ]; then
-  fail "BACKUP_S3_KEEP '${BACKUP_S3_KEEP-}' must be a whole number of 1 or more."
-fi
-
-# ── 2. Only root holds the bucket key ─────────────────────────────────────────
-# FIRST, before the path below is trusted: /opt/acb/app/.env is acb-writable,
-# and acb-backup.service loads it. So a line there could name another key
-# file (BACKUP_OFFBOX_ENV_FILE), or carry the key itself into the env of the
-# gateway. Either is refused. Only an export in the environment of a root
-# shell (the rehearsal, a hand run) may move the key file.
-if [ -f "$app_dir/.env" ] \
-   && grep -qE '^[[:space:]]*(export[[:space:]]+)?BACKUP_(S3_|GPG_|OFFBOX_ENV_FILE)' "$app_dir/.env"; then
-  fail "$app_dir/.env holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE
-       line. The gateway and the WhatsApp bridge load that file, and acb can
-       write it. Move each BACKUP_S3_* and BACKUP_GPG_* line to
-       /etc/acb/backup-offbox.env, and delete BACKUP_OFFBOX_ENV_FILE."
-fi
-key_env_file="${BACKUP_OFFBOX_ENV_FILE:-/etc/acb/backup-offbox.env}"
+# ── 1. Only root holds the bucket key ─────────────────────────────────────────
+# FIRST, before any setting is read. The key file is the ONLY source of the
+# BACKUP_S3_* and BACKUP_GPG_* names: offbox_load_root_file drops them from
+# the env, then reads the file. The env came in part from /opt/acb/app/.env,
+# which acb can write, so a name there must not fall through (BH-6a).
 uid="$(id -u)"
 if [ "$uid" != "0" ]; then
   fail "the off-box copy runs as uid $uid. Only root may hold the bucket key."
 fi
-if [ ! -f "$key_env_file" ]; then
-  fail "$key_env_file does not exist. The bucket key belongs there, root:root 0600."
-fi
-key_perm="$(stat -c '%u:%g %a' "$key_env_file" 2>/dev/null || true)"
-if [ "$key_perm" != "0:0 600" ]; then
-  fail "$key_env_file is '$key_perm' (uid:gid mode). It must be '0:0 600'."
+offbox_root_file_ok "$key_env_file" || fail "the key file is not trusted (see above)."
+offbox_load_root_file "$key_env_file"
+
+# ── 2. The settings ───────────────────────────────────────────────────────────
+offbox_settings || fail "the BACKUP_S3_* settings are not valid (see above)."
+if ! keep="$(offbox_uint "${BACKUP_S3_KEEP-14}")" || [ "$keep" -lt 1 ]; then
+  fail "BACKUP_S3_KEEP '${BACKUP_S3_KEEP-}' must be a whole number of 1 or more."
 fi
 
 for tool in rclone gpg zstd tar sha256sum; do
@@ -94,7 +122,7 @@ for tool in rclone gpg zstd tar sha256sum; do
 done
 
 # ── 3. The gpg key, checked in full before any data is touched ────────────────
-rm -rf "$work"
+rm_work
 mkdir -p "$gpg_home"
 chmod 700 "$work" "$gpg_home"
 key_fail() {
@@ -171,13 +199,81 @@ done
 
 # The file data: Tasks and Projects attachments, meeting audio and the agent
 # workspaces. Paths are absolute, and the tar keeps them under /.
-read -r -a file_dirs <<< "${BACKUP_FILE_DIRS:-$app_dir/data/gtd_attachments $app_dir/data/notes_media /home/acb/.acb/agents}"
+# 🔴 VALIDATED (BH-6a). Root tars each dir, so the env must not name /etc or
+# /root. The two ROOTS are LITERAL, and an entry must sit under one of them
+# as written, before any symlink is followed (fix round 1, P2: a symlinked
+# root once moved the allow list itself). Then:
+#   - the root must not be a symlink, and no dir above it, up to /, may be a
+#     symlink that a user other than root owns
+#   - no part of the entry BELOW the root may be a symlink
+# An entry outside both roots means the default list, with a WARN. An entry
+# that fails a symlink rule is skipped, with a WARN. So tar gets a path that
+# is exactly where it says, and a link cannot lead it out.
+# The agents root follows the layout of <app dir>: /opt/acb/app gives
+# /home/acb/.acb/agents, and a test layout <R>/opt/acb/app gives
+# <R>/home/acb/.acb/agents.
+layout_root="${app_dir%/opt/acb/app}"
+if [ "$layout_root/opt/acb/app" = "$app_dir" ]; then
+  agents_root="$layout_root/home/acb/.acb/agents"
+else
+  agents_root=/home/acb/.acb/agents
+fi
+file_roots=("$app_dir/data" "$agents_root")
+default_dirs="$app_dir/data/gtd_attachments $app_dir/data/notes_media $agents_root"
+# root_trusted <root> — the root is no symlink, and no dir above it is a
+# symlink that a non-root user owns.
+root_trusted() {
+  local p="$1"
+  if [ -L "$p" ]; then return 1; fi
+  while [ "$p" != "/" ] && [ -n "$p" ]; do
+    p="${p%/*}"
+    if [ -z "$p" ]; then p=/; fi
+    if [ -L "$p" ] && [ -n "$(find "$p" -maxdepth 0 ! -user 0 -print 2>/dev/null)" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+# dir_allowed <dir> — print the path to tar, and return 0. Return 1 when the
+# dir is outside both roots, and 2 when a symlink rule fails.
+dir_allowed() {
+  local d="$1" lexical real root
+  [ "${d#/}" != "$d" ] || return 1
+  lexical="$(realpath -m -s -- "$d")" || return 1
+  real="$(realpath -m -- "$d")" || return 1
+  for root in "${file_roots[@]}"; do
+    case "$lexical/" in
+      "$root"/*) ;;
+      *) continue ;;
+    esac
+    root_trusted "$root" || return 2
+    [ "$real" = "$(realpath -m -- "$root")${lexical#"$root"}" ] || return 2
+    echo "$real"
+    return 0
+  done
+  return 1
+}
+read -r -a file_dirs <<< "${BACKUP_FILE_DIRS:-$default_dirs}"
+for d in "${file_dirs[@]}"; do
+  rc=0
+  dir_allowed "$d" >/dev/null || rc=$?
+  if [ "$rc" = "1" ]; then
+    echo "    !! BACKUP_FILE_DIRS names a directory outside ${file_roots[*]}." >&2
+    echo "    !! The copy uses the default list instead." >&2
+    read -r -a file_dirs <<< "$default_dirs"
+    break
+  fi
+done
 present=()
 for d in "${file_dirs[@]}"; do
-  if [ "${d#/}" = "$d" ]; then
-    echo "    skip $d (not an absolute path)"
-  elif [ -d "$d" ]; then
-    present+=("${d#/}")
+  rc=0
+  real="$(dir_allowed "$d")" || rc=$?
+  if [ "$rc" = "1" ]; then
+    echo "    skip $d (outside ${file_roots[*]})"
+  elif [ "$rc" != "0" ]; then
+    echo "    !! skip $d: it, or its root, goes through a symlink." >&2
+  elif [ -d "$real" ]; then
+    present+=("${real#/}")
   else
     echo "    skip $d (no such directory)"
   fi
@@ -190,7 +286,17 @@ fi
 
 # The meeting bot's volume, read in place through its mount point. The bot
 # keeps running. Compose may prefix the name with its project.
-read -r -a volumes <<< "${BACKUP_MEETING_BOT_VOLUME:-acb-meeting-bot-data acb_acb-meeting-bot-data}"
+# VALIDATED (BH-6a): Docker's own volume-name shape, so a name cannot start a
+# docker option. Else the default names.
+default_volumes="acb-meeting-bot-data acb_acb-meeting-bot-data"
+read -r -a volumes <<< "${BACKUP_MEETING_BOT_VOLUME:-$default_volumes}"
+for vol in "${volumes[@]}"; do
+  if ! [[ "$vol" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    echo "    !! BACKUP_MEETING_BOT_VOLUME is not a list of volume names. Using the default." >&2
+    read -r -a volumes <<< "$default_volumes"
+    break
+  fi
+done
 vol_path=""
 if command -v docker >/dev/null 2>&1; then
   for vol in "${volumes[@]}"; do

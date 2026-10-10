@@ -10,14 +10,14 @@ is lost. The owning spec is `project-docs/specs/data_narrowing_pipeline.md`,
 `--compare`, because the live run needs owner approval.
 
 ⚠️ **This eval does not show a saving of the email size.** The email eval
-gates at a ratio of 0.40. Here the gated ratio is 0.622, OVER that bar. It was
-0.650 before H-276. With every chat read in ONE request, the best case for
-today, the ratio is 0.878. On Q2 the new path costs 1.44 times today's path.
+gates at a ratio of 0.40. Here the gated ratio is 0.544, OVER that bar. It was
+0.622 before H-279, and 0.650 before H-276. With every chat read in ONE
+request, the best case for today, the ratio is 0.768.
 
-So the bar here is 0.65. The run prints the email bar and each question that
-costs more under its first line. The rule of H-276 also binds: no gated
-question costs more than today's path. The eval names Q2 as the one known
-breach, at 1.45 at most, and H-279 holds its fix.
+So the bar here is 0.57. The run prints the email bar under its first line.
+The rule of H-276 also binds: no gated question costs more than today's path.
+Since H-279 the rule has no exception. Q2 cost 1.44 times today's path, and it
+now costs 0.95 times.
 
 ## Why WhatsApp saves less than email
 
@@ -28,16 +28,27 @@ is ten times the message. So PICK costs more than it saves on these messages.
 
 Since H-276, the tool checks the cost before PICK (spec §3.3a). On Q1, Q3, Q4
 and Q5 it skips PICK and reads every candidate, and its count line says "with
-no PICK step". Q2 has 27 candidates, more than the READ cap of 25, so PICK
-must run there.
+no PICK step".
+
+Since H-279, two more rules apply (spec §3.3a):
+
+- **One whole chat is one read.** The filters of Q2 choose every message of
+  one group since a date, with no search words. So the adapter reads that
+  group in ONE GET of the thread route, the route of `read_whatsapp_chat`,
+  with no PICK and no windows. Q2 has 27 candidates, more than the READ cap of
+  25, so before H-279 PICK had to run there.
+- **Windows that overlap merge.** On Q1, two kept messages of one chat had
+  windows that shared messages, so 9 of 66 lines showed twice. Now the
+  adapter merges such windows into one block, and each message shows once.
 
 The saving that remains comes from fewer requests. Today's path asks one
 search for each search word, then one request for each five chats it reads.
 The new path asks one request, then the answer.
 
 The weak case is a question on the filters only, such as Q2: all messages of
-one group in three weeks. Today's path reads the group in one request, and
-the new path pays PICK for 27 short messages.
+one group in three weeks. Today's path reads the group in one request. Before
+H-279 the new path paid PICK for 27 short messages. Now it reads the 27
+messages once, and it costs a little less than today's path.
 
 ## What it runs
 
@@ -106,12 +117,11 @@ uv run python -m evals.whatsapp_narrowing.dataset --write
 
 1. **Recall.** For Q1 to Q4, the after path reads in full every answering
    message.
-2. **Cost.** On Q1 to Q4, the after path's credits are at most 0.65 times the
+2. **Cost.** On Q1 to Q4, the after path's credits are at most 0.57 times the
    before path's credits. This is NOT the email bar (see the top). It was 1.00
-   until H-276.
+   until H-276, and 0.65 until H-279.
 3. **Never more (H-276).** No gated question costs more after than before,
-   and Q1 to Q4 together do not. Q2 is the known breach. It passes while its
-   ratio stays at 1.45 or under.
+   and Q1 to Q4 together do not. No question has an exception since H-279.
 4. **The rules.** These bind every question:
    - Each request acts as the member.
    - No message of the other member reaches a response.
@@ -119,9 +129,13 @@ uv run python -m evals.whatsapp_narrowing.dataset --write
      each route's own signature.
    - Each NARROW call sends `hybrid=true`, `websearch=true` and `limit=201`: 200
      candidates and one probe row that says more matched.
-   - READ reads only messages that NARROW found, and at most 25.
-   - READ changes no state. Every request of both paths is a GET, and each
-     READ is the thread route with `around` and the adapter's window.
+   - READ reads only messages that NARROW found, and at most 25 windows. A
+     read of one whole chat is one GET, with a `limit` of at most 100.
+   - READ changes no state. Every request of both paths is a GET. Each READ is
+     the thread route, with `around` and the adapter's window, or, for one
+     whole chat, with `limit` only.
+   - The recall reads the output. A message counts as read only when its line
+     shows as kept (`>>`), with its time, its sender and its whole text.
    - Each PICK item holds one message, and no message past its clip.
 
 ## Run it with no model
@@ -134,6 +148,27 @@ uv run python -m evals.whatsapp_narrowing.run --scripted --out <dir>
 The scripted run calls no model and no Router. The `skill-eval.yml` job runs
 it. The unit job runs `tests/unit/test_whatsapp_narrowing_eval.py`, which
 breaks each side of the pass rule and checks that the eval fails.
+
+## The result after H-279, 2026-10-08
+
+The scripted run, with 5 chat reads in one request on the before path. Every
+number is a stub estimate. No gated question runs PICK.
+
+| Q | Before: found and read | Before recall | After: found and read | After recall | Ratio | Ratio, best case for today |
+|---|---|---|---|---|---|---|
+| Q1 | 155 and 155 | 1.0 | 14 and 14 | 1.0 | 0.40 | 0.71 |
+| Q2 | 57 and 57 | 1.0 | 27 and 27 | 1.0 | 0.95 | 0.95 |
+| Q3 | 102 and 102 | 1.0 | 7 and 7 | 1.0 | 0.55 | 0.74 |
+| Q4 | 117 and 117 | 1.0 | 7 and 7 | 1.0 | 0.53 | 0.72 |
+| Q5 | 67 and 67 | 0.6, expected | 5 and 5 | 0.6, expected | 0.75 | 0.75 |
+
+On Q1 to Q4 the ratio is **0.544**, under the bar of 0.57 and over the email
+bar of 0.40. In the best case for today it is 0.768. With the bar at 0.57, the
+break-even factor of `tier-powerful` is 1.08. No gated question sends a PICK
+request, so `tier-decide` has no break-even factor.
+
+Q2 now reads its 27 messages in one read, so its after path reads 27, not 8.
+Q1 merges its windows, so it shows 11 blocks for 14 kept messages.
 
 ## The result after H-276 and H-277, 2026-10-08
 

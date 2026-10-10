@@ -26,13 +26,14 @@ type NavLike = {
 /** Search words a label alone does not carry, keyed by href. */
 const EXTRA_KEYWORDS: Record<string, string> = {
   "/": "customers organizations orgs home roster",
-  "/usage": "spend calls tokens",
+  "/money": "revenue profit margin cost spend usage calls vendor bill",
   "/models": "catalog declare feed vendor browse",
   "/providers": "vendor keys credentials byok anthropic openai",
   "/tiers": "chains bindings backups failover outage",
   "/pricing": "rates margins credit price charge",
   "/operators": "staff roles admin",
   "/activity": "audit log trail",
+  "/setup": "go live checklist steps setup onboarding",
 };
 
 /** Labels for covered tab URLs, which have no nav entry of their own. */

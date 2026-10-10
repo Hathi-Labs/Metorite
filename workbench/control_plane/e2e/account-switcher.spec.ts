@@ -91,6 +91,47 @@ test.describe("desktop", () => {
   });
 });
 
+/**
+ * Organisation is an app in Admin, not an account page (owner, 2026-10-09):
+ * "organization should be an app under admin if I have access to
+ * organization, rather than something that only appears under my personal
+ * section". So an admin finds it in the sidebar, and the menu holds only the
+ * member's own pages.
+ */
+const ADMIN_ME = {
+  authenticated: true,
+  email: "vjvarada@hathilabs.com",
+  is_admin: true,
+  features: ["tasks", "email", "chat"],
+  permissions: ["*"],
+  roles: ["admin"],
+  organization: { id: "org1", slug: "hathi", display_name: "Hathi Labs LLP" },
+};
+
+async function asAdminWithShellNav(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
+  await stub(page, ACCOUNTS);
+  await page.route("**/api/auth/me", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ADMIN_ME) }),
+  );
+  await page.goto("/settings/appearance");
+}
+
+test.describe("desktop, Organisation's door", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test("an admin finds Organisation in the sidebar's Admin group, and not in the account menu", async ({ page }) => {
+    await asAdminWithShellNav(page);
+    await expect(page.locator("aside").getByRole("link", { name: "Organisation" })).toBeVisible();
+    await footerButton(page).click();
+    const menu = page.getByRole("dialog", { name: "Accounts" });
+    await expect(menu.getByRole("link", { name: "My Profile" })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "My access" })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "Appearance" })).toBeVisible();
+    await expect(menu.getByRole("link", { name: "Organisation" })).toHaveCount(0);
+  });
+});
+
 test.describe("two tabs", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -116,16 +157,95 @@ test.describe("two tabs", () => {
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test("the drawer's account row unfolds the other accounts", async ({ page }) => {
-    await stub(page, ACCOUNTS);
+  // The organization the active account is in. Owner request, 2026-10-09: the
+  // phone must say which organization is open and which account is signed in,
+  // and switch in two taps.
+  const ME = {
+    authenticated: true,
+    email: "vjvarada@hathilabs.com",
+    is_admin: false,
+    features: ["tasks", "email", "chat"],
+    permissions: [],
+    roles: ["employee"],
+    organization: { id: "org1", slug: "hathi", display_name: "Hathi Labs LLP" },
+  };
+  async function phone(page: Page, calls: string[] = []) {
+    await stub(page, ACCOUNTS, calls);
+    await page.route("**/api/auth/me", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ME) }),
+    );
     await page.goto("/settings/appearance");
+  }
+
+  // The header is the account surface: the mark and the organization, the
+  // signed-in address under it, and a tap opens the rest (owner, 2026-10-09).
+  const header = (page: Page) => page.getByTestId("drawer-org").getByRole("button", { name: /^Account, / });
+
+  test("the menu header names the organization and the account, and stays one line", async ({ page }) => {
+    await phone(page);
     await page.getByRole("button", { name: "Menu" }).click();
-    const row = page.getByRole("button", { name: /Vijay Varada/ });
-    await expect(row).toBeVisible();
-    await expect(row).toContainText("2 more");
-    await row.click();
-    const list = page.getByRole("list", { name: "Other accounts" });
+    const top = page.getByTestId("drawer-org");
+    await expect(top).toContainText("Hathi Labs LLP");
+    await expect(top).toContainText("vjvarada@hathilabs.com");
+    await expect(header(page)).toHaveAccessibleName(
+      "Account, signed in as vjvarada@hathilabs.com, in Hathi Labs LLP, 2 more",
+    );
+    // Folded until tapped: no switch list, no actions, no second account row.
+    await expect(header(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(top.getByRole("list", { name: "Switch organization" })).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Other accounts" })).toHaveCount(0);
+    await expect(page.getByTestId("account-tab")).toHaveCount(0);
+  });
+
+  test("a tap on the header opens the other accounts, and only that", async ({ page }) => {
+    await phone(page);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await header(page).click();
+    const top = page.getByTestId("drawer-org");
+    const list = top.getByRole("list", { name: "Switch organization" });
     await expect(list.getByRole("listitem")).toHaveCount(2);
-    await expect(page.getByRole("button", { name: "Add another account" })).toBeVisible();
+    await expect(list).toContainText("Fracktal Works");
+    await expect(top.getByRole("button", { name: "Add another account" })).toBeVisible();
+    // The rare acts are at the foot, not in the header (owner review, 2026-10-09).
+    await expect(top.getByRole("button", { name: /Sign out/ })).toHaveCount(0);
+  });
+
+  test("the foot holds the settings and sign-out, under one heading", async ({ page }) => {
+    await phone(page);
+    await page.getByRole("button", { name: "Menu" }).click();
+    const foot = page.getByRole("region", { name: "Account and settings" });
+    await expect(foot.getByRole("button", { name: "Desktop view" })).toBeVisible();
+    await expect(foot.getByRole("button", { name: "Sign out of all accounts" })).toBeVisible();
+  });
+
+  test("an admin's drawer lists Organisation under Admin, and its foot does not", async ({ page }) => {
+    await asAdminWithShellNav(page);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await expect(page.getByRole("link", { name: "Organisation" })).toHaveCount(1);
+    const foot = page.getByRole("region", { name: "Account and settings" });
+    await expect(foot.getByRole("link", { name: "My Profile" })).toBeVisible();
+    await expect(foot.getByRole("link", { name: "Organisation" })).toHaveCount(0);
+  });
+
+  test("one tap in the open header switches to that account", async ({ page }) => {
+    const calls: string[] = [];
+    await phone(page, calls);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await header(page).click();
+    await page.getByTestId("drawer-org").getByRole("button", { name: /Fracktal Works/ }).click();
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}']);
+  });
+
+  test("a row drops ONE account from this browser", async ({ page }) => {
+    const calls: string[] = [];
+    await phone(page, calls);
+    await page.getByRole("button", { name: "Menu" }).click();
+    await header(page).click();
+    await page
+      .getByTestId("drawer-org")
+      .getByRole("button", { name: "Remove vjvarada@fracktal.in from this browser" })
+      .click();
+    await expect.poll(() => calls).toEqual(['/api/accounts/remove {"slot":2}']);
   });
 });

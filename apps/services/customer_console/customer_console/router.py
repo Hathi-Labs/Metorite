@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -1313,9 +1314,69 @@ class UpstreamFailed(Exception):
     the status to its own wording and the provider's text never leaves here.
     """
 
-    def __init__(self, status: int | None) -> None:
+    def __init__(self, status: int | None, *, vendor: str | None = None) -> None:
         super().__init__(f"upstream failed with {status}")
         self.status = status
+        #: The vendor of the step that refused last, such as ``deepseek``. A
+        #: catalog name, never request text. ``None`` when no step ran.
+        self.vendor = vendor
+
+
+#: The request parameters that a refusal line may NAME. A closed set of OUR
+#: words, so the line can say which parameter a vendor objected to and still
+#: hold no text of the vendor's message.
+#:
+#: 🔴 **Why this exists (2026-10-09).** Every System-1 request got a 400 for
+#: days. The line said ``router.provider_error`` and nothing else, so the
+#: cause was a guess. ``response_format`` in the line would have named it.
+#: ⚠️ Common English words (``user``, ``stop``, ``tools``) are left out on
+#: purpose. They would match ordinary prose that a vendor quotes back.
+ERROR_HINTS: tuple[str, ...] = (
+    "response_format",
+    "json_schema",
+    "json_object",
+    "tool_choice",
+    "parallel_tool_calls",
+    "reasoning_effort",
+    "max_tokens",
+    "max_completion_tokens",
+    "logit_bias",
+    "presence_penalty",
+    "frequency_penalty",
+    "top_p",
+    "stream_options",
+    "context_length",
+)
+
+_ERROR_CLASS = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def describe_failure(failed: UpstreamFailed) -> dict[str, Any]:
+    """The fields of a refusal log line. A status, a class and OUR words only.
+
+    * ``upstream_status``: what the vendor answered.
+    * ``vendor``: the catalog name of the step that refused.
+    * ``error_class``: the type name of the vendor's error, such as
+      ``BadRequestError``. A type name is code, never content.
+    * ``hints``: each :data:`ERROR_HINTS` word that the vendor's message
+      names. The message itself never leaves this function.
+    """
+    cause = failed.__cause__
+    name = type(cause).__name__ if cause is not None else "none"
+    error_class = name if _ERROR_CLASS.fullmatch(name) else "unnamed"
+    hints: list[str] = []
+    if cause is not None:
+        try:
+            text = str(cause).lower()
+        except Exception:  # an odd error must not break the log line
+            text = ""
+        hints = [w for w in ERROR_HINTS if re.search(rf"\b{w}\b", text)]
+    return {
+        "upstream_status": failed.status,
+        "vendor": failed.vendor or "none",
+        "error_class": error_class,
+        "hints": ",".join(hints) or "none",
+    }
 
 
 async def walk_chain(
@@ -1381,7 +1442,7 @@ async def walk_chain(
             # the same request, so the walk stops here. The flag is read in
             # this function and in no other, like every other failover rule.
             if not is_retryable(status) or not remaining or getattr(exc, "terminal", False) is True:
-                raise UpstreamFailed(status) from exc
+                raise UpstreamFailed(status, vendor=vendor) from exc
             if on_failover is not None:
                 on_failover(step, remaining[0], status)
         else:

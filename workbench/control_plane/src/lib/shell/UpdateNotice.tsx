@@ -24,6 +24,8 @@ import {
   type Health,
   createMonitor,
   installFetchObserver,
+  onOutageCover,
+  outageCovered,
   probeHealth,
 } from "./serviceHealth";
 
@@ -78,6 +80,11 @@ export default function UpdateNotice() {
 
     const show = (state: Health, info: ChangeInfo) => {
       const t = toastRef.current;
+      // A surface already says it (the chat's own notice): say it once.
+      if ((state === "updating" || state === "busy") && outageCovered()) {
+        t.dismiss(KEY);
+        return;
+      }
       if (state === "updating") {
         t.show({ key: KEY, variant: "loading", ...COPY.updating });
       } else if (state === "busy") {
@@ -127,6 +134,12 @@ export default function UpdateNotice() {
       onChange: show,
     });
     void monitor.start();
+    // The cover moved: hide the toast while it holds, and bring it back if
+    // the outage outlives the surface's notice.
+    const offCover = onOutageCover(() => {
+      const st = monitor.state();
+      if (st === "updating" || st === "busy") show(st, { buildChanged: false, from: st });
+    });
 
     const restoreFetch = installFetchObserver(window, () => monitor.suspect());
     const onOnline = () => monitor.setOnline(true);
@@ -155,6 +168,7 @@ export default function UpdateNotice() {
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
     return () => {
+      offCover();
       monitor.dispose();
       restoreFetch();
       window.removeEventListener("online", onOnline);

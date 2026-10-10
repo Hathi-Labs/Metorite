@@ -26,6 +26,7 @@ import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
+import { announceInAppLink, externalHost } from "@/lib/inAppLink";
 import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
 import remarkEntityPills, {
   PILL_ATTR,
@@ -257,10 +258,24 @@ export const LINK_CLASS =
 function InAppLink({ href, children }: { href: string; children?: ReactNode }) {
   const router = useRouter();
   return (
-    <ControlLink href={href} onActivate={() => router.push(href)} className={LINK_CLASS}>
+    <ControlLink
+      href={href}
+      // Each click announces itself first. A push of the URL the page already
+      // shows changes nothing, so the second click on one email link did
+      // nothing (`lib/inAppLink.ts`, review round 1 P2-b).
+      onActivate={() => { announceInAppLink(href); router.push(href); }}
+      className={LINK_CLASS}
+    >
       {children}
     </ControlLink>
   );
+}
+
+/** The words of a link, for the "does it already show the host" test. */
+function nodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  return "";
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
@@ -268,9 +283,23 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   if (href?.toLowerCase().startsWith("mailto:")) {
     return <a href={href} className={LINK_CLASS}>{children}</a>;
   }
+  // A link to another site says so: an icon, and its host unless the words
+  // already show it. A mail subject can carry a link, and the member must see
+  // where a link goes before the click (review round 1, P2-a).
+  const host = externalHost(href);
+  const showHost = host !== null && !nodeText(children).includes(host);
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+    <a href={href} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}
+      data-external-link={host ?? undefined}>
       {children}
+      {host !== null && (
+        // `inline-flex` is an atomic inline, so the link's underline stops
+        // here, and the host reads as a label, not as more of the link text.
+        <span className="ml-1 inline-flex items-center gap-0.5 text-[10px] text-muted-foreground" title={href}>
+          <Icon name="ExternalLink" size={10} />
+          {showHost ? host : null}
+        </span>
+      )}
     </a>
   );
 }

@@ -56,12 +56,13 @@ export const NAV: NavGroup[] = [
   {
     title: "Customers",
     items: [
-      { href: "/", label: "Organizations", icon: I("M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75") },
-      { href: "/usage", label: "AI usage", icon: I("M3 3v18h18M7 15l4-5 3 3 5-7") },
+      { href: "/", label: "Customers", icon: I("M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75") },
+      // WS-50: what each customer paid us and cost us. Replaced "AI usage".
+      { href: "/money", label: "Money", icon: I("M3 3v18h18M7 15l4-5 3 3 5-7") },
     ],
   },
   {
-    title: "The AI we sell",
+    title: "AI catalogue",
     items: [
       // One entry for the whole Models section — /providers is its second
       // TAB (owner directive 2026-08-30), so `covers` keeps this entry lit
@@ -73,17 +74,20 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
-    title: "This console",
+    title: "Team & setup",
     items: [
       { href: "/operators", label: "Operators", icon: I("M9 12l2 2 4-4M12 3l7 4v5c0 4.4-3 8.4-7 9.5C8 20.4 5 16.4 5 12V7l7-4Z") },
       { href: "/activity", label: "Activity", icon: I("M22 12h-4l-3 9L9 3l-3 9H2") },
+      // WS-50 slice 5: the go-live checklist left the customer list for its
+      // own page. The list keeps one line that links here while a step is open.
+      { href: "/setup", label: "Setup checklist", icon: I("M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11") },
     ],
   },
 ];
 
 /** Which nav entry the current URL belongs to.
  *
- * ⚠️ "/" is matched EXACTLY. A `startsWith` test would mark Organizations as
+ * ⚠️ "/" is matched EXACTLY. A `startsWith` test would mark Customers as
  * the current page on every route in the app, since every path starts with "/". */
 export function isCurrent(href: string, pathname: string): boolean {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);

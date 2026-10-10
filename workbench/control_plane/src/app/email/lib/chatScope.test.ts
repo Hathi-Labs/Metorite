@@ -238,7 +238,8 @@ describe("email-chat-scope-no-hidden-mailbox", () => {
     const effect = chat.slice(chat.indexOf("const read = chatSettingsRead("));
     // The clear sits just before the read, after the All inboxes return.
     expect(effect).toContain(
-      'setChatModel("tier-powerful");\n    setAcctSettings(null);\n    let cancelled = false;\n    read\n      .then(');
+      // D-EM-61: the chat reads no stored tier, so only the settings clear.
+      '    setAcctSettings(null);\n    let cancelled = false;\n    read\n      .then(');
     expect(effect).toContain("if (cancelled) return;");
     // The page's selectedAccountId never reaches the chat. The one name left is
     // the option of the persona builder, and it takes the chat mailbox.

@@ -163,6 +163,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # capacity and open work.
     "gateway.routes.people": set(),
     "gateway.routes.chat": set(),
+    # WS-47 WAC-1 — Chat on WhatsApp (`/me/whatsapp-link`). Gated on
+    # `feature:chat`, because the run of WAC-3 is a Chat run. No exemptions:
+    # both routes serve the signed-in member, and the webhook stays on the
+    # `/whatsapp` router.
+    "gateway.routes.whatsapp_channel": set(),
     "gateway.routes.actions": set(),
     "gateway.routes.integrations": set(),
     "gateway.routes.workflows": {
@@ -284,6 +289,12 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "list (`test_shell_intent.py::TestTheModelSeesOnlyWhatTheMemberCanOpen`). "
             "It reads no app data: a job is a link to a form the member then fills."
         ),
+        "/shell/needs": (
+            "NS-3 slice A. Each provider in `needs.PROVIDERS` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "read, and a member without the app gets no row and the source "
+            "`absent` (`test_shell_needs.py::TestTheFeatureGate`)."
+        ),
     },
 }
 
@@ -305,6 +316,11 @@ def test_the_shell_providers_each_name_a_feature() -> None:
 
     for app, (feature, _label, _fn) in PROVIDERS.items():
         assert feature and feature.isidentifier(), f"provider {app} has no feature"
+
+    from gateway.routes.shell.needs import PROVIDERS as NEEDS
+
+    for source, (feature, _fn) in NEEDS.items():
+        assert feature and feature.isidentifier(), f"needs provider {source} has no feature"
 
 
 def test_the_two_registries_do_not_overlap() -> None:

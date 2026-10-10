@@ -27,6 +27,9 @@
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
+> ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
+> 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
+> 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -143,7 +146,7 @@ records only what the email app must keep true.
    |---|---|---|---|
    | 1 | Cold-email check, `senders.py:1245` `_llm_is_cold` | `tier-fast` | boolean |
    | 2 | Auto-learn sender pin, `learning.py:67` | `tier-balanced` | boolean, with a 0.9 threshold |
-   | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 3 | Thread status, `replyzero.py:334` | `tier-balanced` with no reasoning, then `tier-fast` (WS-17 AI cost, 2026-10-09) | choice of 3 or 4 |
    | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
    Amended 2026-10-02 by D-EM-7. The rule match now covers the multi-rule mode too, and `rule_model` no longer applies. §10.4.8 holds the current anchors.
@@ -547,7 +550,7 @@ or API client to create a pattern by hand.
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
 | **D-EM-5** | ~~**Outlook is the only provider in the connect flow.** Google shows "coming soon".~~ **Amended by the owner, 2026-10-04: Gmail and Google Workspace mailboxes join Outlook in the connect flow.** Metorite owns ONE Google OAuth app, and the setup stays one click: Connect, consent, done. §12 owns the plan (D-EM-31 to D-EM-35, slices EM-G1 to EM-G10). IMAP stays hidden until its connect path works. |
 | **D-EM-6** | **Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.** Owner, 2026-10-02: "Turn the default autodraft emails to off." This reverses migration 82 for a new mailbox. A stored choice does not change. EM-T7 builds it (§10.4.9). |
-| **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
+| **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. **Amended by D-EM-61 (owner, 2026-10-09):** no member chooses the tier of that text work either. Our code chooses it (§10.4.16). |
 | **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
 | **D-EM-9** | **The owner approves residency for email triage** (owner, 2026-10-02). Tenant mail content may go to TypeSafe and to AI/ML API for the D-EM-7 decisions. This answers H-166 item 3 for email, and for no other app. `DECIDE_ENABLED` stays an owner act (`work_plan.md` §6.1 WS-31 (i)). |
 | **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** §14.4.5 holds the window of each mailbox, at most 24 months. |
@@ -557,6 +560,7 @@ or API client to create a pattern by hand.
 | **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
 | **D-EM-15** | **After the import, Metorite asks the member to set up AI rules.** The rules then run over the imported mail and give insights. The step offers no model choice, because EM-T5b moves the rules to the `decide` tier. Reply drafting is a separate step that the member turns on (D-EM-6). (Owner, 2026-10-02.) |
 | **D-EM-16** | **A short guided setup takes the member through each stage.** The stages are connect, the range, the import, the storage notice when it applies, AI rules, and done. The import shows real progress: the count of messages, an estimate of the total and the phase. A spinner alone is not progress. (Owner, 2026-10-02.) |
+| **D-EM-62** | **Build the cheaper triage decisions of EM-T16, dark, in the order PR-0 to PR-D** (owner, 2026-10-09). After PR-C merges, `email.cold_check` and `email.sender_pin` go to `on`. Two questions stay open for the owner. The record follows this table, and §10.4.17 holds the build. |
 
 **The owner answers to the three checks of EM-T6c (2026-10-02).** Each answer adds to D-EM-14. §10.4.7 gives the reason for each check.
 
@@ -571,6 +575,16 @@ or API client to create a pattern by hand.
 - **(b) (owner, 2026-10-02).** Jev decides the rule match for ALL organizations, with no shadow window ("Do jev for all").
 - **(c) (owner, 2026-10-02).** The demo scope is the rule match only (`email.rule_match`). The thread status, the cold check and the sender pin keep the old path, and shadow stays allowed for them.
 - **(d) (owner, 2026-10-02).** The AUTOMATIC run touches new mail only: mail that arrived after the member made the first enabled rule of the mailbox. Older synced mail changes only through "Process past emails".
+
+**D-EM-62 in full (owner, 2026-10-09).** §10.4.17 holds the build.
+
+- **What the owner said.** The owner asked a question: do the triage, the categorization and the decisions use the `decide` style to keep the app affordable? The owner then said: "let's go ahead with your recommendations about what to do next."
+- **The recommendations.** Build gaps 1 to 4 dark, which are PR-A to PR-D of §10.4.17. Batch the decisions across emails next. Move the cold check and the sender pin to `decide`.
+- **What this approves.** The build of EM-T16 PR-0 to PR-D. After PR-C merges, the orchestrator sets `email.cold_check` and `email.sender_pin` to `on`. D-EM-9 covers both, because both are D-EM-7 decisions.
+- **It also approves the back-off of PR-A.** In `on`, the backfill waits 30 minutes after an undecided ask of the status, and then asks again. D-EM-8 said "the next cycle asks again". The back-off stores no verdict, so the email stays undecided as D-EM-8 requires.
+- **Open (a), for the owner.** Does D-EM-9 residency (Jev, TypeSafe, System One) extend to `email.draft_gate` and `email.draft_consult`? Until the owner says yes, both stay `off` on each live box.
+- **Open (b), for the owner.** D-EM-7 is not amended for the `{{choose}}` template fill. So that item stays out of EM-T16.
+- **The drift found.** Production runs `email.thread_status=on`. The box values, measured 2026-10-09, are `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on` and `DECIDE_FEATURE_ORGS=*`. The spec says that `on` waits for PR-B3 of EM-T4a-2, and PR-B3 is not built. EM-T16 PR-0 is PR-B3, and its merge closes the drift.
 
 ### 10.3 The customer flow (the acceptance target for EM-T3)
 
@@ -608,7 +622,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** ✅ **EM-T4b MERGED (#617, 2026-10-04), dark** (cap 0, budget `log`). **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
-| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). ⚠️ `email.thread_status=on` waits for PR-B3 of EM-T4a-2 to merge (§10.4.6). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
+| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). ⚠️ `email.thread_status=on` waits for PR-B3 of EM-T4a-2 to merge (§10.4.6). 🔨 PR-B3 is BUILT on `email-pr-b3` (2026-10-09), and it is not merged. 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
@@ -618,6 +632,8 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
+| **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
+| **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). ✅ **PR-A MERGED (#793), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** 🔨 **PR-B BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-prb`), dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -1550,7 +1566,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 ✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
 
-✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ EM-T4a-2 PR-B2 MERGED (#685, 2026-10-06). EM-T4a-2 PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ EM-T4a-2 PR-B2 MERGED (#685, 2026-10-06). 🔨 EM-T4a-2 PR-B3 BUILT, NOT MERGED (`email-pr-b3`, 2026-10-09). EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1598,7 +1614,7 @@ The four triage decisions. Each one has an `on` path and an old path. The old pa
 | Decision | `on` | The old path |
 |---|---|---|
 | Rule match. `email.rule_match=on` is live for all organizations | `engine.py:761` `ask`, then `_ask_all` (`decide_features.py:526-530`). The Router path. The slot waits | `engine.py:860` and `:946`, `_llm_json` |
-| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries |
+| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries. Since 2026-10-09 each try asks for no reasoning, and the second try is a different model (`_STATUS_RETRY_MODEL`) |
 | Cold check | `senders.py:1339` `ask` | `senders.py:1353` `_llm_json` |
 | Sender pin. The caller is `runner.py:1246` | `learning.py:161` `ask` | `learning.py:183` `_llm_json` |
 | Shadow, all four | — | `shadow` (`decide_features.py:687`) starts the task at `:728`. The task tries for a slot, or it skips |
@@ -1768,7 +1784,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ PR-B2 MERGED (#685, 2026-10-06), with review round 1. PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
+**Status (2026-10-09).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ PR-B2 MERGED (#685, 2026-10-06), with review round 1. 🔨 PR-B3 BUILT, NOT MERGED (`email-pr-b3`, 2026-10-09), with the fences `email-decision-core-no-session-across-the-on-status-ask`, `email-decision-core-on-status-parity` and `email-decision-core-on-status-degrades`. The mutation run killed each of the 10 mutants that it ran, and no claim covers a mutant outside that run. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
@@ -3656,7 +3672,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 5. **The sender pin.** A pin needs 0.9 or above. With no decision there is no pin. The rule still applies, and the runner stamps the message.
 6. **The member.** `engine._decide_member(db, account_id, feature)` reads the owner for each feature in `on`. Each site gives it to `ask` as a proven member.
 7. **The cool-down** of fix round 2 is for the organization, so it covers all four features. A 402 from the cold check also stops the status and the pin calls.
-8. **`· auto`.** A decided status is confident, so it never gets the tag. The backfill checks an old `· auto` row once more, and then leaves it. With no decision the row keeps the tag, and the next cycle asks again.
+8. **`· auto`.** A decided status is confident, so it never gets the tag. The backfill checks an old `· auto` row once more, and then leaves it. With no decision the row keeps the tag, and the next cycle asks again. **Amended 2026-10-09 (WS-17 AI cost):** the backfill asks about a `· auto` row only when its `classified_at` is older than 6 hours (`replyzero._PROVISIONAL_RECHECK_HOURS`). A row with no decision keeps its old `classified_at`, so the next cycle after the window asks again. A new message on the thread selects it at once.
 9. **The startup check.** `register_email_post_sync_hooks` runs `scheduler_hooks.check_decide_wiring()` once. It logs `email.decide_not_wired` at error level when a feature is `on` and `decide_enabled` or `router_is_wired()` is false. It reads the wiring through a new probe, `acb_llm.routed.router_wired()`. The dependency fence admits eight importers of `console_resolve`, and it pins the `decide` facade to two names, so the gateway may not import it here.
 10. With no organization in `DECIDE_FEATURE_ORGS`, no feature is `on`, so the check of item 9 logs nothing.
 11. The docstrings of `acb_llm/decide.py` say that email leaves an email undecided, with no LLM call.
@@ -5982,6 +5998,543 @@ One more mutation removed the `sni_hostname` extension. The real TLS test failed
 | W13 | `request()` has no `deadline()` | the request budget fence | red, 1 failed |
 | W14 | `_http_unsubscribe` has no `deadline()` | the unsubscribe budget fence | red, 1 failed |
 | W15 | The refusal does not cut the host | the long host fence | red, 1 failed |
+
+#### 10.4.16 EM-T15 — no member chooses the tier of an email AI task
+
+> **Owner decision, 2026-10-09 (D-EM-61).** "In the email settings, we were
+> earlier letting the user decide what model to use for different aspects of
+> the email processing, which now should not be the case. It is hard-coded
+> depending on our best process for email. You can remove the settings for the
+> email AI tiers for doing different things."
+
+**D-EM-61.** No member chooses the model or the tier of an email AI task. Our
+code chooses each tier. This amends D-EM-7, which took the rules model only.
+
+**Status.** ✅ MERGED #759 (`cc0e5ba4d`, 2026-10-09). No migration and no
+flag. The slice is AGENT-SAFE.
+
+**What leaves.** Three rows of AI settings → Advanced, and each API field behind
+it:
+
+| Row | Field | Tier now |
+|---|---|---|
+| Draft writing model | `draft_model` | `tier-powerful` |
+| Manual draft model | `compose_model` | `tier-fast` |
+| Email chat model | `chat_model` | `tier-powerful`, or the tier policy when `AI_TIER_ROUTING` covers email-assistant (D90) |
+
+The email agent's `update_assistant_settings` tool loses `draft_model` and
+`chat_model`. So the agent cannot set a tier. Its schema drops from 1,302 to
+1,190 tokens (o200k, the MAF schema of the tool).
+
+**The tier of each email AI call.** `EMAIL_TASK_TIERS` in
+`automation/assistant.py` holds the first three rows. The other rows were
+never a member choice, and they do not change.
+
+| Call | Where | Tier |
+|---|---|---|
+| A rule draft (REPLY, DRAFT_EMAIL) | `actions._apply_rule_actions` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
+| A follow-up nudge | `followups._maybe_send_follow_up_reminders` | `EMAIL_TASK_TIERS["draft"]`, `tier-powerful` |
+| "Draft with AI", reply | `drafting.draft_reply_smart` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
+| "Draft with AI", composer | `drafting._compose_assist_run` | `EMAIL_TASK_TIERS["compose"]`, `tier-fast` |
+| The email chat | `chat.ai_chat`, `EmailAssistantChat.tsx`, `chat/page.tsx` | `tier-powerful`, or no model for a covered agent |
+| The rule match, thread status, cold check and sender pin | `decide_features` | `tier-decide` (D-EM-7) |
+| The old rule call outside `on` | `engine` | `tier-fast` |
+| A template fill, the cold check outside `on`, the drafter's consult plan, the digest brief | `actions`, `senders`, `drafting`, `digest` | `tier-fast`, at the call site |
+| The pattern check, the voice profile scan | `learning`, `voice_profile` | `tier-balanced`, at the call site |
+| Rules from text, the writing style, the reply memories, the voice profile | `rules`, `assistant`, `drafting`, `voice_profile` | `tier-powerful`, at the call site |
+| The thread status outside `on` | `replyzero` | `tier-balanced`, and its retry on `tier-fast` (#753) |
+
+**Backward compatibility (R6).** The deploy keeps old code working with the
+new schema.
+
+- The three columns stay. Nothing reads them, and nothing writes them.
+- `AssistantSettingsModel` still declares the three request fields for one
+  release. The PUT ignores each value.
+- The PUT logs `email.assistant_settings.model_field_ignored` once for each
+  field in each process. That line shows a client that still sends a field.
+- The model ignores an unknown field (pydantic `extra="ignore"`). So the later
+  removal causes no 422. It only removes the log line.
+- The GET and PUT answers leave the three fields out, as D-EM-7 did for
+  `rule_model`.
+- A later PR removes the request fields, and then the columns. HANDOFF
+  carries that step.
+
+**Fences (R7).**
+
+| Fence | File |
+|---|---|
+| No email source names a model field, and the tab reads no tier list | `src/app/email/lib/noTierChoice.test.ts` |
+| A stored tier does not change the tier of a call | `tests/unit/test_email_no_tier_choice.py` |
+| The agent tool takes no tier argument | `tests/unit/test_email_no_tier_choice.py` |
+| A PUT writes no model column, and the GET answers none (R8) | `tests/unit/test_email_assistant_settings.py` |
+| A stored `chat_model` does not change the chat tier (R8) | `tests/unit/test_email_chat_context_owner.py` |
+
+#### 10.4.17 EM-T16 — cheaper triage decisions
+
+> **Owner decision, 2026-10-09 (D-EM-62, §10.2).** The owner asked whether
+> triage, categorization and decisions use the `decide` style to keep the app
+> affordable. The answer: "let's go ahead with your recommendations about what
+> to do next."
+
+**Status.** 📝 SPECIFIED 2026-10-09. No migration. Each new `decide`
+feature starts `off`. ✅ PR-0 MERGED (#783, 2026-10-09). ✅ PR-A MERGED
+(#793, 2026-10-09). It is dark behind
+`EMAIL_TRIAGE_ONCE_PER_CYCLE`, and a value of `true` on a box is gate
+`enforcement-flip`. 🔨 PR-B BUILT, NOT MERGED (2026-10-09, branch
+`email-em-t16-prb`). It is dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`, and a
+value of `true` on a box is gate `enforcement-flip`. The audit returned
+GO-NARROWED, and its decisions B1 to B7 are in PR-B below. PR-C and PR-D are
+not built.
+
+**Why this section exists.** The spec audit of 2026-10-09 found four places
+where email triage asks a model more often than it must. No section owned that
+work, so the audit returned NO-GO. This section owns it.
+
+**Five PRs, in this order:** PR-0, PR-A, PR-B, PR-C, then PR-D. Each PR gets
+its own audit, its own review and its own merge.
+
+##### PR-0 — EM-T4a-2 PR-B3, the prerequisite
+
+PR-0 is PR-B3 of EM-T4a-2. §10.4.6 owns its scope, and this section does not
+change it. An agent builds it in parallel on branch `email-pr-b3`.
+
+PR-0 also closes a drift. Production runs `email.thread_status=on` (measured
+2026-10-09), but §10.4.6 says that `on` waits for PR-B3. D-EM-62 records the
+drift.
+
+##### PR-A — one classify in each sync cycle, and a back-off in `on`
+
+**Today.** A sync cycle with new mail calls `_maybe_classify_threads`
+(`replyzero.py:2401`) two times for each account:
+
+1. `scheduler.py:1726` runs the `on_new_mail` hook. That hook is
+   `process_new_mail`, and it calls the classify at `scheduler_hooks.py:183`.
+2. `scheduler.py:1740` runs the `classify_threads` hook. That hook calls the
+   classify at `scheduler_hooks.py:300`.
+
+**The change.**
+
+- The scheduler calls the classify once in each cycle for each account.
+- When the cycle ran `on_new_mail`, the scheduler does not run the
+  `classify_threads` hook. When the cycle did not run it, the scheduler runs
+  the hook as today.
+- So the classify keeps its place in `process_new_mail`, before the
+  auto-archive.
+- The manual-sync route and the Graph webhook call `process_new_mail`
+  directly. Their classify does not change.
+
+**The trade-off.** Each call also works the backlog. It asks about up to 25
+inbound threads (`_BACKFILL_INBOUND_CAP`, `replyzero.py:2312`) and up to 40
+sent threads (`_REPLY_DETERMINE_CAP`, `:2310`). Today a cycle with new mail can
+work two batches. After PR-A, it works one batch.
+
+**How the drain keeps its rate.**
+
+- One call runs in EACH cycle, with new mail or without it. So a quiet mailbox
+  still works 25 inbound and 40 sent threads in each cycle, about every 5
+  minutes. That is the steady rate of today.
+- The two caps do not change.
+- Do NOT keep only the classify of `process_new_mail`. Then a quiet mailbox
+  stops its drain. The comment at `scheduler.py:1732-1738` records that
+  defect.
+
+**The back-off in `on`.** In `on` of `email.thread_status`, an undecided
+status ask writes nothing (D-EM-8). Today the next cycle selects the same
+thread and asks again.
+
+- After PR-A, an undecided ask in `on` stores a back-off mark for 30 minutes.
+  The mark is a `tenant_redis` `setex` key for each account, thread and last
+  message id. PR-C uses the same idiom.
+- The backfill selection skips a thread with a mark, before the cap. So a
+  thread with a mark takes no slot from the next thread.
+- A new message changes the last message id of the thread. Then the mark does
+  not match, and the selection takes the thread at once.
+- The mark holds no verdict, and it expires. A Redis failure reads as no
+  mark, and the backfill asks about the thread as today.
+- Outside `on`, `_PROVISIONAL_RECHECK_HOURS` (`replyzero.py:2324`) does this
+  job. PR-A does not change it.
+- The rule runner selects an undecided row again in the next cycle. PR-A does
+  not change that path.
+
+**The decisions of PR-A (coordinator, 2026-10-09).** The audit of
+2026-10-09 returned GO-NARROWED. These decisions close the gaps that it found.
+The line numbers are those of PR-B3 (`64e9f9bb0`).
+
+1. **The asks that write the mark.** Only the Reply Zero backfill writes it.
+   - (a) `ask_status_first` raises `DecisionUnavailable` (`replyzero.py:1361`).
+   - (b) `_resolve_on` rejects an UNDECIDED Block S status (`:1411`).
+   - (c) The sent-thread path of the backfill. `_mark_thread_replied` (`:2172`)
+     returns the undecided state, and the backfill writes the mark. The send
+     and draft routes that call it write no mark.
+   - (d) An undecided RULE match writes no mark. `LLMBudgetExhausted` writes
+     none.
+2. **The Redis key.** The namespace is `email-status-backoff`. The key is
+   `tenant_redis.key("email-status-backoff", account_id, thread_id,
+   last_message_id)`.
+   - Write it with ONE `setex(..., 1800, "1")`. Never write `set` and then
+     `expire`.
+   - Read the marks in ONE batch. PR-A adds `TenantRedis.mget` to
+     `packages/acb_common/acb_common/tenant_redis.py`. That extends the shared
+     seam. `tests/unit/test_tenant_redis.py` fences its tenant keys and the
+     R5(c) ratchet.
+   - A Redis failure reads as "no mark".
+3. **What "ran `on_new_mail`" means.** The gateway registered the hook, and
+   the hook did not raise. A cycle with a hook that raised, or with no hook,
+   still runs `classify_threads`. `tests/unit/test_email_triage_once.py`
+   fences A1, with a case for a hook that raises. `test_email_ai_cost.py`
+   fences A2.
+4. **The tenant (R5).** The organization comes from
+   `acb_common.db.current_tenant()`, as in `digest.py`. With no tenant bound,
+   the backfill writes no mark and reads no mark.
+5. **A flag, so PR-A ships dark (CLAUDE.md §4).** One setting,
+   `EMAIL_TRIAGE_ONCE_PER_CYCLE` (`email_triage_once_per_cycle: bool = False`
+   in `acb_common/settings.py`), holds A1 and A2. With the flag off, the
+   behaviour is the same as before PR-A. The prefix `EMAIL_` of `env_guard`
+   already covers the name. `test_integrations_env_hardening.py` checks it.
+   A value of `true` on a box is gate `enforcement-flip`.
+
+**The risks that PR-A accepts.**
+
+- **Starvation.** The backfill reads the marks after the SQL `LIMIT 200`.
+  During a `decide` outage, about 175 marked rows can fill the window. Then
+  the drain can stop for up to 30 minutes. That costs no money, so PR-A
+  accepts it.
+- **The webhook overlap.** A `process_new_mail` that the webhook starts can
+  classify at the same time as the classify of the scheduler. PR-A does not
+  change that. `HANDOFF.md` H-285 holds the follow-up.
+- **The reclassify count.** In `on`, `_count_reply_zero_backlog` also counts
+  marked threads. So `TestNoReAskStorm::test_the_count_agrees_with_the_selection`
+  cannot hold in `on`. The test stays true outside `on`. In `on`, the drain of
+  a reclassify stops at the first pass with no progress, as it does today.
+
+**PR-A as built (2026-10-09, branch `email-em-t16-pra`).**
+
+- `scheduler.py` skips the `classify_threads` hook as item 3 says.
+  `post_sync.triage_once_per_cycle` is the one reader of the flag.
+- `replyzero.py` holds the mark helpers beside `_NEEDS_STATUS_SQL`.
+  `_drop_marked_rows` runs before `_split_backfill_rows` and the inbound cap.
+- `TenantRedis.mget` refuses the whole call when one key is a `str` or a key
+  of another tenant.
+- Fences: `test_email_triage_once.py` (A1, over the real hook wiring),
+  `test_email_ai_cost.py` (`TestTheOnBackoff`, R8, and
+  `TestTheBackoffNeedsATenant`) and `test_tenant_redis.py` (section 5c).
+
+**Mutations of PR-A.** Each one ran red, and the file came back to the same
+SHA-256 after each one.
+
+- The scheduler loses the skip. `test_one_classify_in_a_cycle_with_new_mail`
+  fails.
+- The mark ignores the state of the ask, so (d) writes one.
+  `test_an_undecided_rule_match_keeps_no_mark` fails.
+- `set` with no time to live replaces `setex`.
+  `test_an_undecided_first_ask_waits_and_new_mail_asks_again` fails.
+- The tenant guard goes. `test_no_tenant_no_mark` fails.
+- The back-off ignores the flag.
+  `test_flag_off_asks_in_each_cycle_and_touches_no_redis` fails.
+- The A1 skip ignores the flag. `test_flag_off_keeps_the_two_classifies`
+  fails.
+- The selection keeps marked rows. `test_a_marked_thread_takes_no_slot_of_the_cap`
+  fails.
+- `_status_backoff_on` loses its `on` test (verifier, 2026-10-09). Both cases
+  of `test_outside_on_the_flag_keeps_no_mark` fail.
+
+##### PR-B — no rule match when the conversation status decides
+
+**Today.** The line numbers are those after PR-A (`361aed8c6`). In `on`, a
+job reads the plan with `read_status_first` (`replyzero.py:1311`) in Block R.
+It asks the status with `ask_status_first` (`:1346`), with no block open.
+Then it calls `ask_rule_match` (`engine.py:1383`) all the same, and resolves
+in Block W (`_resolve_on`, `replyzero.py:1373`).
+
+- `status_before_match` (`:1264`) is the composed form of this for the
+  request paths. It is not the job path.
+- For a known conversation (`_thread_is_conversation`, `:991`) whose status
+  reaches the bar, and that has an enabled rule for the status,
+  `_determined_matches` (`:1226`) makes that rule the one live match.
+- The other matches only become "suppressed" SKIPPED lines in History
+  (`:1237-1238`). So the rule match pays for History text only.
+
+**The change (B1 to B3).** In `on` of `email.thread_status`, with the flag on,
+a job makes zero `ask_rule_match` calls for a thread that meets all three
+conditions:
+
+1. The thread is a known conversation (`StatusFirst.conversation`).
+2. Its status verdict reaches the bar. The job reads `JobStatus.verdict` from
+   `ask_status_first`, and `verdict[1]` (reaches_bar) is True. In a job,
+   `StatusFirst.verdict` is always None, so the test does not read it.
+3. The mailbox has an enabled target rule for that status.
+
+**The two ask sites.**
+
+- `runner.py` `_run_rules_job`, between `ask_status_first` (`:1813`) and
+  `ask_rule_match` (`:1815`).
+- The backfill gap loop of `_maybe_classify_threads`, between
+  `ask_status_first` (`replyzero.py:2691`) and `ask_rule_match` (`:2695`).
+
+**The skip test.** It is the exact branch where `_resolve_on` returns
+`_determined_matches`:
+
+```
+first is not None and first.rules and first.conversation
+and status.state == "verdict" and status.verdict is not None
+and status.verdict[1]
+and first.rules.get(status.verdict[0])
+```
+
+On a skip, the job sets `asked = []` and leaves `status_ask_needed` as it is.
+Then it calls `resolve_classification` as today. A `dry_run` (`first` is
+None) and a new thread (`NOT_ASKED`) never skip. The job logs
+`email.rule_match_skipped` with the account id and the status. So an operator
+can count the saving (H-42: count calls, not credits).
+
+**The scope (B4).**
+
+- The two job sites only.
+- A skip writes no History line of its own, in the runner and in the
+  backfill (B6, as amended on 2026-10-10).
+- The request paths and "Process past emails" are non-goals, and they do not
+  change by one byte. These are the composed `classify_matches`
+  (`engine.py:1479`), `run_rules_on_message` (`runner.py:1105`) and the rule
+  test route.
+
+**The flag (B5).** `EMAIL_STATUS_SKIPS_RULE_MATCH`, which is
+`email_status_skips_rule_match: bool = False` in
+`packages/acb_common/acb_common/settings.py`. It has ONE reader,
+`post_sync.status_skips_rule_match`, beside `post_sync.triage_once_per_cycle`.
+PR-B does not ride the flag of PR-A. A value of `true` on a box is gate
+`enforcement-flip`.
+
+**The History (B6, coordinator amendment of 2026-10-10).** The skip writes
+no History line. The APPLIED line of the status rule stands, and the
+`email.rule_match_skipped` log counts the saving.
+
+- **Why the amendment.** The audit chose one synthetic SKIPPED line. The
+  review found that `HistoryTab.tsx` shows each SKIPPED row as "No match
+  found", with a red pill, an inverted FixButton and a place in the "No
+  match" filter.
+- So each decided conversation message got a wrong row beside its correct
+  APPLIED line. The extra rows also halved the messages that the `LIMIT` of
+  `rules_history` shows.
+- Before PR-B, a conversation whose match found only the conversation rule
+  had ONE APPLIED line. That is the correct History, and PR-B keeps it.
+- The hard-coded reason of a suppressed line in `_apply_and_log_match` does
+  not change.
+
+**The behaviour that PR-B accepts (B7).**
+
+- **D1.** In `on`, with the flag on, an outage of the rule match no longer
+  blocks a decided conversation row. The outage is `DecisionUnavailable`,
+  `LLMBudgetExhausted` or `LLMUnavailable`. The row applies and stamps, and
+  that is correct under D-EM-8, because the status decided the row.
+- **D2.** The degrade path. When `_determined_matches` raises, `_resolve_on`
+  keeps the per-message matches, and on a skip those are none. So the skip
+  runs no per-message action. On a skip, the runner never calls
+  `_maybe_block_cold`.
+  - **A note, with nothing built for it (review P3).** Today a DB error is
+    the one raise of `_restore_conversation_messages`. If it ever gains a
+    raise of another kind, the skip path projects FYI from `matches=[]`.
+- **D3.** In `on`, History shows only the APPLIED line of the status rule.
+  The N suppressed lines of today do not appear, and no line takes their
+  place (B6 as amended).
+
+**PR-B as built (2026-10-09, branch `email-em-t16-prb`).**
+
+- `replyzero.skip_rule_match` holds the skip test and the flag test. It
+  takes no `db`, and it logs `email.rule_match_skipped` with the account id,
+  the status and the job.
+- The runner passes `log_no_match=False` to `_apply_matches` on a skip. So
+  it writes no "No rule matched" line and runs no cold blocker.
+- The backfill sets `asked = []` and writes no line.
+- Review round 1 (2026-10-10) removed the synthetic line and
+  `runner._log_status_decided` (B6 as amended).
+
+**Mutations of PR-B.** Each one ran red, and the file came back to the same
+SHA-256 after each one.
+
+- The skip loses the reaches_bar test. The three `under-the-bar` cases of
+  `test_these_cases_never_skip` fail.
+- The skip loses the target test. The three `no-target-rule` cases fail.
+- The skip loses the flag test. Twelve flag-off cases fail.
+- The composed `classify_matches` skips too.
+  `test_the_composed_path_asks_the_rule_match_with_the_skip_flag` fails.
+- The runner writes a SKIPPED line again on a skip. Seven cases fail,
+  and the R8 case of the runner is one of them.
+- The backfill writes a SKIPPED line on a skip. Three cases fail, and the
+  R8 case of the backfill is one of them.
+
+##### PR-C — keep the "no" verdicts
+
+**Today.** A cold check or a sender pin that decides "no" stores nothing. So
+the next mail from the same sender asks again.
+
+**The change.**
+
+- Keep a decided "not cold" for each account and sender, for 7 days.
+- Keep a decided sender-pin "no" for each account, sender and rule id, for
+  7 days.
+- Write each one with `acb_common.tenant_redis` `setex`, as the brief cache
+  does at `digest.py:536-570` (#753). Use no table and no migration.
+- A kept "no" skips the ask, and gives the same result as a fresh "no".
+- A Redis failure reads as a miss, and the check asks as today.
+- An undecided or failed check stores nothing (D-EM-8).
+- 🔴 NEVER write a "not cold" row to `email_cold_senders`. Three readers take
+  any row there as a sender that is known. These are `_maybe_block_cold`
+  (`senders.py:1475-1480`), the CRM auto-lead (`routes/crm/auto_lead.py:670-675`)
+  and the `GET /cold-senders` list (`senders.py:1538`). Such a row stops the
+  cold check for good, and the auto-lead then makes no lead for that sender.
+  The list also shows the sender as a cold sender.
+
+**The pre-filter.** Many cold-outreach tools add a `List-Unsubscribe` header.
+So that header does not prove that a mail is not cold.
+
+- A no-reply sender skips the cold check. A no-reply address takes no reply,
+  so cold outreach does not use it.
+- A `List-Unsubscribe` header does NOT skip the check. So the cold label holds
+  for a cold-outreach tool that adds the header.
+
+This is the recommendation of the audit, and this spec takes it.
+
+##### PR-D — two draft features, both `off`
+
+`email.draft_gate` and `email.draft_consult` join `decide_features.FEATURES`
+(`decide_features.py:105`) and `ON_FEATURES` (`:122`). `DEFAULT_MODES`
+(`:134`) makes each one `off`.
+
+**`email.draft_gate`.** A `decide` boolean that asks whether a reply needs a
+draft.
+
+- It runs before `_orchestrate_draft` (`drafting.py:1442`). That call runs the
+  consult plan, up to two agent consults, the Mem0 recalls and the draft.
+- So the gate runs before ALL of them. It sits on the rule action path, before
+  `_agent_draft_reply` (`actions.py:587`).
+- It does NOT sit at `drafting.py:1557`, the draft call. There, the paid steps
+  before the draft have already run.
+- It applies only to the AI draft of a rule action (REPLY or DRAFT_EMAIL).
+  The draft confidence must be STANDARD or HIGH_CONFIDENCE.
+- At those two levels the drafter can already answer NO_DRAFT
+  (`_is_no_draft`, `drafting.py:1323`). So a "no" from the gate gives the same
+  result, before the cost. ALL_EMAILS asks for a draft of each email, so the
+  gate has nothing to do there.
+- It NEVER applies to `draft_reply_smart` (`drafting.py:1714`), compose, a
+  follow-up nudge (`followups.py:238`) or the interactive "Draft with AI".
+
+**The modes of `email.draft_gate`.**
+
+- `off` makes the same calls as today.
+- `shadow` always drafts. It logs the gate answer beside `_is_no_draft(body)`
+  of the real draft.
+- In `on`, a "no" skips the consult plan, the consults, the Mem0 recall and
+  the draft. It takes the skip path of a NO_DRAFT body (`actions.py:593-596`).
+- In `on`, a "yes" drafts as today.
+- With no answer, the gate fails open, and the rule drafts as today. A gate that
+  fails closed would drop a reply that the member asked for. The draft is
+  text work, not a D-EM-7 decision, so D-EM-8 does not bind it.
+
+**`email.draft_consult`.** It moves the decision part of `_draft_consult_plan`
+(`drafting.py:1125-1200`) onto `decide`.
+
+- Today one `tier-fast` call picks the email kind (7 kinds) and the agents to
+  consult (2 agents). The same call writes the question for each agent.
+- In `on`, `decide` picks the kind, and asks one boolean for each agent.
+- The question text stays with the LLM (`customer_console.md` §6A.14 CP-13f).
+  The LLM writes a question only for an agent that `decide` picked.
+- Most mail needs no consult. Then the plan makes no LLM call.
+- A missing answer gives no consult, as a failed plan does today.
+- This feature applies to each caller of `_orchestrate_draft`, the
+  interactive draft too.
+
+**Non-goals.** Each one has its reason.
+
+| Not in EM-T16 | Why |
+|---|---|
+| The commitment gate in `capture_email.py:1005` | WS-18 and WS-39 own it, under CP-13f (`customer_console.md` §6A.14). |
+| The `{{choose}}` template fill | D-EM-7 names template fill as text work on the LLM tiers. No decision amends D-EM-7 for it (D-EM-62, open (b)). |
+| The move of the reply memories to a cheaper tier | The seed binds `tier-balanced` and `tier-powerful` to the same model, so a tier move saves nothing. The real defect is `max_tokens=1000` on a reasoning model (`drafting.py:495`), which returns empty content. That is its own follow-up. |
+| Batching across emails | One state goes in each request today, and a failed request leaves only its own email undecided. A batch changes that failure unit, so it needs its own section. |
+
+**Acceptance.** Each clause is a done-when clause with a fence (R7).
+
+| # | Done when | Fence |
+|---|---|---|
+| A1 | One scheduler cycle with new mail calls `_maybe_classify_threads` once for each account. A cycle with no new mail also calls it once. The manual-sync route and the webhook still classify. | A scheduler call-count test |
+| A2 | In `on`, the selection does not take an undecided status ask again for 30 minutes. A new message on the thread makes the selection take it at once. | R8, like `test_email_ai_cost.py::TestNoReAskStorm` |
+| A3 | In `on` of `email.thread_status`, with `EMAIL_STATUS_SKIPS_RULE_MATCH` on, each job makes zero `ask_rule_match` calls for a thread of a known conversation when its status verdict reaches the bar and it has an enabled target rule. The skip writes no History line: the APPLIED line of the status rule stands (coordinator amendment, 2026-10-10, because `HistoryTab.tsx` shows a SKIPPED row as "No match found"). With the flag off, the path does not change by one byte in each mode: the same calls, the same order and the same History lines. Outside `on`, the same is true with the flag on. | A call-count test in `test_email_decide_on.py`, and F6 there: the composed path asks `["status", "rule_match"]` with the flag on. In `test_email_automation_tenancy.py`: F1 zero asks in both jobs, F2 the same result with the flag off and on, F3 the cases that never skip, F4 the PR-B3 fences unchanged with flag-on variants, F5 no SKIPPED row in either job, and only the APPLIED line of the target in the runner, F7 a rule-match outage does not block a decided row, F8 (R8) the runner in org B only |
+| A4 | A decided "not cold" and a decided pin "no" make one ask for each key in the TTL. No "not cold" row reaches `email_cold_senders`. An undecided or failed check stores nothing. A no-reply sender skips the cold check, and a `List-Unsubscribe` header does not. `test_crm_auto_lead.py` stays green. | R8 tests for each rule |
+| A5 | `email.draft_gate`: `off` makes the same calls as today. `shadow` always drafts and logs the gate answer. In `on`, a "no" skips the consult plan, the consults, the Mem0 recall and the draft, and a "yes" drafts as today. No answer fails open. The gate never runs outside the scope of PR-D. | A call-count test for each mode and each excluded caller |
+| A6 | `DEFAULT_MODES` is `off` for each new feature. `test_email_decide_shadow.py` updates its feature set (`:235`). | `test_email_decide_shadow.py` |
+| A7 | No new `decide` call runs outside `decide_features.ask` (`decide_features.py:613`) or `shadow` (`:695`). So each one stays inside `llm_slot` (`_ask_all`, `:534`). | The slot fence of `test_email_llm_cap.py` |
+
+**Gates.**
+
+- 🟢 The build of each PR is AGENT-SAFE.
+- 🔴 `shadow` or `on` of `email.draft_gate` or `email.draft_consult` on a live
+  box is OWNER-GATE. It waits for the owner answer to D-EM-62 open (a).
+- `on` of `email.cold_check` and `email.sender_pin` after PR-C merges is
+  covered. D-EM-9 covers their residency, and the owner approved the step on
+  2026-10-09 (D-EM-62).
+
+**Hazards.**
+
+- **Budget.** `llm_slot` counts one `decide` request as one call, the same as
+  one `tier-powerful` call. A "yes" from the gate adds one count to each draft.
+  The default of `EMAIL_LLM_DAILY_CALLS` is 2000 (`settings.py:414`). In
+  `shadow`, the old path and `decide` both run, so each email counts double.
+- **No price (H-42).** Measure the count of calls for each tier and each
+  feature, not credits.
+- **Latency.** The `decide` trip of the consult plan adds time on the SSE path
+  of the member, while the member waits for "Draft with AI".
+
+**Verify with.** The R8 classes must show 0 SKIPPED. A skip means that no
+database ran, and then the run proves nothing.
+
+```
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_ai_cost.py tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_decide_on.py tests/unit/test_email_llm_cap.py tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_single_classification.py tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_cold_gate_case.py tests/unit/test_crm_auto_lead.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_draft_fallback.py tests/unit/test_email_draft_context.py tests/unit/test_email_no_tier_choice.py tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_rules_engine.py tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_insights_screen.py -q -rs
+uv run pytest tests/unit/test_email_layering.py tests/unit/test_email_reclassify_resumable.py tests/unit/test_tenant_redis.py tests/unit/test_email_automation_tenancy.py tests/unit/test_email_triage_once.py -q -rs
+uv run ruff check <each changed file>
+```
+
+The ruff run on the changed files must find no more than the base finds.
+
+**Anchors, at origin/main `5405a0b7f` (2026-10-09).** The paths are under
+`apps/services/gateway/gateway/` unless the row names another root. The
+`replyzero.py` rows and `digest.py` are at PR-B3 (`64e9f9bb0`), corrected on
+2026-10-09.
+
+| Anchor | What it holds |
+|---|---|
+| `apps/services/email_ingestion/email_ingestion/scheduler.py:1726` | The `on_new_mail` hook of the cycle |
+| `apps/services/email_ingestion/email_ingestion/scheduler.py:1740` | The `classify_threads` hook of the cycle |
+| `routes/email/scheduler_hooks.py:183` | The classify in `process_new_mail` |
+| `routes/email/scheduler_hooks.py:300` | The classify in the `classify_threads` hook |
+| `routes/email/automation/replyzero.py:2401` | `_maybe_classify_threads` |
+| `routes/email/automation/replyzero.py:2310`, `:2312` | The caps of 40 sent and 25 inbound threads |
+| `routes/email/automation/replyzero.py:2324` | `_PROVISIONAL_RECHECK_HOURS` |
+| `routes/email/automation/replyzero.py:1226-1240` | `_determined_matches`, and the suppressed lines at `:1237-1238` (after PR-A) |
+| `routes/email/automation/replyzero.py:1264` | `status_before_match`, the composed request path (after PR-A) |
+| `routes/email/automation/replyzero.py:1311` | `read_status_first` (after PR-A) |
+| `routes/email/automation/replyzero.py:1346` | `ask_status_first` (after PR-A) |
+| `routes/email/automation/replyzero.py:1373` | `_resolve_on` (after PR-A) |
+| `routes/email/automation/replyzero.py:2691`, `:2695` | The backfill asks the status, then the rule match (after PR-A) |
+| `routes/email/automation/runner.py:1813`, `:1815` | The runner asks the status, then the rule match (after PR-A) |
+| `routes/email/automation/engine.py:1383` | `ask_rule_match` |
+| `routes/email/automation/engine.py:1479` | `classify_matches`, the composed form, a non-goal of PR-B |
+| `routes/email/automation/engine.py:1587` | `read_classification` reads the status-first plan (after PR-A) |
+| `routes/email/digest.py:536-570` | The `tenant_redis` `setex` idiom (#753) |
+| `routes/email/automation/senders.py:1475-1480` | `_maybe_block_cold` reads `email_cold_senders` |
+| `routes/crm/auto_lead.py:670-675` | The auto-lead reads `email_cold_senders` |
+| `routes/email/automation/senders.py:1538` | `GET /cold-senders` |
+| `routes/email/automation/actions.py:587` | The rule draft calls `_agent_draft_reply` |
+| `routes/email/automation/drafting.py:1125-1200` | `_draft_consult_plan` |
+| `routes/email/automation/drafting.py:1442` | `_orchestrate_draft` |
+| `routes/email/automation/drafting.py:1557` | The draft call, NOT the gate site |
+| `routes/tasks/capture_email.py:1005` | The commitment gate, a non-goal |
+| `decide_features.py:105`, `:122`, `:134` | `FEATURES`, `ON_FEATURES` and `DEFAULT_MODES` |
+| `decide_features.py:613`, `:695` | `ask` and `shadow` |
+| `packages/acb_common/acb_common/settings.py:414` | `email_llm_daily_calls = 2000` |
+
+**Migration.** EM-T16 needs no migration. If a later change needs one, the
+next free number is 235 today (R1). Check the number again at merge.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
@@ -14617,3 +15170,462 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
   show calls until AI credit metering lands (D-EM-43), then read the price from the console.
 - **Q-ST-2. The bound of 24 months** (D-EM-56). The proposal holds 24 months because the meter,
   Process past emails and the Insights throttle each bound a longer window first.
+
+## 15. Forward with files, and links to an email (2026-10-09)
+
+**Status: ✅ MERGED (#766, 2026-10-09).** No migration, and no flag. The follow-ups are
+§15.5.
+
+The owner chatted with the orchestrator, which called the email assistant. The owner asked it
+to forward a BQ email and its PDF to a colleague. The assistant gave two answers. Its send tool
+could not forward the original PDF. And it had "no shareable link to the original email, only
+an internal id". Nothing in the backend forwarded a mail. The app opened `/email?email=<id>`,
+and no tool used it.
+
+### 15.1 Forward an email with its files
+
+`POST /email/forward` (`gateway/routes/email/transport/forward.py`) sends a new mail from the
+mailbox that holds the original. The body names the source by its id, the recipients, an
+optional note, and `include_attachments` (true by default) or `attachment_ids`.
+
+1. **Owner read first.** A mail of another member, or of another organization, answers 404
+   before any other read. A named `account_id` that does not hold the mail answers 404, as for
+   a reply (D-EM-19).
+2. **The files.** The route takes each file of the mail, or the named files only. A named file
+   of another mail answers 404.
+3. **The size cap.** The files of one forward carry 25 MB at most (`MAX_FORWARD_BYTES`), the
+   limit of Gmail. The route checks the stored sizes before any fetch, and the fetched bytes
+   after it. Above the cap it answers 413 and sends nothing.
+4. **The bytes.** Each file comes through `_fetch_owned_attachment`, the one owned fetch of a
+   file. A file with no bytes (an attached mail, a cloud link) answers 422 and sends nothing.
+   An IMAP mailbox forwards no file (422).
+5. **The body.** The note and the signature of the mailbox come first. Then a forwarded header
+   (From, Date, Subject, To, Cc), then the original. The original HTML is kept. The route reads
+   it from the row, then from the cache of the reading pane, then once from the provider.
+6. **The subject** is `Fwd: <subject>`. The route removes each `Re:`, `Fw:`, `Fwd:` and
+   `Subject:` mark that led the original, so the owner's "Re: Subject:" goes.
+7. **The send** uses `provider_session`, by one of two paths. A forward threads into no
+   conversation.
+   - **Outlook with every file** uses Graph's own `POST /me/messages/{id}/forward`
+     (`forward_message`, `forwards_natively`). Graph copies the files at the server, so
+     a forward of any size sends no file through Metorite and meets no size cap of ours.
+     Graph's `/me/sendMail` takes files inline and refuses a body over about 4 MB. The
+     first build sent an Outlook forward that way, so a real PDF failed after the
+     approval (review round 1, P1-b). The recipients, the bcc and the subject ride in
+     the `message` parameter of the forward.
+   - **A subset of the files on Outlook answers 422** (`OUTLOOK_SUBSET`). Graph's
+     forward carries every file or none. A rebuild with some files would meet the
+     inline limit again. A forward with no files rebuilds the mail with no files.
+   - **Every other forward rebuilds the mail** through `send_message`, with the cap of
+     step 3.
+8. **A provider failure gets a reason, never a bare 500** (`_provider_refusal`). A
+   mail that is too large is 413 on both providers (`OutlookMailTooLarge` for Graph).
+   The provider's own 401, 404 and 429 pass through. Any other refusal of the
+   provider is 422, and it names the status and the provider's error code. A provider
+   that is down is 502, because a 4xx would tell the caller to change a right request.
+   No detail holds a URL.
+
+The agent tool `forward_email` shows a confirmation card before it posts. Each target is in
+`context`: the From mailbox, then each To, Bcc and Cc address, one line each
+(`_card_targets`). The Bcc comes before the Cc (§15.5 item 1). The card keeps 4,000
+characters of `context` and 500 of `detail`. So no subject and no file name can push a
+recipient off the card (verifier F1). A list over ten addresses ends with "+N more".
+
+An `Attachments:` block follows the targets and names each file, one line each (§15.5
+item 2). `detail` starts with From and the first To, then the subject, and the files come
+last, with "+N more" when they do not fit (`_card_detail`). `send_email` builds its card
+the same way. A "no" sends nothing. `instructions.md` says to forward, not to send, when
+the user asks to pass an email to a new person.
+
+⚠️ `POST /email/send` writes no audit row, and it checks no send right beyond the `email`
+feature and the mailbox owner. The forward has the same two guards. It logs
+`email.forwarded` with ids and counts, and never an address or a word of the mail.
+
+### 15.2 Links to an email in chat
+
+The link to one email is `/email?email=<id>&account=<account id>`.
+
+- `emailLink` in `workbench/control_plane/src/app/email/lib/emailLink.ts` builds it, and
+  `_email_link` in the agent prints the same shape. Each answers nothing for an id that is
+  not a UUID.
+- The list tools of the agent print the whole Markdown link as `link_md=` after each
+  `id=`. `read_email` prints it as a `Link:` line. The model copies it and never builds
+  a link.
+- The tool escapes the subject in the words of the link (`_md_link_text`). A sender
+  chooses the subject, so a subject such as `[Open](https://evil.example)` would
+  otherwise plant a link (review round 1, P2-a).
+- The chat draws a link to another site with an external-link icon and its host, so the
+  member sees where it goes (`MarkdownLink`, `lib/inAppLink.ts`).
+- The orchestrator keeps an in-app link of a sub-agent as it is. It does not keep a link
+  to another site that the text of an email gives. A bare UUID in text is not a
+  citation, and the orchestrator does not show it.
+- `components/EmailDeepLink.tsx` opens the email of a link two ways. It reads `?email=`
+  each time it changes. It also hears each click on a chat link (`IN_APP_LINK_EVENT`),
+  so a second click on the same link opens the email again (review round 1, P2-b). An
+  open always brings the mail forward, also when that mail is already selected.
+- "Open in inbox" on a chat card pushes the link, so a refresh opens the same email.
+
+The link opens the email inside the app only. It is not a link to share with another person.
+
+### 15.3 Fences
+
+- `tests/unit/test_email_forward.py`: the route (hermetic), the subject, the tool and the
+  links.
+- `tests/unit/test_email_forward_r8.py` (R8): the route's SQL as a non-privileged role under
+  FORCE row level security.
+- `src/app/email/lib/emailLink.test.ts`: the link, `isInAppPath`, and the two callers.
+- `src/lib/inAppLink.test.ts`: the external mark, the escaped subject, and the click event.
+- `e2e/email-deep-link.spec.ts`: a fresh link, a second link while the page is open, and
+  the same chat link clicked twice.
+- `tests/unit/test_email_forward.py` also holds the card order, the `Attachments:` block
+  and its budget (§15.5 items 1 and 2).
+- `src/lib/confirmationQueue.test.ts`: a list row reads by its key (§15.5 item 3).
+- `src/app/email/lib/forward.test.ts`: the request of the pane, the words of each refusal,
+  and the markers it reads out of `forward.py` (§15.5 item 4).
+- `e2e/email-forward.spec.ts`: the pane sends `POST /email/forward`, the Outlook notice,
+  a file taken out on Gmail, and a 413 with "Forward without files" (§15.5 item 4).
+- `src/app/api/email/[...path]/postTimeout.test.ts`: a forward has 120 seconds at the
+  proxy (§15.5 item 4).
+
+### 15.4 Not done here
+
+- **The rule action FORWARD still writes a text-quoted draft** (`automation/actions.py`).
+- **No link leaves the app.** A link that a colleague can open needs a share model.
+- **A slow forward can go out after the tool reports a failure.** The route does not stop
+  when its caller goes away, and the agent waits 60 seconds for it. A forward that takes
+  longer can be sent while the model reads a failure, and the model can then ask again.
+  An idempotency key for each confirmation does not close this, because a second
+  approval is a new card with a new key. A key over the mail and its recipients for a
+  short window would, and it can also refuse a forward that the member wants twice. That
+  choice is the owner's.
+- **Outlook cannot forward a subset of the files.** `createForward`, a delete of the files
+  not chosen, and a send would do it. Graph names the copied files with new ids, so the
+  match would be by name and size, which two files can share.
+- **The reading-pane Forward takes no file of the member's own.** `POST /email/forward`
+  carries the files of the email only. The pane hides its two attach controls on a
+  forward. "Pop out" opens the full composer, which sends a new mail without the files
+  of the email. A forward with both kinds of file needs `artifacts` on the route.
+- **The pane's forward can still go out after its wait ends.** The proxy waits 120
+  seconds for `POST /email/forward` (§15.5 item 4). A forward that takes longer can
+  still go out. The pane then says that the mail can still go out, and it offers
+  "Open Sent", never a retry (§15.5, review round 1). The bullet on a slow forward
+  above holds the choice of a real fix.
+- **The draft card lists To, Cc, then Bcc** (`_draft_card`). It draws rows, not a box
+  that scrolls, so the order of §15.5 item 1 does not bind it.
+
+### 15.5 Follow-ups of #766 (2026-10-09)
+
+**Status: 🔨 BUILT on branch `email-chat-followups`, not merged (2026-10-09).** No
+migration, and no flag.
+
+1. **The Bcc comes before the Cc on the send and forward cards.** `_card_targets` writes
+   From, To, Bcc, then Cc. The card draws a `context` that holds a note or a body in a
+   box that scrolls at `max-h-40`. A Bcc after a long Cc list sat below that line. The
+   cap of ten for each list, "+N more" and the budget of 3,000 characters are as before.
+2. **The card names each file.** `_card_head` adds an `Attachments:` block to `context`,
+   after the targets and before the note or the body. The block has one line for each
+   file, `- file "<name>" (<size>)`. It names 20 files at most and ends with "+N more".
+   The targets and the files share the budget of 3,000 characters. The targets take
+   what they need first, and the block always keeps room for its count. A forward with
+   no file says "none". `detail` keeps its short form.
+3. **A field row reads by its key.** `parseCardBody` removes a leading `- ` from the key
+   of a row, so `- From` reads `From`. The draft card and the unsubscribe card use the
+   same row shape, so they read right too.
+4. **The reading-pane Forward keeps the files.** `EmailDetail.tsx` sends
+   `POST /email/forward` with the id of the email, To, Cc, Bcc, the note and the files.
+   It no longer builds a forward in the browser.
+   - Each file of the email is a chip, kept by default (`ForwardFileChips.tsx`). Every
+     file kept sends `include_attachments` alone. Some files kept send
+     `attachment_ids`. No file kept sends `include_attachments: false`
+     (`lib/forward.ts`, `forwardRequest`).
+   - On an Outlook mailbox, a chip taken out shows a notice: Outlook forwards all the
+     files of an email, or none of them. The notice has "Keep every file" and "Forward
+     without files". The pane sends nothing while the notice shows.
+   - The route sends from the mailbox that holds the email. A forward with another From
+     stops in the pane and names that mailbox.
+   - `forwardFailure` gives each answer of the route its words. A 413, the Outlook 422,
+     the IMAP 422 and the 422 of a file with no bytes offer "Forward without files",
+     which sends again with no file. A 401, a 404, a 429 and a 502 each say what to do.
+   - The note and the AI help (`compose-assist`, forward mode) are as before. The
+     server adds the forwarded header, the original and the signature.
+   - A sent forward deletes the draft that the autosave kept, as a discard does.
+   - The proxy gives `POST /email/forward` 120 seconds (`FILE_SEND_POST_PATHS`). At 30
+     seconds it answered 502 while the gateway still sent the mail.
+5. **The screenshots.** A capture rig drew the cards, the choice card and the comparison.
+   It drew the email chat inside the Email app and the forward compose. It drew each in dark,
+   light, compact and a changed accent. It found four defects, and this slice fixes
+   each one.
+   - A file name cut at 60 characters lost its extension ("revision.pd"). A long name
+     now keeps its last 16 characters (`_card_file_name`).
+   - The draft card drew its lead-in "Each recipient of this draft:" under its rows. A
+     note that ends with a colon now draws above the rows (`splitNotes`).
+   - The text box of a long card scrolled with no sign of it. The card now says "Scroll
+     the text above to read all of it" when the box holds more.
+   - An option card centred its content, so the titles beside a Recommended badge sat
+     lower. The cards now lay out from the top.
+
+**Fences.**
+
+- `tests/unit/test_email_forward.py`: the Bcc before a long Cc list, the files in
+  `context`, the cap of 20 and the shared budget. It also holds a hidden mark and a long
+  name.
+- `src/lib/confirmationQueue.test.ts`: a list row reads by its key, and a lead-in note
+  draws above the rows.
+- `src/app/email/lib/forward.test.ts`: the request, the Outlook check, the words of each
+  refusal, and the markers that it reads out of `forward.py`.
+- `e2e/email-forward.spec.ts`: the request of the pane, the Outlook notice, a subset on
+  Gmail, and a 413 with "Forward without files".
+- `src/app/api/email/[...path]/postTimeout.test.ts`: the budget of a forward.
+- Advisory: the hint of a box that scrolls measures the DOM, so no unit test reaches it.
+  The screenshots are its only check.
+
+**Review round 1 (2026-10-09).** Four findings, each fixed in this slice.
+
+- **P2. A proxy 502 said "nothing was sent".** A 502 with no `detail` comes from the Next
+  proxy when its wait ends, and the gateway can still send the mail. `forwardFailure`
+  now marks that answer, a 5xx with no detail and a lost request as `unsure`. The pane
+  says that the mail can still go out, and it offers "Open Sent". It offers no retry.
+  The gateway's own 502 has a detail, and it still says that nothing was sent.
+- **P3-a. A late save left a "Fwd:" draft.** A sent forward drains the autosave again,
+  as `discardReply` does, and then deletes each draft. While the forward is in flight,
+  its fields are read-only, and no save starts.
+- **P3-b. A file name could pass for a target line.** Each file line is
+  `- file "<name>" (<size>)`, and a quote in the name is escaped. So a file named
+  `Bcc: ceo@corp.test` cannot read as a target, and a file named `none` reads
+  `- file "none"`, not as the empty marker `- none`. A long workspace path of
+  `send_email` keeps its extension too (`_CARD_PATH_LIMIT`, 120 characters).
+- **Two small ones.** A chip name loses each bidi control, in its text and in its
+  `title`, and it draws in `<bdi>` (`visibleFileName`). "Pop out" is off while the
+  forward keeps a file of the email, because the full composer cannot send those files.
+  Its title says so.
+- **Fences.** `forward.test.ts` holds the unsure answer, the drain, the read-only
+  fields, Open Sent, Pop out and the chip name. `test_email_forward.py` holds the file
+  line, the empty marker and the long path. `e2e/email-forward.spec.ts` holds a 502
+  with no detail, and typing during the send.
+
+**Verifier round 2 (2026-10-09).** Three findings, each fixed in this slice.
+
+- **F1. The e2e test of a stray draft checked nothing.** It pressed Send before the
+  autosave saved, so its loop over the saved drafts never ran. The test now waits for a
+  real draft. It starts a second save that takes 4.5 seconds and is still running at
+  Send. Then it checks that each saved draft is deleted after its last save.
+  - The test turns red when the `deleteEmail` loop goes, and when both drains go.
+  - The drain at the start of the send and the drain in `finishForward` each cover the
+    case alone. So the e2e stays green when only the finish drain goes. The source fence
+    in `forward.test.ts` pins that drain, and it pins the `deleteEmail` loop after
+    `draftsToDiscard`.
+- **F2. Raw bidi controls in the source.** `BIDI_CONTROLS` in `forward.ts` and one Python
+  test held the characters themselves. Both now use escapes. No changed file holds a raw
+  control from U+202A to U+202E or from U+2066 to U+2069.
+- **F3. Send stayed on after an unsure answer.** Send is now off, and Ctrl+Enter does
+  nothing, until the member clicks "I checked Sent, send again". "Open Sent" stays
+  beside it. The e2e test "after an unsure answer, Send waits until the member checked
+  Sent" and a source fence in `forward.test.ts` hold the rule.
+
+## 16. The reading pane: one action row, and the body in dark mode (2026-10-10)
+
+**Status: 🔨 BUILT on branch `email-message-actions-dark`, not merged (2026-10-10). Review
+fix rounds 1 to 3 are in.** UI only. No migration, no flag and no gateway change.
+
+The owner asked for two changes on 2026-10-10. This section records them, and a fix of
+"Loading message…".
+
+**No flag.** The owner asked for both changes directly, and both fix defects that the owner
+saw. Light mode draws exactly as before, and the light version is the member's way back to
+the original sheet in dark mode. A flag would hide the fix from the owner who asked for it.
+
+### 16.1 The same action row on every message
+
+The owner said: "When an email is part of a thread, reply, reply-all, and similar buttons
+are always visible. In a single email, those options are missing."
+
+1. **One row.** `MessageActions.tsx` draws the row on the single email and on each open
+   card of a thread. It holds Reply, Reply all, Forward, a sun in dark mode, and "More
+   actions". Each control is a `Button` with an `aria-label` and a tooltip.
+2. **The menu.** "More actions" opens an `AnchoredPanel` with `align="end"`. Its groups
+   are the owner's list: Add to My Tasks. Archive, Delete, Move to…, Label…. Mark as
+   unread or read, Flag, Star. Print, Download (.eml). View activity. Block sender,
+   Report spam / phishing.
+3. **Each item acts on THAT message.** The reading pane owns every handler, and the row
+   gets the message and the handlers. `actOn` calls the store's `updateEmail` and sets
+   the same change on the open thread. `deleteOne` calls `deleteEmail`. `blockSender`,
+   `downloadEml` and the activity panel now take the message.
+   - Add to My Tasks of a thread card failed before this change. The store looked for
+     the message in the list, and a thread message is often not a row of it. So
+     `captureEmailToTasks(id, accountId)` now takes the mailbox of the message.
+   - Print stays `window.print()`, so it prints the open conversation. The browser
+     prints the page, and the gateway has no print of one message.
+4. **The state of each message.** `updateEmail` and `applyLabel` write `messagePatches` in
+   the store while their write is in flight. Each card and each menu reads it through
+   `withPatch`, so the change shows at once.
+   - The patch is short-lived (round 3). A write that succeeds drops its patch, and a
+     write that fails restores the one before. A list that holds the row drops it too,
+     so a refetched state shows through. `clearCategories` drops the patch of each
+     message that it clears.
+   - After the write, the list row holds the state. For a message that is not a row,
+     the pane's thread copy holds it: `actOn` and `labelOn` change it, and a card takes
+     its read, flag, star, folder and labels from that copy.
+   - A move of a thread message does not change the count of the list.
+5. **Add to My Tasks moved into the menu.** The owner named it as a menu item, and the
+   header keeps four controls. The top toolbar still has the one-click capture for the
+   open mail.
+6. **Keyboard.** The menu opens with focus on its first item. Up, Down, Home and End move.
+   Escape closes it and gives focus back to the button. Tab closes it, except in the
+   Label view.
+   - In the Label view each label is a `menuitemcheckbox` with `aria-checked`. Space or
+     Enter toggles it. Each colour swatch, the "Create label" box and its "+" are stops of
+     the same keys. A disabled "+" is skipped. Tab and Shift+Tab move between the stops,
+     and Up and Down leave the box.
+   - The menu ignores a key while an input method composes a word (`isComposing`).
+7. **Narrow cards.** The row measures its card. Under 600 px the labels go. Under 360 px
+   Reply all, Forward and the sun move into the menu (`actionRowTier`).
+8. **The top toolbar is as it was.**
+
+### 16.2 The body in dark mode
+
+The owner said: "Fix the issue where the email body shows a white background in dark
+mode." The body draws in a sandboxed iframe, on a white sheet that `MessageContent.tsx`
+sets. `lib/bodyLook.ts` now picks a look for the frame, in the owner's order. It reads the
+sanitized markup, which is what the frame draws.
+
+1. **`native`.** The mail has its own `prefers-color-scheme: dark` query. A `color-scheme`
+   CSS property that names dark also counts, on a mail with no colours of its own. A
+   `color-scheme` meta tag does not count, because the sanitizer removes `meta`.
+   `forceDarkMedia` turns the sender's dark queries on, and the frame is not inverted.
+   - A child frame takes its colour scheme from the operating system, not from the app.
+     We measured this in Chromium on 2026-10-10. So the pane rewrites the media condition
+     after the sanitizer. Fixed words replace it, and no tag can form.
+2. **`tokens`.** Simple HTML has no colour and no background of its own. It takes the
+   card, ink, link and border tokens. A plain-text mail already used them.
+3. **`invert`.** Styled HTML gets `invert(1) hue-rotate(180deg)` on the root. Each `img`,
+   `picture`, `video`, `canvas` and `svg image` gets the filter again, so it looks as
+   sent. A picture inside a `<picture>` gets no second filter.
+   - **A light island for a background picture** (coordinator decision, 2026-10-10,
+     round 2). A box with a background picture gets the filter again, and a white
+     backing. The rule covers a `background-image` style, a `background` style with
+     `url(`, and the `background` attribute.
+   - The island composites as in light mode. The photo keeps its true colours, and white
+     text over it stays white. Dark text in a box whose picture did not load sits on
+     white. Hidden white text on white stays hidden.
+   - The backing has no `!important`, so an inline `background-color` of the sender
+     wins. Each of the three rules skips a box with its own `bgcolor` (round 3). So a
+     `<td bgcolor="#1a1a1a">` with a blocked picture keeps its dark colour, and its white
+     text stays readable.
+   - Such a box looks light in dark mode, as an image block does in Gmail.
+   - A picture or a box inside an island gets no second filter.
+   - A layer multiplies the page by a base colour before the filter. The base comes from
+     the card token, so each white box of the mail lands on the card colour. The spread
+     of the layer's shadow also covers a wide mail that the member scrolls sideways.
+   - Each picture and each island paints above the layer (`position: relative` and a
+     higher `z-index`). So the layer tints only the inverted page, and a photo keeps the
+     mean colour of light mode.
+   - **The colours come from THEME, not from the live page** (round 3). The card, the
+     ink, the muted ink and the border are the dark values of `lib/theme/themes.ts`,
+     which `themes.test.ts` keeps in step with `globals.css`. Only the link reads the
+     live accent, `--primary`.
+   - On a switch to dark, next-themes sets its state first and swaps the class of
+     `<html>` later. A live read of the card then got the light white, the base of
+     white is black, and the mail drew as a blank white sheet.
+   - While `<html>` still has `.light`, the pane skips the live read. A
+     `MutationObserver` on the class and style of `<html>` reads the accent again
+     after the swap.
+   - While the pane blocks the images, a remote picture gets no re-invert. Its alt text then
+     stays light.
+4. **`original`.** Light mode, and the light version, draw the sheet exactly as before.
+5. **The light version.** The sun in the row turns it on for one message. The ids live in
+   `localStorage` (`metorite.email.lightVersion`, 200 at most). Each read and write is in
+   a try block. A plain-text mail draws its light version on a `.light` card.
+6. **Print.** Each rule of a dark look is inside `@media screen`, so a print draws the
+   original. Download (.eml) writes the text of the mail, so no look reaches it.
+7. **Security.** The sandbox and the sanitizer are as they were. The look CSS holds fixed
+   text and colours made from numbers. No text of the mail reaches it.
+8. **Time.** Each scan of the classifier and of `forceDarkMedia` is linear. A quantifier
+   is bounded, or it stops at the character that starts the next match. A sanitized body
+   over 256 KB (`CLASSIFY_LIMIT`) skips the style scan and gets `invert`. The pane keeps
+   the look in a `useMemo` on the markup, so a re-render does not scan it again.
+
+### 16.3 "Loading message…" that never ended
+
+The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading message…".
+
+- **What it waits for.** The line waits for `GET /email/messages/{id}`, the detail fetch
+  in `EmailDetail.tsx`. It does not wait for `GET /email/messages/{id}/html`. That fetch
+  shows "Getting the formatted message from the mail provider…" above the text.
+- **The cause.** The flag was one boolean. Mail A starts a fetch and sets it true. The
+  member opens mail B, which has its body, before A's fetch ends. The cleanup of A
+  cancels A's `finally`, and B's effect returns early with no reset. So B showed the line
+  until another fetch ended. A mail with a body should show it for a moment at most.
+- **The fix.** The pane keeps the id and the number of the fetch that loads. Each fetch
+  clears only its own number, so after A, B, A the end of the first fetch of A cannot
+  clear the second. The line shows only while the open mail has no body. A mail that
+  waits only for its file list draws its body at once.
+
+### 16.4 Fences
+
+- `src/app/email/lib/bodyLook.test.ts`: the classifier on a mail with a dark query, a
+  plain mail and a newsletter. It also holds the re-invert rule, the base colour, the
+  print rule, the native rewrite and the light-version list.
+  - `email-dark-linear`: 2 MB of `color-scheme: x ` and of `@media x ` each classify in
+    under 100 ms. Each pattern just under the limit and each rewrite of 2 MB do too.
+  - `email-dark-reinvert`: the light-island rules, the backing with no `!important`,
+    the `bgcolor` case on each rule, and the paint order above the layer.
+  - `email-dark-base`: the palette never takes the card, the ink or the border from the
+    live page, and a white live card still gives a light base.
+- `src/app/email/lib/messageActions.test.ts`: the tiers, the menu groups and the keys.
+  It also holds the wiring of each handler to its message, the capture of a thread
+  message and the loading fix.
+  - `email-patch-per-message`: a write shows while it runs and drops its patch when it
+    ends. A refetched row shows through a patch. A label adds while its write runs, a
+    failed write puts the patch back, `clearCategories` clears a patch, and a thread
+    move keeps the count of the list.
+- `e2e/email-message-actions.spec.ts`: the row on both views, the menu by keyboard, a
+  thread item on its own message and the narrow row. It also holds each look in a real
+  frame, the light version after a reload, light mode, Show images and the loading race.
+  - Fix rounds 1 and 2 add five tests. The light island test measures the pixels: dark
+    text and white text on a photo each read above 4.5, and hidden text stays below 1.5.
+    The photo's mean colour is within 6 of light mode. A sideways scroll shows no black
+    strip. A hydrated older card's menu follows read both ways and a label check. The
+    Label view works with the keyboard only.
+  - Every item of an older card's menu sends its request for that card. That covers
+    Flag, Label, Move, Archive, Add to My Tasks and Delete.
+  - Round 3 adds a test that switches the app from light to dark with the in-app toggle.
+    The mail draws inverted on a light base, and its heading reads on the pixels. The
+    test switches twice more and opens a second mail. The light island test now also
+    holds a `td bgcolor` with a blocked picture: white text reads, and black text on
+    black stays hidden.
+  - Mutations caught, each one red: a handler pointed at the open email (update, delete
+    and tasks), no backing, no re-invert of an island, no island `z-index`, a backing
+    over `bgcolor`, a live read of the card, a patch kept after its write, and no drop
+    of a patch on a refetch.
+- `emailsTotal` after a move of a thread message is a unit fence only
+  (`email-patch-per-message`). The list loads more by itself while its count is short,
+  so an e2e check of the count would not hold still.
+- Advisory: screenshots from a local capture rig on `e2e/visual/harness.ts` are the only
+  check of how the looks appear. The rig is not committed.
+
+### 16.5 Recorded risks and findings
+
+- **A vivid colour in a re-inverted picture shifts.** The browser clamps each filter
+  step, and a hue-rotate of a vivid colour leaves the range. A yellow sun (`#f7c948`)
+  draws as peach, near `#ecbe89`. The multiply layer no longer adds to this, because
+  each picture paints above it. A fix needs a root filter with no hue-rotate, which the
+  owner's rule names. The light version is the way out.
+- **An island with a `background:` shorthand inline gets no backing.** The shorthand
+  sets `background-color` inline, and an inline style beats the backing rule. If its
+  picture does not load, dark text in it can draw on a dark box.
+- **A `bgcolor` on an ancestor table does not stop the backing.** CSS cannot test an
+  attribute of an ancestor of the box. So a box with a background picture inside a
+  dark `<table bgcolor>` gets the white backing. White text in it can then draw on white
+  while its picture is blocked.
+- **Text that the sender positions over a picture hides under it in dark mode.** Each
+  picture paints above the multiply layer, at a high `z-index`. Text placed over the
+  picture with `position` and no higher `z-index` then draws under the picture.
+- **A style block in the head never reaches the frame.** `sanitizeEmailHtml` drops the
+  head, and DOMPurify drops a leading style block too. So a dark design that lives in the
+  head is lost, and that mail gets `invert` or `tokens`. A fix needs a sanitizer change
+  (`FORCE_BODY`, or a kept head style), which this slice did not make.
+- **The frame clips a wide newsletter at the right edge.** A table with a fixed width wider
+  than the pane overflows the frame in light mode too. This slice did not change it.
+- **A patch can hide a change from another device.** `messagePatches` lives for the page.
+  If another device changes a message that this pane changed, the pane shows its own
+  change until a reload.

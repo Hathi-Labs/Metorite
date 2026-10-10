@@ -16,6 +16,16 @@ import {
   type MailAppInfo,
   type ProviderAvailability,
 } from "./connect";
+import type { ForwardBody } from "./forward";
+
+/** The answer of `POST /email/forward`. */
+export interface ForwardResult {
+  id: string;
+  ok: boolean;
+  subject: string;
+  attachments: string[];
+  bytes: number;
+}
 
 // No NEXT_PUBLIC_GATEWAY_URL here on purpose: every call from this module goes
 // through the Next BFF at /api/**, which is the only path that carries the
@@ -1249,6 +1259,18 @@ export async function sendDraft(
   return gatewayFetch("/email/drafts/send", {
     method: "POST",
     body: JSON.stringify({ account_id: accountId, draft_id: draftId }),
+  });
+}
+
+/**
+ * Forward one email with its original files (`POST /email/forward`). The
+ * body comes from `forwardRequest` in `./forward`. A refusal throws the
+ * gateway's status and detail, and `forwardFailure` reads them.
+ */
+export async function forwardEmail(body: ForwardBody): Promise<ForwardResult> {
+  return gatewayFetch<ForwardResult>("/email/forward", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

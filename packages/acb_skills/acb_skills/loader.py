@@ -54,6 +54,78 @@ class AgentLoadError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# The Copilot SDK runtime is leaving (D84, D92, WS-43n)
+# ``project-docs/specs/maf_coding_engine.md`` §15.5 is the design.
+# ---------------------------------------------------------------------------
+
+#: The text that a refused Copilot agent gets, at registration (HTTP 400 in
+#: ``gateway/routes/agent.py``) and at load time (``AgentRuntimeUnsupported``).
+#: One text, so the two refusals cannot tell a repo owner two things.
+COPILOT_MIGRATION_TEXT = (
+    "Metorite no longer runs GitHub Copilot SDK agents (D84, D92). "
+    "Change the repo so that agents.py build_agents() returns an "
+    "agent_framework.Agent, and set \"runtime\": \"maf\" in config.json "
+    "(or remove the field, because \"maf\" is the default). "
+    "See project-docs/specs/maf_coding_engine.md section 15.5."
+)
+
+#: The switch of WS-43r. While it is True, the loader still builds a Copilot
+#: agent and logs one deprecation line for it. WS-43r sets it to False, and
+#: from then on the loader raises ``AgentRuntimeUnsupported``. It is a code
+#: constant, not a setting: no env value can bring the Copilot runtime back.
+#: Fence: ``tests/unit/test_agent_runtime_default.py`` (WS43-F18).
+COPILOT_AGENTS_SUPPORTED = True
+
+#: The agents that already logged their deprecation line in this process.
+_copilot_deprecation_logged: set[str] = set()
+_copilot_deprecation_lock = threading.Lock()
+
+
+class AgentRuntimeUnsupported(AgentLoadError):
+    """Raised when an agent builds a Copilot SDK agent after WS-43r.
+
+    An ``AgentLoadError``, so every caller answers it as it answers an agent
+    that does not load.
+    """
+
+
+def is_copilot_agent(agent: Any) -> bool:
+    """True if *agent* is a Copilot SDK agent.
+
+    The executor uses the same test (``_default_options`` that is not None) to
+    send an object down the Copilot path, whatever its label says. A native
+    ``agent_framework.Agent`` has no ``_default_options``. The test names no
+    Copilot module, so this file stays off the WS43-F15 allowlist.
+    """
+    return getattr(agent, "_default_options", None) is not None
+
+
+def _check_built_runtime(agent_name: str, built: list[Any]) -> None:
+    """Refuse or flag the Copilot agents in *built* (WS-43n, §15.5 steps 2-3).
+
+    Before WS-43r, log one deprecation line for each agent name in each
+    process. After WS-43r, raise ``AgentRuntimeUnsupported``.
+    """
+    if not any(is_copilot_agent(a) for a in built):
+        return
+    if not COPILOT_AGENTS_SUPPORTED:
+        raise AgentRuntimeUnsupported(
+            f"Agent {agent_name!r} builds a GitHub Copilot SDK agent. "
+            + COPILOT_MIGRATION_TEXT
+        )
+    with _copilot_deprecation_lock:
+        if agent_name in _copilot_deprecation_logged:
+            return
+        _copilot_deprecation_logged.add(agent_name)
+    _log.warning(
+        "loader.copilot_agent_deprecated",
+        agent=agent_name,
+        spec="project-docs/specs/maf_coding_engine.md §15.5",
+        detail=COPILOT_MIGRATION_TEXT,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Persistent clone cache (module-level, lives for the process lifetime)
 # ---------------------------------------------------------------------------
 
@@ -1513,6 +1585,9 @@ class LoadedAgent:
                 f"Agent {self.agent_name!r}: build_agents() must return a list, "
                 f"got {type(result).__name__}."
             )
+        # WS-43n: a Copilot SDK agent still runs until WS-43r, with one
+        # deprecation line. After WS-43r it does not load.
+        _check_built_runtime(self.agent_name, result)
         return result
 
     def build_graph(self) -> Any:

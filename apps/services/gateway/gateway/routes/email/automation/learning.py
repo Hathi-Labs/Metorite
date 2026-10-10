@@ -199,6 +199,7 @@ async def _ai_confirms_sender_pattern(
                 )},
                  {"role": "user", "content": user_content}],
                 max_tokens=200,
+                feature="sender_pin",
             )
         except Exception as exc:  # never fail a rule run on this
             _log.warning("email.auto_learn_verdict_failed",

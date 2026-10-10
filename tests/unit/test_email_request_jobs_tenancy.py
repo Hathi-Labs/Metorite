@@ -404,9 +404,6 @@ def test_the_compose_stream_task_keeps_the_organization_of_its_request(
     monkeypatch.setattr(drafting_mod, "_assert_account_owner", AsyncMock())
     monkeypatch.setattr(drafting_mod, "_load_assistant_about",
                         AsyncMock(return_value=("", "")))
-    monkeypatch.setattr(drafting_mod, "_account_models", AsyncMock(
-        return_value={"rule": "tier-fast", "draft": "tier-powerful",
-                      "compose": "tier-fast", "chat": "tier-powerful"}))
     monkeypatch.setattr(drafting_mod, "_llm_compose_assist",
                         AsyncMock(return_value="Hello Priya"))
     # New mail names the sending mailbox (EM-T8e-1). The block yields a bare

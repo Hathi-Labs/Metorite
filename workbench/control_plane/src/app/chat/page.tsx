@@ -21,6 +21,7 @@ import {
   type PersonaAccountSettings,
 } from "@/app/email/lib/emailAssistantPersona";
 import { getAssistantSettings } from "@/app/email/lib/api";
+import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { carriedText, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
@@ -44,12 +45,12 @@ import {
   governedModelProps,
   initialChatOpen,
   newChatAction,
-  readsChatModel,
   tierRoutingUiOn,
 } from "@/lib/tierRouting";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import { filterWord, shellBarOn } from "@/lib/shell/registry";
+import { ShellJob } from "@/lib/shell/doJob";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
@@ -445,7 +446,7 @@ function SessionList({
               <span className="text-[10px] transition-transform duration-150 shrink-0" style={{ transform: isExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}>
                 ▼
               </span>
-              <span className={`shrink-0 rounded-full ${groupRunning ? "ring-2 ring-emerald-400/60" : ""}`}>
+              <span className={`shrink-0 rounded-full ${groupRunning ? "ring-2 ring-success/60" : ""}`}>
                 <AgentAvatar
                   libraryId={agentAvatars[agentName] ?? agentName}
                   size={18}
@@ -457,8 +458,8 @@ function SessionList({
               </span>
               {/* Active run count badge */}
               {groupRunning && (
-                <span className="flex items-center gap-1 text-[10px] text-emerald-400 shrink-0" title="Agent is running">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="flex items-center gap-1 text-[10px] text-success shrink-0" title="Agent is running">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse" />
                   {agentSessions.filter((s) => activeRunIds.has(s.id)).length}
                 </span>
               )}
@@ -489,7 +490,7 @@ function SessionList({
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
                           {activeRunIds.has(s.id) && (
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" title="Agent is generating a response" />
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse shrink-0" title="Agent is generating a response" />
                           )}
                           <span className={`truncate flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}>
                             {s.title ?? s.name}
@@ -653,16 +654,11 @@ function ChatPageInner() {
       })),
     [emailAccounts],
   );
-  // Default to the documented email-chat default (tier-powerful) so a send during
-  // the brief settings-fetch window uses a sensible model instead of "auto"
-  // (which the backend would coerce to a different tier). Refined to the
-  // account's saved chat_model once the fetch resolves; kept on lookup failure.
-  const [emailChatModel, setEmailChatModel] = useState<string | undefined>("tier-powerful");
-  // WS-45 S4 (D90): for a covered email-assistant the platform picks the
-  // tier, so the chat neither reads nor passes `chat_model`. With the UI flag
-  // off it is known and not covered, so the read and the props are as before.
+  // No setting picks the email chat's tier (D-EM-61). A covered
+  // email-assistant runs on the platform's tier, so the chat passes no model
+  // (WS-45 S4, D90). Every other case runs on EMAIL_CHAT_TIER, which our code
+  // chooses, as in the email app.
   const emailTier = useTierRouted("email-assistant");
-  const emailReadsModel = readsChatModel(emailTier);
   // The account's standing configuration, fed into the persona below — same
   // fetch, so the assistant behaves the same here as in the email app.
   const [emailAcctSettings, setEmailAcctSettings] =
@@ -673,7 +669,6 @@ function ChatPageInner() {
     getAssistantSettings(emailChatAccountId)
       .then((s) => {
         if (cancelled) return;
-        if (emailReadsModel) setEmailChatModel(s.chat_model || "tier-powerful");
         setEmailAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -681,9 +676,9 @@ function ChatPageInner() {
           learned_writing_style: s.learned_writing_style,
         });
       })
-      .catch(() => { /* keep the tier-powerful default on lookup failure */ });
+      .catch(() => { /* no standing orders on lookup failure */ });
     return () => { cancelled = true; };
-  }, [activeAgentName, emailChatAccountId, emailReadsModel]);
+  }, [activeAgentName, emailChatAccountId]);
   // Declared after the settings it reads (the persona carries the active
   // account's standing configuration, not just the account list).
   const emailAssistantPersona = useMemo(
@@ -759,6 +754,11 @@ function ChatPageInner() {
     [agentList],
   );
 
+  // The member and org whose sessions the effect below has loaded. The
+  // command bar's "New chat" waits for it, because that load picks the
+  // active conversation and would replace the new one.
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+
   // Load the member's sessions from localStorage once the member is known, and
   // again when the member or the org changes.
   // If ?agent=<name> is in the URL, immediately open a new session for that agent.
@@ -771,6 +771,7 @@ function ChatPageInner() {
       setSessions([]);
       setActiveSessionId("");
       setRestoredId(null);
+      setLoadedScope(null);
       return;
     }
     const existing = getSessions();
@@ -799,6 +800,7 @@ function ChatPageInner() {
       setRestoredId(null);
       setShowPicker(true);
     }
+    setLoadedScope(chatScopeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per member
   }, [chatScopeId]);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -1107,6 +1109,15 @@ function ChatPageInner() {
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="relative flex h-full overflow-hidden">
+      {/* NS-2: the command bar's "New chat" is the "+ New conversation"
+          press. `handleNewSession` waits by itself while the agent list is
+          still out. The job waits for the session load, which sets the
+          active conversation and would replace the new one. */}
+      <ShellJob
+        id="new-chat"
+        ready={!!chatScopeId && loadedScope === chatScopeId}
+        onOpen={() => handleNewSession()}
+      />
       {/* Agent picker modal */}
       {pickerShows && (
         <AgentPickerModal
@@ -1135,7 +1146,7 @@ function ChatPageInner() {
             )}
             {sessions.some((s) => activeRunIds.has(s.id)) && (
               <span
-                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"
+                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-success motion-safe:animate-pulse"
                 title="An agent is running"
               />
             )}
@@ -1235,11 +1246,11 @@ function ChatPageInner() {
                 }
                 activeMailboxId={emailChatAccountId}
                 onMailboxChange={setEmailMailboxId}
-                // Email-assistant locks to the account chat_model (parity with
-                // the email app); all other agents keep the generic picker.
-                // WS-45 S4: a covered email-assistant gets neither prop.
+                // Email-assistant locks to EMAIL_CHAT_TIER (parity with the
+                // email app, D-EM-61); all other agents keep the generic
+                // picker. WS-45 S4: a covered email-assistant gets neither prop.
                 {...(activeSession.agentName === "email-assistant"
-                  ? governedModelProps(emailTier.covered, emailChatModel)
+                  ? governedModelProps(emailTier.covered, EMAIL_CHAT_TIER)
                   : { model: undefined, lockModel: false })}
                 memories={memories.map((m) => m.memory)}
                 memoryUserId={userId}

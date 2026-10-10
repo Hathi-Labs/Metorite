@@ -13,6 +13,8 @@
  * `share` parses, because a bar width is not money.
  */
 
+import { agentName } from "@/lib/agentName";
+
 /** One activity — the agent, else the module, else "unattributed". */
 export interface ActivityRow {
   activity: string;
@@ -155,11 +157,10 @@ export function appLabel(
 
 /**
  * An agent's slug read aloud: `projects-assistant` becomes
- * `Projects assistant`. Only the first letter is raised, so a product name
- * inside the slug keeps the case the agent gave it.
+ * `Projects assistant`. The rule is `lib/agentName.ts`, which the chat trail
+ * reads too, so an agent has one name in billing and in the chat.
  */
 export function agentLabel(agent: string): string {
   if (agent === UNATTRIBUTED) return "Not attributed";
-  const words = agent.replace(/[-_]+/g, " ").trim();
-  return words ? words[0].toUpperCase() + words.slice(1) : agent;
+  return agentName(agent);
 }

@@ -39,6 +39,7 @@ import type { Email } from "@/app/email/lib/types";
 import { MessageContent } from "@/app/email/components/MessageContent";
 import { LabelChip } from "@/app/email/components/LabelChip";
 import { useEmailStore } from "@/app/email/lib/emailStore";
+import { emailLink } from "@/app/email/lib/emailLink";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
@@ -131,6 +132,7 @@ const ACTION_META: Record<string, { icon: string; label: string; danger?: boolea
   move_to_folder: { icon: "FolderInput", label: "Moved to folder" },
   create_label: { icon: "Tag", label: "Label ready" },
   send_email: { icon: "Send", label: "Email sent" },
+  forward_email: { icon: "Forward", label: "Email forwarded" },
   send_reply: { icon: "Reply", label: "Reply sent" },
   send_draft: { icon: "Send", label: "Draft sent" },
   delete_rule: { icon: "Trash2", label: "Rule deleted", danger: true },
@@ -528,10 +530,13 @@ export default function EmailToolCards({
 
 /** Open an email in the email app: select it, leave any full-screen scene (the
  *  Chat scene now covers the inbox, so we must exit it for the email to show),
- *  and route to /email (a no-op in the email app, navigation from the chat app). */
+ *  and route to the email's own link (`lib/emailLink.ts`). The link holds the
+ *  id, so a refresh opens the same email (owner report, 2026-10-09). The
+ *  page's deep-link reader skips an id that is already open, so the open
+ *  here and the link never open the mail twice. */
 function useOpenEmail() {
   const router = useRouter();
-  return (id: string) => {
+  return (id: string, accountId?: string | null) => {
     try {
       // Fetch-and-show even when the message isn't in the current folder's list,
       // so opening works from any view (not just when the inbox is active).
@@ -544,7 +549,7 @@ function useOpenEmail() {
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("cc-email-open", { detail: id }));
     }
-    router.push("/email");
+    router.push(emailLink(id, accountId) ?? "/email");
   };
 }
 
@@ -833,8 +838,6 @@ const SETTING_LABELS: Record<string, string> = {
   digest_send_to_email: "Email the digest",
   multi_rule_execution: "Multi-rule execution",
   sensitive_data_protection: "Sensitive-data protection",
-  draft_model: "Draft model",
-  chat_model: "Chat model",
 };
 
 function fmtVal(v: unknown): string {

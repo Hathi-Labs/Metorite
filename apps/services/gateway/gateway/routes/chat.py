@@ -9,6 +9,7 @@ DELETE /chat/sessions/{session_id}             Delete session + all its messages
 
 GET    /chat/sessions/{session_id}/messages    Fetch messages the caller may read
 POST   /chat/sessions/{session_id}/messages    Upsert a batch of messages
+POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -38,8 +39,9 @@ import json
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
-from acb_common import get_logger, get_settings
-from fastapi import APIRouter, Depends, HTTPException, status
+from acb_common import get_logger
+from acb_common.pg_text import storable
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -297,8 +299,9 @@ def _upsert_session(
                 "id": req.id,
                 "uid": user_id,
                 "agent_name": req.agent_name,
-                "title": req.title,
-                "last_preview": req.last_preview,
+                # The preview is the last reply, so it can hold a NUL too.
+                "title": storable(req.title),
+                "last_preview": storable(req.last_preview),
                 "message_count": req.message_count,
             },
         )
@@ -393,10 +396,10 @@ def _patch_session(
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")
-        params["title"] = req.title
+        params["title"] = storable(req.title)
     if req.last_preview is not None:
         sets.append("last_preview = :last_preview")
-        params["last_preview"] = req.last_preview
+        params["last_preview"] = storable(req.last_preview)
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
@@ -455,7 +458,16 @@ def _delete_session(
             text("DELETE FROM chat_session s WHERE " + _MAY_DELETE_SQL),
             {"id": session_id, "uid": user_id},
         )
-        return result.rowcount > 0
+        deleted = result.rowcount > 0
+        if deleted:
+            # WS-51 S2 (review of #813): a deleted chat asks nothing more. Its
+            # questions close in the SAME transaction, so no "needs you" and
+            # no late answer can bring the chat back.
+            from orchestrator import pending_ask  # noqa: PLC0415
+
+            if pending_ask.durable_asks_enabled():
+                pending_ask.close_thread_asks(s, session_id)
+        return deleted
 
 
 def _get_messages(
@@ -802,6 +814,13 @@ def _upsert_messages(
     is in the return value. A client may still update an agent row that the
     server created, under the S13 rules.
 
+    🔴 **Every value passes through ``acb_common.pg_text.storable`` before
+    the bind** (incident 2026-10-09). A tool result can hold the raw bytes of
+    a file, and Postgres refuses a NUL in ``text`` and ``\\u0000`` in
+    ``jsonb``. One such row failed the whole save with a 500. Each NUL and
+    each lone surrogate becomes U+FFFD. The route and the fold both write
+    here, so this is the one place. Fence: ``test_chat_nul_persist.py``.
+
     Returns the ids whose write the SQL declined, in request order.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
@@ -828,20 +847,27 @@ def _upsert_messages(
             # S14: a client inserts a human row only. The fold and the mint
             # are the server, and they may insert an agent row.
             may_insert = kind == "human" or bool(author_from_run) or bool(mint)
+            # The ids stay as sent: the client matches its rows by them.
+            body = storable({
+                "content": m.content, "tool_events": m.tool_events,
+                "progress_lines": m.progress_lines, "reasoning": m.reasoning,
+                "agent_state": m.agent_state, "custom_events": m.custom_events,
+            })
             result = s.execute(
                 text(_MESSAGE_UPSERT_SQL),
                 {
                     "id": m.id,
                     "sid": session_id,
                     "role": m.role,
-                    "content": m.content,
+                    "content": body["content"],
                     "ts": m.timestamp,
-                    "tool_events": json.dumps(m.tool_events),
-                    "progress_lines": json.dumps(m.progress_lines),
-                    "reasoning": m.reasoning,
-                    "agent_state": json.dumps(m.agent_state) if m.agent_state is not None else None,
-                    "custom_events": json.dumps(m.custom_events),
-                    "author_email": author,
+                    "tool_events": json.dumps(body["tool_events"]),
+                    "progress_lines": json.dumps(body["progress_lines"]),
+                    "reasoning": body["reasoning"],
+                    "agent_state": (json.dumps(body["agent_state"])
+                                    if body["agent_state"] is not None else None),
+                    "custom_events": json.dumps(body["custom_events"]),
+                    "author_email": storable(author),
                     "author_kind": kind,
                     # Only agent output carries a clearance — a human's own
                     # words are theirs regardless of what the run could reach.
@@ -1065,6 +1091,51 @@ async def save_messages(
     }
 
 
+class SupersedeRequest(BaseModel):
+    """The member edited their last message (``gateway/chat_supersede.py``)."""
+
+    superseded_id: str
+    #: The rows of the NEW turn, which a browser save may already have written.
+    keep_ids: list[str] = []
+
+
+@router.post(
+    "/sessions/{session_id}/supersede",
+    status_code=status.HTTP_200_OK,
+    summary="Remove the last message and its replies, because an edit replaces it",
+)
+async def supersede_message(
+    session_id: str,
+    req: SupersedeRequest,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The edit path of a run that does not go through ``/agent/run/stream``.
+
+    ``/agent/run/stream`` does the same work inline, because it also composes
+    the supersede note for the new run. This route serves the paths with no
+    gateway run (the LiteLLM chat), where the history the browser sends is the
+    model's whole memory, so removing the rows is the whole job.
+    """
+    from gateway.chat_supersede import SupersedeRefused, supersede_turn
+
+    email = user.email or ""
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email,
+        organization_id=user.organization_id,
+    )
+    if not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("edit messages"))
+    try:
+        plan = await supersede_turn(
+            session_id, req.superseded_id,
+            actor=email, keep_ids=req.keep_ids[:4], shared=room.is_shared,
+            organization_id=user.organization_id,
+        )
+    except SupersedeRefused as refused:
+        raise HTTPException(status_code=refused.status, detail=refused.detail()) from None
+    return {"ok": True, "removed": plan.removed_ids}
+
+
 class MessageFeedbackRequest(BaseModel):
     message_id: str
     vote: str          # "up" | "down"
@@ -1095,6 +1166,101 @@ async def record_message_feedback(
     return {"ok": True}
 
 
+async def _my_waiting_asks(org: str, me: str) -> dict[str, dict]:
+    """The caller's questions that still wait, by thread. ``{}`` when OFF.
+
+    WS-51 S2. Read under the caller's tenant (``acb_graph.tenant_session``),
+    so another org's rows never reach this list. A database error answers
+    ``{}``: the badge then shows the runs as running, the old answer.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not me or not pending_ask.durable_asks_enabled():
+        return {}
+    try:
+        rows = await asyncio.to_thread(
+            pending_ask.waiting_asks, org, actor_email=me,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.pending_asks_read_failed", exc_info=True)
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        out.setdefault(str(row["thread_id"]), row)
+    return out
+
+
+@router.get(
+    "/pending-asks",
+    summary="The questions of one chat that still wait for an answer",
+)
+async def list_pending_asks(
+    thread_id: str = Query(..., min_length=1, max_length=200),
+    user: UserContext = Depends(get_current_user),
+) -> list[dict]:
+    """The cards a chat must show again: WS-51 S2.
+
+    A card lives in the run's stream. When the run parked, or its process
+    died, the open chat lost the card. This lists the thread's questions that
+    still wait, so the chat draws each card again, from the server, after a
+    reload or a restart.
+
+    Only the member who was ASKED gets a card back (``actor_email``), and only
+    while that member may still send in the room. ``POST
+    /agent/respond-input`` holds the same rule for a late answer. A thread
+    with no chat row passes the room gate for any member of the org
+    (``rooms._unsaved_thread``), so the room alone is not enough (review of
+    #813). The read is under the caller's tenant. Each row is ``requestId``, ``kind``,
+    ``event`` (the card's event name), ``payload`` (the card's own event
+    value), ``askedAt`` and ``answerBy``: ``run`` while the run that asked
+    still waits on it live, ``new_run`` when an answer starts a new run.
+
+    ``[]`` with ``CHAT_DURABLE_ASKS`` OFF. Fence (R7):
+    ``tests/unit/test_pending_ask_flow.py``.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return []
+    org = (getattr(user, "organization_id", None) or "").strip()
+    email = (user.email or "").strip()
+    if not org or not email:
+        return []
+
+    from gateway.routes.agent import _resolve_room  # noqa: PLC0415
+
+    room = await asyncio.to_thread(_resolve_room, thread_id, email, org)
+    if room is None or not room.can_send:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot answer a question in this conversation.",
+        )
+    try:
+        rows = await asyncio.to_thread(
+            pending_ask.waiting_asks, org, thread_id=thread_id, actor_email=email,
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("chat.pending_asks_read_failed", exc_info=True)
+        return []
+    if not rows:
+        return []
+    from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+    liveness = await run_liveness(thread_id)
+    out: list[dict] = []
+    for row in rows:
+        live = row.get("state") == "open" and liveness == "live"
+        out.append({
+            "requestId": row["request_id"],
+            "kind": row["kind"],
+            "event": pending_ask.EVENT_BY_KIND.get(str(row["kind"]), ""),
+            "payload": row.get("payload") or {},
+            "askedAt": row.get("asked_at"),
+            "answerBy": "run" if live else "new_run",
+        })
+    return out
+
+
 @router.get(
     "/active-sessions",
     summary="List session IDs that currently have an active (running) agent",
@@ -1102,95 +1268,130 @@ async def record_message_feedback(
 async def list_active_sessions(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
-    """Return sessions whose agents are currently executing.
+    """Return the caller's live sessions: in their org, and visible to them.
 
-    Scans Redis ``cc:active:*`` keys (set by the executor's stream relay)
-    and cross-references with the ``chat_session`` table to include
-    agent names and titles.  Falls back to an empty list when Redis is
-    unavailable — the frontend will rely on its local chatStore in that
-    case.
+    Used by the conversations sidebar to show a pulsing green dot next to
+    sessions that are still running in the background, even after a browser
+    refresh. Each row is ``threadId``, ``agentName``, ``title`` and
+    ``startedAt``.
 
-    Used by the conversations sidebar to show a pulsing green dot next
-    to sessions that are still running in the background, even after a
-    browser refresh.
+    🔴 **Security fix (cross-tenant leak of live thread ids).** This route used
+    to SCAN ``cc:active:*``, a key with no tenant, so it read every org's live
+    runs. The ``chat_session`` row of another org is invisible under FORCE
+    RLS, so the "no row yet" fallback below returned that org's thread ids to
+    every caller, and the Postgres-error branch returned all of them.
+
+    Now:
+
+    * The candidates come from ONE hash, ``cc:<org>:liveruns``, built through
+      the tenant-prefix wrapper for the caller's org
+      (``stream_relay.list_live_runs``). Nothing scans the keyspace.
+    * A candidate with a ``chat_session`` row is listed only when
+      ``SESSION_VISIBLE_SQL`` passes for the caller, under the caller's tenant.
+    * A candidate with no row yet (the run started before the browser's upsert
+      landed) is listed only when the caller started it.
+    * On a Postgres error only the caller's own runs are listed.
+
+    A run that started before this code has no index entry, so it is not
+    listed. The relay lives in this process, so a deploy restart ends it.
+
+    **WS-51 S2: ``state``.** Each row carries ``state``, ``running`` or
+    ``needs_input`` (``chat_run_continuity.md`` §4 S2). ``needs_input`` comes
+    from the ``chat_pending_ask`` rows of the CALLER (their ``actor_email``),
+    read under the caller's tenant. A thread whose run parked, or died with a
+    question open, has no live run, and is still listed, as ``needs_input``,
+    when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
+    is ``running``. ``askKind`` names the card.
+
+    Fences (R7): ``tests/unit/test_active_sessions_tenant.py`` and
+    ``tests/unit/test_pending_ask_flow.py``.
     """
+    org = (getattr(user, "organization_id", None) or "").strip()
+    if not org:
+        return []  # no tenant, so no run can be the caller's to see
+    me = (user.email or "").strip().lower()
     user_id = user.email or "default"
-    active_threads: list[str] = []
 
-    # ── Scan Redis for cc:active:* keys ────────────────────────────────
+    # ── The caller's org's live runs: one hash, no SCAN ────────────────
     try:
-        import redis.asyncio as aioredis  # noqa: PLC0415
-        settings = get_settings()
-        r = aioredis.from_url(settings.redis_url, decode_responses=True)
-        try:
-            cursor = 0
-            while True:
-                cursor, keys = await r.scan(
-                    cursor, match="cc:active:*", count=100
-                )
-                for k in keys:
-                    # Strip the "cc:active:" prefix to recover the thread_id.
-                    tid = k.removeprefix("cc:active:")
-                    if tid:
-                        active_threads.append(tid)
-                if cursor == 0:
-                    break
-        finally:
-            await r.aclose()
+        from orchestrator.stream_relay import list_live_runs  # noqa: PLC0415
+
+        live = await list_live_runs(org)
     except Exception:  # noqa: BLE001
         _log.warning("chat.active_sessions_redis_failed", exc_info=True)
         return []  # Redis unavailable — frontend falls back to local store
 
-    if not active_threads:
-        return []
+    # ── The caller's own questions that still wait (WS-51 S2) ──────────
+    asks = await _my_waiting_asks(org, me)
 
-    # ── Cross-reference with Postgres for agent name + title ───────────
+    if not live and not asks:
+        return []
+    by_tid = {run["threadId"]: run for run in live}
+    ids = list(dict.fromkeys([*by_tid, *asks]))
+
+    def _state(tid: str) -> dict:
+        ask = asks.get(tid)
+        if ask is None:
+            return {"state": "running", "askKind": None}
+        return {"state": "needs_input", "askKind": ask.get("kind")}
+
+    def _own_unknown(tid: str) -> dict:
+        return {
+            "threadId": tid,
+            "agentName": "unknown",
+            "title": None,
+            "startedAt": by_tid.get(tid, {}).get("startedAt") or None,
+            **_state(tid),
+        }
+
+    def _is_mine(tid: str) -> bool:
+        # A live run the caller started, or a question the caller was asked.
+        return bool(me) and (
+            by_tid.get(tid, {}).get("actor") == me or tid in asks
+        )
+
+    # ── Cross-reference with Postgres for visibility, name and title ───
     try:
         from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with tenant_session(user.organization_id) as s:
+        with tenant_session(org) as s:
             rows = s.execute(
                 text(
                     "SELECT s.id, s.agent_name, s.title "
                     "FROM chat_session s "
                     "WHERE s.id = ANY(:ids) AND " + SESSION_VISIBLE_SQL
                 ),
-                {"ids": active_threads, "uid": user_id},
+                {"ids": ids, "uid": user_id},
             ).fetchall()
-
-        result = [
-            {
-                "threadId": r.id,
-                "agentName": r.agent_name,
-                "title": r.title,
-            }
-            for r in rows
-        ]
-
-        # Threads that are active in Redis but have no session row yet (the
-        # agent started before the frontend's upsert landed) still belong in
-        # the list. Threads that DO have a row and were filtered out belong to
-        # someone else: including them leaked a live thread id to every user,
-        # which the old `not in found_ids` fallback did on every poll.
-        with tenant_session(user.organization_id) as s:
+            # Every row this tenant holds, visible to the caller or not. A row
+            # here that is not in `rows` is somebody else's, and stays hidden.
             known = {
                 row.id for row in s.execute(
                     text("SELECT id FROM chat_session WHERE id = ANY(:ids)"),
-                    {"ids": active_threads},
+                    {"ids": ids},
                 ).fetchall()
             }
-        for tid in active_threads:
-            if tid not in known:
-                result.append({
-                    "threadId": tid,
-                    "agentName": "unknown",
-                    "title": None,
-                })
-        return result
     except Exception:  # noqa: BLE001
-        # Postgres unavailable — return thread IDs without metadata.
-        return [
-            {"threadId": tid, "agentName": "unknown", "title": None}
-            for tid in active_threads
-        ]
+        # Postgres unavailable: list only the runs the caller started. Their
+        # ids are already the caller's. Nobody else's id leaves this route.
+        _log.warning("chat.active_sessions_db_failed", exc_info=True)
+        return [_own_unknown(tid) for tid in ids if tid in by_tid and _is_mine(tid)]
+
+    result = [
+        {
+            "threadId": r.id,
+            "agentName": r.agent_name,
+            "title": r.title,
+            "startedAt": by_tid.get(r.id, {}).get("startedAt") or None,
+            **_state(r.id),
+        }
+        for r in rows
+    ]
+    # No session row yet: the run started before the browser's upsert landed.
+    # Only the person who started it may see it. A question with no live run
+    # and no chat row is a deleted chat's, and is never listed (WS-51 S2).
+    for tid in ids:
+        if tid not in known and tid in by_tid and _is_mine(tid):
+            result.append(_own_unknown(tid))
+    return result

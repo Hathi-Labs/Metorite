@@ -22,7 +22,7 @@ from email_ingestion.providers.gmail import GmailDraftNotFound
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.automation.assistant import (
-    _account_models,
+    EMAIL_TASK_TIERS,
     _load_assistant_about,
 )
 from gateway.routes.email.automation.identity import (
@@ -493,6 +493,7 @@ async def _llm_extract_reply_memories(
             [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": user}],
             max_tokens=1000,
+            feature="reply_memory",
         )
         items = data.get("memories") if isinstance(data, dict) else None
         out: list[dict[str, str]] = []
@@ -671,6 +672,7 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
                 messages=[{"role": "system", "content": sys_prompt},
                           {"role": "user", "content": "Preferences:\n" + listed}],
                 temperature=0.2, max_tokens=1000,
+                feature="email.voice_profile",
             )
         return (resp.choices[0].message.content or "").strip()[:1500]
     except Exception as exc:  # noqa: BLE001
@@ -945,6 +947,7 @@ async def _llm_draft_reply(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.draft",
                     on_delta=on_delta,
                 )
         else:
@@ -952,6 +955,7 @@ async def _llm_draft_reply(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.draft",
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
@@ -1098,6 +1102,7 @@ async def _llm_compose_assist(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.compose_assist",
                     on_delta=on_delta,
                 )
         else:
@@ -1105,6 +1110,7 @@ async def _llm_compose_assist(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
+                    feature="email.compose_assist",
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
@@ -1171,6 +1177,7 @@ async def _draft_consult_plan(
             [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": user_prompt}],
             max_tokens=500,
+            feature="draft_consult",
         )
         consult = data.get("consult", []) if isinstance(data, dict) else []
         out = []
@@ -1728,14 +1735,14 @@ async def draft_reply_smart(
         about, signature = await _load_assistant_about(
             db, req.account_id,
             query=f"{email.get('subject', '')} {email.get('body', '')}")
-        models = await _account_models(db, req.account_id)
         # Synchronous request → keep the orchestration budget under the proxy
         # timeout (one specialist agent, short timeout). Interactive → the
-        # account's COMPOSE model (fast by default), not the background one.
+        # COMPOSE tier, not the background one. Our code chooses it, and no
+        # stored choice changes it (D-EM-61).
         draft = await _agent_draft_reply(
             email, about, signature, user.email or "",
             max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
-            model=models["compose"], account_id=req.account_id,
+            model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
             interactive_fallback=True,
         )
 
@@ -1834,7 +1841,9 @@ async def _compose_assist_run(
         about, signature = await _load_assistant_about(
             db, req.account_id,
             query=f"{req.subject or ''} {req.body or ''}")
-        models = await _account_models(db, req.account_id)
+        # The tier is the COMPOSE tier. Our code chooses it, and no stored
+        # choice changes it (D-EM-61).
+        compose_tier = EMAIL_TASK_TIERS["compose"]
         # The composer body CARRIES the signature now (it's part of the draft,
         # visible upstream). The AI must never see it: a signature-only body is
         # an EMPTY draft — it routes to the full reply drafter, not improve —
@@ -1869,11 +1878,11 @@ async def _compose_assist_run(
                 # The user's AI-bar prompt must steer this draft. This path used
                 # to drop req.instruction entirely, so typing an instruction and
                 # hitting Draft on an empty reply changed nothing.
-                # Interactive → the account's COMPOSE model (fast by default).
+                # Interactive → the COMPOSE tier.
                 draft = await _agent_draft_reply(
                     ctx, about, signature, user.email or "",
                     max_agents=1, agent_timeout=18.0,
-                    model=models["compose"], account_id=req.account_id,
+                    model=compose_tier, account_id=req.account_id,
                     interactive_fallback=True,
                     extra_instructions=(req.instruction or "").strip(),
                     on_activity=on_activity, on_delta=on_delta,
@@ -1924,7 +1933,7 @@ async def _compose_assist_run(
             about=about, signature=signature, current_body=req_body,
             instruction=req.instruction, mode=req.mode, recipient=recipient,
             subject=subject, thread=thread, reply_to_body=reply_to_body,
-            user_email=user.email or "", model=models["compose"],
+            user_email=user.email or "", model=compose_tier,
             on_delta=on_delta, sender=sender,
         )
         if _is_no_draft(draft):

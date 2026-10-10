@@ -90,7 +90,7 @@ EXPECTED_OPEN_WORLD = frozenset({
     "spawn_copilot_agent", "delegate_to_agent",
     # email-assistant: sends, forward or reply rules and their runs, the
     # knowledge that feeds replies, and the writes to the mail provider
-    "send_email", "send_draft", "unsubscribe_sender", "digest", "create_rule",
+    "send_email", "forward_email", "send_draft", "unsubscribe_sender", "digest", "create_rule",
     "update_rule", "run_rules", "learn_rule_pattern", "create_rules_from_prompt",
     "install_default_rules", "update_assistant_settings", "resolve_execution",
     "save_knowledge", "manage_inbox", "create_label", "draft_reply",
@@ -686,11 +686,15 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 
 #: The full tool list of a covered projects-assistant run's first request, as
 #: the real client sends it. A change of this list is a reviewed change.
+#: 2026-10-09 (projects_ai_chat.md §25): eight floor and workflow tools left,
+#: by the agent's `floor_opt_out`: call_agent_background, call_agents_parallel,
+#: get_workflow_run, list_integrations, list_workflows, load_artifact_kit,
+#: load_design_system and manage_todo_list. None of them was called.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
-    "call_agent_background", "call_agents_parallel", "capture_intake", "comment",
+    "capture_intake", "comment",
     "complete", "create_field", "create_personal_task", "create_project",
     "create_status", "create_tag", "create_tags", "create_task", "create_tasks",
     "create_type", "create_types", "defer",
@@ -699,9 +703,8 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",
     "file_access_ls", "file_access_read", "file_access_read_lines",
     "file_access_replace", "file_access_replace_lines", "file_access_write",
-    "find_conflicts", "find_tasks", "fit_for_task", "get_workflow_run",
-    "intake_queue", "link_tasks", "list_integrations", "list_tasks",
-    "list_workflows", "load_artifact_kit", "load_design_system", "manage_todo_list",
+    "find_conflicts", "find_tasks", "fit_for_task",
+    "intake_queue", "link_tasks", "list_tasks",
     "mark_notifications_read", "merge_tags", "merge_tasks", "move_project",
     "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
     "notifications", "open_in_app", "people_for", "project_access",

@@ -6,8 +6,8 @@
  * Three outputs:
  *
  * - `shellSidebar` — the sidebar's groups. Only places where the member works.
- * - `accountPanes` — the account menu's links: pages about the member or the
- *   organization (My Profile, Appearance, Organisation).
+ * - `accountPanes` — the account menu's links: pages about the member (My
+ *   Profile, Appearance). Organisation is an app in Admin since 2026-10-09.
  * - `launcherGroups` — All apps: every app the member holds, by team, each
  *   with its purpose. A `setting` is not an app, so it never shows there.
  *
@@ -19,11 +19,12 @@
  * 2. Chat and Approvals keep a sidebar door until NS-6 builds the dock and
  *    the bell that would replace them. Before that, moving them away would
  *    hide the assistant and an approver's queue.
- * 3. A group with no item is dropped, and Home is called "Home" until NS-3
- *    makes it My Day. A heading over nothing, or a name the page does not
- *    keep, costs trust.
+ * 3. A group with no item is dropped, and Home is called "Home" until My
+ *    Day is on (NS-3, `homePane`). A heading over nothing, or a name the
+ *    page does not keep, costs trust.
  */
 import type { NavPane, NavSection } from "@/lib/nav";
+import { myDayOn } from "@/lib/shell/myDayFlag";
 
 /** The flag for the shell nav. Off, the sidebar and the drawer are as before. */
 export function shellNavOn(): boolean {
@@ -42,6 +43,26 @@ export function shellNavOn(): boolean {
   return false;
 }
 
+/**
+ * The desktop frame, from the two shell flags (`navigation_shell.md` §3.1).
+ *
+ * - `classic` — no shell bar. The sidebar carries the logo, as before NS-1.
+ * - `column` — the shell bar only (NS-1). The bar sits over the page column,
+ *   and the sidebar still carries the logo and the fold control.
+ * - `full` — both flags (owner, 2026-10-09). One bar spans the whole width
+ *   and carries the fold control and the organization's logo, so the logo
+ *   stays in view when the sidebar is folded. The sidebar has no head.
+ *
+ * ⚠️ The shell nav alone, with no bar, stays `classic`: there is no bar to
+ * carry the logo, and the sidebar must not lose it.
+ */
+export type DesktopFrame = "classic" | "column" | "full";
+
+export function desktopFrame(bar: boolean, nav: boolean): DesktopFrame {
+  if (!bar) return "classic";
+  return nav ? "full" : "column";
+}
+
 /** The groups, in the order the sidebar and All apps show them. */
 export const TEAM_GROUPS: readonly { team: string; label: string }[] = [
   { team: "personal", label: "Personal Center" },
@@ -50,7 +71,7 @@ export const TEAM_GROUPS: readonly { team: string; label: string }[] = [
   { team: "admin", label: "Admin" },
 ];
 
-/** The first item of the sidebar. NS-3 renames it My Day when that page exists. */
+/** The first item of the sidebar, as it reads with My Day off. */
 export const HOME_PANE: NavPane = {
   href: "/",
   label: "Home",
@@ -60,6 +81,16 @@ export const HOME_PANE: NavPane = {
   blurb: "Where you start",
   launch: "live",
 };
+
+/**
+ * The first item of the sidebar and the drawer. With My Day on (NS-3), `/`
+ * IS My Day, so the item carries that name. Off, it stays "Home", because a
+ * name the page does not keep costs trust.
+ */
+export function homePane(on: boolean = myDayOn()): NavPane {
+  if (!on) return HOME_PANE;
+  return { ...HOME_PANE, label: "My Day", note: "What needs you today", blurb: "What needs you today" };
+}
 
 function held(sections: readonly NavSection[]): NavPane[] {
   return sections.flatMap((s) => s.items);
@@ -105,8 +136,10 @@ export interface AccountLink {
 export const MY_ACCESS: AccountLink = { href: "/people/access", label: "My access", icon: "KeyRound" };
 
 /**
- * The account menu's rows: the member's own pages first, then "My access",
- * then the organization's. A member sees only what `visibleSections` gave.
+ * The account menu's rows: the member's own pages, with "My access" after My
+ * Profile. A member sees only what `visibleSections` gave. An `account` pane
+ * of another team would follow them, and none exists since Organisation
+ * became an app in Admin (owner, 2026-10-09).
  */
 export function accountLinks(sections: readonly NavSection[]): AccountLink[] {
   // No sections is an unresolved viewer (`visibleSections(null)`). A member

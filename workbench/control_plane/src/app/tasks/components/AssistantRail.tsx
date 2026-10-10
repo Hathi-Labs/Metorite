@@ -169,7 +169,7 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
               >
                 {activeRunIds.has(s.id) ? (
                   <span
-                    className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                    className="w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse flex-shrink-0"
                     title="Active — agent is working"
                   />
                 ) : (

@@ -73,8 +73,10 @@ clone cache.
    tests/unit/test_delegation_no_egress.py.
 5b-1. system_one.py -- the `system-one` MAF agent. It holds no tools, and it is
    not in `_AGENT_REGISTRY`. `ask()` sends a batch of up to 20 questions in
-   ONE request on `tier-fast`, with a strict JSON-schema `response_format`,
-   through `acb_llm.attribution.attributed_openai` to the gateway's `/v1`.
+   ONE request on `tier-fast`, in JSON mode (`{"type": "json_object"}`).
+   Never send a JSON schema: the Router answered 400 to it for three days.
+   The shape is in INSTRUCTIONS, and `parse_answers` checks it. Each failure
+   logs `system_one.failed` with a reason code. The request goes through `acb_llm.attribution.attributed_openai` to the gateway's `/v1`.
    It sends nothing when `acb_llm.routed.routing_is_on()` is false, so it
    never reaches a vendor directly. The 3 s limit is the client's request
    timeout, with no retry. It logs no context, question or option. A caller
@@ -98,6 +100,22 @@ clone cache.
    package cannot import it. `decide()` reads the SDK 1.0 shapes: a write's
    target is `file_name`, and a `read` request is a read, contained in the
    workspace. Fence: tests/unit/test_shared_agent_shell_tools.py.
+   `decide()` refuses a read of a BINARY file in the workspace with the
+   reason `read_binary_file` (incident 2026-10-09). `binary_file_note` reads the
+   first 8 KB through `safe_open`, after the containment check. A NUL or a
+   known magic number makes the file binary. The model reads the name, the
+   kind and the size, and `read_attachment` for a .docx, .xlsx or .pdf file.
+   The refusal holds in `enforce` and in `audit`, because an approval only
+   gives the model the bytes again. Fence: tests/unit/test_chat_nul_persist.py.
+   ⚠️ It never refuses a name with an image suffix (`_CLI_IMAGE_SUFFIXES`:
+   png, jpg, jpeg, gif, webp, bmp, ico, tif, tiff, heic, avif, in any case),
+   and it does not open that file. The CLI's `view` asks the native
+   `imageHelpersIsBinaryImageFile`, which answers by the suffix alone, and
+   then sends the file to the model as an image. A refusal would hide a
+   screenshot (fix rounds 1 and 2). The list follows CLI 1.0.66, so a CLI
+   upgrade must check it again. A file that starts with a UTF-16 or UTF-32
+   byte order mark is text. UTF-16 text with no mark stays refused, and the
+   sentence asks the member for a UTF-8 copy.
 5d. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
    Every host reader and writer of a dir that a sandbox container mounts opens
    its paths here: `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux
@@ -166,6 +184,11 @@ clone cache.
    It builds on `thread_slug`, the one slug of `outputs/<thread slug>/` too.
    The gateway upload route and this tool both call it. Do not add a second
    reader of an attachment. Fence: tests/unit/test_read_attachment.py.
+   Since 2026-10-09 `read_attachment` is a core floor tool and in
+   `_FLOOR_KEEP`, because every chat can attach a file. No scope, toggle or
+   `floor_opt_out` takes it away. `addendum.ATTACHMENT_FAILURE_RULE` tells
+   the agent what to do when the tool cannot read a file. Fence:
+   tests/unit/test_chat_upload_every_agent.py.
    `attachment_tools.parse_bounded` is the ONE bounded parse of the process
    (WS-17 EM-T11). `read_attachment` and the gateway's email text route
    (`GET /email/attachments/{id}/text`) both call it. The agent runtime runs

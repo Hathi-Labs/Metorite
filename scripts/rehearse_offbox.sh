@@ -22,6 +22,10 @@
 #      With the key missing, the run fails. No night reaches the bucket.
 #
 # It must run as ROOT, because backup_offbox.sh refuses any other user.
+# As root, backup_db.sh takes its paths from where it runs (BH-6a), and the
+# off-box names from the key file only. So this copies the three scripts into
+# a layout under $work/root: <root>/opt/acb/app/scripts, <root>/opt/acb/backups
+# and <root>/etc/acb/backup-offbox.env. Nothing on the real box is touched.
 #
 # Usage:
 #   BACKUP_S3_ENDPOINT=http://minio:9000 BACKUP_S3_ACCESS_KEY_ID=... \
@@ -96,25 +100,31 @@ offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/not-a-st
 offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/other/2026-01-01T000000Z/keep.txt"
 pass "made"
 
-mkdir -p "$work/app" "$work/backups" "$work/files/attachments"
-printf 'POSTGRES_USER=%s\n' "$PGUSER" > "$work/app/.env"
-printf 'resume of a candidate, rehearsal\n' > "$work/files/attachments/cv.txt"
-# The key file, as on the box: root:root 0600. This runs as root, so the file
-# is root's. backup_offbox.sh refuses it with any other owner or mode.
 [ "$(id -u)" = "0" ] || die "run this as root: the off-box copy refuses any other user"
-env | grep -E '^BACKUP_S3_' > "$work/backup-offbox.env"
-chmod 600 "$work/backup-offbox.env"
-export BACKUP_OFFBOX_ENV_FILE="$work/backup-offbox.env"
+root="$work/root"
+app="$root/opt/acb/app"
+key_env="$root/etc/acb/backup-offbox.env"
+mkdir -p "$app/scripts" "$app/data/attachments" "$root/opt/acb/backups" "$root/etc/acb"
+cp "$here/backup_db.sh" "$here/backup_offbox.sh" "$here/offbox_lib.sh" "$app/scripts/"
+printf 'POSTGRES_USER=%s\n' "$PGUSER" > "$app/.env"
+printf 'resume of a candidate, rehearsal\n' > "$app/data/attachments/cv.txt"
+# key_file [NAME=value ...] — write the key file, as on the box: root:root
+# 0600. This runs as root, so the file is root's. The S3 names come from the
+# env of this rehearsal. Each argument adds one more line.
+key_file() {
+  { env | grep -E '^BACKUP_S3_'; printf '%s\n' "$@"; } > "$key_env"
+  chmod 600 "$key_env"
+}
+gpg_lines=("BACKUP_GPG_RECIPIENT=$fpr" "BACKUP_GPG_PUBLIC_KEY_FILE=$work/public.asc")
 backup() {
-  APP_DIR="$work/app" BACKUP_DIR="$work/backups" \
-  BACKUP_FILE_DIRS="$work/files/attachments $work/files/absent" \
+  BACKUP_FILE_DIRS="$app/data/attachments $app/data/absent" \
   BACKUP_MEETING_BOT_VOLUME=offbox-rehearsal-no-such-volume \
-    bash "$here/backup_db.sh" --offbox
+    bash "$app/scripts/backup_db.sh" "$@"
 }
 
 say "Night 1: backup_db.sh with the off-box copy"
-BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
-  backup > "$work/night1.log" 2>&1 || { cat "$work/night1.log"; die "backup_db.sh failed"; }
+key_file "${gpg_lines[@]}"
+backup --offbox > "$work/night1.log" 2>&1 || { cat "$work/night1.log"; die "backup_db.sh failed"; }
 grep -q "off-box copy ok" "$work/night1.log" || { cat "$work/night1.log"; die "no 'off-box copy ok'"; }
 grep -E "uploading|off-box copy ok|skip " "$work/night1.log" | sed 's/^/    /'
 pass "uploaded"
@@ -149,7 +159,7 @@ psql -d postgres -qc 'DROP DATABASE acb_offbox_restored' >/dev/null
 [ "$got_md5" = "$seed_md5" ] || die "restored md5 $got_md5, seeded $seed_md5"
 pass "rows: md5 $got_md5"
 tar -C "$work/restore" -xf "$work/restore/$night1/files.tar"
-cmp -s "$work/files/attachments/cv.txt" "$work/restore${work}/files/attachments/cv.txt" \
+cmp -s "$app/data/attachments/cv.txt" "$work/restore$(realpath -m "$app")/data/attachments/cv.txt" \
   || die "the file in files.tar differs from the source"
 pass "files.tar gives back the attachment"
 
@@ -163,11 +173,12 @@ offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/2026-01-
 pass "complete 2026-01-01 and 2026-01-02, incomplete 2025-12-30 and 2026-01-05"
 
 say "Nights 2 and 3, on the SAME day as night 1, with BACKUP_S3_KEEP=2"
+key_file "${gpg_lines[@]}" BACKUP_S3_KEEP=2
 for n in 2 3; do
   sleep 1
-  BACKUP_S3_KEEP=2 BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
-    backup > "$work/night$n.log" 2>&1 || { cat "$work/night$n.log"; die "night $n failed"; }
+  backup --offbox > "$work/night$n.log" 2>&1 || { cat "$work/night$n.log"; die "night $n failed"; }
 done
+key_file "${gpg_lines[@]}"
 grep -E "pruned|night\(s\) in the bucket" "$work/night3.log" | sed 's/^/    /'
 mapfile -t left < <(offbox_list_nights)
 mapfile -t left_complete < <(offbox_listing | offbox_complete_in)
@@ -190,27 +201,26 @@ pass "2 nights left, and nothing outside them was touched"
 say "Without --offbox, nothing is uploaded"
 before="$(offbox_list_nights | wc -l)"
 sleep 1
-BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
-APP_DIR="$work/app" BACKUP_DIR="$work/backups" bash "$here/backup_db.sh" > "$work/noflag.log" 2>&1 \
+backup > "$work/noflag.log" 2>&1 \
   || { cat "$work/noflag.log"; die "a run without --offbox failed"; }
 grep -q "Only acb-backup.service passes --offbox" "$work/noflag.log" || die "no 'not in this run' line"
 [ "$before" = "$(offbox_list_nights | wc -l)" ] || die "a run without --offbox uploaded"
 pass "no upload, $before nights before and after"
 
 say "A key file that is not 0600 is refused"
-chmod 644 "$work/backup-offbox.env"
+chmod 644 "$key_env"
 sleep 1
-if BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
-   backup > "$work/mode.log" 2>&1; then die "a 0644 key file was accepted"; fi
+if backup --offbox > "$work/mode.log" 2>&1; then die "a 0644 key file was accepted"; fi
 grep -q "It must be '0:0 600'" "$work/mode.log" || { cat "$work/mode.log"; die "no mode refusal"; }
-chmod 600 "$work/backup-offbox.env"
+chmod 600 "$key_env"
 [ "$before" = "$(offbox_list_nights | wc -l)" ] || die "a 0644 key file uploaded a night"
 pass "refused, and nothing uploaded"
 
 say "With no key, the run fails and uploads nothing"
 before="$(offbox_list_nights | wc -l)"
 sleep 1
-if backup > "$work/nokey.log" 2>&1; then die "a run with no key exited 0"; fi
+key_file
+if backup --offbox > "$work/nokey.log" 2>&1; then die "a run with no key exited 0"; fi
 grep -q "Nothing was uploaded" "$work/nokey.log" || { cat "$work/nokey.log"; die "no refusal line"; }
 after="$(offbox_list_nights | wc -l)"
 [ "$before" = "$after" ] || die "a night reached the bucket with no key"

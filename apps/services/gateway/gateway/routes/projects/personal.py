@@ -36,7 +36,7 @@ so no request can be made to read or write somebody else's practice.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1654,6 +1654,95 @@ async def _attach_assigned_by(
     by_task = {str(r.task_id): getattr(r, "assigned_by", None) for r in found}
     for row in items:
         row["assigned_by"] = by_task.get(str(row["id"]))
+
+
+#: The dispositions that say "not for now", so a due date does not make the
+#: task a need. SOMEDAY is the member's deliberate "not now". REFERENCE is
+#: information, not an action. WAITING is NOT here: an overdue waiting-for is
+#: a cue to chase someone. ⚠️ **This tuple is the one owner of that rule.**
+#: :data:`ACTIONABLE_CLAUSE` is built from it, :func:`my_due_tasks` filters
+#: by it, and the shell's needs feed imports it as ``HIDDEN_DISPOSITIONS``.
+NOT_NOW_DISPOSITIONS: tuple[str, ...] = ("SOMEDAY", "REFERENCE")
+
+#: The effective dispositions that :func:`my_due_tasks` never returns.
+NOT_DUE_WORK: frozenset[str] = frozenset({"DONE", "TRASH", *NOT_NOW_DISPOSITIONS})
+
+#: "Still mine to act on": the lens rows whose EFFECTIVE disposition is not
+#: in :data:`NOT_DUE_WORK`. It is :func:`effective_disposition`, in SQL, for
+#: exactly those answers:
+#:
+#: * a closing lane is DONE (or TRASH when I stated TRASH), whatever I stated;
+#: * a stated TRASH, SOMEDAY or REFERENCE stays so on an open lane;
+#: * with nothing stated, a ``backlog`` lane derives SOMEDAY.
+#:
+#: A stated DONE on an open lane reads NEXT, so it stays in. ``my_due_tasks``
+#: still runs the Python rule over every row it reads, so a drift between the
+#: two can only narrow the answer, never widen it.
+#: `test_shell_needs_r8.py::TestTheLensDueRead` holds the two to one answer on
+#: a real database.
+ACTIONABLE_CLAUSE = (
+    "(s.category IS NULL OR s.category NOT IN (" + _CLOSED_LITERAL + "))"
+    " AND p.disposition IS DISTINCT FROM 'TRASH'"
+    + "".join(f" AND p.disposition IS DISTINCT FROM '{d}'" for d in NOT_NOW_DISPOSITIONS)
+    + " AND NOT (p.disposition IS NULL AND s.category = 'backlog')"
+)
+
+#: Due before the start of the member's tomorrow, in the member's zone.
+DUE_BY_TODAY_CLAUSE = (
+    "t.due_at IS NOT NULL AND t.due_at < CAST(:due_before AS timestamptz)"
+)
+
+#: The order of the read: the oldest deadline first, then the id, so a tie
+#: has one order and the LIMIT keeps the same rows on every load.
+_DUE_ORDER = " ORDER BY t.due_at ASC, t.id LIMIT :limit"
+
+
+async def my_due_tasks(user: UserContext, *, limit: int) -> dict[str, Any]:
+    """My work that is due today or overdue: one bounded read of the lens.
+
+    For the shell's needs feed (``navigation_shell.md`` §7.2). It is the
+    inbox's own read, ``_MY_TASKS_SQL`` over the one membership fragment
+    and :func:`my_tasks_binds`, with the inbox's default of no deferred
+    task. It adds three narrowings: due before the member's tomorrow
+    (:data:`DUE_BY_TODAY_CLAUSE`), still mine to act on
+    (:data:`ACTIONABLE_CLAUSE`), and the oldest deadline first with a
+    ``LIMIT``. So it is ONE query, whatever the size of the member's list.
+
+    ⚠️ **Not ``my_inbox``.** ``my_inbox`` orders by the member's hand rank
+    and pages in Python over every row, so a feed that paged it read the
+    whole list up to three times, and still lost the oldest overdue task
+    after 300 rows.
+
+    Not a route. The shell calls it after its own ``feature:projects``
+    check. It writes nothing, and the address is the authenticated one.
+    The rows carry no assignees and no parent: the feed shows neither.
+    ``today`` and ``timezone`` are the values of ``GET /projects/my/today``.
+    """
+    email = actor(user).lower()
+    size = max(1, int(limit))
+    sql = (
+        _MY_TASKS_SQL
+        + f" AND {DEFERRED_CLAUSE} AND {DUE_BY_TODAY_CLAUSE} AND {ACTIONABLE_CLAUSE}"
+        + _DUE_ORDER
+    )
+    items: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        stored = await stored_zone(db, email)
+        zone = zone_name(stored)
+        today = local_date(zone, datetime.now(UTC))
+        tomorrow = datetime.combine(
+            today + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo(zone),
+        )
+        params = await my_tasks_binds(
+            db, email, archived=False, today=today, due_before=tomorrow,
+            limit=size,
+        )
+        for row in (await db.execute(text(sql), params)).fetchall():
+            task, effective = _project_task(row)
+            if effective in NOT_DUE_WORK:
+                continue
+            items.append(task)
+    return {"rows": items, "today": today.isoformat(), "timezone": zone}
 
 
 # ── The projects I lead (WS-39 S6e, §4.8 point 1) ───────────────────────────

@@ -6,7 +6,7 @@ import React from "react";
 import type { ChatMessage } from "@/hooks/useAgentChat";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import { parseStoredRunError } from "@/lib/runErrors";
-import MarkdownMessage from "@/components/MarkdownMessage";
+import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
@@ -15,7 +15,8 @@ import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
-import { genUiPlacement } from "@/lib/chatPlacement";
+import { genUiFlow, genUiPlacement, type FlowBlock } from "@/lib/chatPlacement";
+import { answersFromTools } from "@/lib/askAnswers";
 import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
@@ -30,6 +31,9 @@ import { buildEntityIndex } from "@/lib/entityIndex";
 import { pillsForTurn } from "@/lib/projectsAgent";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
+import { isEdited } from "@/lib/chatEdit";
+import ChatSendButton from "@/components/ChatSendButton";
+import Button from "@/components/ui/Button";
 
 /** The only part of a room participant a message bubble needs: a face. */
 export type BubbleParticipant = Pick<
@@ -104,8 +108,9 @@ function MessageBubble({
   sessionId,
   onChoice,
   onHitlRespond,
+  askAnswers,
   onFileOpen,
-  onResend,
+  onEditLast,
   onRetryMessage,
   emailContext,
   viewerEmail,
@@ -120,8 +125,14 @@ function MessageBubble({
    *  answers resume the parked run via /agent/respond-input instead of being
    *  sent as a new chat message. Falls back to onChoice when absent. */
   onHitlRespond?: (requestId: string, answer: string) => void;
+  /** The answers this session sent to blocking cards, by `request_id`
+   *  (`lib/askAnswers.ts`). A card that has one stays locked on a remount. */
+  askAnswers?: ReadonlyMap<string, string>;
   onFileOpen?: (entry: FileEntry) => void;
-  onResend?: (content: string) => void;
+  /** Present on the member's LAST user message only (`lib/chatEdit.ts`).
+   *  The edit replaces that message and every reply after it. An earlier
+   *  message offers no Edit, because editing it would fork the thread. */
+  onEditLast?: (messageId: string, content: string) => Promise<string | null>;
   onRetryMessage?: (m: ChatMessage) => void;
   emailContext?: { accountId?: string | null; emailId?: string | null };
   /** Who is reading. Absent in a solo thread, where every human turn is yours. */
@@ -167,6 +178,10 @@ function MessageBubble({
       ? message.authorEmail !== sessionAgentName
       : otherVoices > 0);
   const [editing, setEditing] = useState(false);
+  // The server's answer to an edit: pending while it decides, then the
+  // reason it refused. A refusal keeps the composer open with the text.
+  const [editPending, setEditPending] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [editText, setEditText] = useState(message.content);
   const editRef = useRef<HTMLTextAreaElement>(null);
 
@@ -176,7 +191,7 @@ function MessageBubble({
       const t = editRef.current;
       t.focus();
       t.style.height = "auto";
-      t.style.height = `${Math.max(t.scrollHeight, 60)}px`;
+      t.style.height = `${Math.max(t.scrollHeight, 32)}px`;
     }
   }, [editing]);
 
@@ -250,9 +265,26 @@ function MessageBubble({
   // inline as a first-class element (not buried in the "Interactive view"
   // fold) so on-the-fly UI is prominent. Button actions route through onChoice
   // — the same follow-up contract as the ```choices``` MCQ block.
-  const genUiEvents = (message.customEvents ?? [])
-    .filter((e) => e.name === "generative_ui" && e.value != null)
-    .map((e) => e.value);
+  // The answers the run itself recorded, so a reload keeps a card answered.
+  const toolAnswers = useMemo(() => answersFromTools(dedupedToolEvents), [dedupedToolEvents]);
+  const genUiRaw = (message.customEvents ?? [])
+    .filter((e) => e.name === "generative_ui" && e.value != null);
+  const genUiEvents = genUiRaw.map((e) => e.value);
+  // Text that streamed AFTER a card draws below that card (owner report,
+  // 2026-10-09: the run's answer to a picked option drew above the picker,
+  // so the click looked dead). `null` keeps the old order: all the text,
+  // then all the cards. `genUiFlow` in lib/chatPlacement.ts is the rule.
+  const flow = genUiFlow(message.segments, genUiRaw.map((e) => e.segmentCutoff));
+  const head = flow && flow[0]?.kind === "text" ? flow[0].text : "";
+  // ONE slot for the cards in both layouts, so a card keeps its place in
+  // the tree when the turn's first text arrives after it, and never
+  // remounts: its block is the first after the head in both (`cards-0`).
+  const blocks: FlowBlock[] = flow
+    ? (head ? flow.slice(1) : flow)
+    : genUiEvents.length > 0
+      ? [{ kind: "cards", indexes: genUiEvents.map((_, i) => i) }]
+      : [];
+  const lastTextIdx = flow ? flow.map((b) => b.kind).lastIndexOf("text") : -1;
 
   // The tiers that served this answer (WS-45 S3, D90 Q4), for every member.
   // Null with the UI flag off, so the action row is as it was.
@@ -330,23 +362,40 @@ function MessageBubble({
     );
   }
 
-  const handleEditSubmit = () => {
+  const handleEditSubmit = async () => {
+    if (editPending) return;
     const trimmed = editText.trim();
-    if (trimmed && onResend) {
-      onResend(trimmed);
+    // An unchanged text is no edit: close the composer and keep the reply.
+    if (!trimmed || !onEditLast || trimmed === message.content.trim()) {
+      setEditing(false);
+      return;
     }
-    setEditing(false);
+    setEditPending(true);
+    setEditError(null);
+    const refused = await onEditLast(message.id, trimmed);
+    setEditPending(false);
+    // Accepted: the edited turn replaces this bubble. Refused: the thread is
+    // as it was, and the member keeps the text and reads why.
+    if (refused) setEditError(refused);
+    else setEditing(false);
   };
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditError(null);
+    setEditText(message.content);
+  };
+  const startEdit = onEditLast
+    ? () => { setEditText(message.content); setEditError(null); setEditing(true); }
+    : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter inserts a newline (matches the main composer) — only Ctrl/Cmd+
     // Enter (or the Send button) submits the edited message.
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      handleEditSubmit();
+      void handleEditSubmit();
     } else if (e.key === "Escape") {
-      setEditing(false);
-      setEditText(message.content);
+      cancelEdit();
     }
   };
 
@@ -354,7 +403,7 @@ function MessageBubble({
     setEditText(e.target.value);
     const t = e.currentTarget;
     t.style.height = "auto";
-    t.style.height = `${Math.min(Math.max(t.scrollHeight, 60), 300)}px`;
+    t.style.height = `${Math.min(Math.max(t.scrollHeight, 32), 300)}px`;
   };
 
   // ═══ Someone ELSE's turn — left-aligned, with a face and a name ═══
@@ -392,61 +441,64 @@ function MessageBubble({
   if (isUser) {
     return (
       <div className="flex justify-end group">
-        {editing ? (
-          /* ═══ Edit mode ═══ */
-          <div className="w-full max-w-full sm:max-w-[85%]">
-            <div className="rounded-2xl rounded-tr-sm border-2 border-warning/50 bg-secondary shadow-lg shadow-warning/5 overflow-hidden">
-              {/* Edit header */}
-              <div className="flex items-center justify-between px-4 py-2 border-b border-border/60 bg-secondary/80">
-                <span className="text-[11px] text-warning/80 font-medium">
-                  ✏️ Editing message
+        {editing && onEditLast ? (
+          /* ═══ Edit mode — a variant of the chat composer (owner, 2026-10-09).
+             Same container, radius, padding and Send button as the composer
+             in AgentChat. The cue is the primary border and a Pencil icon,
+             tokens only. The keyboard hint shows on a desktop pointer only. */
+          <div className="w-full sm:max-w-[85%]">
+            <div className="rounded-2xl border border-primary/40 bg-secondary/50 tech-transition">
+              <div className="flex items-center gap-1.5 pl-3 pr-1 pt-1.5 text-[11px] text-muted-foreground">
+                <Icon name="Pencil" size={12} className="shrink-0 text-primary" />
+                <span className="font-medium text-foreground">Editing</span>
+                <span className="hidden lg:inline pointer-coarse:hidden truncate">
+                  · Ctrl+Enter to send · Esc to cancel
                 </span>
-                <span className="text-[10px] text-muted-foreground hidden sm:block">
-                  Ctrl+Enter to send · Esc to cancel · Enter for new line
-                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={cancelEdit}
+                  className="ml-auto"
+                >
+                  Cancel
+                </Button>
               </div>
-
-              {/* Textarea */}
-              <div className="px-3 py-3">
+              <div className="flex items-end gap-2 px-2 pt-1 pb-2">
                 <textarea
                   ref={editRef}
                   value={editText}
                   onChange={handleEditInput}
                   onKeyDown={handleEditKeyDown}
-                  rows={3}
-                  className="w-full resize-none rounded-xl bg-card border border-border px-4 py-3 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-warning/60 transition-colors"
-                  style={{ minHeight: "60px", maxHeight: "300px" }}
+                  rows={1}
+                  aria-label="Edit your message"
+                  className="flex-1 resize-none bg-transparent px-1 py-1.5 text-[16px] sm:text-sm text-foreground placeholder-muted-foreground focus:outline-none overflow-y-auto scrollbar-thin"
+                  style={{ minHeight: "32px", maxHeight: "300px" }}
+                />
+                <ChatSendButton
+                  type="button"
+                  onClick={() => void handleEditSubmit()}
+                  disabled={!editText.trim()}
+                  loading={editPending}
+                  label="Send edited message"
+                  title="Send edited message"
                 />
               </div>
-
-              {/* Action buttons */}
-              <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/60 bg-secondary/60">
-                <button
-                  onClick={() => { setEditing(false); setEditText(message.content); }}
-                  className="text-[12px] px-3 py-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  Cancel
-                </button>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-muted-foreground">{editText.length} chars</span>
-                  <button
-                    onClick={handleEditSubmit}
-                    disabled={!editText.trim()}
-                    className="text-[12px] px-4 py-1.5 rounded-lg bg-primary text-primary-foreground font-semibold disabled:opacity-30 hover:opacity-90 tech-transition flex items-center gap-1.5"
-                  >
-                    <span>↑</span> Send
-                  </button>
-                </div>
-              </div>
+              {editError && (
+                <p role="alert" className="flex items-start gap-1.5 px-3 pb-2 text-[11px] text-destructive">
+                  <Icon name="AlertCircle" size={12} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0">{editError}</span>
+                </p>
+              )}
             </div>
           </div>
         ) : (
           /* ═══ Normal user bubble — compact, right-aligned, no avatar ═══ */
           <div className="max-w-[88%] sm:max-w-[78%]">
             <div
-              onDoubleClick={() => { setEditText(message.content); setEditing(true); }}
-              className="px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md cursor-pointer select-none hover:bg-primary/20 tech-transition"
-              title="Double-click to edit"
+              onDoubleClick={startEdit}
+              className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${startEdit ? "cursor-pointer select-none hover:bg-primary/20" : ""}`}
+              title={startEdit ? "Double-click to edit" : undefined}
             >
               <p className="whitespace-pre-wrap break-words">{message.content}</p>
             </div>
@@ -456,8 +508,11 @@ function MessageBubble({
                   content={message.content}
                   messageId={message.id}
                   role="user"
-                  onEdit={() => { setEditText(message.content); setEditing(true); }}
+                  onEdit={startEdit}
                 />
+              )}
+              {isEdited(message) && (
+                <span className="text-[10px] text-muted-foreground">Edited</span>
               )}
               <div className="text-[10px] text-muted-foreground">{timestamp}</div>
             </div>
@@ -466,6 +521,59 @@ function MessageBubble({
       </div>
     );
   }
+
+  // One generative-UI card, by its index in `genUiEvents`. Both orders draw
+  // through it: the old order and the stream order of `genUiFlow`.
+  const renderGenUi = (i: number) => {
+    const spec = genUiEvents[i];
+
+    const rec = (spec && typeof spec === "object"
+      ? spec : {}) as Record<string, unknown>;
+    const requestId =
+      typeof rec.request_id === "string" ? rec.request_id : null;
+    const act = (msg: string) => {
+      if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
+      else onChoice?.(msg);
+    };
+    const answered = requestId
+      ? (askAnswers?.get(requestId) ?? toolAnswers.get(requestId))
+      : undefined;
+    // An element that needs the member is marked, so the pin above
+    // the composer can find it and scroll to it (§24 rule 1).
+    const ask = genUiPlacement(spec) === "ask";
+    const askAttr = ask ? { "data-chat-ask": genUiTarget(message.id, i, spec) } : {};
+    if (rec.surface === "panel") {
+      const title = typeof rec.title === "string" && rec.title
+        ? rec.title : "Interactive view";
+      return (
+        <button
+          key={i}
+          type="button"
+          onClick={() => openGenUI({
+            id: `${message.id}:${i}`,
+            title,
+            sessionId,
+            spec,
+          })}
+          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-xs text-foreground hover:bg-secondary/60 transition-colors"
+        >
+          <Icon name="AppWindow" size={13} className="text-primary" />
+          <span className="font-medium">{title}</span>
+          <span className="text-muted-foreground">
+            — open in side panel
+          </span>
+        </button>
+      );
+    }
+    if (ask) {
+      return (
+        <div key={i} {...askAttr} className="min-w-0 outline-none">
+          <GenerativeUINode spec={spec} onAction={act} answered={answered} />
+        </div>
+      );
+    }
+    return <GenerativeUINode key={i} spec={spec} onAction={act} answered={answered} />;
+  };
 
   // ═══ Assistant message — no bubble, renders directly ═══
   return (
@@ -478,13 +586,14 @@ function MessageBubble({
           ThinkingContainer, code blocks, and artifact cards have their own
           visual containers. Only the timestamp and action bar are added. */}
       <MarkdownMessage
-        content={message.content}
-        streaming={message.streaming}
+        content={flow ? head : message.content}
+        // In flow order the caret sits on the LAST text block, wherever it is.
+        streaming={flow ? message.streaming && !!head && lastTextIdx === 0 : message.streaming}
         toolEvents={dedupedToolEvents}
         progressLines={message.progressLines}
         isThinkingActive={message.isThinkingActive}
         reasoningBlocks={message.reasoningBlocks}
-        segments={message.segments}
+        segments={flow ? (head ? [{ id: "flow-head", text: head }] : undefined) : message.segments}
         onChoice={onChoice}
         sessionId={sessionId}
         entityPills={pills}
@@ -528,55 +637,27 @@ function MessageBubble({
           surface:"panel" specs render as a compact open-chip (the immersive
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
-      {genUiEvents.length > 0 && (
+      {blocks.length > 0 && (
         <EntityIndexContext.Provider value={entityIndex}>
-        <div className="mt-3 space-y-2">
-          {genUiEvents.map((spec, i) => {
-            const rec = (spec && typeof spec === "object"
-              ? spec : {}) as Record<string, unknown>;
-            const requestId =
-              typeof rec.request_id === "string" ? rec.request_id : null;
-            const act = (msg: string) => {
-              if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
-              else onChoice?.(msg);
-            };
-            // An element that needs the member is marked, so the pin above
-            // the composer can find it and scroll to it (§24 rule 1).
-            const ask = genUiPlacement(spec) === "ask";
-            const askAttr = ask ? { "data-chat-ask": genUiTarget(message.id, i, spec) } : {};
-            if (rec.surface === "panel") {
-              const title = typeof rec.title === "string" && rec.title
-                ? rec.title : "Interactive view";
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => openGenUI({
-                    id: `${message.id}:${i}`,
-                    title,
-                    sessionId,
-                    spec,
-                  })}
-                  className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-xs text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  <Icon name="AppWindow" size={13} className="text-primary" />
-                  <span className="font-medium">{title}</span>
-                  <span className="text-muted-foreground">
-                    — open in side panel
-                  </span>
-                </button>
-              );
-            }
-            if (ask) {
-              return (
-                <div key={i} {...askAttr} className="min-w-0 outline-none">
-                  <GenerativeUINode spec={spec} onAction={act} />
-                </div>
-              );
-            }
-            return <GenerativeUINode key={i} spec={spec} onAction={act} />;
-          })}
-        </div>
+          {blocks.map((b, k) =>
+            b.kind === "cards" ? (
+              <div key={`cards-${k}`} className="mt-3 space-y-2">
+                {b.indexes.map((i) => renderGenUi(i))}
+              </div>
+            ) : (
+              <div key={`text-${k}`} className="mt-3 text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0">
+                <MarkdownBody
+                  content={b.text}
+                  onChoice={onChoice}
+                  sessionId={sessionId}
+                  entityPills={pills}
+                  entityIndex={entityIndex ?? undefined}
+                  fences
+                  caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
+                />
+              </div>
+            ),
+          )}
         </EntityIndexContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
@@ -650,7 +731,12 @@ export default React.memo(MessageBubble, (a, b) =>
   a.message === b.message &&
   a.sessionId === b.sessionId &&
   a.onChoice === b.onChoice &&
-  a.onResend === b.onResend &&
+  // The blocking-card answer. Left out, a bubble kept the handler of the
+  // render when the card arrived, with a stale `submitText` inside it, so a
+  // 409 fallback could queue the answer behind a run that had ended.
+  a.onHitlRespond === b.onHitlRespond &&
+  a.askAnswers === b.askAnswers &&
+  a.onEditLast === b.onEditLast &&
   a.onRetryMessage === b.onRetryMessage &&
   a.onFileOpen === b.onFileOpen &&
   a.emailContext?.accountId === b.emailContext?.accountId &&

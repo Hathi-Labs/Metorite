@@ -84,6 +84,15 @@ class Job:
     href: str
     #: Field name → what to put there. Empty for a job with no form.
     fields: dict[str, str] = field(default_factory=dict)
+    #: True for the job of an `adminOnly` pane (`nav.ts`). Only an admin holds
+    #: it, so only an admin's prompt names it (§6.4 rule 1).
+    admin: bool = False
+
+
+#: The admin test of the tenant plane. ``GET /auth/me`` reports the same test
+#: as ``is_admin`` (``routes/admin/me.py``), and ``visibleSections`` shows an
+#: ``adminOnly`` pane on that flag. ``test_shell_intent.py`` holds the two equal.
+ADMIN_PERMISSION = "admin:members:read"
 
 
 #: The jobs, in step with `workbench/control_plane/src/lib/shell/registry.ts`
@@ -100,12 +109,22 @@ JOBS: tuple[Job, ...] = (
          "subject": "a short subject line for the email"}),
     Job("plan-day", "Plan my day", "plan, schedule or look at their day, their calendar or their agenda",
         "tasks", "/calendar"),
+    Job("new-project", "New space", "start a new space, project or department board in Projects",
+        "projects", "/projects?do=new-project"),
+    Job("new-chat", "New chat", "start a new conversation with the AI assistant",
+        "chat", "/chat?do=new-chat"),
+    Job("invite", "Invite a member", "invite a new person to join the organization",
+        None, "/settings/organization?do=invite", admin=True),
     Job("find-person", "Find a colleague", "find a colleague, or who knows or does something",
         "people", "/people"),
     Job("edit-profile", "Update my profile", "change their own profile, skills, CV or working hours",
         None, "/people/me"),
     Job("appearance", "Change how Metorite looks", "change the theme, dark or light mode, density or accent",
         None, "/settings/appearance"),
+    Job("whatsapp-reply", "Reply on WhatsApp", "answer the customers who wrote to the business on WhatsApp",
+        "whatsapp", "/whatsapp"),
+    Job("review-approvals", "Review pending approvals", "check and approve what the AI wants to send before it goes out",
+        "approvals", "/approvals"),
 )
 
 #: The option that means "not a job": the assistant takes it.
@@ -113,8 +132,17 @@ ASK = "ask"
 
 
 def held_jobs(user: UserContext) -> list[Job]:
-    """The jobs this member can open. Only these reach the model (§6.4 rule 1)."""
-    return [j for j in JOBS if j.feature is None or user.has_permission(f"feature:{j.feature}")]
+    """The jobs this member can open. Only these reach the model (§6.4 rule 1).
+
+    Two gates, both read from the session, never from the request: the
+    job's feature, and for an admin job the admin permission.
+    """
+    is_admin = user.has_permission(ADMIN_PERMISSION)
+    return [
+        j for j in JOBS
+        if (j.feature is None or user.has_permission(f"feature:{j.feature}"))
+        and (not j.admin or is_admin)
+    ]
 
 
 class IntentRequest(BaseModel):

@@ -1239,7 +1239,8 @@ async def test_off_still_tags_a_fallback_with_auto(monkeypatch, tenant) -> None:
     upsert = _status_env(monkeypatch, our_side_last=True)
     await rz.recompute_thread_status(_owner_db(), ACC, "t1", trigger="outbound")
     assert upsert.await_args.args[6].endswith("· auto")
-    assert len(llm) == 2  # the configured tier, then the escalation
+    # The configured tier, then the one retry on a different model.
+    assert llm == ["tier-balanced", "tier-fast"]
 
 
 async def test_mark_thread_replied_leaves_the_labels_with_no_decision(
@@ -1496,6 +1497,29 @@ async def test_the_status_is_asked_before_the_rule_match(monkeypatch, tenant) ->
     assert _asked(fake) == ["status", "rule_match"]
     assert out[0]["rule"] is NEEDS_REPLY and out[0]["source"] == "thread_status"
     assert out[1]["suppressed"] == "conversation"
+    assert llm == []
+
+
+async def test_the_composed_path_asks_the_rule_match_with_the_skip_flag(
+    monkeypatch, tenant,
+) -> None:
+    """WS-17 EM-T16 PR-B (A3, F6). The skip of PR-B lives in the two jobs
+    only. With ``EMAIL_STATUS_SKIPS_RULE_MATCH`` on, the composed
+    ``classify_matches`` of the request paths still asks the status, then the
+    rule match, although the status decides the thread. The job half of A3
+    is in ``test_email_automation_tenancy.py`` (F1 to F8)."""
+    monkeypatch.setenv("EMAIL_STATUS_SKIPS_RULE_MATCH", "true")
+    _modes(monkeypatch, ALL_ON)
+    fake = _fake(monkeypatch, by_key={"r0": 0.9}, choices={"status": "REPLY"})
+    llm = _llm_tripwire_all(monkeypatch)
+    db = _classify_env(monkeypatch, {"REPLY": NEEDS_REPLY}, conversation=True)
+    row = SimpleNamespace(id=MID, thread_id="t1")
+    with structlog.testing.capture_logs() as caps:
+        out = await eng.classify_matches(db, ACC, row, EMAIL, resolve=True)
+    assert _asked(fake) == ["status", "rule_match"]
+    assert out[0]["rule"] is NEEDS_REPLY and out[0]["source"] == "thread_status"
+    assert out[1]["suppressed"] == "conversation"
+    assert not [c for c in caps if c.get("event") == "email.rule_match_skipped"]
     assert llm == []
 
 
@@ -1766,7 +1790,12 @@ class TestTheThreadStatusOnJev:
     def _auto_row(self, p) -> tuple[str, str, str]:
         """A sent thread whose stored status is a guess (`· auto`). The sent
         message came after the first enabled rule, so it is over the
-        new-mail floor (fix round 3)."""
+        new-mail floor (fix round 3).
+
+        The guess is OLDER than the recheck window of the backfill
+        (``replyzero._PROVISIONAL_RECHECK_HOURS``, WS-17 2026-10-09). A guess
+        inside the window waits, so the backfill asks about it only after the
+        window (``test_email_ai_cost.py``)."""
         owner = f"owner-{uuid.uuid4().hex[:8]}@decide-on.test"
         acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
         _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Receipt",
@@ -1778,11 +1807,12 @@ class TestTheThreadStatusOnJev:
         with p.admin_engine.begin() as c:
             c.execute(text(
                 "INSERT INTO email_thread_status (account_id, thread_id, status, "
-                "last_message_id, last_message_at, reason, organization_id) VALUES "
+                "last_message_id, last_message_at, reason, classified_at, "
+                "organization_id) VALUES "
                 "(CAST(:a AS uuid), :t, 'AWAITING', CAST(:m AS uuid), now(), :r, "
-                "CAST(:o AS uuid))"),
+                "now() - make_interval(hours => :h), CAST(:o AS uuid))"),
                 {"a": acc, "t": tid, "m": sent, "r": "Replied — AWAITING_REPLY · auto",
-                 "o": p.org_b})
+                 "h": rz._PROVISIONAL_RECHECK_HOURS + 1, "o": p.org_b})
         return acc, owner, tid
 
     async def test_an_auto_row_gets_one_more_check_and_then_none(

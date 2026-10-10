@@ -30,6 +30,7 @@ import PageHeader from "@/components/PageHeader";
 import { AbsencePanel, AwayBadge } from "../components/AbsencePanel";
 import { AvatarPicker } from "../components/AvatarPicker";
 import { ProfilePanels } from "../components/ProfilePanels";
+import { WhatsAppLinkSection } from "../components/WhatsAppLinkSection";
 import { type PersonDetail, type WorkRow, peopleApi } from "../lib/api";
 import { initials } from "../lib/directory";
 import { PAGE_FRAME } from "../lib/frame";
@@ -290,6 +291,13 @@ export default function MyProfilePage() {
           />
         </>
       )}
+
+      {/*
+        Chat on WhatsApp (WS-47 WAC-1). It needs no directory row, so it sits
+        outside the three states, and it draws nothing until the gateway says
+        the channel is open for this member's organization.
+      */}
+      <WhatsAppLinkSection />
     </main>
   );
 }

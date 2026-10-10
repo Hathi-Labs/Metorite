@@ -12,8 +12,10 @@ touches the database by never giving it one.
 
 from __future__ import annotations
 
+import itertools
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from gateway.routes.projects.importer.bundle import ImportBundle
@@ -24,11 +26,18 @@ CLOSED: frozenset[str] = frozenset({"done", "cancelled"})
 
 #: §6.3 — proposed category by the words in a status name, first match wins.
 #: "cancel" comes before "done", so "Cancelled - done" reads as cancelled.
+#: I-10b (§7.7): work on hold, waiting, blocked, paused or stuck has STARTED,
+#: so it is In progress (owner, 2026-10-09). That rule comes before the
+#: backlog rule, so "Blocked - backlog" reads as In progress. Review, QA and
+#: testing are In progress by a rule, so the Map step does not mark them as
+#: a guess.
 _PROPOSALS: tuple[tuple[re.Pattern[str], Category], ...] = (
     (re.compile(r"cancel|won'?t|wont|rejected|dropped"), "cancelled"),
     (re.compile(r"\b(done|complete|completed|closed|shipped|resolved|finished)\b"), "done"),
-    (re.compile(r"backlog|hold|someday|later|parked|icebox"), "backlog"),
+    (re.compile(r"hold|waiting|\bwait\b|blocked|paused|stuck"), "in_progress"),
+    (re.compile(r"backlog|someday|later|parked|icebox"), "backlog"),
     (re.compile(r"^(to ?do|open|new|not started|pending)$"), "todo"),
+    (re.compile(r"review|\bqa\b|testing|\btest\b"), "in_progress"),
 )
 
 #: A group grant is ``group:<slug>``, with the slug rule of the groups the
@@ -40,12 +49,95 @@ _GRANT = re.compile(r"^(org|group:[\w-]{1,64})$")
 MAX_NAME = 120
 
 
-def propose_category(name: str) -> Category:
+def rule_category(name: str) -> Category | None:
+    """The stage a rule of ``_PROPOSALS`` gives the name, or ``None`` when no
+    rule matches. ``None`` is what the Map step marks as a guess (I-10b)."""
     folded = " ".join(name.lower().split())
     for pattern, category in _PROPOSALS:
         if pattern.search(folded):
             return category
-    return "in_progress"
+    return None
+
+
+def propose_category(name: str) -> Category:
+    return rule_category(name) or "in_progress"
+
+
+#: §6.3 (I-10) — a source name that means one of the usual statuses, folded
+#: case-blind with runs of spaces closed up. Anything else keeps its own name.
+_SYNONYMS: dict[str, tuple[str, Category]] = {
+    **{
+        n: ("Done", "done")
+        for n in ("done", "closed", "complete", "completed", "finished", "resolved", "shipped")
+    },
+    **{n: ("To do", "todo") for n in ("to do", "todo", "open", "new", "not started")},
+    **{n: ("In progress", "in_progress") for n in ("in progress", "in process", "doing", "wip")},
+    "backlog": ("Backlog", "backlog"),
+    **{
+        n: ("Cancelled", "cancelled")
+        # The second spelling uses the typographic apostrophe a tool may write.
+        for n in ("cancelled", "canceled", "won't do", "won\u2019t do", "wont do")
+    },
+}
+
+#: A NEW status name holds 1 to this many characters. The plan refuses a
+#: longer one (``_statuses``).
+MAX_STATUS = 64
+#: What a choice may name at most. A lane the space already holds can be
+#: longer than ``MAX_STATUS``, because ``admin.create_status`` sets no limit.
+#: So the choice takes it, and the plan checks only a NEW name (the I-10
+#: review). A cap stays, because a choice is request input.
+MAX_CHOICE = 500
+#: What a target takes when an intake lane holds its name (§6.3, P1-b).
+IMPORTED = " (imported)"
+
+
+def imported_name(name: str, taken: Iterable[str] = ()) -> str:
+    """The name a target takes beside an intake lane of the same name. The
+    plan proposes it, and the writer places into it in each set that holds
+    such a lane, so both spell it one way (§6.3).
+
+    ``taken`` holds names (lower case) the result must not be: the intake
+    lanes of the set. A member may recategorise "Triage (imported)" into an
+    intake lane too, so the name then steps on to "Triage (imported 2)"
+    (the PR #784 review). Each step is a new name, so the loop ends."""
+    blocked = {_fold(n) for n in taken}
+    for step in itertools.count(1):
+        suffix = IMPORTED if step == 1 else f" (imported {step})"
+        candidate = f"{name[: MAX_STATUS - len(suffix)]}{suffix}"
+        if _fold(candidate) not in blocked:
+            return candidate
+    raise AssertionError("unreachable")
+
+
+#: One status of a target set: its name and its stage.
+StatusTarget = tuple[str, Category]
+
+
+def _fold(name: str) -> str:
+    return " ".join(name.lower().split())
+
+
+def propose_target(name: str, target: list[StatusTarget]) -> tuple[str, Category, bool]:
+    """§6.3 (I-10) — the status a source name proposes to become, its stage,
+    and whether the target set already holds it.
+
+    A name the set holds, case-blind, is that status. Then the synonym table.
+    Anything else is a new status with the same name and a capital first
+    letter, and ``_PROPOSALS`` gives its stage. A proposal that names a status
+    of the set takes that status, with its spelling and its stage."""
+    held = {_fold(n): (n, c) for n, c in target}
+    folded = _fold(name)
+    if folded in held:
+        return (*held[folded], True)
+    if folded in _SYNONYMS:
+        proposed, category = _SYNONYMS[folded]
+    else:
+        spaced = " ".join(name.split())[:MAX_STATUS]
+        proposed, category = spaced[:1].upper() + spaced[1:], propose_category(name)
+    if _fold(proposed) in held:
+        return (*held[_fold(proposed)], True)
+    return proposed, category, False
 
 
 # ── the admin's choices ─────────────────────────────────────────────────────
@@ -64,8 +156,8 @@ class StatusChoice(BaseModel):
         if value is None:
             return None
         value = " ".join(value.split())
-        if not value or len(value) > 64:
-            raise ValueError("a status name holds 1 to 64 characters")
+        if not value or len(value) > MAX_CHOICE:
+            raise ValueError(f"a status name holds 1 to {MAX_CHOICE} characters")
         return value
 
 
@@ -216,6 +308,11 @@ def build_plan(
     existing_refs: set[str] | None = None,
     legacy_refs: set[str] | None = None,
     target_ok: bool = True,
+    target_statuses: list[StatusTarget] | None = None,
+    continues: bool = False,
+    earlier_names: dict[str, StatusTarget] | None = None,
+    reserved_statuses: list[str] | None = None,
+    renamed_statuses: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The dry run.
 
@@ -225,9 +322,19 @@ def build_plan(
     pre-D52 importer wrote into ``pm_tasks.clickup_id`` (§11 Q-7). Both are
     skipped at apply, so the plan counts them. ``target_ok`` is the route's
     answer to "may this admin write into the chosen existing space".
+
+    I-10 (§6.3): ``target_statuses`` is the set the run writes into, in its
+    order: the root seed for a new space, or the set of the existing space's
+    status owner. ``continues`` says that the writer goes into an earlier
+    import's tree (``import_writer.continues_earlier``), and
+    ``earlier_names`` holds the status each source name became in that tree.
+    ``reserved_statuses`` names the target set's intake lanes, and
+    ``renamed_statuses`` maps an earlier lane's old name to the name a member
+    gave it since. The route reads all of these, as it reads the directory.
     """
     existing_refs = existing_refs or set()
     legacy_refs = legacy_refs or set()
+    target_statuses = list(target_statuses or [])
     errors: list[str] = []
 
     # I-8: the tree and the columns are shown IN FULL, so a skipped List can be
@@ -242,7 +349,16 @@ def build_plan(
         errors.append("Everything is skipped. Keep at least one list to import.")
 
     people = _people(bundle, mapping, directory, errors)
-    statuses, final = _statuses(bundle, mapping, errors)
+    statuses, final = _statuses(
+        bundle,
+        mapping,
+        errors,
+        target_statuses,
+        continues,
+        earlier_names or {},
+        reserved_statuses,
+        renamed_statuses,
+    )
 
     closed = [t for t in bundle.tasks if t.status_name and final[t.status_name][1] in CLOSED]
     refs = {t.ref for t in bundle.tasks}
@@ -250,16 +366,14 @@ def build_plan(
     already = (refs & existing_refs) - legacy
     skipped = legacy | already
 
-    # D79: every status set keeps a Done status. Each imported project owns
-    # its set (§6.3), so count the projects whose mapped set has none.
-    per_project: dict[str, set[str]] = defaultdict(set)
-    for t in bundle.tasks:
-        if t.status_name:
-            per_project[t.container_ref].add(final[t.status_name][1])
-    projects = [c.ref for c in bundle.containers if c.kind == "project"]
-    done_added = sum(1 for ref in projects if "done" not in per_project.get(ref, set()))
-
     target = mapping.target
+    # D79, per SET (I-10): a set that holds any done-stage status gains
+    # nothing. A new space starts with the seed, which holds Done. An existing
+    # space gains one only when neither its set nor the mapping holds one. A
+    # run that continues writes into sets an earlier run already completed.
+    used = {final[t.status_name][1] for t in bundle.tasks if t.status_name}
+    has_done = "done" in used or any(c == "done" for _, c in target_statuses)
+    done_added = int(target.kind == "existing" and not continues and not has_done)
     if target.kind == "existing" and not target.project_id:
         errors.append("Choose the existing space to import into.")
     if target.kind == "existing" and target.project_id and not target_ok:
@@ -278,7 +392,18 @@ def build_plan(
         "warnings": [w.model_dump() for w in bundle.warnings],
         "losses": [loss.model_dump() for loss in bundle.losses],
         "people": people,
+        # Every member the people step may choose, IN FULL. It is the same
+        # set `_people` accepts, so the picker cannot offer a member the plan
+        # then refuses. The assignee search caps at 8 (`assignees.MAX_PEOPLE`)
+        # and was the picker's source until 2026-10-09.
+        "members": _members(directory),
         "statuses": statuses,
+        # I-10: the set the statuses land in, in its own order. The Map step
+        # offers it as "In this space", and shows its stage as fixed.
+        "target_statuses": [{"name": n, "category": c} for n, c in target_statuses],
+        # The intake lanes' names, which no target takes (P1-b, §6.3).
+        "reserved_statuses": list(reserved_statuses or []),
+        "continues": continues,
         "tree": tree,
         "columns": columns,
         # I-8: what the admin's skips leave out. Subtasks follow their parent.
@@ -308,6 +433,13 @@ def build_plan(
         "errors": errors,
         "ready": not errors,
     }
+
+
+def _members(directory: dict[str, str]) -> list[dict[str, str]]:
+    """The directory as picker rows, by name and then by address."""
+    rows = [{"email": email, "name": name or email} for email, name in directory.items()]
+    rows.sort(key=lambda r: (r["name"].lower(), r["email"]))
+    return rows
 
 
 def _people(
@@ -363,9 +495,44 @@ def _statuses(
     bundle: ImportBundle,
     mapping: ImportMapping,
     errors: list[str],
+    target: list[StatusTarget] | None = None,
+    continues: bool = False,
+    earlier: dict[str, StatusTarget] | None = None,
+    reserved: list[str] | None = None,
+    renamed: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, tuple[str, Category]]]:
     """§6.3 — one row per distinct source name, across every List. Returns the
-    rows and ``source name → (Metorite name, category)``."""
+    rows and ``source name → (Metorite name, category)``.
+
+    I-10. A run that starts a new tree takes the PROPOSAL where the mapping
+    names no status: a choice with no name, or no choice. A run that
+    continues an earlier import keeps that import's names: the status each
+    source name became then (``earlier``), and else the source name, as
+    before I-10. Either way, a name the target set holds takes the stage of
+    that status, and the plan shows it as fixed.
+
+    ``reserved`` names the intake lanes of the target set (the I-10 review,
+    P1-b). No task of an import lands in one, and the name is taken, so a
+    target with that name becomes "<name> (imported)" instead.
+
+    ``renamed`` holds ``old name → name now`` for a lane a member renamed
+    since the run this one continues (the I-10 review, P2-b). A run that
+    continues follows it, so the plan shows the lane the writer uses."""
+    target = list(target or [])
+    earlier = earlier or {}
+    held = {_fold(n): (n, c) for n, c in target}
+    pen = {_fold(n) for n in reserved or []}
+    # The names the runs this one continues recorded (`status_names`). A long
+    # one is not new, so the 64-character limit does not apply to it.
+    recorded = {_fold(target_name) for target_name, _category in earlier.values()}
+    moved = {_fold(old): new for old, new in (renamed or {}).items()} if continues else {}
+
+    def off_the_pen(name: str) -> str:
+        name = moved.get(_fold(name), name)
+        if _fold(name) in pen and _fold(name) not in held:
+            return imported_name(name, taken=pen)
+        return name
+
     tasks: Counter[str] = Counter()
     lists: dict[str, set[str]] = defaultdict(set)
     order: list[str] = []
@@ -378,19 +545,53 @@ def _statuses(
     final: dict[str, tuple[str, Category]] = {}
     rows = []
     for name in order:
-        proposed = propose_category(name)
         choice = mapping.statuses.get(name)
-        category = choice.category if choice else proposed
-        target_name = choice.name if choice and choice.name else name
+        if continues:
+            proposed_name, proposed = earlier.get(name, (name, propose_category(name)))
+        else:
+            proposed_name, proposed, _held = propose_target(name, target)
+        proposed_name = off_the_pen(proposed_name)
+        named = bool(choice and choice.name)
+        target_name = off_the_pen(choice.name if choice and choice.name else proposed_name)
+        # On a new tree, a choice with no name comes only from a mapping made
+        # before I-10, and it takes the whole proposal. A run that continues
+        # keeps the choice's stage, as before I-10.
+        category: Category = choice.category if choice and (named or continues) else proposed
+        existing = _fold(target_name) in held
+        if existing:
+            # The status exists: it keeps its own stage and spelling.
+            target_name, category = held[_fold(target_name)]
+        elif len(target_name) > MAX_STATUS and not (
+            continues and _fold(target_name) in {_fold(name), *recorded}
+        ):
+            # Only a NEW status has the limit. A run that continues keeps the
+            # earlier tree's names: the source name, and every name an
+            # earlier run recorded. The wizard sends a name on EVERY row, so
+            # "no choice" cannot be the test (the PR #784 review).
+            errors.append(f"A new status name holds 1 to {MAX_STATUS} characters: {name}.")
         final[name] = (target_name, category)
+        # I-10b build rule 1: a GUESS is a stage that only the default of
+        # `propose_category` gave: no lane of the set, no synonym, no stage
+        # rule, and no stage that an earlier run recorded. A plan saved
+        # before I-10b has no field, and the client reads that as false.
+        guessed = (
+            not existing
+            and not (continues and name in earlier)
+            and _fold(name) not in held
+            and _fold(name) not in _SYNONYMS
+            and rule_category(name) is None
+        )
         rows.append(
             {
                 "name": name,
                 "tasks": tasks[name],
                 "lists": len(lists[name]),
                 "proposed": proposed,
+                "proposed_name": proposed_name,
                 "category": category,
                 "becomes": target_name,
+                "existing": existing,
+                "guessed": guessed,
             }
         )
 
@@ -481,7 +682,23 @@ def resolve_people(
 
 
 def resolve_statuses(
-    bundle: ImportBundle, mapping: ImportMapping
+    bundle: ImportBundle,
+    mapping: ImportMapping,
+    target_statuses: list[StatusTarget] | None = None,
+    continues: bool = False,
+    earlier_names: dict[str, StatusTarget] | None = None,
+    reserved_statuses: list[str] | None = None,
+    renamed_statuses: dict[str, str] | None = None,
 ) -> dict[str, tuple[str, Category]]:
-    """Source status name → (Metorite status name, stage)."""
-    return _statuses(bundle, mapping, [])[1]
+    """Source status name → (Metorite status name, stage). It takes the same
+    facts as :func:`build_plan`, so the writer lands what the plan showed."""
+    return _statuses(
+        bundle,
+        mapping,
+        [],
+        target_statuses,
+        continues,
+        earlier_names,
+        reserved_statuses,
+        renamed_statuses,
+    )[1]

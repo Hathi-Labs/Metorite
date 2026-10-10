@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 139
+-- Tables in this phase: 141
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -157,6 +157,13 @@ ALTER TABLE chat_message ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_message FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chat_message_tenant_isolation ON chat_message;
 CREATE POLICY chat_message_tenant_isolation ON chat_message
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE chat_pending_ask ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_pending_ask FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chat_pending_ask_tenant_isolation ON chat_pending_ask;
+CREATE POLICY chat_pending_ask_tenant_isolation ON chat_pending_ask
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -969,6 +976,13 @@ ALTER TABLE wa_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE wa_templates FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS wa_templates_tenant_isolation ON wa_templates;
 CREATE POLICY wa_templates_tenant_isolation ON wa_templates
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE whatsapp_member_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_member_links FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS whatsapp_member_links_tenant_isolation ON whatsapp_member_links;
+CREATE POLICY whatsapp_member_links_tenant_isolation ON whatsapp_member_links
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

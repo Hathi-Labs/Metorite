@@ -95,6 +95,12 @@ mirrored into the `emit_generative_ui` docstring). Since S4 the lockstep is a
 fence: `tests/unit/test_genui_catalog_lockstep.py` holds the catalog, the
 registry and the docstring to one set of names.
 
+**Since 2026-10-09 the shapes come on demand** (`projects_ai_chat.md` §25).
+The docstring keeps the names only. `write_artifact.GENUI_TEMPLATE_SHAPES`
+holds each `data` string of the catalog, word for word, and the tool returns
+a shape when the model sends a template with no `data`. The same fence holds
+the shapes to the catalog.
+
 ## 4. Scenario → element mapping (brainstorm; build on demand)
 
 | Scenario | Today | Future template candidates |
