@@ -67,6 +67,15 @@ a room, and no reply is written into one.
 at once and writes nothing, and the scope rule tells the model to send the
 member to the web app for a change.
 
+**The WhatsApp profile (WAC-10a, §12).** With ``WHATSAPP_ASSISTANT_NATIVE_UI``
+on, the run opens ``acb_skills.whatsapp_ui.whatsapp_run`` as well. The
+injection seam then drops the web-only tools and the web prompt blocks, and
+gives the run's own agent ``whatsapp_ui``. The run first shows the typing
+indicator. After it, the text goes out first and each queued element after
+it, under the same send mark, so the at-most-once rules above hold for them.
+The thread keeps the text plus each element's rendition. A resend of a stored
+reply is that text only.
+
 **One process.** The thread locks and ``_LIVE_ROWS`` live in this gateway
 process, like the WAC-2 limiter. The row's claim is the guard that holds
 across processes.
@@ -126,6 +135,30 @@ SCOPE_RULE = (
     "member asks for a change, tell them to make it in the Metorite web app."
 )
 
+#: The scope rule of a run with the WhatsApp profile (WAC-10a, §12). The same
+#: scope and the same "no change from WhatsApp", plus how to write for a phone
+#: and when to call ``whatsapp_ui``. Advisory, like ``SCOPE_RULE``.
+SCOPE_RULE_NATIVE = (
+    "You are answering a member of this organization on WhatsApp. Answer only "
+    "about this member's work in Metorite: their tasks, projects, calendar and "
+    "the other data of their organization in Metorite. If the member asks about "
+    "any other topic, refuse in one line.\n"
+    "Write for a phone screen: short paragraphs, one idea each, and no "
+    "greeting. WhatsApp shows plain text with its own marks only: *bold*, "
+    "_italic_, ~strike~, a list line that starts with \"- \" or \"1. \", and a "
+    "``` block for monospace. Markdown headings, tables, ** and [text](url) "
+    "links do not work. A ``` block of at most 30 characters a line can align "
+    "a few short rows. Marks such as ✅ ⏳ ❌ and a bar such as ▓▓▓▓░░ 60% work "
+    "well.\n"
+    "Call whatsapp_ui when an element reads better than text: a list for tasks "
+    "or items the member can open, buttons for a short choice or the next "
+    "question, a chart or a table image for numbers, and a link button to a "
+    "page of https://app.metorite.com (/tasks, /projects, /calendar, /chat). "
+    "A tap comes back to you as the member's next message.\n"
+    "You cannot change data from WhatsApp. When the member asks for a change, "
+    "tell them to make it in the Metorite web app, and add a link button."
+)
+
 # ── The limits ──────────────────────────────────────────────────────────────
 
 #: WhatsApp's limit for one text message.
@@ -144,6 +177,8 @@ RUN_TIMEOUT_S = 4 * 60
 HISTORY_TURNS = 20
 SWEEP_EVERY_S = 60
 SWEEP_BATCH = 20
+#: The typing indicator is a nicety. It never holds the run longer than this.
+_TYPING_TIMEOUT_S = 5
 
 #: The namespace of a thread id that a message opens (:func:`new_thread_id`).
 _THREAD_NS = uuid.UUID("5f3c1a2e-9d47-4b8e-a6c1-7e2d0b9f4a13")
@@ -1064,7 +1099,7 @@ async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
 async def _last_word(req: RunRequest, tries: int) -> None:
     """The last try of a ``running`` row: its stored reply, else the general
     text. Each one goes once, under the row's state change."""
-    stored = await _stored_reply(req.chat_session_id, req.wamid)
+    stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
     if stored:
         await _deliver(req, stored, _Attempt(tries=tries), frm="running",
                        last_try=True)
@@ -1079,7 +1114,7 @@ async def _close_used_up(req: RunRequest) -> None:
     the reply and before ``sending``. Then that reply goes, once, under the
     same send mark. Else the general text goes, once.
     """
-    stored = await _stored_reply(req.chat_session_id, req.wamid)
+    stored = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
     if stored:
         await _deliver(req, stored, _Attempt(tries=MAX_TRIES), frm="failed",
                        last_try=True)
@@ -1088,13 +1123,14 @@ async def _close_used_up(req: RunRequest) -> None:
 
 
 def build_payload(message: str, history: list[dict[str, str]],
-                  member_email: str) -> dict[str, Any]:
+                  member_email: str, *, native: bool = False) -> dict[str, Any]:
     """The event payload of one run.
 
     ``_history_loader`` makes the batch executor take its STRUCTURED path on
     every turn, the first one too: the scope rule is then a leading system
     message, and never text folded into the member's turn
-    (``executor._run_with_maf_agent``).
+    (``executor._run_with_maf_agent``). *native* picks the scope rule of the
+    WhatsApp profile (WAC-10a).
     """
     prior = list(history)
     return {
@@ -1102,7 +1138,7 @@ def build_payload(message: str, history: list[dict[str, str]],
         "message": message,
         "messages": prior,
         "_history_loader": lambda: list(prior),
-        "system_context": SCOPE_RULE,
+        "system_context": SCOPE_RULE_NATIVE if native else SCOPE_RULE,
         "think_mode": "auto",
         # How the tools reach the member (`executor._payload_user`). The
         # server's value, from the link row, never from the message.
@@ -1122,13 +1158,21 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
     run_id = str(uuid.uuid4())
     # A try whose reply is already in the thread (its send failed, or it
     # crashed before `sending`) sends that reply again. The agent runs once.
-    reply = await _stored_reply(req.chat_session_id, req.wamid)
+    # The elements of that try are not stored, so a resend is text only: the
+    # thread's reply holds each element's rendition (WAC-10a, §12).
+    reply = _resend_text(await _stored_reply(req.chat_session_id, req.wamid))
+    ui: list[Any] = []
     if reply is None:
-        payload = build_payload(message, history, req.member_email)
+        native = flags.native_ui_enabled()
+        payload = build_payload(message, history, req.member_email, native=native)
         from acb_skills.ask_tools import refuse_cards
+        from acb_skills.whatsapp_ui import thread_record, whatsapp_run
 
+        if native:
+            await _show_typing(req)
         try:
-            with refuse_cards():
+            with refuse_cards(), (whatsapp_run(AGENT) if native
+                                  else contextlib.nullcontext()) as wa_run:
                 result = await asyncio.wait_for(
                     _executor()(
                         AGENT, payload,
@@ -1157,7 +1201,9 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         from gateway.routes.projects.agent_dispatch import reply_text
 
         reply = reply_text(result).strip()
-        if not reply:
+        if wa_run is not None:
+            ui = list(wa_run.outbox)
+        if not reply and not ui:
             if await _end(req.message_id, "failed", "empty"):
                 await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
             return
@@ -1168,18 +1214,54 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
             if await _end(req.message_id, "refused", "shared"):
                 await _send(req, [REPLY_FAILED], kind="shared", attempt=attempt)
             return
-        await _write_reply(req, reply)
+        # The thread keeps the text AND what each element showed, so the
+        # next turn knows which buttons it offered. A resend cuts the
+        # renditions off again (`_resend_text`).
+        record = thread_record(reply, ui)
+        await _write_reply(req, record)
     else:
         _log.info("whatsapp_channel.run.resend_stored", run_id=run_id,
                   message_id=req.message_id)
 
     await _deliver(req, reply, attempt, frm="running",
-                   last_try=attempt.tries >= MAX_TRIES)
+                   last_try=attempt.tries >= MAX_TRIES, ui=ui)
+
+
+def _resend_text(stored: str | None) -> str | None:
+    """The text a resend sends from a stored reply: the text part only, not
+    the element renditions (``whatsapp_ui.resend_text``, WAC-10a)."""
+    from acb_skills.whatsapp_ui import resend_text
+
+    return resend_text(stored)
+
+
+async def _show_typing(req: RunRequest) -> None:
+    """Mark the member's message read and show "typing…" (WAC-10a).
+
+    Best effort and bounded: a failure here never stops the run.
+    """
+    creds = flags.bot_credentials()
+    if creds is None:
+        return
+    try:
+        from whatsapp_ingestion.providers.factory import build_provider
+
+        provider = build_provider("cloud_api", creds)
+        show = getattr(provider, "show_typing", None)
+        if show is not None:
+            await asyncio.wait_for(show(req.wamid), timeout=_TYPING_TIMEOUT_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _log.info("whatsapp_channel.run.typing_failed", error_type=type(exc).__name__)
 
 
 async def _deliver(req: RunRequest, reply: str, attempt: _Attempt, *,
-                   frm: str, last_try: bool) -> None:
+                   frm: str, last_try: bool, ui: list[Any] | None = None) -> None:
     """Send *reply* under the durable send mark, then close the row.
+
+    *ui* holds the elements that ``whatsapp_ui`` queued (WAC-10a). Each one is
+    one more part after the text parts, so the rules below hold for it too.
 
     The mark (``frm`` → ``sending``) comes first. From then on no run takes
     the row again, and nothing sends it the general text. ``attempt.marked``
@@ -1201,7 +1283,7 @@ async def _deliver(req: RunRequest, reply: str, attempt: _Attempt, *,
         attempt.marked = False
         _log.info("whatsapp_channel.run.not_sending", message_id=req.message_id)
         return
-    parts = split_reply(reply)
+    parts: list[Any] = [*split_reply(reply), *(ui or [])]
     sent = await _send(req, parts, kind="answer", attempt=attempt)
     if sent == len(parts):
         to, code = "replied", None
@@ -1239,9 +1321,11 @@ def send_surely_failed(exc: BaseException) -> bool:
     return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
 
 
-async def _send(req: RunRequest, texts: list[str], *, kind: str,
+async def _send(req: RunRequest, texts: list[Any], *, kind: str,
                 attempt: _Attempt | None = None) -> int:
-    """Send each text from the bot number, and record each one sent.
+    """Send each part from the bot number, and record each one sent.
+
+    A part is a text, or an element of ``whatsapp_ui`` (:func:`_send_part`).
 
     Logs Meta's error fields only, never the exception text, which can carry
     a URL or a token. Returns how many texts went out, and stops at the first
@@ -1266,7 +1350,7 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str,
     sent = 0
     for part in texts:
         try:
-            out_id = await provider.send_text(req.wa_id, part)
+            out_id = await _send_part(provider, req.wa_id, part)
         except asyncio.CancelledError:
             # A cancel while the request is in flight: Meta may have it.
             if attempt is not None:
@@ -1296,6 +1380,23 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str,
     _log.info("whatsapp_channel.run.reply_sent", kind=kind, phone_hint=hint,
               parts=len(texts))
     return sent
+
+
+async def _send_part(provider: Any, wa_id: str, part: Any) -> str:
+    """Send one part: a text, an interactive element, or an image.
+
+    An image goes up to Meta's media store first, then out by its id. An
+    upload alone shows the member nothing, so an upload error goes through
+    :func:`send_surely_failed` like a send error. An unclear one reads as
+    "maybe sent", and the code then sends nothing again, which is the safe
+    side.
+    """
+    if isinstance(part, str):
+        return await provider.send_text(wa_id, part)
+    if part.kind == "interactive":
+        return await provider.send_interactive(wa_id, part.interactive)
+    media_id = await provider.upload_media(part.png, "image/png", "metorite.png")
+    return await provider.send_image(wa_id, media_id, caption=part.caption)
 
 
 # ── The sweep ───────────────────────────────────────────────────────────────

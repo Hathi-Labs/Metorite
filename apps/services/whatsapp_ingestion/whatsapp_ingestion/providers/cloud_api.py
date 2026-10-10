@@ -177,6 +177,81 @@ class WhatsAppCloudProvider(BaseWhatsAppProvider):
             resp.raise_for_status()
             return resp.json()
 
+    async def send_interactive(
+        self, to_wa_id: str, interactive: dict[str, Any],
+    ) -> str:
+        """Reply buttons, a list or a link button (``type`` inside the object).
+
+        The caller builds and checks the object (WS-47 WAC-10a,
+        ``acb_skills.whatsapp_ui``). This method only posts it.
+        """
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "interactive",
+            "interactive": interactive,
+        }
+        return await self._post_message(payload)
+
+    async def upload_media(
+        self, data: bytes, mime_type: str, filename: str,
+    ) -> str:
+        """Upload a file to this number's media store. Returns the media id."""
+        url = f"{_GRAPH_BASE}/{self.graph_version}/{self.phone_number_id}/media"
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                data={"messaging_product": "whatsapp", "type": mime_type},
+                files={"file": (filename, data, mime_type)},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        media_id = body.get("id") if isinstance(body, dict) else None
+        if not media_id:
+            raise RuntimeError("unexpected media upload response shape")
+        return str(media_id)
+
+    async def send_image(
+        self, to_wa_id: str, media_id: str, *, caption: str | None = None,
+    ) -> str:
+        image: dict[str, Any] = {"id": media_id}
+        if caption:
+            image["caption"] = caption
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "image",
+            "image": image,
+        }
+        return await self._post_message(payload)
+
+    async def show_typing(self, wa_message_id: str) -> bool:
+        """Mark the member's message read and show "typing…" to them.
+
+        Meta hides the indicator after 25 seconds, or when the reply arrives.
+        Best effort: it returns False on any error and never raises.
+        """
+        payload = {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": wa_message_id,
+            "typing_indicator": {"type": "text"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.post(
+                    self._messages_url, headers=self._headers(), json=payload
+                )
+                resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("whatsapp.typing_failed error_class=%s",
+                           type(exc).__name__)
+            return False
+        return True
+
     async def mark_read(self, wa_message_id: str) -> None:
         payload = {
             "messaging_product": "whatsapp",

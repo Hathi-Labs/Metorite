@@ -254,24 +254,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/chat_run_continuity.md` §4 S2
 - **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
 
-### H-290 · Give the long-header data-engine test a fixed memory budget · [AGENT]
-- **Check:** run the test 20 times in a shell loop:
-  `for i in $(seq 20); do uv run pytest tests/unit/test_data_engine.py -q -k long_header || echo FAIL; done`.
-  One `FAIL` with "The load passed the memory cap of the engine" means this
-  is open.
-- **Why.** On 2026-10-10 `test_a_long_header_keeps_each_answer_under_1_mb`
-  failed the post-merge Unit tests of #816, and it passed on a rerun. A red
-  post-merge job blocks the deploy, so this test blocks deploys at random.
-  The engine sets DuckDB's `memory_limit` from the container
-  (`_duckdb_memory_mb`, `sandbox/data_engine.py`). So the cap moves with the
-  runner's memory, and a 400-column header of 5000-character names sits near
-  it.
-- **Do this:** pin the memory budget in the test. Patch `_duckdb_memory_mb`
-  to a fixed value that the load fits in. Or make the header smaller, while
-  it still proves the cut. Do not mark the test flaky, and do not delete it.
-- **Authority:** `CLAUDE.md` §3 rule 8, the deploy gate
-- **Added:** 2026-10-10 · branch `ws51-run-cap-and-todos`
-
 ### H-289 · Build WS-51 S7, browser push for "needs your answer" and "finished" · [AGENT]
 - **Check:** run `rg -n "pushManager|serviceWorker.register" workbench/control_plane/src`.
   No hit means S7 is not built.

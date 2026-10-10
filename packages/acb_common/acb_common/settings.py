@@ -1021,6 +1021,11 @@ class Settings(BaseSettings):
     # tests/unit/test_wac_bot_inbound.py.
     whatsapp_assistant_phone_number_id: str = ""
     whatsapp_assistant_access_token: str = ""
+    # WAC-10a (spec §12): the WhatsApp run profile and its native UI. ON, a
+    # bot run drops the web-only tools, gets `whatsapp_ui`, and shows the
+    # typing indicator. OFF, the run is the WAC-3 run. Default OFF. Fence:
+    # tests/unit/test_wac_native_ui.py.
+    whatsapp_assistant_native_ui: bool = False
 
     # ── Token accessors ────────────────────────────────────────────────────
 
