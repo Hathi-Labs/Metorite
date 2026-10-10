@@ -19,7 +19,7 @@ import { useEffect } from "react";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
-import { pointAppearanceAt } from "@/lib/theme/scope";
+import { clearAppearanceForAccounts, pointAppearanceAt } from "@/lib/theme/scope";
 
 /**
  * The keys that belong to one organization. Each test in
@@ -155,6 +155,9 @@ export async function signOutAll(): Promise<void> {
     const res = await act("signout-all");
     const body = res.ok ? ((await res.json()) as { emails?: string[] }) : {};
     clearAccountNamespaces(body.emails ?? []);
+    // The same accounts' appearance keys, which carry each address in their
+    // names (lib/theme/scope.ts).
+    clearAppearanceForAccounts(body.emails ?? []);
   } catch {
     /* the sign-out below still runs */
   }

@@ -14,9 +14,10 @@
  *   3. Bind the appearance scope to the account `useAccess()` names
  *      (`lib/theme/scope.ts`). When the pointer disagreed, the store and
  *      the colour mode re-read at once. So it mounts INSIDE `AccessProvider`.
- *   4. Copy each colour-mode change into the account's own key. next-themes
- *      writes only its bare `theme` key, and one watcher here covers every
- *      caller of `setTheme`.
+ *   4. Copy each colour-mode change made in THIS tab into the tab's own
+ *      scope. next-themes writes only its bare `theme` key, and one watcher
+ *      here covers every caller of `setTheme`. A mode that arrived from
+ *      another tab is not copied (`lib/theme/storage.ts`).
  *
  * ⚠️ A third job — preloading the active theme's icon pack — went with the
  * theming engine on 2026-08-31. There is one pack, it ships in the bundle,
@@ -27,11 +28,11 @@
  * engine.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import { useAccess } from "@/components/AccessProvider";
 import { reconcileAppearanceScope } from "@/lib/theme/scope";
-import { themeStorage } from "@/lib/theme/storage";
+import { themeStorage, watchAppearanceStorage } from "@/lib/theme/storage";
 import { useAppearanceStore } from "@/lib/theme/store";
 import type { AppearanceSettings } from "@/lib/theme/types";
 
@@ -44,6 +45,18 @@ export default function ThemeProvider() {
   const email = access.email ?? null;
   const orgId = access.organization?.id ?? null;
   const [org, setOrg] = useState<AppearanceSettings["org"] | null>(null);
+  // ⚠️ Out of the bind's deps on purpose (review round 2, P1). next-themes
+  // gives `setTheme` a new identity when another tab's `storage` event
+  // changes the mode. In the deps, that re-ran the bind, and two tabs on two
+  // accounts moved the pointer back and forth and swapped their modes.
+  const setThemeRef = useRef(setTheme);
+  useEffect(() => {
+    setThemeRef.current = setTheme;
+  }, [setTheme]);
+
+  // Hear the other tabs first: a moved pointer makes this tab passive, and a
+  // mode another tab chose is not copied into this tab's scope.
+  useEffect(() => watchAppearanceStorage(), []);
 
   useEffect(() => {
     hydrate();
@@ -57,10 +70,11 @@ export default function ThemeProvider() {
     if (theme) themeStorage.mirrorMode(theme);
   }, [theme]);
 
+  // Once for each identity: the deps are the account and nothing else.
   useEffect(() => {
     if (loading) return;
-    reconcileAppearanceScope(email, orgId, { rehydrate, setMode: setTheme });
-  }, [loading, email, orgId, rehydrate, setTheme]);
+    reconcileAppearanceScope(email, orgId, { rehydrate, setMode: (m) => setThemeRef.current(m) });
+  }, [loading, email, orgId, rehydrate]);
 
   // The org defaults land only after the bind, or they would be cached in the
   // scope of the account the pointer named before it moved.

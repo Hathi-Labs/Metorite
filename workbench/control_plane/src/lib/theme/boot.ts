@@ -24,6 +24,8 @@
  * colour mode into next-themes' bare `theme` key, or removes that key when the
  * scope has none. next-themes' own script runs after this one, inside
  * `Providers`, so it reads the account's mode. `scope.ts` has the rules.
+ * The copy has its own try/catch: a full storage quota must not skip the
+ * density and the accent after it.
  */
 
 import { DENSITY_SCALE } from "./types";
@@ -52,7 +54,7 @@ export function themeBootScript(): string {
 var d=document.documentElement,ls=window.localStorage;
 var s=ls.getItem(${JSON.stringify(APPEARANCE_SCOPE_KEY)});
 function k(n){return s?n+${sep}+s:n;}
-if(s){var m=ls.getItem(k(${mode}));if(m)ls.setItem(${mode},m);else ls.removeItem(${mode});}
+if(s){try{var m=ls.getItem(k(${mode}));if(m)ls.setItem(${mode},m);else ls.removeItem(${mode});}catch(e){}}
 var scale=${scales};
 var den=ls.getItem(k(${JSON.stringify(STORAGE_KEYS.density)}))||ls.getItem(k(${JSON.stringify(STORAGE_KEYS.orgDensity)}));
 if(scale[den])d.style.setProperty(${JSON.stringify(DENSITY_PROPERTY)},String(scale[den]));

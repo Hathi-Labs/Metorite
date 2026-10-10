@@ -54,6 +54,7 @@ import {
   type RailPick,
 } from "@/lib/railSessions";
 import type { SessionRefusedHandler } from "@/lib/chatTurnFailure";
+import { clearSignedOutAppearance } from "@/lib/theme/scope";
 
 /**
  * The signed-in member's chat scope, from `useAccess()` (the one identity
@@ -104,7 +105,11 @@ export function useChatSignOutClear(): void {
     // session fetch during a deploy also reads as "unauthenticated".
     let cancelled = false;
     void confirmSignedOut().then((confirmed) => {
-      if (confirmed && !cancelled) clearSignedOutAccount();
+      if (confirmed && !cancelled) {
+        clearSignedOutAccount();
+        // The appearance keys name the account too (lib/theme/scope.ts).
+        clearSignedOutAppearance();
+      }
     });
     return () => { cancelled = true; };
   }, [signedOut]);

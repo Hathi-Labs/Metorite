@@ -4,15 +4,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
-import { resetLeaving, switchTo } from "@/lib/accountSwitch";
+import { resetLeaving, signOutAll, switchTo } from "@/lib/accountSwitch";
 import { themeBootScript } from "./boot";
 import {
   appearanceScopeFor,
   bindAppearanceScope,
+  clearAppearanceForAccounts,
+  clearSignedOutAppearance,
   pointAppearanceAt,
   reconcileAppearanceScope,
 } from "./scope";
-import { APPEARANCE_SCOPE_KEY, themeStorage } from "./storage";
+import {
+  APPEARANCE_SCOPE_KEY,
+  __newAppearanceTabForTests,
+  isAppearancePassive,
+  onAppearanceStorage,
+  tabAppearanceScope,
+  themeStorage,
+} from "./storage";
 import { useAppearanceStore } from "./store";
 
 /**
@@ -47,6 +56,7 @@ beforeEach(() => {
   ls = memoryStorage();
   g.localStorage = ls;
   g.window = globalThis;
+  __newAppearanceTabForTests();
 });
 afterEach(() => {
   resetLeaving();
@@ -194,9 +204,10 @@ describe("(d) a switch points the next load at the target first", () => {
     expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBe(SCOPE_A);
   });
 
-  it("an email never seen here gets a scope with no values, so it paints defaults", () => {
+  it("an email with no remembered org leaves the pointer, and the bind corrects it later", () => {
+    bindAppearanceScope(A.email, A.org);
     pointAppearanceAt("new@three.test");
-    expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBe("new@three.test|");
+    expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBe(SCOPE_A);
   });
 });
 
@@ -238,6 +249,12 @@ describe("the wiring (source fence)", () => {
     const src = read("components/ThemeProvider.tsx");
     const mirror = src.indexOf("themeStorage.mirrorMode(");
     const bind = src.indexOf("reconcileAppearanceScope(email");
+    // (round 2, P1 rule 2) Once for each identity: `setTheme` is not a dep.
+    const deps = src.slice(bind).match(/\}, \[([^\]]*)\]\);/);
+    expect(deps?.[1]).toBe("loading, email, orgId, rehydrate");
+    // The storage listener is installed before the bind runs.
+    expect(src.indexOf("watchAppearanceStorage()")).toBeGreaterThan(0);
+    expect(src.indexOf("watchAppearanceStorage()")).toBeLessThan(bind);
     const org = src.indexOf("setOrgDefaults(org)");
     expect(mirror).toBeGreaterThan(0);
     expect(bind).toBeGreaterThan(mirror);
@@ -252,5 +269,154 @@ describe("the wiring (source fence)", () => {
     expect(open).toBeGreaterThan(0);
     expect(at).toBeGreaterThan(open);
     expect(at).toBeLessThan(close);
+  });
+});
+
+describe("review round 2, P1: two tabs on two accounts", () => {
+  it("(1) a tab writes to ITS scope, not to the pointer another tab moved", () => {
+    bindAppearanceScope(A.email, A.org);
+    // Another tab loads as B. Storage changes with no event in this tab.
+    ls.setItem(APPEARANCE_SCOPE_KEY, SCOPE_B);
+    useAppearanceStore.getState().setAccent("rgb(255, 0, 0)");
+    useAppearanceStore.getState().setUserDensity("compact");
+    useAppearanceStore.getState().setOrgDefaults({ density: "comfortable", allowUserOverride: true });
+    themeStorage.mirrorMode("light");
+    expect(tabAppearanceScope()).toBe(SCOPE_A);
+    expect(ls.getItem(`cc-accent:${SCOPE_A}`)).toBe("rgb(255, 0, 0)");
+    expect(ls.getItem(`cc-density:${SCOPE_A}`)).toBe("compact");
+    expect(ls.getItem(`cc-density-org:${SCOPE_A}`)).toBe("comfortable");
+    expect(ls.getItem(`theme:${SCOPE_A}`)).toBe("light");
+    for (const k of ["cc-accent", "cc-density", "cc-density-org", "theme"]) {
+      expect(ls.getItem(`${k}:${SCOPE_B}`)).toBeNull();
+    }
+  });
+
+  it("(2) a second bind of the same identity changes nothing", () => {
+    const apply = { rehydrate: vi.fn(), setMode: vi.fn() };
+    expect(reconcileAppearanceScope(A.email, A.org, apply)).toBe(true);
+    expect(reconcileAppearanceScope(A.email, A.org, apply)).toBe(false);
+    expect(apply.rehydrate).toHaveBeenCalledTimes(1);
+    expect(apply.setMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("(3) a tab whose pointer another tab moves goes passive: no re-point, no write", () => {
+    bindAppearanceScope(A.email, A.org);
+    ls.setItem(`theme:${SCOPE_A}`, "light");
+    ls.setItem(APPEARANCE_SCOPE_KEY, SCOPE_B);
+    onAppearanceStorage({ key: APPEARANCE_SCOPE_KEY, newValue: SCOPE_B });
+    expect(isAppearancePassive()).toBe(true);
+
+    const apply = { rehydrate: vi.fn(), setMode: vi.fn() };
+    expect(reconcileAppearanceScope(A.email, A.org, apply)).toBe(false);
+    expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBe(SCOPE_B);
+    expect(apply.setMode).not.toHaveBeenCalled();
+    themeStorage.mirrorMode("dark");
+    useAppearanceStore.getState().setAccent("rgb(1, 2, 3)");
+    expect(ls.getItem(`theme:${SCOPE_A}`)).toBe("light");
+    expect(ls.getItem(`cc-accent:${SCOPE_A}`)).toBeNull();
+  });
+
+  it("(3) a pointer event that names this tab's own scope keeps it active", () => {
+    bindAppearanceScope(A.email, A.org);
+    onAppearanceStorage({ key: APPEARANCE_SCOPE_KEY, newValue: SCOPE_A });
+    expect(isAppearancePassive()).toBe(false);
+  });
+
+  it("(4) a mode that came from another tab is not mirrored, a mode chosen here is", () => {
+    bindAppearanceScope(A.email, A.org);
+    ls.setItem(`theme:${SCOPE_A}`, "light");
+    onAppearanceStorage({ key: "theme", newValue: "dark" });
+    themeStorage.mirrorMode("dark");
+    expect(ls.getItem(`theme:${SCOPE_A}`)).toBe("light");
+    // A removed key reaches next-themes as its default mode.
+    onAppearanceStorage({ key: "theme", newValue: null });
+    themeStorage.mirrorMode("dark");
+    expect(ls.getItem(`theme:${SCOPE_A}`)).toBe("light");
+    themeStorage.mirrorMode("dark");
+    expect(ls.getItem(`theme:${SCOPE_A}`)).toBe("dark");
+  });
+});
+
+describe("review round 2, P2: a scope with no org is no scope", () => {
+  it("does not bind, adopt or point at `email|`, and the bare keys stay", () => {
+    ls.setItem("cc-accent", "rgb(255, 0, 0)");
+    ls.setItem("theme", "light");
+    const apply = { rehydrate: vi.fn(), setMode: vi.fn() };
+    expect(reconcileAppearanceScope(A.email, "", apply)).toBe(false);
+    expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBeNull();
+    expect(ls.getItem("cc-accent")).toBe("rgb(255, 0, 0)");
+    expect(ls.getItem("cc-accent:a@one.test|")).toBeNull();
+    expect(themeStorage.getAccent()).toBe("rgb(255, 0, 0)");
+
+    // The org arrives on the next answer: now the values move, once.
+    expect(reconcileAppearanceScope(A.email, A.org, apply)).toBe(true);
+    expect(ls.getItem(`cc-accent:${SCOPE_A}`)).toBe("rgb(255, 0, 0)");
+    expect(ls.getItem("cc-accent")).toBeNull();
+  });
+
+  it("a remembered org still supplies the scope", () => {
+    bindAppearanceScope(A.email, A.org);
+    expect(appearanceScopeFor(A.email, "")).toBe(SCOPE_A);
+    expect(appearanceScopeFor("new@three.test", "")).toBeNull();
+  });
+});
+
+describe("review round 2, P2: a sign-out leaves no address in a key name", () => {
+  const seed = () => {
+    bindAppearanceScope(B.email, B.org);
+    bindAppearanceScope(A.email, A.org);
+    ls.setItem(`cc-accent:${SCOPE_A}`, "red");
+    ls.setItem(`theme:${SCOPE_A}`, "light");
+    ls.setItem(`cc-density-org:${SCOPE_B}`, "compact");
+    ls.setItem("cc-accent:c@three.test|org-3", "blue");
+    ls.setItem("cc-appearance-last:c@three.test", "c@three.test|org-3");
+  };
+  const leftovers = () =>
+    Array.from({ length: ls.length }, (_, i) => ls.key(i) ?? "").filter((k) => /a@one\.test|b@two\.test/.test(k));
+
+  it("clears every key of each account, the pointer, and nobody else's", () => {
+    seed();
+    clearAppearanceForAccounts(["A@one.test", "b@two.test"]);
+    expect(leftovers()).toEqual([]);
+    expect(ls.getItem(APPEARANCE_SCOPE_KEY)).toBeNull();
+    expect(ls.getItem("cc-accent:c@three.test|org-3")).toBe("blue");
+    expect(ls.getItem("cc-appearance-last:c@three.test")).toBe("c@three.test|org-3");
+    // This tab is signed out: it falls back to the bare keys.
+    expect(tabAppearanceScope()).toBeNull();
+  });
+
+  it("Sign out of all accounts clears them", async () => {
+    seed();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, emails: ["a@one.test", "b@two.test"] })));
+    await signOutAll();
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("a detected sign-out clears the account this tab showed, and only it", () => {
+    seed();
+    clearSignedOutAppearance();
+    expect(leftovers().filter((k) => k.includes("a@one.test"))).toEqual([]);
+    expect(ls.getItem(`cc-density-org:${SCOPE_B}`)).toBe("compact");
+  });
+});
+
+describe("the boot script survives a full storage quota", () => {
+  it("a throwing mode copy does not skip the density and the accent", () => {
+    ls.setItem(APPEARANCE_SCOPE_KEY, SCOPE_A);
+    ls.setItem(`theme:${SCOPE_A}`, "light");
+    ls.setItem(`cc-density:${SCOPE_A}`, "compact");
+    ls.setItem(`cc-accent:${SCOPE_A}`, "rgb(255, 0, 0)");
+    const full = {
+      getItem: (k: string) => ls.getItem(k),
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: (k: string) => ls.removeItem(k),
+    };
+    const props: Record<string, string> = {};
+    const documentElement = { style: { setProperty: (p: string, v: string) => void (props[p] = v) } };
+    new Function("window", "document", themeBootScript())({ localStorage: full }, { documentElement });
+    expect(props["--ui-scale"]).toBe("0.92");
+    expect(props["--primary"]).toBe("rgb(255, 0, 0)");
   });
 });

@@ -12,6 +12,10 @@ import { expect, test, type Page } from "@playwright/test";
  *      so only the boot script and the pointer paint them.
  *   2. A pointer that names the wrong account corrects itself once the
  *      session answers.
+ *   3. Two tabs on two accounts in one browser (review round 2, P1). They
+ *      used to move the one pointer back and forth and swap the two
+ *      accounts' modes. Now each tab writes only its own scope, and a tab
+ *      whose pointer another tab moved goes passive.
  */
 
 const ROSE = "hsl(347 77% 50%)";
@@ -83,4 +87,42 @@ test("a pointer that names the wrong account corrects itself", async ({ page }) 
   await page.goto("/settings/appearance");
   await expect.poll(() => pointer(page)).toBe("b@two.test|org-b");
   await expect.poll(() => primary(page)).toBe(plain);
+});
+
+test("two tabs on two accounts keep both accounts' modes", async ({ context }) => {
+  const read = (page: Page) =>
+    page.evaluate(() => ({
+      a: localStorage.getItem("theme:a@one.test|org-a"),
+      b: localStorage.getItem("theme:b@two.test|org-b"),
+      pointer: localStorage.getItem("cc-appearance-scope"),
+    }));
+
+  // Tab 1 records A as light, then B as dark.
+  const tab1 = await context.newPage();
+  await signedInAs(tab1, me("a@one.test", "org-a"));
+  await tab1.goto("/settings/appearance");
+  await expect.poll(() => pointer(tab1)).toBe("a@one.test|org-a");
+  await tab1.getByRole("button", { name: "Light", exact: true }).click();
+  await expect.poll(() => isLight(tab1)).toBe(true);
+  await signedInAs(tab1, me("b@two.test", "org-b"));
+  await tab1.goto("/settings/appearance");
+  await expect.poll(() => pointer(tab1)).toBe("b@two.test|org-b");
+  await expect.poll(() => isLight(tab1)).toBe(false);
+  await tab1.getByRole("button", { name: "Dark", exact: true }).click();
+  await expect.poll(() => read(tab1)).toEqual({ a: "light", b: "dark", pointer: "b@two.test|org-b" });
+
+  // Tab 2 shows A. Then tab 1 loads as B again. Each load moves the pointer
+  // under the other tab, and next-themes there hears the other mode.
+  const tab2 = await context.newPage();
+  await signedInAs(tab2, me("a@one.test", "org-a"));
+  await tab2.goto("/settings/appearance");
+  await expect.poll(() => pointer(tab2)).toBe("a@one.test|org-a");
+  await tab1.reload();
+  await expect.poll(() => pointer(tab1)).toBe("b@two.test|org-b");
+
+  // Give a ping-pong the time it used to need, then read the record.
+  await tab1.waitForTimeout(2500);
+  expect(await read(tab1)).toEqual({ a: "light", b: "dark", pointer: "b@two.test|org-b" });
+  await tab2.close();
+  await tab1.close();
 });
