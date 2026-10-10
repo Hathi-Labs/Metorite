@@ -36,7 +36,8 @@ import { autoOpenArtifact, syncPanelToSession } from "@/lib/autoOpenArtifact";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
-import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useTierRouted } from "@/hooks/useTierRouted";
 import {
@@ -316,6 +317,7 @@ function SessionList({
   sessions,
   activeId,
   activeRunIds,
+  unreadIds,
   onSelect,
   onNew,
   onDelete,
@@ -324,6 +326,8 @@ function SessionList({
   sessions: ChatSession[];
   activeId: string;
   activeRunIds: Set<string>;
+  /** Chats with a reply the member has not read (WS-51 S5). */
+  unreadIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -464,6 +468,10 @@ function SessionList({
                   {agentSessions.filter((s) => activeRunIds.has(s.id)).length}
                 </span>
               )}
+              {/* WS-51 S5: a folded group still says that a reply waits. */}
+              {!groupRunning && agentSessions.some((s) => unreadIds.has(s.id)) && (
+                <SessionRunDot running={false} unread />
+              )}
               <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
                 {count}
               </span>
@@ -490,9 +498,7 @@ function SessionList({
                       )}
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
-                          {activeRunIds.has(s.id) && (
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse shrink-0" title="Agent is generating a response" />
-                          )}
+                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} />
                           <span className={`truncate flex-1 ${isActive ? "font-semibold text-foreground" : "font-medium"}`}>
                             {s.title ?? s.name}
                           </span>
@@ -567,6 +573,8 @@ function ChatPageInner() {
     open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen,
   } = useMobileDrawer();
   const activeRunIds = useActiveSessions();
+  // WS-51 S5: a chat whose run ended while the member looked away.
+  const unreadIds = useUnreadIds();
 
   // Refs to hold drawer content (defined later in render).
   const conversationsRef = useRef<React.ReactNode>(null);
@@ -1055,6 +1063,7 @@ function ChatPageInner() {
           sessions={sessions}
           activeId={activeSessionId}
           activeRunIds={activeRunIds}
+          unreadIds={unreadIds}
           onSelect={(id) => { handleSelectSession(id); closeDrawer(); }}
           onNew={() => { handleNewSession(); closeDrawer(); }}
           onDelete={handleDeleteSession}
@@ -1174,12 +1183,12 @@ function ChatPageInner() {
                 {sessions.length}
               </span>
             )}
-            {sessions.some((s) => activeRunIds.has(s.id)) && (
-              <span
-                className="mt-1.5 inline-block h-1.5 w-1.5 rounded-full bg-success motion-safe:animate-pulse"
-                title="An agent is running"
+            <span className="mt-1.5 inline-flex">
+              <SessionRunDot
+                running={sessions.some((s) => activeRunIds.has(s.id))}
+                unread={sessions.some((s) => unreadIds.has(s.id))}
               />
-            )}
+            </span>
             <span className="mt-3 flex flex-1 items-center justify-center">
               <span
                 className="text-[10px] font-semibold tracking-widest"
@@ -1211,6 +1220,7 @@ function ChatPageInner() {
               sessions={sessions}
               activeId={activeSessionId}
               activeRunIds={activeRunIds}
+              unreadIds={unreadIds}
               onSelect={handleSelectSession}
               onNew={handleNewSession}
               onDelete={handleDeleteSession}

@@ -629,6 +629,34 @@ select optgroup {
   }
 }
 
+/* ── The phone's agent pill (WS-51 S5, `lib/shell/RunSignals.tsx`) ─────────
+   It sits on the fixed bottom nav: the nav's height, the safe-area inset and
+   a gap. While it shows, `AgentPill` sets `data-agent-pill` on <html>, and
+   the toasts and the page's last row move up by the pill's height (2.5rem)
+   and a gap, so the pill never covers a composer or a toast. Only the phone
+   layout mounts the pill, so the attribute is the gate, not a width.
+   Fence: runSignals.test.ts. */
+.agent-pill-bottom {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 0.5rem);
+}
+:root[data-agent-pill] .toast-viewport-bottom {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.5rem);
+}
+:root[data-agent-pill] .pb-nav {
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
+}
+/* The thin progress line. It slides only when the member allows motion. With
+   reduced motion it is a still third of the line. */
+@keyframes agent-pill-progress {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .agent-pill-progress {
+    animation: agent-pill-progress 1.6s ease-in-out infinite;
+  }
+}
+
 /* ── Signature rich-text editor (Tiptap / ProseMirror) ───────────────────
    Scoped under .sig-rich (the SignatureEditor body). Covers the pieces the
    library renders unstyled: tables + the column-resize affordance, selected

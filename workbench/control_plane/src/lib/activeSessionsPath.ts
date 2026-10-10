@@ -7,6 +7,14 @@
  */
 export const ACTIVE_SESSIONS_PATH = "/chat/active-sessions";
 
+/**
+ * The header of a list that is NOT complete (WS-51 S5): a Redis, Postgres or
+ * question read error in the gateway, or a lost gateway call in the BFF. The
+ * poller keeps its last list when it sees it. The gateway's twin is
+ * `RUNS_PARTIAL_HEADER` in `gateway/routes/chat.py`.
+ */
+export const RUNS_PARTIAL_HEADER = "X-Runs-Partial";
+
 export function activeSessionsPath(requestUrl: string | null | undefined): string {
   let steps = false;
   try {

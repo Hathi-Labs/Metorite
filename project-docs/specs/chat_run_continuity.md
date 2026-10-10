@@ -10,7 +10,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
 | S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
-| S5 — unread replies, the toast, the tab title and the phone pill | Spec only |
+| S5 — unread replies, the toast, the tab title and the phone pill | **BUILT** 2026-10-10, branch `ws51-s5-attention`, no flag |
 | S6 — the activity of the other signed-in accounts | Spec only |
 | D-1 to D-3 — the deferred decisions | **OWNER-GATE** |
 
@@ -515,6 +515,107 @@ uses the shell's one toast viewport.
 **Fence.** A `src/lib/runSignals.test.ts` vitest. It pins the title text for
 each state, the unread rule, and one toast for each finished run.
 
+**As built (2026-10-10).** No flag. Every signal reads the S1 store and this
+tab's own runs, and no signal polls. The rules are pure functions in
+`lib/runSignals.ts`. `lib/shell/RunSignals.tsx` feeds them and draws.
+
+1. **Where unread lives.** It lives in the browser, in the member's own chat
+   namespace. `chatKey("unread")` builds the key, so the scope is the email
+   and the org. A switch of account or org reads another map and deletes
+   nothing. A sign-out clears the map with the rest of that account.
+   - **Why not the server.** A server `read_at` needs a table, a FORCE RLS
+     policy and a migration (R1, R5, R6, R8). The spec asks for a dot, and the
+     server keeps no read state today.
+   - **The cost.** A reply read on one device stays unread on another.
+2. **The finish rule.** A run that leaves the live list marks its chat
+   unread. The run must have been on the server list once. A run that only
+   this tab knew can leave the tab's set while it still runs. A new member
+   empties the list, and `liveRunsGeneration` tells the tracker that this is
+   no finish.
+3. **Read.** An `AgentChat` holds its thread open (`useChatOpen`). A chat
+   that the member watches in a visible tab marks nothing. A run that ends in
+   an open chat of a hidden tab marks it, and the tab clears it when it shows.
+   A deleted or forgotten chat leaves the map. The map keeps 50 chats, and an
+   entry goes after 7 days.
+4. **The toast.** "<Agent> finished", the chat title, and "Open", for 8 s.
+   Open takes the `open-chat` link of S3. The open chat never gets a toast. A
+   run that ends while the tab is hidden gets its toast when the tab shows.
+   Two tabs that see one run end show one toast: the entry records the run's
+   start time and a `toasted` mark.
+5. **The badge.** `runBadge` takes a third count. The order is what the
+   member must do: amber (needs you), then blue (`info`, a new reply), then
+   green (running). The control, the sidebar, the drawer and the phone tabs
+   all read it. The panel adds a "New reply · 5 min ago" row. Each chat list
+   draws `components/SessionRunDot.tsx`, and a folded group on /chat shows a
+   blue dot too.
+6. **The hidden tab.** "(N) Needs you · Metorite" wins over "(N) New reply ·
+   Metorite". The favicon swaps to `public/favicon-needs.png` or
+   `public/favicon-reply.png`, which were made once. The page's own title and
+   icon come back when the tab shows.
+7. **The phone pill.** It shows the newest live run that is not an open chat,
+   its step or "Working", and "+N". A run that waits shows "Needs your
+   answer". It sits at `z-50` on the bottom nav, with the safe-area inset.
+   While it shows, `data-agent-pill` on `<html>` lifts the toasts and the
+   page's last row above it. The line moves only with motion allowed. Only the
+   pill asks for `?steps=1`, and only while it shows in a visible tab.
+
+**Fences (R7), as built.**
+
+| Fence | What it holds |
+|---|---|
+| `src/lib/runSignals.test.ts` | The unread rule, scoped by member and org. A new member, a tab-only run and a watched chat mark nothing. One toast for each run, never for the open chat, and one across two tabs. The title text for each state, the favicon swap and the restore. The pill: shows, hides, links, +N, tokens, motion and steps. The badge order, the panel row and the dot on the four chat lists |
+| `src/components/navBadge.test.ts` | The phone tab and drawer badges take the unread count |
+
+**Mutation record (2026-10-10).** Thirteen mutants, thirteen killed:
+
+- the server-seen rule, the open chat, the member reset, a tracker that does
+  not move on
+- the title order, the title restore, the favicon restore
+- the pill that shows the open chat
+- a hidden tab that toasts at once, another tab's toast ignored, an open that
+  clears nothing
+- blue under green in the badge, and a deleted chat that keeps its dot
+
+**Visual review (2026-10-10).** The rig ran /chat with one run that ended and
+one that went on, and the phone at 390 with three runs. It captured the
+toast, the chat list and the panel in dark and light at 1440, and the pill in
+dark and light at 390. In a real page, a hidden tab read "(1) New reply ·
+Metorite" with the reply favicon, and both came back when the tab showed. The
+console showed no error.
+
+**Review of #818 (2026-10-10).** One fix round closed two P1 findings and
+the P2 findings.
+
+- **An outage is not an end.** A Redis, Postgres or question read error in
+  the gateway sets `X-Runs-Partial: 1`. The BFF passes it on, and it marks
+  its own lost call the same way. The poller keeps its last list on a partial
+  answer. The mark is a header, not a 503, because every own-API 5xx raises
+  "Metorite is updating".
+- **Two misses.** A run ends only when two complete polls in a row lack it.
+  A deploy loses two polls at most (`lib/gatewayFetch.ts`).
+- **A parked question never ends.** An answer or an expiry is no reply. Its
+  identity is `ask:<thread>:<kind>`, the same in every tab.
+- **One summary toast.** Three or more runs that end in one poll show "N
+  assistants finished". Its Open shows the activity panel.
+- **Another tab.** A chat that shows in a visible tab writes a heartbeat
+  (`chatKey("open")`, 12 s). Another tab then marks nothing and shows no
+  toast.
+- **Interrupted.** A run that ends within 90 s of an outage says "<Agent>
+  was interrupted".
+- **The dock.** `AgentChat` takes `visible`. The Projects dock passes false
+  while a task hides the chat.
+- An unread entry older than 7 days does not count, before any write. A
+  finish waits until a member scope is bound.
+
+Twelve more mutants, twelve killed. One lived on the first run: the test of
+the question read used a broken Postgres, which marked the list by itself.
+The test now runs on a healthy fake.
+
+**Known limits.**
+
+- Unread does not follow the member to another device.
+- A run ends 10 s after the fact in a visible tab, and 60 s in a hidden tab.
+
 ### S6 — the activity of the other signed-in accounts
 
 **What.** The S3 list adds the runs of the other accounts on this device. The
@@ -551,6 +652,9 @@ An agent must refuse these by name until the owner decides.
 | `workbench/control_plane/src/lib/runActivity.ts` | The agent-to-app map and the counts (S1), the panel rows and the chat link (S3) |
 | `workbench/control_plane/src/lib/shell/ActivityControl.tsx` | The activity control and its panel (S3) |
 | `workbench/control_plane/src/lib/railSessions.ts` | `askRailSession`, `findSession` (S3) |
+| `workbench/control_plane/src/lib/runSignals.ts` | The unread map, the finish rule, the toast, the tab signal and the pill model (S5) |
+| `workbench/control_plane/src/lib/shell/RunSignals.tsx` | `RunSignalsHost` and `AgentPill` (S5) |
+| `workbench/control_plane/src/components/SessionRunDot.tsx` | The dot on a chat row in every chat list (S5) |
 | `workbench/control_plane/src/hooks/useActiveSessions.ts` | `useActiveSessions` and `useRunActivity` |
 | `workbench/control_plane/src/components/NavBadge.tsx` | The one nav count |
 | `workbench/control_plane/src/components/Sidebar.tsx` | `NavLink`, `paneBadge` |

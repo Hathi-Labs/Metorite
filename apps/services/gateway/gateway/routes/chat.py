@@ -41,7 +41,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from acb_common.pg_text import storable
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from gateway.rooms import (
     SESSION_VISIBLE_SQL,
     RoomAccess,
@@ -1184,12 +1184,13 @@ async def record_message_feedback(
     return {"ok": True}
 
 
-async def _my_waiting_asks(org: str, me: str) -> dict[str, dict]:
+async def _my_waiting_asks(org: str, me: str) -> dict[str, dict] | None:
     """The caller's questions that still wait, by thread. ``{}`` when OFF.
 
     WS-51 S2. Read under the caller's tenant (``acb_graph.tenant_session``),
     so another org's rows never reach this list. A database error answers
-    ``{}``: the badge then shows the runs as running, the old answer.
+    ``None``, so the caller can mark its list partial (WS-51 S5): a parked
+    question that drops out of the list is not an answered one.
     """
     from orchestrator import pending_ask  # noqa: PLC0415
 
@@ -1201,7 +1202,7 @@ async def _my_waiting_asks(org: str, me: str) -> dict[str, dict]:
         )
     except Exception:  # noqa: BLE001
         _log.warning("chat.pending_asks_read_failed", exc_info=True)
-        return {}
+        return None
     out: dict[str, dict] = {}
     for row in rows:
         out.setdefault(str(row["thread_id"]), row)
@@ -1279,6 +1280,19 @@ async def list_pending_asks(
     return out
 
 
+#: The response header that says the list is NOT complete (WS-51 S5). A
+#: degraded branch sets it, the BFF passes it on, and the browser keeps its
+#: last list instead of reading every missing run as finished. A header, not
+#: a 503: every own-API 5xx raises "Metorite is updating" in the shell
+#: (`lib/shell/serviceHealth.ts`), and the old callers read the body alone.
+RUNS_PARTIAL_HEADER = "X-Runs-Partial"
+
+
+def _mark_partial(response: Response | None) -> None:
+    if response is not None:
+        response.headers[RUNS_PARTIAL_HEADER] = "1"
+
+
 @router.get(
     "/active-sessions",
     summary="List session IDs that currently have an active (running) agent",
@@ -1286,6 +1300,7 @@ async def list_pending_asks(
 async def list_active_sessions(
     user: UserContext = Depends(get_current_user),
     steps: bool = False,
+    response: Response = None,  # type: ignore[assignment]  # FastAPI injects it
 ) -> list[dict]:
     """Return the caller's live sessions: in their org, and visible to them.
 
@@ -1332,6 +1347,11 @@ async def list_active_sessions(
     already lists, so it widens nothing. Without ``steps`` every row carries
     ``lastStep: None``.
 
+    **WS-51 S5: a partial list says so.** A Redis error, a Postgres error
+    and a failed read of the waiting questions each answer a list that may
+    lack runs that still run. Each sets ``X-Runs-Partial: 1``. The browser
+    then keeps its last list, so an outage never reads as "every run ended".
+
     Fences (R7): ``tests/unit/test_active_sessions_tenant.py``,
     ``tests/unit/test_pending_ask_flow.py`` and
     ``tests/unit/test_run_last_step.py``.
@@ -1349,10 +1369,15 @@ async def list_active_sessions(
         live = await list_live_runs(org)
     except Exception:  # noqa: BLE001
         _log.warning("chat.active_sessions_redis_failed", exc_info=True)
+        _mark_partial(response)
         return []  # Redis unavailable — frontend falls back to local store
 
     # ── The caller's own questions that still wait (WS-51 S2) ──────────
     asks = await _my_waiting_asks(org, me)
+    if asks is None:
+        # The read failed: a parked question may be missing (WS-51 S5).
+        _mark_partial(response)
+        asks = {}
 
     if not live and not asks:
         return []
@@ -1423,6 +1448,7 @@ async def list_active_sessions(
         # Postgres unavailable: list only the runs the caller started. Their
         # ids are already the caller's. Nobody else's id leaves this route.
         _log.warning("chat.active_sessions_db_failed", exc_info=True)
+        _mark_partial(response)
         return await _with_steps(
             [_own_unknown(tid) for tid in ids if tid in by_tid and _is_mine(tid)],
         )

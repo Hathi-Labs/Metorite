@@ -108,16 +108,28 @@ export function needsInputLabel(n: number): string {
   return n === 1 ? "1 assistant needs your answer" : `${n} assistants need your answer`;
 }
 
+/** The blue badge's spoken name: "1 new reply", "2 new replies" (WS-51 S5). */
+export function newReplyLabel(n: number): string {
+  return n === 1 ? "1 new reply" : `${n} new replies`;
+}
+
 /** What a nav entry wears for its runs: a count, a tone and a spoken name. */
-export type RunBadge = { count: number; tone: "success" | "warning"; label: string };
+export type RunBadge = { count: number; tone: "success" | "warning" | "info"; label: string };
 
 /**
- * The ONE rule for a pane's run badge (WS-51 S2). A run that waits on the
- * member wins: the badge is amber (`warning`) and counts those runs. Else it
- * is green (`success`) and counts every run. `null` draws no badge.
+ * The ONE rule for a pane's run badge (WS-51 S2, S5). The order is what the
+ * member must do, first to last:
+ *
+ *   1. a run waits on the member: amber (`warning`), the count of those runs;
+ *   2. a reply waits to be read: blue (`info`), the count of unread chats;
+ *   3. runs go on: green (`success`), the count of every run.
+ *
+ * The tab title keeps the same order ("Needs you", then "New reply",
+ * `lib/runSignals.ts`). `null` draws no badge.
  */
-export function runBadge(running: number, needsInput: number): RunBadge | null {
+export function runBadge(running: number, needsInput: number, unread = 0): RunBadge | null {
   if (needsInput > 0) return { count: needsInput, tone: "warning", label: needsInputLabel(needsInput) };
+  if (unread > 0) return { count: unread, tone: "info", label: newReplyLabel(unread) };
   if (running > 0) return { count: running, tone: "success", label: runningLabel(running) };
   return null;
 }
@@ -134,16 +146,28 @@ export function badgeText(n: number): string {
 // org), or a run this tab streams that the server has not listed yet. No row
 // comes from anywhere else, so the panel shows nothing the badges do not count.
 
+/**
+ * A row's state. `new_reply` (WS-51 S5) is a chat whose run ended while the
+ * member did not look at it. It comes from the member's unread map, never
+ * from the server.
+ */
+export type ActivityState = "running" | "needs_input" | "new_reply";
+
 /** One row of the activity panel. */
 export type ActivityRow = {
   threadId: string;
   agentName: string;
   title: string | null;
   startedAt: string | null;
-  state: "running" | "needs_input";
+  state: ActivityState;
   /** The run's latest step, plain text, from the server. */
   lastStep: string | null;
+  /** When the run ended, epoch ms. Only a `new_reply` row has it. */
+  finishedAt?: number | null;
 };
+
+/** The part of an unread entry that a row reads (`lib/runSignals.ts`). */
+export type UnreadSource = { at: number; agent: string; title: string | null };
 
 /** The part of a server row that the panel reads. */
 export type ActivitySource = RunRef & {
@@ -156,12 +180,17 @@ export type ActivitySource = RunRef & {
  * The panel's rows, newest first. A run this tab streams that the server has
  * not listed yet is the newest of all: it started a moment ago, here. A
  * server row with no start time (a parked question) sorts last.
+ *
+ * `unread` (WS-51 S5) adds a "New reply" row for each chat in the member's
+ * unread map that runs no more. A chat that runs again shows its live row
+ * only. An unread row sorts by the time its run ended.
  */
 export function activityRows(
   server: readonly ActivitySource[],
   localIds: Iterable<string>,
   localAgent: (threadId: string) => string | undefined,
   localTitle: (threadId: string) => string | null | undefined = () => null,
+  unread: Readonly<Record<string, UnreadSource>> = {},
 ): ActivityRow[] {
   const rows: { row: ActivityRow; at: number }[] = [];
   const seen = new Set<string>();
@@ -197,6 +226,22 @@ export function activityRows(
       at: Infinity,
     });
   }
+  for (const [id, entry] of Object.entries(unread)) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push({
+      row: {
+        threadId: id,
+        agentName: entry.agent || "unknown",
+        title: entry.title ?? localTitle(id) ?? null,
+        startedAt: null,
+        state: "new_reply",
+        lastStep: null,
+        finishedAt: entry.at,
+      },
+      at: Number.isFinite(entry.at) ? entry.at : -Infinity,
+    });
+  }
   rows.sort((a, b) => (b.at === a.at ? a.row.threadId.localeCompare(b.row.threadId) : b.at > a.at ? 1 : -1));
   return rows.map((r) => r.row);
 }
@@ -225,9 +270,23 @@ export function elapsedLabel(startedAt: string | null | undefined, now: number):
 /** The step, cut to one short line. The server caps it too. */
 export const STEP_MAX_CHARS = 60;
 
-/** A row's status line: "Running · 2 min · Search tasks" or "Needs your answer". */
-export function runStatusText(row: Pick<ActivityRow, "state" | "startedAt" | "lastStep">, now: number): string {
+/** The words of a row whose run ended unread (WS-51 S5). */
+export const NEW_REPLY_TEXT = "New reply";
+
+/**
+ * A row's status line: "Running · 2 min · Search tasks", "Needs your answer",
+ * or "New reply · 5 min ago".
+ */
+export function runStatusText(
+  row: Pick<ActivityRow, "state" | "startedAt" | "lastStep" | "finishedAt">,
+  now: number,
+): string {
   if (row.state === "needs_input") return "Needs your answer";
+  if (row.state === "new_reply") {
+    if (typeof row.finishedAt !== "number" || !Number.isFinite(row.finishedAt)) return NEW_REPLY_TEXT;
+    const ago = elapsedLabel(new Date(row.finishedAt).toISOString(), now);
+    return ago === "under 1 min" ? `${NEW_REPLY_TEXT} · just now` : `${NEW_REPLY_TEXT} · ${ago} ago`;
+  }
   const parts = ["Running"];
   const elapsed = elapsedLabel(row.startedAt, now);
   if (elapsed) parts.push(elapsed);

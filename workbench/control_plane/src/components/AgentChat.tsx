@@ -39,7 +39,7 @@ import {
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { cardsToRestore, fetchPendingAsks } from "@/lib/pendingAsks";
 import { identity as boundIdentity } from "@/lib/dataCache";
-import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
+import { useChatOpen, useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { CONTINUE_TEXT, interruptedTurn } from "@/lib/chatRecovery";
 import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
@@ -159,6 +159,12 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
 interface AgentChatProps {
   agentName: string;
   sessionId: string;
+  /**
+   * False while a parent keeps the chat mounted but hidden, as the Projects
+   * dock does under a task (WS-51 S5). A hidden chat is not "open": a run
+   * that ends in it marks it unread and may raise a toast. Default true.
+   */
+  visible?: boolean;
   agentDescription?: string;
   /** Integration statuses passed from the parent. If absent, fetched on mount. */
   integrationStatuses?: IntegrationStatus[];
@@ -263,6 +269,7 @@ const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELL
 export default function AgentChat({
   agentName,
   sessionId,
+  visible = true,
   agentDescription,
   integrationStatuses: externalStatuses,
   availableAgents: externalAgents,
@@ -1045,6 +1052,9 @@ export default function AgentChat({
   // A card that comes back answers through `postRespondInput`, and the
   // gateway's 409 `run_restarted` turns the answer into a new run.
   const [pendingAskTick, setPendingAskTick] = useState(0);
+  // WS-51 S5: this chat shows, so it is read. A run that ends here while the
+  // tab shows marks nothing, and raises no toast (`lib/runSignals.ts`).
+  useChatOpen(visible ? sessionId : null);
   const threadNeedsInput = useThreadNeedsInput(sessionId);
   useEffect(() => {
     if (!sessionId || !threadNeedsInput) return;

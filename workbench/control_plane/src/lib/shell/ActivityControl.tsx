@@ -101,8 +101,8 @@ onClear(() => _setOpen(false));
 // ── The control ──────────────────────────────────────────────────────────────
 
 /** The control's spoken name: what it is, then what it counts. */
-export function activityControlLabel(running: number, needsInput: number): string {
-  const badge = runBadge(running, needsInput);
+export function activityControlLabel(running: number, needsInput: number, unread = 0): string {
+  const badge = runBadge(running, needsInput, unread);
   return badge ? `Assistants: ${badge.label}` : "Assistants: none running";
 }
 
@@ -113,27 +113,31 @@ export function activityControlLabel(running: number, needsInput: number): strin
 export function ActivityButton({
   running,
   needsInput,
+  unread = 0,
   open,
   onOpen,
   className = "",
 }: {
   running: number;
   needsInput: number;
+  /** Chats with a reply the member has not read (WS-51 S5). */
+  unread?: number;
   /** The panel is up. */
   open: boolean;
   onOpen: () => void;
   /** Layout only. */
   className?: string;
 }) {
-  const badge = runBadge(running, needsInput);
+  const badge = runBadge(running, needsInput, unread);
+  const label = activityControlLabel(running, needsInput, unread);
   return (
     <Button
       variant="ghost"
       size="icon-sm"
       icon="Bot"
       data-activity-control={badge ? badge.tone : "quiet"}
-      aria-label={activityControlLabel(running, needsInput)}
-      title={activityControlLabel(running, needsInput)}
+      aria-label={label}
+      title={label}
       aria-haspopup="dialog"
       aria-expanded={open}
       onClick={onOpen}
@@ -168,13 +172,14 @@ export function ActivityControl({
 }) {
   const { access, loading } = useAccess();
   const workspace = shouldPollWorkspace(access, loading);
-  const { total, needsTotal } = useRunActivity(null, workspace);
+  const { total, needsTotal, unreadTotal } = useRunActivity(null, workspace);
   const open = useActivityOpen();
   if (!workspace) return null;
   return (
     <ActivityButton
       running={total}
       needsInput={needsTotal}
+      unread={unreadTotal}
       open={open}
       onOpen={() => {
         onBeforeOpen?.();
@@ -216,11 +221,12 @@ export function ActivityList({
     );
   }
   return (
-    <ul aria-label="Live assistants" className="flex flex-col py-1">
+    <ul aria-label="Assistant activity" className="flex flex-col py-1">
       {rows.map((row) => {
         const pane = paneForAgent(row.agentName, sections);
         const agent = agentLabel(row.agentName);
         const needs = row.state === "needs_input";
+        const reply = row.state === "new_reply";
         const status = runStatusText(row, now);
         const title = row.title?.trim() || "Untitled chat";
         return (
@@ -245,10 +251,10 @@ export function ActivityList({
                   <span
                     aria-hidden
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                      needs ? "bg-warning" : "bg-success motion-safe:animate-pulse"
+                      needs ? "bg-warning" : reply ? "bg-info" : "bg-success motion-safe:animate-pulse"
                     }`}
                   />
-                  <span className={`truncate ${needs ? "font-medium text-foreground" : ""}`}>{status}</span>
+                  <span className={`truncate ${needs || reply ? "font-medium text-foreground" : ""}`}>{status}</span>
                 </span>
               </span>
             </Link>
@@ -315,6 +321,22 @@ export function ActivityPanel({
 }
 
 /**
+ * The panes the member holds, as a stable set. A chat link to any other pane
+ * opens in Chat (`chatLink`). The panel, the toast and the phone pill share it.
+ */
+export function useHeldHrefs(): ReadonlySet<string> {
+  const { access, loading } = useAccess();
+  const heldKey = useMemo(
+    () =>
+      visibleSections(loading ? null : access.features, access.is_admin)
+        .flatMap((s) => s.items.map((p) => p.href))
+        .join(","),
+    [loading, access.features, access.is_admin],
+  );
+  return useMemo(() => new Set(heldKey ? heldKey.split(",") : []), [heldKey]);
+}
+
+/**
  * The one panel, for every layout. `AppShell` renders it on the desktop and
  * on the phone, with the shell bar flag on or off.
  */
@@ -323,14 +345,7 @@ export function ActivityHost({ placement }: { placement: ModalPlacement }) {
   const workspace = shouldPollWorkspace(access, loading);
   const rows = useActivityRows(workspace);
   const open = useActivityOpen();
-  const heldKey = useMemo(
-    () =>
-      visibleSections(loading ? null : access.features, access.is_admin)
-        .flatMap((s) => s.items.map((p) => p.href))
-        .join(","),
-    [loading, access.features, access.is_admin],
-  );
-  const heldHrefs = useMemo(() => new Set(heldKey ? heldKey.split(",") : []), [heldKey]);
+  const heldHrefs = useHeldHrefs();
   if (!workspace) return null;
   return (
     <ActivityPanel
