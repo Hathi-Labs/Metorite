@@ -408,9 +408,14 @@ export function useAgentChat({
             // every turn and never correlated with the frontend's nanoid —
             // breaking refresh recovery.
             assistantMessageId: assistantId,
+            // The id and the time of the member's turn. The gateway saves the
+            // turn under this id before the run starts (WS-51 S4), so a tab
+            // closed at once keeps it, and the save below updates that row.
+            userMessageId: userMsg.id,
+            userMessageTs: userMsg.timestamp,
             // The gateway stops the old run, removes the old turn and tells
             // the model about the edit (gateway/chat_supersede.py).
-            ...(supersedes ? { supersedes, userMessageId: userMsg.id } : {}),
+            ...(supersedes ? { supersedes } : {}),
             // Continue after an app update: a flag, never words. The gateway
             // writes the note the model reads (gateway/chat_recovery.py).
             ...(opts?.resume ? { resume: true } : {}),

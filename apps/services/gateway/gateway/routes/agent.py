@@ -2142,6 +2142,142 @@ async def _mint_run_row_bounded(
         )
 
 
+#: The longest browser message id that the run route saves (WS-51 S4). A
+#: browser id is a nanoid of 21 characters.
+_PROMPT_ID_MAX = 128
+
+
+class PromptToSave(BaseModel):
+    """The member's turn that the run route saves for the browser (WS-51 S4)."""
+
+    message_id: str
+    content: str
+    timestamp_ms: int
+    custom_events: list[Any] = []
+
+
+def prompt_to_save(
+    *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
+    actor: str, room: Any, supersedes: str = "",
+) -> PromptToSave | None:
+    """The turn to save at run start, or ``None`` when the server saves nothing.
+
+    WS-51 S4 (``chat_run_continuity.md`` §4). The browser saves the member's
+    turn too, a moment later. The server writes the SAME row id, so the
+    browser's save updates that row and never adds a second one. So the server
+    saves only when the browser named its id. An old bundle, or an API caller,
+    sends no id, and keeps the old behaviour.
+
+    The author is never in this record. ``_upsert_messages`` stamps a human
+    turn with the caller, from the session. A caller who may not send in the
+    room (``can_send``) saves nothing, and so does a room that the lookup could
+    not resolve.
+
+    The time is the browser's own stamp of the turn, which the browser save
+    writes too. Its earlier turns carry the browser clock, so a server clock
+    could sort this turn above the reply before it. With no stamp, the server
+    clock is used.
+    """
+    import time
+
+    mid = (message_id or "").strip()
+    words = text or ""
+    if not thread_id or not mid or len(mid) > _PROMPT_ID_MAX or not words.strip():
+        return None
+    if not (actor or "").strip():
+        return None
+    if room is None or getattr(room, "resolve_failed", False):
+        return None
+    if not getattr(room, "can_send", False):
+        return None
+    ts = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
+    if not 0 < ts < 2**53:
+        ts = int(time.time() * 1000)
+    # An edit keeps its "Edited" marker after a reload, as the browser's own
+    # save writes it (lib/chatEdit.ts `editedMarker`).
+    marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
+    return PromptToSave(
+        message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
+    )
+
+
+def _save_prompt_row(
+    thread_id: str, prompt: PromptToSave, *, member: str, agent_name: str,
+    organization_id: str | None,
+) -> bool:
+    """Save the member's turn before the run starts (WS-51 S4). True on a write.
+
+    The write goes through the one upsert seam, ``_upsert_messages``, bound to
+    the run's tenant, which the route took from the server-side identity. The
+    seam passes the text through ``storable`` and stamps the author from
+    ``member``. The parent chat row is made first when it is missing, as the
+    mint does.
+
+    It is best effort, as the mint is. On a failure it logs
+    ``agent.prompt_save_failed`` and the run goes on, because the browser save
+    still writes the turn.
+    """
+    from gateway.routes.chat import (
+        MessageRecord,
+        _ensure_session,
+        _upsert_messages,
+    )
+
+    try:
+        _ensure_session(
+            thread_id, (member or "").strip(), agent_name,
+            organization_id=organization_id,
+        )
+        declined = _upsert_messages(
+            thread_id,
+            [MessageRecord(
+                id=prompt.message_id, role="user", content=prompt.content,
+                timestamp=prompt.timestamp_ms,
+                custom_events=list(prompt.custom_events),
+            )],
+            actor_email=member, agent_name=agent_name,
+            organization_id=organization_id,
+        )
+        return not declined
+    except Exception as exc:  # The save must never stop a run.
+        _log.warning(
+            "agent.prompt_save_failed",
+            thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+            error=str(exc)[:200],
+        )
+        return False
+
+
+async def _save_prompt_row_bounded(
+    thread_id: str, prompt: PromptToSave | None, *, member: str,
+    agent_name: str, organization_id: str | None,
+) -> None:
+    """``_save_prompt_row`` in a worker thread, bounded by ``_MINT_TIMEOUT_S``.
+
+    A slow database must not hold the first byte of the reply. On a timeout
+    the thread can still finish later, and the upsert is idempotent by id.
+    """
+    import asyncio
+
+    if prompt is None:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                _save_prompt_row, thread_id, prompt,
+                member=member, agent_name=agent_name,
+                organization_id=organization_id,
+            ),
+            _MINT_TIMEOUT_S,
+        )
+    except TimeoutError:
+        _log.warning(
+            "agent.prompt_save_failed",
+            thread_id=thread_id[:12], message_id=prompt.message_id[:40],
+            reason="timeout",
+        )
+
+
 async def _extract_run_memory(
     run_id: str,
     extract_user: str,
@@ -2244,6 +2380,16 @@ async def run_agent_stream_endpoint(
     _supersedes = str(req.payload.pop("supersedes", "") or "").strip()
     _new_user_id = str(req.payload.pop("user_message_id", "") or "").strip()
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    # WS-51 S4: the member's turn, as they typed it. The server saves it
+    # below, before the run starts, so a tab closed at once keeps it. The
+    # words are read HERE, before a Continue note, a replayed steer or the
+    # supersede note changes `message`.
+    _prompt = prompt_to_save(
+        thread_id=req.thread_id, message_id=_new_user_id,
+        text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
+        timestamp=req.payload.pop("user_message_ts", None),
+        actor=actor_email, room=room, supersedes=_supersedes,
+    )
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
         from gateway.chat_supersede import (  # noqa: PLC0415
@@ -2307,6 +2453,16 @@ async def run_agent_stream_endpoint(
         _decision, req, agent_name, actor_email, room,
     )
     if _steered is not None:
+        # WS-51 S4: a steer is stored for the live run (#797), and the
+        # member's words show on a reload too, as their own turn. The spec
+        # is silent here, so the turn is saved with its actor. A stop and a
+        # dropped turn save nothing.
+        if _decision.route.name == "STEER":
+            await _save_prompt_row_bounded(
+                req.thread_id or "", _prompt,
+                member=actor_email, agent_name=agent_name,
+                organization_id=_room_org,
+            )
         return _steered
 
     run_id = req.run_id or str(uuid.uuid4())
@@ -2518,6 +2674,9 @@ async def run_agent_stream_endpoint(
                 for r in rows
                 if r.get("role") in ("user", "assistant")
                 and str(r.get("content") or "").strip()
+                # WS-51 S4: the current turn is saved before the run, and
+                # it reaches the model as `message`. Not twice.
+                and not (_new_user_id and r.get("id") == _new_user_id)
             ]
 
         req.payload["_history_loader"] = _load_history_from_store
@@ -2599,6 +2758,16 @@ async def run_agent_stream_endpoint(
             ) from None
         _supersede_note = compose_supersede_note(_plan)
         _superseded_ids = _plan.removed_ids
+
+    # WS-51 S4: the server saves the member's turn, under the browser's own
+    # id, before the run starts. It comes after every refusal and after the
+    # supersede above, so a refused turn saves nothing and an edit's old turn
+    # is gone first. It comes before the agent row, so the turn exists first.
+    await _save_prompt_row_bounded(
+        thread_id, _prompt,
+        member=_mem_user, agent_name=agent_name,
+        organization_id=_room_org,
+    )
 
     # WS-27bm S14 (§20): the server creates the agent row of this run, here
     # and once. It runs after the steer decision and the refusal above, so a
