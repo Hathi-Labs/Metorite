@@ -1,0 +1,19 @@
+[Unit]
+Description=Metorite Operator Console (staff, CP-8)
+After=network-online.target acb-customer-console.service
+Wants=network-online.target
+Requires=acb-customer-console.service
+
+[Service]
+Type=simple
+User=acb
+WorkingDirectory=/opt/acb/app/workbench/operator_console
+Environment=NODE_ENV=production
+Environment=PATH=/home/acb/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/opt/acb/app/workbench/operator_console/.env.local
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

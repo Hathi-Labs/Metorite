@@ -10,6 +10,7 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - hostinger/acb.service -- systemd unit: the docker compose stack, `--profile core` only (WS-49 BH-8)
 - hostinger/acb-gateway.service -- systemd unit: FastAPI gateway on :8080
 - hostinger/acb-workbench.service -- systemd unit: Next.js workbench on :3001
+- hostinger/acb-operator-console.service -- systemd unit: the staff Operator Console. It is the unit that ran on the box, byte for byte (WS-49 BH-2)
 - caddy/ -- Caddy reverse proxy configuration
 - secrets/manifest.json -- the secrets-drop manifest that `scripts/secrets.sh` reads. It holds names, paths and modes, and never a value. Git tracks only this file in `secrets/`. Reference: `docs/secrets_drop.md`
 - ../.github/workflows/deploy.yml -- CI/CD: push-to-deploy (lint → test → SSH → deploy → smoke)
@@ -22,6 +23,10 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - `scripts/vps_apply.sh` installs every `hostinger/*.service` and `*.timer` file when it changes (BO-23). A unit that is not a repo file is drift
 - `scripts/vps_apply.sh` installs every `hostinger/<unit>.service.d/*.conf` drop-in before the first service restart, then runs `daemon-reload` (WS-49 BH-7). It deletes nothing. It never writes a `90-*` name, because `90-*` is a rollback on the box (`scripts/bh2_rollback.sh`). A unit with a changed drop-in gets one restart. Fences: `tests/unit/test_unit_hardening.py` and `tests/unit/test_agent_deps_target.py`
 - `hostinger/acb-gateway.service.d/40-agent-site.conf` gives the gateway `/var/lib/acb-gateway` and `/var/cache/acb-gateway`. Agent installs go there, never to the shared venv. Do not set `PYTHONPATH` in any unit
+- `hostinger/acb-gateway.service.d/50-hardening.conf` is the gateway sandbox (WS-49 BH-2): NoNewPrivileges, `ProtectSystem=strict`, no Docker socket, no `/run/user`. Its `ReadWritePaths` is the write allowlist of the gateway. A new write path is a reviewed change to the conf AND to `RW_ALLOWLIST` in `tests/unit/test_unit_hardening.py`. Never add `.venv`, `/opt/acb/t2-vendor`, `scripts/` or `deploy/`
+- A writer of `/opt/acb/app/.env` must keep its inode, because the gateway sandbox binds that inode at start. Never `sed -i` it and never `mv` a file onto it. In `vps_apply.sh`, use `env_edit_in_place`. An append (`>>`) is fine. Fence: `tests/unit/test_env_inode.py`
+- `scripts/vps_apply.sh` runs the BH-2 strict check after its last restart and before the marker. A gateway that is not active, or not sandboxed with no valid rollback, fails the deploy. Fence: `tests/unit/test_bh2_strict_check.py`
+- `scripts/bh2_rollback.sh on|off` turns the gateway sandbox off for 72 hours, and on again. Both take the deploy lock. `status` takes none, and `health-watchdog.sh` logs `WARN BH-2 rolled back` on each tick while a rollback is on
 - The T2 vendor cache is the constant `/opt/acb/t2-vendor`. The deploy installs it with `--ignore-scripts` and reads no path from `.env`. It removes a `CUSTOM_APPS_T2_VENDOR_DIR` line from `.env`, with a warning
 - Docker Compose boots with `--profile core` only (Postgres, Redis). The memory profile (Neo4j) is OFF. WS-49 BH-8 took it out after Neo4j answered on the public internet
 - Every published port in `infra/docker-compose.yml` binds to the literal `127.0.0.1`. Docker port rules go around ufw. Fence: `tests/unit/test_compose_ports_local.py`

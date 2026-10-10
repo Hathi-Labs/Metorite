@@ -25,11 +25,22 @@
 # is root:root under /etc/acb, which is root-only. So the script works the same
 # from root and from `acb`, and tests/unit/test_bh2_rollback.py stubs `sudo`.
 #
-# `status` exit codes are the contract that the BH-2 strict check reads:
+# `status` exit codes are the contract that the BH-2 strict check of
+# scripts/vps_apply.sh and the WARN of health-watchdog.sh read:
 #   0  the rollback is on, and its expiry is in the future (prints WARN)
 #   1  the rollback is off: no conf, no ack
 #   3  the rollback is expired, malformed, or half there
 #   2  usage
+#
+# The deploy lock (B3). `on` and `off` restart the gateway, and so does a
+# deploy. So they take the lock that scripts/vps_apply.sh and vps_pull.sh
+# take for a whole apply: $(dirname APP_DIR)/acb-deploy.lock, which is
+# /opt/acb/acb-deploy.lock on the box. They wait at most BH2_LOCK_WAIT
+# seconds. On a timeout they name the holder, change nothing and exit 4.
+# `status` takes NO lock: the strict check runs it while the deploy holds the
+# lock, and a lock there would wait on itself. Fence:
+# tests/unit/test_bh2_rollback.py (the lock section).
+#   4  `on` or `off` did not get the deploy lock, and changed nothing
 set -euo pipefail
 
 UNIT="acb-gateway"
@@ -45,6 +56,10 @@ HEALTH_TRIES=120
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_CONF="$APP_DIR/deploy/hostinger/rollback/acb-gateway-90-bh2-off.conf"
+# The same path as DEPLOY_LOCK in scripts/vps_apply.sh. sudo resets the env,
+# so on the box this is always the default. The tests set it.
+DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"
+BH2_LOCK_WAIT="${BH2_LOCK_WAIT:-600}"
 
 usage() {
   echo "usage: bh2_rollback.sh on|off|status" >&2
@@ -52,6 +67,56 @@ usage() {
 }
 
 now_epoch() { date -u +%s; }
+
+# "since <time>, pid <pid> (<user>)" for whoever holds the deploy lock now.
+# It reads the record that vps_apply.sh and take_deploy_lock write.
+lock_holder() {
+  local hpid="" hsince="" hwho=""
+  read -r hpid hsince hwho < "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  if [ -n "$hpid" ] && [ -d "/proc/$hpid" ]; then
+    echo "since $hsince, pid $hpid ($hwho)"
+  else
+    echo "(the holder left no record)"
+  fi
+}
+
+# Take the deploy lock on fd 9, or exit 4 and change nothing. The lock holds
+# until this script exits. The file is opened READ-ONLY, as vps_apply.sh does,
+# because flock(2) ignores the open mode. So a lock file that root made stays
+# usable by the app user, and the other way round.
+take_deploy_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "!! flock is missing, so this script cannot take the deploy lock $DEPLOY_LOCK." >&2
+    echo "   Nothing changed." >&2
+    exit 4
+  fi
+  if [ ! -e "$DEPLOY_LOCK" ]; then
+    ( umask 022; : >> "$DEPLOY_LOCK" ) 2>/dev/null || true
+    if [ "$(id -u)" = "0" ]; then
+      chown "$(stat -c '%U:%G' "$APP_DIR")" "$DEPLOY_LOCK" 2>/dev/null || true
+    fi
+  fi
+  if ! exec 9<"$DEPLOY_LOCK"; then
+    echo "!! cannot open the deploy lock $DEPLOY_LOCK. Nothing changed." >&2
+    exit 4
+  fi
+  if ! flock -n 9; then
+    echo "    waiting up to ${BH2_LOCK_WAIT}s: a deploy holds $DEPLOY_LOCK $(lock_holder)"
+    if ! flock -w "$BH2_LOCK_WAIT" 9; then
+      echo "!! a deploy still holds $DEPLOY_LOCK after ${BH2_LOCK_WAIT}s, $(lock_holder)." >&2
+      echo "   Nothing changed. Run this command again when the deploy ends." >&2
+      exit 4
+    fi
+  fi
+  if printf '%s %s %s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "bh2_rollback:$(id -un)" \
+       > "$DEPLOY_LOCK.holder.$$" 2>/dev/null; then
+    mv -f "$DEPLOY_LOCK.holder.$$" "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  fi
+  if [ "$(id -u)" = "0" ] && [ -e "$DEPLOY_LOCK.holder" ]; then
+    chown "$(stat -c '%U:%G' "$APP_DIR")" "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  fi
+  echo "    took the deploy lock $DEPLOY_LOCK"
+}
 
 fmt_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -146,6 +211,7 @@ write_ack() {
 
 cmd_on() {
   [ -f "$SRC_CONF" ] || { echo "!! missing $SRC_CONF" >&2; exit 1; }
+  take_deploy_lock
   read_state
   if [ "$STATE" = "expired" ]; then
     echo "!! the BH-2 rollback is not valid: $EXPIRY_WHY." >&2
@@ -174,6 +240,7 @@ cmd_on() {
 
 cmd_off() {
   local changed=0
+  take_deploy_lock
   if have_dropin; then
     sudo rm -f "$DROPIN"
     echo "    removed $DROPIN"

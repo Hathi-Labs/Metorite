@@ -10,10 +10,26 @@ SESSION_SECRET=$(openssl rand -hex 16)
 
 echo "Generated random secrets"
 
-sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PW}/" .env
-sed -i "s/^LITELLM_MASTER_KEY=.*/LITELLM_MASTER_KEY=${LITELLM_KEY}/" .env
-sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+psycopg://acb:${POSTGRES_PW}@localhost:5432/acb|" .env
-sed -i "s/^GATEWAY_SESSION_SECRET=.*/GATEWAY_SESSION_SECRET=${SESSION_SECRET}/" .env
+# WS-49 BH-2: write INTO .env, so its inode stays. The gateway sandbox
+# bind-mounts the inode of .env, and `sed -i` would leave a running gateway
+# on the old, unlinked copy. Fence: tests/unit/test_env_inode.py.
+edit_env() {
+  local tmp
+  tmp="$(mktemp ./.env-edit.XXXXXX)"
+  sed "$1" .env > "$tmp"
+  # The write truncates first. A failure in the middle leaves a short .env,
+  # so compare, and keep the full copy when they differ.
+  if ! cat "$tmp" > .env || ! cmp -s "$tmp" .env; then
+    echo "!! .env write failed, the full copy is at $tmp" >&2
+    exit 1
+  fi
+  rm -f "$tmp"
+}
+
+edit_env "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${POSTGRES_PW}/"
+edit_env "s/^LITELLM_MASTER_KEY=.*/LITELLM_MASTER_KEY=${LITELLM_KEY}/"
+edit_env "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+psycopg://acb:${POSTGRES_PW}@localhost:5432/acb|"
+edit_env "s/^GATEWAY_SESSION_SECRET=.*/GATEWAY_SESSION_SECRET=${SESSION_SECRET}/"
 
 # Add missing vars
 grep -q "^GATEWAY_INTERNAL_TOKEN=" .env || echo "GATEWAY_INTERNAL_TOKEN=${LITELLM_KEY}" >> .env
