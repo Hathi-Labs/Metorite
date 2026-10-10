@@ -3,8 +3,11 @@
 /**
  * /crm — the native CRM (spec: project-docs/specs/crm_app.md §5).
  *
- * Five tabs over one dataset: the deals kanban (the landing tab) and a list
- * per entity on the shared list contract. The record sheet opens OVER
+ * Views over one dataset: the deals kanban (the landing view) and a list
+ * per entity on the shared list contract. Since WS-53 CRM-U1 the app opens
+ * with `AppTopBar`, and a rail of `RailRow`s (`components/CrmRail.tsx`)
+ * replaced the tab strip. The rail writes the same `?tab=` the tabs did, so
+ * every old link still opens its view. The record sheet opens OVER
  * whichever list is showing, driven by `?deal=`/`?lead=`/`?contact=`/
  * `?organization=` — v1 has no saved-views table, so view state lives in the
  * URL and canned views are code.
@@ -18,12 +21,16 @@
 import Icon from "@/components/Icon";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { AppTopBar } from "@/components/AppTopBar";
+import { useMobileDrawer } from "@/components/AppShell";
 import FilterPills from "@/components/FilterPills";
-import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { hasCapability } from "@/lib/access";
+import { railClass, useRailFold } from "@/lib/railFold";
 import ConvertModal from "./components/ConvertModal";
+import CrmRail from "./components/CrmRail";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
 import PipelineSettings from "./components/PipelineSettings";
@@ -53,16 +60,7 @@ import {
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-
-const TABS = [
-  { id: "board", label: "Pipeline", icon: "Kanban" },
-  { id: "deals", label: "Deals" },
-  { id: "leads", label: "Leads" },
-  { id: "contacts", label: "Contacts" },
-  { id: "organizations", label: "Organizations" },
-  { id: "reports", label: "Reports", icon: "BarChart3" },
-  { id: "settings", label: "Pipeline settings", icon: "Settings" },
-];
+import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
 const PARAM_FOR: Record<EntitySlug, SheetParam> = {
@@ -82,6 +80,11 @@ function CrmPageInner() {
 
   const store = useCrmStore();
   const { access } = useAccess();
+  const { isMobile } = useViewMode();
+  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  /** The rail of views: open from `lg` up, folded below, the member's call
+   *  inside a band. The one rule My Tasks uses (`lib/railFold.ts`). */
+  const rail = useRailFold();
   const [creating, setCreating] = useState<EntitySlug | null>(null);
   /** Local, not in the store: an in-flight download is this button's state,
    *  not the collection's, and reusing `saving` would grey out the sheet. */
@@ -194,149 +197,204 @@ function CrmPageInner() {
     }
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <div>
-          <h1 className="text-base font-bold text-foreground sm:text-lg">CRM</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {view.tab === "board"
-              ? // Weighted sits next to the raw total rather than replacing it:
-                // "₹4.2Cr in the pipeline" is what is on the table and
-                // "₹1.6Cr weighted" is what the forecast believes, and a header
-                // that showed only one of them would be answering a different
-                // question from the one being asked.
-                `${totals.count} open deals · ${compactMoney(totals.amount)} in the pipeline · ${compactMoney(totals.weighted)} weighted`
-              : view.tab === "settings"
-                ? "Stages, statuses and lost reasons — the pipeline is data, not a deploy"
-                : view.tab === "reports"
-                  ? "Forecast, funnel, win rate and who is carrying what"
-                  : "Pipeline, leads and customers"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {listEntity && (
-            // WS-26i-export — the filter that is on screen, as a CSV.
-            //
-            // ⚠️ Fetched rather than navigated to (see lib/api.exportRecords).
-            // The endpoint REFUSES a filter wider than its row cap, naming the
-            // matched count, and `window.location = …` would turn that refusal
-            // into a tab full of JSON instead of a sentence in the banner
-            // below.
-            //
-            // It is on the LISTS only: the board is a page of each lane and
-            // reports are aggregates, so neither has a row set an export could
-            // honestly claim to be "what you were looking at".
-            <Button
-              variant="secondary"
-              // `lg` is the New button's geometry beside it — two controls in
-              // one header at two sizes read as two products.
-              size="lg"
-              icon="Download"
-              loading={exporting}
-              onClick={async () => {
-                setExporting(true);
-                await store.exportList(listEntity, view);
-                setExporting(false);
-              }}
-            >
-              Export
-            </Button>
-          )}
-          <button
-            onClick={reload}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary tech-transition"
-            aria-label="Refresh"
-          >
-            <Icon name="RefreshCw" className={`w-4 h-4 ${store.loading ? "animate-spin" : ""}`} />
-          </button>
-          {view.tab !== "settings" && view.tab !== "reports" && (
-            <button
-              onClick={() => setCreating(listEntity ?? "deals")}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 tech-transition sm:px-4"
-            >
-              <Icon name="Plus" className="w-4 h-4" />
-              New
-            </button>
-          )}
-        </div>
-      </header>
+  // The scope line beside the name. CRM-Z7 puts the mode here ("Native", or
+  // "Synced from Zoho · 4 min ago"). Until a mode exists, it says what the
+  // view on screen holds.
+  const subtitle =
+    view.tab === "board"
+      ? // Weighted sits next to the raw total rather than replacing it:
+        // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
+        // weighted" is what the forecast believes, and a line that showed
+        // only one of them would be answering a different question.
+        `${totals.count} open deals · ${compactMoney(totals.amount)} in the pipeline · ${compactMoney(totals.weighted)} weighted`
+      : view.tab === "settings"
+        ? "Stages, statuses and lost reasons — the pipeline is data, not a deploy"
+        : view.tab === "reports"
+          ? "Forecast, funnel, win rate and who is carrying what"
+          : // A list view names itself. With the rail folded, the four
+            // lists share one layout, and this line is all that tells
+            // Deals from Contacts.
+            viewLabel(view.tab);
 
-      <Tabs
-        tabs={TABS}
-        activeTab={view.tab}
-        onTabChange={(id) => go(selectTab(view, id as CrmView["tab"]))}
-        variant="underline"
+  /** A rail row, from the desktop column or the phone's drawer. */
+  function chooseView(tab: CrmView["tab"]): void {
+    go(selectTab(view, tab));
+    if (isMobile) closeDrawer();
+  }
+
+  // The app's verb sits next to its name, as Capture does in My Tasks. It is
+  // the quick-create entry the old header held, at the bar's size.
+  const actions =
+    view.tab !== "settings" && view.tab !== "reports" ? (
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="Plus"
+        onClick={() => setCreating(listEntity ?? "deals")}
+      >
+        New
+      </Button>
+    ) : null;
+
+  const tools = (
+    <>
+      {listEntity && (
+        // WS-26i-export — the filter that is on screen, as a CSV.
+        //
+        // ⚠️ Fetched rather than navigated to (see lib/api.exportRecords).
+        // The endpoint REFUSES a filter wider than its row cap, naming the
+        // matched count, and `window.location = …` would turn that refusal
+        // into a tab full of JSON instead of a sentence in the banner below.
+        //
+        // It is on the LISTS only: the board is a page of each lane and
+        // reports are aggregates, so neither has a row set an export could
+        // honestly claim to be "what you were looking at".
+        <Button
+          variant="ghost"
+          size={isMobile ? "icon-sm" : "sm"}
+          icon="Download"
+          loading={exporting}
+          aria-label="Export CSV"
+          title="Export what is on screen as a CSV"
+          onClick={async () => {
+            setExporting(true);
+            await store.exportList(listEntity, view);
+            setExporting(false);
+          }}
+        >
+          {isMobile ? null : "Export"}
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={reload}
+        aria-label="Refresh"
+        title="Refresh"
+      >
+        <Icon name="RefreshCw" size={14} className={store.loading ? "animate-spin" : ""} />
+      </Button>
+    </>
+  );
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+      {/* ═══ The app's title bar (AGENTS.md rule 11, CRM-U1) ═══
+          The rail toggle, the name and the scope, the New verb, then the
+          tools at the right end. On a phone `AppTopBar` draws the compact
+          bar by itself. There the title names the view on screen, and a tap
+          opens the views in the shell's drawer, as the Email inbox does. */}
+      <AppTopBar
+        rail={{ open: rail.open, onToggle: rail.toggle, noun: "the views" }}
+        title={
+          isMobile ? (
+            <button
+              type="button"
+              onClick={() =>
+                openDrawer(
+                  <nav aria-label="CRM views" className="p-2">
+                    <CrmRail tab={view.tab} onSelect={chooseView} />
+                  </nav>
+                )
+              }
+              className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
+            >
+              <span className="truncate">{viewLabel(view.tab)}</span>
+              <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
+            </button>
+          ) : (
+            "CRM"
+          )
+        }
+        subtitle={subtitle}
+        actions={actions}
+        tools={tools}
       />
 
-      {chips.length > 0 && (
-        <FilterPills
-          items={chips}
-          activeId={activeChip(view)}
-          onChange={(id) => go(applyChip(view, id))}
-        />
-      )}
-
-      {store.error && (
-        // A refusal must surface: a control that silently no-ops reads as
-        // broken, and a stale row after a 409 reads as success.
-        <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2">
-          <p className="flex-1 text-xs text-destructive">{store.error}</p>
-          <button
-            onClick={() => store.setError(null)}
-            className="text-destructive/70 hover:text-destructive"
-            aria-label="Dismiss"
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* The rail of views. It folds below `lg` and the toggle in the bar
+            opens it (`useRailFold`, the My Tasks rule). A phone has no
+            column: the views live in the drawer the title opens. */}
+        {!isMobile && rail.open ? (
+          <nav
+            aria-label="CRM views"
+            className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <Icon name="X" className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
+            <CrmRail tab={view.tab} onSelect={chooseView} />
+          </nav>
+        ) : null}
 
-      {view.tab === "board" ? (
-        <KanbanBoard
-          lanes={store.lanes}
-          loading={store.loading}
-          onMove={moveDeal}
-          onOpen={(id) => go(openRecord(view, "deal", id))}
-          onCreate={() => setCreating("deals")}
-        />
-      ) : view.tab === "reports" ? (
-        <Reports reports={store.reports} loading={store.loading} />
-      ) : view.tab === "settings" ? (
-        <PipelineSettings
-          dealStatuses={store.dealStatuses}
-          leadStatuses={store.leadStatuses}
-          lostReasons={store.lostReasons}
-          saving={store.saving}
-          // Hiding the pull is the courtesy half; the route is floored on the
-          // same capability server-side and refuses regardless.
-          canPullStages={hasCapability(access, "admin:access:manage")}
-          onSaveStatus={store.saveStatus}
-          onRemoveStatus={store.removeStatus}
-          onReorderStatuses={store.reorderStatuses}
-          onSaveLostReason={store.saveLostReason}
-          onRemoveLostReason={store.removeLostReason}
-          onReorderLostReasons={store.reorderLostReasons}
-          onPullStages={store.pullZohoStages}
-        />
-      ) : (
-        // `listEntity` is non-null here by construction — the three branches
-        // above are the only tabs that are not a collection — but it is read
-        // through the guard rather than cast, because the cast is what made
-        // `?tab=settings` render a list of nothing on the way in.
-        listEntity && (
-          <RecordList
-            entity={listEntity}
-            rows={store.rows}
-            total={store.total}
-            loading={store.loading}
-            sort={view.sort}
-            direction={view.dir}
-            onSort={(key) => go(applySort(view, key))}
-            onOpen={(id) => go(openRecord(view, PARAM_FOR[listEntity], id))}
-          />
-        )
-      )}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {chips.length > 0 && (
+            <FilterPills
+              items={chips}
+              activeId={activeChip(view)}
+              onChange={(id) => go(applyChip(view, id))}
+            />
+          )}
+
+          {store.error && (
+            // A refusal must surface: a control that silently no-ops reads as
+            // broken, and a stale row after a 409 reads as success.
+            <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2">
+              <p className="flex-1 text-xs text-destructive">{store.error}</p>
+              <button
+                onClick={() => store.setError(null)}
+                className="text-destructive/70 hover:text-destructive"
+                aria-label="Dismiss"
+              >
+                <Icon name="X" className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {view.tab === "board" ? (
+            <KanbanBoard
+              lanes={store.lanes}
+              loading={store.loading}
+              onMove={moveDeal}
+              onOpen={(id) => go(openRecord(view, "deal", id))}
+              onCreate={() => setCreating("deals")}
+            />
+          ) : view.tab === "reports" ? (
+            <Reports reports={store.reports} loading={store.loading} />
+          ) : view.tab === "settings" ? (
+            <PipelineSettings
+              dealStatuses={store.dealStatuses}
+              leadStatuses={store.leadStatuses}
+              lostReasons={store.lostReasons}
+              saving={store.saving}
+              // Hiding the pull is the courtesy half; the route is floored on the
+              // same capability server-side and refuses regardless.
+              canPullStages={hasCapability(access, "admin:access:manage")}
+              onSaveStatus={store.saveStatus}
+              onRemoveStatus={store.removeStatus}
+              onReorderStatuses={store.reorderStatuses}
+              onSaveLostReason={store.saveLostReason}
+              onRemoveLostReason={store.removeLostReason}
+              onReorderLostReasons={store.reorderLostReasons}
+              onPullStages={store.pullZohoStages}
+            />
+          ) : (
+            // `listEntity` is non-null here by construction — the three branches
+            // above are the only tabs that are not a collection — but it is read
+            // through the guard rather than cast, because the cast is what made
+            // `?tab=settings` render a list of nothing on the way in.
+            listEntity && (
+              <RecordList
+                entity={listEntity}
+                rows={store.rows}
+                total={store.total}
+                loading={store.loading}
+                sort={view.sort}
+                direction={view.dir}
+                onSort={(key) => go(applySort(view, key))}
+                onOpen={(id) => go(openRecord(view, PARAM_FOR[listEntity], id))}
+              />
+            )
+          )}
+        </main>
+      </div>
 
       {view.record && (
         <RecordSheet
