@@ -13,6 +13,7 @@
 import { NAV_SECTIONS } from "@/lib/nav";
 import { relativeTime } from "@/lib/taskCard";
 
+import { orderCards } from "./presets";
 import { KIND_ORDER, type NeedsApp, type NeedsItem, type NeedsKind, type SourceState } from "./needs";
 
 // ── The header ──────────────────────────────────────────────────────────────
@@ -128,11 +129,22 @@ export interface NeedsGroup {
 }
 
 /**
- * Group rows under their labels, in the server's kind order. The order
- * inside a group is the server's too: the shell sorts nothing again.
+ * The kind order, with the member's preset's first kind moved to the front
+ * (NS-7, §8.1: the Sales manager reads replies first). A kind the feed does
+ * not carry changes nothing.
  */
-export function groupNeeds(items: readonly NeedsItem[]): NeedsGroup[] {
-  return KIND_ORDER.map((kind) => ({
+export function kindOrder(first?: string): readonly NeedsKind[] {
+  if (!first || !(KIND_ORDER as readonly string[]).includes(first)) return KIND_ORDER;
+  return [first as NeedsKind, ...KIND_ORDER.filter((k) => k !== first)];
+}
+
+/**
+ * Group rows under their labels, in the server's kind order, or with the
+ * preset's first kind in front. The order inside a group is the server's:
+ * the shell sorts nothing again.
+ */
+export function groupNeeds(items: readonly NeedsItem[], first?: string): NeedsGroup[] {
+  return kindOrder(first).map((kind) => ({
     kind,
     label: KIND_LABELS[kind],
     items: items.filter((i) => i.kind === kind),
@@ -143,20 +155,26 @@ export function groupNeeds(items: readonly NeedsItem[]): NeedsGroup[] {
  * The rows to draw: the first seven, or all of them once the member asks.
  * The cut runs over the whole feed, then groups, so seven means seven rows
  * and not seven per group. Before "Show all", at most five are approvals,
- * so the member's own work stays in view.
+ * so the member's own work stays in view. With a preset's first kind (NS-7),
+ * the cut runs over the feed in that order, so its rows are the ones that stay.
  */
 export function shownNeeds(
   items: readonly NeedsItem[],
   expanded: boolean,
   limit = NEEDS_SHOWN,
+  first?: string,
 ): { groups: NeedsGroup[]; hidden: number } {
+  const order = kindOrder(first);
+  const sorted = first
+    ? order.flatMap((kind) => items.filter((i) => i.kind === kind))
+    : items;
   let approvals = 0;
   const shown = expanded
-    ? items
-    : items
+    ? sorted
+    : sorted
         .filter((i) => i.kind !== "approval" || ++approvals <= APPROVALS_SHOWN)
         .slice(0, limit);
-  return { groups: groupNeeds(shown), hidden: items.length - shown.length };
+  return { groups: groupNeeds(shown, first), hidden: items.length - shown.length };
 }
 
 /**
@@ -286,6 +304,20 @@ export function cardsFor(features: readonly string[], isAdmin = false): MyDayCar
     today: lens,
     next: lens,
   };
+}
+
+/**
+ * The order My Day draws its cards in (NS-7). With the shell nav off, the
+ * page's own order. Otherwise the member's layout: the stored one, the
+ * browser's copy of it, or the role's preset when the read failed. While
+ * nothing is known the page holds the card area, so this order never
+ * changes under the member's eye.
+ */
+export function cardOrderFor<T extends string>(
+  held: readonly T[],
+  shell: { enabled: boolean; layout: { cards: readonly string[] } },
+): T[] {
+  return shell.enabled ? orderCards(held, shell.layout.cards) : [...held];
 }
 
 // ── Today's rows ────────────────────────────────────────────────────────────

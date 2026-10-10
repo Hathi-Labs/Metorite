@@ -37,8 +37,10 @@ import { visibleSections } from "@/lib/nav";
 
 import AppLauncher from "./AppLauncher";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
-import { cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
+import { cardOrderFor, cardsFor, dateLine, failedLines, greetingLine, seesApprovals, summaryLine } from "./myDay";
+import { BUILT_CARDS } from "./presets";
 import { homePane } from "./shellNav";
+import { useShellPrefs } from "./shellPrefs";
 
 /**
  * The clock, by the minute, on the client only. The server renders no time,
@@ -69,6 +71,16 @@ export default function MyDay() {
   const needs = useNeedsYou(!accessLoading && cards.needs, seesApprovals(access.features, access.is_admin));
   const today = useTodayItems(!accessLoading && cards.today, now);
   const sections = visibleSections(accessLoading ? null : access.features, access.is_admin);
+  // The member's preset orders the cards (NS-7, §8.1). It hides none: a card
+  // the preset does not name follows the named ones. With the shell nav off,
+  // the page keeps its own order.
+  const shell = useShellPrefs();
+  const held = BUILT_CARDS.filter((k) => cards[k as keyof typeof cards]);
+  const order = cardOrderFor(held, shell);
+  // ⚠️ With no known layout yet (a first visit, the read still out), the
+  // cards wait, as they wait for access. Drawing the role's order first and
+  // the member's after moved every card under the member's eye (round 2).
+  const layoutPending = shell.enabled && shell.loading;
 
   // The summary waits for both reads. A feed that failed says nothing here,
   // because "Nothing needs you" would be a claim the page cannot back. A
@@ -114,7 +126,7 @@ export default function MyDay() {
         </div>
       </div>
 
-      {accessLoading ? (
+      {accessLoading || layoutPending ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>
           <Skeleton className="h-64 w-full rounded-xl xl:col-span-2" />
           <Skeleton className="h-40 w-full rounded-xl" />
@@ -134,18 +146,30 @@ export default function MyDay() {
         // One column in the order of the question. From `xl`, Today is a
         // right rail that spans both rows, and the other two stack left.
         <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
-          {cards.needs ? <NeedsYouCard needs={needs} now={now} className="xl:col-span-2" /> : null}
-          {cards.today ? (
-            <TodayCard today={today} now={now} className="xl:col-start-3 xl:row-span-2 xl:row-start-1" />
-          ) : null}
-          {cards.next ? (
-            <NextActionsCard
-              enabled
-              needs={needs.items ?? []}
-              needsSettled={!cards.needs || needs.items !== undefined || !needs.loading}
-              className="xl:col-span-2"
-            />
-          ) : null}
+          {/* Each card keeps its place in the grid at `xl`: Today is the right
+              rail whatever its order. The order sets the one column, and
+              the order of the two cards on the left. */}
+          {order.map((key) =>
+            key === "needs" ? (
+              <NeedsYouCard
+                key={key}
+                needs={needs}
+                now={now}
+                first={shell.enabled ? shell.layout.needsFirst : undefined}
+                className="xl:col-span-2"
+              />
+            ) : key === "today" ? (
+              <TodayCard key={key} today={today} now={now} className="xl:col-start-3 xl:row-span-2 xl:row-start-1" />
+            ) : key === "next" ? (
+              <NextActionsCard
+                key={key}
+                enabled
+                needs={needs.items ?? []}
+                needsSettled={!cards.needs || needs.items !== undefined || !needs.loading}
+                className="xl:col-span-2"
+              />
+            ) : null,
+          )}
         </div>
       )}
 

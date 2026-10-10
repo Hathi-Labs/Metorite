@@ -56,6 +56,7 @@ import { shellDockOn } from "./dockFlag";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
 import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
 import { ShellBell } from "./ShellBell";
+import { useShellPrefs } from "./shellPrefs";
 
 export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
 
@@ -123,6 +124,9 @@ export function ShellFrame({
   );
   const here = contextPane(pathname, panes);
   const { data: session } = useSession();
+  // The member's preset orders the jobs of the empty bar (NS-7). Off, the
+  // shell nav reads nothing and the bar keeps its own order.
+  const shell = useShellPrefs();
   // NS-6: the one bell, with its flag on. Read once, as the sidebar reads
   // the bar's flag, because the dev override lives in `localStorage`.
   const [dockOn] = useState(() => shellDockOn());
@@ -147,6 +151,7 @@ export function ShellFrame({
         panes={panes}
         here={here}
         email={session?.user?.email ?? null}
+        jobOrder={shell.enabled ? shell.layout.jobs : undefined}
       />
     </>
   );

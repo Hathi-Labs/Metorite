@@ -222,7 +222,8 @@ describe("one list for the bell and the card", () => {
   it("the card and the bell's panel both render NeedsList", () => {
     const card = code(read("./NeedsYouCard.tsx"));
     expect(card).toMatch(/export function NeedsList\(/);
-    expect(card).toMatch(/<HomeCard[^>]*>\s*<NeedsList needs=\{needs\} now=\{now\} \/>/);
+    // NS-7: the card also passes the preset's first group. The bell does not.
+    expect(card).toMatch(/<HomeCard[^>]*>\s*<NeedsList needs=\{needs\} now=\{now\}( first=\{first\})? \/>/);
     const bell = code(read("./ShellBell.tsx"));
     expect(bell).toMatch(/^import \{[^}]*\bNeedsList\b[^}]*\} from "\.\/NeedsYouCard";/m);
     expect(bell).toMatch(/<NeedsList needs=\{panelNeeds\} now=\{now\} \/>/);

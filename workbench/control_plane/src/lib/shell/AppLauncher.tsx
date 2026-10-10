@@ -12,13 +12,21 @@
  *
  * It reads `launcherGroups(visibleSections(...))`, so it shows nothing the
  * member does not hold (`launch_surface.md` §8.4).
+ *
+ * A star on each app pins it to "My apps", or unpins it (NS-7, §3.2). The
+ * star shows once the member's layout is known. Before that, a toggle would
+ * write over a layout the shell has not read. The write shows at once and
+ * goes back when the server refuses it (`saveShellPrefs`).
  */
 import Link from "next/link";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
+import { EMPTY_SHELL, PINNABLE, togglePin } from "@/lib/shell/presets";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
+import { saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export default function AppLauncher({
   open,
@@ -39,6 +47,15 @@ export default function AppLauncher({
   const shown = groups.flatMap((g) => g.items);
   const focusHref = (shown.find((p) => isActive(pathname, p.href)) ?? shown[0])?.href;
   const focusRef = useRef<HTMLAnchorElement | null>(null);
+  const shell = useShellPrefs();
+  const canPin = shell.enabled && shell.stored !== undefined;
+  const pins = shell.layout.pins;
+  const [pinError, setPinError] = useState<string | null>(null);
+  const toggle = (href: string) => {
+    setPinError(null);
+    const next = { ...EMPTY_SHELL, ...shell.stored, pins: togglePin(pins, href) };
+    saveShellPrefs(next).catch(() => setPinError("Your pin was not saved. Try again."));
+  };
   return (
     <Modal
       open={open}
@@ -60,6 +77,11 @@ export default function AppLauncher({
             </Link>
           </p>
         )}
+        {pinError && (
+          <p role="alert" className="text-xs text-destructive">
+            {pinError}
+          </p>
+        )}
         {groups.map((g) => (
           <section key={g.id} aria-labelledby={`launcher-${g.id}`}>
             <h3
@@ -71,14 +93,15 @@ export default function AppLauncher({
             <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {g.items.map((p) => {
                 const here = isActive(pathname, p.href);
+                const pinned = pins.includes(p.href);
                 return (
-                  <li key={p.href}>
+                  <li key={p.href} className="relative">
                     <Link
                       ref={p.href === focusHref ? focusRef : undefined}
                       href={p.href}
                       onClick={onClose}
                       aria-current={here ? "page" : undefined}
-                      className={`flex h-full items-start gap-3 rounded-lg border px-3 py-2.5 tech-transition ${
+                      className={`flex h-full items-start gap-3 rounded-lg border px-3 py-2.5 tech-transition ${canPin && PINNABLE.has(p.href) ? "pr-10" : ""} ${
                         here
                           ? "border-primary/40 bg-primary/10"
                           : "border-border hover:border-primary/30 hover:bg-secondary"
@@ -94,6 +117,31 @@ export default function AppLauncher({
                         </span>
                       </span>
                     </Link>
+                    {/* A sibling of the link, never inside it: a button in a
+                        link is two controls in one, and a click on the star
+                        must not open the app. */}
+                    {/* ⚠️ The wrapper places the star. `.cc-control` sets its
+                        own `position`, which beats an `absolute` class on
+                        the button, and the star then drew under the tile. */}
+                    {canPin && PINNABLE.has(p.href) && (
+                      <span className="absolute right-2 top-2">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-pressed={pinned}
+                          aria-label={pinned ? `Unpin ${p.label} from My apps` : `Pin ${p.label} to My apps`}
+                          title={pinned ? "Unpin from My apps" : "Pin to My apps"}
+                          onClick={() => toggle(p.href)}
+                          data-testid="launcher-pin"
+                        >
+                          <Icon
+                            name="Star"
+                            size={14}
+                            className={pinned ? "fill-current text-primary" : "text-muted-foreground"}
+                          />
+                        </Button>
+                      </span>
+                    )}
                   </li>
                 );
               })}

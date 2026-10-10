@@ -22,6 +22,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import { accountLinks, homePane, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
+import { useShellPrefs } from "@/lib/shell/shellPrefs";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -79,7 +80,13 @@ export default function Sidebar() {
   // because it swaps the whole page; a label here does not.
   const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
-  const railSections = shellNav ? shellSidebar(sections) : sections;
+  // The member's pins (NS-7): "My apps" first, from their layout. While the
+  // first read is out the groups draw without it, which is complete, not
+  // blank. A failed read draws the role's preset (`shellLayout`).
+  const shell = useShellPrefs();
+  const railSections = shellNav
+    ? shellSidebar(sections, shell.loading ? undefined : shell.layout.pins)
+    : sections;
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
    * the two polls below AND by the `return null` further down.
@@ -491,7 +498,7 @@ function NavSectionBlock({
   const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts, unreadCounts);
   if (collapsed) {
     return (
-      <div>
+      <div data-nav-section={section.id}>
         <div className="flex flex-col gap-1 p-2">
           {section.items.map((p) => (
             <NavLink
@@ -517,7 +524,7 @@ function NavSectionBlock({
     : section.items;
 
   return (
-    <div className="px-2 py-1.5">
+    <div className="px-2 py-1.5" data-nav-section={section.id}>
       {/* Section heading — click to fold/unfold */}
       <button
         onClick={onToggle}
