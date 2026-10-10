@@ -523,7 +523,9 @@ What the row does for you:
 - **The name.** It is one line at 13 px, regular for an item and medium for a
   `group`. A cut name shows whole in a dark tip after 400 ms, and only when it
   is cut.
-- **The indent.** One 12 px step per level, with an optional thin guide.
+- **The indent.** One 16 px step per level, with an optional thin guide. The
+  guide sits under the centre of the parent's icon, 8 px clear of the child's
+  icon.
 - **The expand chevron.** A row that opens passes `expand`. Its chevron takes
   the icon's slot on hover and on keyboard focus, and the icon gives way. So
   no row keeps a chevron column. The toggle is a labelled button with
