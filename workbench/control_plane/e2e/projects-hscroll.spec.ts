@@ -119,7 +119,7 @@ for (const [mode, label] of [
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
     // ⚠️ The CHILD. A space draws a dashboard; only a project draws the board.
-    // The rail starts closed (railFold.ts): open it like a member does.
+    // The rail starts closed (treeFold.ts): open it like a member does.
     await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2000);

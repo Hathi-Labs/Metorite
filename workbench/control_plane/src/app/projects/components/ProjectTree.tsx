@@ -29,12 +29,12 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import RailRow from "@/components/ui/RailRow";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import type { ProjectRow } from "../lib/api";
 import { type ProjectMenuHandlers, projectMenuItems } from "../lib/projectMenu";
 import { accentForSlot } from "@/lib/categorical";
-import { openFolds, toggleFold, useFoldOpen } from "../lib/railFold";
+import { openFolds, toggleFold, useFoldOpen } from "../lib/treeFold";
 import { type TreeDropTarget, planTreeDrop } from "../lib/treeDrop";
 
 import {
@@ -442,7 +442,7 @@ function Node({
   /** Omitted = a read-only tree, and no menu is offered at all. */
   actions?: ProjectMenuHandlers;
 }) {
-  // The fold lives in `railFold`, not here: a row's own state forgot itself
+  // The fold lives in `treeFold`, not here: a row's own state forgot itself
   // on every re-mount and opened every space (owner, 2026-10-10).
   const open = useFoldOpen(node.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -554,7 +554,13 @@ function Node({
         tree
         tier={level === "space" ? "group" : "item"}
         selected={isSelected && !litInto}
-        onSelect={() => onSelect(node)}
+        onSelect={() => {
+          // A pick of a row that holds others opens it, to show them. Here
+          // and not on a selection change, so a phone drawer that unmounts
+          // on the pick, and a re-pick of the selected row, both open it.
+          if (children.length > 0) openFolds([node.id]);
+          onSelect(node);
+        }}
         // The row's menu is open: keep its controls on screen under it.
         pinned={menu != null || addMenu != null}
         className={`${dragging ? "opacity-40" : ""} ${litInto ? "ring-1 ring-primary" : ""}`}
@@ -875,20 +881,14 @@ export function ProjectTree({
 }: Props) {
   const draftAtRoot = creating != null && creating.parentId === null;
 
-  // A selected row is never hidden in a closed parent. A row the member
-  // PICKS that holds others also opens, to show them. The selection the page
-  // lands on (the first space) is not a pick, so it opens nothing of its own,
-  // and the rail still starts closed. On the selection CHANGING only, so a
-  // member who then closes a row with the chevron keeps it closed.
-  const landed = useRef(false);
+  // A selected row is never hidden in a closed parent: a deep link to a
+  // subproject opens the path to it. Only the ANCESTORS: the space the page
+  // lands on is not the member's pick, so the rail still starts closed. A
+  // pick opens its own row in the row's click (`Node`), not here. On the
+  // selection CHANGING only, so a member who then closes a row keeps it shut.
   useEffect(() => {
     if (!selectedId) return;
-    const path = pathTo(roots, selectedId);
-    const node = path[path.length - 1];
-    if (!node) return;
-    const ids = path.slice(0, -1).map((n) => n.id);
-    if (landed.current && node.children?.length) ids.push(node.id);
-    landed.current = true;
+    const ids = pathTo(roots, selectedId).slice(0, -1).map((n) => n.id);
     if (ids.length) openFolds(ids);
     // `roots` is read, not watched: a refetch must not re-open what the
     // member closed.

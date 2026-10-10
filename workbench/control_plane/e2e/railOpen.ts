@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 /**
  * Open every row of the Projects rail, the way a member does: by its toggle.
  *
- * The rail starts CLOSED since 2026-10-10 (`app/projects/lib/railFold.ts`,
+ * The rail starts CLOSED since 2026-10-10 (`app/projects/lib/treeFold.ts`,
  * owner ask). A spec that needs a child row on screen opens the tree first,
  * rather than the app keeping a test-only default.
  *

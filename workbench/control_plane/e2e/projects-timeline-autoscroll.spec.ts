@@ -138,7 +138,7 @@ async function openTimeline(
 
   await page.goto("/projects");
   await page.waitForTimeout(3500);
-  // The rail starts closed (railFold.ts): open it like a member does.
+  // The rail starts closed (treeFold.ts): open it like a member does.
   await openAllRows(page);
   await page.getByText("Bootloader").first().click();
   await page.waitForTimeout(2500);

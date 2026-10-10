@@ -27,7 +27,7 @@ async function openProjects(page: Page) {
   await page.route("**/api/projects/tree", (route) => route.fulfill({ json: RAIL_TREE }));
   await page.goto("/projects");
   await expect(page.getByText("Company Operations").first()).toBeVisible({ timeout: 20_000 });
-  // The rail starts closed (railFold.ts). These specs measure open rows.
+  // The rail starts closed (treeFold.ts). These specs measure open rows.
   await openAllRows(page);
 }
 

@@ -127,7 +127,7 @@ test("Enter on a strip button runs the action, and does not open the task", asyn
   await page.waitForTimeout(4000);
 
   // ⚠️ The CHILD. A space draws a dashboard; only a project draws the board.
-  // The rail starts closed (railFold.ts): open it like a member does.
+  // The rail starts closed (treeFold.ts): open it like a member does.
   await openAllRows(page);
   await page.getByText("Bootloader", { exact: true }).first().click();
   await page.waitForTimeout(2500);
@@ -197,7 +197,7 @@ test("a slow rename on one card does not close or disable another's", async ({
   await page.goto("/projects");
   await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(4000);
-  // The rail starts closed (railFold.ts): open it like a member does.
+  // The rail starts closed (treeFold.ts): open it like a member does.
   await openAllRows(page);
   await page.getByText("Bootloader", { exact: true }).first().click();
   await page.waitForTimeout(2500);
@@ -277,7 +277,7 @@ test.describe("on a touch-capable display", () => {
     await page.goto("/projects");
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
-    // The rail starts closed (railFold.ts): open it like a member does.
+    // The rail starts closed (treeFold.ts): open it like a member does.
     await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);
@@ -350,7 +350,7 @@ test.describe("on a touch-capable display", () => {
     await page.goto("/projects");
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
-    // The rail starts closed (railFold.ts): open it like a member does.
+    // The rail starts closed (treeFold.ts): open it like a member does.
     await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);
@@ -422,7 +422,7 @@ test.describe("on a touch-capable display", () => {
     await page.goto("/projects");
     await page.waitForLoadState("domcontentloaded");
     await page.waitForTimeout(4000);
-    // The rail starts closed (railFold.ts): open it like a member does.
+    // The rail starts closed (treeFold.ts): open it like a member does.
     await openAllRows(page);
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);

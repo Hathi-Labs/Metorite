@@ -8,6 +8,9 @@
  * appreciable amount of time, or if I've started using some other app or I've
  * logged out and logged back in, start with everything closed again."*
  *
+ * (Not `src/lib/railFold.ts`, which folds the whole rail away. This one folds
+ * the rows inside it.)
+ *
  * ## Four rules, and what enforces each
  *
  * 1. **Everything starts closed.** The store starts empty. Before this, each
@@ -16,11 +19,15 @@
  * 2. **Kept while you use Projects.** The store is a module, so it outlives a
  *    row, the phone drawer and a client-side navigation inside the app.
  * 3. **Forgotten when you leave.** `forgetFold()` runs when the Projects page
- *    unmounts — a route to another app. A sign-out and sign-in reload the
- *    page, which empties the module. A different member on the same tab
- *    resets it too (`dataCache.identity`).
- * 4. **Forgotten after 30 idle minutes** (`FOLD_IDLE_MS`). `resumeFold()` runs
- *    on mount and whenever the tab comes back into view.
+ *    unmounts — a route to another app. A sign-out and a sign-in are full
+ *    page loads, which empty the module. A different member resets it too
+ *    (`dataCache.identity`).
+ * 4. **Forgotten after 30 minutes AWAY** (`FOLD_AWAY_MS`). Away means the tab
+ *    was hidden: `markHidden()` notes when, and `resumeFold()` on the tab's
+ *    return compares. Time spent working on a board with the tab in view is
+ *    not "away", however long, so the rail never closes under the member's
+ *    hands (review of #853: an idle clock that only a fold reset closed the
+ *    rail on the first chevron click after half an hour of board work).
  *
  * ⚠️ **Memory only, never `localStorage` or `sessionStorage`.** The ids are a
  * tenant's rows, and `AGENTS.md` rule 9 keeps tenant rows off the device. It
@@ -31,54 +38,48 @@ import { useSyncExternalStore } from "react";
 
 import { identity } from "@/lib/dataCache";
 
-/** How long the rail keeps its folds with nothing touched. */
-export const FOLD_IDLE_MS = 30 * 60 * 1000;
+/** How long the tab may be away before the rail starts closed again. */
+export const FOLD_AWAY_MS = 30 * 60 * 1000;
 
 export interface FoldState {
   open: ReadonlySet<string>;
-  /** When the member last opened, closed or picked a row. */
-  touchedAt: number;
+  /** When the tab was hidden, or null while it is in view. */
+  hiddenAt: number | null;
   /** Who the folds belong to (`dataCache.identity`). */
   who: string | null;
 }
 
-export const CLOSED: FoldState = { open: new Set(), touchedAt: 0, who: null };
+export const CLOSED: FoldState = { open: new Set(), hiddenAt: null, who: null };
 
-/** The state to resume from: closed when it is stale or someone else's. */
+/** The tab went out of view at `now`. */
+export function hiddenAtTime(state: FoldState, now: number): FoldState {
+  return { ...state, hiddenAt: now };
+}
+
+/** The state to resume from: closed after a long absence, or for another member. */
 export function resumed(
   state: FoldState,
   now: number,
   who: string | null,
-  idleMs = FOLD_IDLE_MS,
+  awayMs = FOLD_AWAY_MS,
 ): FoldState {
-  if (state.open.size === 0) return state;
-  if (state.who !== who || now - state.touchedAt > idleMs) return { ...CLOSED, who };
-  return state;
+  if (state.open.size > 0 && state.who !== who) return { ...CLOSED, who };
+  if (state.hiddenAt !== null && now - state.hiddenAt > awayMs) return { ...CLOSED, who };
+  return state.hiddenAt === null ? state : { ...state, hiddenAt: null };
 }
 
 /** One row opened or closed. `open` forces a side; absent flips it. */
-export function toggled(
-  state: FoldState,
-  id: string,
-  now: number,
-  who: string | null,
-  open?: boolean,
-): FoldState {
+export function toggled(state: FoldState, id: string, who: string | null, open?: boolean): FoldState {
   const next = new Set(state.open);
   if (open ?? !next.has(id)) next.add(id);
   else next.delete(id);
-  return { open: next, touchedAt: now, who };
+  return { ...state, open: next, who };
 }
 
-/** Open every id, so a selected row's ancestors show it. Same state if nothing changes. */
-export function withOpen(
-  state: FoldState,
-  ids: readonly string[],
-  now: number,
-  who: string | null,
-): FoldState {
+/** Open every id and close none. The same state when nothing changes. */
+export function withOpen(state: FoldState, ids: readonly string[], who: string | null): FoldState {
   if (ids.every((id) => state.open.has(id))) return state;
-  return { open: new Set([...state.open, ...ids]), touchedAt: now, who };
+  return { ...state, open: new Set([...state.open, ...ids]), who };
 }
 
 // ── the store ───────────────────────────────────────────────────────────────
@@ -99,15 +100,20 @@ function subscribe(fn: () => void): () => void {
 
 /** Open or close one row. */
 export function toggleFold(id: string, open?: boolean) {
-  set(toggled(resumed(state, Date.now(), identity()), id, Date.now(), identity(), open));
+  set(toggled(state, id, identity(), open));
 }
 
 /** Open these rows, and close none. */
 export function openFolds(ids: readonly string[]) {
-  set(withOpen(resumed(state, Date.now(), identity()), ids, Date.now(), identity()));
+  set(withOpen(state, ids, identity()));
 }
 
-/** Drop folds that went stale or belong to someone else. */
+/** The tab went out of view. */
+export function markHidden() {
+  set(hiddenAtTime(state, Date.now()));
+}
+
+/** The tab is in view again, or the page arrived: drop folds that went stale. */
 export function resumeFold() {
   set(resumed(state, Date.now(), identity()));
 }

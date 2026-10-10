@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAllRows } from "./railOpen";
 import { clickAndWait, firstVisible, gotoAndSettle, readPaint, stubApi, underAccents } from "./visual/harness";
 
 /**
@@ -84,6 +85,8 @@ test("a member's accent does not repaint the board's statuses", async ({ page })
   // The harness helpers, not raw locators: `.first()` returns a hidden mobile
   // duplicate, and a canvas mounts with its data rather than with the click.
   await gotoAndSettle(page, "/projects");
+  // The rail starts closed (treeFold.ts): open it like a member does.
+  await openAllRows(page);
   expect(await clickAndWait(page, "Firmware"), "could not select a project").toBe(true);
 
   const lane = await firstVisible(page, "In progress");
