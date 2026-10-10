@@ -200,6 +200,15 @@ onClear(() => {
   _listeners.forEach((l) => l());
 });
 
+/**
+ * The member generation. It goes up when the member changes, and the list
+ * empties at the same moment. A reader that compares two lists (WS-51 S5,
+ * `lib/runSignals.ts`) must not read that empty list as "every run ended".
+ */
+export function liveRunsGeneration(): number {
+  return _generation;
+}
+
 /** The last list the server returned. A stable reference while unchanged. */
 export function getLiveRuns(): readonly LiveRun[] {
   return _runs;

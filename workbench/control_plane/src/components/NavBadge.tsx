@@ -2,7 +2,7 @@
  * NavBadge — the count on a nav entry: the desktop sidebar, the phone drawer
  * and the phone's bottom bar draw this one component.
  *
- * Two tones, two meanings:
+ * Three tones, three meanings:
  *   - `success`: assistants running on this app (WS-51 S1). It pulses, and
  *     only when the member allows motion (`motion-safe:`).
  *   - `warning`: something waits for the member. On a run badge that is an
@@ -10,6 +10,9 @@
  *     green count on the same pane (`runBadge` in `lib/runActivity.ts`), and
  *     it does not pulse. /agents keeps its updates count in it too. A plain
  *     running count never takes it.
+ *   - `info`: a reply that the member has not read (WS-51 S5). It sits between
+ *     the two: amber wins over it, and it wins over green. It does not pulse,
+ *     because nothing runs.
  *
  * The count is not colour alone: `label` is its spoken name ("2 assistants
  * running", "1 assistant needs your answer"), on `role="img"` so a screen
@@ -20,11 +23,12 @@
 
 import { badgeText } from "@/lib/runActivity";
 
-export type NavBadgeTone = "success" | "warning";
+export type NavBadgeTone = "success" | "warning" | "info";
 
 const TONE: Record<NavBadgeTone, string> = {
   success: "bg-success text-success-foreground motion-safe:animate-pulse",
   warning: "bg-warning text-warning-foreground",
+  info: "bg-info text-info-foreground",
 };
 
 /**

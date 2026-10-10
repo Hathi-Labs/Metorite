@@ -63,8 +63,38 @@ export interface ChatSession {
 /** The prefix of every namespaced chat key. */
 const NS_PREFIX = "cc-chat::";
 
-/** What a namespaced key holds. */
-export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder";
+/**
+ * What a namespaced key holds. `unread` is the member's chats with a reply
+ * they have not read (WS-51 S5, `lib/runSignals.ts`).
+ */
+export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder" | "unread";
+
+/**
+ * The window event that says the unread map changed in THIS tab. Another tab
+ * hears the `storage` event instead. `lib/runSignals.ts` listens to both.
+ */
+export const UNREAD_EVENT = "cc-unread-change";
+
+/**
+ * Drop one chat from the unread map (WS-51 S5). A deleted or forgotten chat
+ * must not keep a dot, or a count that nothing can clear. The map's entry
+ * shape belongs to `lib/runSignals.ts`. This only removes a key.
+ */
+function dropUnread(id: string): void {
+  const key = chatKey("unread");
+  if (typeof window === "undefined" || !key) return;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    const map = JSON.parse(raw) as Record<string, unknown>;
+    if (!map || typeof map !== "object" || !(id in map)) return;
+    delete map[id];
+    localStorage.setItem(key, JSON.stringify(map));
+    if (typeof window.dispatchEvent === "function") window.dispatchEvent(new Event(UNREAD_EVENT));
+  } catch {
+    /* storage off, or a map that does not parse: nothing to drop */
+  }
+}
 
 /**
  * Points at the last member scope bound in this browser, so a sign-out that
@@ -462,6 +492,7 @@ export function deleteSession(id: string): void {
   writeList(sessions);
   // Also remove the persisted messages for this session.
   deleteMessages(id);
+  dropUnread(id);
   // Background delete from Postgres.
   fetch(`/api/chat/sessions/${id}`, { method: "DELETE" }).catch(() => {});
 }
@@ -477,6 +508,7 @@ export function deleteSession(id: string): void {
 export function forgetSession(id: string): void {
   writeList(getSessions().filter((s) => s.id !== id));
   deleteMessages(id);
+  dropUnread(id);
 }
 
 /**

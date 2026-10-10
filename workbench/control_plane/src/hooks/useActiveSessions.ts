@@ -18,17 +18,32 @@
  *
  * `useRunActivity` is the same union, counted per app pane for the nav's run
  * badge (`lib/runActivity.ts`).
+ *
+ * WS-51 S5 adds the member's unread chats (`lib/runSignals.ts`): `useUnread`
+ * reads the map, `useRunActivity` counts it per pane, and `useActivityRows`
+ * lists it as "New reply" rows. `useChatOpen` holds a chat open while it shows.
  */
 
-import { useSyncExternalStore, useCallback, useMemo, useRef } from "react";
+import { useSyncExternalStore, useCallback, useEffect, useMemo, useRef } from "react";
 import { subscribeAllSessions, getActiveSessionIdsStable, getSessionAgent } from "@/lib/chatStore";
 import { getLiveRuns, getServerLiveRuns, subscribeLiveRuns } from "@/lib/liveRuns";
 import { activityRows, countRunsByApp, mergeRuns, type ActivityRow } from "@/lib/runActivity";
+import {
+  getOpenChats,
+  getServerOpenChats,
+  getServerUnread,
+  getUnread,
+  markChatOpen,
+  subscribeOpenChats,
+  subscribeUnread,
+  type UnreadMap,
+} from "@/lib/runSignals";
 import { getSessions } from "@/lib/sessions";
 
 const EMPTY = new Set<string>();
 
-function useLocalActive(): Set<string> {
+/** This tab's own streaming runs (the chat store's `isLoading`). */
+export function useLocalActive(): Set<string> {
   const subscribe = useCallback(
     (listener: () => void) => subscribeAllSessions(listener),
     [],
@@ -42,7 +57,7 @@ function useLocalActive(): Set<string> {
 const NO_RUNS = () => () => {};
 
 /** `enabled: false` reads nothing and starts no poll: no workspace yet. */
-function useServerRuns(enabled = true) {
+export function useServerRuns(enabled = true) {
   return useSyncExternalStore(
     enabled ? subscribeLiveRuns : NO_RUNS,
     enabled ? getLiveRuns : getServerLiveRuns,
@@ -99,7 +114,47 @@ export type RunActivity = {
   needsTotal: number;
   /** The same, per app pane href. A pane with any wears the amber badge. */
   needsByApp: Record<string, number>;
+  /** The chats with a reply the member has not read (WS-51 S5). */
+  unreadTotal: number;
+  /** The same, per app pane href. A pane with any wears the blue badge. */
+  unreadByApp: Record<string, number>;
 };
+
+const NO_UNREAD = () => () => {};
+
+/**
+ * The member's unread map (WS-51 S5). `enabled: false` reads nothing: no
+ * workspace yet. It re-reads on this tab's writes and on another tab's.
+ */
+export function useUnread(enabled = true): UnreadMap {
+  return useSyncExternalStore(
+    enabled ? subscribeUnread : NO_UNREAD,
+    enabled ? getUnread : getServerUnread,
+    getServerUnread,
+  );
+}
+
+/** The ids of the member's unread chats, for a chat list's dots. */
+export function useUnreadIds(): ReadonlySet<string> {
+  const map = useUnread();
+  return useMemo(() => new Set(Object.keys(map)), [map]);
+}
+
+/** The chats an `AgentChat` shows now (WS-51 S5). */
+export function useOpenChats(): ReadonlySet<string> {
+  return useSyncExternalStore(subscribeOpenChats, getOpenChats, getServerOpenChats);
+}
+
+/**
+ * Hold *threadId* open while the calling chat shows it. Opening it clears its
+ * unread mark, and a run that ends in it marks nothing while the tab shows.
+ */
+export function useChatOpen(threadId: string | null | undefined): void {
+  useEffect(() => {
+    if (!threadId) return;
+    return markChatOpen(threadId);
+  }, [threadId]);
+}
 
 /**
  * The live runs, counted per app pane. `visibleHrefs` is the set of panes the
@@ -113,16 +168,20 @@ export function useRunActivity(
 ): RunActivity {
   const localActive = useLocalActive();
   const serverRuns = useServerRuns(enabled);
+  const unread = useUnread(enabled);
   return useMemo(() => {
     const runs = mergeRuns(serverRuns, localActive, getSessionAgent);
     const needsByApp = countRunsByApp(runs, visibleHrefs, undefined, true);
+    const unreadRefs = Object.entries(unread).map(([threadId, e]) => ({ threadId, agentName: e.agent }));
     return {
       total: runs.length,
       byApp: countRunsByApp(runs, visibleHrefs),
       needsTotal: Object.values(needsByApp).reduce((a, b) => a + b, 0),
       needsByApp,
+      unreadTotal: unreadRefs.length,
+      unreadByApp: countRunsByApp(unreadRefs, visibleHrefs),
     };
-  }, [serverRuns, localActive, visibleHrefs]);
+  }, [serverRuns, localActive, visibleHrefs, unread]);
 }
 
 /**
@@ -139,7 +198,7 @@ export function useThreadNeedsInput(threadId: string | null | undefined): boolea
 }
 
 /** A session's title from this member's session list, for a run with none. */
-function localTitle(threadId: string): string | null {
+export function localTitle(threadId: string): string | null {
   try {
     return getSessions().find((s) => s.id === threadId)?.title ?? null;
   } catch {
@@ -156,8 +215,9 @@ function localTitle(threadId: string): string | null {
 export function useActivityRows(enabled = true): ActivityRow[] {
   const localActive = useLocalActive();
   const serverRuns = useServerRuns(enabled);
+  const unread = useUnread(enabled);
   return useMemo(
-    () => activityRows(serverRuns, enabled ? localActive : EMPTY, getSessionAgent, localTitle),
-    [serverRuns, localActive, enabled],
+    () => activityRows(serverRuns, enabled ? localActive : EMPTY, getSessionAgent, localTitle, unread),
+    [serverRuns, localActive, enabled, unread],
   );
 }

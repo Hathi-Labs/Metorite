@@ -128,7 +128,7 @@ describe("the phone nav wears the run badge on every page", () => {
   });
 
   it("the Menu tab carries the total off /chat, and the Chats tab on it", () => {
-    expect(shell).toContain("const tabBadge = runBadge(activeCount, needsTotal);");
+    expect(shell).toContain("const tabBadge = runBadge(activeCount, needsTotal, unreadTotal);");
     expect(shell).toMatch(
       /<AppIcon name="Menu" size=\{20\} \/>\s*\{!isChatPage && tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
     );
@@ -139,7 +139,7 @@ describe("the phone nav wears the run badge on every page", () => {
 
   it("each drawer link carries its app's count, amber when a run there waits", () => {
     expect(shell).toContain(
-      "const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0);",
+      "const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);",
     );
     expect(shell).toMatch(/const b = drawerBadge\(p\.href\);\s*return b \? <NavBadge count=\{b\.count\} tone=\{b\.tone\} label=\{b\.label\} \/> : null;/);
   });

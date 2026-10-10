@@ -94,7 +94,7 @@ export default function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
   );
-  const { byApp: runCounts, needsByApp: needsCounts } = useRunActivity(railHrefs, canPoll);
+  const { byApp: runCounts, needsByApp: needsCounts, unreadByApp: unreadCounts } = useRunActivity(railHrefs, canPoll);
 
   // Per-section fold state, persisted so the layout survives reloads. Stored
   // as a map of FOLDED ids — unknown/new sections therefore default to open.
@@ -317,6 +317,7 @@ export default function Sidebar() {
               agentUpdateCount={agentUpdateCount}
               runCounts={runCounts}
               needsCounts={needsCounts}
+              unreadCounts={unreadCounts}
               pinnedApps={pinnedApps}
               shellNav={shellNav}
             />
@@ -459,6 +460,7 @@ function NavSectionBlock({
   agentUpdateCount = 0,
   runCounts = {},
   needsCounts = {},
+  unreadCounts = {},
   pinnedApps = [],
   shellNav = false,
 }: {
@@ -474,11 +476,13 @@ function NavSectionBlock({
   runCounts?: Record<string, number>;
   /** The runs per pane href that wait on the member's answer (WS-51 S2). */
   needsCounts?: Record<string, number>;
+  /** The unread chats per pane href (WS-51 S5). */
+  unreadCounts?: Record<string, number>;
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
 }) {
-  const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts);
+  const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts, unreadCounts);
   if (collapsed) {
     return (
       <div>
@@ -560,6 +564,7 @@ export function paneBadge(
   agentUpdateCount: number,
   runCounts: Record<string, number>,
   needsCounts: Record<string, number> = {},
+  unreadCounts: Record<string, number> = {},
 ): { badge?: number; badgeTone?: NavBadgeTone; badgeLabel?: string } {
   if (href === "/agents") {
     return agentUpdateCount > 0
@@ -570,7 +575,7 @@ export function paneBadge(
         }
       : {};
   }
-  const b = runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0);
+  const b = runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);
   return b ? { badge: b.count, badgeTone: b.tone, badgeLabel: b.label } : {};
 }
 

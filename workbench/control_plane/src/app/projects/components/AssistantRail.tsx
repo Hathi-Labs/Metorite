@@ -27,7 +27,8 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
 import { useAgentSessions } from "@/hooks/useChatSessions";
-import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { fetchTaskSettings } from "@/app/tasks/lib/api";
 import {
@@ -96,6 +97,8 @@ export function AssistantRail({
   const userId: string = nextAuthSession?.user?.email ?? "dev@fracktal.in";
 
   const activeRunIds = useActiveSessions();
+  // WS-51 S5: a chat whose run ended while the member looked away.
+  const unreadIds = useUnreadIds();
 
   const [showSessions, setShowSessions] = useState(false);
   const [pendingInput, setPendingInput] = useState<string | undefined>();
@@ -298,14 +301,7 @@ export function AssistantRail({
                 }`}
                 onClick={() => switchSession(s.id)}
               >
-                {activeRunIds.has(s.id) ? (
-                  <span
-                    className="w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse flex-shrink-0"
-                    title="Active — agent is working"
-                  />
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30 flex-shrink-0" />
-                )}
+                <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} placeholder />
                 <div className="flex-1 min-w-0">
                   <div className="text-[11px] text-foreground truncate">
                     {s.title || "New conversation"}
