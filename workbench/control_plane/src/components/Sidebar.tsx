@@ -8,7 +8,7 @@ import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
 import { autoFoldEnabled, floatingOpen, isWorkEvent, shouldFold } from "@/lib/sidebarFold";
-import Icon from "@/components/Icon";
+import Icon, { themedIcon } from "@/components/Icon";
 import NavBadge, { type NavBadgeTone } from "@/components/NavBadge";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import { runBadge } from "@/lib/runActivity";
@@ -22,7 +22,13 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import { ADD_APPS_HINT, accountLinks, homePane, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
-import { useShellPrefs } from "@/lib/shell/shellPrefs";
+import { latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
+import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
+import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
+import { chatScope } from "@/lib/sessions";
+import { ContextMenu } from "@/components/ContextMenu";
+import { useToast } from "@/components/ui/Toast";
+import Button from "@/components/ui/Button";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -114,19 +120,61 @@ export default function Sidebar() {
   );
   const { byApp: runCounts, needsByApp: needsCounts, unreadByApp: unreadCounts } = useRunActivity(railHrefs, canPoll);
 
-  // Per-section fold state, persisted so the layout survives reloads. Stored
-  // as a map of FOLDED ids — unknown/new sections therefore default to open.
-  const [foldedSections, setFoldedSections] = useState<Record<string, boolean>>({});
+  // Per-category fold state, kept per ACCOUNT (owner, 2026-10-11), so a
+  // reload keeps it and another account on this browser never reads it
+  // (`lib/shell/sidebarFolds.ts`). Stored as a map of FOLDED ids, so a new
+  // category starts open.
+  const foldScope = accessLoading ? null : chatScope(access.email, access.organization?.id);
+  const [foldedSections, setFoldedSections] = useState<Folds>({});
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(FOLD_KEY);
-      if (raw) setFoldedSections(JSON.parse(raw));
-    } catch {
-      // Corrupt/unavailable storage — start with everything open.
-    }
-  }, []);
+    setFoldedSections(readFolds(foldScope));
+  }, [foldScope]);
   const toggleSection = (id: string) =>
-    setFoldedSections((prev) => persistFolds({ ...prev, [id]: !prev[id] }));
+    setFoldedSections((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      writeFolds(foldScope, next);
+      return next;
+    });
+
+  // "Hide from sidebar" on a row (owner, 2026-10-11). The same optimistic
+  // save as the star in All apps, built on the latest layout, and it goes
+  // back when the server refuses it. The toast offers Undo.
+  const toast = useToast();
+  const canHide = shellNav && shell.enabled && shell.stored !== undefined;
+  const flipStar = (href: string) => {
+    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
+  };
+  const hideFromSidebar = (pane: NavPane) => {
+    flipStar(pane.href).then(
+      () =>
+        toast.show({
+          key: "sidebar-hide",
+          title: `${pane.label} hidden from your sidebar.`,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              flipStar(pane.href).catch(() =>
+                toast.show({ key: "sidebar-hide", variant: "error", title: "Your sidebar was not saved. Try again." }),
+              );
+            },
+          },
+        }),
+      () => toast.show({ key: "sidebar-hide", variant: "error", title: "Your sidebar was not saved. Try again." }),
+    );
+  };
+  // The row menu: at the pointer for a right-click, under the "···" for a
+  // press. `trigger` gets the focus back when the menu closes.
+  const [rowMenu, setRowMenu] = useState<{ pane: NavPane; x: number; y: number; keyboard: boolean; trigger: HTMLElement | null } | null>(null);
+  const closeRowMenu = () => {
+    const back = rowMenu?.trigger;
+    setRowMenu(null);
+    back?.focus();
+  };
+  const rowMenuFor = canHide
+    ? (pane: NavPane, at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null }) =>
+        setRowMenu({ pane, ...at })
+    : undefined;
 
   // Navigating into a folded section unfolds it (once per navigation — the
   // user can still fold it again while staying on the page).
@@ -139,9 +187,11 @@ export default function Sidebar() {
       const shape = shellNav ? shellSidebar(NAV_SECTIONS) : NAV_SECTIONS;
       const owner = shape.find((s) => s.items.some((p) => pathname.startsWith(p.href)));
       if (!owner || !prev[owner.id]) return prev;
-      return persistFolds({ ...prev, [owner.id]: false });
+      const next = { ...prev, [owner.id]: false };
+      writeFolds(foldScope, next);
+      return next;
     });
-  }, [pathname, shellNav]);
+  }, [pathname, shellNav, foldScope]);
 
   // Poll agent list for behind_by counts — shows "N updates" badge on Agents
   useEffect(() => {
@@ -331,7 +381,12 @@ export default function Sidebar() {
               section={section}
               pathname={pathname}
               collapsed={collapsed}
-              folded={!!foldedSections[section.id]}
+              folded={isFolded(
+                foldedSections,
+                section.id,
+                section.items.some((p) => (shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href))),
+              )}
+              onRowMenu={rowMenuFor}
               onToggle={() => toggleSection(section.id)}
               onNavigate={armFold}
               agentUpdateCount={agentUpdateCount}
@@ -346,6 +401,29 @@ export default function Sidebar() {
           </>
         )}
       </nav>
+
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          autoFocus={rowMenu.keyboard}
+          onClose={closeRowMenu}
+          items={[
+            {
+              kind: "item",
+              label: "Hide from sidebar",
+              icon: themedIcon("EyeOff"),
+              onSelect: () => hideFromSidebar(rowMenu.pane),
+            },
+            {
+              kind: "item",
+              label: "Open in new tab",
+              icon: themedIcon("ExternalLink"),
+              onSelect: () => window.open(rowMenu.pane.href, "_blank", "noopener"),
+            },
+          ]}
+        />
+      )}
 
       {/* All apps (NS-2): every app the member holds, each with its purpose. */}
       {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
@@ -510,17 +588,11 @@ function NavSkeleton({ collapsed }: { collapsed: boolean }) {
 // Section block
 // ---------------------------------------------------------------------------
 
-/** localStorage key for the folded-section map (Record<sectionId, true>). */
-const FOLD_KEY = "cc-nav-folded-sections";
-
-function persistFolds(next: Record<string, boolean>): Record<string, boolean> {
-  try {
-    localStorage.setItem(FOLD_KEY, JSON.stringify(next));
-  } catch {
-    // Storage unavailable (private mode) — fold state just won't persist.
-  }
-  return next;
-}
+/** Opens a row's menu at a point. `keyboard` moves the focus into it. */
+type RowMenuOpen = (
+  pane: NavPane,
+  at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null },
+) => void;
 
 function NavSectionBlock({
   section,
@@ -535,6 +607,7 @@ function NavSectionBlock({
   unreadCounts = {},
   pinnedApps = [],
   shellNav = false,
+  onRowMenu,
 }: {
   section: NavSection;
   pathname: string | null;
@@ -553,6 +626,8 @@ function NavSectionBlock({
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
+  /** Opens a row's menu (owner, 2026-10-11). Absent: the rows have none. */
+  onRowMenu?: RowMenuOpen;
 }) {
   const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts, unreadCounts);
   if (collapsed) {
@@ -568,6 +643,7 @@ function NavSectionBlock({
               onNavigate={onNavigate}
               {...badgeFor(p.href)}
               shellNav={shellNav}
+              onRowMenu={onRowMenu}
             />
           ))}
         </div>
@@ -577,7 +653,8 @@ function NavSectionBlock({
   }
 
   // A folded section keeps showing the item you are ON — the current location
-  // must never vanish from the nav.
+  // must never vanish from the nav. With the shell nav, the category of the
+  // current route is never folded at all (`isFolded`).
   const items = folded
     ? section.items.filter((p) => pathname?.startsWith(p.href))
     : section.items;
@@ -594,7 +671,7 @@ function NavSectionBlock({
             : "py-1.5 text-[11px] text-muted-foreground"
         }`}
       >
-        <span>{section.label}</span>
+        <span>{shellNav ? foldHeading(section.label, section.items.length, folded) : section.label}</span>
         <Icon
           name="ChevronDown"
           size={12}
@@ -616,6 +693,7 @@ function NavSectionBlock({
               {...badgeFor(p.href)}
               pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
               shellNav={shellNav}
+              onRowMenu={onRowMenu}
             />
           ))}
         </div>
@@ -665,6 +743,7 @@ export function NavLink({
   badgeLabel,
   pinnedApps,
   shellNav = false,
+  onRowMenu,
 }: {
   pane: NavPane;
   pathname: string | null;
@@ -677,6 +756,13 @@ export function NavLink({
   badgeLabel?: string;
   pinnedApps?: PinnedApp[];
   shellNav?: boolean;
+  /**
+   * The row's menu: "Hide from sidebar" and "Open in new tab" (owner,
+   * 2026-10-11). A right-click opens it, open or folded. Open, a "···" at
+   * the row's end opens it too. It is a SIBLING of the link, so the link
+   * keeps its own name and stays the click target. Home passes none.
+   */
+  onRowMenu?: RowMenuOpen;
 }) {
   // The shell nav matches by segment, so Home ("/") is active on Home only.
   const active = shellNav ? isActive(pathname, pane.href) : pathname?.startsWith(pane.href);
@@ -695,6 +781,14 @@ export function NavLink({
         href={pane.href}
         title={shellNav ? `${pane.label}: ${purpose}` : pane.label}
         onClick={onNavigate}
+        onContextMenu={
+          onRowMenu
+            ? (e) => {
+                e.preventDefault();
+                onRowMenu(pane, { x: e.clientX, y: e.clientY, keyboard: false, trigger: e.currentTarget });
+              }
+            : undefined
+        }
         className={`rounded-lg tech-transition flex items-center justify-center p-2.5 relative ${
           active
             ? "bg-primary/15 text-primary"
@@ -714,14 +808,21 @@ export function NavLink({
     );
   }
 
-  return (
-    <>
+  const link = (
       <Link
         key={pane.href}
         href={pane.href}
         onClick={onNavigate}
+        onContextMenu={
+          onRowMenu
+            ? (e) => {
+                e.preventDefault();
+                onRowMenu(pane, { x: e.clientX, y: e.clientY, keyboard: false, trigger: e.currentTarget });
+              }
+            : undefined
+        }
         title={shellNav ? purpose : undefined}
-        className={`rounded-lg tech-transition px-3 py-2 text-sm ${
+        className={`rounded-lg tech-transition px-3 py-2 text-sm ${onRowMenu ? "w-full pr-9" : ""} ${
           active
             ? "bg-primary/15 text-primary"
             : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
@@ -736,6 +837,35 @@ export function NavLink({
           <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>
         )}
       </Link>
+  );
+
+  return (
+    <>
+      {onRowMenu ? (
+        // `group` lets hover, or keyboard focus anywhere in the row, show the
+        // "···" (`reveal-on-hover`, `rail-row-actions` in globals.css). The
+        // button takes no click at rest, so it never swallows the link's.
+        <div className="group relative flex items-center">
+          {link}
+          <span className="reveal-on-hover rail-row-actions absolute right-1.5 top-1/2 -translate-y-1/2">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="MoreHorizontal"
+              aria-label={`More for ${pane.label}`}
+              aria-haspopup="menu"
+              title="More"
+              data-row-more=""
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                onRowMenu(pane, { x: r.left, y: r.bottom + 4, keyboard: e.detail === 0, trigger: e.currentTarget });
+              }}
+            />
+          </span>
+        </div>
+      ) : (
+        link
+      )}
       {pinnedApps && pinnedApps.length > 0 && (
         <div className="flex flex-col gap-0.5 ml-[26px] mt-0.5 mb-1">
           {pinnedApps.map((a) => {

@@ -44,11 +44,18 @@ export function ContextMenu({
   y,
   items,
   onClose,
+  autoFocus = false,
 }: {
   x: number;
   y: number;
   items: CtxItem[];
   onClose: () => void;
+  /**
+   * Move the focus to the first item when the menu opens. A menu opened from
+   * the keyboard (a "···" button) needs it, or Tab walks the page behind it.
+   * Escape still closes it, and the caller puts the focus back.
+   */
+  autoFocus?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
@@ -68,6 +75,10 @@ export function ContextMenu({
     }
     setPos({ x: nx, y: ny });
   }, [x, y]);
+
+  useEffect(() => {
+    if (autoFocus) ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [autoFocus]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

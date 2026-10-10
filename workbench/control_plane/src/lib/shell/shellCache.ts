@@ -85,12 +85,20 @@ export function shellAccountPrefix(email: string): string {
 
 /** Remove the layouts of these emails, in every organization. Never throws. */
 export function clearCachedLayouts(emails: readonly string[]): void {
+  clearAccountKeys(SHELL_CACHE_PREFIX, emails);
+}
+
+/**
+ * Remove every `<prefix><email>|<org>` key of these emails. Never throws.
+ * The shell layout and the sidebar folds (`sidebarFolds.ts`) share it.
+ */
+export function clearAccountKeys(prefix: string, emails: readonly string[]): void {
   const store = storage();
   if (!store) return;
   try {
     const prefixes = [...new Set(emails.flatMap((e) => [e, e.toLowerCase()]))]
       .filter(Boolean)
-      .map(shellAccountPrefix);
+      .map((e) => `${prefix}${e}|`);
     const doomed: string[] = [];
     for (let i = 0; i < store.length; i++) {
       const k = store.key(i);
