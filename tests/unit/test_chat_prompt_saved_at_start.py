@@ -29,6 +29,8 @@ Mutations this suite catches (R7):
   answer to a steer;
 * the seam's kind check removed: a browser id that names an AGENT row
   rewrites that reply as the member's turn;
+* the run cap's refusal moved below the save point (WS-51 D-3): the cap
+  case finds the refused turn in Postgres;
 * the save moved in front of the supersede: no failure, because the keep
   list protects the new turn. That order is a choice, not a fence.
 
