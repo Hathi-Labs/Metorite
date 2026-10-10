@@ -293,6 +293,33 @@ run. The two that lived led to two new tests:
 - A resend that did not move the row lived. A test of two answers that race
   now kills it.
 
+**Review of #813 (2026-10-10).** One fix round closed two P1 findings and
+three P2 findings:
+
+- **The park pops the Future.** It removes the Future from
+  `_pending_user_input` before it cancels the run. Before, ask_questions
+  path A and the B1 bridge kept an orphan Future, and a late answer got 200
+  and started nothing.
+- **No answer is lost.** The park checks the Future again after each await.
+  An answer that came in during the park moves the row to `answered`, and
+  the run goes on. `resolve_user_input` now sets the result at once on its
+  own loop, so the check sees it.
+- **Only the asked member.** `/chat/pending-asks` and a late answer read
+  only the caller's own rows (`actor_email`). A thread with no chat row
+  passes the room gate for any member of the org.
+- **A deleted chat asks nothing.** The chat delete closes its rows in the
+  same tenant transaction. `/chat/active-sessions` lists a question with no
+  live run only when its chat row exists.
+- **The question is data.** `compose_card_answer` puts the question in a
+  fenced block and breaks a fence marker, a platform tag or a forged "My
+  answer:" inside it. The member's answer stays outside the block.
+- **The chat asks only when the thread waits.** With the flag off the
+  server never says `needs_input`, so the chat sends no pending-asks
+  request.
+
+Five more mutants, five killed: the Future left in place, no check after
+the move, the actor filter removed twice, and no neutralising pass.
+
 **Known limits.**
 
 - A blocking generative UI is not drawn again from the server. The saved
