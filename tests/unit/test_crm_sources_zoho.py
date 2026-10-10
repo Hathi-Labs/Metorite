@@ -782,6 +782,34 @@ async def test_users_become_source_records() -> None:
     assert fake.requests[0].url.params["type"] == "AllUsers"
 
 
+def users_page(*ids: str, more: bool) -> httpx.Response:
+    return ok({"users": [{"id": i} for i in ids], "info": {"more_records": more}})
+
+
+async def test_users_read_every_page(leaks: list[str]) -> None:
+    fake = Fake([users_page("u1", "u2", more=True), users_page("u3", more=False)])
+    source = fake.source()
+    users = await source.list_users()
+    assert [u.ext_id for u in users] == ["u1", "u2", "u3"]
+    assert [r.url.params["page"] for r in fake.requests] == ["1", "2"]
+    assert all(r.url.params["per_page"] == "200" for r in fake.requests)
+    assert source.credits_used == 2
+
+
+async def test_users_stop_on_an_empty_page() -> None:
+    fake = Fake([users_page("u1", more=True), users_page(more=True)])
+    users = await fake.source().list_users()
+    assert [u.ext_id for u in users] == ["u1"]
+    assert len(fake.requests) == 2
+
+
+async def test_users_paging_stops_at_the_budget() -> None:
+    fake = Fake([users_page("u1", more=True), users_page("u2", more=False)])
+    with pytest.raises(BudgetExhausted):
+        await fake.source(credit_budget=1).list_users()
+    assert len(fake.requests) == 1
+
+
 # ── The seam ────────────────────────────────────────────────────────────────
 
 

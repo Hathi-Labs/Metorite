@@ -537,12 +537,30 @@ class ZohoSource:
     # ── 6. Users ────────────────────────────────────────────────────────────
 
     async def list_users(self) -> list[SourceRecord]:
+        """Every user, page by page (``per_page=200``) until ``more_records`` ends.
+
+        Each page is one call, so the credit budget can stop the read. Then
+        :class:`BudgetExhausted` is raised and no part list is returned.
+        """
         path = f"/crm/{RECORDS_API_VERSION}/users"
-        r = await self._get(path, params={"type": "AllUsers"})
-        if r.status_code in (204, 304):
-            return []
-        self._raise_for_status(r, path)
-        return list(_records("user", _error_body(r).get("users"), "Modified_Time"))
+        out: list[SourceRecord] = []
+        page = 1
+        while True:
+            r = await self._get(
+                path,
+                params={"type": "AllUsers", "page": page, "per_page": PER_PAGE},
+            )
+            if r.status_code in (204, 304):
+                break
+            self._raise_for_status(r, path)
+            body = _error_body(r)
+            rows = body.get("users")
+            out.extend(_records("user", rows, "Modified_Time"))
+            info = body.get("info") or {}
+            if not isinstance(info, dict) or not info.get("more_records") or not rows:
+                break
+            page += 1
+        return out
 
     # ── 3. Field definitions and pipelines ──────────────────────────────────
 
