@@ -75,8 +75,8 @@ function calendarRows() {
   ];
 }
 
-async function setup(page: Page) {
-  await page.addInitScript(() => {
+async function setup(page: Page, opts: { chatName?: string; memberName?: string } = {}) {
+  await page.addInitScript((chatName: string) => {
     localStorage.setItem("cc-shell-bar", "1");
     localStorage.setItem("cc-shell-nav", "1");
     localStorage.setItem("cc-my-day", "1");
@@ -85,9 +85,9 @@ async function setup(page: Page) {
     const now = new Date().toISOString();
     localStorage.setItem(
       "cc-chat::admin@example.com|org1::sessions",
-      JSON.stringify([{ id: "s1", name: "Supplier follow-up", agentName: "assistant", createdAt: now, updatedAt: now, messageCount: 0 }]),
+      JSON.stringify([{ id: "s1", name: chatName, agentName: "assistant", createdAt: now, updatedAt: now, messageCount: 0 }]),
     );
-  });
+  }, opts.chatName ?? "Supplier follow-up");
   const rows = calendarRows();
   await stubApi(
     page,
@@ -103,7 +103,7 @@ async function setup(page: Page) {
       "people/facets": { departments: [], teams: [], statuses: [] },
       "actions/pending": [],
       "admin/members/requests": [],
-      "example/access": MEMBER_ACCESS,
+      "example/access": opts.memberName ? { ...MEMBER_ACCESS, display_name: opts.memberName } : MEMBER_ACCESS,
       "admin/members": [],
       "admin/roles": [],
       "admin/groups": [],
@@ -186,6 +186,10 @@ test.describe("one title bar and one h1 on every page", () => {
     // Each phone bar is the compact one.
     await page.goto("/settings/organization");
     await expect(page.locator('[data-app-bar="compact"]')).toBeVisible();
+    // The Email inbox's heading names the folder, and its mailbox mark is
+    // not part of the name: "Inbox", never "AInbox" (round 3).
+    await page.goto("/email");
+    await expect(page.getByRole("heading", { level: 1, name: "Inbox", exact: true })).toBeVisible();
     await ctx.close();
   });
 });
@@ -250,3 +254,61 @@ test.describe("at 1024 with the sidebar open, nothing leaves the bar", () => {
     });
   }
 });
+
+/**
+ * A long name never splits the left group (round 3). Measured before the
+ * fix: Chat with a long conversation at 900px put the rail toggle alone on
+ * line 1 and the h1 on line 2, and the member page drew three rows (back
+ * arrow / name / Save).
+ */
+const LONG_CHAT =
+  "Supplier follow-up on the March shipment, the customs paperwork, the revised delivery schedule and the second quote from the freight forwarder";
+const LONG_MEMBER = "Priyadarshini Venkataraghavan Subramanian-Ramachandran (Firmware and Embedded Systems)";
+
+async function leftGroup(page: Page) {
+  return page.locator('[data-app-bar="desktop"]').evaluate((bar) => {
+    const group = bar.querySelector("[data-app-bar-name]")!;
+    const lead = group.querySelector("button, a")!.getBoundingClientRect();
+    const h1 = group.querySelector("h1")!;
+    const sub = h1.nextElementSibling as HTMLElement | null;
+    const mid = (r: DOMRect) => r.top + r.height / 2;
+    return {
+      leadMid: mid(lead),
+      h1Mid: mid(h1.getBoundingClientRect()),
+      h1Cut: h1.scrollWidth > h1.clientWidth + 1,
+      subCut: sub ? sub.scrollWidth > sub.clientWidth + 1 : null,
+    };
+  });
+}
+
+for (const width of [900, 1024]) {
+  test.describe(`a long name at ${width}`, () => {
+    test.use({ viewport: { width, height: 768 } });
+
+    test("Chat: the rail toggle and the name share one row, and the scope line gives way", async ({ page }) => {
+      await setup(page, { chatName: LONG_CHAT });
+      await page.goto("/chat");
+      await expect(page.locator('[data-app-bar="desktop"]').getByRole("heading", { level: 1, name: "Chat" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Hide conversations" })).toBeVisible();
+      const g = await leftGroup(page);
+      expect(Math.abs(g.leadMid - g.h1Mid), "the toggle and the h1 on one row").toBeLessThan(4);
+      expect(g.subCut, "the conversation name truncates").toBe(true);
+      expect(g.h1Cut, "the app's name stays whole").toBe(false);
+      expect((await barFits(page, width)).problems).toEqual([]);
+    });
+
+    test("a member page: the way back and the name share one row, the subtitle gives way first", async ({ page }) => {
+      await setup(page, { memberName: LONG_MEMBER });
+      await page.goto("/settings/members/priya%40acme.example");
+      const bar = page.locator('[data-app-bar="desktop"]');
+      await expect(bar.getByRole("heading", { level: 1, name: LONG_MEMBER })).toBeVisible();
+      await expect(bar.getByRole("link", { name: "Back to Organisation" })).toBeVisible();
+      const g = await leftGroup(page);
+      expect(Math.abs(g.leadMid - g.h1Mid), "the back link and the h1 on one row").toBeLessThan(4);
+      // The order of giving way: a cut name implies a cut subtitle.
+      expect(g.subCut, "the subtitle truncates").toBe(true);
+      if (g.h1Cut) expect(g.subCut).toBe(true);
+      expect((await barFits(page, width)).problems).toEqual([]);
+    });
+  });
+}

@@ -170,9 +170,11 @@ export default function BillingPage() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* The page's title bar (owner, 2026-10-10). */}
+      {/* The page's title bar (owner, 2026-10-10). Its way back leads to
+          Organisation, where an admin manages seats. `/settings` only
+          redirects to a page that no longer exists (round 3). */}
       <AppTopBar
-        back={{ href: "/settings", label: "Back to settings" }}
+        back={{ href: "/settings/organization", label: "Back to Organisation" }}
         title="Billing"
         subtitle="AI credits, subscription and bills"
       />

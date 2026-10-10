@@ -196,6 +196,20 @@ describe("(b) every live pane opens with AppTopBar", () => {
     expect(imports("app/page.tsx", MY_DAY_HOME)).toBe(true);
   });
 
+  it("the browser census visits every page this table names, and no other", () => {
+    // R7 (round 3): `AGENTS.md` rule 11 says a new pane joins `PAGES` in
+    // `e2e/app-title-bar.spec.ts`. This holds the two lists to one set, so a
+    // live pane missing from the census fails here.
+    const spec = readFileSync(join(SRC, "..", "e2e", "app-title-bar.spec.ts"), "utf8");
+    const block = spec.slice(spec.indexOf("const PAGES"), spec.indexOf("];", spec.indexOf("const PAGES")));
+    const visited = [...block.matchAll(/\[\s*"[^"]+",\s*"([^"]+)"\s*\]/g)].map((m) => m[1]);
+    expect(visited.length, "the census list was not found").toBeGreaterThan(10);
+    // A dynamic route is visited at one concrete path: `[email]` → any value.
+    const asRoute = (path: string) => path.replace(/^\/settings\/members\/[^/]+$/, "/settings/members/[email]");
+    const want = [...Object.keys(APP_BAR_HOME), ...Object.keys(SUB_PAGE_HOME), "/"].sort();
+    expect(visited.map(asRoute).sort()).toEqual(want);
+  });
+
   it("no live pane draws a hand-rolled title row beside the bar", () => {
     // The shapes the bar replaced: Calendar's own h1, Approvals' text-lg
     // h1, Email's folder h1 and the WhatsApp rail's name. A pane under the

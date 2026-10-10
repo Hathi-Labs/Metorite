@@ -1096,13 +1096,17 @@ export default function EmailPage() {
                 }}
                 className="inline-flex max-w-full items-center gap-2 align-middle hover:opacity-80 transition-opacity"
               >
-                {viewAll ? (
-                  <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
-                    <AppIcon name="Inbox" size={12} />
-                  </span>
-                ) : selectedAccount ? (
-                  <MailboxAvatar account={selectedAccount} />
-                ) : null}
+                {/* `aria-hidden`: the mark is decoration, so the heading
+                    reads "Inbox", never "AInbox" (round 3). */}
+                <span aria-hidden data-mailbox-mark className="flex shrink-0">
+                  {viewAll ? (
+                    <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground">
+                      <AppIcon name="Inbox" size={12} />
+                    </span>
+                  ) : selectedAccount ? (
+                    <MailboxAvatar account={selectedAccount} />
+                  ) : null}
+                </span>
                 <span className="truncate">{folderLabel(selectedFolder)}</span>
               </button>
             }

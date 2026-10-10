@@ -163,24 +163,30 @@ export function AppTopBar({
       data-app-bar="desktop"
       className="flex min-h-10 min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-card px-2 py-1"
     >
-      {back ? <BackLink back={back} /> : null}
-      {rail ? (
-        <>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            selected={rail.open}
-            icon={rail.open ? "PanelLeftClose" : "PanelLeftOpen"}
-            aria-label={railLabel(rail)}
-            title={railLabel(rail)}
-            onClick={rail.onToggle}
-          />
-          <div className="h-4 w-px shrink-0 bg-border" aria-hidden />
-        </>
-      ) : null}
-      <div data-app-bar-name className="flex min-w-0 items-center gap-2 pl-1">
+      {/* ⚠️ The LEFT group is ONE flex item that never wraps (round 3): the
+          way back or the rail toggle, the divider, the icon and the name.
+          So the toggle and the name never land on two lines. When the group
+          has no room, it shrinks: the scope line first, then the name. Only
+          the actions and the tools wrap to a second line. */}
+      <div data-app-bar-name className="flex min-w-0 flex-nowrap items-center gap-2">
+        {back ? <BackLink back={back} /> : null}
+        {rail ? (
+          <>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              selected={rail.open}
+              icon={rail.open ? "PanelLeftClose" : "PanelLeftOpen"}
+              aria-label={railLabel(rail)}
+              title={railLabel(rail)}
+              onClick={rail.onToggle}
+              className="shrink-0"
+            />
+            <div className="h-4 w-px shrink-0 bg-border" aria-hidden />
+          </>
+        ) : null}
         {glyph ? (
-          <Icon name={glyph} size={15} className="shrink-0 text-muted-foreground" />
+          <Icon name={glyph} size={15} className="ml-1 shrink-0 text-muted-foreground" />
         ) : null}
         {name}
       </div>

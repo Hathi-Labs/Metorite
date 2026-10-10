@@ -21,7 +21,8 @@ is on in production.
 
 Review round 2 added four rules to §3.1. The bar wraps,
 and a phone draws the compact bar. Chat on a phone has none, and the Settings
-sub-pages take the bar.
+sub-pages take the bar. Round 3 added a fifth: only the actions and the tools
+wrap, so a long name never parts the rail toggle from the name.
 
 NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
 `NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
@@ -162,7 +163,7 @@ its own header under it when it titles a pane, as Email's list does with
 "Inbox" and its filter. That header is an `<h2>`, and it never repeats the
 bar's toggle or tools. `DESIGN_SYSTEM.md` §6a holds the shape.
 
-Four more rules, from the review of 2026-10-10:
+Five more rules, from the review of 2026-10-10:
 
 - **The row wraps when it runs out of room.** The tools go to a second line at
   the right end, so no control leaves the screen. The subtitle gives way
@@ -170,6 +171,9 @@ Four more rules, from the review of 2026-10-10:
   a control. A "More" menu was the other choice, and it lost: the tools carry
   their own anchored popovers, and `src/components/ui/` has no menu to hold
   them.
+- **Only the actions and the tools wrap.** The left group is one item that
+  never wraps: the rail toggle or the way back, the icon and the name. So a
+  long name never parts the toggle from the name (round 3).
 - **On a phone the app bar is the compact one,** with the subtitle muted after
   the name. My Day, People, My Profile, WhatsApp, the Email inbox and its
   scenes all draw it.
@@ -177,12 +181,13 @@ Four more rules, from the review of 2026-10-10:
   the agent and Share, and the Chats tab names the app. A bar above that row
   stacks a third row on the smallest screen. It had no `<h1>` before either.
 - **A Settings sub-page opens with the bar too.** Teams, Roles, Billing and a
-  member's page each carry a `back` link at the left end, to Organisation or
-  to Settings.
+  member's page each carry a `back` link at the left end, to Organisation.
 
 Fences: `src/lib/shell/appBar.test.ts` (source) and
-`e2e/app-title-bar.spec.ts` (one `<h1>` and one bar on each page at 1440 and
-390, and the bar at 1024, 960 and 800).
+`e2e/app-title-bar.spec.ts`. The e2e counts one `<h1>` and one bar on each
+page at 1440 and 390. It checks Calendar at 1024, 960 and 800, and Email and
+Projects at 1024. It checks a long name in Chat and on a member page at 900
+and 1024.
 
 **This reverses NS-1's merged row.** From 2026-10-08 to 2026-10-10,
 `AppTopBar` portalled its contents into slots in this bar, and a page with no

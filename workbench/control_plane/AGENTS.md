@@ -356,12 +356,15 @@ Seven rules on top of the three above. Each one exists because it was broken:
    `AppTopBar`. It fails on an app name in the shell bar's markup.
    `e2e/app-title-bar.spec.ts` opens each live pane, My Day and the four
    Settings sub-pages at 1440 and at 390. It fails unless each page shows one
-   `<h1>` and one app bar. At 1024, 960 and 800 it fails on a bar control
-   out of the window or under the name. Chat on a phone is
-   the one named exception, with its reason in the spec.
+   `<h1>` and one app bar. Chat on a phone is the one named exception, with
+   its reason in the spec. The same spec fails on a bar control out of the
+   window or under the name. It checks Calendar at 1024, 960 and 800, and
+   Email and Projects at 1024. At 900 and 1024, a long name must not part
+   the rail toggle or the way back from the name.
    `src/components/pageHeading.test.ts` holds `PageHeader` and
    `SettingsHeader` to an `<h2>`. Add a new live pane to `APP_BAR_HOME` in
    `appBar.test.ts` and to `PAGES` in the e2e, in the same PR.
+   `appBar.test.ts` fails when the two lists differ.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that
