@@ -1011,3 +1011,60 @@ async def test_a_retry_history_leaves_out_a_newer_texts_turn_and_answer(
                  if c["payload"]["message"] == "Older")
     assert retry["payload"]["messages"] == [], (
         "the retry saw a newer text's turn or answer")
+
+
+async def test_neither_the_stale_read_nor_the_stale_claim_takes_a_sending_row(
+    bot,
+) -> None:
+    """Each guard by itself, behind the sweep's unconfirmed close."""
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    req = await _recorded(bot, email=email, phone=phone, body="In flight")
+    with p.admin_engine.begin() as c:
+        c.execute(text(f"UPDATE {_TABLE} SET state = 'sending', tries = 1, "
+                       "updated_at = now() - interval '10 minutes' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": req.message_id})
+    b = bot.bot_run
+
+    async def _read():
+        from acb_common.db import bind_tenant, release_tenant
+
+        token = bind_tenant(p.org_a)
+        try:
+            async with b.tenant_session() as db:
+                rows = (await db.execute(text(b._STALE_SQL), {
+                    "max": b.MAX_TRIES, "stale": b.STALE_S,
+                    "expire": b.EXPIRE_S, "n": 1000,
+                })).mappings().all()
+            claimed = await b._claim(req.message_id, stale=True)
+            return [str(r["id"]) for r in rows], claimed
+        finally:
+            release_tenant(token)
+
+    ids, claimed = await _in_scope(bot, _read)
+    assert req.message_id not in ids, "the stale read took a sending row"
+    assert claimed is None, "the stale claim took a sending row"
+    assert _state(bot, req.message_id).state == "sending"
+
+
+async def test_the_sweep_starts_nothing_for_a_thread_a_drain_holds(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    req = await _recorded(bot, email=email, phone=phone, body="Held")
+    _age(bot, req.message_id, updated="10 minutes")
+    started: list[str] = []
+    monkeypatch.setattr(bot.bot_run, "start",
+                        lambda r, *, stale=False: started.append(r.message_id))
+    monkeypatch.setitem(bot.bot_run._RUN_LOCKS, req.chat_session_id,
+                        asyncio.Lock())
+    await _in_scope(bot, bot.bot_run.sweep_once)
+    assert req.message_id not in started, "the sweep queued a held thread"
+    monkeypatch.delitem(bot.bot_run._RUN_LOCKS, req.chat_session_id)
+    await _in_scope(bot, bot.bot_run.sweep_once)
+    assert req.message_id in started
