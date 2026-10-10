@@ -502,7 +502,7 @@ export function InboxView() {
               onOpenChange={setChipOpen}
               query={hashQuery}
               areas={areas}
-              tree={tree}
+              roots={roots}
               projects={projects}
               onCreateArea={createArea}
             />

@@ -28,17 +28,17 @@
  * is clean rather than drawing three empty tables.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { IncludeSubtasksBox } from "@/components/SubtaskCascade";
 import { CASCADE_DEFAULTS } from "@/lib/subtaskCascade";
-import SelectButton from "@/components/ui/SelectButton";
 
 import type { FieldDef } from "../lib/customFields";
 import { destinations, nameOf } from "../lib/destinations";
 import { readPlan } from "../lib/movePlan";
+import { type PickerNode, pathLabel, pickerNodes } from "../lib/pickerTree";
 import type { ProjectNode } from "../lib/tree";
 import {
   MoveLosses,
@@ -49,6 +49,7 @@ import {
   type PromoteFieldsState,
   useMovePreview,
 } from "./PromoteFields";
+import { NodeIcon, ProjectPicker } from "./ProjectPicker";
 
 /**
  * S6c — what the promote door answers on top of the destination. The type
@@ -112,6 +113,9 @@ export function MoveTasksDialog({
   promote,
 }: Props) {
   const [destination, setDestination] = useState<string | null>(initialDestination ?? null);
+  // The list is open until a pick, and again on "Change".
+  const [picking, setPicking] = useState(!initialDestination);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   // S6g — the promote door's answers come up from `PromoteFields`, the one
   // component Clarify draws too.
@@ -161,6 +165,7 @@ export function MoveTasksDialog({
       }
       icon="FolderInput"
       size="md"
+      initialFocus={picking ? searchRef : undefined}
       description={
         promote
           ? `${PROMOTE_HINT} Statuses and fields are mapped into the project's own vocabulary.`
@@ -168,34 +173,35 @@ export function MoveTasksDialog({
       }
     >
       <div className="space-y-3 p-3 text-xs">
-        <label className="block space-y-1">
+        <div className="space-y-1">
           <span className="text-muted-foreground">Move to</span>
-          {/* ⚠️ `SelectButton`, NOT the `Select` primitive (owner, 2026-09-20).
-              `Select` is a native `<select>`, and the open list is drawn by the
-              operating system. The tree survives the move: `depth` indents
-              each row, and a folder stays in the list, disabled, because it
-              explains the indent of the project beneath it. */}
-          <SelectButton
-            label="Move to"
-            widthClass="w-full"
-            value={destination ?? ""}
-            onChange={(next) => {
-              setDestination(next || null);
-              setOverrides({});
-              setAnswers(null);
-            }}
-            options={[
-              { value: "", label: "Pick a project…" },
-              ...destRows.map(({ node, depth, legal }) => ({
-                value: node.id,
-                label: node.name,
-                depth,
-                disabled: !legal,
-                hint: legal ? undefined : "a folder holds projects, not tasks",
-              })),
-            ]}
-          />
-        </label>
+          {/* ⚠️ `ProjectPicker`, inline (owner, 2026-10-10). It replaced a
+              `SelectButton` that opened every node of every space as one list.
+              It is drawn IN the dialog, not hung from a trigger: a portalled
+              list sits outside the Modal's focus trap, and its search box
+              then loses the caret. After a pick it folds to the breadcrumb,
+              so the mapping below it has the room. */}
+          {picking || !destination ? (
+            <ProjectPicker
+              roots={roots}
+              value={destination}
+              inputRef={searchRef}
+              label="Move to"
+              onPick={(next) => {
+                setDestination(next);
+                setOverrides({});
+                setAnswers(null);
+                setPicking(false);
+              }}
+            />
+          ) : (
+            <PickedProject
+              picked={pickerNodes(roots).find((n) => n.id === destination) ?? null}
+              disabled={busy}
+              onChange={() => setPicking(true)}
+            />
+          )}
+        </div>
 
         {promote ? (
           /* S6g — the one set of promote questions, shared with Clarify. */
@@ -305,6 +311,32 @@ export function MoveTasksDialog({
         </Button>
       </div>
     </Modal>
+  );
+}
+
+/** The picked destination, folded to its breadcrumb, with a way back to the list. */
+function PickedProject({
+  picked,
+  disabled,
+  onChange,
+}: {
+  picked: PickerNode | null;
+  disabled?: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-2.5 py-1.5">
+      {picked ? <NodeIcon node={picked} /> : null}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate font-medium text-foreground">{picked?.name ?? "A project"}</span>
+        {picked && picked.path.length > 0 ? (
+          <span className="truncate text-[10px] text-muted-foreground">{pathLabel(picked.path)}</span>
+        ) : null}
+      </span>
+      <Button variant="ghost" size="sm" onClick={onChange} disabled={disabled}>
+        Change
+      </Button>
+    </div>
   );
 }
 
