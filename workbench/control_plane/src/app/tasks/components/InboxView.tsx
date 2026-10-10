@@ -437,6 +437,9 @@ export function InboxView() {
     setValue(next);
     // `#` at the start of a word opens the picker, filtered by what follows.
     if (openHashQuery(next) !== null) setChipOpen(true);
+    // Deleting the `#` closes the picker it opened. Left open, the picker
+    // would draw its own search box, and that box takes the caret.
+    else if (hashQuery !== null) setChipOpen(false);
   };
   const pickDest = (dest: CaptureDestination | null) => {
     setCaptureDest(dest);
@@ -502,7 +505,7 @@ export function InboxView() {
               onOpenChange={setChipOpen}
               query={hashQuery}
               areas={areas}
-              tree={tree}
+              roots={roots}
               projects={projects}
               onCreateArea={createArea}
             />

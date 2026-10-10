@@ -155,22 +155,11 @@ async function moveFirstCardAway(page: import("@playwright/test").Page) {
   await card.hover();
   await card.getByRole("button", { name: /Select/i }).click();
   await page.getByRole("button", { name: /Move to project/ }).first().click();
-  // The picker is portalled to `document.body` (AnchoredPanel), so it is not
-  // inside the dialog in the DOM even though it is drawn over it.
-  await page.getByText("Pick a project", { exact: false }).first().click();
-  const options = page.locator('[role="option"]');
-  let destination = null;
-  for (let i = 0; i < (await options.count()); i += 1) {
-    if (await options.nth(i).isEnabled()) {
-      const label = (await options.nth(i).innerText()).trim();
-      if (label && !label.startsWith("Pick")) { destination = options.nth(i); break; }
-    }
-  }
-  if (!destination) throw new Error("the picker offered no destination");
-  await destination.click();
-  // ⚠️ The portalled list is drawn OVER the dialog's own buttons. Clicking
-  // "Move" while it is still mounted hits the listbox instead.
-  await page.locator('[role="listbox"]').waitFor({ state: "detached", timeout: 10_000 });
+  // The picker is `ProjectPicker`, drawn INLINE in the dialog (owner,
+  // 2026-10-10): a search box over the tree. A pick folds it to a breadcrumb.
+  await page.getByRole("combobox", { name: /Move to/ }).fill("Firmware");
+  await page.getByRole("treeitem", { name: /Firmware/ }).first().click();
+  await expect(page.getByRole("button", { name: "Change", exact: true })).toBeVisible();
   const confirm = page.getByRole("button", { name: "Move", exact: true }).last();
   await expect(confirm).toBeEnabled({ timeout: 10_000 });
   await confirm.click();

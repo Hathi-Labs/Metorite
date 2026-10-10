@@ -101,7 +101,7 @@ describe("the quarantine register", () => {
     expect(gated.length).toBeGreaterThanOrEqual(8);
     for (const must of [
       "projects-card-strip.spec.ts",
-      "projects-select-portal.spec.ts",
+      "projects-move-picker.spec.ts",
       "projects-stale-after-write.spec.ts",
       "projects-timeline-autoscroll.spec.ts",
       "toast.spec.ts",

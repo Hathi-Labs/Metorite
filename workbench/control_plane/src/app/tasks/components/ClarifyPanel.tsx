@@ -1376,7 +1376,7 @@ export function ClarifyPanel({
                           suggestedId={proposal.projectId}
                           onChange={setProjectId}
                           onCreateArea={createArea}
-                          tree={tree}
+                          roots={roots}
                         />
                       )}
                       {promoting && projectId && (
