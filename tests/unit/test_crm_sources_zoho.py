@@ -375,6 +375,9 @@ async def read_all(
     while step is not None:
         page = await source.list_changed("deal", step)
         got.extend(r.ext_id for r in page.records)
+        # A cursor that does not move would loop for ever. Fail instead.
+        assert page.next_cursor != step, f"the cursor did not advance: {step}"
+        assert n < 50, "the read did not end"
         step = page.next_cursor
         n += 1
         if after_page is not None:
