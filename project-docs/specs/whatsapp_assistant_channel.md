@@ -830,8 +830,9 @@ things for each agent of the run:
 
 1. **It strips the web DELIVERY tools, and only those.** The tools of
    `whatsapp_ui.WITHHELD_TOOLS` leave the scope, the final list and each
-   agent's own tools. Each one is about HOW an answer reaches the web chat: a
-   card, the todo panel, a file card, an upload, or the web design kits. The
+   agent's own tools. Each one is about HOW an answer reaches the web chat.
+   The list holds web cards, the todo panel, file cards, uploads and the web
+   design kits. The
    web prompt blocks leave too: the generative UI directive and the output
    discipline block.
    ⚠️ **The rule (owner, 2026-10-10):** the channel changes delivery, never
