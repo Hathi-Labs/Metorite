@@ -1555,6 +1555,9 @@ closes the value part of P3 (§0) for `acb-backup.service` and
   `backup_offbox.sh`, `offbox_lib.sh`, `health-watchdog.sh`,
   `bh2_rollback.sh` and `root_env.sh`. The name list sits beside them as
   `root_env_names.txt`.
+- **Builder note (N3).** The repo holds the builder at `scripts/root_env.sh`.
+  `root_lib_files.txt` lists it, so the sync copies it flat to
+  `/usr/local/lib/acb/root_env.sh`.
 - The compose tree keeps its relative layout: `infra/docker-compose.yml`,
   `infra/postgres/00_create_databases.sql`,
   `infra/postgres/01_schema.sql` and `apps/services/meeting_bot/`. The
@@ -1719,8 +1722,12 @@ limit what a hostile value can do.
 - A root run from the checkout path stops with exit 2, as a root run from
   any other place does today.
 - The `.env` guard at `:1117` keeps its two literal acb-writable paths,
-  `$APP_DIR/.env` and the Console `.env`. It stops reading `$ENV_FILE`,
-  because root.env can never hold a `BACKUP_` name.
+  `$APP_DIR/.env` and the Console `.env`. It stops reading `$ENV_FILE`.
+- root.env does hold `BACKUP_` names: `BACKUP_VERIFY_IMAGE`,
+  `BACKUP_VERIFY_MEMORY`, `BACKUP_FILE_DIRS` and
+  `BACKUP_MEETING_BOT_VOLUME`. The guard matches only
+  `BACKUP_(S3_|GPG_|OFFBOX_ENV_FILE)`. No name of that shape is on the list,
+  so no such name can reach root.env.
 - **The second caller.** `apply_migrations.sh:201` and `:209` run
   `$APP_DIR/scripts/backup_db.sh` as `acb`, before the migrations. That path
   does not change. A run as `acb` is not a root run (`backup_db.sh:147`). So
@@ -1744,6 +1751,9 @@ limit what a hostile value can do.
   `deploy.sh:65` runs `source /opt/acb/app/.env` today. BH-6 removes that
   line. A script reads a named key with `grep`, as `vps_apply.sh:718-721`
   does.
+- **Builder note (N4).** `deploy.sh` stops with a clear message when
+  `/usr/local/lib/acb/deployed_sha` is missing. The message says that no
+  root copy is on the box, and that the next run of `vps_apply.sh` makes it.
 - The hint at `vps_apply.sh:2034` names the new `logs` command.
 
 **The order in `vps_apply.sh` (B1, C2).** The current shape:
@@ -1843,11 +1853,10 @@ own PR. Read each anchor again at dispatch.
 | `test_backup_env_values.py` | 65-75, 260-266, 276-283, 957, 988, 1002 | the layout `$R/opt/acb/app/scripts`, and its refusal message | the layout `$R/usr/local/lib/acb`, with `ENV_FILE` at `$R/etc/acb/root.env` |
 | `test_backup_env_values.py` | 804-810 | the scan finds `acb-backup.service` as a root unit that loads the app env | the scan finds no unit. Assert an empty list, and pin the `UnsetEnvironment=` block by unit name |
 | `test_bh2_strict_check.py` | 548-558 | the watchdog finds `../../scripts/bh2_rollback.sh` | keep it for the checkout. Add a test that the unit sets `BH2_ROLLBACK_SCRIPT` under `/usr/local/lib/acb` |
+| `test_secrets_drop.py` | 405-416 | the `app-env` entry restarts the gateway and the bridge, which load `.env` | keep that check, because both are `acb` units. Add the BH-F4 test: an entry with `rebuild_root_env` calls the `rootenv` verb, and the verb runs only `/usr/local/lib/acb/root_env.sh` |
 
 These tests stay as they are, and BH-6 keeps them green:
 
-- `test_secrets_drop.py:405-416`. The gateway and the bridge load `.env`,
-  and both are `acb` units.
 - `test_unit_hardening.py:851-852`. `NEVER_WRITABLE` holds `.git`, and B8
   rests on that fact.
 - `test_backup_deploy_wiring.py:1759-1785`. The off-box tool list does not
@@ -1891,6 +1900,8 @@ These tests stay as they are, and BH-6 keeps them green:
     runs the pre-migration backup as `acb`, and that backup passes.
 11. `sudo cat /usr/local/lib/acb/deployed_sha` gives the sha that the
     deploy recorded.
+12. **The secrets push (B9).** A push of `app-env` runs `rootenv` on the
+    box, and a failed `rootenv` is a WARN.
 
 **Verification.** pr-check runs `tests/unit/` on `ubuntu-latest`. Before the
 PR, run the BH-6 suites on Linux in Docker, as a user that is not root. On
@@ -1958,6 +1969,9 @@ ssh metorite 'systemctl list-timers acb-backup.timer acb-health-watchdog.timer -
   `app_commit` from `deployed_sha`.
 - A run as `acb` of the checkout copy reads `$APP_DIR/.env`, and it needs no
   `/etc/acb/root.env` (B4).
+- In `tests/unit/test_secrets_drop.py`: an entry with `rebuild_root_env`
+  calls the `rootenv` verb, and the verb runs only
+  `/usr/local/lib/acb/root_env.sh`.
 - `status` of the flat `bh2_rollback.sh` gives the same exit codes as the
   checkout copy.
 
