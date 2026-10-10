@@ -39,6 +39,12 @@ async function stub(page: Page, branding: unknown = NO_LOGO) {
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/health", (r) => json(r, { gateway: "up" }));
   await page.route("**/api/auth/me", (r) => json(r, MEMBER));
+  // A signed-in session, so the account row and the drawer's account block
+  // draw (`account-switcher.spec.ts` stubs it the same way).
+  await page.route("**/api/auth/session", (r) =>
+    json(r, { user: { email: MEMBER.email, name: "Member" }, expires: "2099-01-01T00:00:00.000Z" }),
+  );
+  await page.route(/\/api\/accounts(\?.*)?$/, (r) => json(r, { enabled: false }));
   await page.route("**/api/settings/branding", (r) => json(r, branding));
 }
 
