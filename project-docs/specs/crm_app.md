@@ -1,5 +1,10 @@
 # CRM App — Master Plan (native CRM; Zoho CRM retirement path)
 
+> ⚠️ **2026-10-11: new CRM work moved to `crm_platform.md` (WS-53).** This file
+> is the as-built record of WS-26. The owner directive of 2026-10-11 gives each org
+> two modes, Native and Mirror. So "Zoho is retired" is no longer the end state
+> of the product (D95, proposed).
+
 > **Product:** Metorite · **Feature:** CRM (Sales Center's primary module) · **Created:** 2026-08-05
 > **Status:** 🟢 **WS-26a + WS-26b + WS-26c BUILT AND DEPLOYED** (2026-08-05/06) ·
 > 🟢 **WS-26d read half BUILT** (2026-08-06) · 🟢 **WS-26d-email BUILT, MERGED (PR #392)
