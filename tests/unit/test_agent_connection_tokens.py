@@ -24,6 +24,18 @@ The acceptance of EA-1, each one a test below:
 * two concurrent refreshes revoke the connection;
 * the table stores token hashes only.
 
+Fix round 1 (the adversarial review, 2026-10-11) adds:
+
+* ``TestIssueAndRevokeAreSerialized`` — a revoke that overlaps a rotation, in
+  either order, leaves no live token. Driven by explicit transaction steps
+  and a wait on ``pg_stat_activity``, never by event-loop luck;
+* one test for each clause of the code spend, the refresh spend and the
+  connection check, so deleting any clause turns one test red;
+* the idle window: a refresh slides it, and a lookup refuses a token of a
+  revoked or expired connection;
+* a refresh token presented by another client, or for another resource,
+  spends nothing and revokes nothing.
+
 ⚠️ **R8.** Every subject here is a SQL property: a policy, a single-row
 ``UPDATE ... WHERE used_at IS NULL``, a row lock under concurrency. A Python
 fake agrees with whatever SQL it is handed. The gate is
@@ -38,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -47,6 +60,12 @@ pytest.importorskip("sqlalchemy")
 
 from acb_auth import agent_tokens
 from acb_auth.agent_tokens import (
+    CONNECTION_DEAD,
+    INVALID,
+    REUSED,
+    WRONG_CLIENT,
+    IssuedTokens,
+    Refused,
     consume_code,
     create_connection,
     hash_token,
@@ -187,6 +206,7 @@ def promoted():
     ns.app_dsn = ns.app_url.render_as_string(hide_password=False)
     ns.org_a = org_a
     ns.org_b = org_b
+    ns.dbname = dedicated
     yield ns
 
     eng.dispose()
@@ -217,12 +237,69 @@ async def _connect(org: str, *, member: str = "dev@agenttok.test"):
     grant = await consume_code(code)
     assert grant is not None
     issued = await issue_tokens(grant, with_refresh=True)
+    assert isinstance(issued, IssuedTokens), issued
     return connection_id, code, issued
+
+
+async def _fresh_code(org: str, connection_id: str) -> str:
+    """A new, unspent code for an existing connection."""
+    token = bind_tenant(org)
+    try:
+        return await mint_code(
+            connection_id, client_id=_CLIENT, code_challenge="c" * 43,
+            redirect_uri=_REDIRECT, resource=_RESOURCE,
+        )
+    finally:
+        release_tenant(token)
+
+
+async def _rotate(raw: str, *, client_id: str = _CLIENT, resource: str | None = _RESOURCE):
+    return await rotate_refresh(raw, client_id=client_id, resource=resource)
 
 
 def _admin_one(promoted, sql: str, **params):
     with promoted.admin_engine.connect() as c:
         return c.execute(text(sql), params).one()
+
+
+def _admin_exec(promoted, sql: str, **params) -> None:
+    """A write as the admin, which escapes RLS. Used to put a row in a state."""
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(sql), params)
+
+
+def _live_tokens(promoted, connection_id: str) -> int:
+    return _admin_one(
+        promoted,
+        "SELECT count(*) FROM agent_token "
+        " WHERE connection_id = :i AND revoked_at IS NULL",
+        i=connection_id)[0]
+
+
+def _connection_revoked(promoted, connection_id: str) -> bool:
+    return _admin_one(
+        promoted,
+        "SELECT revoked_at IS NOT NULL FROM agent_connection WHERE id = :i",
+        i=connection_id)[0]
+
+
+async def _wait_for_a_lock_wait(promoted, *, timeout: float = 10.0) -> None:
+    """Return once a session in the dedicated database waits on a lock.
+
+    This is what makes the interleaving tests deterministic: the test does not
+    guess with a sleep, it sees Postgres report the waiter.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        waiting = _admin_one(
+            promoted,
+            "SELECT count(*) FROM pg_stat_activity "
+            " WHERE datname = :d AND wait_event_type = 'Lock'",
+            d=promoted.dbname)[0]
+        if waiting:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("no session waited on a lock — nothing serialized")
 
 
 class TestTheCatalogIsPromoted:
@@ -345,12 +422,48 @@ class TestTheLookupWorksUnbound:
                 release_tenant(token)
 
 
-class TestACodeWorksOnce:
+class TestACode:
+    """Single use, expiry and revocation: each clause of the code spend."""
+
     async def test_the_second_spend_of_a_code_returns_nothing(self, promoted):
         async with tenant_engine_scope(promoted.app_dsn):
             _cid, code, _issued = await _connect(promoted.org_a)
             again = await consume_code(code)
         assert again is None, "a spent code was accepted a second time"
+
+    async def test_an_expired_code_returns_nothing(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, _issued = await _connect(promoted.org_a)
+            code = await _fresh_code(promoted.org_a, cid)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET expires_at = now() - interval '1 second' "
+                " WHERE token_hash = :h", h=hash_token(code))
+            assert await consume_code(code) is None
+
+    async def test_a_revoked_code_returns_nothing(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, _issued = await _connect(promoted.org_a)
+            code = await _fresh_code(promoted.org_a, cid)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET revoked_at = now() WHERE token_hash = :h",
+                h=hash_token(code))
+            assert await consume_code(code) is None
+
+    async def test_a_code_of_a_revoked_connection_issues_nothing(self, promoted):
+        """The code survives a racing revoke, so the issue must check."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, _issued = await _connect(promoted.org_a)
+            code = await _fresh_code(promoted.org_a, cid)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection SET revoked_at = now() WHERE id = :i",
+                i=cid)
+            grant = await consume_code(code)
+            assert grant is not None
+            assert await issue_tokens(grant, with_refresh=True) == Refused(
+                CONNECTION_DEAD)
 
 
 class TestRefreshRotation:
@@ -359,62 +472,248 @@ class TestRefreshRotation:
     async def test_a_refresh_issues_a_new_pair_and_spends_the_old(self, promoted):
         async with tenant_engine_scope(promoted.app_dsn):
             connection_id, _code, issued = await _connect(promoted.org_a)
-            rotated = await rotate_refresh(issued.refresh_token)
-            assert rotated is not None
+            rotated = await _rotate(issued.refresh_token)
+            assert isinstance(rotated, IssuedTokens), rotated
             assert rotated.refresh_token != issued.refresh_token
             assert rotated.connection_id == connection_id
             assert rotated.organization_id == promoted.org_a
+            assert rotated.client_id == _CLIENT
             assert await lookup_token(rotated.access_token) is not None
             assert await lookup_token(issued.refresh_token, kind="refresh") is None
+
+    async def test_the_issued_tokens_do_not_print(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            _cid, _code, issued = await _connect(promoted.org_a)
+        shown = repr(issued)
+        assert issued.access_token not in shown
+        assert issued.refresh_token not in shown
 
     async def test_a_reused_refresh_token_revokes_the_connection(self, promoted):
         async with tenant_engine_scope(promoted.app_dsn):
             connection_id, _code, issued = await _connect(promoted.org_a)
-            rotated = await rotate_refresh(issued.refresh_token)
-            assert rotated is not None
-            reused = await rotate_refresh(issued.refresh_token)
-            assert reused is None
+            rotated = await _rotate(issued.refresh_token)
+            assert isinstance(rotated, IssuedTokens)
+            assert await _rotate(issued.refresh_token) == Refused(REUSED)
             # Every token of the connection is dead, the fresh pair included.
             assert await lookup_token(rotated.access_token) is None
             assert await lookup_token(rotated.refresh_token, kind="refresh") is None
             assert await lookup_token(issued.access_token) is None
-        revoked_at = _admin_one(
-            promoted, "SELECT revoked_at FROM agent_connection WHERE id = :i",
-            i=connection_id)[0]
-        live = _admin_one(
-            promoted,
-            "SELECT count(*) FROM agent_token "
-            " WHERE connection_id = :i AND revoked_at IS NULL",
-            i=connection_id)[0]
-        assert revoked_at is not None, "the reuse did not revoke the connection"
+        assert _connection_revoked(promoted, connection_id), (
+            "the reuse did not revoke the connection")
+        live = _live_tokens(promoted, connection_id)
         assert live == 0, f"{live} tokens of the revoked connection are still live"
 
     async def test_two_concurrent_refreshes_revoke_the_connection(self, promoted):
-        """No grace window: the client must serialize its refreshes."""
+        """No grace window: the client must serialize its refreshes.
+
+        Order-free twin of the deterministic test below. It holds under any
+        order the two calls happen to take.
+        """
         async with tenant_engine_scope(promoted.app_dsn):
             connection_id, _code, issued = await _connect(promoted.org_a)
             results = await asyncio.gather(
-                rotate_refresh(issued.refresh_token),
-                rotate_refresh(issued.refresh_token),
-            )
-            winners = [r for r in results if r is not None]
+                _rotate(issued.refresh_token), _rotate(issued.refresh_token))
+            winners = [r for r in results if isinstance(r, IssuedTokens)]
             assert len(winners) <= 1, "two callers spent one refresh token"
             for won in winners:
                 assert await lookup_token(won.access_token) is None
-        revoked_at = _admin_one(
-            promoted, "SELECT revoked_at FROM agent_connection WHERE id = :i",
-            i=connection_id)[0]
-        assert revoked_at is not None, (
+        assert _connection_revoked(promoted, connection_id), (
             "two concurrent refreshes left the connection live")
 
     async def test_another_connection_is_untouched_by_a_reuse(self, promoted):
         async with tenant_engine_scope(promoted.app_dsn):
             _cid, _code, issued = await _connect(promoted.org_a)
             other_cid, _c2, other = await _connect(promoted.org_b)
-            assert await rotate_refresh(issued.refresh_token) is not None
-            assert await rotate_refresh(issued.refresh_token) is None
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            assert await _rotate(issued.refresh_token) == Refused(REUSED)
             found = await lookup_token(other.access_token)
         assert found is not None and found.connection_id == other_cid
+
+
+class TestEachRefreshClauseRefuses:
+    """Each clause of the spend and of the connection check, one test each."""
+
+    async def test_a_revoked_refresh_token_is_refused(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET revoked_at = now() WHERE token_hash = :h",
+                h=hash_token(issued.refresh_token))
+            assert await _rotate(issued.refresh_token) == Refused(INVALID)
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_an_expired_refresh_token_is_refused(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET expires_at = now() - interval '1 second' "
+                " WHERE token_hash = :h", h=hash_token(issued.refresh_token))
+            assert await _rotate(issued.refresh_token) == Refused(INVALID)
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_a_revoked_connection_issues_nothing(self, promoted):
+        """The connection row is revoked and its token rows were missed."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection SET revoked_at = now() WHERE id = :i",
+                i=cid)
+            assert await _rotate(issued.refresh_token) == Refused(CONNECTION_DEAD)
+
+    async def test_an_expired_connection_issues_nothing(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection "
+                "   SET expires_at = now() - interval '1 second' WHERE id = :i",
+                i=cid)
+            assert await _rotate(issued.refresh_token) == Refused(CONNECTION_DEAD)
+
+    async def test_another_client_cannot_spend_or_kill_the_token(self, promoted):
+        """A mismatch spends nothing and is NOT a reuse (FIX 4)."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            wrong = await _rotate(
+                issued.refresh_token, client_id="https://evil.example/m.json")
+            assert wrong == Refused(WRONG_CLIENT)
+            # The real client still holds a working token.
+            real = await _rotate(issued.refresh_token)
+            assert isinstance(real, IssuedTokens), real
+            # A spent token presented by another client is still not a reuse.
+            late = await _rotate(
+                issued.refresh_token, client_id="https://evil.example/m.json")
+            assert late == Refused(WRONG_CLIENT)
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_another_resource_cannot_spend_the_token(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            wrong = await _rotate(
+                issued.refresh_token, resource="https://other.example/mcp")
+            assert wrong == Refused(WRONG_CLIENT)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+        assert not _connection_revoked(promoted, cid)
+
+
+class TestTheIdleWindow:
+    """A connection expires after its idle window, and use slides it (FIX 2)."""
+
+    async def test_a_refresh_slides_the_idle_window(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection SET expires_at = now() + interval '1 day', "
+                "       last_used_at = NULL WHERE id = :i", i=cid)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+        slid, used = _admin_one(
+            promoted,
+            "SELECT expires_at > now() + interval '89 days', last_used_at IS NOT NULL "
+            "  FROM agent_connection WHERE id = :i", i=cid)
+        assert slid, "the refresh did not slide the idle window"
+        assert used, "the refresh did not stamp last_used_at"
+
+    async def test_a_lookup_refuses_a_token_of_a_revoked_connection(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection SET revoked_at = now() WHERE id = :i",
+                i=cid)
+            assert await lookup_token(issued.access_token) is None
+
+    async def test_a_lookup_refuses_a_token_of_an_expired_connection(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection "
+                "   SET expires_at = now() - interval '1 second' WHERE id = :i",
+                i=cid)
+            assert await lookup_token(issued.access_token) is None
+
+
+class TestIssueAndRevokeAreSerialized:
+    """Review finding P0: a revoke that overlaps an issue must still win.
+
+    Each test drives the interleaving with explicit transaction steps and
+    waits until Postgres reports the waiting session. Nothing depends on
+    which coroutine the event loop happens to run first.
+    """
+
+    async def test_a_revoke_during_a_rotation_kills_the_new_pair(self, promoted):
+        """A rotates and holds its transaction open. B revokes. A commits."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            a = await agent_tokens._session()
+            try:
+                await a.begin()
+                rotated = await agent_tokens._rotate_in(
+                    a, hash_token(issued.refresh_token), _CLIENT, _RESOURCE)
+                assert isinstance(rotated, IssuedTokens), rotated
+                revoke = asyncio.create_task(
+                    agent_tokens.revoke_connection(promoted.org_a, cid))
+                await _wait_for_a_lock_wait(promoted)
+                assert not revoke.done(), "the revoke did not wait for the rotation"
+                await a.commit()
+            finally:
+                await a.close()
+            await asyncio.wait_for(revoke, 10)
+            assert await lookup_token(rotated.access_token) is None
+            assert await lookup_token(rotated.refresh_token, kind="refresh") is None
+            again = await _rotate(rotated.refresh_token)
+            assert isinstance(again, Refused), "a revoked connection renewed"
+        assert _live_tokens(promoted, cid) == 0
+
+    async def test_a_rotation_during_a_revoke_issues_nothing(self, promoted):
+        """B revokes the connection row and holds. A rotates. B finishes.
+
+        Without the connection lock the rotation spends the token, then waits
+        on B, while B waits on the token row: a deadlock, which Postgres breaks
+        by failing one of the two.
+        """
+        from acb_common.db import tenant_session
+
+        params = {"connection_id": None, "org": promoted.org_a}
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            params["connection_id"] = cid
+            async with tenant_session(promoted.org_a) as b:
+                await b.execute(text(agent_tokens._REVOKE_CONNECTION_SQL), params)
+                rotation = asyncio.create_task(_rotate(issued.refresh_token))
+                await _wait_for_a_lock_wait(promoted)
+                assert not rotation.done(), "the rotation did not wait for the revoke"
+                await b.execute(text(agent_tokens._REVOKE_TOKENS_SQL), params)
+            result = await asyncio.wait_for(rotation, 10)
+        assert result == Refused(CONNECTION_DEAD)
+        assert _live_tokens(promoted, cid) == 0
+
+    async def test_the_second_of_two_refreshes_is_a_reuse(self, promoted):
+        """Deterministic twin of the concurrent test: A rotates and holds, the
+        second refresh waits, A commits, and the second spend matches nothing."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            a = await agent_tokens._session()
+            try:
+                await a.begin()
+                first = await agent_tokens._rotate_in(
+                    a, hash_token(issued.refresh_token), _CLIENT, _RESOURCE)
+                assert isinstance(first, IssuedTokens), first
+                second = asyncio.create_task(_rotate(issued.refresh_token))
+                await _wait_for_a_lock_wait(promoted)
+                assert not second.done()
+                await a.commit()
+            finally:
+                await a.close()
+            assert await asyncio.wait_for(second, 10) == Refused(REUSED)
+            assert await lookup_token(first.access_token) is None
+            assert await lookup_token(first.refresh_token, kind="refresh") is None
+        assert _connection_revoked(promoted, cid)
+        assert _live_tokens(promoted, cid) == 0
 
 
 class TestOnlyTheHashIsStored:

@@ -1124,12 +1124,17 @@ class Settings(BaseSettings):
     # is the kill switch, default OFF. EA-1 adds no HTTP surface, so nothing
     # reads it yet. EA-2 makes every new route answer 404 while it is false.
     #
-    # The lifetimes, in seconds. The one reader is `acb_auth.agent_tokens`.
+    # The lifetimes, in seconds. `acb_auth.agent_tokens` reads the first four.
     # An access token lives one hour, a refresh token 30 days and an
-    # authorization code 60 seconds. A connection with no use for 90 days
-    # expires. A registered client that nobody uses expires after one day.
-    # There is no grace window on a refresh: two refreshes at once revoke the
-    # connection.
+    # authorization code 60 seconds. A connection expires 90 days after it
+    # last issued a token: each token issue and each refresh moves its
+    # `expires_at` to now plus this value. An expired connection issues no
+    # token, and the token lookup refuses every token of it. There is no
+    # grace window on a refresh: two refreshes at once revoke the connection.
+    #
+    # `agent_client_unused_ttl_s` has NO reader yet. EA-2b (dynamic client
+    # registration) is to read it, so an unused registered client expires
+    # after one day.
     #
     # `env_guard` refuses each `AGENT_*` name on each Integrations write, so
     # only the env file of the box sets them. 🔴 A flip on a box is gate

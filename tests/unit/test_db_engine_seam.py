@@ -871,14 +871,16 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
     "packages/acb_auth/acb_auth/agent_tokens.py": (
         1,
         "WS-55 EA-1 — the outside-agent token store. ONE helper (`_session`) "
-        "that only the token acts open, and it MUST be unbound: an outside "
+        "that only the token acts open, and it MUST start unbound: an outside "
         "agent sends only an opaque token, so the edge finds the token BEFORE "
-        "it knows the tenant. Those acts touch only `agent_token`, which is "
-        "RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
-        "§10.3). Every read and write of the tenant-scoped `agent_connection` "
-        "goes through `tenant_session()` instead. Not a known-open brick: "
-        "`test_agent_connection_tokens.py` proves the lookup, the code spend "
-        "and the refresh rotation unbound, as the non-privileged role on a "
+        "it knows the tenant. The first read touches only `agent_token`, which "
+        "is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
+        "§10.3). Before it touches the tenant-scoped `agent_connection`, the "
+        "act binds the tenant FROM THE TOKEN ROW inside the same transaction, "
+        "with the seam's own `set_config(..., true)` statement (the "
+        "`org_settings` pattern). Not a known-open brick: "
+        "`test_agent_connection_tokens.py` proves the lookup, the code spend, "
+        "the issue and the refresh rotation as the non-privileged role on a "
         "phase-4-promoted catalog.",
     ),
     "packages/acb_common/acb_common/provisioning.py": (
