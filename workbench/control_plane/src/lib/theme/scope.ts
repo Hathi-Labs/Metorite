@@ -46,6 +46,7 @@ import {
   SCOPE_SEPARATOR,
   STORAGE_KEYS,
   isAppearancePassive,
+  resumeAppearance,
   rawStorage,
   scopedKey,
   setTabAppearanceScope,
@@ -113,9 +114,15 @@ export function bindAppearanceScope(
   email: string | null | undefined,
   organizationId: string | null | undefined,
 ): boolean {
-  if (isAppearancePassive()) return false;
   const scope = appearanceScopeFor(email, organizationId);
   if (!scope) return false;
+  if (isAppearancePassive()) {
+    // Stale only when the pointer names ANOTHER account. Two tabs of one
+    // account that load with no pointer race to write it, and the slower tab
+    // must still bind, or it drops every change until it reloads.
+    if (rawStorage.read(APPEARANCE_SCOPE_KEY) !== scope) return false;
+    resumeAppearance();
+  }
   // Read the tab's scope BEFORE the pointer moves: a tab that never read one
   // takes it from the pointer, and must take the scope its boot painted.
   const before = tabAppearanceScope();

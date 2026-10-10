@@ -153,6 +153,15 @@ export function isAppearancePassive(): boolean {
 }
 
 /**
+ * For `scope.ts`: this tab is not stale after all. A tab that loaded with no
+ * pointer goes passive when a sibling tab of the SAME account binds first.
+ * The pointer then names this tab's own account, and its bind resumes it.
+ */
+export function resumeAppearance(): void {
+  tab.passive = false;
+}
+
+/**
  * The `storage` event handler. `ThemeProvider` installs it with
  * `watchAppearanceStorage`. Exported for the tests.
  */

@@ -321,6 +321,21 @@ describe("review round 2, P1: two tabs on two accounts", () => {
     expect(ls.getItem(`cc-accent:${SCOPE_A}`)).toBeNull();
   });
 
+  it("(3) a tab that loaded with no pointer still binds when a sibling of the SAME account wrote it first", () => {
+    // Session restore: two tabs of A load with no pointer. This one reads none.
+    expect(isAppearancePassive()).toBe(false);
+    themeStorage.getAccent();
+    // The faster tab binds A and writes the pointer.
+    ls.setItem(APPEARANCE_SCOPE_KEY, SCOPE_A);
+    onAppearanceStorage({ key: APPEARANCE_SCOPE_KEY, newValue: SCOPE_A });
+    bindAppearanceScope(A.email, A.org);
+    expect(isAppearancePassive()).toBe(false);
+    useAppearanceStore.getState().setAccent("rgb(1, 2, 3)");
+    themeStorage.mirrorMode("light");
+    expect(ls.getItem(`cc-accent:${SCOPE_A}`)).toBe("rgb(1, 2, 3)");
+    expect(ls.getItem(`theme:${SCOPE_A}`)).toBe("light");
+  });
+
   it("(3) a pointer event that names this tab's own scope keeps it active", () => {
     bindAppearanceScope(A.email, A.org);
     onAppearanceStorage({ key: APPEARANCE_SCOPE_KEY, newValue: SCOPE_A });
