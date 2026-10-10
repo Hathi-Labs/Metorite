@@ -654,8 +654,11 @@ class ZohoSource:
         ``permanent``. ``cursor.since`` is sent as ``If-Modified-Since``.
 
         This read pages by offset. The endpoint takes no sort, so it has no
-        key to page on. A tombstone does not move when a record is edited,
-        and a new delete can only repeat a row, which the caller dedupes.
+        key to page on. A new delete can repeat a row, and the caller dedupes
+        it. A restore from the recycle bin REMOVES a tombstone, and that
+        shifts the offsets, so a read resumed after a pause can skip a
+        tombstone. The adapter cannot close that gap alone. The engine slice
+        (CRM-Z5) owns it, with a re-read from the cursor or a reconcile.
         """
         module = _module(entity)
         return await self._page(
