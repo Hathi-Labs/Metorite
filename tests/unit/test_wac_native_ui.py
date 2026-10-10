@@ -113,11 +113,19 @@ async def test_a_list_numbers_its_rows_and_cuts_long_text() -> None:
     assert "- Order PLA" in box[0].rendition
 
 
+async def test_rows_of_one_title_are_kept_apart() -> None:
+    """WAC-10c review: a refused list lost a whole view, so a repeated title
+    gets a suffix instead."""
+    out, box = await _in_run("list", {"body": "x", "rows": ["dup", "Dup"]})
+    assert out["ok"] is True
+    rows = box[0].interactive["action"]["sections"][0]["rows"]
+    assert [r["title"] for r in rows] == ["dup", "Dup (2)"]
+
+
 @pytest.mark.parametrize(("data", "says"), [
     ({"body": "x", "rows": [f"t{i}" for i in range(11)]}, "at most 10 rows"),
     ({"body": "x", "sections": [{"title": "A", "rows": ["a"]}, {"rows": ["b"]}]},
      "each section needs a title"),
-    ({"body": "x", "rows": ["dup", "Dup"]}, "two rows"),
     ({"body": "x", "rows": []}, "list of"),
 ])
 async def test_bad_lists_are_refused(data: dict, says: str) -> None:

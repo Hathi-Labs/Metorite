@@ -35,16 +35,22 @@ from tests.unit.test_wac_bot_run import (  # noqa: F401 - `world` is a fixture
 NOW = datetime.now(UTC)
 
 
+ORG = "11111111-1111-4111-8111-111111111111"
+
+
 class _Ctx:
-    def __init__(self, perms: set[str]) -> None:
+    def __init__(self, perms: set[str], org: str = ORG) -> None:
         self.perms = perms
         self.email = "alice@fracktal.in"
+        self.organization_id = org
 
     def has_permission(self, p: str) -> bool:
         return p in self.perms
 
 
-ALL = {"feature:projects", "feature:tasks", "feature:email", "admin:settings:manage"}
+ALL = {"feature:projects", "feature:tasks", "feature:email", "feature:approvals",
+       "admin:members:read",
+       "admin:settings:manage"}
 
 
 @pytest.fixture()
@@ -102,11 +108,15 @@ def reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(calendar, "day_summary", _day)
     state["ctx"] = _Ctx(set(ALL))
 
+    import acb_auth.deps as deps
+
     async def _member(email: str) -> _Ctx:
         state["calls"].append(f"ctx:{email}")
         return state["ctx"]
 
-    monkeypatch.setattr(views, "member_context", _member)
+    # The REAL views.member_context runs, with its org check; the request
+    # path's resolve under it is the fake.
+    monkeypatch.setattr(deps, "member_context", _member)
     return state
 
 
@@ -270,7 +280,7 @@ async def test_with_the_switch_off_a_command_goes_to_the_assistant(
 
 
 async def test_the_ai_sends_a_view_by_name(reads: dict) -> None:
-    with wui.whatsapp_run("orchestrator", views=views.runner("alice@fracktal.in")) as run:
+    with wui.whatsapp_run("orchestrator", views=views.runner("alice@fracktal.in", ORG)) as run:
         out = await wui.whatsapp_ui("view", {"name": "overdue"})
         bad = await wui.whatsapp_ui("view", {"name": "nope"})
     assert out["ok"] is True and out["sent"].startswith("*Overdue*")
@@ -281,7 +291,7 @@ async def test_the_ai_sends_a_view_by_name(reads: dict) -> None:
 
 async def test_a_view_the_member_may_not_open_is_refused(reads: dict) -> None:
     reads["ctx"] = _Ctx({"feature:projects"})
-    with wui.whatsapp_run("orchestrator", views=views.runner("alice@fracktal.in")):
+    with wui.whatsapp_run("orchestrator", views=views.runner("alice@fracktal.in", ORG)):
         out = await wui.whatsapp_ui("view", {"name": "calendar"})
     assert out["ok"] is False and "cannot open" in out["error"]
 

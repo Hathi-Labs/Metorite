@@ -37,7 +37,7 @@ def _png(svg: str) -> bytes:
     ("Blocked", "amber"), ("Waiting on vendor", "amber"), ("todo", "gray"),
     ("Backlog", "gray"), ("cancelled", "red"), ("triage", "violet"),
     ("purple", "violet"), ("orange", "amber"), ("grey", "gray"),
-    ("on_hold", "amber"), ("active", "green"), ("at risk", "amber"),
+    ("on_hold", "amber"), ("active", "blue"), ("at risk", "amber"),
     ("off_track", "red"), ("Overdue", "red"), ("Code review", "blue"),
     (None, "gray"), ("", "gray"), ("Something else", "gray"),
 ])
@@ -114,9 +114,22 @@ def test_spare_width_goes_to_the_widest_text_column() -> None:
 def test_only_the_wide_columns_shrink() -> None:
     need = [40.0, 900.0, 600.0, 70.0]
     widths = render.column_widths(need, [True, False, False, False], 584.0)
-    assert sum(widths) == pytest.approx(584.0, abs=1)
+    assert sum(widths) == pytest.approx(584.0, abs=0.01)
     assert widths[0] == pytest.approx(48.0) and widths[3] == pytest.approx(70.0)
-    assert widths[1] > widths[2]
+    assert widths[1] == pytest.approx(widths[2])  # the wide ones share one cap
+
+
+@pytest.mark.parametrize(("need", "numeric"), [
+    # The verifier's case: four mid columns, one long, one very long title.
+    ([92, 92, 92, 92, 219, 2135], [False] * 6),
+    ([3000] * 6, [False] * 6),
+    ([10] * 6, [True] * 6),
+    ([600, 40], [False, True]),
+])
+def test_the_columns_always_fill_the_image_exactly(need: list, numeric: list) -> None:
+    widths = render.column_widths([float(n) for n in need], numeric, 584.0)
+    assert sum(widths) == pytest.approx(584.0, abs=0.01)
+    assert all(w > 0 for w in widths)
 
 
 def test_a_digit_string_counts_as_a_number_column() -> None:

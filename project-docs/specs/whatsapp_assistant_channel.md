@@ -708,7 +708,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-7** | Proactive messages: the daily brief and the nudge, STOP and START (§5.8) | AGENT-SAFE to build, **OWNER-GATE** to switch on | A brief goes only to an opted-in, linked phone. STOP ends every Metorite-initiated message to that phone |
 | **WAC-8** | Org controls: the org setting, admin revoke, revoke on membership removal, link expiry | AGENT-SAFE | An org with the channel off gets no run and no new link. A removed member's link is `revoked` before their next message |
 | **WAC-9** | Production switch-on for an org | **OWNER-GATE** | The owner names the org. The flag holds it, and a smoke message on production gets an answer. Report the box and the SHA (§3a rule 2) |
-| **WAC-10a** ✅ built 2026-10-10, dark | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
+| **WAC-10a** ✅ live 2026-10-10 (Meta test number) | The WhatsApp run profile and the `whatsapp_ui` tool (§12): buttons, lists, the link button, chart and table images, the typing indicator, taps as text. The web-only tools leave the bot run | AGENT-SAFE | §12.5, N1 to N8. Fence: `tests/unit/test_wac_native_ui.py` |
 | **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
@@ -1012,3 +1012,29 @@ column, and only the wide columns shrink (`whatsapp_render.column_widths`).
 | C8 | The live check: "today", "calendar" and "menu" answer on the test number, and the log shows `whatsapp_channel.run.quick` |
 
 Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py`.
+
+### 13.6 The review round of 2026-10-10
+
+An adversarial review, a verifier and the owner's own screenshots found
+these. Each one is fixed, and each fix has a fence in
+`tests/unit/test_wac_views_review.py`, `test_wac_cards.py` or
+`test_wac_native_ui.py`.
+
+| Found | Fix |
+|---|---|
+| A tap on a menu row arrives as "Title (description)", so it never matched a command, and the AI ran | `views.match` reads the title of a list tap |
+| Two rows that cut to one title made the list refuse, and the whole view failed | `whatsapp_ui` adds " (2)" to a repeated row title |
+| A source that timed out still gave "Nothing needs you ✅" | A failed source says the view may not be all. A failed approvals source hands the message to the AI |
+| 50 overdue tasks hid every task due later today | The due read takes 200 rows. At the cap, "due today" hands over to the AI and "overdue" says "200+" |
+| A full source showed its cap as the count | A source that gave its 15 rows shows "15+", with a link to the rest |
+| `member_context` resolves the org from the email, not from the link row | `views.member_context` refuses a context whose org is not the link's (D-WAC-3) |
+| A tap on the AI's own "Today" button opened the canned view | The quick path skips when the last reply offered the AI's own buttons or list. A view's reply carries an invisible mark (U+2064), so a menu tap still runs |
+| The model typed "[Table: …]" and "[Chart …]" as text and sent no image (owner screenshots) | The model no longer reads element records in its history. The reply guard (`whatsapp_ui.polish`) draws a typed table or chart, or cuts it |
+| The model said "tap any of these" and sent nothing to tap (owner screenshot) | The guard turns the reply's bullets into a list, or cuts the sentence |
+| The table shrink could push a column off the image | `column_widths` caps the wide columns at one width, so the sum is the image width |
+| `hue` claimed an exact match with the web and did not give one | `hue` applies the web's rules first. Its own health and priority words apply only where the web gives no hue |
+| The menu showed rows that the member cannot open | The menu shows a row only when the member holds its feature |
+
+**Each link names its org** (owner, 2026-10-10). A link button carries
+`org=<the link row's org id>`, which the server sets and the model cannot
+choose. The web app's switch to that org's account is WAC-10d.

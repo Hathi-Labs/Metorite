@@ -67,6 +67,9 @@ for _view, _words in {
 FEATURE = {"my_day": None, "due_today": "projects", "overdue": "projects",
            "calendar": "tasks", "approvals": None, "menu": None}
 
+#: How deep the due views read the member's due work (oldest first).
+DUE_READ = 200
+
 _PUNCT = re.compile(r"[^\w\s']")
 
 
@@ -76,9 +79,22 @@ def normalize(text: str) -> str:
     return " ".join(_PUNCT.sub(" ", folded).split())
 
 
+#: A tap on a list row arrives as "Title (description)" (``inbound.tap_text``).
+_TAP = re.compile(r"\A(.{1,24}) \((.*)\)\Z", re.DOTALL)
+
+
 def match(text: str) -> str | None:
-    """The view a whole message asks for, or None. Short messages only."""
-    if not text or len(text) > 60:
+    """The view a whole message asks for, or None. Short messages only.
+
+    A list tap ("My day (What needs you now…)") matches on its title, so a
+    tap on the menu costs no AI call (WAC-10c review).
+    """
+    if not text or len(text) > 140:
+        return None
+    tap = _TAP.match(text.strip())
+    if tap:
+        return COMMANDS.get(normalize(tap.group(1)))
+    if len(text) > 60:
         return None
     return COMMANDS.get(normalize(text))
 
@@ -95,10 +111,19 @@ class View:
     ui: list[Any] = field(default_factory=list)
 
 
-async def member_context(email: str) -> Any:
+async def member_context(email: str, organization_id: str) -> Any:
+    """The member's request context, IN THE LINK'S ORG only.
+
+    ``acb_auth.deps.member_context`` finds the org from the email. The run's
+    org comes from the link row (D-WAC-3), so a context in any other org is
+    refused, never used (WAC-10c review).
+    """
     from acb_auth.deps import member_context as _ctx
 
-    return await _ctx(email)
+    ctx = await _ctx(email)
+    if str(getattr(ctx, "organization_id", "") or "") != str(organization_id):
+        raise PermissionError("the member's context is not in the link's org")
+    return ctx
 
 
 def _allowed(ctx: Any, name: str) -> bool:
@@ -196,14 +221,23 @@ async def _feed(ctx: Any) -> dict[str, Any]:
     return await shell_needs(limit=MAX_LIMIT, user=ctx)
 
 
+def _admin_approvals(ctx: Any) -> bool:
+    """The feed's own gate for approvals: the feature AND the admin right."""
+    from gateway.routes.shell.needs import ADMIN_PERMISSION
+
+    return bool(ctx.has_permission("feature:approvals")
+                and ctx.has_permission(ADMIN_PERMISSION))
+
+
 async def view_menu(ctx: Any) -> View:
-    rows = [
-        _row("My day", "What needs you now, from every app"),
-        _row("Due today", "Your tasks due today"),
-        _row("Overdue", "Your tasks past their due date"),
-        _row("Calendar", "Today's plan on a timeline"),
-    ]
-    if ctx.has_permission("admin:settings:manage"):
+    """Only the rows that this member can open."""
+    rows = [_row("My day", "What needs you now, from every app")]
+    for name, title, desc in (("due_today", "Due today", "Your tasks due today"),
+                              ("overdue", "Overdue", "Your tasks past their due date"),
+                              ("calendar", "Calendar", "Today's plan on a timeline")):
+        if _allowed(ctx, name):
+            rows.append(_row(title, desc))
+    if _admin_approvals(ctx):
         rows.append(_row("Approvals", "Agent actions waiting for you"))
     el = await _build("list", {"body": "Tap one, or ask me anything about your work.",
                                "button": "Menu", "rows": rows})
@@ -211,32 +245,44 @@ async def view_menu(ctx: Any) -> View:
 
 
 async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
+    if only == "approval" and not _admin_approvals(ctx):
+        return View("approvals", "Approvals are for the admins of your organization.")
     feed = await _feed(ctx)
+    sources = feed.get("sources") or {}
+    failed = sorted(k for k, v in sources.items() if v == "failed")
+    if only == "approval" and "approvals" in failed:
+        # The one source this view needs did not answer: no false "none".
+        raise RuntimeError("the approvals source failed")
     items = [i for i in feed.get("items") or [] if only is None or i.get("kind") == only]
     now = datetime.now(UTC)
-    if only == "approval":
-        head = "*Approvals*"
-        if not ctx.has_permission("admin:settings:manage"):
-            return View("approvals", "Approvals are for the admins of your organization.")
-    else:
-        head = "*My day*"
+    head = "*Approvals*" if only == "approval" else "*My day*"
+    note = (f"\n_{', '.join(failed).capitalize()} did not answer in time, so this may "
+            "not be all._") if failed and only is None else ""
     if not items:
+        if failed and only is None:
+            el = await _link("Open My Day to see the rest.", "Open My Day", "/")
+            return View("my_day", f"{head} — nothing so far.{note}", [el])
         quiet = ("No approvals wait for you. ✅" if only == "approval"
                  else "Nothing needs you right now. ✅")
         el = await _build("buttons", {"body": quiet, "buttons": ["Calendar", "Menu"]})
         return View(only or "my_day", head, [el])
+    from gateway.routes.shell.needs import PER_APP
+
     counts: dict[str, int] = {}
     for i in items:
         counts[i["kind"]] = counts.get(i["kind"], 0) + 1
-    summary = " · ".join(_kind_words(k, n) for k, n in counts.items() if k in dict(_KINDS))
+    # A source gives at most PER_APP rows, so a full source may hold more.
+    capped = {k for k, n in counts.items() if n >= PER_APP}
+    summary = " · ".join(_kind_words(k, n).replace(str(n), f"{n}+", 1) if k in capped
+                         else _kind_words(k, n)
+                         for k, n in counts.items() if k in dict(_KINDS))
     sections = []
     for kind, label in _KINDS:
         rows = [_row(i.get("title"), str(i.get("detail") or ""), _when(i.get("at"), now))
                 for i in items if i.get("kind") == kind]
         sections.append((label, rows))
-    failed = [k for k, v in (feed.get("sources") or {}).items() if v == "failed"]
-    note = f"\n_{', '.join(failed).capitalize()} did not answer in time._" if failed else ""
-    ui = await _list("Tap one to ask about it.", "View", sections, len(items), "/", "Open My Day")
+    total = len(items) + (1 if capped else 0)
+    ui = await _list("Tap one to ask about it.", "View", sections, total, "/", "Open My Day")
     return View(only or "my_day", f"{head} — {summary}{note}", ui)
 
 
@@ -245,7 +291,11 @@ async def view_due(ctx: Any, *, kind: str) -> View:
     from gateway.routes.projects.personal import my_due_tasks
     from gateway.routes.shell.needs import HIDDEN_DISPOSITIONS
 
-    answer = await my_due_tasks(ctx, limit=50)
+    # The read is oldest deadline first, so a short limit fills with overdue
+    # work and hides what is due later today (WAC-10c review). One member's
+    # due work is small, so read deep, and never say "none" at the cap.
+    answer = await my_due_tasks(ctx, limit=DUE_READ)
+    at_cap = len(answer.get("rows") or []) >= DUE_READ
     now = datetime.now(UTC)
     rows: list[tuple[datetime, dict]] = []
     for t in answer.get("rows") or []:
@@ -262,6 +312,8 @@ async def view_due(ctx: Any, *, kind: str) -> View:
         rows.append((due, t))
     rows.sort(key=lambda p: p[0])
     title = "*Overdue*" if kind == "overdue" else "*Due today*"
+    if not rows and at_cap:
+        raise RuntimeError("the due read reached its cap")  # the assistant answers
     if not rows:
         quiet = "Nothing is overdue. ✅" if kind == "overdue" else "Nothing is due today. ✅"
         el = await _build("buttons", {"body": quiet, "buttons": ["My day", "Calendar"]})
@@ -278,7 +330,10 @@ async def view_due(ctx: Any, *, kind: str) -> View:
         by_project[name] = by_project.get(name, 0) + 1
     top = ", ".join(f"{n} in {p}" for p, n in sorted(by_project.items(),
                                                      key=lambda kv: -kv[1])[:3])
-    text = f"{title} — {_plural(len(rows), 'task')}\n{top}"
+    count = _plural(len(rows), "task")
+    if at_cap and kind == "overdue":
+        count = count.replace(str(len(rows)), f"{len(rows)}+", 1)
+    text = f"{title} — {count}\n{top}"
     ui = await _list("Tap a task to ask about it.", "View tasks", [("", list_rows)],
                      len(rows), "/projects", "Open Projects")
     return View(kind, text, ui)
@@ -359,14 +414,16 @@ async def run(name: str, ctx: Any) -> View:
     return await _VIEWS[name](ctx)
 
 
-def runner(email: str) -> Callable[[str], Awaitable[View]]:
+def runner(email: str, organization_id: str) -> Callable[[str], Awaitable[View]]:
     """The view runner a WhatsApp run hands to ``whatsapp_ui``: one member's
-    context, resolved once, on first use."""
+    context in the link's org, resolved once, on first use. ``names`` lists
+    the views, so the tool can refuse an unknown name before any read."""
     ctx_box: list[Any] = []
 
     async def _run(name: str) -> View:
         if not ctx_box:
-            ctx_box.append(await member_context(email))
+            ctx_box.append(await member_context(email, organization_id))
         return await run(name, ctx_box[0])
 
+    _run.names = NAMES  # type: ignore[attr-defined]
     return _run

@@ -289,27 +289,28 @@ def column_widths(need: list[float], numeric: list[bool], avail: float) -> list[
     """Widths for table columns that NEED these widths, in *avail*.
 
     A narrow column (an id, a priority, a number) keeps what it needs. When
-    the columns are too wide, only the wide ones shrink, in proportion. When
-    there is room to spare, the widest TEXT column takes it, so a task title
-    never sits far right of a short id (the owner's "Due today" image,
-    2026-10-10).
+    the columns are too wide, the wide ones share one cap ("water filling"):
+    each column gets ``min(need, cap)``, and the cap makes the sum exactly
+    *avail*. When there is room to spare, the widest TEXT column takes it, so
+    a task title never sits far right of a short id (the owner's "Due today"
+    image, 2026-10-10). The sum is *avail* in every case (WAC-10c review).
     """
     n = len(need)
     floor = min(48.0, avail / n)
     widths = [max(floor, w) for w in need]
     if sum(widths) > avail:
-        fixed = [w <= avail / n for w in widths]
-        for _ in range(n):  # a shrink can push another column under the share
-            room = avail - sum(w for w, f in zip(widths, fixed, strict=True) if f)
-            wide = sum(w for w, f in zip(widths, fixed, strict=True) if not f)
-            if wide <= 0:
-                break
-            scaled = [w if f else w * room / wide for w, f in zip(widths, fixed, strict=True)]
-            newly = [not f and s <= floor for s, f in zip(scaled, fixed, strict=True)]
-            if not any(newly):
-                widths = [max(s, floor) for s in scaled]
-                break
-            fixed = [f or nw for f, nw in zip(fixed, newly, strict=True)]
+        lo, hi = floor, max(widths)
+        for _ in range(60):  # bisect the cap: sum(min(w, cap)) == avail
+            cap = (lo + hi) / 2
+            if sum(min(w, cap) for w in widths) > avail:
+                hi = cap
+            else:
+                lo = cap
+        widths = [min(w, lo) for w in widths]
+        short = avail - sum(widths)
+        wide = [j for j in range(n) if widths[j] >= lo - 1e-6]
+        for j in wide:  # the rounding remainder, shared by the capped columns
+            widths[j] += short / len(wide)
         return widths
     text_cols = [j for j in range(n) if not numeric[j]] or list(range(n))
     widest = max(text_cols, key=lambda j: need[j])

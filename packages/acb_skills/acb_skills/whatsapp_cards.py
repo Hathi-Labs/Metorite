@@ -8,10 +8,12 @@ cards that the web app shows as a view: KPI tiles, a board of columns, a
 timeline, a calendar day, a project schedule and a breakdown. Each one is an
 SVG that ``whatsapp_render.to_png`` turns into a PNG.
 
-**One colour vocabulary.** A status maps to one of six hues exactly as
+**One colour vocabulary.** A status maps to one of six hues as
 ``workbench/control_plane/src/lib/statusAccent.ts`` maps it: a stored colour
 name first, then the category, then a keyword in the name (:func:`hue`). So a
-"Blocked" column is amber here and on the web.
+"Blocked" column is amber here and on the web. Only where the web gives no
+hue do the WhatsApp extensions apply: health and priority words such as
+"at risk" or "overdue".
 
 Fence: ``tests/unit/test_wac_cards.py``.
 """
@@ -54,21 +56,35 @@ HUES: dict[str, str] = {
     "violet": _hsl(268, 70, 50),   # --violet
 }
 _ALIASES = {"grey": "gray", "orange": "amber", "yellow": "amber", "purple": "violet"}
+#: ``CATEGORY_HUES`` of statusAccent.ts.
 _CATEGORY = {"backlog": "gray", "todo": "gray", "in_progress": "blue", "done": "green",
              "cancelled": "red", "triage": "violet"}
-#: ``PROJECT_STATES`` of statusAccent.ts.
-_PROJECT = {"queued": "gray", "active": "green", "ongoing": "green", "on_hold": "amber",
-            "paused": "amber", "stopped": "red"}
-#: Health words that a report uses (RAG).
-_HEALTH = {"on_track": "green", "at_risk": "amber", "off_track": "red", "late": "red",
-           "overdue": "red", "good": "green", "bad": "red", "warn": "amber",
-           "neutral": "gray", "info": "blue", "high": "red", "urgent": "red",
-           "medium": "amber", "low": "gray"}
+#: ``keywordHue`` of statusAccent.ts, in its order. Leaving "cancel" out is
+#: the web's own choice (statusAccent.ts), so it is left out here too.
+_WEB_KEYWORDS = (
+    (re.compile(r"done|complete|closed|finished|shipped"), "green"),
+    (re.compile(r"wait|block|hold|paused|stuck"), "amber"),
+    (re.compile(r"progress|doing|active|working|review|in[\s-]?process"), "blue"),
+    (re.compile(r"todo|to[\s-]?do|backlog|new|open|inbox"), "gray"),
+)
+#: WhatsApp extensions, used ONLY where the web gives no hue. Report health
+#: (RAG), due-date and priority words that a card's ``tone`` may carry.
+_EXTRA = {"on_track": "green", "at_risk": "amber", "off_track": "red", "late": "red",
+          "overdue": "red", "good": "green", "bad": "red", "warn": "amber",
+          "neutral": "gray", "info": "blue", "critical": "red", "urgent": "red",
+          "important": "amber", "approved": "green", "pending": "amber",
+          "rejected": "red", "failed": "red", "stopped": "red", "queued": "gray"}
+_EXTRA_WORDS = re.compile(r"overdue|late|reject|fail")
 
 
 def hue(value: object, *, default: str = "gray") -> str:
-    """The hue name for a colour, a status category, or a status or health
-    word, in the order of ``statusAccent.resolveHue``."""
+    """The hue name for a colour, a status category, or a status word.
+
+    The order of ``statusAccent.resolveHue``: a colour name, the category,
+    then the web's keyword rules. Only when none answers do the extensions
+    (:data:`_EXTRA`) apply, so a word the web colours is never coloured
+    differently here.
+    """
     if not isinstance(value, str) or not value.strip():
         return default
     v = value.strip().lower()
@@ -76,19 +92,15 @@ def hue(value: object, *, default: str = "gray") -> str:
     if v in HUES:
         return v
     key = re.sub(r"[\s-]+", "_", v)
-    for table in (_CATEGORY, _PROJECT, _HEALTH):
-        if key in table:
-            return table[key]
-    if re.search(r"done|complete|closed|finished|shipped|approved", v):
-        return "green"
-    if re.search(r"wait|block|hold|paused|stuck|pending", v):
-        return "amber"
-    if re.search(r"reject|cancel|fail|overdue|late", v):
+    if key in _CATEGORY:
+        return _CATEGORY[key]
+    for rule, name in _WEB_KEYWORDS:
+        if rule.search(v):
+            return name
+    if key in _EXTRA:
+        return _EXTRA[key]
+    if _EXTRA_WORDS.search(v):
         return "red"
-    if re.search(r"progress|doing|active|working|review|in[\s-]?process", v):
-        return "blue"
-    if re.search(r"todo|to[\s-]?do|backlog|new|open|inbox", v):
-        return "gray"
     return default
 
 

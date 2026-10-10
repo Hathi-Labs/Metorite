@@ -162,6 +162,9 @@ SCOPE_RULE_NATIVE = (
     "Links on https://app.metorite.com: a task /projects?task=<id>, a project "
     "/projects?project=<id>, an email /email?email=<id>&account=<id>, a person "
     "/people/<id>, and /tasks, /calendar, /approvals, /chat.\n"
+    "Never type an element as text (no \"[Table: …]\" or \"[Chart …]\"): call "
+    "whatsapp_ui. Never say \"tap\" unless you sent buttons or a list. Items "
+    "the member may dig into go in a list.\n"
     "You cannot change data from WhatsApp. When the member asks for a change, "
     "tell them to make it in the Metorite web app, and add a link button."
 )
@@ -1131,6 +1134,44 @@ async def _close_used_up(req: RunRequest) -> None:
         await _send(req, [REPLY_FAILED], kind="tries")
 
 
+def model_turn(turn: dict[str, str]) -> dict[str, str]:
+    """A past turn as the model reads it: the text of a reply only.
+
+    The thread keeps each element's record after an invisible mark, for the
+    web chat and for a resend. The model must not read those records: a
+    model that saw "[Table: …]" in its own past replies typed it as text and
+    sent no image (owner screenshots, 2026-10-10). An answer of elements
+    only reads as a short note.
+    """
+    from acb_skills.whatsapp_ui import RENDITION_MARK, VIEW_MARK
+
+    content = str(turn.get("content") or "")
+    if turn.get("role") != "assistant" or (
+            RENDITION_MARK not in content and VIEW_MARK not in content):
+        return turn
+    text = content.replace(VIEW_MARK, "").split(RENDITION_MARK, 1)[0].strip()
+    return {**turn, "content": text or "(I sent the member a WhatsApp card.)"}
+
+
+def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
+    """True when the last reply was the AI's own buttons or list.
+
+    Then a tap such as "Today" answers the AI's question, and must not open
+    the canned view of the same name (WAC-10c review). A view's own reply
+    carries :data:`VIEW_MARK`, so a tap on the menu still runs the view.
+    """
+    from acb_skills.whatsapp_ui import RENDITION_MARK, VIEW_MARK
+
+    last = next((t for t in reversed(history) if t.get("role") == "assistant"), None)
+    if last is None:
+        return False
+    content = str(last.get("content") or "")
+    if content.startswith(VIEW_MARK) or RENDITION_MARK not in content:
+        return False
+    records = content.split(RENDITION_MARK, 1)[1]
+    return "[Buttons:" in records or "[List " in records
+
+
 def build_payload(message: str, history: list[dict[str, str]],
                   member_email: str, *, native: bool = False) -> dict[str, Any]:
     """The event payload of one run.
@@ -1141,7 +1182,7 @@ def build_payload(message: str, history: list[dict[str, str]],
     (``executor._run_with_maf_agent``). *native* picks the scope rule of the
     WhatsApp profile (WAC-10a).
     """
-    prior = list(history)
+    prior = [model_turn(m) for m in history]
     return {
         "mode": "chat",
         "message": message,
@@ -1173,13 +1214,14 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
     ui: list[Any] = []
     if reply is None:
         native = flags.native_ui_enabled()
-        from acb_skills.whatsapp_ui import thread_record, whatsapp_run
+        from acb_skills.whatsapp_ui import VIEW_MARK, polish, thread_record, whatsapp_run
         from gateway.routes.whatsapp_channel import views
 
         # WAC-10c: a quick command ("today", "calendar", a menu tap) is
         # answered by code, with no AI call. A view that fails falls back
         # to the assistant, so it never costs the member an answer.
-        name = views.match(message) if native else None
+        name = (views.match(message)
+                if native and not _offered_ai_choice(history) else None)
         view = await _quick_view(req, name) if name else None
         if view is not None:
             reply, ui = view.text, list(view.ui)
@@ -1190,8 +1232,10 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
             if native:
                 await _show_typing(req)
             try:
-                with refuse_cards(), (whatsapp_run(AGENT, views=views.runner(req.member_email))
-                                      if native else contextlib.nullcontext()) as wa_run:
+                with refuse_cards(), (whatsapp_run(
+                        AGENT, org=req.organization_id,
+                        views=views.runner(req.member_email, req.organization_id))
+                        if native else contextlib.nullcontext()) as wa_run:
                     result = await asyncio.wait_for(
                         _executor()(
                             AGENT, payload,
@@ -1222,6 +1266,11 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
             reply = reply_text(result).strip()
             if wa_run is not None:
                 ui = list(wa_run.outbox)
+                # The reply guard: no copied element record, and no tap
+                # promise with nothing to tap (whatsapp_ui.polish). It may
+                # draw, so it runs off the event loop, in the run's context.
+                with whatsapp_run(AGENT, org=req.organization_id):
+                    reply, ui = await asyncio.to_thread(polish, reply, ui)
             if not reply and not ui:
                 if await _end(req.message_id, "failed", "empty"):
                     await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
@@ -1237,6 +1286,8 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         # next turn knows which buttons it offered. A resend cuts the
         # renditions off again (`_resend_text`).
         record = thread_record(reply, ui)
+        if view is not None:
+            record = VIEW_MARK + record  # code built it (`_offered_ai_choice`)
         await _write_reply(req, record)
     else:
         _log.info("whatsapp_channel.run.resend_stored", run_id=run_id,
@@ -1260,13 +1311,18 @@ async def _quick_view(req: RunRequest, name: str) -> Any:
     Bounded, and never raises: any failure (a read, a render, a feature the
     member does not hold) hands the message to the assistant instead.
     """
+    from acb_skills.whatsapp_ui import whatsapp_run
     from gateway.routes.whatsapp_channel import views
 
+    async def _build() -> Any:
+        # The resolve sits inside the bound, and the view sits inside a run
+        # context that carries the link's org, so each link button names it.
+        ctx = await views.member_context(req.member_email, req.organization_id)
+        with whatsapp_run(AGENT, org=req.organization_id):
+            return await views.run(name, ctx)
+
     try:
-        view = await asyncio.wait_for(
-            views.run(name, await views.member_context(req.member_email)),
-            timeout=QUICK_TIMEOUT_S,
-        )
+        view = await asyncio.wait_for(_build(), timeout=QUICK_TIMEOUT_S)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
