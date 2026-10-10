@@ -63,6 +63,17 @@ crash can lose the tail of a long reply, and it never sends a part twice. A
 thread is a room only when its visibility is not `private` or it has a
 participant who is not its member. The member's own `owner` row is no room.
 
+*(Review round 3, 2026-10-10.)* The bot sends a stored reply again only when
+the first part SURELY did not reach the member. That is a 4xx from Meta, or a
+connection that never opened. A read timeout, a 5xx or a 200 with no message
+id may have delivered the text. Then the row closes as `replied`, and nothing
+goes again. The last word of a used-up message is its stored reply when the thread
+holds one, and else the general text.
+
+**The trade-off is at-most-once.** A restart, or an unclear error, during the
+first send can lose the reply and still record the message as `replied`. A
+reply that goes out twice is the worse failure, so the bot accepts the loss.
+
 **Amended 2026-10-09 (owner, in chat: "can you see what we can start working on
 and building").** Four changes, recorded in §11:
 
@@ -431,8 +442,9 @@ audit)*. BO-20 has not landed (WS-4 row). So WAC-3 adds the table
 `whatsapp_bot_messages`, tenant-scoped with FORCE RLS. Its columns are `id`,
 `organization_id`, `member_email`, `wa_id`, `wamid` (unique), `direction` (`in`
 or `out`), `state`, `chat_session_id`, `tries`, `error_code`, `received_at`
-and `updated_at`. The states are `received`, `running`, `replied`, `refused`,
-`failed` and `expired`.
+and `updated_at`. The states are `received`, `running`, `sending`,
+`replied`, `refused`, `failed` and `expired`. A row is `sending` from just
+before the first part of its reply goes out, and nothing runs it again.
 
 - **It holds no message text.** The text lives only in the chat thread (§5.9).
 - **One `wamid`, one run.** A redelivery inserts nothing (`ON CONFLICT DO
