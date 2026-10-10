@@ -172,6 +172,7 @@ describe("/ with the My Day flag", () => {
         needs: {
           items,
           count: items.length,
+          total: items.length,
           sources: { tasks: "ok", approvals: "ok" },
           loading: false,
           error: null,

@@ -107,6 +107,13 @@ export interface DoneRow {
   show(): void;
   /** Put the row back with a short error. */
   fail(message: string): void;
+  /**
+   * Start the row's hold again, with no focus move. Called once the store
+   * has begun the write. A cold hydrate can take longer than the hold, and
+   * an answer that lands then still holds the task, because the write has
+   * not reached the server yet.
+   */
+  keep?(): void;
 }
 
 /**
@@ -135,6 +142,7 @@ export async function markDoneFromHome(
     if (!(await whenAnswered(id, store))) return "kept";
     row.hide();
   }
+  row.keep?.();
   onNextSyncFailure(() => row.fail(failure), store);
   onUndone(id, () => row.show(), store);
   return "done";

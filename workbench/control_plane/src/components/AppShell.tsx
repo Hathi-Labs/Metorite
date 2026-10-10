@@ -45,6 +45,8 @@ import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
+import { shellDockOn } from "@/lib/shell/dockFlag";
+import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
@@ -135,6 +137,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // The shell nav flag, read once as the Sidebar reads it: the dev override
   // must not flip mid-session, and the two must agree on the frame.
   const [navOn] = useState(() => shellNavOn());
+  // NS-6: the one bell, behind its own flag. Read once, as above.
+  const [dockOn] = useState(() => shellDockOn());
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
@@ -243,6 +247,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             bar's right end when the bar is on. Near the top, beside the
             sidebar head that holds the control, when it is off. */}
         <ActivityHost placement={frame === "classic" ? "top" : "end"} />
+        {/* NS-6 slice 6a: the one bell's panel, placed as the activity panel
+            is. With the flag off it is not mounted at all. */}
+        {dockOn ? <ShellBellHost placement={frame === "classic" ? "top" : "end"} /> : null}
         {/* WS-51 S5: unread marks, the finished toast, and the hidden tab's
             title and favicon. It draws nothing. */}
         <RunSignalsHost />
@@ -298,6 +305,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* WS-51 S3: the one activity panel, as a bottom sheet. The Menu
             drawer holds the control, with the shell bar flag on or off. */}
         <ActivityHost placement="sheet" />
+        {/* NS-6 slice 6a: the bell's panel, as a bottom sheet. */}
+        {dockOn ? <ShellBellHost placement="sheet" /> : null}
         {/* WS-51 S5: the same signals, and the agent pill above the bottom
             nav while a run goes on. */}
         <RunSignalsHost />
@@ -412,6 +421,8 @@ function MobileBottomNavInner({
   // so it never disagrees. `app/page.tsx` needs `useSyncExternalStore`
   // because it swaps the whole page; a label here does not.
   const [home] = useState(() => homePane());
+  // NS-6: the one bell sits beside the activity control here, as on the bar.
+  const [dockOn] = useState(() => shellDockOn());
   const [launcherOpen, setLauncherOpen] = useState(false);
   const drawerSections = shellNav ? shellSidebar(navSections) : navSections;
   // The run badge (WS-51 S1), from the one shared poller. Each drawer link
@@ -441,7 +452,8 @@ function MobileBottomNavInner({
       {/* NS-1 on the phone: the one search. Beside it, the activity control
           (WS-51 S3), as on the desktop bar: the phone draws no shell row, so
           the drawer opens the shell's one panel, as a sheet. The control shows
-          with the shell bar flag off too. */}
+          with the shell bar flag off too. With NS-6's flag on, the one bell
+          sits before it, as on the bar. */}
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         {shellBarOn() ? (
           <button
@@ -458,6 +470,7 @@ function MobileBottomNavInner({
         ) : (
           <span className="min-w-0 flex-1 px-1 text-sm text-muted-foreground">Assistants</span>
         )}
+        {dockOn ? <ShellBell onBeforeOpen={close} className="h-10 w-10 shrink-0" /> : null}
         <ActivityControl onBeforeOpen={close} className="h-10 w-10 shrink-0" />
       </div>
       <nav className="flex flex-col overflow-y-auto">

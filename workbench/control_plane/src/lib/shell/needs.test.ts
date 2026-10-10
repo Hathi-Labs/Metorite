@@ -72,8 +72,8 @@ const item = (extra: Partial<NeedsItem>): NeedsItem => ({
 
 describe("readFeed", () => {
   it("reads a missing field as empty", () => {
-    expect(readFeed(undefined)).toEqual({ count: 0, items: [], sources: {} });
-    expect(readFeed({ items: "nope" })).toEqual({ count: 0, items: [], sources: {} });
+    expect(readFeed(undefined)).toEqual({ count: 0, total: 0, items: [], sources: {} });
+    expect(readFeed({ items: "nope" })).toEqual({ count: 0, total: 0, items: [], sources: {} });
   });
 
   it("drops a row it cannot draw, and keeps the rest", () => {
@@ -85,6 +85,15 @@ describe("readFeed", () => {
     expect(feed.items.map((i) => i.id)).toEqual(["tasks:t1"]);
     expect(feed.count).toBe(2);
     expect(feed.sources).toEqual({ tasks: "ok" });
+  });
+
+  it("reads `total`, the rows before the feed's cut, and falls back to `count`", () => {
+    // NS-6: the bell's badge reads `total`, so a feed cut to 30 still says 47.
+    expect(readFeed({ count: 1, total: 47, items: [item({})] }).total).toBe(47);
+    // An older gateway sends no `total`.
+    expect(readFeed({ count: 1, items: [item({})] }).total).toBe(1);
+    // Never less than the rows sent.
+    expect(readFeed({ count: 3, total: 1, items: [item({})] }).total).toBe(3);
   });
 
   it("keeps an approval row, the kind slice C adds", () => {
