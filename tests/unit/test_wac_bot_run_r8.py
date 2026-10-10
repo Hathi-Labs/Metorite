@@ -212,15 +212,24 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bot_run, "_executor", lambda: agent)
 
     sent: list[tuple[str, str]] = []
-    #: How many sends refuse before one goes out (Meta down).
+    #: How many sends Meta refuses (a 4xx: surely not sent) before one goes.
     refuse: list[int] = [0]
+    #: Errors that a send raises AFTER the text reached the member (a read
+    #: timeout, a 5xx, a 200 with no message id), one per send.
+    after: list[BaseException] = []
+    #: Errors that a send raises BEFORE anything reached Meta.
+    before: list[BaseException] = []
 
     class _Provider:
         async def send_text(self, to: str, body: str) -> str:
             if refuse[0] > 0:
                 refuse[0] -= 1
-                raise RuntimeError("Meta is down")
+                raise _http_status(400)
+            if before:
+                raise before.pop(0)
             sent.append((to, body))
+            if after:
+                raise after.pop(0)
             return f"wamid.out.{uuid.uuid4().hex[:12]}"
 
     monkeypatch.setattr(factory, "build_provider", lambda _n, _c: _Provider())
@@ -234,12 +243,18 @@ def bot(granted, monkeypatch: pytest.MonkeyPatch):
 
     ns = _NS()
     ns.p, ns.agent, ns.sent, ns.bot_run = granted, agent, sent, bot_run
-    ns.refuse = refuse
+    ns.refuse, ns.after, ns.before = refuse, after, before
     try:
         yield ns
     finally:
         access.invalidate()
         eng.dispose()
+
+
+def _http_status(status: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "https://graph.facebook.com/v20.0/1/messages")
+    return httpx.HTTPStatusError("meta", request=req,
+                                 response=httpx.Response(status, request=req))
 
 
 def _change(sender: str, body: str, wamid: str | None = None) -> dict[str, Any]:
@@ -1068,3 +1083,128 @@ async def test_the_sweep_starts_nothing_for_a_thread_a_drain_holds(
     monkeypatch.delitem(bot.bot_run._RUN_LOCKS, req.chat_session_id)
     await _in_scope(bot, bot.bot_run.sweep_once)
     assert req.message_id in started
+
+
+# ── Review round 3, 1: only a SURE non-delivery is resent (real rows) ──────
+
+
+def _http_request() -> httpx.Request:
+    return httpx.Request("POST", "https://graph.facebook.com/v20.0/1/messages")
+
+
+async def _one_text_flow(bot, *, body: str):
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    await _webhook(bot, (_change(phone, body),))
+    (row,) = [r for r in _bot_rows(bot, phone) if r.direction == "in"]
+    return phone, row
+
+
+async def _sweeps_later(bot, message_id: str, times: int = 3) -> None:
+    for _ in range(times):
+        _age(bot, message_id, updated="10 minutes")
+        await _in_scope(bot, bot.bot_run.sweep_once)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: httpx.ReadTimeout("slow", request=_http_request()),
+    lambda: _http_status(502),
+    lambda: RuntimeError("unexpected send response shape: {}"),
+])
+async def test_a_send_that_may_have_delivered_goes_out_once_ever(
+    bot, make,
+) -> None:
+    bot.after.append(make())
+    phone, row = await _one_text_flow(bot, body="Maybe delivered")
+    assert (row.state, row.error_code) == ("replied", "send_unconfirmed")
+    await _sweeps_later(bot, str(row.id))
+    mine = [s for s in bot.sent if s[0] == phone]
+    assert mine == [(phone, _ANSWER)], "the member got the answer twice"
+    runs = [c for c in bot.agent.calls
+            if c["payload"]["message"] == "Maybe delivered"]
+    assert len(runs) == 1
+
+
+async def test_a_connection_that_never_opened_is_resent_from_the_thread(
+    bot,
+) -> None:
+    bot.before.append(httpx.ConnectError("refused", request=_http_request()))
+    phone, row = await _one_text_flow(bot, body="Never reached Meta")
+    assert (row.state, row.error_code, row.tries) == ("received", "send", 1)
+    await _sweeps_later(bot, str(row.id), times=1)
+    mine = [s for s in bot.sent if s[0] == phone]
+    assert mine == [(phone, _ANSWER)]
+    runs = [c for c in bot.agent.calls
+            if c["payload"]["message"] == "Never reached Meta"]
+    assert len(runs) == 1, "the agent ran again for a resend"
+    assert _state(bot, str(row.id)).state == "replied"
+
+
+# ── Review round 3, 2: a mark that commits and then fails ──────────────────
+
+
+async def test_a_mark_that_commits_then_fails_still_delivers(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b = bot.bot_run
+    real_move = b._move
+    once = [True]
+
+    async def _move(message_id, frm, to, code):
+        ok = await real_move(message_id, frm, to, code)
+        if to == "sending" and once[0]:
+            once[0] = False
+            raise RuntimeError("after the commit")
+        return ok
+
+    monkeypatch.setattr(b, "_move", _move)
+    phone, row = await _one_text_flow(bot, body="Mark then fail")
+    assert bot.sent == [] or all(s[0] != phone for s in bot.sent)
+    state = _state(bot, str(row.id))
+    assert state.state == "received", (
+        "the row would close as send_unconfirmed with nothing sent")
+    await _sweeps_later(bot, str(row.id), times=1)
+    mine = [s for s in bot.sent if s[0] == phone]
+    assert mine == [(phone, _ANSWER)]
+    assert _state(bot, str(row.id)).state == "replied"
+
+
+# ── Review round 3, 5: a used-up row with a full answer in the thread ──────
+
+
+async def test_a_used_up_row_with_a_stored_answer_gets_the_answer(
+    bot, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last try crashed after it wrote the reply and before `sending`,
+    twice (the database fails on the mark). The sweep then finds the row used
+    up: it sends the stored answer, once, and not the general text."""
+    p = bot.p
+    email, phone = _email(), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    req = await _recorded(bot, email=email, phone=phone, body="Answer me")
+    _age(bot, req.message_id, updated="0 seconds", tries=2)
+    b = bot.bot_run
+    real_move = b._move
+    broken = [True]
+
+    async def _move(message_id, frm, to, code):
+        if broken[0] and to == "sending":
+            raise RuntimeError("database gone before the commit")
+        return await real_move(message_id, frm, to, code)
+
+    monkeypatch.setattr(b, "_move", _move)
+    await _run_one(bot, req)
+    assert all(s[0] != phone for s in bot.sent), "something was sent"
+    assert tuple(_state(bot, req.message_id))[:2] == ("running", 3)
+
+    broken[0] = False
+    _age(bot, req.message_id, updated="10 minutes")
+    await _in_scope(bot, b.sweep_once)
+    mine = [s for s in bot.sent if s[0] == phone]
+    assert mine == [(phone, _ANSWER)], "the general text replaced the answer"
+    assert _state(bot, req.message_id).state == "replied"
+    await _sweeps_later(bot, req.message_id)
+    assert [s for s in bot.sent if s[0] == phone] == [(phone, _ANSWER)]

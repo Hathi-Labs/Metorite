@@ -1093,7 +1093,7 @@ async def test_a_failed_first_send_gives_the_row_back_and_keeps_the_reply(
 
     class _Down:
         async def send_text(self, to: str, body: str) -> str:
-            raise RuntimeError(f"down {TOKEN}")
+            raise _status_error(400)   # Meta refused: surely not sent
 
     monkeypatch.setattr(factory, "build_provider", lambda n, c: _Down())
     await _post_and_run(_message())
@@ -1354,7 +1354,7 @@ async def test_a_refused_first_part_resends_the_stored_reply_with_no_second_run(
         async def send_text(self, to: str, body: str) -> str:
             if refuse[0]:
                 refuse[0] = False
-                raise RuntimeError("Meta is down")
+                raise _status_error(400)   # Meta refused: surely not sent
             world.sent.append((to, body))
             return "wamid.out.ok"
 
@@ -1378,7 +1378,7 @@ async def test_a_channel_that_refuses_every_try_ends_failed_with_no_general_text
 
     class _Down:
         async def send_text(self, to: str, body: str) -> str:
-            raise RuntimeError("Meta is down")
+            raise _status_error(400)   # Meta refused: surely not sent
 
     monkeypatch.setattr(factory, "build_provider", lambda n, c: _Down())
     await _post_and_run(_message())
@@ -1399,7 +1399,7 @@ async def test_a_part_that_went_out_is_never_sent_again(
     class _Second:
         async def send_text(self, to: str, body: str) -> str:
             if world.sent:
-                raise RuntimeError("Meta is down")
+                raise _status_error(400)   # Meta refused: surely not sent
             world.sent.append((to, body))
             return "wamid.out.1"
 
@@ -1460,3 +1460,162 @@ async def test_a_retried_older_text_does_not_see_a_newer_texts_answer(
     assert retry["messages"] == [], "the retry saw a newer text's answer"
     assert [r["state"] for r in world.store.inbound_rows()] == [
         "replied", "replied"]
+
+
+# ── Round 3, 1: only a SURE non-delivery is resent ─────────────────────────
+
+
+def _request_obj() -> httpx.Request:
+    return httpx.Request("POST", "https://graph.facebook.com/v20.0/1/messages")
+
+
+@pytest.mark.parametrize("exc,sure", [
+    (_status_error(400), True),
+    (_status_error(429), True),
+    (httpx.ConnectError("refused", request=_request_obj()), True),
+    (httpx.ConnectTimeout("no route", request=_request_obj()), True),
+    (_status_error(500), False),
+    (_status_error(503), False),
+    (httpx.ReadTimeout("slow", request=_request_obj()), False),
+    (httpx.RemoteProtocolError("cut", request=_request_obj()), False),
+    (RuntimeError("unexpected send response shape: {}"), False),
+])
+def test_only_a_4xx_or_a_connection_that_never_opened_is_a_sure_failure(
+    exc, sure,
+) -> None:
+    assert bot_run.send_surely_failed(exc) is sure
+
+
+def _provider_that(world: _World, monkeypatch: pytest.MonkeyPatch, *,
+                   deliver_then_raise: BaseException | None = None,
+                   refuse_once: BaseException | None = None) -> None:
+    """A provider whose FIRST send records the text and then raises (the
+    text reached the member), or refuses once and then works."""
+    from whatsapp_ingestion.providers import factory
+
+    state = {"first": True}
+
+    class _P:
+        async def send_text(self, to: str, body: str) -> str:
+            first, state["first"] = state["first"], False
+            if first and refuse_once is not None:
+                raise refuse_once
+            world.sent.append((to, body))
+            if first and deliver_then_raise is not None:
+                raise deliver_then_raise
+            return "wamid.out.ok"
+
+    monkeypatch.setattr(factory, "build_provider", lambda n, c: _P())
+
+
+@pytest.mark.parametrize("exc", [
+    httpx.ReadTimeout("slow", request=_request_obj()),
+    _status_error(502),
+    RuntimeError("unexpected send response shape: {}"),
+])
+async def test_a_send_that_may_have_delivered_is_never_sent_again(
+    world: _World, monkeypatch: pytest.MonkeyPatch, exc,
+) -> None:
+    _provider_that(world, monkeypatch, deliver_then_raise=exc)
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert (row["state"], row["code"]) == ("replied", "send_unconfirmed")
+    await _later_sweeps(world, row)
+    assert world.sent == [(PHONE, ANSWER)], "the member got the answer twice"
+    assert len(world.agent.calls) == 1
+
+
+@pytest.mark.parametrize("exc", [
+    _status_error(400),
+    httpx.ConnectError("refused", request=_request_obj()),
+])
+async def test_a_sure_refusal_is_resent_from_the_thread(
+    world: _World, monkeypatch: pytest.MonkeyPatch, exc,
+) -> None:
+    _provider_that(world, monkeypatch, refuse_once=exc)
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert (row["state"], row["code"]) == ("received", "send")
+    await _later_sweeps(world, row, times=1)
+    assert world.sent == [(PHONE, ANSWER)]
+    assert len(world.agent.calls) == 1
+    assert row["state"] == "replied"
+
+
+async def test_a_cancel_while_the_send_is_in_flight_is_never_sent_again(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from whatsapp_ingestion.providers import factory
+
+    class _InFlight:
+        async def send_text(self, to: str, body: str) -> str:
+            world.sent.append((to, body))   # Meta has it
+            raise asyncio.CancelledError()  # the restart lands now
+
+    monkeypatch.setattr(factory, "build_provider", lambda n, c: _InFlight())
+    links = [dict(lk) for lk in world.links]
+    req = await bot_run.record_inbound(links, PHONE, "wamid.FLIGHT", QUESTION)
+    with pytest.raises(asyncio.CancelledError):
+        await bot_run.run_message(req)
+    row = world.store.rows[req.message_id]
+    assert (row["state"], row["code"]) == ("replied", "cancelled")
+    await _later_sweeps(world, row)
+    assert world.sent == [(PHONE, ANSWER)]
+
+
+# ── Round 3, 2: a mark that committed, and nothing went out ────────────────
+
+
+@pytest.mark.parametrize("fault", [RuntimeError, asyncio.CancelledError])
+async def test_a_mark_that_commits_then_fails_still_delivers_the_reply(
+    world: _World, monkeypatch: pytest.MonkeyPatch, fault,
+) -> None:
+    real = world.store.move
+    once = [True]
+
+    async def _move(message_id, frm, to, code):
+        ok = await real(message_id, frm, to, code)
+        if to == "sending" and once[0]:
+            once[0] = False
+            raise fault("after the commit")
+        return ok
+
+    monkeypatch.setattr(bot_run, "_move", _move)
+    links = [dict(lk) for lk in world.links]
+    req = await bot_run.record_inbound(links, PHONE, "wamid.MARK", QUESTION)
+    if fault is asyncio.CancelledError:
+        with pytest.raises(asyncio.CancelledError):
+            await bot_run.run_message(req)
+    else:
+        await bot_run.run_message(req)
+    row = world.store.rows[req.message_id]
+    assert world.sent == [], "a send started"
+    assert row["state"] == "received", "the row would close with no reply"
+    await _later_sweeps(world, row, times=1)
+    assert world.sent == [(PHONE, ANSWER)]
+    assert len(world.agent.calls) == 1
+
+
+# ── Round 3, 5: the last try sends the stored answer, not the general text ─
+
+
+async def test_a_last_try_that_crashed_after_the_reply_sends_the_stored_reply(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = world.store.move
+    once = [True]
+
+    async def _move(message_id, frm, to, code):
+        if to == "sending" and frm == "running" and once[0]:
+            once[0] = False
+            raise RuntimeError("database gone before the commit")
+        return await real(message_id, frm, to, code)
+
+    monkeypatch.setattr(bot_run, "_move", _move)
+    links = [dict(lk) for lk in world.links]
+    req = await bot_run.record_inbound(links, PHONE, "wamid.LAST", QUESTION)
+    world.store.rows[req.message_id]["tries"] = 2
+    await bot_run.run_message(req)
+    row = world.store.rows[req.message_id]
+    assert world.sent == [(PHONE, ANSWER)], "the general text replaced the answer"
+    assert row["state"] == "replied" and row["tries"] == 3

@@ -38,11 +38,18 @@ in the database. Nothing runs a ``sending`` row again, and nothing sends it
 the general text: the sweep closes it as ``replied`` (``send_unconfirmed``)
 after 5 minutes. A crash in the middle of a long reply can lose its tail, and
 it never sends a part twice. A failure BEFORE ``sending`` gives the row back
-as ``received`` with its try counted, so the sweep runs it again, and the last
-try sends the general text once. A first part that WhatsApp refuses gives the
-row back too. The next try sends the reply stored in the thread again, with
-no second run of the agent. After the last try, the row ends ``failed``
-(``send``), and no general text goes, because the channel itself failed.
+as ``received`` with its try counted, so the sweep runs it again. A first part
+that SURELY did not reach the member (Meta answered 4xx, or the connection
+never opened) gives the row back too, and the next try sends the reply stored
+in the thread, with no second run of the agent. Any other send error (a read
+timeout, a 5xx, a 200 with no message id) may have delivered the text, so the
+row closes as ``replied`` (``send_unconfirmed``) and nothing is sent again.
+The last try sends the stored reply if the thread holds one, and else the
+general text, once. A channel that refused every try gets no general text.
+
+**The trade-off is at-most-once.** A restart, or an unclear error, during the
+first send can lose the reply and still record the row as ``replied``. A
+reply that goes out twice is the worse failure, so the code picks the loss.
 
 **The text lives in the thread only.** The table holds no text (§5.9). The
 member's turn is written BEFORE the 200, with an id made from the ``wamid``
@@ -513,7 +520,9 @@ async def _session_state(
 
 
 async def _thread_shared(session_id: str) -> bool:
-    """True when the thread has any participant row: it is a shared room."""
+    """True when the thread is a shared room (``_ROOM_SQL``): a visibility
+    other than ``private``, or a participant who is not its member. The
+    member's own ``owner`` row is no room."""
     async with tenant_session() as db:
         return bool((await db.execute(
             text(_SHARED_SQL), {"sid": session_id},
@@ -776,8 +785,13 @@ def start(req: RunRequest, *, stale: bool = False) -> asyncio.Task[None]:
 
 
 async def stop_runs(timeout: float = 5.0) -> None:
-    """Cancel the live runs (gateway shutdown). Each row stays ``running``,
-    so the sweep of the next process runs it again."""
+    """Cancel the live runs (gateway shutdown).
+
+    A row before its send stays ``running``, or goes back to ``received``,
+    and the next process's sweep runs it again. A row whose send started is
+    closed as ``replied`` in a shielded write, or stays ``sending`` for the
+    sweep to close, so nothing goes out twice (at-most-once).
+    """
     runs = list(_RUNS)
     for task in runs:
         task.cancel()
@@ -901,8 +915,11 @@ class _Attempt:
 
     tries: int = 0
     sent: bool = False
-    #: The row is `sending` in the database.
+    #: The send mark was asked for: the row is `sending`, or may be.
     marked: bool = False
+    #: A send raised in a way that may have delivered the text (a read
+    #: timeout, a 5xx, a cancel in flight). Never resend after it.
+    unsure: bool = False
 
 
 async def run_message(req: RunRequest, *, stale: bool = False) -> None:
@@ -991,10 +1008,16 @@ async def _process(req: RunRequest, *, stale: bool) -> None:
         # sweep takes it. After a part went out, the end write is shielded
         # and bounded. If it still fails, the row stays `sending`, which no
         # run takes again, so nothing is sent twice.
-        if attempt.sent:
-            with contextlib.suppress(BaseException):
+        with contextlib.suppress(BaseException):
+            if attempt.sent or attempt.unsure:
                 await asyncio.wait_for(asyncio.shield(_move(
                     req.message_id, "sending", "replied", "cancelled")),
+                    timeout=_CANCEL_WRITE_S)
+            elif attempt.marked:
+                # The mark landed (or may have), and no send started. The
+                # row waits again, and the next try sends the stored reply.
+                await asyncio.wait_for(asyncio.shield(_move(
+                    req.message_id, "sending", "received", "cancelled")),
                     timeout=_CANCEL_WRITE_S)
         raise
     except Exception as exc:  # the record names the class only
@@ -1007,31 +1030,56 @@ async def _process(req: RunRequest, *, stale: bool) -> None:
 
 
 async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
-    """Close a try that raised. Never loses a message, never sends twice.
+    """Close a try that raised. At most one reply, and no silent loss.
 
     * Not claimed yet: nothing changed, and the row still waits.
-    * The row is ``sending``: a part may have gone out. The end write tries
-      once more. Every other write below needs ``running``, so a ``sending``
-      row is never run again and never gets the general text.
+    * A part went out, or may have: the row is ``replied``. Nothing more goes.
+    * The mark was asked for and nothing went out: the row goes back to
+      ``running`` (it may be ``sending`` if the mark committed and then
+      raised), and is handled as below.
     * Tries left: the row waits again (``received``), and the sweep runs it.
-    * The last try: the row is ``failed``, and the general text goes once.
+    * The last try: the stored reply goes once if the thread holds one, else
+      the general text goes once (:func:`_last_word`).
     """
     if attempt.tries == 0:
         return
     with contextlib.suppress(Exception):
+        if attempt.marked and (attempt.sent or attempt.unsure):
+            await _move(req.message_id, "sending", "replied",
+                        "internal" if attempt.sent else "send_unconfirmed")
+            return
         if attempt.marked:
-            if attempt.sent:
-                await _move(req.message_id, "sending", "replied", "internal")
-            elif attempt.tries < MAX_TRIES:
-                # The send refused its first part: the stored reply goes on
-                # the next try.
-                await _move(req.message_id, "sending", "received", "send")
-            else:
-                await _move(req.message_id, "sending", "failed", "send")
-        elif attempt.tries < MAX_TRIES:
+            await _move(req.message_id, "sending", "running", "internal")
+        if attempt.tries < MAX_TRIES:
             await _retry(req.message_id, "internal")
-        elif await _end(req.message_id, "failed", "internal"):
-            await _send(req, [REPLY_FAILED], kind="failed")
+        else:
+            await _last_word(req, attempt.tries)
+
+
+async def _last_word(req: RunRequest, tries: int) -> None:
+    """The last try of a ``running`` row: its stored reply, else the general
+    text. Each one goes once, under the row's state change."""
+    stored = await _stored_reply(req.chat_session_id, req.wamid)
+    if stored:
+        await _deliver(req, stored, _Attempt(tries=tries), frm="running",
+                       last_try=True)
+    elif await _end(req.message_id, "failed", "internal"):
+        await _send(req, [REPLY_FAILED], kind="failed")
+
+
+async def _close_used_up(req: RunRequest) -> None:
+    """The last word of a row that the sweep found used up (now ``failed``).
+
+    A full answer may sit in the thread: a try that crashed after it wrote
+    the reply and before ``sending``. Then that reply goes, once, under the
+    same send mark. Else the general text goes, once.
+    """
+    stored = await _stored_reply(req.chat_session_id, req.wamid)
+    if stored:
+        await _deliver(req, stored, _Attempt(tries=MAX_TRIES), frm="failed",
+                       last_try=True)
+    else:
+        await _send(req, [REPLY_FAILED], kind="tries")
 
 
 def build_payload(message: str, history: list[dict[str, str]],
@@ -1120,29 +1168,70 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         _log.info("whatsapp_channel.run.resend_stored", run_id=run_id,
                   message_id=req.message_id)
 
-    # The durable send mark. From here no run takes this row again, and
-    # nothing sends it the general text.
-    if not await _move(req.message_id, "running", "sending", None):
+    await _deliver(req, reply, attempt, frm="running",
+                   last_try=attempt.tries >= MAX_TRIES)
+
+
+async def _deliver(req: RunRequest, reply: str, attempt: _Attempt, *,
+                   frm: str, last_try: bool) -> None:
+    """Send *reply* under the durable send mark, then close the row.
+
+    The mark (``frm`` → ``sending``) comes first. From then on no run takes
+    the row again, and nothing sends it the general text. ``attempt.marked``
+    is set BEFORE the mark's await: if the UPDATE commits and then raises,
+    or a cancel lands in it, the failure path still knows a mark may exist
+    and gives the row back, because no send started.
+
+    How the row closes:
+
+    * every part went out → ``replied``
+    * a send may have delivered (:func:`send_surely_failed` is False) →
+      ``replied``/``send_unconfirmed``, never sent again
+    * a part went out, then one surely failed → ``replied``/``send_partial``
+    * nothing went out, surely: tries left → ``received``/``send`` (the next
+      try sends this stored reply), the last try → ``failed``/``send``
+    """
+    attempt.marked = True
+    if not await _move(req.message_id, frm, "sending", None):
+        attempt.marked = False
         _log.info("whatsapp_channel.run.not_sending", message_id=req.message_id)
         return
-    attempt.marked = True
     parts = split_reply(reply)
     sent = await _send(req, parts, kind="answer", attempt=attempt)
     if sent == len(parts):
-        await _move(req.message_id, "sending", "replied", None)
+        to, code = "replied", None
+    elif attempt.unsure:
+        to, code = "replied", "send_unconfirmed"
     elif sent:
-        # A part went out. The rest is lost, and nothing goes twice.
-        await _move(req.message_id, "sending", "replied", "send_partial")
-    elif attempt.tries < MAX_TRIES:
-        # Nothing went out. The next try sends the stored reply again.
-        await _move(req.message_id, "sending", "received", "send")
+        to, code = "replied", "send_partial"
+    elif not last_try:
+        to, code = "received", "send"
     else:
-        # The channel itself failed on every try. No general text either.
-        await _move(req.message_id, "sending", "failed", "send")
+        # The channel refused every try. No general text either.
+        to, code = "failed", "send"
+    await _move(req.message_id, "sending", to, code)
     _log.info("whatsapp_channel.run.replied" if sent == len(parts) else
               "whatsapp_channel.run.send_failed",
-              run_id=run_id, message_id=req.message_id, chars=len(reply),
-              parts=len(parts), sent=sent)
+              message_id=req.message_id, chars=len(reply), parts=len(parts),
+              sent=sent, state=to, code=code)
+
+
+def send_surely_failed(exc: BaseException) -> bool:
+    """True only when the text SURELY did not reach the member.
+
+    * ``httpx.HTTPStatusError`` with a 4xx: Meta's own refusal.
+    * ``httpx.ConnectError`` or ``httpx.ConnectTimeout``: nothing reached Meta.
+
+    Every other error may come AFTER Meta accepted the text: a read timeout,
+    a 5xx, or ``cloud_api._post_message``'s "unexpected send response shape"
+    on a 200. Those read as "possibly sent", so nothing is sent again.
+    """
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = getattr(exc.response, "status_code", None)
+        return isinstance(status, int) and 400 <= status < 500
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
 
 
 async def _send(req: RunRequest, texts: list[str], *, kind: str,
@@ -1151,7 +1240,8 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str,
 
     Logs Meta's error fields only, never the exception text, which can carry
     a URL or a token. Returns how many texts went out, and stops at the first
-    one that fails. *attempt* notes that a part went out.
+    one that fails. *attempt* notes that a part went out, and whether a
+    failed send may have delivered its text (:func:`send_surely_failed`).
     """
     hint = req.wa_id[-4:]
     creds = flags.bot_credentials()
@@ -1172,9 +1262,18 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str,
     for part in texts:
         try:
             out_id = await provider.send_text(req.wa_id, part)
+        except asyncio.CancelledError:
+            # A cancel while the request is in flight: Meta may have it.
+            if attempt is not None:
+                attempt.unsure = True
+            raise
         except Exception as exc:
+            sure = send_surely_failed(exc)
+            if attempt is not None and not sure:
+                attempt.unsure = True
             _log.warning("whatsapp_channel.run.reply_failed", kind=kind,
-                         phone_hint=hint, sent=sent, **meta_error_fields(exc))
+                         phone_hint=hint, sent=sent, surely_not_sent=sure,
+                         **meta_error_fields(exc))
             return sent
         sent += 1
         if attempt is not None:
@@ -1207,8 +1306,8 @@ def _uuid_or_none(value: str) -> str | None:
 async def _sweep_org(org: str) -> list[RunRequest]:
     """Expire, close and collect the waiting rows of ONE org. Bound.
 
-    A row that used its tries gets the general text once, here: the UPDATE
-    that closes it returns it only once.
+    A row that used its tries gets its last word once, here: the UPDATE
+    that closes it returns it only once (:func:`_close_used_up`).
     """
     token = bind_tenant(org)
     try:
@@ -1233,7 +1332,7 @@ async def _sweep_org(org: str) -> list[RunRequest]:
             if row["chat_session_id"] is None:
                 continue
             with contextlib.suppress(Exception):
-                await _send(_request(row), [REPLY_FAILED], kind="tries")
+                await _close_used_up(_request(row))
     finally:
         release_tenant(token)
     if expired or exhausted or unconfirmed:
