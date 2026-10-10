@@ -7,15 +7,18 @@
  * **The product has three heading shapes, and this fence keeps each of them
  * in ONE place. They differ in CHROME, never in the title's size:**
  *
- * 1. `PageHeader` — the DOCUMENT header. No rule under it, at the top of a
- *    page that flows. The People app.
- * 2. `SettingsHeader` — the PANE header. Carries the back link out of a pane
- *    you navigated into, inside the bordered bar. Settings.
- * 3. The APP BAR — a slim `h-10` strip carrying a rail toggle and the app's
- *    name. Projects and Tasks. Deliberately not a page header. Its component
- *    is `AppTopBar` since 2026-09-24, and both apps render it. The app's
- *    name is small there on purpose (`DESIGN_SYSTEM.md` §6a), so it does not
- *    take `HEADING_TITLE`.
+ * 1. The APP BAR — `AppTopBar`, the slim `h-10` title bar every app opens
+ *    with (owner, 2026-10-10). It holds the app's name, and **that is the
+ *    app's one `<h1>`.** The name is small there on purpose
+ *    (`DESIGN_SYSTEM.md` §6a), so it does not take `HEADING_TITLE`.
+ * 2. `PageHeader` — the DOCUMENT header. No rule under it, at the top of a
+ *    page that flows. The People app. Its title is an `<h2>`.
+ * 3. `SettingsHeader` — the PANE header. Carries the back link out of a pane
+ *    you navigated into, inside the bordered bar. Settings. Its title is an
+ *    `<h2>`.
+ *
+ * One `<h1>` per app: the bar's. Each page or pane under it is an `<h2>`.
+ * `lib/shell/appBar.test.ts` holds every live pane to rendering the bar.
  *
  * Both components take their title from `headingScale.ts`, so shape 1 and
  * shape 2 are the same size. Tab from Workload to Organisation and only the
@@ -50,15 +53,16 @@ const SRC = path.join(__dirname, "..");
 
 /**
  * The count of files outside the swept apps that still write their own
- * `<h1>`. **Measured 2026-09-22, down from 49. This may only ever go DOWN.**
+ * `<h1>`. **Measured 2026-10-10, down from 39, when every live app moved its
+ * title into `AppTopBar`. This may only ever go DOWN.**
  *
  * To lower it: convert a file's heading to `PageHeader` or `SettingsHeader`,
  * then set this to the new count. Never raise it — a new surface takes a
  * heading component, which is the whole point.
  */
-const RAW_HEADING_BUDGET = 39;
+const RAW_HEADING_BUDGET = 27;
 
-/** The two components that legitimately contain the one `<h1>` each. */
+/** The two heading components. Each holds one `<h2>`, under the app bar. */
 const HEADING_COMPONENTS = ["PageHeader.tsx", "SettingsHeader.tsx"];
 
 /**
@@ -113,7 +117,7 @@ describe("the heading comes from a component", () => {
     }
   });
 
-  it("both heading components exist and each holds exactly one <h1>", () => {
+  it("both heading components exist, each holds one <h2>, and neither an <h1>", () => {
     for (const name of HEADING_COMPONENTS) {
       // Comments stripped FIRST: both docstrings say `<h1>` while explaining
       // themselves, and a fence that counts prose measures the wrong thing.
@@ -121,7 +125,11 @@ describe("the heading comes from a component", () => {
       const source = stripComments(
         fs.readFileSync(path.join(SRC, "components", name), "utf8"),
       );
-      expect(source.match(/<h1[\s>]/g) ?? []).toHaveLength(1);
+      // The app's one h1 is its title bar's (owner, 2026-10-10). A page
+      // header under the bar is a second level, so a second h1 is the
+      // defect this catches.
+      expect(source.match(/<h2[\s>]/g) ?? []).toHaveLength(1);
+      expect(source).not.toMatch(/<h1[\s>]/);
     }
   });
 

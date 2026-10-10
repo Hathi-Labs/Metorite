@@ -123,7 +123,7 @@ export function AppTopBar({
 
   return (
     <div
-      data-app-bar
+      data-app-bar="desktop"
       className="flex h-10 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card px-2"
     >
       {rail ? (

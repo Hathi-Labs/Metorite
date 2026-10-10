@@ -219,11 +219,13 @@ const SEAM: {
     /**
      * 2026-09-24, "the frame". Each app drew its own `h-10` bar, and My
      * Tasks' carried a private `PanelToggle`. A second bar, or that toggle
-     * grown back, is the drift this row catches.
+     * grown back, is the drift this row catches. Since 2026-10-10 every app
+     * opens with this bar (owner), so the name a second one would most
+     * likely take is caught too.
      */
     what: "the app bar",
     home: "components/AppTopBar.tsx",
-    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+(?:AppTopBar|PanelToggle)\b/,
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+(?:AppTopBar|AppTitleBar|PanelToggle)\b/,
   },
   {
     /** Projects' switcher was local to its page, and My Tasks hand-rolled one. */
@@ -412,6 +414,9 @@ describe("both apps reach the shared modules", () => {
     // dropdown, one panel header, one stage vocabulary, one panel width.
     ["projects", "components/AppTopBar"],
     ["tasks", "components/AppTopBar"],
+    // 2026-10-10 (owner): the third lens over the one task store opens with
+    // the same title bar, not a header of its own.
+    ["calendar", "components/AppTopBar"],
     ["projects", "components/ModeSwitch"],
     ["tasks", "components/ModeSwitch"],
     ["projects", "components/ui/SelectButton"],
