@@ -638,12 +638,15 @@ test.describe("a category folds, per account", () => {
 
   test("the category of the current route opens, whatever was stored", async ({ page }) => {
     await page.addInitScript(() => {
-      localStorage.setItem("cc-sidebar-folds:priya@example.com|org1", JSON.stringify({ across: true }));
+      localStorage.setItem("cc-sidebar-folds:priya@example.com|org1", JSON.stringify({ across: true, studio: true }));
     });
     await stub(page, { ...STARRED, pins: [...ENGINEER_STARS, "/people"] });
     await page.goto("/settings/appearance");
     await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "false");
     await page.goto("/people");
+    // AI Studio is the witness: once it reads folded, the stored folds have
+    // loaded, so an open Apps is the rule and not the first frame.
+    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "false");
     await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
     await expect(sidebar(page).getByRole("link", { name: "People", exact: true })).toBeVisible();
   });
