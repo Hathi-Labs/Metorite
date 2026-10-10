@@ -442,10 +442,10 @@ function ProjectNav({
           type="button"
           aria-label="New space"
           title="New space"
-          onClick={() => {
-            onNewSpace();
-            onPicked?.();
-          }}
+          // ⚠️ No `onPicked` here (2026-10-10). The draft row is drawn IN
+          // this tree, so closing the phone drawer hid the field the tap
+          // had just opened. The drawer stays open and shows the draft.
+          onClick={() => onNewSpace()}
           className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
         >
           <Icon name="Plus" className="h-4 w-4" />
@@ -459,10 +459,9 @@ function ProjectNav({
           onSelect(project);
           onPicked?.();
         }}
-        onAddChild={(parent, option) => {
-          onAddChild(parent, option);
-          onPicked?.();
-        }}
+        // Kept open for the same reason as "New space" above: the child's
+        // draft row is drawn in this tree.
+        onAddChild={onAddChild}
         onOpenSettings={(space) => {
           onOpenSettings(space);
           onPicked?.();
@@ -1490,7 +1489,10 @@ function ProjectsWorkspace() {
         )}
       </div>,
     );
-  }, [isMobile, sheet, mode, selected, visibleRoots, openDrawer, closeDrawer]);
+    // `creating` is here so the drawer re-injects when a draft opens or
+    // closes. Without it, the "+" in the drawer drew nothing: the snapshot
+    // kept the tree as it was before the tap (2026-10-10).
+  }, [isMobile, sheet, mode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
