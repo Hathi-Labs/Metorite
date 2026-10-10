@@ -220,8 +220,10 @@ export interface CollapsibleCardHeaderProps {
   /** Draw nothing while the header does not toggle. For a card that had no
    *  title row before it folded. */
   quiet?: boolean;
-  /** The title's type and colour. */
+  /** The row's type size: the count and the summary follow it too. */
   className?: string;
+  /** The title's weight and colour. The icon keeps the card's own colour. */
+  titleClassName?: string;
 }
 
 /**
@@ -235,7 +237,12 @@ export interface CollapsibleCardHeaderProps {
  *
  * Outside a folding card it draws nothing, so a card can call it anywhere.
  */
-export function CollapsibleCardHeader({ title, quiet = false, className = "" }: CollapsibleCardHeaderProps) {
+export function CollapsibleCardHeader({
+  title,
+  quiet = false,
+  className = "text-[11px]",
+  titleClassName = "font-medium text-foreground",
+}: CollapsibleCardHeaderProps) {
   const fold = useCardFold();
   if (!fold) return null;
   const { toggle, open, label, icon, count, summary, panelId } = fold;
@@ -244,7 +251,7 @@ export function CollapsibleCardHeader({ title, quiet = false, className = "" }: 
   const words = (
     <>
       {icon ? <Icon name={icon} size={13} className="shrink-0" /> : null}
-      <span className={`min-w-0 truncate ${shut && summary ? "max-w-[60%] shrink-0" : ""} ${className}`}>
+      <span className={`min-w-0 truncate ${shut && summary ? "max-w-[60%] shrink-0" : ""} ${titleClassName}`}>
         {title ?? label}
       </span>
       {counted ? <span className="shrink-0 font-normal tabular-nums text-muted-foreground">· {count}</span> : null}
@@ -252,7 +259,7 @@ export function CollapsibleCardHeader({ title, quiet = false, className = "" }: 
   );
   if (!toggle) {
     if (quiet) return null;
-    return <div className="flex min-w-0 items-center gap-2">{words}</div>;
+    return <div className={`flex min-w-0 items-center gap-2 ${className}`}>{words}</div>;
   }
   return (
     <Base.Trigger
@@ -261,7 +268,7 @@ export function CollapsibleCardHeader({ title, quiet = false, className = "" }: 
       // The substrate names the panel only while it is open. The panel stays
       // mounted while shut, so the toggle names it in both states.
       aria-controls={panelId}
-      className="cc-control group -mx-1 -my-0.5 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left"
+      className={`cc-control group -mx-1 -my-0.5 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left ${className}`}
     >
       {/* One icon for both states, turned: a swap of glyph would jump by a
           pixel. `motion-reduce` keeps it still for a member who asked. */}

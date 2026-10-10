@@ -570,12 +570,14 @@ function MessageBubble({
     // A long card rolls up when a newer card arrives (`components/RollupCard`).
     // An ask that still waits never does: the pin's own rule says when.
     // A root `card` has its own title row, and that row is the one toggle.
+    // It never wore an icon, so it does not get one. A frame does.
     const target = genUiTarget(message.id, i, spec);
     const title = unfenced(genUiTitle(spec)) || "Card";
     const header = genUiRootIsCard(spec) ? "own" : "frame";
+    const icon = header === "own" ? undefined : "LayoutTemplate";
     if (ask) {
       return (
-        <RollupCard key={i} id={target} title={title} icon="LayoutTemplate" header={header}
+        <RollupCard key={i} id={target} title={title} icon={icon} header={header}
           askTarget={answered === undefined ? target : undefined}>
           <div {...askAttr} className="min-w-0 outline-none">
             <GenerativeUINode spec={spec} onAction={act} answered={answered} />
@@ -584,7 +586,7 @@ function MessageBubble({
       );
     }
     return (
-      <RollupCard key={i} id={target} title={title} icon="LayoutTemplate" header={header}>
+      <RollupCard key={i} id={target} title={title} icon={icon} header={header}>
         <GenerativeUINode spec={spec} onAction={act} answered={answered} />
       </RollupCard>
     );

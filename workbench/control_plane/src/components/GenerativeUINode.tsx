@@ -154,7 +154,8 @@ function Node({
             <CollapsibleCardHeader
               title={title ?? undefined}
               quiet={title === null}
-              className="text-sm font-semibold text-foreground"
+              className="text-sm"
+              titleClassName="font-semibold text-foreground"
             />
             <CollapsibleCardBody className={title !== null || fold.toggle ? "space-y-2 pt-2" : "space-y-2"}>
               {renderKids()}
