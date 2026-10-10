@@ -575,3 +575,50 @@ async def persist_final_assistant_message(
             error=str(exc),
         )
         return None
+
+
+async def persist_channel_reply(
+    thread_id: str,
+    message_id: str,
+    content: str,
+    *,
+    user_id: str,
+    agent_name: str = "orchestrator",
+    timestamp_ms: int,
+    organization_id: str,
+) -> bool:
+    """Write the final reply of a run that a CHANNEL started (WS-47 WAC-3).
+
+    The WhatsApp bot runs the executor's batch ``run_agent``. That path
+    writes no Redis event log, so :func:`persist_final_assistant_message`
+    has nothing to replay. The caller holds the reply text, and this writes
+    it as the run's sealed agent row, with the same rules as the fold:
+    ``author_from_run`` names the agent that ran, and the member who started
+    the run is the run member (S12, S13). It never changes a human turn.
+
+    The caller wrote the session row first. ``organization_id`` is the tenant
+    that the phone link names, never one from the message. Returns True when
+    the row was written. Unlike the fold, it raises on a database error, so
+    the caller can record the failure.
+    """
+    import asyncio
+
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    record = MessageRecord(
+        id=message_id, role="assistant", content=content, timestamp=timestamp_ms,
+    )
+    declined = await asyncio.to_thread(
+        _upsert_messages, thread_id, [record],
+        actor_email=user_id, agent_name=agent_name,
+        # The fold's own rule: a solo thread records nothing (None), and a
+        # thread that became a room records its members and caps (§4).
+        authority=await _run_authority(thread_id, user_id),
+        author_from_run=True,
+        organization_id=organization_id,
+    )
+    if declined:
+        _log.warning("chat_fold.channel_reply_declined",
+                     thread_id=thread_id[:12], message_id=message_id[:40])
+        return False
+    return True

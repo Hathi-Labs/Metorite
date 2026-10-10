@@ -947,12 +947,26 @@ def _make_user_input_handler(thread_id: str) -> Any:
     The returned coroutine emits a ``user_input_requested`` event straight to
     the Redis relay (the streaming generator is parked awaiting ``agent.run``
     and cannot yield this frame itself) and blocks until the answer arrives.
+
+    WS-47 WAC-3: a run inside ``acb_skills.ask_tools.refuse_cards`` has no
+    card channel, so the handler answers empty at once and parks nothing. It
+    reads the switch when it is built, on the run's frame, because the SDK
+    can call it in a context that does not carry the run's ContextVars.
     """
+    try:
+        from acb_skills.ask_tools import cards_refused
+        _refused_at_build = cards_refused()
+    except Exception:
+        cards_refused = None  # type: ignore[assignment]
+        _refused_at_build = False
 
     async def _handler(request: Any, _ctx: Any) -> dict[str, Any]:
         global _sse_seq
         import time as _time
         import uuid as _uuid
+
+        if _refused_at_build or (cards_refused is not None and cards_refused()):
+            return {"answer": "", "wasFreeform": True}
 
         if isinstance(request, dict):
             question = request.get("question", "") or ""
