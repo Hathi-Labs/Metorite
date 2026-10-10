@@ -158,15 +158,26 @@ function RollupCardIn({
 
   // The body's height, measured. 0 is "not known" (a shut body measures 0).
   const [height, setHeight] = useState(0);
+  // The body holds something to fold: text, or a visual element. Padding
+  // alone is not a body, so a one-line receipt draws no toggle. A shut body
+  // keeps its children, so this holds while the card is shut.
+  const [filled, setFilled] = useState(false);
   useLayoutEffect(() => {
     const el = body;
     if (!el) return;
+    const readFilled = () =>
+      setFilled(
+        (el.textContent ?? "").trim().length > 0 ||
+          el.querySelector("img,svg,table,canvas,input,select,textarea,button,iframe") !== null,
+      );
+    readFilled();
     const h = el.offsetHeight;
     if (h > 0) setHeight(h);
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver((entries) => {
       const next = entries[entries.length - 1]?.contentRect.height ?? 0;
       if (next > 0) setHeight(Math.round(next));
+      readFilled();
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -184,7 +195,9 @@ function RollupCardIn({
 
   const pending = pendingProp || (!!askTarget && waiting.has(askTarget));
   const long = isLong(height, rows);
-  const toggle = showRollupToggle({ pending, long });
+  // Every card with a body may fold by hand (owner feedback, 2026-10-11).
+  const hasBody = filled || (rows ?? 0) > 0;
+  const toggle = showRollupToggle({ pending, hasBody });
   const open = rollupOpen({ pending, manual, newest, long, held });
   // What the member sees now, for the focus to hold. Read in a handler only.
   const openRef = useRef(open);

@@ -14,8 +14,9 @@
  *    The choice lives for the page's life, keyed by the card's id, so a
  *    re-render or a reconnect replay keeps it. A reload forgets it.
  * 3. The NEWEST card in the transcript stays open.
- * 4. Every older LONG card folds. A short card never folds and never shows
- *    a toggle.
+ * 4. Every older LONG card folds by itself. A short card never folds by
+ *    itself, and the member may still fold it by hand: every card with a
+ *    body draws the toggle ({@link showRollupToggle}).
  *
  * "Long" is a measure, not a guess: the body is taller than
  * {@link LONG_PX}, or it lists more than {@link LONG_ROWS} rows.
@@ -71,9 +72,21 @@ export function rollupOpen({ pending, manual, newest, long, held }: RollupInputs
   return !long;
 }
 
-/** Does the card draw its toggle? Only a long card that does not wait. */
-export function showRollupToggle({ pending, long }: Pick<RollupInputs, "pending" | "long">): boolean {
-  return long && !pending;
+/**
+ * Does the card draw its toggle? Every card with a body that does not wait.
+ *
+ * ⚠️ Owner feedback, 2026-10-11: "why am I unable to roll up and close the
+ * accordion". Until then only a LONG card drew the toggle, and the one-line
+ * rows of #843 made a three-task receipt short, so its toggle vanished. A
+ * member may fold any card by hand. Length decides only the AUTOMATIC fold
+ * (rule 4, `rollupOpen`). A card with no body (a one-line receipt) has
+ * nothing to fold, so it draws no toggle.
+ */
+export function showRollupToggle({
+  pending,
+  hasBody,
+}: Pick<RollupInputs, "pending"> & { hasBody: boolean }): boolean {
+  return hasBody && !pending;
 }
 
 // ── The member's choices, for the page's life ──────────────────────────────
