@@ -261,6 +261,11 @@ describe("the wiring (source fence)", () => {
     expect(org).toBeGreaterThan(bind);
   });
 
+  it("a detected sign-out clears the appearance after NextAuth confirms it", () => {
+    const hook = read("hooks/useChatSessions.ts");
+    expect(hook).toMatch(/^\s*if \(confirmed && !cancelled\) clearSignedOutAppearance\(\);\r?$/m);
+  });
+
   it("the appearance provider mounts inside AccessProvider, so useAccess() resolves", () => {
     const src = read("components/Providers.tsx");
     const open = src.indexOf("<AccessProvider>");

@@ -105,11 +105,9 @@ export function useChatSignOutClear(): void {
     // session fetch during a deploy also reads as "unauthenticated".
     let cancelled = false;
     void confirmSignedOut().then((confirmed) => {
-      if (confirmed && !cancelled) {
-        clearSignedOutAccount();
-        // The appearance keys name the account too (lib/theme/scope.ts).
-        clearSignedOutAppearance();
-      }
+      if (confirmed && !cancelled) clearSignedOutAccount();
+      // The appearance keys name the account too (lib/theme/scope.ts).
+      if (confirmed && !cancelled) clearSignedOutAppearance();
     });
     return () => { cancelled = true; };
   }, [signedOut]);
