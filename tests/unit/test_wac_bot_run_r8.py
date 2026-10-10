@@ -735,3 +735,33 @@ async def test_a_redelivery_keeps_the_newest_preview_and_the_chosen_agent(
     assert row.agent_name == "task-manager", "a bot write reset the agent"
     assert row.message_count == 6
     assert len(bot.agent.calls) == 3
+
+
+async def test_the_turn_read_of_a_room_returns_nothing(bot) -> None:
+    """The SQL guard behind the ``shared`` check: no read of a room, even by
+    the turn's own id."""
+    p = bot.p
+    email, other, phone = _email(), _email("o"), _phone()
+    _seed_member(p.admin_engine, org=p.org_a, email=email)
+    _seed_link(p.admin_engine, org=p.org_a, email=email, phone=phone)
+    wamid = f"wamid.room.{uuid.uuid4().hex[:8]}"
+    await _webhook(bot, (_change(phone, "Mine", wamid=wamid),))
+    room = bot.agent.calls[0]["thread_id"]
+
+    async def _read():
+        from acb_common.db import bind_tenant, release_tenant
+
+        token = bind_tenant(p.org_a)
+        try:
+            return await bot.bot_run._thread_turns(
+                room, bot.bot_run.turn_id(wamid))
+        finally:
+            release_tenant(token)
+
+    assert (await _in_scope(bot, _read))[0] == "Mine"
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session_participant (session_id, subject, role, "
+            "organization_id) VALUES (:s, :e, 'member', CAST(:o AS uuid))"),
+            {"s": room, "e": other, "o": p.org_a})
+    assert await _in_scope(bot, _read) == (None, [])
