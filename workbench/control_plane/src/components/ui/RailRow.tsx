@@ -186,8 +186,10 @@ export function RailRow({
   // The toggle sits over the icon's slot, so it draws only where the icon
   // does. An editor draws its own icon, and no toggle covers it.
   const toggle = expand && !editor ? expand : null;
-  // The kind of pointer that pressed the toggle last. Read only in the click
-  // handler, and cleared there, so Enter and Space always switch the row.
+  // The kind of pointer that last pressed in this row. Taken on the ROW, in
+  // the capture phase: a tap's pointerdown lands on the icon, before the
+  // hover that switches the chevron on, so the toggle never sees it. Read
+  // and cleared on each click, so Enter and Space always switch the row.
   const pressedBy = useRef<string | null>(null);
   const onTogglePress = toggle
     ? () => {
@@ -208,6 +210,9 @@ export function RailRow({
   return (
     <div
       {...rowProps}
+      onPointerDownCapture={(event: React.PointerEvent) => {
+        pressedBy.current = event.pointerType;
+      }}
       data-rail-row=""
       data-pinned={held ? "" : undefined}
       className={`${railRowClass({ selected, tier, touch: isMobile })} ${className}`}
@@ -229,9 +234,6 @@ export function RailRow({
             aria-label={toggle.expanded ? `Collapse ${label}` : `Expand ${label}`}
             aria-expanded={toggle.expanded}
             data-rail-toggle=""
-            onPointerDown={(event: React.PointerEvent) => {
-              pressedBy.current = event.pointerType;
-            }}
             onClick={onTogglePress}
             onKeyDown={onKeyDown}
             className={`absolute -left-0.5 top-1/2 z-10 h-5 w-5 -translate-y-1/2 rounded ${
@@ -245,7 +247,10 @@ export function RailRow({
           type="button"
           {...buttonProps}
           data-rail-label=""
-          onClick={onSelect}
+          onClick={() => {
+            pressedBy.current = null;
+            onSelect?.();
+          }}
           onFocus={onFocus}
           onBlur={onBlur}
           onKeyDown={onKeyDown}
