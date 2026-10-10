@@ -366,7 +366,7 @@ def test_deleting_the_chat_closes_its_questions(as_app, flag_on):
     pending_ask.move_ask(w.org_a, rid, to="parked", from_states=("open",))
 
     assert _delete_session(tid, _ALICE, organization_id=w.org_a) is True
-    assert tuple(_admin_row(w, w.org_a, rid))[0] == "closed"
+    assert _admin_row(w, w.org_a, rid).state == "closed"
     assert pending_ask.read_ask(w.org_a, rid) is None
     waiting = pending_ask.waiting_asks(w.org_a, actor_email=_ALICE)
     assert tid not in {r["thread_id"] for r in waiting}
