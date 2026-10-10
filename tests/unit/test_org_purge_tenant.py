@@ -236,7 +236,7 @@ class TestTheExclusionCannotGoStale:
                     "      AND c.confdeltype = 'c')"
                 ))
             }
-        assert _NOT_TENANT_SCOPED == frozenset()
+        assert not _NOT_TENANT_SCOPED
         assert not_cascading == set(_NOT_TENANT_SCOPED), (
             f"organization_id columns outside the cascade: "
             f"{sorted(not_cascading)} — a new tenant table must gain "

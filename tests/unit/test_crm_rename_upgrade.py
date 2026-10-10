@@ -577,7 +577,7 @@ def test_applying_the_crm_migrations_again_changes_nothing(eng):
 
 
 @_DB_GATE
-def test_144_and_241_apply_again_on_the_promoted_catalog(promoted):
+def test_144_and_241_apply_again_on_the_promoted_catalog(promoted):  # noqa: F811
     """The ladder AND all four generated phases, as on production. A second
     run of 144 and 241 must neither fail nor add a key, an index or a
     policy."""
