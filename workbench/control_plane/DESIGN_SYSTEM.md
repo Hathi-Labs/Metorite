@@ -421,67 +421,6 @@ Measured on 2026-09-21: **eight different `<h1>` spellings** across People,
 Projects and Settings, three of them inside the People app alone. A snippet
 cannot be changed centrally. A component can.
 
-### 6b. A rail of named items — `RailRow` and `OverflowTip`
-
-**The rule, owner direction of 2026-10-10:** a rail of named items uses
-`RailRow`, and a truncated label gets `OverflowTip`. Both live in
-`src/components/ui/`.
-
-```tsx
-import RailRow from "@/components/ui/RailRow";
-
-<RailRow label={node.name} depth={2} guides selected={isSelected}
-         icon={<Icon name="Folder" />} meta={openTasks || null}
-         actions={<Button variant="ghost" size="icon-xs" icon="Plus" aria-label="New project" />}
-         onSelect={() => select(node)} />
-```
-
-What the row does for you:
-
-- **The trailing zone.** At rest it shows `meta`, such as a muted count. On
-  hover, on keyboard focus in the row, or while `pinned`, it shows `actions`.
-  At rest the actions take no width, so the name gets that room.
-- **The name.** It is one line at 13 px, regular for an item and medium for a
-  `group`. A cut name shows whole in a dark tip after 400 ms, and only when it
-  is cut.
-- **The indent.** One 12 px step per level, with an optional thin guide.
-- **The expand chevron.** A row that opens passes `expand`. Its chevron takes
-  the icon's slot on hover and on keyboard focus, and the icon gives way. So
-  no row keeps a chevron column. The toggle is a labelled button with
-  `aria-expanded` at all times, and Tab reaches it at rest. ArrowRight opens
-  the row and ArrowLeft closes it.
-- **Touch.** On a phone each row is 40 px, and the selected row keeps its
-  actions on screen. A row that opens shows its chevron in the slot.
-
-The owner's reference was ClickUp's sidebar. Before this, every Projects row
-kept its "···" and "+" on screen. They took about 60 px from each name at a
-256 px rail.
-
-⚠️ **The reveal is two utilities in `globals.css`, `rail-row-actions` and
-`rail-row-meta`.** The actions also carry `reveal-on-hover`. Neither utility
-has a media query, for the reason §4 and `revealOnHover.test.ts` record.
-
-⚠️ **The tip is `AnchoredPanel` with `variant="tip"`.** It portals out of the
-rail, so the rail cannot clip it. It draws the `--tooltip` pair, which is dark
-in both modes. It carries no `PREVENT_OUTSIDE_CLICK` marker, because a tip is
-not a popup.
-
-Fences:
-
-- `src/components/ui/RailRow.test.ts` holds the markup and the two utilities.
-- `src/components/ui/OverflowTip.test.ts` holds the tip's reducer and surface.
-- `src/lib/railRows.test.ts` fails when a rail on its list stops drawing
-  `RailRow`.
-- `e2e/rail-rows.spec.ts` measures the hover, the tip and the room the name
-  gets back.
-
-**Advisory:** nothing tests that a NEW rail adopts `RailRow`. Add it to
-`RAILS` in `railRows.test.ts` in the PR that builds it.
-
-**Not every list is a rail.** A two-line row with a preview or an avatar is a
-card, such as a Chat conversation or an Email mailbox. Those keep their own
-markup.
-
 ### 6a. Two ways a surface opens, and only two
 
 Naming both, because a third appears whenever the set is left implicit.
@@ -551,6 +490,73 @@ Layout: header → tabs/filters → `flex-1 overflow-y-auto` content, optional
 
 Spacing: page padding `px-4 sm:px-6`, content `p-4`, grid gaps `gap-3`.
 Grids: `grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5`.
+
+### 6b. A rail of named items — `RailRow` and `OverflowTip`
+
+**The rule, owner direction of 2026-10-10:** a rail of named items uses
+`RailRow`, and a truncated label gets `OverflowTip`. Both live in
+`src/components/ui/`.
+
+```tsx
+import RailRow from "@/components/ui/RailRow";
+
+<RailRow label={node.name} depth={2} guides selected={isSelected}
+         icon={<Icon name="Folder" />} meta={openTasks || null}
+         actions={<Button variant="ghost" size="icon-xs" icon="Plus" aria-label="New project" />}
+         onSelect={() => select(node)} />
+```
+
+What the row does for you:
+
+- **The trailing zone.** At rest it shows `meta`, such as a muted count. On
+  hover, on keyboard focus in the row, or while `pinned`, it shows `actions`.
+  At rest the actions take no width, so the name gets that room. A row with
+  no actions keeps its count. The count gives way from sight only, so it
+  stays in the row's accessible name.
+- **The name.** It is one line at 13 px, regular for an item and medium for a
+  `group`. A cut name shows whole in a dark tip after 400 ms, and only when it
+  is cut.
+- **The indent.** One 12 px step per level, with an optional thin guide.
+- **The expand chevron.** A row that opens passes `expand`. Its chevron takes
+  the icon's slot on hover and on keyboard focus, and the icon gives way. So
+  no row keeps a chevron column. The toggle is a labelled button with
+  `aria-expanded` at all times, and Tab reaches it at rest. ArrowRight opens
+  the row and ArrowLeft closes it.
+- **Touch.** On a phone each row is 40 px. A row that opens draws its
+  chevron in its own column, and its icon stays. Each row draws its
+  `phoneActions`, one "···" at a 40 px target, because choosing a row closes
+  the drawer. Pass `tree` on a tree's rows, so a leaf keeps the empty column.
+- **A finger on a touch laptop.** A tap on a parent's icon selects the row,
+  and a tap on the chevron that then shows opens it (`togglePress`).
+
+The owner's reference was ClickUp's sidebar. Before this, every Projects row
+kept its "···" and "+" on screen. They took about 60 px from each name at a
+256 px rail.
+
+⚠️ **The reveal is two utilities in `globals.css`, `rail-row-actions` and
+`rail-row-meta`.** The actions also carry `reveal-on-hover`. Neither utility
+has a media query, for the reason §4 and `revealOnHover.test.ts` record.
+
+⚠️ **The tip is `AnchoredPanel` with `variant="tip"`.** It portals out of the
+rail, so the rail cannot clip it. It draws the `--tooltip` pair, which is dark
+in both modes, on the top layer above the phone drawer. It carries no
+`PREVENT_OUTSIDE_CLICK` marker, because a tip is not a popup.
+
+Fences:
+
+- `src/components/ui/RailRow.test.ts` holds the markup and the two utilities.
+- `src/components/ui/OverflowTip.test.ts` holds the tip's reducer and surface.
+- `src/lib/railRows.test.ts` fails when a rail on its list stops drawing
+  `RailRow`.
+- `e2e/rail-rows.spec.ts` measures the hover, the tip and the room the name
+  gets back.
+
+**Advisory:** nothing tests that a NEW rail adopts `RailRow`. Add it to
+`RAILS` in `railRows.test.ts` in the PR that builds it.
+
+**Not every list is a rail.** A two-line row with a preview or an avatar is a
+card, such as a Chat conversation or an Email mailbox. Those keep their own
+markup.
 
 ---
 

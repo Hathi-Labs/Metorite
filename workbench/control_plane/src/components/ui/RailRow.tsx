@@ -20,8 +20,9 @@
  *   the icon hides. ClickUp does this, and it removes the chevron column,
  *   which took 22 px from every name. The toggle is a real button at all
  *   times. At rest it is transparent, but Tab reaches it, and its label and
- *   `aria-expanded` are always there. On a phone it shows the chevron in the
- *   slot at all times, because nothing can hover.
+ *   `aria-expanded` are always there. The swap is for a device that can
+ *   hover. On a phone the chevron has its own column and the icon stays, so
+ *   a space keeps its glyph and a parent project keeps its run-state wheel.
  * - **label** — one line, cut with an ellipsis. `OverflowTip` shows the
  *   whole of it on hover and on keyboard focus.
  * - **the trailing zone** — `meta` (a muted count) at rest, and the row's
@@ -33,9 +34,11 @@
  *
  * The swap carries no media query (`reveal-on-hover`'s rule), so a
  * touch-capable laptop driven by a mouse behaves like any desktop. On a
- * phone (`useViewMode().isMobile`) nothing can hover, so the SELECTED row
- * pins its actions, an expandable row shows its chevron, and every row
- * grows to 40 px for a finger.
+ * phone (`useViewMode().isMobile`) nothing can hover, and choosing a row
+ * closes the drawer the rail sits in. So each row draws its `phoneActions`
+ * at all times, usually one "···" at a 40 px target, and every row grows to
+ * 40 px for a finger. A rail that gives no `phoneActions` falls back to the
+ * selected row keeping its `actions`.
  *
  * ## Keys
  *

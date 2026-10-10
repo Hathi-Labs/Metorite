@@ -75,6 +75,14 @@ describe("the tip's markup", () => {
     expect(code).toContain("<AnchoredPanel");
   });
 
+  it("paints on the top layer, above the phone drawer", () => {
+    // The drawer is `fixed inset-0 z-[70]`. The default popover layer is
+    // `z-[60]`, so a tip in a drawer rail drew under it.
+    expect(code).toMatch(/layer="top"/);
+    const panel = readFileSync(fileURLToPath(new URL("./AnchoredPanel.tsx", import.meta.url)), "utf8");
+    expect(panel).toMatch(/top: "z-\[90\]"/);
+  });
+
   it("adds no native title and no second accessible name", () => {
     expect(code).not.toMatch(/\stitle=/);
     expect(code).not.toContain("aria-describedby");
