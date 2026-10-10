@@ -40,7 +40,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { LIVE_PANES } from "@/lib/nav";
+import { LIVE_PANES, PANES } from "@/lib/nav";
 
 import { ShellBarRow } from "./ShellBar";
 
@@ -125,6 +125,15 @@ const APP_BAR_HOME: Record<string, string> = {
   "/settings/appearance": "app/settings/appearance/page.tsx",
 };
 
+/**
+ * A `preview` pane that already opens with the bar. It is not in the live set,
+ * so it is apart from `APP_BAR_HOME`, and the browser census visits it too.
+ * When the pane goes live (CRM-L2), its row moves to `APP_BAR_HOME`.
+ */
+const PREVIEW_BAR_HOME: Record<string, string> = {
+  "/crm": "app/crm/page.tsx",
+};
+
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */
 const MY_DAY_HOME = "lib/shell/MyDayPage.tsx";
 
@@ -175,7 +184,15 @@ describe("(b) every live pane opens with AppTopBar", () => {
     expect(Object.keys(APP_BAR_HOME).sort()).toEqual(LIVE_PANES.map((p) => p.href).sort());
   });
 
-  for (const [href, rel] of Object.entries(APP_BAR_HOME)) {
+  it("a preview pane with a bar is not live, and is a real pane", () => {
+    const live = new Set(LIVE_PANES.map((p) => p.href));
+    for (const href of Object.keys(PREVIEW_BAR_HOME)) {
+      expect(live.has(href), `${href} is live, so it belongs in APP_BAR_HOME`).toBe(false);
+      expect(PANES.some((p) => p.href === href), `${href} is no nav pane`).toBe(true);
+    }
+  });
+
+  for (const [href, rel] of Object.entries({ ...APP_BAR_HOME, ...PREVIEW_BAR_HOME })) {
     it(`${href} draws its bar in ${rel}, which its route renders`, () => {
       drawsTheBar(rel);
       const route = routeFiles(href);
@@ -206,7 +223,7 @@ describe("(b) every live pane opens with AppTopBar", () => {
     expect(visited.length, "the census list was not found").toBeGreaterThan(10);
     // A dynamic route is visited at one concrete path: `[email]` → any value.
     const asRoute = (path: string) => path.replace(/^\/settings\/members\/[^/]+$/, "/settings/members/[email]");
-    const want = [...Object.keys(APP_BAR_HOME), ...Object.keys(SUB_PAGE_HOME), "/"].sort();
+    const want = [...Object.keys(APP_BAR_HOME), ...Object.keys(PREVIEW_BAR_HOME), ...Object.keys(SUB_PAGE_HOME), "/"].sort();
     expect(visited.map(asRoute).sort()).toEqual(want);
   });
 
@@ -214,7 +231,7 @@ describe("(b) every live pane opens with AppTopBar", () => {
     // The shapes the bar replaced: Calendar's own h1, Approvals' text-lg
     // h1, Email's folder h1 and the WhatsApp rail's name. A pane under the
     // bar titles itself with an h2.
-    for (const rel of new Set([...Object.values(APP_BAR_HOME), ...Object.values(SUB_PAGE_HOME), MY_DAY_HOME])) {
+    for (const rel of new Set([...Object.values(APP_BAR_HOME), ...Object.values(PREVIEW_BAR_HOME), ...Object.values(SUB_PAGE_HOME), MY_DAY_HOME])) {
       let src = code(read(rel));
       // Two named exceptions, the same card. A member without
       // `admin:members:read` gets a denial card IN PLACE of Organisation or a
