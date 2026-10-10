@@ -25,6 +25,7 @@ import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -312,19 +313,84 @@ async def test_a_transport_error_on_the_token_call_is_a_source_error(leaks: list
 # ── 4. Paging ───────────────────────────────────────────────────────────────
 
 
-async def test_three_pages_return_every_row_in_order_then_stop(leaks: list[str]) -> None:
-    fake = Fake([rows("a", "b", more=True), rows("c", "d", more=True), rows("e")])
-    source = fake.source()
-    cursor: SourceCursor | None = SourceCursor()
+@dataclass
+class ZohoStore:
+    """A fake Zoho module that sorts its rows again on each call.
+
+    It answers like ``GET /crm/v2/{module}`` sorted by ``Modified_Time``
+    ascending: it applies ``If-Modified-Since`` (strictly after, or at-or-after
+    when ``inclusive``), then a page of ``page_size`` rows. An edit between
+    two calls moves a row to the end, which is what Zoho does.
+    """
+
+    times: dict[str, datetime]
+    page_size: int = 2
+    inclusive: bool = False
+    tokens: bool = False
+    requests: list[httpx.Request] = field(default_factory=list)
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        items = sorted(self.times.items(), key=lambda kv: (kv[1], kv[0]))
+        header = request.headers.get("If-Modified-Since")
+        if header:
+            since = parsedate_to_datetime(header)
+            items = [kv for kv in items if (kv[1] >= since if self.inclusive else kv[1] > since)]
+        if not items:
+            return httpx.Response(304)
+        token = request.url.params.get("page_token")
+        page = int(token.removeprefix("tok-")) if token else int(request.url.params["page"])
+        chunk = items[(page - 1) * self.page_size : page * self.page_size]
+        info: dict[str, Any] = {"more_records": page * self.page_size < len(items)}
+        if info["more_records"] and self.tokens:
+            info["next_page_token"] = f"tok-{page + 1}"
+        data = [{"id": i, "Modified_Time": t.isoformat()} for i, t in chunk]
+        return ok({"data": data, "info": info})
+
+    def source(self, **kw: Any) -> ZohoSource:
+        return ZohoSource(
+            CONFIG,
+            credential(),
+            transport=httpx.MockTransport(self.handle),
+            clock=lambda: NOW,
+            **kw,
+        )
+
+
+T0 = datetime(2026, 10, 1, 10, 0, tzinfo=UTC)
+
+
+def at(seconds: int) -> datetime:
+    return T0 + timedelta(seconds=seconds)
+
+
+async def read_all(
+    source: ZohoSource,
+    cursor: SourceCursor | None = None,
+    after_page: Callable[[int], None] | None = None,
+) -> list[str]:
     got: list[str] = []
-    while cursor is not None:
-        page = await source.list_changed("deal", cursor)
+    step: SourceCursor | None = cursor or SourceCursor()
+    n = 0
+    while step is not None:
+        page = await source.list_changed("deal", step)
         got.extend(r.ext_id for r in page.records)
-        cursor = page.next_cursor
-    assert got == ["a", "b", "c", "d", "e"]
-    assert len(fake.requests) == 3
-    assert [r.url.params["page"] for r in fake.requests] == ["1", "2", "3"]
-    for r in fake.requests:
+        step = page.next_cursor
+        n += 1
+        if after_page is not None:
+            after_page(n)
+    return got
+
+
+async def test_three_pages_return_every_row_in_order_then_stop(leaks: list[str]) -> None:
+    # Each resume reads the boundary row again, so a page of 3 brings 2 new
+    # rows after the first. With Zoho pages of 200 that costs 1 row in 200.
+    store = ZohoStore({k: at(i) for i, k in enumerate("abcdef")}, page_size=3)
+    got = await read_all(store.source())
+    assert got == ["a", "b", "c", "d", "e", "f"]
+    assert len(store.requests) == 3
+    assert store.requests[0].url.params["page"] == "1"
+    for r in store.requests:
         assert r.url.path == "/crm/v2/Deals"
         assert r.url.params["per_page"] == "200"
         assert r.url.params["sort_by"] == "Modified_Time"
@@ -332,18 +398,86 @@ async def test_three_pages_return_every_row_in_order_then_stop(leaks: list[str])
         assert r.headers["Authorization"] == f"Zoho-oauthtoken {ACCESS}"
 
 
-async def test_a_next_page_token_is_sent_with_no_page(leaks: list[str]) -> None:
-    fake = Fake([rows("a", more=True, token="tok-2"), rows("b")])
-    source = fake.source()
-    first = await source.list_changed("lead")
-    assert first.next_cursor is not None
-    assert first.next_cursor.page_token == "tok-2"
-    second = await source.list_changed("lead", first.next_cursor)
-    assert second.next_cursor is None
-    sent = fake.requests[1].url.params
-    assert sent["page_token"] == "tok-2"
-    assert "page" not in sent
-    assert sent["per_page"] == "200"
+@pytest.mark.parametrize("inclusive", [False, True], ids=["after", "at-or-after"])
+async def test_an_edit_between_pages_skips_no_record(leaks: list[str], inclusive: bool) -> None:
+    """Fix round 1, P1. The engine stops at its budget after page 1, and an
+    edit moves ``a`` to the end before it resumes. With offset paging, page 2
+    of the new order starts at ``d``, and ``c`` is lost for good."""
+    store = ZohoStore({k: at(i) for i, k in enumerate("abcdef")}, inclusive=inclusive)
+    first = store.source(credit_budget=1)
+    page = await first.list_changed("deal")
+    assert [r.ext_id for r in page.records] == ["a", "b"]
+    with pytest.raises(BudgetExhausted):
+        await first.list_changed("deal", page.next_cursor)
+    store.times["a"] = at(90)
+    got = await read_all(store.source(), page.next_cursor)
+    assert got == ["c", "d", "e", "f", "a"]
+
+
+@pytest.mark.parametrize("inclusive", [False, True], ids=["after", "at-or-after"])
+async def test_an_edit_on_every_page_skips_no_record(leaks: list[str], inclusive: bool) -> None:
+    store = ZohoStore({k: at(i) for i, k in enumerate("abcdefgh")}, inclusive=inclusive)
+    edits = iter(["a", "c", "e"])
+
+    def edit(n: int) -> None:
+        key = next(edits, None)
+        if key is not None:
+            store.times[key] = at(100 + n)
+
+    got = await read_all(store.source(), after_page=edit)
+    assert set("abcdefgh") <= set(got)
+    assert list(dict.fromkeys(got))[:2] == ["a", "b"]
+
+
+@pytest.mark.parametrize("tokens", [False, True], ids=["page", "page_token"])
+@pytest.mark.parametrize("inclusive", [False, True], ids=["after", "at-or-after"])
+async def test_a_tie_at_one_second_wider_than_a_page_reads_each_row_once(
+    leaks: list[str],
+    inclusive: bool,
+    tokens: bool,
+) -> None:
+    """Five rows share one second, and a page holds two. The keyset cannot
+    pass that second, so the cursor pages inside it and skips the ids it
+    has seen. ``a`` sits one second before, at the edge of the re-read."""
+    times = {"a": at(1), "b": at(2), "c": at(2), "d": at(2), "e": at(2), "f": at(2), "g": at(3)}
+    store = ZohoStore(times, inclusive=inclusive, tokens=tokens)
+    got = await read_all(store.source())
+    assert got == ["a", "b", "c", "d", "e", "f", "g"]
+    if tokens:
+        sent = [r.url.params for r in store.requests if "page_token" in r.url.params]
+        assert sent, "the tie never used the page token"
+        assert all("page" not in params for params in sent)
+
+
+async def test_a_resume_reads_the_boundary_second_again(leaks: list[str]) -> None:
+    """The keyset sends one second before ``since``, so a strict Zoho filter
+    still returns the rows at ``since`` that the last page did not reach."""
+    store = ZohoStore({"a": at(1), "b": at(2), "c": at(2)})
+    page = await store.source().list_changed("deal")
+    assert page.next_cursor is not None
+    assert page.next_cursor.since == at(2)
+    assert page.next_cursor.seen_ids == ("b",)
+    assert page.next_cursor.page == 1
+    await store.source().list_changed("deal", page.next_cursor)
+    assert parsedate_to_datetime(store.requests[1].headers["If-Modified-Since"]) == at(1)
+
+
+async def test_created_time_stands_in_for_a_missing_modified_time(leaks: list[str]) -> None:
+    """The old Fracktal tenant sent no ``Modified_Time`` on some modules
+    (``crm_app.md``). The record and the keyset use ``Created_Time``."""
+    body = {
+        "data": [
+            {"id": "1", "Modified_Time": None, "Created_Time": "2026-10-01T10:00:05+00:00"},
+            {"id": "2", "Created_Time": "2026-10-01T10:00:07+00:00"},
+        ],
+        "info": {"more_records": True},
+    }
+    fake = Fake([ok(body)])
+    page = await fake.source().list_changed("deal")
+    assert [r.modified_at for r in page.records] == [at(5), at(7)]
+    assert page.next_cursor is not None
+    assert page.next_cursor.since == at(7)
+    assert page.next_cursor.seen_ids == ("2",)
 
 
 @pytest.mark.parametrize("status", [204, 304])

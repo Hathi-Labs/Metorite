@@ -88,16 +88,19 @@ class SourceRecord:
 
 @dataclass(frozen=True)
 class SourceCursor:
-    """Where a read stands.
+    """Where a read stands. The caller stores it as it is, and resumes with it.
 
     ``since`` is the incremental cursor. ``page`` and ``page_token`` say which
     page comes next. When ``page_token`` is set, the adapter sends it and no
-    page number.
+    page number. ``seen_ids`` holds the ids the read already returned at
+    exactly ``since``. A keyset read uses it to skip them when it reads that
+    second again (see ``ZohoSource.list_changed``).
     """
 
     since: datetime | None = None
     page: int = 1
     page_token: str | None = None
+    seen_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

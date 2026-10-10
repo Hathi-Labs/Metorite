@@ -23,7 +23,7 @@ import asyncio
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 
@@ -211,17 +211,97 @@ def _page_params(cursor: SourceCursor, extra: Mapping[str, Any]) -> dict[str, An
     return params
 
 
-def _next_cursor(cursor: SourceCursor, body: Mapping[str, Any], count: int) -> SourceCursor | None:
+#: The time keys of a record, in order. The old Fracktal tenant sent no
+#: ``Modified_Time`` on some modules (``crm_app.md``), so ``Created_Time``
+#: stands in, for the record and for the keyset.
+_CHANGED_TIME_KEYS = ("Modified_Time", "Created_Time")
+_DELETED_TIME_KEYS = ("deleted_time",)
+
+#: A keyset resume asks from this much before ``since``. ``If-Modified-Since``
+#: has a resolution of one second, and Zoho does not say whether its filter
+#: is strict. One second back makes the rows AT ``since`` come back in both
+#: cases, and the adapter drops the rows it has already returned.
+_KEYSET_OVERLAP = timedelta(seconds=1)
+
+
+def _more(body: Mapping[str, Any], count: int) -> tuple[bool, str | None]:
+    """Whether another page exists, and Zoho's ``next_page_token`` when it sent one."""
     info = body.get("info") or {}
     if not isinstance(info, dict) or not info.get("more_records") or count == 0:
-        return None
+        return False, None
     token = info.get("next_page_token")
-    if token:
-        return replace(cursor, page=cursor.page + 1, page_token=str(token))
-    return replace(cursor, page=cursor.page + 1, page_token=None)
+    return True, str(token) if token else None
 
 
-def _records(entity: str, rows: object, time_key: str) -> tuple[SourceRecord, ...]:
+def _offset_next(cursor: SourceCursor, body: Mapping[str, Any], count: int) -> SourceCursor | None:
+    """The next page of the same query, by number or by token."""
+    more, token = _more(body, count)
+    if not more:
+        return None
+    return replace(cursor, page=cursor.page + 1, page_token=token)
+
+
+def _keyset_next(
+    cursor: SourceCursor,
+    records: tuple[SourceRecord, ...],
+    body: Mapping[str, Any],
+    count: int,
+) -> SourceCursor | None:
+    """The next cursor of a keyset read. ``records`` is the page before the skip.
+
+    The next read starts at the latest time on this page, at page 1, and
+    carries the ids at that time. One case cannot advance: a page whose
+    rows all sit at or before ``since`` on a resume, which is a tie at one
+    second wider than a page. Then the cursor pages by offset inside the
+    same query, and adds the new ids to ``seen_ids``.
+    """
+    more, token = _more(body, count)
+    if not more:
+        return None
+    times = [r.modified_at for r in records if r.modified_at is not None]
+    if not times:
+        return _offset_next(cursor, body, count)
+    last = max(times)
+    at_last = tuple(r.ext_id for r in records if r.modified_at == last)
+    resuming = cursor.since is not None and bool(cursor.seen_ids)
+    if resuming and cursor.since is not None and last <= cursor.since:
+        seen = tuple(dict.fromkeys(cursor.seen_ids + at_last))
+        return replace(cursor, page=cursor.page + 1, page_token=token, seen_ids=seen)
+    return SourceCursor(since=last, page=1, page_token=None, seen_ids=at_last)
+
+
+def _request_since(cursor: SourceCursor) -> datetime | None:
+    """The ``If-Modified-Since`` to send. A keyset resume reads ``since`` again."""
+    if cursor.since is not None and cursor.seen_ids:
+        return cursor.since - _KEYSET_OVERLAP
+    return cursor.since
+
+
+def _unseen(cursor: SourceCursor, records: tuple[SourceRecord, ...]) -> tuple[SourceRecord, ...]:
+    """Drop what a keyset resume returned before: rows older than ``since``,
+    and the ``seen_ids`` at ``since``. A row with no time is kept."""
+    since = cursor.since
+    if since is None or not cursor.seen_ids:
+        return records
+    seen = set(cursor.seen_ids)
+    return tuple(
+        r
+        for r in records
+        if r.modified_at is None
+        or r.modified_at > since
+        or (r.modified_at == since and r.ext_id not in seen)
+    )
+
+
+def _row_time(row: Mapping[str, Any], time_keys: tuple[str, ...]) -> datetime | None:
+    for key in time_keys:
+        parsed = _parse_time(row.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _records(entity: str, rows: object, time_keys: tuple[str, ...]) -> tuple[SourceRecord, ...]:
     if not isinstance(rows, list):
         return ()
     out: list[SourceRecord] = []
@@ -232,7 +312,7 @@ def _records(entity: str, rows: object, time_key: str) -> tuple[SourceRecord, ..
             SourceRecord(
                 entity=entity,
                 ext_id=str(row["id"]),
-                modified_at=_parse_time(row.get(time_key)),
+                modified_at=_row_time(row, time_keys),
                 fields=row,
             )
         )
@@ -470,19 +550,27 @@ class ZohoSource:
         path: str,
         cursor: SourceCursor | None,
         extra: Mapping[str, Any],
-        time_key: str,
+        *,
+        keyset: bool,
     ) -> SourcePage:
         cursor = cursor or SourceCursor()
-        r = await self._get(path, params=_page_params(cursor, extra), since=cursor.since)
+        since = _request_since(cursor) if keyset else cursor.since
+        r = await self._get(path, params=_page_params(cursor, extra), since=since)
         # 204 = nothing there; 304 = nothing changed since the cursor.
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
         self._raise_for_status(r, path)
         body = _error_body(r)
         rows = body.get("data") or []
-        records = _records(entity, rows, time_key)
         count = len(rows) if isinstance(rows, list) else 0
-        return SourcePage(records=records, next_cursor=_next_cursor(cursor, body, count))
+        if not keyset:
+            records = _records(entity, rows, _DELETED_TIME_KEYS)
+            return SourcePage(records=records, next_cursor=_offset_next(cursor, body, count))
+        records = _records(entity, rows, _CHANGED_TIME_KEYS)
+        return SourcePage(
+            records=_unseen(cursor, records),
+            next_cursor=_keyset_next(cursor, records, body, count),
+        )
 
     # ── 4 and 5. Changed and deleted records ────────────────────────────────
 
@@ -491,15 +579,32 @@ class ZohoSource:
         entity: str,
         cursor: SourceCursor | None = None,
     ) -> SourcePage:
-        """One page of the records changed since ``cursor.since``.
+        """One page of the records changed since ``cursor.since``. A KEYSET read.
 
-        Stable pagination. Zoho's default order is by Modified_Time DESCENDING,
-        so a record edited (by anyone, including our own push) between page 1
-        and page 2 jumps to the front and shifts every later record back one
-        slot — the record that was at the page boundary is never returned.
-        Ascending by the same key we cursor on makes the sequence append-only
-        for the duration of the pull: a concurrent edit lands at the END, past
-        the pages we have already read, and the next cycle picks it up.
+        The rows come sorted by ``Modified_Time`` ascending. The next cursor
+        does not say "page 2". It says "from the latest ``Modified_Time`` on
+        this page, page 1", and it carries the ids at that exact time
+        (``seen_ids``). The caller may stop at its budget and resume hours
+        later with that cursor.
+
+        Why not an offset. With "page 2", an edit to a row that was already
+        read moves it to the end and shifts every later row up one place. The
+        row at the page edge is then skipped for good, and the watermark of
+        the engine moves past it. A keyset does not move when the rows before
+        it change.
+
+        Ties. Many rows can share one second. The resume asks from one second
+        before ``since`` and drops the rows older than ``since`` and the
+        ``seen_ids`` at ``since``, so it returns each row once. When a whole
+        page sits at one second, the keyset cannot pass it. Then the cursor
+        pages by offset inside that second (with ``page_token`` when Zoho
+        sends one), and an edit inside such a tie can still shift it. That is
+        the one window left, and it needs more than 200 rows with one
+        ``Modified_Time``.
+
+        A row with no ``Modified_Time`` uses ``Created_Time``. A row with
+        neither is returned and keyed by offset. An edited row comes back
+        on a later page, so the caller dedupes by ``ext_id``.
         """
         module = _module(entity)
         return await self._page(
@@ -507,7 +612,7 @@ class ZohoSource:
             f"/crm/{RECORDS_API_VERSION}/{module}",
             cursor,
             {"sort_by": "Modified_Time", "sort_order": "asc"},
-            "Modified_Time",
+            keyset=True,
         )
 
     async def list_deleted(
@@ -524,6 +629,10 @@ class ZohoSource:
         a Zoho delete is to ask for the tombstones. ``kind`` is Zoho's ``type``
         filter — ``all`` (default), ``recycle`` (still restorable) or
         ``permanent``. ``cursor.since`` is sent as ``If-Modified-Since``.
+
+        This read pages by offset. The endpoint takes no sort, so it has no
+        key to page on. A tombstone does not move when a record is edited,
+        and a new delete can only repeat a row, which the caller dedupes.
         """
         module = _module(entity)
         return await self._page(
@@ -531,7 +640,7 @@ class ZohoSource:
             f"/crm/{RECORDS_API_VERSION}/{module}/deleted",
             cursor,
             {"type": kind},
-            "deleted_time",
+            keyset=False,
         )
 
     # ── 6. Users ────────────────────────────────────────────────────────────
@@ -555,7 +664,7 @@ class ZohoSource:
             self._raise_for_status(r, path)
             body = _error_body(r)
             rows = body.get("users")
-            out.extend(_records("user", rows, "Modified_Time"))
+            out.extend(_records("user", rows, _CHANGED_TIME_KEYS))
             info = body.get("info") or {}
             if not isinstance(info, dict) or not info.get("more_records") or not rows:
                 break
