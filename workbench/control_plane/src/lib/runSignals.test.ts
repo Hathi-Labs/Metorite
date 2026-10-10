@@ -316,6 +316,7 @@ describe("the finished toast", () => {
       title: "Task manager finished",
       description: "Plan the week",
       actionLabel: "Open",
+      timeout: 8_000,
     });
     expect(finishedToast({ threadId: "t-b", agent: "orchestrator", title: "  " }).title).toBe("Assistant finished");
   });

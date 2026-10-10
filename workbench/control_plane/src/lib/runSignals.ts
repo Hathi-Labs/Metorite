@@ -391,14 +391,24 @@ export function onTabVisible(now: number = Date.now()): FinishedRun[] {
   return toasts;
 }
 
+/** How long the finished toast stays: long enough to reach Open. */
+export const FINISHED_TOAST_MS = 8_000;
+
 /** The toast of a finished run: "<Agent> finished", the chat title, and Open. */
-export function finishedToast(run: FinishedRun): { key: string; title: string; description?: string; actionLabel: string } {
+export function finishedToast(run: FinishedRun): {
+  key: string;
+  title: string;
+  description?: string;
+  actionLabel: string;
+  timeout: number;
+} {
   const title = run.title?.trim();
   return {
     key: `run-finished:${run.threadId}`,
     title: `${agentLabel(run.agent)} finished`,
     description: title || undefined,
     actionLabel: "Open",
+    timeout: FINISHED_TOAST_MS,
   };
 }
 

@@ -92,6 +92,7 @@ export function RunSignalsHost() {
           variant: "success",
           title: t.title,
           description: t.description,
+          timeout: t.timeout,
           action: { label: t.actionLabel, onClick: () => router.push(chatLink(run.agent, run.threadId, held)) },
         });
       }
