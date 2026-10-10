@@ -9,7 +9,7 @@ ask of the same day. **Verified against code on 2026-10-10**, at `origin/main`
 | S1 — one activity feed and the nav badges | **BUILT** 2026-10-10, branch `chat-activity-badges` |
 | S2 — a durable "needs input" | **BUILT** 2026-10-10, branch `ws51-s2-needs-input`, dark behind `CHAT_DURABLE_ASKS` |
 | S3 — the top-right activity control | **BUILT** 2026-10-10, branch `ws51-s3-activity`, no flag |
-| S4 — the server saves the prompt at run start | Spec only |
+| S4 — the server saves the prompt at run start | **BUILT** 2026-10-10, branch `ws51-s4-prompt-save` |
 | S5 — unread replies, the toast, the tab title and the phone pill | Spec only |
 | S6 — the activity of the other signed-in accounts | Spec only |
 | D-1 to D-3 — the deferred decisions | **OWNER-GATE** |
@@ -433,6 +433,35 @@ the next open. R8 binds the upsert.
 **Fence.** A `tests/unit/test_chat_prompt_saved_at_start.py` suite under R8.
 It closes the stream after the first event, then reads the turn back from
 Postgres.
+
+**As built (2026-10-10).** No flag. The write is idempotent by id, and the
+browser save already writes the same row.
+
+1. **The id.** The chat sends `userMessageId` and `userMessageTs` on every
+   send, not only on an edit. The BFF forwards them as `user_message_id` and
+   `user_message_ts`. With no id, the server saves nothing. That covers an
+   old bundle and an API caller.
+2. **The save point.** `/agent/run/stream` saves the turn after every
+   refusal and after the supersede, and before the agent row of the run. The
+   write goes through `_upsert_messages`, bound to the org of the session.
+   The author is the caller from the session, never the payload. A caller
+   who may not send in the room saves nothing (`prompt_to_save`).
+3. **The time.** The row takes the browser's own time stamp, which the
+   browser save also writes. The earlier turns carry the browser clock, so a
+   server clock could sort the turn above the reply before it.
+4. **An edit.** The supersede removes the old turn first. The new turn then
+   goes in with its "Edited" marker.
+5. **A steer.** The spec was silent. The route saves a steered turn with its
+   actor, so it shows on a reload. The route saves nothing for a stop, or
+   for a turn that it drops.
+6. **The history.** A first turn sends no history, so the executor reads
+   the store. That read now leaves out the current turn, which the model
+   reads as `message`.
+7. **`/copilot/chat`.** No client calls it, so S4 does not change it.
+
+**Mutation record (2026-10-10).** Five mutants, five killed: no save at run
+start, a server id in place of the browser id, no author, no `can_send`
+check, and no history filter.
 
 ### S5 — signals outside an open chat
 

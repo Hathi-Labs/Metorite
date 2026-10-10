@@ -168,7 +168,14 @@ describe("a refused edit changes nothing (review of #795)", () => {
     expect(src).toMatch(/const accepted = res\.status !== 202 && res\.ok && !!res\.body;/);
     expect(src).toMatch(/settleEditAnswer\(\s*threadId, prev\.messages, supersedes, res\.status, accepted, body,/);
     expect(src).not.toMatch(/supersedeLocal\(prev\.messages/);
-    expect(src).toMatch(/\.\.\.\(supersedes \? \{ supersedes, userMessageId: userMsg\.id \} : \{\}\)/);
+    expect(src).toMatch(/\.\.\.\(supersedes \? \{ supersedes \} : \{\}\)/);
+    // WS-51 S4: every send names its own row, so the gateway saves the turn
+    // under the id the browser save writes. An edit keeps it too.
+    expect(src).toMatch(/userMessageId: userMsg\.id,\s*userMessageTs: userMsg\.timestamp,/);
+    // The BFF forwards the id on every send, and not only with an edit.
+    const route = readFileSync(join(__dirname, "..", "app", "api", "agent", "chat", "route.ts"), "utf8");
+    expect(route).toMatch(/\.\.\.\(userMessageId\s*\?\s*\{\s*user_message_id: userMessageId,/);
+    expect(route).not.toMatch(/supersedes, user_message_id/);
     expect(src).toMatch(/stopGeneration = useCallback\(\(\): Promise<void> =>/);
     // A stale poll must not resurrect a superseded row.
     expect(src).toMatch(/if \(isSuperseded\(threadId, rm\.id\)\) continue;/);
