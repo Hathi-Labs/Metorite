@@ -714,7 +714,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-10c** ✅ built 2026-10-10 | Cards, views and quick commands (§13): KPI tiles, board, timeline, agenda, gantt and donut images. Six views that code builds from the web's own reads. Quick commands answer with no AI call | AGENT-SAFE | §13.5, C1 to C8. Fences: `tests/unit/test_wac_views.py`, `tests/unit/test_wac_cards.py` |
 | **WAC-10e** ✅ built 2026-10-11 | Reply and react like a person (§13.7): the first part of each answer quotes the member's message, the AI can react with an emoji, a long job says so first, and a plain thanks gets a 👍 with no AI call | AGENT-SAFE | §13.7, E1 to E7. Fence: `tests/unit/test_wac_react.py` |
 | **WAC-10f** ✅ built 2026-10-11 | One chart language (§13.8): the web app's chart engine draws WhatsApp charts on the server, in the product's look. 13 kinds, from a short spec. Falls back to the old renderer | AGENT-SAFE | §13.8, F1 to F5. Fences: `src/lib/charts/charts.test.ts`, `tests/unit/test_wac_chart_engine.py` |
-| **WAC-10g** | The same charts live in the web chat: a `chart` template with tooltips and a legend | AGENT-SAFE | The chat draws each kind of §13.8 from the same spec |
+| **WAC-10g** ✅ built 2026-10-11 | The same charts live in the web chat (§13.9): a `chart` template with a tooltip and a legend, and `barChart` through the same engine | AGENT-SAFE | §13.9, G1 to G5. Fence: `src/components/LiveChart.test.ts` |
 | **WAC-10b** (was WAC-10) | Native UI, part 1 (§5.11): the org switcher. §12 built the rest | AGENT-SAFE | "What is due today?" returns a list message, and a tap on a row returns that task. A member of two orgs switches orgs with the list, and the next answer comes from the new org. A row id for an org the sender has no link to changes nothing |
 | **WAC-11** | Native UI, part 2: the "New task" Flow and its endpoint (§5.11) | AGENT-SAFE to build, **OWNER-GATE** for the endpoint key on the box | The Flow opens from a button, lists the member's own projects, and its submit writes exactly one task in the current org. A Flow token from another phone writes nothing |
 
@@ -1172,3 +1172,37 @@ that need Node and the packages skip where the packages are not installed.
 **Next.** WAC-10g draws the same spec live in the web chat, as a `chart`
 template, with tooltips and a legend. WAC-10h draws the KPI tiles, the board,
 the timeline and the agenda in the same language.
+
+### 13.9 WAC-10g: the same charts, live in the web chat (owner, 2026-10-11)
+
+The owner asked for the charts as live HTML and JavaScript in Metorite's own
+chat, not as static images.
+
+**One template.** `emit_generative_ui` gets the template `chart`. Its data is
+the spec of §13.8, word for word, so the AI writes one shape for both
+surfaces. `LiveChart.tsx` builds the option with `kinds.mjs` and draws it in
+the page with ECharts. It adds a tooltip on hover and a legend that hides a
+series. The chart also follows the member's colour mode and the width of the
+chat column.
+
+**One bar chart.** The old `barChart` template now draws through the same
+engine. Its data maps onto a bar spec (`barChartSpec`), so the chat holds no
+second, hand-built bar chart.
+
+**Small bundle.** `lib/charts/echarts.ts` imports only the series and the
+components that the kinds use. `LiveChart` loads it on first use, so a chat
+with no chart never downloads it.
+
+**Text, never markup.** Each live tooltip uses ECharts' `richText` mode. A
+label is the model's text, and the default HTML tooltip would put it into the
+page as markup. Rich text draws it as text.
+
+**Acceptance (WAC-10g).**
+
+| # | Check | Fence |
+|---|---|---|
+| G1 | The chat offers `chart`, and `barChart` draws through the engine | `LiveChart.test.ts` `wac10g-one-chart` |
+| G2 | A live chart has a tooltip, no footer and the page's font. A bad spec shows its reason | `LiveChart.test.ts` `wac10g-live` |
+| G3 | The browser registry holds every series and component that a kind uses | `LiveChart.test.ts` `wac10g-every-kind-loads` |
+| G4 | Every live tooltip is rich text | `charts.test.ts` "a live tooltip draws text, never HTML" |
+| G5 | The template catalog, the registry, the shapes and the docstring name `chart` | `tests/unit/test_genui_catalog_lockstep.py` |

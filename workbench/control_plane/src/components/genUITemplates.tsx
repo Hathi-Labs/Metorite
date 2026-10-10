@@ -29,6 +29,7 @@
 import { createElement, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import GenUIFallback from "@/components/GenUIFallback";
+import LiveChart from "@/components/LiveChart";
 import { resolveIcon } from "@/lib/icons";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
@@ -184,6 +185,10 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "planCard",
     summary: "An editable project plan (title, owner, effort, start, due, after per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
     data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
+  },  {
+    name: "chart",
+    summary: "A live chart in Metorite's chart language (13 kinds), with a tooltip and a legend. The WhatsApp bot sends the same spec as an image.",
+    data: "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
   },
 ];
 
@@ -440,42 +445,19 @@ function StatDashboard({ data }: { data: Data }) {
   );
 }
 
-function BarChart({ data }: { data: Data }) {
+/** The `barChart` template's data as a chart-language spec (WAC-10g), so the
+ *  chat has ONE bar chart: the one the WhatsApp bot draws too. */
+const BAR_TONES: Record<string, string> = { primary: "blue", success: "green", warning: "amber", danger: "red" };
+export function barChartSpec(data: Data): Data {
   const bars = arr(data.bars).map((b) => (b ?? {}) as Data);
-  const max = Math.max(1, ...bars.map((b) => num(b.value)));
-  return (
-    <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
-      {data.title != null && (
-        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 10 }}>
-          {str(data.title)}
-        </div>
-      )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {bars.map((b, i) => {
-          const pct = (num(b.value) / max) * 100;
-          const color = barColor(b.tone);
-          return (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 90, fontSize: TYPE.caption, color: "var(--muted-foreground)", textAlign: "right",
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {str(b.label)}
-              </div>
-              <div style={{ flex: 1, height: 18, borderRadius: 6, background: "var(--secondary)", overflow: "hidden" }}>
-                <div style={{
-                  height: "100%", width: `${pct}%`, background: color, borderRadius: 6,
-                  animation: `ccGrow .7s cubic-bezier(.22,1,.36,1) ${i * 0.06}s both`,
-                }} />
-              </div>
-              <div style={{ width: 52, fontSize: TYPE.caption, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
-                {num(b.value).toLocaleString()}{data.unit != null ? str(data.unit) : ""}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <style>{`@keyframes ccGrow{from{width:0}}`}</style>
-    </div>
-  );
+  return {
+    type: "bar",
+    title: data.title,
+    unit: data.unit,
+    labels: bars.map((b) => str(b.label)),
+    values: bars.map((b) => num(b.value)),
+    tones: bars.map((b) => BAR_TONES[str(b.tone)] ?? "blue"),
+  };
 }
 
 function SparkTrend({ data }: { data: Data }) {
@@ -1651,7 +1633,7 @@ export type TemplateRenderer = (data: Data, ctx?: TemplateCtx) => React.ReactEle
 export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   weatherCard: (data) => <WeatherCard data={data} />,
   statDashboard: (data) => <StatDashboard data={data} />,
-  barChart: (data) => <BarChart data={data} />,
+  barChart: (data) => <LiveChart spec={barChartSpec(data)} />,
   sparkTrend: (data) => <SparkTrend data={data} />,
   comparison: (data) => <Comparison data={data} />,
   progressTracker: (data) => <ProgressTracker data={data} />,
@@ -1665,6 +1647,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   dataGrid: (data) => <DataGrid data={data} />,
   reportCard: (data) => <ReportCard data={data} />,
   planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
+  chart: (data) => <LiveChart spec={data} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */
