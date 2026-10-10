@@ -345,15 +345,24 @@ the S2 `state`. It draws on every page, desktop and phone.
 **Fence.** A render test of the three row states, and the S1 tree sweep.
 
 **As built (2026-10-10).** No flag. The control only reads the S1 store, and
-it writes nothing.
+it writes nothing. ⚠️ It works with the shell bar flag `NEXT_PUBLIC_SHELL_BAR`
+ON or OFF (review of #815). The flag decides only WHERE the desktop draws the
+control. Nothing in S3 is dark behind it.
 
 1. **The control.** `lib/shell/ActivityControl.tsx` draws the `Bot` icon with
    `NavBadge` and `runBadge`, the one colour rule. Green counts the running
    runs. Amber counts the runs that need the member, and amber wins. With no
-   run, the control shows the icon alone. The shell bar draws it at its right
-   end, after the app's tools and the bell (`ShellBar.tsx`).
-2. **The panel.** `ShellFrame` mounts one `Modal`, at the new `end`
-   placement under the bar. Escape and an outside press close it, Tab stays
+   run, the control shows the icon alone. It is ONE component in three
+   places:
+   - with the shell bar ON, the bar's right end, after the app's tools and
+     the bell (`ShellBar.tsx`);
+   - with the shell bar OFF, the sidebar head, beside the fold control
+     (`Sidebar.tsx`), because that layout has no top bar;
+   - on the phone, the Menu drawer, in both cases (`AppShell.tsx`).
+2. **The panel.** `ActivityHost` mounts one `Modal`, and `AppShell` renders
+   it in every layout. It sits under the bar (`end`), near the top when the
+   bar is off (`top`), or as a bottom sheet on the phone (`sheet`). Escape and
+   an outside press close it, Tab stays
    in it, and focus goes back to the control. The rows come from
    `useActivityRows`, which reads the same two sources as the badges: the S1
    store and the runs of this tab. Newest first. A row shows the agent, its
@@ -362,22 +371,36 @@ it writes nothing.
 3. **The link.** No chat link existed before S3. The shell job door
    (`lib/shell/doJob.tsx`) is the deep-link idiom, so a row links to
    `<app>?do=open-chat&fill.session=<thread id>`. Chat, My Tasks, Projects
-   and Email each declare `<ShellJob id={OPEN_CHAT_JOB}>`. The three apps
+   and Email each declare `<ShellJob id={OPEN_CHAT_JOB} ungated>`. An
+   `ungated` job listens with the shell bar flag off too, because this link
+   does not come from the command bar and it saves nothing. The three apps
    open their assistant and call `askRailSession`. Then `useAgentSessions`
    opens the chat once its restore is done. Every other agent opens in Chat.
    App Workshop opens in Chat too, because its chat is per app, not per id.
    A run on a pane that the member cannot see also opens in Chat.
 4. **The step.** `/chat/active-sessions` adds `lastStep` to a running row
    (`stream_relay.latest_step`). It reads the tail of the run's own stream,
-   one XREVRANGE with COUNT 12, and adds no key. A tool start gives its tool
-   in words, a progress line gives its text, and a text delta gives "Writing
-   a reply". The server takes out tags, angle brackets and control characters,
-   and it caps the step at 60 characters. The browser caps it again and draws
-   it as text.
+   one XREVRANGE with COUNT 12, and adds no key.
+   - ⚠️ **The step comes only from a tool NAME or a fixed label.** A tool
+     start gives its name in words, and an MCP name loses its server prefix.
+     A text delta gives "Writing a reply", and a thinking delta gives
+     "Thinking". The text of a progress update, a result or an argument is
+     never a step. A Copilot partial result with no tool id becomes a
+     progress update that carries raw tool output, such as lines of a `.env`
+     file (review of #815).
+   - A tool name must look like an identifier, so free text never passes.
+   - The server takes out tags, angle brackets and control characters, and it
+     caps the step at 60 characters. The browser caps it again and draws it
+     as text.
+   - **Steps only on demand.** The route reads a step only for `?steps=1`.
+     The poll sends it only while the panel is open (`wantLiveSteps`), and
+     the BFF passes on only that parameter. So the 5 s badge poll reads no
+     stream.
 5. **The phone.** The phone has no shell row. The Menu drawer shows the same
-   control beside "Search or ask anything", and a tap opens the same panel as
-   a bottom sheet (the new `sheet` placement). The Menu tab keeps its S1
-   badge, so a member sees the count before the drawer opens.
+   control beside "Search or ask anything", or beside the word "Assistants"
+   when the shell bar is off. A tap opens the same panel as a bottom sheet.
+   The Menu tab keeps its S1 badge, so a member sees the count before the
+   drawer opens.
 6. **Visibility.** The panel lists only the rows that `/chat/active-sessions`
    returns for the member and org, plus the runs of this tab. An asked chat
    opens only when `findSession` finds it in the member's own list.
@@ -387,15 +410,17 @@ it writes nothing.
 - **"New reply" waits for S5.** The server keeps no "finished, unread" state
   for a run. A run leaves the list when it ends. So the panel shows two row
   states, and S5 adds the third with its unread rule.
+- **A chat that is gone.** A link to a chat that is not in the member's list
+  opens nothing. Chat says "That chat is no longer available."
 
 **Fences (R7), as built.**
 
 | Fence | What it holds |
 |---|---|
-| `src/lib/shell/activityControl.test.ts` | The quiet, green and amber states. The rows, their order and their text. The link of each agent, and the job on each app that a link names. The panel is a `Modal` that hands back `onClose`. The empty state. A step drawn as text. The shell owns the control, and it polls nothing |
+| `src/lib/shell/activityControl.test.ts` | The quiet, green and amber states. The rows, their order and their text. The link of each agent, and the ungated job on each app that a link names. The panel is a `Modal` that hands back `onClose`. The empty state. A step drawn as text. The control in the bar, in the sidebar head and in the drawer, and the panel in every layout. Steps asked for only while the panel is open, and the BFF passes on only `steps=1` |
 | `src/lib/railAsk.test.ts` | An ask is read and never taken, it opens once in each rail, and it goes stale. `findSession` finds only the member's own chat |
 | `src/lib/liveRuns.test.ts` | The store carries the step, caps it, and publishes a new step |
-| `tests/unit/test_run_last_step.py` | The step rule, the 60-character cap, plain text, one tail read, the route, and a question with no step |
+| `tests/unit/test_run_last_step.py` | The step rule, tool output that never reaches the step, the MCP prefix, the 60-character cap, plain text, one tail read, the route, a question with no step, and a badge poll that reads no stream |
 
 **Mutation record (2026-10-10).** Nine mutants, nine killed:
 
@@ -404,6 +429,12 @@ it writes nothing.
 - the step left out of the publish key
 - no cap, angle brackets kept, the whole stream read, and a step read for a
   question
+
+The review fix round added six more mutants, six killed:
+
+- progress text back in the step, and a free-text tool name allowed
+- a step read on every poll, and a poll that always asks for steps
+- no control in the sidebar head, and the open-chat job gated on the flag
 
 **Visual review (2026-10-10).** The rig ran the control and the open panel
 with two running chats and one that needs the member. It captured dark,
@@ -415,8 +446,6 @@ the asked chat in the My Tasks rail, and a Chat row opened it in Chat.
 
 - The control in the phone drawer shows the counts of the moment the drawer
   opened, like the drawer links (S1).
-- With the shell bar flag off, the desktop draws no control. The flag is on
-  in production.
 - A member with no `chat` feature cannot open a Chat link. The same gap holds
   for the S1 badge.
 
