@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
     MyTaskModel,
@@ -291,7 +292,7 @@ async def _llm_capture(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-fast",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=450,
             feature="tasks.capture_email",
@@ -1078,7 +1079,7 @@ async def _llm_detect_commitment(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-fast",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0, max_tokens=450,
             feature="tasks.capture_email",

@@ -35,6 +35,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends
 from fastapi.responses import StreamingResponse
 from gateway.routes.notes.copilot_policy import (
@@ -245,7 +246,7 @@ async def _craft(
             model="tier-balanced",
             fallback_model="tier-fast",
             messages=[
-                {"role": "system", "content": _system(_CRAFT_SYSTEM, instructions)},
+                {"role": "system", "content": _system(_CRAFT_SYSTEM + "\n\n" + voice_prompt("chat"), instructions)},
                 {"role": "user", "content": (
                     (f"BACKGROUND:\n{background}\n\n" if background else "")
                     + f"MEETING STATE:\n{state.as_prompt()}\n\n"

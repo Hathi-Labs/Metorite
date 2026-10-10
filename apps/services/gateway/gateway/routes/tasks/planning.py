@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
     _log,
@@ -162,7 +163,7 @@ async def _llm_plan(
     try:
         resp, _used = await acompletion_with_fallback(
             model=model, fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.2, max_tokens=2200,
             response_format={"type": "json_object"},

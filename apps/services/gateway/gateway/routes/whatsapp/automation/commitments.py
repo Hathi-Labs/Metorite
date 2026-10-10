@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.whatsapp.automation.drafting import detect_language
 from gateway.routes.whatsapp.core import _tenant_session, router
@@ -212,7 +213,7 @@ def build_nudge_messages(
         "Draft the founder's gentle follow-up now."
     )
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system + "\n\n" + voice_prompt("message")},
         {"role": "user", "content": user},
     ]
 

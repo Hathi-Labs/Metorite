@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
@@ -20,15 +21,14 @@ from gateway.routes.email.automation.identity import (
 from gateway.routes.email.automation.senders import canonical_cleanup_category
 from gateway.routes.email.core import (
     _assert_account_owner,
-    _tenant_session,
     _llm_json,
     _log,
+    _tenant_session,
     provider_session,
     router,
 )
 from pydantic import BaseModel
 from sqlalchemy import text
-
 
 # The digest is a PROJECTION of the same windowed inbox aggregates the Analytics
 # screen reports — never a parallel re-derivation with its own (drifting) rules.
@@ -532,7 +532,7 @@ _BRIEF_SYSTEM = (
     "for the day — what's most pressing and who it's with. Name 1-3 "
     "specific items (a person or subject), newest-pressing first. No "
     "greeting, no preamble, under 25 words. "
-    'Respond ONLY JSON {"brief": "<sentence>"}.')
+    'Respond ONLY JSON {"brief": "<sentence>"}.' + "\n\n" + voice_prompt("summary", json=True))
 
 
 def _brief_cache_key(account_id: str, user_prompt: str) -> Any:

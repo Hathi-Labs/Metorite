@@ -18,6 +18,7 @@ import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.workflows.core import (
     _log,
@@ -274,7 +275,7 @@ async def workflow_copilot(
         context = await _capability_context(body.message, db)
 
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": COPILOT_SYSTEM_PROMPT},
+        {"role": "system", "content": COPILOT_SYSTEM_PROMPT + "\n\n" + voice_prompt("chat", json=True)},
         {
             "role": "system",
             "content": (

@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
 from pydantic import BaseModel
@@ -155,7 +156,7 @@ async def draft_agenda(
             model="tier-balanced",
             fallback_model="tier-fast",
             messages=[
-                {"role": "system", "content": _AGENDA_SYSTEM},
+                {"role": "system", "content": _AGENDA_SYSTEM + "\n\n" + voice_prompt("chat", "title", json=True)},
                 {"role": "user", "content": (
                     ("\n\n".join(ctx) + "\n\n" if ctx else "")
                     + f"USER SAYS:\n{message}"

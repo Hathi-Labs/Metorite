@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.automation.identity import resolve_self
 from gateway.routes.email.automation.senders import DISPOSED_FOLDERS
@@ -15,9 +16,9 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _assert_mail_in_mailbox,
     _assert_thread_in_mailbox,
-    _tenant_session,
     _llm_json,
     _log,
+    _tenant_session,
     provider_session,
     router,
 )
@@ -646,7 +647,7 @@ async def _llm_generate_rules(prompt: str) -> list[dict[str, Any]]:
         # forced; generous budget so several rules aren't truncated.
         data, _content, _used = await _llm_json(
             "tier-powerful",
-            [{"role": "system", "content": sys_prompt},
+            [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("title", json=True)},
              {"role": "user", "content": prompt[:4000]}],
             max_tokens=2500,
             feature="rules_generate",

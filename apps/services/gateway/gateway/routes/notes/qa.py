@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.notes.core import _log, _tenant_session, load_owned_meeting, router
 from gateway.routes.notes.summaries import _PASS_CHARS, _llm_json, _model, _tag
@@ -134,7 +135,7 @@ async def ask_meeting(
         + '\nReturn STRICT JSON: {"answer": str, "refs": [int]}'
     )
     result = await _llm_json(
-        system,
+        system + "\n\n" + voice_prompt("chat", json=True),
         f"QUESTION: {question}\n\nTRANSCRIPT (DATA):\n{data}",
         _model("meeting_qa"),
         max_tokens=700,

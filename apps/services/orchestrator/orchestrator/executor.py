@@ -6083,6 +6083,7 @@ async def _llm_recovery(
 
     try:
         from acb_llm import LLMTier, complete
+        from acb_llm.voice import voice_prompt
 
         messages: list[dict[str, str]] = list(event_payload.get("messages", []))
         latest: str = event_payload.get("message", "")
@@ -6097,7 +6098,7 @@ async def _llm_recovery(
             "Never show raw Python tracebacks or variable names. Be concise."
         )
         recovery_msgs: list[dict[str, str]] = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": system + "\n\n" + voice_prompt("chat")},
             *messages,
             *(
                 [{"role": "user", "content": latest}]

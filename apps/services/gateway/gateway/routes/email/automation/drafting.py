@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.voice import voice_prompt
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
@@ -35,11 +36,11 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
     _fmt_addr_list,
-    _savepoint,
-    _tenant_session,
     _llm_json,
     _log,
     _row_to_message,
+    _savepoint,
+    _tenant_session,
     email_memory_scope,
     provider_session,
     router,
@@ -934,7 +935,7 @@ async def _llm_draft_reply(
         )
         if instructions:
             user_prompt += f"\nExtra instructions: {instructions}\n"
-        _messages = [{"role": "system", "content": sys_prompt},
+        _messages = [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("email")},
                      {"role": "user", "content": user_prompt}]
         # Generous output budget — a full reply body (greeting + paragraphs +
         # context) must never be truncated mid-sentence.
@@ -1091,7 +1092,7 @@ async def _llm_compose_assist(
                 "email for the recipient and subject above.\n"
             )
         user_prompt = "".join(parts)
-        _messages = [{"role": "system", "content": sys_prompt},
+        _messages = [{"role": "system", "content": sys_prompt + "\n\n" + voice_prompt("email")},
                      {"role": "user", "content": user_prompt}]
         if on_delta is not None:
             # Streaming path (SSE compose): live deltas reach the composer;
@@ -2458,8 +2459,7 @@ async def send_draft_endpoint(
             # "reply shows up as a separate email in Sent" bug). Providers
             # without an update/send-draft primitive (IMAP) fall back to a
             # thread-aware fresh send.
-            from gateway.routes.email.signature import \
-                build_signed_bodies  # noqa: PLC0415
+            from gateway.routes.email.signature import build_signed_bodies  # noqa: PLC0415
             sig_row = (await db.execute(text(
                 "SELECT signature FROM email_assistant_settings "
                 "WHERE account_id = :aid"
