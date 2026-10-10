@@ -138,6 +138,21 @@ class _Store:
         row.update(state="running", tries=row["tries"] + 1, stale=False)
         return row["tries"]
 
+    async def move(self, message_id: str, frm: str, to: str,
+                   code: str | None) -> bool:
+        row = self.rows[message_id]
+        if row["state"] != frm:
+            return False
+        row.update(state=to, code=code)
+        return True
+
+    async def stored_reply(self, sid: str, wamid: str) -> str | None:
+        rid = bot_run.reply_id(wamid)
+        for m in self.threads.get(sid, []):
+            if m["id"] == rid and m["role"] == "assistant":
+                return m["content"]
+        return None
+
     async def retry(self, message_id: str, code: str) -> bool:
         row = self.rows[message_id]
         if row["state"] != "running":
@@ -177,10 +192,20 @@ class _Store:
         at = next((i for i, m in enumerate(msgs) if m["id"] == mid), None)
         if at is None:
             return None, []
-        # The SQL's rule: the user turns up to this one, and every reply.
+        # The SQL's rule: the thread as it was at this turn. A bot reply
+        # counts by the turn it answers.
+        index = {m["id"]: i for i, m in enumerate(msgs)}
+
+        def _before(i: int, m: dict[str, Any]) -> bool:
+            if i < at:
+                return True
+            if m["role"] == "assistant" and m["id"].startswith("wa-out-"):
+                asked = index.get("wa-in-" + m["id"][len("wa-out-"):])
+                return asked is not None and asked < at
+            return False
+
         history = [{"role": m["role"], "content": m["content"]}
-                   for i, m in enumerate(msgs)
-                   if i != at and (m["role"] == "assistant" or i < at)]
+                   for i, m in enumerate(msgs) if i != at and _before(i, m)]
         return msgs[at]["content"], history
 
     def inbound_rows(self) -> list[dict[str, Any]]:
@@ -269,6 +294,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(bot_run, "_RUNS", set())
     monkeypatch.setattr(bot_run, "_LIVE_ROWS", set())
     monkeypatch.setattr(bot_run, "_retry", st.retry)
+    monkeypatch.setattr(bot_run, "_move", st.move)
+    monkeypatch.setattr(bot_run, "_stored_reply", st.stored_reply)
     monkeypatch.setattr(bot_run, "_waiting", st.waiting)
     monkeypatch.setattr(bot_run, "_thread_shared", st.thread_shared)
     monkeypatch.setattr(bot_run, "_RUN_LOCKS", {})
@@ -772,16 +799,16 @@ async def test_the_last_failed_try_sends_the_general_text_once(
 async def test_a_failure_after_the_reply_went_out_sends_nothing_more(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real = world.store.end
+    real = world.store.move
     once = [True]
 
-    async def _end(message_id, state, code):
-        if state == "replied" and once[0]:
+    async def _move(message_id, frm, to, code):
+        if frm == "sending" and to == "replied" and once[0]:
             once[0] = False
             raise RuntimeError("database gone")
-        return await real(message_id, state, code)
+        return await real(message_id, frm, to, code)
 
-    monkeypatch.setattr(bot_run, "_end", _end)
+    monkeypatch.setattr(bot_run, "_move", _move)
     await _post_and_run(_message())
     (row,) = world.store.inbound_rows()
     assert world.sent == [(PHONE, ANSWER)]
@@ -1059,7 +1086,7 @@ async def test_an_empty_answer_is_a_failure(world: _World) -> None:
     assert row["state"] == "failed" and row["code"] == "empty"
 
 
-async def test_a_failed_send_ends_the_row_failed(
+async def test_a_failed_first_send_gives_the_row_back_and_keeps_the_reply(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from whatsapp_ingestion.providers import factory
@@ -1071,7 +1098,9 @@ async def test_a_failed_send_ends_the_row_failed(
     monkeypatch.setattr(factory, "build_provider", lambda n, c: _Down())
     await _post_and_run(_message())
     (row,) = world.store.inbound_rows()
-    assert row["state"] == "failed" and row["code"] == "send"
+    # Round 2: nothing went out, so the next try sends the stored reply.
+    assert row["state"] == "received" and row["code"] == "send"
+    assert row["tries"] == 1
     assert world.store.reply_writes == 1, "the thread keeps the reply"
 
 
@@ -1225,3 +1254,209 @@ def test_the_ids_are_stable_for_a_redelivery_and_hold_no_colon() -> None:
     tid = bot_run.new_thread_id(ORG_A, MEMBER, "wamid.A")
     assert tid == bot_run.new_thread_id(ORG_A, MEMBER, "wamid.A")
     assert ":" not in tid and str(uuid.UUID(tid)) == tid
+
+
+# ── Round 2, A: at most one reply per message, durably ─────────────────────
+
+
+def _db_down_after_sending(world: _World, monkeypatch: pytest.MonkeyPatch):
+    """Every row write fails once the row is `sending`: the database is gone
+    between the send and the end write. Returns a switch to bring it back."""
+    st = world.store
+    down = [False]
+
+    async def _move(message_id, frm, to, code):
+        if down[0]:
+            raise RuntimeError("database gone")
+        ok = await st.move(message_id, frm, to, code)
+        if ok and to == "sending":
+            down[0] = True
+        return ok
+
+    async def _end(message_id, state, code):
+        if down[0]:
+            raise RuntimeError("database gone")
+        return await st.end(message_id, state, code)
+
+    async def _retry(message_id, code):
+        if down[0]:
+            raise RuntimeError("database gone")
+        return await st.retry(message_id, code)
+
+    monkeypatch.setattr(bot_run, "_move", _move)
+    monkeypatch.setattr(bot_run, "_end", _end)
+    monkeypatch.setattr(bot_run, "_retry", _retry)
+    return down
+
+
+async def _later_sweeps(world: _World, row: dict[str, Any], times: int = 3) -> None:
+    req = bot_run.RunRequest(row["id"], ORG_A, MEMBER, PHONE, row["wamid"],
+                             row["sid"])
+    for _ in range(times):
+        row["stale"] = True
+        await bot_run.run_message(req, stale=True)
+
+
+@pytest.mark.parametrize("tries_before", [0, 2])
+async def test_a_sent_reply_whose_end_write_fails_is_never_sent_again(
+    world: _World, monkeypatch: pytest.MonkeyPatch, tries_before: int,
+) -> None:
+    """At try 1 and at try 3: the database fails on EVERY write after the
+    send. The row stays `sending`, and no later try sends anything."""
+    down = _db_down_after_sending(world, monkeypatch)
+    links = [dict(lk) for lk in world.links]
+    req = await bot_run.record_inbound(links, PHONE, "wamid.DOWN", QUESTION)
+    row = world.store.rows[req.message_id]
+    row["tries"] = tries_before
+    await bot_run.run_message(req)
+    assert world.sent == [(PHONE, ANSWER)]
+    assert row["state"] == "sending"
+
+    down[0] = False   # the database is back
+    await _later_sweeps(world, row)
+    assert world.sent == [(PHONE, ANSWER)], "a sent reply went out twice"
+    assert len(world.agent.calls) == 1
+    assert row["state"] == "sending", "only the sweep's SQL closes it"
+
+
+async def test_a_cancel_between_the_send_and_the_end_sends_nothing_twice(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = world.store.move
+    once = [True]
+
+    async def _move(message_id, frm, to, code):
+        if frm == "sending" and to == "replied" and once[0]:
+            once[0] = False
+            raise asyncio.CancelledError()   # a deploy's stop_runs
+        return await real(message_id, frm, to, code)
+
+    monkeypatch.setattr(bot_run, "_move", _move)
+    links = [dict(lk) for lk in world.links]
+    req = await bot_run.record_inbound(links, PHONE, "wamid.CANCEL", QUESTION)
+    with pytest.raises(asyncio.CancelledError):
+        await bot_run.run_message(req)
+    row = world.store.rows[req.message_id]
+    assert row["state"] == "replied" and row["code"] == "cancelled", (
+        "the shielded end write did not close the row")
+    await _later_sweeps(world, row)
+    assert world.sent == [(PHONE, ANSWER)]
+
+
+async def test_a_refused_first_part_resends_the_stored_reply_with_no_second_run(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from whatsapp_ingestion.providers import factory
+
+    refuse = [True]
+
+    class _Flaky:
+        async def send_text(self, to: str, body: str) -> str:
+            if refuse[0]:
+                refuse[0] = False
+                raise RuntimeError("Meta is down")
+            world.sent.append((to, body))
+            return "wamid.out.ok"
+
+    monkeypatch.setattr(factory, "build_provider", lambda n, c: _Flaky())
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert row["state"] == "received" and row["code"] == "send"
+    assert row["tries"] == 1 and world.sent == []
+
+    await _later_sweeps(world, row, times=1)
+    assert world.sent == [(PHONE, ANSWER)]
+    assert len(world.agent.calls) == 1, "the agent ran again for a resend"
+    assert world.store.reply_writes == 1, "the reply was written twice"
+    assert row["state"] == "replied" and row["tries"] == 2
+
+
+async def test_a_channel_that_refuses_every_try_ends_failed_with_no_general_text(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from whatsapp_ingestion.providers import factory
+
+    class _Down:
+        async def send_text(self, to: str, body: str) -> str:
+            raise RuntimeError("Meta is down")
+
+    monkeypatch.setattr(factory, "build_provider", lambda n, c: _Down())
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    await _later_sweeps(world, row, times=2)
+    assert row["tries"] == 3
+    assert row["state"] == "failed" and row["code"] == "send"
+    assert len(world.agent.calls) == 1
+    await _later_sweeps(world, row, times=1)
+    assert world.sent == []
+
+
+async def test_a_part_that_went_out_is_never_sent_again(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from whatsapp_ingestion.providers import factory
+
+    class _Second:
+        async def send_text(self, to: str, body: str) -> str:
+            if world.sent:
+                raise RuntimeError("Meta is down")
+            world.sent.append((to, body))
+            return "wamid.out.1"
+
+    monkeypatch.setattr(factory, "build_provider", lambda n, c: _Second())
+    world.agent.reply = {"result": "x" * 4000 + "\n\n" + "y" * 200}
+    await _post_and_run(_message())
+    (row,) = world.store.inbound_rows()
+    assert row["state"] == "replied" and row["code"] == "send_partial"
+    await _later_sweeps(world, row)
+    assert len(world.sent) == 1
+
+
+# ── Round 2, C: the thread became a room while the agent ran ───────────────
+
+
+async def test_a_thread_shared_during_the_run_gets_no_reply_written(
+    world: _World,
+) -> None:
+    world.agent.gate = asyncio.Event()
+    await _post(_message())
+    for _ in range(50):
+        if world.agent.calls:
+            break
+        await asyncio.sleep(0.01)
+    (row,) = world.store.inbound_rows()
+    world.store.shared.add(row["sid"])   # shared on the web, mid-run
+    world.agent.gate.set()
+    await asyncio.wait_for(bot_run.wait_for_runs(), timeout=5)
+    assert world.store.reply_writes == 0, "the answer went into a room"
+    assert row["state"] == "refused" and row["code"] == "shared"
+    assert world.sent == [(PHONE, FAILED_TEXT)]
+
+
+# ── Round 2, D: a retry sees the thread as it was ──────────────────────────
+
+
+async def test_a_retried_older_text_does_not_see_a_newer_texts_answer(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = world.store.write_reply
+    broken = [True]
+
+    async def _flaky(req, reply):
+        if broken[0]:
+            broken[0] = False
+            raise RuntimeError("database gone")
+        await real(req, reply)
+
+    monkeypatch.setattr(bot_run, "_write_reply", _flaky)
+    await _post_and_run(_message("Older"), _message("Newer"))
+    # The older text failed, the newer one ran, and the second drain (the
+    # newer text's own task) then tried the older one again.
+    assert [c["payload"]["message"] for c in world.agent.calls] == [
+        "Older", "Newer", "Older"]
+    assert world.agent.calls[1]["payload"]["messages"] == [
+        {"role": "user", "content": "Older"}]
+    retry = world.agent.calls[2]["payload"]
+    assert retry["messages"] == [], "the retry saw a newer text's answer"
+    assert [r["state"] for r in world.store.inbound_rows()] == [
+        "replied", "replied"]

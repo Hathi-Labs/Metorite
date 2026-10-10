@@ -32,19 +32,28 @@ The path of one text from a linked phone:
    times. A row that used its 3 tries gets the general failure text once. A
    row older than 24 hours becomes ``expired`` and gets no reply.
 
-**Never lost, never sent twice.** A failure after the claim, before any part
-of a reply went out, gives the row back as ``received`` with its try counted,
-so the sweep runs it again. The third failure sends the general text once.
-A failure after a part went out sends nothing more.
+**At most one reply per message, and at least one unless the channel fails.**
+Just before the first part of a reply goes out, the row becomes ``sending``,
+in the database. Nothing runs a ``sending`` row again, and nothing sends it
+the general text: the sweep closes it as ``replied`` (``send_unconfirmed``)
+after 5 minutes. A crash in the middle of a long reply can lose its tail, and
+it never sends a part twice. A failure BEFORE ``sending`` gives the row back
+as ``received`` with its try counted, so the sweep runs it again, and the last
+try sends the general text once. A first part that WhatsApp refuses gives the
+row back too. The next try sends the reply stored in the thread again, with
+no second run of the agent. After the last try, the row ends ``failed``
+(``send``), and no general text goes, because the channel itself failed.
 
 **The text lives in the thread only.** The table holds no text (§5.9). The
 member's turn is written BEFORE the 200, with an id made from the ``wamid``
 (:func:`turn_id`). So a crash after the 200 loses nothing: the sweep reads the
 turn back from ``chat_session_id`` and that id, and runs it.
 
-**A shared room is not the WhatsApp thread.** When someone adds a participant
-to the thread on the web, the thread becomes a room. The next text opens a new
-solo thread, and no run reads the room.
+**A shared room is not the WhatsApp thread.** A thread is a room when it has a
+participant who is not its member, or a visibility other than ``private``.
+The member's own ``owner`` row (a web run on the thread writes one) does not
+make a room. The next text after a room opens a new solo thread, no run reads
+a room, and no reply is written into one.
 
 **WAC-3 is reads only (§5.6).** The run opens
 ``acb_skills.ask_tools.refuse_cards``. A tool that asks for a card gets a deny
@@ -242,16 +251,27 @@ ON CONFLICT (wamid) DO NOTHING
 RETURNING id::text AS id
 """
 
-#: The member's WhatsApp thread: their latest SOLO `whatsapp` session. A
-#: session with any participant row is a shared room, and stops being it.
-_FIND_THREAD_SQL = """
+#: When the session ``s`` is a shared room: a visibility other than
+#: ``private`` (the room route sets it with no participant row), or a
+#: participant who is not the session's member. The member's OWN ``owner``
+#: row (``routes/chat.py`` ``_ensure_session``) is no room. The subject of a
+#: person is the plain email, the same value as ``user_id``.
+_ROOM_SQL = """(
+    COALESCE(s.visibility, 'private') <> 'private'
+    OR EXISTS (
+        SELECT 1 FROM chat_session_participant p
+         WHERE p.session_id = s.id
+           AND lower(p.subject) <> lower(s.user_id)
+    )
+)"""
+
+#: The member's WhatsApp thread: their latest SOLO `whatsapp` session.
+_FIND_THREAD_SQL = f"""
 SELECT s.id FROM chat_session s
  WHERE s.channel = 'whatsapp'
    AND s.user_id = :email
    AND s.updated_at > now() - make_interval(secs => CAST(:idle AS double precision))
-   AND NOT EXISTS (
-       SELECT 1 FROM chat_session_participant p WHERE p.session_id = s.id
-   )
+   AND NOT {_ROOM_SQL}
  ORDER BY s.updated_at DESC
  LIMIT 1
 """
@@ -268,8 +288,8 @@ SELECT s.agent_name,
  WHERE s.id = :sid
 """
 
-_SHARED_SQL = """
-SELECT EXISTS (SELECT 1 FROM chat_session_participant WHERE session_id = :sid)
+_SHARED_SQL = f"""
+SELECT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
 """
 
 #: The fresh claim: only a row that waits.
@@ -311,6 +331,16 @@ UPDATE whatsapp_bot_messages
 RETURNING id
 """
 
+#: One state change, from one state only. `sending` is set just before the
+#: first part of a reply goes out, and nothing takes a `sending` row again.
+_MOVE_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = :to, error_code = :code, updated_at = now()
+ WHERE id = CAST(:id AS uuid)
+   AND state = :frm
+RETURNING id
+"""
+
 #: A failure before any reply went out: the row waits again, with its try
 #: counted, so the sweep runs it again.
 _RETRY_SQL = """
@@ -336,25 +366,39 @@ SELECT id::text AS id, organization_id::text AS organization_id,
 """
 
 #: The member's own turn. A shared room gives no row: no run reads a room.
-_TURN_SQL = """
+_TURN_SQL = f"""
 SELECT content, timestamp_ms FROM chat_message
  WHERE session_id = :sid AND id = :mid AND role = 'user'
-   AND NOT EXISTS (
-       SELECT 1 FROM chat_session_participant p WHERE p.session_id = :sid
-   )
+   AND NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
 """
 
-#: The prior turns. Every user turn up to this one, and every reply: a
-#: newer text's turn was written before the 200, so the reply to an older
-#: text has a LATER timestamp than this turn and still belongs to its history.
-_HISTORY_SQL = """
-SELECT role, content FROM chat_message
- WHERE session_id = :sid
-   AND id <> :mid
-   AND (role = 'assistant' OR (role = 'user' AND timestamp_ms <= :ts))
-   AND NOT EXISTS (
-       SELECT 1 FROM chat_session_participant p WHERE p.session_id = :sid
+#: The reply that a try already wrote into the thread. A retry sends it again
+#: with no second run of the agent.
+_STORED_REPLY_SQL = """
+SELECT content FROM chat_message
+ WHERE session_id = :sid AND id = :mid AND role = 'assistant'
+"""
+
+#: The prior turns: the thread as it was at this turn. A row written at or
+#: before this turn, of either role. A bot reply counts by the turn it
+#: answers, not by its own time: a newer text's turn was written before the
+#: 200, so the reply to an older text is LATER than this turn and still
+#: belongs here, and the reply to a NEWER text does not (a retry).
+_HISTORY_SQL = f"""
+SELECT role, content FROM chat_message m
+ WHERE m.session_id = :sid
+   AND m.id <> :mid
+   AND m.role IN ('user', 'assistant')
+   AND (
+       m.timestamp_ms <= :ts
+       OR (m.role = 'assistant' AND m.id LIKE 'wa-out-%' AND EXISTS (
+           SELECT 1 FROM chat_message q
+            WHERE q.session_id = :sid
+              AND q.role = 'user'
+              AND q.id = 'wa-in-' || substr(m.id, 8)
+              AND q.timestamp_ms <= :ts))
    )
+   AND NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = :sid AND {_ROOM_SQL})
  ORDER BY timestamp_ms DESC, id DESC
  LIMIT :n
 """
@@ -369,6 +413,7 @@ RETURNING id
 """
 
 #: A row that used its tries. It gets the general text once, from the sweep.
+#: Never a `sending` row, and never a row whose run is live in this process.
 _EXHAUSTED_SQL = """
 UPDATE whatsapp_bot_messages
    SET state = 'failed', error_code = 'tries', updated_at = now()
@@ -376,8 +421,21 @@ UPDATE whatsapp_bot_messages
    AND state IN ('received', 'running')
    AND tries >= :max
    AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
+   AND id::text <> ALL(CAST(:live AS text[]))
 RETURNING id::text AS id, organization_id::text AS organization_id,
           member_email, wa_id, wamid, chat_session_id
+"""
+
+#: A `sending` row that nobody closed (a crash or a cancel between the send
+#: and the end write). A part may have gone out, so it is never sent again.
+_UNCONFIRMED_SQL = """
+UPDATE whatsapp_bot_messages
+   SET state = 'replied', error_code = 'send_unconfirmed', updated_at = now()
+ WHERE direction = 'in'
+   AND state = 'sending'
+   AND updated_at < now() - make_interval(secs => CAST(:stale AS double precision))
+   AND id::text <> ALL(CAST(:live AS text[]))
+RETURNING id
 """
 
 #: The OLDEST waiting row of each thread, when it waited too long. The run
@@ -550,6 +608,23 @@ async def _end(message_id: str, state: str, code: str | None) -> bool:
         )).first() is not None
 
 
+async def _move(message_id: str, frm: str, to: str, code: str | None) -> bool:
+    """Change the row's state from *frm* to *to*. False when it was not *frm*."""
+    async with tenant_session() as db:
+        return (await db.execute(text(_MOVE_SQL), {
+            "id": message_id, "frm": frm, "to": to, "code": code,
+        })).first() is not None
+
+
+async def _stored_reply(session_id: str, wamid: str) -> str | None:
+    """The reply that an earlier try of this message wrote, or None."""
+    async with tenant_session() as db:
+        row = (await db.execute(text(_STORED_REPLY_SQL), {
+            "sid": session_id, "mid": reply_id(wamid),
+        })).first()
+    return str(row[0]) if row is not None and row[0] else None
+
+
 async def _retry(message_id: str, code: str) -> bool:
     async with tenant_session() as db:
         return (await db.execute(
@@ -680,6 +755,9 @@ _LIVE_ROWS: set[str] = set()
 #: user, so the map holds only the threads that are busy now.
 _RUN_LOCKS: dict[str, asyncio.Lock] = {}
 _RUN_LOCK_USERS: dict[str, int] = {}
+
+#: How long a cancelled run may take to close a row whose reply went out.
+_CANCEL_WRITE_S = 2.0
 
 #: The refusals that tell the member something. Every other one is silent.
 _REFUSAL_REPLIES = {"identity": REPLY_NO_WORKSPACE, "shared": REPLY_FAILED}
@@ -823,6 +901,8 @@ class _Attempt:
 
     tries: int = 0
     sent: bool = False
+    #: The row is `sending` in the database.
+    marked: bool = False
 
 
 async def run_message(req: RunRequest, *, stale: bool = False) -> None:
@@ -907,7 +987,15 @@ async def _process(req: RunRequest, *, stale: bool) -> None:
         attempt.tries = tries
         await _answer(req, attempt)
     except asyncio.CancelledError:
-        # A restart. The row stays `running`, and the next sweep takes it.
+        # A restart. Before `sending`, the row stays `running` and the next
+        # sweep takes it. After a part went out, the end write is shielded
+        # and bounded. If it still fails, the row stays `sending`, which no
+        # run takes again, so nothing is sent twice.
+        if attempt.sent:
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(asyncio.shield(_move(
+                    req.message_id, "sending", "replied", "cancelled")),
+                    timeout=_CANCEL_WRITE_S)
         raise
     except Exception as exc:  # the record names the class only
         _log.warning("whatsapp_channel.run.failed_internal",
@@ -922,15 +1010,24 @@ async def _after_failure(req: RunRequest, attempt: _Attempt) -> None:
     """Close a try that raised. Never loses a message, never sends twice.
 
     * Not claimed yet: nothing changed, and the row still waits.
-    * A part of a reply went out: the row is ``replied``. Nothing more goes.
+    * The row is ``sending``: a part may have gone out. The end write tries
+      once more. Every other write below needs ``running``, so a ``sending``
+      row is never run again and never gets the general text.
     * Tries left: the row waits again (``received``), and the sweep runs it.
     * The last try: the row is ``failed``, and the general text goes once.
     """
     if attempt.tries == 0:
         return
     with contextlib.suppress(Exception):
-        if attempt.sent:
-            await _end(req.message_id, "replied", "internal")
+        if attempt.marked:
+            if attempt.sent:
+                await _move(req.message_id, "sending", "replied", "internal")
+            elif attempt.tries < MAX_TRIES:
+                # The send refused its first part: the stored reply goes on
+                # the next try.
+                await _move(req.message_id, "sending", "received", "send")
+            else:
+                await _move(req.message_id, "sending", "failed", "send")
         elif attempt.tries < MAX_TRIES:
             await _retry(req.message_id, "internal")
         elif await _end(req.message_id, "failed", "internal"):
@@ -969,66 +1066,98 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
             await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
         return
 
-    payload = build_payload(message, history, req.member_email)
     run_id = str(uuid.uuid4())
-    from acb_skills.ask_tools import refuse_cards
+    # A try whose reply is already in the thread (its send failed, or it
+    # crashed before `sending`) sends that reply again. The agent runs once.
+    reply = await _stored_reply(req.chat_session_id, req.wamid)
+    if reply is None:
+        payload = build_payload(message, history, req.member_email)
+        from acb_skills.ask_tools import refuse_cards
 
-    try:
-        with refuse_cards():
-            result = await asyncio.wait_for(
-                _executor()(
-                    AGENT, payload,
-                    run_id=run_id,
-                    thread_id=req.chat_session_id,
-                    model=None,
-                    # D-WAC-3: the link's org, bound explicitly.
-                    organization_id=req.organization_id,
-                    # H-73: the member who pays is the link's member.
-                    session_user=req.member_email,
-                ),
-                timeout=RUN_TIMEOUT_S,
-            )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        code = _error_code(exc)
-        _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
-                     message_id=req.message_id, code=code,
-                     error_type=type(exc).__name__)
-        if await _end(req.message_id, "failed", code):
-            await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
-                        kind="failed", attempt=attempt)
+        try:
+            with refuse_cards():
+                result = await asyncio.wait_for(
+                    _executor()(
+                        AGENT, payload,
+                        run_id=run_id,
+                        thread_id=req.chat_session_id,
+                        model=None,
+                        # D-WAC-3: the link's org, bound explicitly.
+                        organization_id=req.organization_id,
+                        # H-73: the member who pays is the link's member.
+                        session_user=req.member_email,
+                    ),
+                    timeout=RUN_TIMEOUT_S,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            code = _error_code(exc)
+            _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
+                         message_id=req.message_id, code=code,
+                         error_type=type(exc).__name__)
+            if await _end(req.message_id, "failed", code):
+                await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
+                            kind="failed", attempt=attempt)
+            return
+
+        from gateway.routes.projects.agent_dispatch import reply_text
+
+        reply = reply_text(result).strip()
+        if not reply:
+            if await _end(req.message_id, "failed", "empty"):
+                await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
+            return
+        if await _thread_shared(req.chat_session_id):
+            # The thread became a room while the agent ran. The answer was
+            # made for one member, so it goes into no room: nothing is
+            # written, and the member gets the general text once.
+            if await _end(req.message_id, "refused", "shared"):
+                await _send(req, [REPLY_FAILED], kind="shared", attempt=attempt)
+            return
+        await _write_reply(req, reply)
+    else:
+        _log.info("whatsapp_channel.run.resend_stored", run_id=run_id,
+                  message_id=req.message_id)
+
+    # The durable send mark. From here no run takes this row again, and
+    # nothing sends it the general text.
+    if not await _move(req.message_id, "running", "sending", None):
+        _log.info("whatsapp_channel.run.not_sending", message_id=req.message_id)
         return
-
-    from gateway.routes.projects.agent_dispatch import reply_text
-
-    reply = reply_text(result).strip()
-    if not reply:
-        if await _end(req.message_id, "failed", "empty"):
-            await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
-        return
-    await _write_reply(req, reply)
-    sent = await _send(req, split_reply(reply), kind="answer", attempt=attempt)
-    await _end(req.message_id, "replied" if sent else "failed",
-               None if sent else "send")
-    _log.info("whatsapp_channel.run.replied" if sent else
+    attempt.marked = True
+    parts = split_reply(reply)
+    sent = await _send(req, parts, kind="answer", attempt=attempt)
+    if sent == len(parts):
+        await _move(req.message_id, "sending", "replied", None)
+    elif sent:
+        # A part went out. The rest is lost, and nothing goes twice.
+        await _move(req.message_id, "sending", "replied", "send_partial")
+    elif attempt.tries < MAX_TRIES:
+        # Nothing went out. The next try sends the stored reply again.
+        await _move(req.message_id, "sending", "received", "send")
+    else:
+        # The channel itself failed on every try. No general text either.
+        await _move(req.message_id, "sending", "failed", "send")
+    _log.info("whatsapp_channel.run.replied" if sent == len(parts) else
               "whatsapp_channel.run.send_failed",
-              run_id=run_id, message_id=req.message_id, chars=len(reply))
+              run_id=run_id, message_id=req.message_id, chars=len(reply),
+              parts=len(parts), sent=sent)
 
 
 async def _send(req: RunRequest, texts: list[str], *, kind: str,
-                attempt: _Attempt | None = None) -> bool:
+                attempt: _Attempt | None = None) -> int:
     """Send each text from the bot number, and record each one sent.
 
     Logs Meta's error fields only, never the exception text, which can carry
-    a URL or a token. Returns True when every text went out. *attempt* notes
-    that a part went out, so a later failure sends nothing more.
+    a URL or a token. Returns how many texts went out, and stops at the first
+    one that fails. *attempt* notes that a part went out.
     """
     hint = req.wa_id[-4:]
     creds = flags.bot_credentials()
     if creds is None:
         _log.warning("whatsapp_channel.run.no_token_at_send", kind=kind)
-        return False
+        return 0
 
     from gateway.routes.whatsapp.transport.connect import meta_error_fields
     from whatsapp_ingestion.providers.factory import build_provider
@@ -1038,14 +1167,16 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str,
     except ValueError as exc:
         _log.warning("whatsapp_channel.run.provider_refused",
                      error_class=type(exc).__name__)
-        return False
+        return 0
+    sent = 0
     for part in texts:
         try:
             out_id = await provider.send_text(req.wa_id, part)
         except Exception as exc:
             _log.warning("whatsapp_channel.run.reply_failed", kind=kind,
-                         phone_hint=hint, **meta_error_fields(exc))
-            return False
+                         phone_hint=hint, sent=sent, **meta_error_fields(exc))
+            return sent
+        sent += 1
         if attempt is not None:
             attempt.sent = True
         if out_id:
@@ -1060,7 +1191,7 @@ async def _send(req: RunRequest, texts: list[str], *, kind: str,
                              error_type=type(exc).__name__)
     _log.info("whatsapp_channel.run.reply_sent", kind=kind, phone_hint=hint,
               parts=len(texts))
-    return True
+    return sent
 
 
 # ── The sweep ───────────────────────────────────────────────────────────────
@@ -1085,9 +1216,13 @@ async def _sweep_org(org: str) -> list[RunRequest]:
             expired = (await db.execute(
                 text(_EXPIRE_SQL), {"expire": EXPIRE_S},
             )).fetchall()
-            exhausted = (await db.execute(
-                text(_EXHAUSTED_SQL), {"max": MAX_TRIES, "stale": STALE_S},
-            )).mappings().all()
+            live = sorted(_LIVE_ROWS)
+            unconfirmed = (await db.execute(
+                text(_UNCONFIRMED_SQL), {"stale": STALE_S, "live": live},
+            )).fetchall()
+            exhausted = (await db.execute(text(_EXHAUSTED_SQL), {
+                "max": MAX_TRIES, "stale": STALE_S, "live": live,
+            })).mappings().all()
             rows = (await db.execute(text(_STALE_SQL), {
                 "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
                 "n": SWEEP_BATCH,
@@ -1099,10 +1234,15 @@ async def _sweep_org(org: str) -> list[RunRequest]:
                 await _send(_request(row), [REPLY_FAILED], kind="tries")
     finally:
         release_tenant(token)
-    if expired or exhausted:
+    if expired or exhausted or unconfirmed:
         _log.info("whatsapp_channel.sweep.closed", organization_id=org,
-                  expired=len(expired), exhausted=len(exhausted))
-    return [_request(r) for r in rows if str(r["id"]) not in _LIVE_ROWS]
+                  expired=len(expired), exhausted=len(exhausted),
+                  unconfirmed=len(unconfirmed))
+    # A thread whose lock a run of this process holds runs its rows in that
+    # drain. A second task would only wait and then fail its claim.
+    return [_request(r) for r in rows
+            if str(r["id"]) not in _LIVE_ROWS
+            and str(r["chat_session_id"]) not in _RUN_LOCKS]
 
 
 async def sweep_once() -> int:

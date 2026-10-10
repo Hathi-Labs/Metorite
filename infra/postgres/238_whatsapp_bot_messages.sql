@@ -5,8 +5,10 @@
 -- What: `whatsapp_bot_messages`, one row for each message that a linked
 --       member sends to the bot number (`direction = 'in'`), and one row for
 --       each reply that the bot sends (`direction = 'out'`). An inbound row
---       starts as `received`. The run makes it `running`, then `replied`,
---       `refused` or `failed`. The sweep makes a row older than 24 hours
+--       starts as `received`. The run makes it `running`, then `sending`
+--       just before the first part of a reply goes out, then `replied`,
+--       `refused` or `failed`. A `sending` row is never run again, so a
+--       reply goes out at most once. The sweep makes a row older than 24 hours
 --       `expired`. `chat_session.channel` marks the thread of the channel,
 --       and WAC-3 writes `whatsapp` there.
 -- Why:  WS-47 WAC-3, `project-docs/specs/whatsapp_assistant_channel.md` §5.4
@@ -58,8 +60,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_bot_messages (
         direction IN ('in', 'out')
     ),
     CONSTRAINT whatsapp_bot_messages_state_known CHECK (
-        state IN ('received', 'running', 'replied', 'refused', 'failed',
-                  'expired')
+        state IN ('received', 'running', 'sending', 'replied', 'refused',
+                  'failed', 'expired')
     ),
     CONSTRAINT whatsapp_bot_messages_wa_id_digits CHECK (
         wa_id ~ '^[0-9]{6,20}$'
