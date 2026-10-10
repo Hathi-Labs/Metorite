@@ -109,18 +109,45 @@ export function initialExpanded(
   if (nodes.length < OPEN_ALL_BELOW) {
     return new Set(nodes.filter((n) => n.hasChildren).map((n) => n.id));
   }
+  return ancestorIds(nodes, focus);
+}
+
+/**
+ * Every ancestor of each id, so the path to it can open.
+ *
+ * The node itself is left out: picking a space does not need its contents
+ * spread out under the pick. Also what the picker adds when a pick or a
+ * suggestion arrives AFTER mount, such as a late proposal in Clarify.
+ */
+export function ancestorIds(
+  nodes: readonly PickerNode[],
+  ids: readonly (string | null | undefined)[],
+): Set<string> {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const open = new Set<string>();
-  for (const id of focus) {
+  for (const id of ids) {
     let at = id ? byId.get(id) : undefined;
-    // The ancestors open. The node itself stays as it was: picking a space
-    // does not need its contents spread out under the pick.
     while (at?.parentId) {
       open.add(at.parentId);
       at = byId.get(at.parentId);
     }
   }
   return open;
+}
+
+/**
+ * Where `token` hits `lower`, preferring a hit at the start of a word.
+ *
+ * "Reprint print" answers "print" at its second word, not inside "Reprint",
+ * so it ranks with the names that start with the word.
+ */
+function bestHit(lower: string, token: string): { at: number; startsWord: boolean } | null {
+  let first: number | null = null;
+  for (let at = lower.indexOf(token); at >= 0; at = lower.indexOf(token, at + 1)) {
+    if (at === 0 || /[^\p{L}\p{N}]/u.test(lower[at - 1])) return { at, startsWord: true };
+    first ??= at;
+  }
+  return first === null ? null : { at: first, startsWord: false };
 }
 
 /** The lower-cased words of a query. Empty for a blank one. */
@@ -164,15 +191,17 @@ export function searchRows(nodes: readonly PickerNode[], query: string): SearchH
     let mark: [number, number] | null = null;
     let band = 2;
     for (const t of tokens) {
-      const at = lower.indexOf(t);
-      if (at < 0) continue;
-      const startsWord = at === 0 || /[^a-z0-9]/.test(lower[at - 1]);
-      const b = startsWord ? 0 : 1;
+      const hit = bestHit(lower, t);
+      if (!hit) continue;
+      const b = hit.startsWord ? 0 : 1;
       if (b < band || mark === null) {
         band = Math.min(band, b);
-        mark = [at, at + t.length];
+        mark = [hit.at, hit.at + t.length];
       }
     }
+    // A name whose lower case changes its length ("İ" lowers to two code
+    // units) would put the highlight in the wrong place. It ranks, unmarked.
+    if (lower.length !== n.name.length) mark = null;
     bands[band].push({ node: n, mark });
   }
   return [...bands[0], ...bands[1], ...bands[2]];

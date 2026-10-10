@@ -43,6 +43,7 @@ import { stepCursor } from "@/lib/cursor";
 
 import {
   type PickerNode,
+  ancestorIds,
   initialExpanded,
   matchesTokens,
   pathLabel,
@@ -139,16 +140,25 @@ export function ProjectPicker({
   const tokens = queryTokens(query);
   const searching = tokens.length > 0;
 
-  // Opened once per tree, from the pick and the suggestion. A member's own
-  // opening and closing is theirs after that, so a re-render never undoes it.
-  // Re-seeded only when the TREE changes, never on a pick: set during render,
-  // React's pattern for state derived from a prop, rather than in an effect.
+  // Which nodes are open. Seeded per tree from the pick and the suggestion.
+  // A member's own opening and closing is theirs after that, so a re-render
+  // never undoes it. A pick or suggestion that arrives LATER (Clarify's
+  // proposal lands after mount) opens the path to it and closes nothing.
+  // Set during render, React's pattern for state derived from a prop.
+  const focusKey = `${value ?? ""}|${suggestedId ?? ""}`;
   const [opened, setOpened] = useState(() => ({
     nodes,
+    focusKey,
     expanded: initialExpanded(nodes, [value, suggestedId]),
   }));
   if (opened.nodes !== nodes) {
-    setOpened({ nodes, expanded: initialExpanded(nodes, [value, suggestedId]) });
+    setOpened({ nodes, focusKey, expanded: initialExpanded(nodes, [value, suggestedId]) });
+  } else if (opened.focusKey !== focusKey) {
+    setOpened({
+      nodes,
+      focusKey,
+      expanded: new Set([...opened.expanded, ...ancestorIds(nodes, [value, suggestedId])]),
+    });
   }
   const expanded = opened.expanded;
 
@@ -191,19 +201,21 @@ export function ProjectPicker({
   const optionId = (key: string) => `${listId}-${key}`;
   const listRef = useRef<HTMLDivElement>(null);
 
-  // On mount, bring the pick (or the suggestion) into the list's view. The
-  // path to it is already open, and an open path that ends below the fold is
-  // the suggestion nobody sees. The LIST scrolls, never the page or dialog,
-  // so this sets `scrollTop` rather than calling `scrollIntoView`.
+  // Bring the pick (or the suggestion) into the list's view once it resolves
+  // in the tree. The path to it is open, and an open path that ends below the
+  // fold is the suggestion nobody sees. A row already in view stays put, so a
+  // click never makes the list jump. The LIST scrolls, never the page or the
+  // dialog, so this sets `scrollTop` rather than calling `scrollIntoView`.
+  const target = [value, suggestedId].find((id) => id && nodes.some((n) => n.id === id)) ?? null;
   useEffect(() => {
     const list = listRef.current;
-    const target = [value, suggestedId].find((id) => id && nodes.some((n) => n.id === id));
     const row = target ? document.getElementById(optionId(target)) : null;
     if (!list || !row) return;
-    list.scrollTop = Math.max(0, row.offsetTop - list.clientHeight / 2);
-    // Once, on mount: a later pick is a click the member can already see.
+    const top = row.offsetTop;
+    if (top >= list.scrollTop && top + row.offsetHeight <= list.scrollTop + list.clientHeight) return;
+    list.scrollTop = Math.max(0, top - list.clientHeight / 2);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [target, nodes]);
   useEffect(() => {
     if (!cursor) return;
     document.getElementById(optionId(cursor))?.scrollIntoView({ block: "nearest" });
@@ -265,7 +277,7 @@ export function ProjectPicker({
   };
 
   return (
-    <div className="flex flex-col gap-1.5" onKeyDown={external ? undefined : onKeyDown}>
+    <div className="flex flex-col gap-1.5">
       {external ? null : (
         <Input
           ref={inputRef}
@@ -274,6 +286,9 @@ export function ProjectPicker({
           autoFocus={autoFocus}
           value={ownQuery}
           onChange={(e) => setOwnQuery(e.target.value)}
+          // On the search box only. A key on a footer button ("New Area…")
+          // is that button's, and must not pick the cursor row.
+          onKeyDown={onKeyDown}
           placeholder="Search projects, spaces and folders…"
           aria-label={`Search — ${label}`}
           role="combobox"
@@ -294,7 +309,7 @@ export function ProjectPicker({
         className={`${listClass} relative flex flex-col gap-0.5 overflow-y-auto`}
       >
         {groups.map((g) => (
-          <div key={g.key} className="flex flex-col gap-0.5">
+          <div key={g.key} role="group" aria-label={g.label} className="flex flex-col gap-0.5">
             {g.label ? <GroupLabel>{g.label}</GroupLabel> : null}
             {g.rows.map((row) => (
                 <Row
@@ -383,7 +398,12 @@ export function ProjectPicker({
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-2 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+    // `aria-hidden`: a tree holds tree items and groups, and the group's
+    // `aria-label` already says this to assistive technology.
+    <p
+      aria-hidden
+      className="px-2 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+    >
       {children}
     </p>
   );

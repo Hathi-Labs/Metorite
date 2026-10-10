@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { destinations } from "./destinations";
 import {
   OPEN_ALL_BELOW,
+  ancestorIds,
   initialExpanded,
   matchesTokens,
   pathLabel,
@@ -110,6 +111,15 @@ describe("initialExpanded", () => {
     expect([...initialExpanded(small, [])]).toEqual(["works"]);
   });
 
+  it("ancestorIds opens the path to a late pick, and never the pick itself", () => {
+    expect([...ancestorIds(NODES, ["booth-fw", "qc"])].sort()).toEqual([
+      "booth",
+      "eng",
+      "fracktory",
+      "works",
+    ]);
+  });
+
   it("opens nothing for an id the tree does not hold", () => {
     const big = pickerNodes([...TREE, ...filler(OPEN_ALL_BELOW)]);
     expect(initialExpanded(big, ["gone", null, undefined]).size).toBe(0);
@@ -146,6 +156,13 @@ describe("searchRows", () => {
     const hits = searchRows(NODES, "control");
     expect(hits[0].node.id).toBe("qc");
     expect(hits[0].mark).toEqual([8, 15]);
+  });
+
+  it("prefers a hit at the start of a word over an earlier one inside a word", () => {
+    const nodes = pickerNodes([{ id: "a", name: "Reprint print" }, { id: "b", name: "Blueprints" }]);
+    const hits = searchRows(nodes, "print");
+    expect(hits.map((h) => h.node.id)).toEqual(["a", "b"]);
+    expect(hits[0].mark).toEqual([8, 13]);
   });
 
   it("puts a path-only match after every name match", () => {

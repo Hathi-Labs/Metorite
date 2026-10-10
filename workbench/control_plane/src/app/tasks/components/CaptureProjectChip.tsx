@@ -98,7 +98,7 @@ export function CaptureProjectChip({
         ref={setChip}
         type="button"
         onClick={() => onOpenChange(!open)}
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title={
           value
@@ -126,7 +126,8 @@ export function CaptureProjectChip({
         maxHeight={460}
         align="end"
         className="w-80 max-w-[calc(100vw-2rem)] p-1"
-        panelProps={{ role: "listbox", "aria-label": "Capture to" }}
+        // A dialog, not a listbox: it holds a search box and a tree.
+        panelProps={{ role: "dialog", "aria-label": "Capture to" }}
       >
           <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
             {query ? `Capture to “${query}”` : "Capture to"}

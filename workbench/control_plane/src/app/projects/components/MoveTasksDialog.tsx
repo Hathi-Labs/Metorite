@@ -182,18 +182,32 @@ export function MoveTasksDialog({
               then loses the caret. After a pick it folds to the breadcrumb,
               so the mapping below it has the room. */}
           {picking || !destination ? (
-            <ProjectPicker
-              roots={roots}
-              value={destination}
-              inputRef={searchRef}
-              label="Move to"
-              onPick={(next) => {
-                setDestination(next);
-                setOverrides({});
-                setAnswers(null);
-                setPicking(false);
-              }}
-            />
+            <>
+              <ProjectPicker
+                roots={roots}
+                value={destination}
+                inputRef={searchRef}
+                // "Change" mounts the list again, and the caret goes with it.
+                autoFocus
+                label="Move to"
+                onPick={(next) => {
+                  setPicking(false);
+                  // ⚠️ Picking the project already chosen only folds the
+                  // list. Resetting the answers here would leave the button
+                  // dead: `PromoteFields` is keyed on the destination, so it
+                  // does not remount and never reports again.
+                  if (next === destination) return;
+                  setDestination(next);
+                  setOverrides({});
+                  setAnswers(null);
+                }}
+              />
+              {destination ? (
+                <Button variant="ghost" size="sm" onClick={() => setPicking(false)}>
+                  Keep {destName || "the current pick"}
+                </Button>
+              ) : null}
+            </>
           ) : (
             <PickedProject
               picked={pickerNodes(roots).find((n) => n.id === destination) ?? null}
