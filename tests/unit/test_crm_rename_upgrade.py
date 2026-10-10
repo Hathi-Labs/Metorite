@@ -613,7 +613,7 @@ def test_with_no_fracktalworks_the_default_org_owns_the_orphans(eng):
 
 @_DB_GATE
 def test_with_no_clear_owner_241_stops_and_names_the_table(eng):
-    from sqlalchemy.exc import DBAPIError
+    import psycopg
 
     conn = eng.connect()
     trans = conn.begin()
@@ -622,7 +622,7 @@ def test_with_no_clear_owner_241_stops_and_names_the_table(eng):
         _hide_slug(conn, "fracktalworks")
         _hide_slug(conn, "default")
         _run(conn, _no_txn(_text(_spine())))
-        with pytest.raises(DBAPIError) as err:
+        with pytest.raises(psycopg.Error) as err:
             _run(conn, _no_txn(_text(_tenancy())))
         assert "crm_companies" in str(err.value)
         assert "no organization_id" in str(err.value)
