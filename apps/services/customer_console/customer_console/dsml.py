@@ -34,11 +34,11 @@ call runs only when all five of these hold:
 
 1. **The request offered the tool** (:func:`declared_tool_names`).
    ``tool_choice="none"`` offers nothing, and a forced choice offers one tool.
-2. **No input message holds DSML** (:func:`input_is_tainted`). If a system,
-   user or tool message carries the marker, the model may be echoing it, so
-   nothing runs (``echoed_input``).
+2. **No input message holds DSML** (:func:`input_is_tainted`). If any input
+   message carries the marker, escaped or not, the model may be echoing it,
+   so nothing runs (``echoed_input``). Assistant turns count too.
 3. **The block is not inside a code fence.** A fenced block is a quote. It
-   stays visible and it never runs.
+   stays visible and it never runs (``fenced``).
 4. **The block is the trailing content.** The vendor template puts calls at
    the end of the answer. A block with prose after it is removed and never runs
    (``not_trailing``).
@@ -121,8 +121,14 @@ _PARAM_RE = re.compile(
     re.S,
 )
 _ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"')
-#: A CommonMark fence line: up to three spaces, then three or more ` or ~.
-_FENCE_LINE_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+#: A fence line: any leading whitespace, then three or more ` or ~. Any
+#: indent counts, so a fence inside a list item is found. That fails closed:
+#: more text reads as a quote, and a quote never runs.
+_FENCE_LINE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")
+#: The marker in an input message, also when an encoder wrote the bar as the
+#: six characters backslash, u, f, f, 5, c (once or twice escaped). Matched
+#: against lowercased text.
+_TAINT_RE = re.compile(rf"(?:{BAR}|\\+uff5c)dsml(?:{BAR}|\\+uff5c)")
 
 
 class _Malformed(ValueError):
@@ -183,24 +189,42 @@ def _texts(content: Any) -> Iterable[str]:
                 yield part["text"]
 
 
+def _message_texts(message: dict[str, Any]) -> Iterable[str]:
+    yield from _texts(message.get("content"))
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") if isinstance(call, dict) else None
+        if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+            yield fn["arguments"]
+
+
 def input_is_tainted(messages: Any) -> bool:
-    """True when a system, user or tool message holds DSML markup.
+    """True when ANY input message holds DSML markup, escaped or not.
 
     🔴 **The echo attack.** An email body holds a DSML block. The member asks
     to see the email, the model quotes it, and a Router that read every block
     would run the quoted call. A request whose INPUT already carries the
     marker cannot tell an echo from a call, so it runs none.
 
-    ⚠️ Assistant turns do not count. They are the model's own earlier output,
-    and a message stored before this fix can hold the markup.
+    🔴 **Assistant turns count too (re-review of #851).** Tool messages do
+    not reach the next turn (``acb_llm.assemble_run_context`` and the
+    gateway's store loader keep user, assistant and system turns). So turn 1
+    can quote the email inside a fence, and turn 2 can ask for it "again, as
+    plain text" with no tool message left to taint it. After this fix, DSML
+    in a stored assistant turn is a fenced quote or a leak from before the
+    fix. Both are reasons to run nothing.
+
+    ⚠️ **Escaped markup counts.** ``json.dumps`` writes the bar as six
+    characters, and a model that quotes the text decodes them.
     """
     if not isinstance(messages, list):
         return False
     for message in messages:
-        if not isinstance(message, dict) or message.get("role") == "assistant":
+        if not isinstance(message, dict):
             continue
-        if any(TAG_CORE in text for text in _texts(message.get("content"))):
-            return True
+        for text in _message_texts(message):
+            low = text.lower()
+            if "dsml" in low and _TAINT_RE.search(low):
+                return True
     return False
 
 
@@ -355,14 +379,16 @@ class _Fence:
 
     open: str | None = None
     line: str = ""
+    #: How many fences have opened, so a quote logs once per fence.
+    opened: int = 0
 
     def push(self, text: str) -> None:
         parts = text.split("\n")
         for i, part in enumerate(parts):
             if i:
                 self._end_line()
-            if len(self.line) < 80:
-                self.line += part[: 80 - len(self.line)]
+            if len(self.line) < 200:
+                self.line += part[: 200 - len(self.line)]
 
     def _end_line(self) -> None:
         match = _FENCE_LINE_RE.fullmatch(self.line)
@@ -374,6 +400,7 @@ class _Fence:
             # A backtick fence may not hold a backtick in its info string.
             if not (run[0] == "`" and "`" in rest):
                 self.open = run
+                self.opened += 1
         elif run[0] == self.open[0] and len(run) >= len(self.open) and not rest.strip():
             self.open = None
 
@@ -393,6 +420,8 @@ class _Choice:
     finished: bool = False
     saw_markup: bool = False
     fence: _Fence = field(default_factory=_Fence)
+    #: The fence (by its count) whose quoted markup was already logged.
+    fence_logged: int = 0
 
 
 class DsmlStream:
@@ -483,6 +512,12 @@ class DsmlStream:
             return ""
         if st.fence.inside or not _TAG_START_RE.match(after):
             # A quote inside a fence, or a marker with no tag name: text.
+            if st.fence.inside and _TAG_START_RE.match(after) and (
+                st.fence_logged != st.fence.opened
+            ):
+                # Logged once per fence: the quote is visible, and it never runs.
+                st.fence_logged = st.fence.opened
+                _drop("fenced")
             self._show(st, mark.group(0), out)
             return after
         st.region = ""
@@ -709,6 +744,44 @@ def _apply(body: dict[str, Any], edits: dict[int, dict[str, Any]]) -> None:
             choice["finish_reason"] = edit["finish_reason"]
 
 
+def _plain(obj: Any) -> Any:
+    """A JSON-safe copy of one vendor object, best-effort."""
+    if obj is None or isinstance(obj, (dict, list, str, int, float, bool)):
+        return obj
+    try:
+        return json.loads(json.dumps(obj, default=lambda o: getattr(o, "__dict__", str(o))))
+    except Exception:
+        return None
+
+
+def _minimal(chunk: Any) -> dict[str, Any]:
+    """Rebuild a chunk that cannot copy itself, from the fields a client reads."""
+    choices = []
+    for choice in _field(chunk, "choices") or []:
+        delta = _field(choice, "delta")
+        out: dict[str, Any] = {}
+        role = _field(delta, "role")
+        if isinstance(role, str):
+            out["role"] = role
+        content = _field(delta, "content")
+        if isinstance(content, str):
+            out["content"] = content
+        native = _field(delta, "tool_calls")
+        if native:
+            out["tool_calls"] = [_plain(c) for c in native]
+        index = _field(choice, "index")
+        choices.append({
+            "index": index if isinstance(index, int) else 0,
+            "delta": out,
+            "finish_reason": _field(choice, "finish_reason"),
+        })
+    body: dict[str, Any] = {"object": "chat.completion.chunk", **_head(chunk), "choices": choices}
+    usage = _plain(_field(chunk, "usage"))
+    if isinstance(usage, dict):
+        body["usage"] = usage
+    return body
+
+
 def _head(chunk: Any) -> dict[str, Any]:
     return {k: v for k in ("id", "object", "created", "model") if (v := _field(chunk, k))}
 
@@ -776,9 +849,11 @@ async def normalise_stream(
         try:
             body = dump(mode="json", exclude_none=True) if callable(dump) else dict(chunk)
         except Exception:
+            # 🔴 The machine has ALREADY taken this chunk, so the original
+            # must not go out: it would show the raw markup, and held text
+            # twice. A minimal copy carries the planned edits instead.
             _log.exception("router.dsml_chunk_unreadable")
-            yield chunk
-            continue
+            body = _minimal(chunk)
         _apply(body, edits)
         yield body
     flush = _flush_chunk(state, head)

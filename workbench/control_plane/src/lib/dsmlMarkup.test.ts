@@ -67,6 +67,11 @@ describe("stripDsmlMarkup", () => {
     expect(stripDsmlMarkup(text)).toBe(text);
   });
 
+  it("keeps a block inside a fence in a list item as written", () => {
+    const text = `1. The email:\n\n     \`\`\`\n     ${OWNER}\n     \`\`\`\n`;
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+
   it("keeps an unclosed fence as written", () => {
     const text = "```text\n" + OWNER;
     expect(stripDsmlMarkup(text)).toBe(text);

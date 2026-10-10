@@ -42,8 +42,11 @@ const ANY_TAG_RE = new RegExp(`</?${TAG}[A-Za-z_][^<>]*>`, "g");
 const BARE_MARKER_RE = new RegExp(
   `</?${TAG}[A-Za-z_]+(?:\\s+[A-Za-z_][\\w-]*(?:\\s*=\\s*(?:"[^"]*"?)?)?)*\\s*$`,
 );
-/** A CommonMark fence line: up to three spaces, then three or more ` or ~. */
-const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/**
+ * A fence line: any leading whitespace, then three or more ` or ~. Any indent
+ * counts, so a fence inside a list item keeps its quote as written.
+ */
+const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
 
 /** True when the text holds any DSML markup. */
 export function hasDsmlMarkup(text: string): boolean {
