@@ -40,14 +40,17 @@ import {
 import {
   NO_PICK,
   carriedText,
+  findSession,
   isRestored,
   openDeliberately,
   recoverRefused,
   recoveredNotice,
   refusalHandler,
   restoreOrStart,
+  railAsk,
   restoreOrStartAfterMerge,
   startFresh,
+  subscribeRailAsks,
   type RailPick,
 } from "@/lib/railSessions";
 import type { SessionRefusedHandler } from "@/lib/chatTurnFailure";
@@ -163,12 +166,33 @@ export function useAgentSessions(agent: string): AgentSessions {
     setPick(next);
   }, []);
 
+  // WS-51 S3: a link asked this rail to open one chat (`askRailSession`). It
+  // waits until the restore below has chosen, so the restore cannot replace
+  // the asked chat. Each ask opens once in this rail.
+  const restoringRef = useRef(true);
+  const seenAskRef = useRef(0);
+  const openAsked = useCallback(() => {
+    if (restoringRef.current) return;
+    const ask = railAsk(agent, seenAskRef.current);
+    if (!ask) return;
+    seenAskRef.current = ask.seq;
+    void findSession(ask.id).then((found) => {
+      // Only this member's own chat, and only one of this rail's agent.
+      if (!found || found.agentName !== agent) return;
+      choose(openDeliberately(found.id));
+      setSessions(getSessions());
+      setNoticeText(null);
+    });
+  }, [agent, choose]);
+  useEffect(() => subscribeRailAsks(openAsked), [openAsked]);
+
   // Restore this member's newest session of the agent, or start one. It runs
   // again when the member or the org changes, so a chat never carries over.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setNoticeText(null);
     setRecoveredInput(undefined);
+    restoringRef.current = true;
     if (!scope) {
       setSessions([]);
       choose(NO_PICK);
@@ -182,9 +206,11 @@ export function useAgentSessions(agent: string): AgentSessions {
       if (cancelled) return;
       choose(next);
       setSessions(getSessions());
+      restoringRef.current = false;
+      openAsked();
     });
     return () => { cancelled = true; };
-  }, [scope, agent, choose]);
+  }, [scope, agent, choose, openAsked]);
 
   // Merge the sessions that live only in Postgres (cache clear, other device,
   // or created from the main chat app).

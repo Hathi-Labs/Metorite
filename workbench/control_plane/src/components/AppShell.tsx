@@ -44,6 +44,7 @@ import { DrawerAccountFoot, DrawerAccountHeader } from "@/components/AccountSwit
 import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
+import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   accountLinks,
@@ -230,6 +231,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </main>
         ) : null}
         <WelcomeDialog />
+        {/* WS-51 S3: the one activity panel, in every frame. Under the shell
+            bar's right end when the bar is on. Near the top, beside the
+            sidebar head that holds the control, when it is off. */}
+        <ActivityHost placement={frame === "classic" ? "top" : "end"} />
         <FocusSession />
         {/* D-PM-38 (S5) — the store's subtask question. Global, like the
             store: Focus Mode and the Calendar complete tasks too. */}
@@ -278,6 +283,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </main>
         )}
         <WelcomeDialog />
+        {/* WS-51 S3: the one activity panel, as a bottom sheet. The Menu
+            drawer holds the control, with the shell bar flag on or off. */}
+        <ActivityHost placement="sheet" />
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
@@ -402,22 +410,28 @@ function MobileBottomNavInner({
           the organization, the signed-in address under it, and a tap opens
           the other accounts and the account actions. */}
       <DrawerAccountHeader onClose={close} />
-      {/* NS-1 on the phone: the one search. */}
-      {shellBarOn() ? (
-        <div className="border-b border-border px-3 py-2">
+      {/* NS-1 on the phone: the one search. Beside it, the activity control
+          (WS-51 S3), as on the desktop bar: the phone draws no shell row, so
+          the drawer opens the shell's one panel, as a sheet. The control shows
+          with the shell bar flag off too. */}
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        {shellBarOn() ? (
           <button
             type="button"
             onClick={() => {
               close();
               window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query: "" } }));
             }}
-            className="flex h-10 w-full items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-sm text-muted-foreground"
+            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-sm text-muted-foreground"
           >
             <AppIcon name="Sparkles" size={16} className="shrink-0 text-primary" />
             Search or ask anything
           </button>
-        </div>
-      ) : null}
+        ) : (
+          <span className="min-w-0 flex-1 px-1 text-sm text-muted-foreground">Assistants</span>
+        )}
+        <ActivityControl onBeforeOpen={close} className="h-10 w-10 shrink-0" />
+      </div>
       <nav className="flex flex-col overflow-y-auto">
         {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
             placeholders, never the full list. The drawer opens on tap, so a

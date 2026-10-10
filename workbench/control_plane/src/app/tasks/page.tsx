@@ -47,6 +47,8 @@ import { isOpenShortcut } from "../projects/lib/search";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
+import { OPEN_CHAT_JOB } from "@/lib/runActivity";
+import { askRailSession } from "@/lib/railSessions";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
@@ -155,6 +157,18 @@ export default function TasksPage() {
     return () => window.removeEventListener("cc-mobile-nav", handler);
   }, [openDrawer, closeDrawer, openQuickCapture, selectView]);
 
+  // WS-51 S3: the activity panel's link (`?do=open-chat&fill.session=<id>`).
+  // The rail opens the asked chat once it has restored (`useAgentSessions`).
+  const openChat = useCallback(
+    (f: Record<string, string>) => {
+      if (!f.session) return;
+      askRailSession("task-manager", f.session);
+      if (isMobile) openDrawer(<AssistantRail />);
+      else setAssistantOpen(true);
+    },
+    [isMobile, openDrawer],
+  );
+
   // Search opens from ⌘K and from the top bar's Search button, through ONE
   // guard. Not over another overlay (`searchAllowed`): the palette would open
   // hidden behind it and take the keystrokes.
@@ -250,6 +264,9 @@ export default function TasksPage() {
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         {/* NS-1: the command bar's "New task" opens Capture here. */}
         <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "", true)} />
+        {/* WS-51 S3: a row of the activity panel opens its chat in the rail. */}
+        <ShellJob id={OPEN_CHAT_JOB}
+        ungated onOpen={openChat} />
         {/* The phone bar, as Projects draws it (`AppTopBar compact`). It
             holds the page's one h1 here too. Capture and the lists live in
             the shell's bottom bar, so this carries "My day", search and the
@@ -297,6 +314,9 @@ export default function TasksPage() {
     <div className="flex h-full w-full select-none flex-col overflow-hidden bg-background">
       {/* NS-1: the command bar's "New task" opens Capture here. */}
       <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "", true)} />
+      {/* WS-51 S3: a row of the activity panel opens its chat in the rail. */}
+      <ShellJob id={OPEN_CHAT_JOB}
+        ungated onOpen={openChat} />
       {/* The shared app bar (`components/AppTopBar.tsx`), the one Projects
           renders: rail toggle, the app's h1, Capture, then search, the
           bell and the assistant at the right end. */}

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   HIDDEN_MS,
+  LAST_STEP_MAX,
   VISIBLE_MS,
   _resetLiveRunsForTests,
   getLiveRuns,
@@ -136,7 +137,10 @@ describe("one poller for the whole app", () => {
     const off = subscribeLiveRuns(() => {});
     await flush();
     expect(getLiveRuns()).toEqual([
-      { threadId: "t1", agentName: "unknown", title: null, startedAt: null, state: "running", askKind: null },
+      {
+        threadId: "t1", agentName: "unknown", title: null, startedAt: null,
+        state: "running", askKind: null, lastStep: null,
+      },
     ]);
     off();
   });
@@ -168,6 +172,32 @@ describe("one poller for the whole app", () => {
     await flush();
     expect(calls).toBeGreaterThan(before);
     expect(getLiveRuns()[0].state).toBe("needs_input");
+    off();
+  });
+
+  // WS-51 S3. Mutation: drop the step from the publish key, and this fails.
+  it("carries the run's step, capped, and publishes a new step", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", lastStep: "Search  tasks" }];
+    let calls = 0;
+    const off = subscribeLiveRuns(() => { calls += 1; });
+    await flush();
+    expect(getLiveRuns()[0].lastStep).toBe("Search tasks");
+    const before = calls;
+    payload = [{ threadId: "t1", agentName: "orchestrator", lastStep: "x".repeat(200) }];
+    await vi.advanceTimersByTimeAsync(VISIBLE_MS);
+    await flush();
+    expect(calls).toBeGreaterThan(before);
+    const step = getLiveRuns()[0].lastStep ?? "";
+    expect(step.length).toBe(LAST_STEP_MAX);
+    expect(step.endsWith("…")).toBe(true);
+    off();
+  });
+
+  it("keeps no step that is not text", async () => {
+    payload = [{ threadId: "t1", agentName: "orchestrator", lastStep: { html: "<b>" } }];
+    const off = subscribeLiveRuns(() => {});
+    await flush();
+    expect(getLiveRuns()[0].lastStep).toBeNull();
     off();
   });
 });

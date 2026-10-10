@@ -1267,6 +1267,7 @@ async def list_pending_asks(
 )
 async def list_active_sessions(
     user: UserContext = Depends(get_current_user),
+    steps: bool = False,
 ) -> list[dict]:
     """Return the caller's live sessions: in their org, and visible to them.
 
@@ -1303,8 +1304,19 @@ async def list_active_sessions(
     when the caller may see its chat. With ``CHAT_DURABLE_ASKS`` OFF every row
     is ``running``. ``askKind`` names the card.
 
-    Fences (R7): ``tests/unit/test_active_sessions_tenant.py`` and
-    ``tests/unit/test_pending_ask_flow.py``.
+    **WS-51 S3: ``lastStep``.** With ``?steps=1`` a running row carries the
+    run's latest step, for example "Search tasks" or "Writing a reply", read
+    from the tail of its own stream (``stream_relay.latest_step``). The step is
+    a tool NAME or a fixed label, never the text of a result or a progress
+    update. It is plain text, at most 60 characters, and None when there is no
+    step. The browser asks for it only while the activity panel is open, so
+    the 5 s badge poll reads no stream. It is read only for a row this route
+    already lists, so it widens nothing. Without ``steps`` every row carries
+    ``lastStep: None``.
+
+    Fences (R7): ``tests/unit/test_active_sessions_tenant.py``,
+    ``tests/unit/test_pending_ask_flow.py`` and
+    ``tests/unit/test_run_last_step.py``.
     """
     org = (getattr(user, "organization_id", None) or "").strip()
     if not org:
@@ -1344,6 +1356,23 @@ async def list_active_sessions(
             **_state(tid),
         }
 
+    async def _with_steps(rows: list[dict]) -> list[dict]:
+        # WS-51 S3: the live step, read only for a row this route already
+        # lists, and only for a run that runs. A question has no step.
+        from orchestrator.stream_relay import latest_step  # noqa: PLC0415
+
+        async def _one(row: dict) -> str | None:
+            if not steps:
+                return None  # the badge poll: no stream read at all
+            if row.get("state") != "running" or row["threadId"] not in by_tid:
+                return None
+            return await latest_step(row["threadId"])
+
+        found = await asyncio.gather(*(_one(r) for r in rows), return_exceptions=True)
+        for row, step in zip(rows, found, strict=True):
+            row["lastStep"] = step if isinstance(step, str) else None
+        return rows
+
     def _is_mine(tid: str) -> bool:
         # A live run the caller started, or a question the caller was asked.
         return bool(me) and (
@@ -1376,7 +1405,9 @@ async def list_active_sessions(
         # Postgres unavailable: list only the runs the caller started. Their
         # ids are already the caller's. Nobody else's id leaves this route.
         _log.warning("chat.active_sessions_db_failed", exc_info=True)
-        return [_own_unknown(tid) for tid in ids if tid in by_tid and _is_mine(tid)]
+        return await _with_steps(
+            [_own_unknown(tid) for tid in ids if tid in by_tid and _is_mine(tid)],
+        )
 
     result = [
         {
@@ -1394,4 +1425,4 @@ async def list_active_sessions(
     for tid in ids:
         if tid not in known and tid in by_tid and _is_mine(tid):
             result.append(_own_unknown(tid))
-    return result
+    return await _with_steps(result)

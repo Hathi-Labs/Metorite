@@ -30,6 +30,11 @@
  * Anything may open the bar with words already in it:
  * `window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query } }))`.
  * A list filter does that for "Search everywhere for …" (§6.7 rule 3).
+ *
+ * **The activity control** (WS-51 S3) is the shell's own, at the right end of
+ * the bar, after the app's tools: every live assistant run, across apps
+ * (`ActivityControl.tsx`). `AppShell` mounts its one panel, in every layout,
+ * so the control works with this bar's flag off too (from the sidebar head).
  */
 
 import {
@@ -46,6 +51,7 @@ import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
 import { visibleSections } from "@/lib/nav";
+import { ActivityControl } from "./ActivityControl";
 import { CommandBar } from "./CommandBar";
 import { focusPageFilter, pageFilterTarget } from "./pageFilter";
 import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
@@ -151,6 +157,7 @@ export function ShellFrame({
           setRight={setRight}
           onOpen={() => openWith("")}
           lead={lead}
+          activity={<ActivityControl />}
         />
       ) : null}
       {children}
@@ -186,6 +193,7 @@ function ShellBarRow({
   setRight,
   onOpen,
   lead,
+  activity,
 }: {
   here: { label: string; icon: string } | null;
   claimed: boolean;
@@ -193,6 +201,8 @@ function ShellBarRow({
   setRight: (el: HTMLElement | null) => void;
   onOpen: () => void;
   lead?: ReactNode;
+  /** The shell's own control at the right end, after the app's tools. */
+  activity?: ReactNode;
 }) {
   const shortcut = useShortcutLabel();
   // ⚠️ With the brand zone, a side slot never gets LESS than its content, and
@@ -239,7 +249,11 @@ function ShellBarRow({
         </kbd>
       </button>
 
-      <div ref={setRight} className={`flex ${side} flex-1 basis-0 items-center justify-end gap-1`} />
+      <div className={`flex ${side} flex-1 basis-0 items-center justify-end gap-1`}>
+        {/* The app's tools portal here (`AppTopBar`), the bell among them. */}
+        <div ref={setRight} className="flex min-w-0 items-center justify-end gap-1 empty:hidden" />
+        {activity}
+      </div>
     </header>
   );
 }
