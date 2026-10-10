@@ -25,9 +25,9 @@ Source     Feature               Function
 tasks      ``feature:projects``  ``projects.personal.my_due_tasks``: one
                                  bounded read of the lens, due today and
                                  overdue, the oldest deadline first.
-approvals  ``feature:approvals`` ``action_broker.list_pending``: the queue
-                                 of the bound tenant, the longest wait
-                                 first (NS-3 slice C).
+approvals  ``feature:approvals`` ``action_broker.read_pending``: the queue
+           and an org admin      of the bound tenant, the longest wait
+                                 first, 50 rows at most (NS-3 slice C).
 projects   ``feature:projects``  ``projects.notifications.list_notifications``,
                                  unread only.
 email      ``feature:email``     ``email.transport.accounts.list_accounts``,
@@ -35,13 +35,28 @@ email      ``feature:email``     ``email.transport.accounts.list_accounts``,
                                  for each mailbox, the longest wait first.
 =========  ====================  ==========================================
 
-⚠️ **Approvals is the gate of ``routes/actions.py`` and nothing more.** Its
-router demands ``feature:approvals``, and ``GET /actions/pending`` adds
-``require_internal_auth``. That second check is the transport: the BFF sends
-the internal token on every call, and on this call too. ``pending_actions``
-has no approver column, so each member who holds the feature sees the queue
-of the organization, as the Approvals app shows it. The broker binds the
-tenant itself (H-201), and the provider adds no rule of its own (§5.2 rule 7).
+⚠️ **Only an org admin gets approval rows** (owner decision, 2026-10-10).
+The router of ``routes/actions.py`` demands ``feature:approvals``, and that
+gate alone is too wide: migration 207 grants ``feature:*`` to ``member`` and
+``manager`` in every org. So the provider ALSO demands ``ADMIN_PERMISSION``,
+the admin test of ``routes/shell/intent.py``. ``GET /auth/me`` reports the
+same test as ``is_admin``. Any other member keeps the Approvals app if they
+hold it, and their feed holds only their own work. ``pending_actions`` has
+no approver column. A finer Approver role is a later option.
+
+``GET /actions/pending`` also demands ``require_internal_auth``. That check is
+the transport: the BFF sends the internal token on every call, and on this
+call too. The broker binds the tenant itself (H-201).
+
+⚠️ **The feed reads ``read_pending``, not ``list_pending``.** ``list_pending``
+answers ``[]`` when the database fails, so the source would read a false
+``ok``. ``read_pending`` raises, so the source reads ``failed``. It is also
+bounded: 50 rows, the oldest first.
+
+⚠️ **Approvals never push the member's own work out of the feed.** An
+approval takes only the room that the other rows leave inside ``limit``
+(``YIELDING_KINDS``). The approvals provider also runs LAST, so a slow sync
+pool cannot spend the time budget of the member's own sources.
 
 ⚠️ **An approval row has no act.** Approving runs an outward write: a mail, a
 CRM push, a broadcast. The member reads the proposal in Approvals first, so
@@ -109,6 +124,7 @@ from urllib.parse import quote, urlencode
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.personal import NOT_NOW_DISPOSITIONS
+from gateway.routes.shell.intent import ADMIN_PERMISSION
 from gateway.routes.shell.search import router
 
 logger = logging.getLogger(__name__)
@@ -139,6 +155,9 @@ HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 #: after an overdue task, because an agent's work waits on it.
 KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
               "needs_reply": 4}
+#: The kinds that take only the room the member's own rows leave inside the
+#: limit. An admin's approvals must never push out their own work.
+YIELDING_KINDS = frozenset({"approval"})
 #: Within a kind: True is newest first, False is oldest first.
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
                 "notification": True, "needs_reply": False}
@@ -364,11 +383,11 @@ def _proposer(actor: Any) -> str:
 async def _approvals(user: UserContext) -> list[Item]:
     import action_broker
 
-    # The app's own read, as ``GET /actions/pending`` calls it. The broker
-    # binds the tenant this request bound (H-201), and the queue has no
-    # approver column. The read is sync, so it runs in a thread, which
-    # takes this context and its tenant with it.
-    rows = await asyncio.to_thread(action_broker.list_pending)
+    # The broker's bounded read of the queue, which raises on a database
+    # failure (the module note). The broker binds the tenant this request
+    # bound (H-201). The read is sync, so it runs in a thread, which takes
+    # this context and its tenant with it.
+    rows = await asyncio.to_thread(action_broker.read_pending, PER_APP)
     out = []
     for row in rows:
         action_id = str(row["id"])
@@ -382,12 +401,15 @@ async def _approvals(user: UserContext) -> list[Item]:
 
 #: source → (the feature its app's router demands, the provider). The order
 #: here is the order the providers run in, not the order of the feed.
+#: Approvals runs LAST (the module note).
 PROVIDERS: dict[str, tuple[str, Callable[[UserContext], Awaitable[list[Item]]]]] = {
     "tasks": ("projects", _tasks),
-    "approvals": ("approvals", _approvals),
     "projects": ("projects", _projects),
     "email": ("email", _email),
+    "approvals": ("approvals", _approvals),
 }
+#: The sources that also demand the admin test (owner decision, 2026-10-10).
+ADMIN_SOURCES = frozenset({"approvals"})
 
 
 def _sort(items: list[Item]) -> list[Item]:
@@ -422,7 +444,9 @@ async def shell_needs(
     deadline = loop.time() + TOTAL_BUDGET_S
     for key, (feature, provider) in PROVIDERS.items():
         # The gate the app's router would have applied (see the module note).
-        if not user.has_permission(f"feature:{feature}"):
+        if not user.has_permission(f"feature:{feature}") or (
+            key in ADMIN_SOURCES and not user.has_permission(ADMIN_PERMISSION)
+        ):
             sources[key] = "absent"
             continue
         left = deadline - loop.time()
@@ -448,5 +472,12 @@ async def shell_needs(
         sources[key] = "ok"
         items.extend(rows[:PER_APP])
 
-    feed = _sort(items)[:size]
-    return {"count": len(feed), "items": feed, "sources": sources}
+    return {**_fit(items, size), "sources": sources}
+
+
+def _fit(items: list[Item], size: int) -> dict[str, Any]:
+    """The first ``size`` rows. A yielding kind takes only the room left."""
+    own = _sort([i for i in items if i["kind"] not in YIELDING_KINDS])[:size]
+    rest = _sort([i for i in items if i["kind"] in YIELDING_KINDS])[:size - len(own)]
+    feed = _sort(own + rest)
+    return {"count": len(feed), "items": feed}

@@ -101,6 +101,26 @@ export const KIND_LABELS: Readonly<Record<NeedsKind, string>> = {
 /** Rows shown before "Show all". Seven is what the eye takes in one look. */
 export const NEEDS_SHOWN = 7;
 
+/**
+ * Approval rows shown before "Show all". An admin's queue can be long, and
+ * the member's own work must stay in view below it.
+ */
+export const APPROVALS_SHOWN = 5;
+
+/**
+ * Whether this member gets the "Waiting for your approval" group: an org
+ * admin who holds `approvals` (owner decision, 2026-10-10). The server
+ * applies the same test (`ADMIN_SOURCES` in `routes/shell/needs.py`).
+ */
+export function seesApprovals(features: readonly string[], isAdmin: boolean): boolean {
+  return isAdmin && features.includes("approvals");
+}
+
+/** The feed's rows, minus any approval row this member may not see. */
+export function keepApprovals(items: readonly NeedsItem[], allowed: boolean): NeedsItem[] {
+  return allowed ? [...items] : items.filter((i) => i.kind !== "approval");
+}
+
 export interface NeedsGroup {
   kind: NeedsKind;
   label: string;
@@ -122,14 +142,20 @@ export function groupNeeds(items: readonly NeedsItem[]): NeedsGroup[] {
 /**
  * The rows to draw: the first seven, or all of them once the member asks.
  * The cut runs over the whole feed, then groups, so seven means seven rows
- * and not seven per group.
+ * and not seven per group. Before "Show all", at most five are approvals,
+ * so the member's own work stays in view.
  */
 export function shownNeeds(
   items: readonly NeedsItem[],
   expanded: boolean,
   limit = NEEDS_SHOWN,
 ): { groups: NeedsGroup[]; hidden: number } {
-  const shown = expanded ? items : items.slice(0, limit);
+  let approvals = 0;
+  const shown = expanded
+    ? items
+    : items
+        .filter((i) => i.kind !== "approval" || ++approvals <= APPROVALS_SHOWN)
+        .slice(0, limit);
   return { groups: groupNeeds(shown), hidden: items.length - shown.length };
 }
 
@@ -247,15 +273,16 @@ export interface MyDayCards {
  * Needs you shows when any source of the feed is open to the member. The
  * feed's tasks and Projects sources need `feature:projects`, its email
  * source needs `feature:email`, and its approvals source needs
- * `feature:approvals` (`routes/shell/needs.py`, `PROVIDERS`). So an approver
- * with no other app gets the card for the "Waiting for your approval"
- * group. The server gates each row, and the card draws what it sends.
+ * `feature:approvals` AND the admin test (`routes/shell/needs.py`,
+ * `PROVIDERS` and `ADMIN_SOURCES`). So an org admin with no other app gets
+ * the card for the "Waiting for your approval" group, and any other member
+ * with `approvals` alone gets no card.
  */
-export function cardsFor(features: readonly string[]): MyDayCards {
+export function cardsFor(features: readonly string[], isAdmin = false): MyDayCards {
   const has = new Set(features);
   const lens = has.has("tasks") && has.has("projects");
   return {
-    needs: has.has("projects") || has.has("email") || has.has("approvals"),
+    needs: has.has("projects") || has.has("email") || seesApprovals(features, isAdmin),
     today: lens,
     next: lens,
   };

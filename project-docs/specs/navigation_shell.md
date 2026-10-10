@@ -474,11 +474,16 @@ Needs you already shows. Fence: `src/lib/shell/myDay.test.ts`.
 
 **Waiting for you is a group of Needs you, not a card** *(NS-3 slice C,
 2026-10-10)*. The rule is the one for Needs reply. The pending actions show
-under "Waiting for your approval", right after Overdue. The feed sends them
-only to a member who holds `approvals`. So an approver with no other app gets
-the Needs you card, and every other member gets no approval row. Each row
-opens Approvals. Fences: `src/lib/shell/myDay.test.ts` and
-`src/lib/shell/myDayPage.test.ts`.
+under "Waiting for your approval", right after Overdue.
+
+**The approver is an org admin** *(owner decision, 2026-10-10)*. The feed
+sends approval rows only to an org admin who holds `approvals`. Any other
+member keeps the Approvals app if they hold it, and their My Day shows only
+their own work. A finer Approver role is a later option. So an admin with no
+other app gets the Needs you card, and every other member gets no approval
+row. At most five approval rows show before "Show all", so the admin's own
+work stays in view. Each row opens Approvals. Fences:
+`src/lib/shell/myDay.test.ts` and `src/lib/shell/myDayPage.test.ts`.
 
 **No second arithmetic.** A team card draws a number that a Projects read or a
 report section already computes. The shell computes nothing.
@@ -822,14 +827,22 @@ the archive, junk or trash. Archive means "dealt with", and Reply Zero hides
 an archived thread too.
 
 **Approvals is slice C, built 2026-10-10 after H-201.** The provider checks
-`feature:approvals`, the feature that the router of `routes/actions.py`
-demands. `GET /actions/pending` also demands `require_internal_auth`. That
-check is the transport, and the BFF sends the internal token on this call
-too. The provider calls `list_pending`, the read of that route. The broker
-binds the tenant of the request itself (H-201). `pending_actions` has no
-approver column, so each member who holds the feature sees the queue of the
-organization, as Approvals shows it. A member without the feature gets no
-row, and the broker is not called.
+two things. The first is `feature:approvals`, the feature that the router of
+`routes/actions.py` demands. The second is the admin test,
+`ADMIN_PERMISSION` in `routes/shell/intent.py`. `GET /auth/me` reports the
+same test as `is_admin`. A member who fails either check gets no row, and
+the broker is not called.
+
+**Why the admin test** *(owner decision, 2026-10-10)*. The feature alone is
+too wide. Migration 207 grants `feature:*` to `member` and `manager` in every
+org, and that covers `feature:approvals`. `pending_actions` has no approver
+column. So with the feature alone, each member's My Day would show the whole
+queue of the org, above their own work. The approver is an org admin. A
+finer Approver role is a later option.
+
+`GET /actions/pending` also demands `require_internal_auth`. That check is
+the transport, and the BFF sends the internal token on this call too. The
+broker binds the tenant of the request itself (H-201).
 
 **An approval row has no act** (`act` is null). To approve runs an outward
 write, such as a mail, a CRM push or a broadcast. The member must read the
@@ -842,10 +855,19 @@ comes from the action name, for example "Change a record in Zoho CRM". The
 detail names the proposer, for example "Proposed by the email assistant
 agent". Neither prints an id.
 
-⚠️ **The approvals read is not bounded.** `list_pending` reads the whole
-queue of the organization, and the provider keeps 15 rows. It also answers
-an empty list when the database fails, so that failure reads `ok` with no
-row. Only an error that the read raises reads `failed`.
+**The approvals read is `read_pending`, and it is bounded.** It is a sibling
+of `list_pending` in `action_broker/broker.py`. It reads the pending rows of
+the bound tenant, the oldest first, and 50 rows at most. The feed asks for
+15. `list_pending` answers an empty list when the database fails, so a
+failure there would read `ok`. `read_pending` raises, so the `approvals`
+source reads `failed`.
+
+**Approvals never push the member's own work out.** An approval row takes
+only the room that the other rows leave inside `limit` (`YIELDING_KINDS` in
+`needs.py`). So 15 overdue tasks and 15 approvals at a limit of 30 still
+return the notifications and the replies. The approvals provider also runs
+last, so a slow pool cannot spend the time of the member's own sources. The
+display order stays as below.
 
 **The contract.** My Day and the bell read this shape:
 
@@ -868,7 +890,7 @@ row. Only an error that the read raises reads `failed`.
 with the action that waited longest first, because the work of an agent
 waits on it. Then rows due today, then notifications with the newest first. Then needs-reply rows, with the
 person who waits longest first. Each source gives 15 rows at most, so one app
-cannot fill the feed.
+cannot fill the feed. An approval takes only the room left inside `limit`.
 
 **Two rules from the email app apply.** A mailbox that the member keeps
 separate stays out of the feed (D-EM-30). The read of the mail never starts
@@ -880,11 +902,14 @@ mailbox failed.
 
 Fences: `tests/unit/test_shell_needs.py` holds the gate, the order, the caps,
 a failed source and the SQL of the two reads. It also holds the approvals
-gate, each org's queue and the plain words of each action. `tests/unit/test_shell_needs_r8.py`
+gate, the admin test, each org's queue, the room rule and the plain words of
+each action. Its fake is the tenant session, so the real `read_pending`
+runs, and a database error reads `failed`. `tests/unit/test_shell_needs_r8.py`
 is R8, as the role with no privileges and with RLS forced. It also holds a snoozed thread, a junk thread and
 a member with more work than the cap. Its `TestTheApprovalsQueue` seeds a
-pending action in each org through `enqueue`. An approver sees the row of
-their own org and never the other. A member without the feature sees none.
+pending action in each org through `enqueue`. An admin sees the row of
+their own org and never the other. A member with the feature who is not an
+admin sees none, and a member without the feature sees none.
 
 ---
 
@@ -1199,8 +1224,9 @@ to 4 are met for those three, and the R8 run is in the pull request.
 **Slice C is built (2026-10-10).** It adds the fourth provider, Approvals,
 after H-201, and the "Waiting for your approval" group of Needs you (§4.5,
 §7.2). So done-when 2 now holds for the four providers, and done-when 3 for
-the four negative tests. A member without the approvals gate gets no
-pending action, and the R8 run is in the pull request.
+the four negative tests. Only an org admin with the approvals gate gets a
+pending action (owner decision, 2026-10-10). The R8 run is in the pull
+request.
 
 My Day itself (done-when 1 and 5) is slice B, below. The owner turned it on
 in production on 2026-10-10.
@@ -1214,9 +1240,10 @@ Done when:
 2. `GET /shell/needs` merges the four providers of §7.2 on the request's
    session.
 3. Each of the four providers has its own negative test. Another member's
-   private task, notification, pending action and mail thread reach no card
-   and no needs row. A member without the approvals gate gets no pending
-   action.
+   private task, notification and mail thread reach no card and no needs
+   row. Another organization's pending action reaches no card and no needs
+   row, and neither does any pending action for a member who is not an
+   admin. A member without the approvals gate gets no pending action.
 4. The needs SQL ran against a real Postgres (R8), and the run is in the pull
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
@@ -1256,7 +1283,8 @@ belong to slice A, the gateway feed.
 - **Who gets a card.** A card asks for what the server asks for. Today and
   Next actions read `/projects/my/*`, and the Projects router demands
   `feature:projects`. So both cards need `tasks` and `projects`. Needs you
-  needs `projects`, `email` or `approvals`, the features of its sources.
+  needs `projects` or `email`, or `approvals` for an org admin. These are
+  the features of its sources.
 - **One caveat, once.** When a source does not answer, the Needs you card
   names the gap and offers Retry. An example is "Email did not answer, so
   its replies may be missing". The summary then says nothing about needs.

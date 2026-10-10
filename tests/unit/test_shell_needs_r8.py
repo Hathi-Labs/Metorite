@@ -22,9 +22,10 @@ one row of the other organization:
   never returns: RLS and the lens's tenant bind each hold it out.
 * **Approvals** (`TestTheApprovalsQueue`, NS-3 slice C). Each org's queue
   is seeded through the broker's own `enqueue`, as the app role, under
-  `bind_tenant`. An approver of the member's org sees that org's pending
-  actions, and the other org's never. A member without `feature:approvals`
-  gets none. The other org's row is real: its own approver sees it.
+  `bind_tenant`. An org admin who holds `feature:approvals` sees that org's
+  pending actions, and the other org's never. A member who holds the
+  feature and is not an admin gets none, and neither does a member without
+  the feature. The other org's row is real: its own admin sees it.
 * **The two bounded reads** (`TestTheLensDueRead`). A third member holds more
   due work than the cap. The lens read gives the oldest deadlines first and
   stops at the cap. It leaves out what the Python rule calls not mine to act
@@ -81,8 +82,10 @@ ZONE = "Pacific/Kiritimati"
 SOURCES = {"tasks": "ok", "approvals": "absent", "projects": "ok", "email": "ok"}
 
 
-def _member(email: str, *extra: str) -> UserContext:
+def _member(email: str, *extra: str, is_admin: bool = False) -> UserContext:
     features = {"feature:projects", "feature:email", *(f"feature:{f}" for f in extra)}
+    if is_admin:
+        features.add(shell.ADMIN_PERMISSION)
     return UserContext(
         email=email, role=UserRole.EMPLOYEE,
         access=EffectiveAccess(role_granted=frozenset(features)),
@@ -399,7 +402,7 @@ class TestTheApprovalsQueue:
     async def test_an_approver_sees_their_orgs_queue_and_not_the_other_orgs(
         self, promoted, seeded, queue, monkeypatch,  # noqa: F811
     ):
-        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"))
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals", is_admin=True))
         assert answer["sources"]["approvals"] == "ok"
         got = [i for i in answer["items"] if i["app"] == "approvals"]
         assert f"approvals:{queue['mine']}" in [i["id"] for i in got]
@@ -415,6 +418,14 @@ class TestTheApprovalsQueue:
         assert kinds.index("approval") > kinds.index("overdue")
         assert kinds.index("approval") < kinds.index("due_today")
 
+    async def test_a_member_with_the_feature_who_is_not_an_admin_gets_none(
+        self, promoted, seeded, queue, monkeypatch,  # noqa: F811
+    ):
+        # Owner decision, 2026-10-10: only an org admin gets approval rows.
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"))
+        assert answer["sources"] == SOURCES
+        assert not [i for i in answer["items"] if i["app"] == "approvals"]
+
     async def test_a_member_without_the_gate_gets_no_pending_action(
         self, promoted, seeded, queue, monkeypatch,  # noqa: F811
     ):
@@ -427,7 +438,7 @@ class TestTheApprovalsQueue:
     ):
         # Non-vacuity: the row held out above is in the table, and the
         # approver of its own org reads it.
-        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals"),
+        answer = await _needs(promoted, monkeypatch, _member(ME, "approvals", is_admin=True),
                               org=promoted.org_a)
         got = [i["id"] for i in answer["items"] if i["app"] == "approvals"]
         assert f"approvals:{queue['elsewhere']}" in got

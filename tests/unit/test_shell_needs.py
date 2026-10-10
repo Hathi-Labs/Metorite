@@ -19,9 +19,12 @@ fails it:
 * **The two app reads are bounded and reuse the app's rule** (the lens read
   and the email read, by their SQL text). R8 runs them for real.
 * **Approvals (slice C)** reads the queue of the bound tenant, through the
-  broker's own ``list_pending``. A member without ``feature:approvals`` gets
-  no row, and the broker is never called. A row has no act, and opens
-  ``/approvals``.
+  broker's own ``read_pending``. The fake stands in for the tenant SESSION,
+  so the real read runs, and a database error reaches the feed as
+  ``failed``. Only an org admin who holds ``feature:approvals`` gets a row
+  (owner decision, 2026-10-10). A member with ``feature:*`` who is not an
+  admin gets none, and the broker is never called. A row has no act, opens
+  ``/approvals``, and never pushes the member's own work out of the feed.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -66,6 +69,25 @@ def member(*features: str, email: str = ME) -> UserContext:
 
 
 ALL = ("projects", "email")
+
+
+def admin(*features: str, email: str = ME) -> UserContext:
+    """An org admin: the admin test of ``routes/shell/intent.py``, plus the
+    features named. The approvals source needs both."""
+    return UserContext(
+        email=email,
+        role=UserRole.EMPLOYEE,
+        access=EffectiveAccess(role_granted=frozenset(
+            {*(f"feature:{f}" for f in features), shell.ADMIN_PERMISSION})),
+    )
+
+
+def everything_but_admin(email: str = ME) -> UserContext:
+    """A member as migration 207 makes one: ``feature:*``, and no admin."""
+    return UserContext(
+        email=email, role=UserRole.EMPLOYEE,
+        access=EffectiveAccess(role_granted=frozenset({"feature:*"})),
+    )
 
 
 def _task(task_id: str, title: str, due: datetime | None, project: str = "Hardware",
@@ -177,16 +199,26 @@ class Fakes:
         return [SimpleNamespace(model_dump=lambda a=a: dict(a))
                 for a in self.accounts.get(kw["user"].email, [])]
 
-    def list_pending(self):
-        # Sync, as the broker's read is. No user: it reads the bound tenant.
-        from acb_common.db import current_tenant
+    @contextmanager
+    def tenant_session(self, org=None):
+        """``acb_graph.tenant_session``: the broker's REAL ``read_pending``
+        runs on it. It answers the bound org's rows by the read's own
+        contract, the oldest first and ``:limit`` rows, and records the SQL."""
+        fakes = self
 
-        org = current_tenant()
-        self.calls.append(("list_pending", None, {"org": org}))
-        time.sleep(0.005)  # a read takes time, as the async fakes do
-        if "list_pending" in self.fail:
-            raise self.fail["list_pending"]
-        return [dict(r) for r in self.pending.get(org or "", [])]
+        class _Session:
+            def execute(self, stmt, params=None):
+                sql = " ".join(str(stmt).split())
+                fakes.calls.append(("read_pending", None,
+                                    {"org": org, "sql": sql, **(params or {})}))
+                time.sleep(0.005)  # a read takes time, as the async fakes do
+                if "read_pending" in fakes.fail:
+                    raise fakes.fail["read_pending"]
+                rows = sorted(fakes.pending.get(org or "", []), key=lambda r: r["created_at"])
+                rows = [dict(r) for r in rows[: params["limit"]]]
+                return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: rows))
+
+        yield _Session()
 
     async def needs_reply_threads(self, user, account_id, limit):
         await self._enter("needs_reply_threads", user,
@@ -213,9 +245,9 @@ def fakes(monkeypatch) -> Fakes:
     monkeypatch.setattr(notifications, "list_notifications", f.list_notifications)
     monkeypatch.setattr(accounts, "list_accounts", f.list_accounts)
     monkeypatch.setattr(digest, "needs_reply_threads", f.needs_reply_threads)
-    import action_broker
+    import acb_graph
 
-    monkeypatch.setattr(action_broker, "list_pending", f.list_pending)
+    monkeypatch.setattr(acb_graph, "tenant_session", f.tenant_session)
     return f
 
 
@@ -275,7 +307,27 @@ class TestTheFeatureGate:
         assert answer["sources"]["approvals"] == "absent"
         assert not [i for i in answer["items"] if i["app"] == "approvals"]
         assert not [i for i in ids(answer) if i.startswith("approvals:")]
-        assert "list_pending" not in {name for name, _, _ in fakes.calls}
+        assert "read_pending" not in {name for name, _, _ in fakes.calls}
+
+    def test_a_member_with_every_feature_who_is_not_an_admin_gets_no_approval(self, fakes):
+        # The P1 of round 2. Migration 207 grants `feature:*` to `member` and
+        # `manager`, and it covers `feature:approvals`. So the feature alone
+        # would put the org's whole queue on every member's My Day.
+        answer = run(everything_but_admin())
+        assert answer["sources"]["approvals"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "approvals"]
+        assert "read_pending" not in {name for name, _, _ in fakes.calls}
+        assert answer["sources"]["tasks"] == "ok"  # non-vacuity: the rest ran
+
+    def test_an_admin_without_the_feature_gets_no_approval(self, fakes):
+        answer = run(admin(*ALL))
+        assert answer["sources"]["approvals"] == "absent"
+        assert "read_pending" not in {name for name, _, _ in fakes.calls}
+
+    def test_an_admin_with_the_feature_gets_the_queue(self, fakes):
+        answer = run(admin("approvals"))
+        assert answer["sources"]["approvals"] == "ok"
+        assert ids(answer) == ["approvals:pa-old", "approvals:pa-new"]
 
     def test_the_approvals_provider_checks_the_feature_of_the_actions_route(self):
         # The feature that `routes/actions.py`'s router demands, read from it.
@@ -285,6 +337,18 @@ class TestTheFeatureGate:
         held = [c.cell_contents for c in (gate.__closure__ or ())]
         assert "feature:approvals" in held
         assert shell.PROVIDERS["approvals"][0] == "approvals"
+
+    def test_the_admin_test_is_the_one_intent_and_auth_me_use(self):
+        # Reused, never copied: `routes/shell/intent.py` owns the string, and
+        # `GET /auth/me` reports the same test as `is_admin`.
+        from gateway.routes.shell import intent
+
+        assert shell.ADMIN_PERMISSION is intent.ADMIN_PERMISSION
+        assert "approvals" in shell.ADMIN_SOURCES
+
+    def test_the_approvals_provider_runs_last(self):
+        # A slow sync pool must not spend the budget of the member's own work.
+        assert list(shell.PROVIDERS)[-1] == "approvals"
 
     def test_a_signed_out_caller_is_refused(self, fakes):
         anon = UserContext(email=None, role=UserRole.EMPLOYEE)
@@ -323,26 +387,26 @@ class TestAnotherMembersRowsNeverArrive:
         assert fakes.calls and all(u is user for _, u, _ in fakes.calls)
 
     def test_another_orgs_pending_action_never_appears(self, fakes):
-        answer = run(member(*ALL, "approvals"))
+        answer = run(admin(*ALL, "approvals"))
         assert answer["sources"]["approvals"] == "ok"
         got = [i for i in ids(answer) if i.startswith("approvals:")]
         assert got == ["approvals:pa-old", "approvals:pa-new"]
         assert "approvals:pa-theirs" not in ids(answer)
         # The broker read the tenant this request bound, and no other.
-        assert [kw["org"] for n, _, kw in fakes.calls if n == "list_pending"] == [ORG]
+        assert [kw["org"] for n, _, kw in fakes.calls if n == "read_pending"] == [ORG]
 
     def test_the_other_org_sees_its_own_queue_and_not_mine(self, fakes):
         # Non-vacuity: the row held out above is real for its own org.
-        assert ids(run(member("approvals"), org=ORG_OTHER)) == ["approvals:pa-theirs"]
+        assert ids(run(admin("approvals"), org=ORG_OTHER)) == ["approvals:pa-theirs"]
 
     def test_with_no_tenant_bound_no_pending_action_arrives(self, fakes):
-        answer = run(member("approvals"), org=None)
+        answer = run(admin("approvals"), org=None)
         assert answer["items"] == []
 
 
 class TestTheAnswer:
     def test_the_rows_in_the_contracts_order(self, fakes):
-        assert ids(run(member(*ALL, "approvals"))) == [
+        assert ids(run(admin(*ALL, "approvals"))) == [
             # overdue, oldest first
             "tasks:t-old", "tasks:t-late",
             # approvals, the longest wait first: an agent's work waits on it
@@ -411,7 +475,7 @@ class TestTheAnswer:
             assert datetime.fromisoformat(row["at"]).tzinfo is not None
 
     def test_the_shape_of_an_approval(self, fakes):
-        rows = {i["id"]: i for i in run(member(*ALL, "approvals"))["items"]}
+        rows = {i["id"]: i for i in run(admin(*ALL, "approvals"))["items"]}
         assert rows["approvals:pa-new"] == {
             "id": "approvals:pa-new", "app": "approvals", "kind": "approval",
             "title": "Change a record in Zoho CRM",
@@ -443,7 +507,7 @@ class TestTheAnswer:
         fakes.pending[ORG] = [{"id": "pa-1", "actor": actor, "action": action,
                                "target": "lead:0b6f7d4e", "payload": {},
                                "status": "pending", "created_at": NOW}]
-        row = run(member("approvals"))["items"][0]
+        row = run(admin("approvals"))["items"][0]
         assert (row["title"], row["detail"]) == (title, detail)
         assert "0b6f7d4e" not in row["title"] + row["detail"]
 
@@ -482,9 +546,40 @@ class TestTheCaps:
             {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
              "target": "t", "payload": {}, "status": "pending",
              "created_at": NOW - timedelta(minutes=n)} for n in range(30)]
-        got = run(member("approvals"), limit=50)["items"]
+        got = run(admin("approvals"), limit=50)["items"]
         assert len(got) == shell.PER_APP
         assert got[0]["id"] == "approvals:pa-29"
+
+    def _flood(self, fakes, overdue: int, due_today: int) -> None:
+        fakes.tasks[ME] = (
+            [_task(f"t-o{n:02}", "x", NOW - timedelta(hours=n + 1)) for n in range(overdue)]
+            + [_task(f"t-d{n:02}", "x", LATER_TODAY) for n in range(due_today)])
+        fakes.pending[ORG] = [
+            {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
+             "target": "t", "payload": {}, "status": "pending",
+             "created_at": NOW - timedelta(minutes=n)} for n in range(15)]
+
+    def test_approvals_never_push_out_the_members_own_work(self, fakes):
+        # 15 overdue tasks and 15 approvals fill a limit of 30 by kind order
+        # alone. The notifications and the replies must still arrive.
+        self._flood(fakes, overdue=15, due_today=0)
+        answer = run(admin(*ALL, "approvals"), limit=30)
+        apps = [i["app"] for i in answer["items"]]
+        assert apps.count("tasks") == 15
+        assert apps.count("projects") == 2 and apps.count("email") == 2
+        assert apps.count("approvals") == 11
+        assert answer["count"] == 30
+
+    def test_approvals_never_push_out_a_task_due_today(self, fakes):
+        # Approvals sort before due today. At a limit of 25, the old cut gave
+        # 10 overdue and 15 approvals, and no due-today row.
+        self._flood(fakes, overdue=10, due_today=5)
+        got = run(admin(*ALL, "approvals"), limit=25)["items"]
+        assert len([i for i in got if i["kind"] == "due_today"]) == 5
+        assert len([i for i in got if i["kind"] == "approval"]) == 25 - 19
+        # The display order is unchanged: approvals still sit after overdue.
+        kinds = [i["kind"] for i in got]
+        assert kinds.index("approval") < kinds.index("due_today")
 
     def test_the_limit_defaults_to_30_and_stops_at_50(self, fakes):
         fakes.tasks[ME] = [_task(f"t-{n}", "x", NOW - timedelta(hours=n + 1))
@@ -503,13 +598,13 @@ class TestAFailingAppIsLeftOut:
         ("broken", "source"),
         [("my_due_tasks", "tasks"), ("list_notifications", "projects"),
          ("needs_reply_threads", "email"), ("list_accounts", "email"),
-         ("list_pending", "approvals")],
+         ("read_pending", "approvals")],
     )
     @pytest.mark.parametrize("error", [HTTPException(status_code=404, detail="gone"),
                                        RuntimeError("db down")])
     def test_its_source_reads_failed_and_the_rest_answer(self, fakes, broken, source, error):
         fakes.fail[broken] = error
-        answer = run(member(*ALL, "approvals"))
+        answer = run(admin(*ALL, "approvals"))
         assert answer["sources"][source] == "failed"
         assert source not in {i["app"] for i in answer["items"]}
         others = {k for k in ("tasks", "approvals", "projects", "email") if k != source}
@@ -538,13 +633,13 @@ class TestAFailingAppIsLeftOut:
 
     def test_a_slow_app_is_left_out(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 0.001)
-        answer = run(member(*ALL, "approvals"))
+        answer = run(admin(*ALL, "approvals"))
         assert answer["items"] == []
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 0.0)
-        answer = run(member(*ALL, "approvals"))
+        answer = run(admin(*ALL, "approvals"))
         assert set(answer["sources"].values()) == {"failed"}
         assert fakes.calls == []
 
@@ -565,10 +660,16 @@ class TestTheCallsStayInStep:
     def test_the_approvals_read_takes_no_member_and_no_org(self):
         # The broker reads `current_tenant()` (H-201). An org passed in would
         # be one taken from somewhere other than the auth dependency.
-        from action_broker.broker import list_pending
+        from action_broker.broker import read_pending
 
-        assert list(inspect.signature(list_pending).parameters) == []
-        assert "_bound_tenant(" in inspect.getsource(list_pending)
+        assert list(inspect.signature(read_pending).parameters) == ["limit"]
+        assert "_bound_tenant(" in inspect.getsource(read_pending)
+
+    def test_the_feed_reads_the_bounded_queue_oldest_first(self, fakes):
+        run(admin("approvals"))
+        call = next(kw for n, _, kw in fakes.calls if n == "read_pending")
+        assert "ORDER BY created_at ASC, id LIMIT :limit" in call["sql"]
+        assert call["limit"] == shell.PER_APP
 
     def test_the_email_read_takes_the_member_a_mailbox_and_a_limit(self):
         assert list(inspect.signature(_real_needs_reply_threads).parameters) == [

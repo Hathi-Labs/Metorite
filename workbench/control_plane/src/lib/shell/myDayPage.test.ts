@@ -21,11 +21,11 @@ import { NO_ACCESS } from "@/lib/access";
 
 import type { NeedsItem } from "./needs";
 
-const access = { features: ["tasks", "projects", "email"] as string[] };
+const access = { features: ["tasks", "projects", "email"] as string[], is_admin: false };
 
 vi.mock("@/components/AccessProvider", () => ({
   useAccess: () => ({
-    access: { ...NO_ACCESS, authenticated: true, features: access.features },
+    access: { ...NO_ACCESS, authenticated: true, features: access.features, is_admin: access.is_admin },
     loading: false,
     stale: false,
     refresh: async () => {},
@@ -51,6 +51,7 @@ beforeAll(async () => {
 afterEach(() => {
   vi.unstubAllEnvs();
   access.features = ["tasks", "projects", "email"];
+  access.is_admin = false;
 });
 
 describe("/ with the My Day flag", () => {
@@ -100,13 +101,23 @@ describe("/ with the My Day flag", () => {
     expect(html).not.toContain('data-testid="next-actions"');
   });
 
-  it("gives an approver with no other app the Needs you card alone", async () => {
+  it("gives an org admin with only Approvals the Needs you card alone", async () => {
     vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
     access.features = ["approvals"];
+    access.is_admin = true;
     const html = await renderHome();
     expect(html).toContain('data-testid="needs-you"');
     expect(html).not.toContain('data-testid="today"');
     expect(html).not.toContain('data-testid="next-actions"');
+  });
+
+  it("gives a member with only Approvals who is not an admin no Needs you card", async () => {
+    // Owner decision, 2026-10-10: only an org admin gets approval rows.
+    vi.stubEnv("NEXT_PUBLIC_MY_DAY", "1");
+    access.features = ["approvals"];
+    const html = await renderHome();
+    expect(html).not.toContain('data-testid="needs-you"');
+    expect(html).toContain("Nothing is enabled for your account yet");
   });
 
   it("explains itself to a member who holds nothing", async () => {
