@@ -73,7 +73,9 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (_url: string, init?: RequestInit) => {
       const who = new Headers(init?.headers).get("X-User-Email");
-      return Response.json({ organization: { display_name: `Org of ${who}` } });
+      return Response.json({
+        organization: { id: `id-of-${who}`, slug: `slug-of-${who}`, display_name: `Org of ${who}` },
+      });
     }),
   );
 });
@@ -136,11 +138,52 @@ describe("stash, list and switch", () => {
     const res = await GET(
       request("/api/accounts?orgs=1", { [SESSION]: a, "__Host-mt-acct-0": a, "__Host-mt-acct-2": b }),
     );
+    // R7 fence `accounts-orgs-shape`: with `?orgs=1`, each account carries
+    // the id an org-aware link names, read AS that account.
+    expect(await res.json()).toEqual({
+      enabled: true,
+      active: {
+        email: "a@one.test",
+        name: "a",
+        organization_id: "id-of-a@one.test",
+        organization_slug: "slug-of-a@one.test",
+      },
+      others: [
+        {
+          slot: 2,
+          email: "b@two.test",
+          name: "b",
+          organization: "Org of b@two.test",
+          organization_id: "id-of-b@two.test",
+          organization_slug: "slug-of-b@two.test",
+        },
+      ],
+    });
+  });
+
+  it("keeps the plain list as it was, and asks the gateway nothing", async () => {
+    authed.email = "a@one.test";
+    const a = await token("a@one.test");
+    const b = await token("b@two.test");
+    const res = await GET(request("/api/accounts", { [SESSION]: a, "__Host-mt-acct-2": b }));
     expect(await res.json()).toEqual({
       enabled: true,
       active: { email: "a@one.test", name: "a" },
-      others: [{ slot: 2, email: "b@two.test", name: "b", organization: "Org of b@two.test" }],
+      others: [{ slot: 2, email: "b@two.test", name: "b", organization: null }],
     });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("names no organization for an account whose read fails", async () => {
+    authed.email = "a@one.test";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 502 })));
+    const a = await token("a@one.test");
+    const b = await token("b@two.test");
+    const body = await (await GET(request("/api/accounts?orgs=1", { [SESSION]: a, "__Host-mt-acct-1": b }))).json();
+    expect(body.others).toEqual([
+      { slot: 1, email: "b@two.test", name: "b", organization: null, organization_id: null, organization_slug: null },
+    ]);
+    expect(body.active).toEqual({ email: "a@one.test", name: "a", organization_id: null, organization_slug: null });
   });
 
   it("refuses the list when Auth.js names someone other than the cookie", async () => {

@@ -6,6 +6,8 @@
  * as the read cache, the stores and the module caches, belongs to the account
  * that loaded it, and a reload is the one reset that misses nothing. `/`,
  * because the current path may name a record of the other organization.
+ * An org-aware link (`lib/orgLink.ts`) is the one exception. It names a
+ * record of the TARGET organization, so it lands on that path instead.
  *
  * Before the reload, it clears the browser storage that belongs to ONE
  * organization. Without that, the other organization's logo paints first, and
@@ -16,6 +18,7 @@
 import { useEffect } from "react";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
+import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 
 /**
  * The keys that belong to one organization. Each test in
@@ -44,11 +47,20 @@ export interface OtherAccount {
   email: string;
   name: string | null;
   organization: string | null;
+  /** With `?orgs=1` only. The id that an org-aware link names. */
+  organization_id?: string | null;
+  organization_slug?: string | null;
 }
 
 export interface Accounts {
   enabled: boolean;
-  active: { email: string; name: string | null } | null;
+  active: {
+    email: string;
+    name: string | null;
+    /** With `?orgs=1` only. */
+    organization_id?: string | null;
+    organization_slug?: string | null;
+  } | null;
   others: OtherAccount[];
 }
 
@@ -74,8 +86,18 @@ async function act(action: string, body?: unknown): Promise<Response> {
   });
 }
 
-/** Make another signed-in account the active one. False if it is gone. */
-export async function switchTo(slot: number, go: (url: string) => void = (u) => window.location.assign(u)) {
+/**
+ * Make another signed-in account the active one. False if it is gone.
+ *
+ * `target` is where the reload lands, `/` by default. Only a same-origin
+ * relative path is used, and anything else lands on `/`, so a link cannot
+ * turn a switch into a redirect off the site.
+ */
+export async function switchTo(
+  slot: number,
+  go: (url: string) => void = (u) => window.location.assign(u),
+  target = "/",
+) {
   const res = await act("switch", { slot });
   if (!res.ok) return false;
   // Tell the other tabs NOW (security review round 2, P2). The cookie has
@@ -93,16 +115,22 @@ export async function switchTo(slot: number, go: (url: string) => void = (u) => 
     /* no body: the backstop still runs */
   }
   clearOrgScopedStorage();
-  go("/");
+  go(safeLocalPath(target) ?? "/");
   return true;
 }
 
-/** Keep this account, then sign in to another one. */
-export async function addAccount(go: (url: string) => void = (u) => window.location.assign(u)) {
+/**
+ * Keep this account, then sign in to another one. With `callbackUrl`, the
+ * sign-in comes back to that same-origin path.
+ */
+export async function addAccount(
+  go: (url: string) => void = (u) => window.location.assign(u),
+  callbackUrl?: string,
+) {
   const res = await act("stash");
   if (!res.ok) return false;
   clearOrgScopedStorage();
-  go("/signin?add=1");
+  go(callbackUrl === undefined ? "/signin?add=1" : signInUrl(callbackUrl, true));
   return true;
 }
 
