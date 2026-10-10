@@ -1217,12 +1217,14 @@ async def _sweep_org(org: str) -> list[RunRequest]:
                 text(_EXPIRE_SQL), {"expire": EXPIRE_S},
             )).fetchall()
             live = sorted(_LIVE_ROWS)
-            unconfirmed = (await db.execute(
-                text(_UNCONFIRMED_SQL), {"stale": STALE_S, "live": live},
-            )).fetchall()
+            # Exhausted first: its own `state` filter is what keeps a
+            # `sending` row from the general text, not the order.
             exhausted = (await db.execute(text(_EXHAUSTED_SQL), {
                 "max": MAX_TRIES, "stale": STALE_S, "live": live,
             })).mappings().all()
+            unconfirmed = (await db.execute(
+                text(_UNCONFIRMED_SQL), {"stale": STALE_S, "live": live},
+            )).fetchall()
             rows = (await db.execute(text(_STALE_SQL), {
                 "max": MAX_TRIES, "stale": STALE_S, "expire": EXPIRE_S,
                 "n": SWEEP_BATCH,
