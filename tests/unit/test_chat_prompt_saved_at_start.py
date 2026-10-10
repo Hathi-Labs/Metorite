@@ -292,12 +292,13 @@ def test_the_tenant_and_the_author_come_from_the_session(graph_as_app, world):
     alice = _client(_user(_ALICE, a))
     bob = _client(_user(_BOB, a))
     _new_session(alice, sid)
-    # Bob joins as a member, and his own turn is in the thread.
+    # Alice owns the room, Bob joins as a member, and his turn is in it.
     with graph_as_app.admin_engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO chat_session_participant (session_id, subject, role, "
-            "organization_id) VALUES (:s, :e, 'member', :o)"),
-            {"s": sid, "e": _BOB, "o": a})
+        for who, role in ((_ALICE, "owner"), (_BOB, "member")):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, "
+                "role, organization_id) VALUES (:s, :e, :r, :o)"),
+                {"s": sid, "e": who, "r": role, "o": a})
     assert bob.post(f"/chat/sessions/{sid}/messages",
                     json=[_browser_row("u-bob", "Bob asks")]).status_code == 200
 
@@ -323,10 +324,11 @@ def test_a_viewer_and_a_member_of_another_org_write_nothing(graph_as_app, world)
     alice = _client(_user(_ALICE, a))
     _new_session(alice, sid)
     with graph_as_app.admin_engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO chat_session_participant (session_id, subject, role, "
-            "organization_id) VALUES (:s, :e, 'viewer', :o)"),
-            {"s": sid, "e": _BOB, "o": a})
+        for who, role in ((_ALICE, "owner"), (_BOB, "viewer")):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, "
+                "role, organization_id) VALUES (:s, :e, :r, :o)"),
+                {"s": sid, "e": who, "r": role, "o": a})
 
     bob = _client(_user(_BOB, a))
     code, _ = _send_and_close(bob, _run_body(sid, "u-viewer", "Viewer words"))
