@@ -47,13 +47,19 @@ export interface RollupInputs {
   newest: boolean;
   /** The body is long (rule 4). */
   long: boolean;
+  /**
+   * The focus is inside the card. An automatic fold would hide the focused
+   * control, and a keyboard member would lose their place (review round 1).
+   * Only a toggle by hand folds a card that holds the focus.
+   */
+  focused?: boolean;
 }
 
 /** Is the card open? The four rules, in order. */
-export function rollupOpen({ pending, manual, newest, long }: RollupInputs): boolean {
+export function rollupOpen({ pending, manual, newest, long, focused = false }: RollupInputs): boolean {
   if (pending) return true;
   if (manual) return manual === "open";
-  if (newest) return true;
+  if (newest || focused) return true;
   return !long;
 }
 
@@ -86,21 +92,30 @@ export function resetManualStates(): void {
 /**
  * The transcript's cards, so each one can ask whether it is the newest.
  *
- * Order is the DOM order of the cards, not the order they mounted in. A
- * reload mounts every card at once, and a card can mount late in an old turn
- * (a slow template). `compare` is `Node.compareDocumentPosition` in the app,
- * and the test passes its own.
+ * `compare` decides the order, and the app passes {@link turnThenArrival}:
+ * turns in DOM order, and the cards of one turn in the order they arrived.
+ * DOM order alone was wrong inside a turn (review round 1): a turn draws its
+ * generative-UI cards ABOVE its receipts, so a table that came after a write
+ * lost "newest" to the receipt and folded before the member saw it. The
+ * test passes its own `compare`.
  */
+export interface RollupEntry<N> {
+  node: N;
+  /** The order the card registered in. A reload registers in tree order. */
+  seq: number;
+}
+
 export class RollupRegistry<N = unknown> {
-  private readonly nodes = new Map<string, N>();
+  private readonly nodes = new Map<string, RollupEntry<N>>();
   private readonly listeners = new Set<() => void>();
   private newestId: string | null = null;
+  private seq = 0;
 
-  constructor(private readonly compare: (a: N, b: N) => number) {}
+  constructor(private readonly compare: (a: RollupEntry<N>, b: RollupEntry<N>) => number) {}
 
-  /** Add or move a card. Listeners hear only when the newest changes. */
+  /** Add a card. Listeners hear only when the newest changes. */
   register(id: string, node: N): void {
-    this.nodes.set(id, node);
+    this.nodes.set(id, { node, seq: this.seq++ });
     this.recompute();
   }
 
@@ -121,7 +136,7 @@ export class RollupRegistry<N = unknown> {
   };
 
   private recompute(): void {
-    let best: [string, N] | null = null;
+    let best: [string, RollupEntry<N>] | null = null;
     for (const entry of this.nodes) {
       if (!best || this.compare(entry[1], best[1]) > 0) best = entry;
     }
@@ -130,6 +145,16 @@ export class RollupRegistry<N = unknown> {
     this.newestId = next;
     for (const fn of this.listeners) fn();
   }
+}
+
+/** The attribute on a turn's wrapper in the transcript (`AgentChat`). */
+export const TURN_ATTR = "data-rollup-turn";
+
+/** Turns in DOM order, and the cards of one turn by arrival. */
+export function turnThenArrival(a: RollupEntry<Element>, b: RollupEntry<Element>): number {
+  const ta = a.node.closest(`[${TURN_ATTR}]`);
+  if (ta && ta === b.node.closest(`[${TURN_ATTR}]`)) return a.seq - b.seq;
+  return domOrder(a.node, b.node);
 }
 
 /** DOM order: positive when `a` comes after `b`. */

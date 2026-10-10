@@ -43,7 +43,7 @@ import {
 } from "@/lib/cardRollup";
 
 export interface RollupScope {
-  registry: RollupRegistry<Node>;
+  registry: RollupRegistry<Element>;
   /** The `data-chat-ask` targets of the elements that wait on the member. */
   waiting: ReadonlySet<string>;
   /** Told when the member folds or opens a card by hand. The transcript
@@ -134,11 +134,13 @@ function RollupCardIn({
     setManual(manualStateOf(id));
   }, [id]);
   const [animate, setAnimate] = useState(false);
+  // The focus is inside: an automatic fold waits (`lib/cardRollup.ts`).
+  const [focused, setFocused] = useState(false);
 
   const pending = pendingProp || (!!askTarget && waiting.has(askTarget));
   const long = isLong(height, rows);
   const toggle = showRollupToggle({ pending, long });
-  const open = rollupOpen({ pending, manual, newest, long });
+  const open = rollupOpen({ pending, manual, newest, long, focused });
 
   const onOpenChange = useCallback(
     (next: boolean) => {
@@ -152,7 +154,15 @@ function RollupCardIn({
   );
 
   return (
-    <div ref={rootRef} data-rollup-card={id} className={className}>
+    <div
+      ref={rootRef}
+      data-rollup-card={id}
+      className={className}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
+    >
       <CollapsibleCard
         open={open}
         onOpenChange={onOpenChange}

@@ -158,5 +158,8 @@ describe("the chat attaches it", () => {
     expect(src).toContain("attachStickToBottom(thread, content,");
     expect(src).toContain("nearAfterScroll(isNearBottomRef.current, lastTop, el)");
     expect(src).toMatch(/<div ref=\{contentRef\}/);
+    // A fold by hand can leave the bottom with no scroll event, so the
+    // observer keeps the scroll-to-bottom button in step (review round 1).
+    expect(src).toMatch(/setNearBottom: \(near\) => \{[\s\S]{0,240}setShowScrollBtn\(/);
   });
 });

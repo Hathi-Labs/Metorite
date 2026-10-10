@@ -29,7 +29,7 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import AskPin from "@/components/AskPin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
-import { RollupRegistry, domOrder } from "@/lib/cardRollup";
+import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
@@ -1373,7 +1373,12 @@ export default function AgentChat({
     if (!thread || !content) return;
     return attachStickToBottom(thread, content, {
       getNearBottom: () => isNearBottomRef.current,
-      setNearBottom: (near) => { isNearBottomRef.current = near; },
+      // The button follows the flag, as `onScroll` keeps it (review round 1):
+      // a fold by hand can leave the bottom with no scroll event.
+      setNearBottom: (near) => {
+        isNearBottomRef.current = near;
+        setShowScrollBtn(!near && thread.scrollHeight > thread.clientHeight + 200);
+      },
       lastManualToggleAt: () => lastManualToggleRef.current,
     });
   }, []);
@@ -1803,7 +1808,7 @@ export default function AgentChat({
   // The transcript's cards, for the roll-up (`lib/cardRollup.ts`): which one
   // is the newest, and which ones wait. Keyed on the targets' text, so the
   // context changes only when what waits changes, not on every token.
-  const [rollupRegistry] = useState(() => new RollupRegistry<Node>(domOrder));
+  const [rollupRegistry] = useState(() => new RollupRegistry<Element>(turnThenArrival));
   const waitingKey = JSON.stringify([...waitingTargets(askSources)]);
   const onManualToggle = useCallback(() => {
     lastManualToggleRef.current = performance.now();
@@ -2015,7 +2020,7 @@ export default function AgentChat({
             const showDateDivider = prevMsg &&
               new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
             return (
-              <div key={msg.id} className="animate-fade-in">
+              <div key={msg.id} className="animate-fade-in" {...{ [TURN_ATTR]: "" }}>
                 {showDateDivider && (
                   <div className="flex items-center gap-3 my-4">
                     <div className="flex-1 h-px bg-border" />

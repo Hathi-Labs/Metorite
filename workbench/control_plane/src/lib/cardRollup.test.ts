@@ -25,12 +25,14 @@ import {
   LONG_PX,
   LONG_ROWS,
   RollupRegistry,
+  TURN_ATTR,
   isLong,
   manualStateOf,
   resetManualStates,
   rollupOpen,
   setManualState,
   showRollupToggle,
+  turnThenArrival,
 } from "@/lib/cardRollup";
 import { EMPTY_CONFIRMATIONS, confirmationReducer } from "@/lib/confirmationQueue";
 
@@ -38,7 +40,7 @@ import { EMPTY_CONFIRMATIONS, confirmationReducer } from "@/lib/confirmationQueu
 const createElement = rawElement as unknown as (type: unknown, props: unknown, ...children: unknown[]) => ReactElement;
 
 /** A registry ordered by a number: a later card has a bigger one. */
-const byPosition = () => new RollupRegistry<number>((a, b) => a - b);
+const byPosition = () => new RollupRegistry<number>((a, b) => a.node - b.node);
 
 beforeEach(() => resetManualStates());
 
@@ -76,6 +78,37 @@ describe("a long card rolls up when a newer card arrives", () => {
     expect(reg.newest()).toBe("late-in-the-page");
   });
 
+  it("inside one turn, the card that came last is the newest, though it draws higher", () => {
+    // A turn draws its generative-UI cards above its receipts. A table that
+    // came after a write must still be the newest (review round 1).
+    const turn = { id: "m-1" };
+    const el = (y: number) =>
+      ({
+        y,
+        closest: (sel: string) => (sel === `[${TURN_ATTR}]` ? turn : null),
+        compareDocumentPosition: () => 0,
+      }) as unknown as Element;
+    const reg = new RollupRegistry<Element>(turnThenArrival);
+    reg.register("tool:t-batch", el(2)); // the receipt, lower in the turn
+    reg.register("genui:m-1:0", el(1)); // the table, later in time
+    expect(reg.newest()).toBe("genui:m-1:0");
+  });
+
+  it("across turns, the later turn wins, whatever arrived first", () => {
+    const at = (turn: object, pos: number) =>
+      ({
+        pos,
+        closest: () => turn,
+        compareDocumentPosition(other: { pos: number }) {
+          return other.pos < pos ? 2 : 4; // 2: the other one precedes this one
+        },
+      }) as unknown as Element;
+    const reg = new RollupRegistry<Element>(turnThenArrival);
+    reg.register("late-turn", at({ t: 2 }, 9));
+    reg.register("early-turn", at({ t: 1 }, 1));
+    expect(reg.newest()).toBe("late-turn");
+  });
+
   it("tells its listeners only when the newest changes", () => {
     const reg = byPosition();
     let heard = 0;
@@ -90,9 +123,9 @@ describe("a long card rolls up when a newer card arrives", () => {
   });
 
   it("draws the folded card in the component: header, count and summary, shut", () => {
-    const registry = new RollupRegistry<Node>(() => 0);
+    const registry = new RollupRegistry<Element>(() => 0);
     // A newer card is already in the transcript.
-    registry.register("tool:newer", {} as Node);
+    registry.register("tool:newer", {} as Element);
     const scope: RollupScope = { registry, waiting: new Set() };
     const html = renderToStaticMarkup(
       createElement(
@@ -164,8 +197,8 @@ describe("a pending approval card never rolls up", () => {
   });
 
   it("a waiting generative-UI ask draws open, with no toggle, though a newer card exists", () => {
-    const registry = new RollupRegistry<Node>(() => 0);
-    registry.register("tool:newer", {} as Node);
+    const registry = new RollupRegistry<Element>(() => 0);
+    registry.register("tool:newer", {} as Element);
     const scope: RollupScope = { registry, waiting: new Set(["genui:req-plan"]) };
     const html = renderToStaticMarkup(
       createElement(
@@ -195,12 +228,17 @@ describe("a manual open beats the automatic rule", () => {
     expect(rollupOpen({ pending: false, newest: true, long: true, manual: "closed" })).toBe(false);
   });
 
+  it("an automatic fold waits while the focus is inside the card, and a toggle by hand does not", () => {
+    expect(rollupOpen({ pending: false, newest: false, long: true, focused: true })).toBe(true);
+    expect(rollupOpen({ pending: false, newest: false, long: true, focused: true, manual: "closed" })).toBe(false);
+  });
+
   it("the choice lives for the page's life, by the card's id", () => {
     setManualState("tool:t-batch", "open");
     expect(manualStateOf("tool:t-batch")).toBe("open");
     expect(manualStateOf("tool:other")).toBeUndefined();
-    const registry = new RollupRegistry<Node>(() => 0);
-    registry.register("tool:newer", {} as Node);
+    const registry = new RollupRegistry<Element>(() => 0);
+    registry.register("tool:newer", {} as Element);
     // A remount (a replay) reads the choice back.
     const html = renderToStaticMarkup(
       createElement(
