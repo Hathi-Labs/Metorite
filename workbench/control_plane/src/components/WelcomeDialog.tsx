@@ -21,6 +21,11 @@
  * ⚠️ A read that fails asks nothing. "Never asked" is a fact only the server
  * knows, and asking on a fault would ask a member who already answered.
  *
+ * ⚠️ A WRITE that fails never holds the member here (round 2). Every way out
+ * closes first, the choice holds for this page, and one toast says the save
+ * did not land. A later visit asks again, because the server still says
+ * "never asked".
+ *
  * With the shell nav off (`shellNavOn`), only the founder's welcome exists,
  * exactly as before NS-7.
  *

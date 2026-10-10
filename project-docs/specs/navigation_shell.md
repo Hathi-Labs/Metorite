@@ -1090,7 +1090,7 @@ not hold, or for an app that is not live yet, does not render.
 | Founder | Projects, Approvals, My Email, Chat | Needs you, Today, Team pulse (NS-5) | new-project ("New space"), invite, capture |
 | Sales manager | My Email, My WhatsApp, Projects, CRM (preview, renders when live) | Needs you (needs_reply first), Today, Next actions | compose, whatsapp-reply, capture |
 | Marketing lead | Projects, My Email, Chat | Needs you, Next actions, Today | capture, new-chat, compose |
-| Finance manager | Approvals, My Email, Projects, Invoices (preview, renders when live) | Needs you (approval first), Today | review-approvals, compose |
+| Finance manager | Approvals, My Email, Projects, Invoices (preview, renders when live). ⚠️ NS-7 does not pin Invoices yet, because `nav.ts` has no Invoices pane | Needs you (approval first), Today | review-approvals, compose |
 | Operations manager | Projects, People, Calendar | Needs you, Today, Next actions, Out today (NS-5) | new-project, capture, find-person |
 | Engineer | My Tasks, Projects, Calendar, Chat | Next actions, Today, Needs you | capture, plan-day, new-chat |
 | Accounts assistant | My Tasks, My Email | Needs you, Next actions | capture, compose |
@@ -1161,6 +1161,31 @@ Mutation, seen to fail first: let `pinnedPanes` read every pane, not
   row" as "seed the day from the People schedule" (D-PC-16). So the shell's
   first write puts that seed in the new row. Later writes change
   `shell_prefs` only (`upsert_settings_sql`, its `update` argument).
+- ⚠️ **Two results of that first write, recorded and accepted.**
+  - The seed freezes at that moment. Before NS-7, a member with no row
+    followed each later change of their People schedule. After the first
+    shell write, the calendar keeps the hours of that day, as it does after
+    any first save of a setting.
+  - The member joins the rollover sweep. The sweep in
+    `routes/tasks/calendar.py` runs each 15 minutes over the
+    `user_settings` rows with `auto_rollover` on, and a new row has it on.
+    So an overdue block that is not done moves into the member's new day,
+    as it does for every member with a row.
+- **The first frame draws the last known layout** (round 2). The browser
+  keeps the layout that the server last confirmed, one copy for each account,
+  under `cc-shell-prefs:<email>|<organizationId>` (`shellCache.ts`). The
+  sidebar and My Day draw it at once, and the read confirms it or replaces
+  it. A refused write never reaches the copy. With no copy, "My apps" and the
+  My Day cards wait for the read, so nothing moves under the member's eye.
+- **The read starts beside the access read.** The route needs the session
+  only, so `AppShell` asks for it before access resolves.
+- **A sign-out clears the copy** with the chat caches, in
+  `clearSignedOutAccount` and `clearAccountNamespaces`. So no email outlives
+  its sign-out in a key name.
+- **A star shows only where the save can land.** `PINNABLE` in `presets.ts`
+  holds the panes that `nav.ts` declares by its own href. The six Center
+  panes are not in it, because D49 keeps them unlinked and the `PUT`
+  refuses them.
 - **The `PUT` refuses** an unknown preset, pane, card or job, an unknown
   key, more than 24 pins, and an answer with no preset. The member and the
   tenant come from the session only (R5).
@@ -1205,6 +1230,12 @@ skip it. The question changes the starting layout and nothing else.
 
 **Built 2026-10-10 (NS-7).**
 
+- **A write fault never holds the member in the question** (round 2). Skip,
+  Escape, the header's X and an answer each close the dialog first, and the
+  write follows. When the write fails, the choice holds for this page and
+  one toast says "Couldn't save that. We'll ask again next time." The server
+  still holds "never asked", so a later visit asks again. A latch in the page
+  stops a second ask in the same document.
 - **One dialog, never two.** A founder's `?welcome=new-org` asks the
   question first, and then shows the invite step in the same dialog.
 - **The question opens only when the server answers "never asked".** A
