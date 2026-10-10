@@ -1,8 +1,9 @@
 # Integrations — one registry, and an admin console over it
 
 > **Board row:** WS-54 · **Created:** 2026-10-11 · **Owner question:** 2026-10-11
-> **Status:** 📝 **PLAN — verified against code and production on 2026-10-11** at
-> `origin/main` `ba6bbb7b6`. Nothing in this file is built yet.
+> **Status:** 🔨 **IN-0 BUILT 2026-10-11** (not merged). Its part (e) is held
+> behind H-244. IN-1 to IN-7 are a 📝 PLAN, verified against code and
+> production on 2026-10-11 at `origin/main` `ba6bbb7b6`.
 
 > **Decision:** D96 (§10). The orchestrator took it on 2026-10-11 when the owner
 > asked, and the owner was told the same day. The owner may overrule it.
@@ -232,7 +233,7 @@ IN-0 comes first and alone, because it closes live holes.
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **IN-0** | **Close the holes.** (a) Six routes stop writing `os.environ` and `.env`: configure, PUT and DELETE `/keys` keep the per-org store write. The GitHub device poll stores `github:token` for the org. connect-cli answers 410. The old OAuth authorize, callback and refresh are retired (410). A failed store write in configure answers 503. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete filter on the caller's tenant, and the list returns key names only, never a `headers` or `env_vars` value. (d) `/mcp/test` and plugin install fetch only through `gateway/outbound_guard.py`. (e) **Held behind H-244 [OWNER]:** the `<<<SETUP:...>>>` path stops writing configure. After (a) it can write no env value, so holding it leaves no cross-tenant hole | 🟢 AGENT-SAFE for (a) to (d). ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod the startup copy is already inert (9 orgs), so the cost is close to zero | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
+| **IN-0** ✅ built 2026-10-11, (e) held behind H-244 | **Close the holes.** (a) Six routes stop writing `os.environ` and `.env`: configure, PUT and DELETE `/keys` keep the per-org store write. The GitHub device poll stores `github:token` for the org. connect-cli answers 410. The old OAuth authorize, callback and refresh are retired (410). A failed store write in configure answers 503. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete filter on the caller's tenant, and the list returns key names only, never a `headers` or `env_vars` value. (d) `/mcp/test` and plugin install fetch only through `gateway/outbound_guard.py`. (e) **Held behind H-244 [OWNER]:** the `<<<SETUP:...>>>` path stops writing configure. After (a) it can write no env value, so holding it leaves no cross-tenant hole | 🟢 AGENT-SAFE for (a) to (d). ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod the startup copy is already inert (9 orgs), so the cost is close to zero | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
 | **IN-1** | **The read model.** `GET /integrations/connections` over the three sources of §3.2. Status per org, not per deployment. `_is_configured` answers False for an unknown service | 🟢 AGENT-SAFE. Needs CRM-Z2 for the table | Two orgs see only their own rows. No response holds a credential (a sentinel fence). A mailbox row shows owner and health and no message |
 | **IN-2** | **The console.** It replaces the five tabs with one list of connections, filters by app and status, and opens a side panel with reconnect, disconnect, and a link to the owning app. MCP gets an "Add" form. The stale text goes (IN-D16) | 🟢 AGENT-SAFE | Visual review passes. Every action reaches the store through the routes of IN-0 and IN-1. `AppTopBar` and the shared controls only |
 | **IN-3** | **Per-run credentials for the integration resolvers.** `acb_skills` resolvers read the per-run context, filled from the per-org store, and the environment stops winning | 🔴 §6 gate (f) | A run in org A gets org A's key and a run in org B gets org B's, on one process at one time (R8) |
@@ -253,7 +254,9 @@ uv run pytest tests/unit/test_integrations_env_hardening.py \
   tests/unit/test_mt0d_per_org_credentials.py \
   tests/unit/test_mcp_servers_org_scope.py \
   tests/unit/test_integration_env_scoping.py \
-  tests/unit/test_org_access_credentials.py
+  tests/unit/test_org_access_credentials.py \
+  tests/unit/test_integrations_in0.py \
+  tests/unit/test_integrations_mcp_tenant_r8.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missingIntegrations.test.ts src/app/integrations
 ```
 
