@@ -83,7 +83,7 @@ describe("the compact lockup in the full-width shell bar", () => {
 
 /**
  * Owner decision, 2026-10-11: a workspace with no logo shows OUR comet, the
- * same mark as the sidebar's foot. Not the ⌘ glyph it showed before, and not
+ * same mark that signs the bar's right end. Not the ⌘ glyph it showed before, and not
  * on a `bg-primary` tile, which an accent recoloured.
  */
 describe("with no logo, the comet", () => {
@@ -119,8 +119,8 @@ describe("with no logo, the comet", () => {
 });
 
 /**
- * Owner decision, 2026-10-11: our name moved to the foot of the sidebar
- * (`MetoriteSignature`). A customer's logo carries nothing of ours, in the
+ * Owner decision, 2026-10-11: our comet moved to the bar's right end
+ * (`BarSignature`). A customer's logo carries nothing of ours, in the
  * bar, in the sidebar's head or in the phone menu's head.
  */
 describe("no caption beside a customer's logo", () => {

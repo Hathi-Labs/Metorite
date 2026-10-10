@@ -1,14 +1,12 @@
 /**
- * The Metorite comet and the sidebar's foot signature (owner, 2026-10-11).
+ * The Metorite comet (owner, 2026-10-11).
  *
- * The owner moved our own mark out of the shell bar and to the foot of the
- * left sidebar. These checks fail on the wrong builds that look right:
+ * These checks fail on the wrong builds that look right:
  *   1. A comet path that drifted from `brand/`, or a second copy of it.
  *   2. Gradient stops that ignore the colour mode, or the wrong master's.
  *   3. Two marks on one page that share one gradient id.
- *   4. A signature that turned into a control: a link, a button, a hover fill.
- *   5. A signature that left its place over the account row.
- * The geometry (centred in the folded rail) is `e2e/sidebar-signature.spec.ts`.
+ * Where the comet sits is `lib/shell/shellSignature.test.ts` and
+ * `e2e/shell-signature.spec.ts`.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -19,11 +17,10 @@ import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { MetoriteMark, MetoriteSignature } from "./MetoriteMark";
+import { MetoriteMark } from "./MetoriteMark";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const BRAND = fileURLToPath(new URL("../../../../brand/", import.meta.url));
-const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 const master = (name: string) => readFileSync(join(BRAND, name), "utf8");
 
 const pathOf = (svg: string) => /<path\b[^>]*\sd="([^"]+)"/.exec(svg)?.[1] ?? "";
@@ -95,52 +92,5 @@ describe("the gradient follows the colour mode", () => {
     const named = html({ label: "Metorite" });
     expect(named).toContain('role="img"');
     expect(named).toContain('aria-label="Metorite"');
-  });
-});
-
-describe("the signature is a signature, not a control", () => {
-  const open = renderToStaticMarkup(createElement(MetoriteSignature));
-  const folded = renderToStaticMarkup(createElement(MetoriteSignature, { collapsed: true }));
-
-  it("open, it shows the comet and the word, in muted text", () => {
-    expect(open).toContain("data-metorite-mark");
-    expect(open.replace(/<[^>]*>/g, "")).toBe("Metorite");
-    expect(open).toContain("text-muted-foreground");
-  });
-
-  it("folded, it shows the comet alone, named by a native title", () => {
-    expect(folded).toContain("data-metorite-mark");
-    expect(folded.replace(/<[^>]*>/g, "")).toBe("");
-    expect(folded).toContain('title="Metorite"');
-    expect(folded).toContain('aria-label="Metorite"');
-    expect(folded).toMatch(/class="flex justify-center/);
-  });
-
-  it("is never a link, a button, a focus stop or a hover fill", () => {
-    for (const out of [open, folded]) {
-      expect(out).not.toMatch(/<a\b|<button\b|tabindex|href=/i);
-      expect(out).not.toMatch(/hover:/);
-    }
-  });
-});
-
-describe("the signature sits just over the account row", () => {
-  it("desktop: the sidebar draws it before SidebarAccountFooter, open and folded", () => {
-    const src = read("components/Sidebar.tsx");
-    const sig = src.indexOf("<MetoriteSignature collapsed={collapsed}");
-    const foot = src.indexOf("<SidebarAccountFooter");
-    expect(sig).toBeGreaterThan(0);
-    expect(foot).toBeGreaterThan(sig);
-    // Nothing else is drawn between the two.
-    expect(src.slice(sig, foot)).not.toMatch(/<(?!\/?MetoriteSignature)[A-Za-z]/);
-  });
-
-  it("phone: the drawer draws it before DrawerAccountFoot", () => {
-    const src = read("components/AppShell.tsx");
-    const sig = src.indexOf("<MetoriteSignature");
-    const foot = src.indexOf("<DrawerAccountFoot");
-    expect(sig).toBeGreaterThan(0);
-    expect(foot).toBeGreaterThan(sig);
-    expect(src.slice(sig, foot)).not.toMatch(/<(?!\/?MetoriteSignature)[A-Za-z]/);
   });
 });

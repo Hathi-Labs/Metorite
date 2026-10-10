@@ -13,7 +13,6 @@ import NavBadge, { type NavBadgeTone } from "@/components/NavBadge";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import { runBadge } from "@/lib/runActivity";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
-import { MetoriteSignature } from "@/components/MetoriteMark";
 import { SidebarFoldButton, useSidebarFold } from "@/components/SidebarFold";
 import { ActivityControl } from "@/lib/shell/ActivityControl";
 import { shellDockOn } from "@/lib/shell/dockFlag";
@@ -366,12 +365,6 @@ export default function Sidebar() {
           pathname={pathname}
         />
       )}
-
-      {/* Our signature, just over the account row (owner, 2026-10-11). The
-          bar and the head show the customer's logo alone, so this is the one
-          fixed place of the product's own mark. Open, the comet sits on the
-          nav icons' column (`px-5`). Folded, it is centred in the rail. */}
-      <MetoriteSignature collapsed={collapsed} className={collapsed ? "py-2" : "px-5 py-2"} />
 
       {/* User / sign-out footer */}
       <SidebarAccountFooter

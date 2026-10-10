@@ -121,7 +121,7 @@ describe("the lockup", () => {
   it("shows the customer's logo with no caption of ours (owner, 2026-10-11)", () => {
     const l = lockup({ logo: logo(), updatedBy: "", updatedAt: "" }, "Home");
     expect(l.kind).toBe("org");
-    // Our name moved to the foot of the sidebar. Nothing rides with their logo.
+    // Our comet signs the bar's right end. Nothing rides with their logo.
     expect(l).not.toHaveProperty("caption");
     if (l.kind === "org") expect(l.logo.dataUri).toContain("base64");
   });

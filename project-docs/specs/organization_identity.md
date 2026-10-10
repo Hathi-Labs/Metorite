@@ -25,7 +25,7 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
 
 | # | Item | Gate | State |
 |---|---|---|---|
-| **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo. It replaces our mark top-left in every member's shell. Since 2026-10-11 no words of ours sit beside it. Our mark is at the foot of the sidebar (owner decision, `navigation_shell.md` §3.1). | 🟢 AGENT-SAFE | ◐ built, unmerged |
+| **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo. It replaces our mark top-left in every member's shell. Since 2026-10-11 no words of ours sit beside it. Our comet signs the right end of the shell bar (owner decision, `navigation_shell.md` §3.1). | 🟢 AGENT-SAFE | ◐ built, unmerged |
 | **OI-1b** | **The logo editor and dark mode.** Any image opens in an editor that trims and crops it and draws the stored PNG. One logo covers both colour modes. | 🟢 AGENT-SAFE | ✅ built 2026-10-09 |
 | **OI-2** | **Tenant-scope the store.** `org_settings` must carry `organization_id`, widen its PK, and bind through the seam before a second customer shares a database. | 🟢 AGENT-SAFE | ✅ built 2026-10-09, migration 234 |
 | **OI-3a** | **No network wait.** The customer's mark renders from a local cache, revalidated behind it. | 🟢 AGENT-SAFE | ✅ built 2026-08-14 |

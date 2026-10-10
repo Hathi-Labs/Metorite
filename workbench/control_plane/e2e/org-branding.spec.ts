@@ -149,7 +149,7 @@ async function measureLockup(page: Page) {
     const caption = leaves.find((e) => {
       const t = e.textContent?.trim() ?? "";
       // The logo-less captions only. A customer's logo carries none since
-      // 2026-10-11: our name moved to the sidebar's foot (owner decision).
+      // 2026-10-11: our comet signs the bar's right end (owner decision).
       return t === "Control Plane" || t === "Home";
     });
 

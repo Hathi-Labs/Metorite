@@ -1,10 +1,10 @@
 /**
- * The Metorite comet, and the quiet signature at the foot of the sidebar.
+ * The Metorite comet, the one mark of our own brand in the app.
  *
- * Owner decision, 2026-10-11: the product's own mark moves out of the shell
- * bar and to the foot of the left sidebar. The bar shows the customer's logo
- * alone. The foot shows this signature in every frame: the desktop rail,
- * open or folded, and the phone drawer. One product mark in one fixed place.
+ * Owner decisions, 2026-10-11. The shell bar's left end shows the customer's
+ * logo alone, with no words of ours. Our comet signs the bar at its right end
+ * (`BarSignature` in `lib/shell/ShellBar.tsx`). A workspace with no logo
+ * shows the comet in its lockup instead (`BrandMark`).
  *
  * ⚠️ **This file holds the ONE copy of the comet path in the app.** The master
  * is `brand/metorite-logo.svg` (light) and `brand/metorite-logo-dark.svg`
@@ -18,7 +18,7 @@
  * argued in `src/lib/theme/conformance.test.ts` (`COLOR_EXCEPTIONS`).
  *
  * Fences: `src/components/metoriteMark.test.ts` and
- * `e2e/sidebar-signature.spec.ts`.
+ * `e2e/shell-signature.spec.ts`.
  */
 
 import { useId } from "react";
@@ -96,44 +96,5 @@ export function MetoriteMark({
       </defs>
       <path fill={`url(#${id})`} fillRule="evenodd" d={COMET_PATH} />
     </svg>
-  );
-}
-
-/**
- * The signature at the foot of the sidebar and of the phone drawer.
- *
- * It is not a control. It has no link, no button, no hover fill and no focus
- * stop, so it reads as a signature and not as one more item in the nav. The
- * words are `text-muted-foreground` at `text-[11px]`, and the comet draws at
- * 80% opacity, so neither competes with the nav above it.
- *
- * Folded, the comet sits alone in the rail's icon column, centred the way the
- * rail's icons and the bar's fold control are. Its name is a native `title`,
- * as every other icon of the folded rail has (`NavLink`, "All apps").
- */
-export function MetoriteSignature({
-  collapsed = false,
-  className = "",
-}: {
-  /** The folded rail: the comet alone. */
-  collapsed?: boolean;
-  /** The padding, so the signature lines up with the rows of its surface. */
-  className?: string;
-}) {
-  if (collapsed) {
-    return (
-      <div data-metorite-signature="rail" title="Metorite" className={`flex justify-center ${className}`}>
-        <MetoriteMark size={16} label="Metorite" className="opacity-80" />
-      </div>
-    );
-  }
-  return (
-    <div
-      data-metorite-signature="full"
-      className={`flex select-none items-center gap-1.5 text-[11px] font-medium leading-none text-muted-foreground ${className}`}
-    >
-      <MetoriteMark size={14} className="opacity-80" />
-      <span>Metorite</span>
-    </div>
   );
 }

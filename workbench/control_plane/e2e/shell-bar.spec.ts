@@ -488,7 +488,7 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   // Measured 2026-10-09: at compact density the brand zone is 224px, and the
   // px-sized logo must give way inside it. Owner, 2026-10-11: the logo stands
   // alone, with no "powered by Metorite" beside it, and it has the room the
-  // caption kept. Our name is at the sidebar's foot (`sidebar-signature.spec.ts`).
+  // caption kept. Our comet signs the bar's right end (`shell-signature.spec.ts`).
   test("both flags: a customer's logo stands alone, and fits the brand zone at every density", async ({ page }) => {
     await shellOn(page);
     await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
