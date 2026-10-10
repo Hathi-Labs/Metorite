@@ -4,9 +4,12 @@
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
 > agent to build it. D95 is decided (§16).
+
 > **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-0, the
 > kill switch, default OFF (2026-10-11). CRM-Z1, the `crm_sources` seam and the
-> Zoho read adapter (2026-10-11). The other slices are not built yet.
+> Zoho read adapter (2026-10-11). CRM-Z0, the Zoho facts (§5.2, §7.2) and the
+> OAuth runbook `docs/ZOHO_OAUTH_SETUP.md` (2026-10-11). The other slices are
+> not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -369,27 +372,113 @@ credential comes from `integration_connections` only. The fence is
 
 ### 5.2 Zoho facts this design rests on
 
-Confirmed 2026-10-11 against Zoho's developer documentation:
+CRM-Z0 read each fact in Zoho's own documentation on 2026-10-11. A row that
+says **measured** comes from a live probe with `curl` on the same day, with no
+credential. A row that says **not confirmed** has no Zoho source yet, and it
+names the slice that measures it.
 
 - **One OAuth client serves every data centre** when it has multi-DC on. The
   consent request goes to `accounts.zoho.com`. The redirect returns `location`
   and `accounts-server`. The token request goes to that server, and the token
-  response returns `api_domain`. The data centres are US, EU, IN, AU, JP, CA
-  and CN.
-- **The API budget belongs to the customer.** Zoho counts credits in a 24-hour
-  window. The cap depends on the edition and the licence count. For example,
-  Professional gets 10,000 plus 500 per licence, up to 500,000. A normal call
-  costs 1 credit. Past the cap Zoho answers `TOO_MANY_REQUESTS`.
+  response returns `api_domain`. The data centres are US, EU, IN, AU, JP, CA,
+  SA and UK. ⚠️ **CN is not one of them.** The first draft named CN, and that
+  was wrong (row 9).
+- **The API budget belongs to the customer.** Zoho counts credits in a
+  rolling 24-hour window. The cap depends on the edition and the licence
+  count. For example, Professional gets 50,000 plus 500 for each licence, up
+  to 3,000,000. The first draft said 10,000 and 500,000, and that was wrong
+  (row 6). A normal call costs 1 credit. Past the cap Zoho answers HTTP 429.
 
-**To verify in CRM-Z0, before any build:**
+**The facts, CRM-Z0 (2026-10-11).**
 
-- the exact names of the read-only scopes
-- the limits of the Bulk Read API
-- the lifetime of a Notification API channel
-- the shape of a deep link to a record, for each data centre
-- whether the v2 record reads return `next_page_token` (CRM-Z1 sends it when
-  it comes, and pages by number when it does not)
-- that a stage name is unique across the pipelines of a module
+| # | Fact | Answer | Source (URL, read 2026-10-11) |
+|---|---|---|---|
+| 1 | The read-only scopes | The form is `ZohoCRM.<scope>.<operation>`, with a comma between scopes. **Records:** `ZohoCRM.modules.leads.READ`, `ZohoCRM.modules.contacts.READ`, `ZohoCRM.modules.accounts.READ`, `ZohoCRM.modules.deals.READ`, `ZohoCRM.modules.notes.READ`, `ZohoCRM.modules.calls.READ` and `ZohoCRM.modules.events.READ`. `ZohoCRM.modules.tasks.READ` only if the mirror reads Zoho Tasks. **The deleted list has no scope of its own.** The READ scope of the module covers it. **Metadata:** `ZohoCRM.settings.fields.READ`, `ZohoCRM.settings.layouts.READ`, `ZohoCRM.settings.pipeline.READ` and `ZohoCRM.settings.modules.READ`. **Users:** `ZohoCRM.users.READ`. **Org:** `ZohoCRM.org.READ`. **Bulk Read** adds `ZohoCRM.bulk.READ`. The docs write a module name in lower case, and Zoho's own MCP server writes it with a capital. **Not confirmed:** whether the case matters | [scopes](https://www.zoho.com/crm/developer/docs/api/v8/scopes.html) · [records](https://www.zoho.com/crm/developer/docs/api/v8/get-records.html) · [deleted](https://www.zoho.com/crm/developer/docs/api/v8/get-deleted-records.html) · [fields](https://www.zoho.com/crm/developer/docs/api/v8/field-meta.html) · [layouts](https://www.zoho.com/crm/developer/docs/api/v8/layouts-meta.html) · [pipelines](https://www.zoho.com/crm/developer/docs/api/v8/get-pipelines.html) · [modules](https://www.zoho.com/crm/developer/docs/api/v8/modules-api.html) · [users](https://www.zoho.com/crm/developer/docs/api/v8/get-users.html) · [org](https://www.zoho.com/crm/developer/docs/api/v8/get-org-data.html) · [bulk](https://www.zoho.com/crm/developer/docs/api/v8/bulk-read/create-job.html) |
+| 2 | Paging, and the 2000-row cap | **v2:** the docs show no `page_token`. `info` holds `per_page`, `count`, `page` and `more_records`, and no `next_page_token`. The v2 docs state no 2000-row cap. **v3 and later, v8 too:** `page` reaches the first 2000 rows only. Past them a call must send `page_token`, which comes from `info.next_page_token`. `info` also gives `page_token_expiry`. A third-party report names the error `DISCRETE_PAGINATION_LIMIT_EXCEEDED`, and no Zoho page does. **The keyset read of CRM-Z1 asks for page 1 of a new window each time.** So the cap reaches only the offset fallback and a tie of more than 2000 rows | [v2 records](https://www.zoho.com/crm/developer/docs/api/v2/get-records.html) · [v3 records](https://www.zoho.com/crm/developer/docs/api/v3/get-records.html) · [v8 records](https://www.zoho.com/crm/developer/docs/api/v8/get-records.html) |
+| 3 | `If-Modified-Since` and `sort_by` | The header returns "recently modified records", so it filters on the modified time. The docs show ISO 8601 with seconds and an offset, `2019-07-25T15:26:49+05:30`, on v2 and v8. So the step is one second. The adapter sends RFC 1123, and a live v2 call honoured it on 2026-08-06 with a 304 (`crm_app.md` §7.1). A 304 means "not modified since the time in the header". **`sort_by`:** v2 takes any field API name. v3 and v8 take only `id`, `Created_Time` and `Modified_Time`, and the default is `id`. **v3 and v8 make `fields` mandatory** for a list read, with 50 field API names at most | [v2 records](https://www.zoho.com/crm/developer/docs/api/v2/get-records.html) · [v8 records](https://www.zoho.com/crm/developer/docs/api/v8/get-records.html) · [status codes](https://www.zoho.com/crm/developer/docs/api/v8/status-codes.html) |
+| 4 | The deleted list | `GET /crm/{version}/{module}/deleted`, the same path on v2 and v8. `type` is `all` (default), `recycle` or `permanent`. It pages by `page` and `per_page` (200 at most). The docs name no `page_token` and no sort. **Not confirmed:** the order of the rows. A row holds `id`, `display_name`, `type`, `deleted_by`, `created_by` and `deleted_time`. **Zoho keeps a recycle-bin row for 60 days and a permanent delete for 120 days.** One call costs 2 credits | [v8 deleted](https://www.zoho.com/crm/developer/docs/api/v8/get-deleted-records.html) · [v2 deleted](https://www.zoho.com/crm/developer/docs/api/v2/get-deleted-records.html) · [limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) |
+| 5 | Bulk Read | `POST /crm/bulk/{version}/read`. Scopes `ZohoCRM.bulk.READ` and the READ scope of the module. One job exports 200,000 rows at most. The next batch comes through `page`, or `page_token` from `next_page_token`. A page token lives 24 hours at most. The file stays for one day. It reads every module except Notes, Attachments and Emails. A query takes 25 criteria at most. The answer is not immediate: a callback or a poll says when the file is ready. To start a job costs 50 credits. **Not confirmed:** a limit on jobs at one time, and the cost of the status and download calls | [bulk limits](https://www.zoho.com/crm/developer/docs/api/v8/bulk-read/limitations.html) · [create job](https://www.zoho.com/crm/developer/docs/api/v8/bulk-read/create-job.html) · [limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) |
+| 6 | Credits and concurrency | **Credits per edition, rolling 24 hours:** Free 5,000. Standard 50,000 + 250 per licence, up to 100,000. Professional 50,000 + 500 per licence, up to 3,000,000. Enterprise 50,000 + 1,000 per licence, up to 5,000,000. Ultimate 50,000 + 2,000 per licence, with no cap. **Cost:** a page of records 1, or 3 with `cvid`. The deleted list 2. Users, field and module metadata 1. A COQL query 1 to 3. A Bulk Read job 50. **Not confirmed:** whether a refused call (429) costs a credit. **Concurrency for one org and app:** Free 5, Standard 10, Professional 15, Enterprise 20, Ultimate 25. **A sub-limit of 10** covers a record read with `cvid` or `sort_by`, COQL and some writes. Past it Zoho answers `TOO_MANY_REQUESTS`. HTTP 429 means that the org spent its daily credits, or that a call passed the concurrency limit. **`X-API-CREDITS-REMAINING`** comes in the response only when half or more of the daily credits are spent | [v8 limits](https://www.zoho.com/crm/developer/docs/api/v8/api-limits.html) · [v2 limits](https://www.zoho.com/crm/developer/docs/api/v2/api-limits.html) · [status codes](https://www.zoho.com/crm/developer/docs/api/v8/status-codes.html) |
+| 7 | The token endpoint | `POST {accounts-server}/oauth/v2/token`. An error comes as `{"error":"<code>"}`. **Measured:** a client id that does not exist gets HTTP 200 with `{"error":"invalid_client"}`, for the code grant and for the refresh grant. The codes are `invalid_client` (also a wrong secret for that data centre), `invalid_client_secret`, `invalid_redirect_uri` and `invalid_code`. `invalid_code` covers a code that expired or was used, and a revoked refresh token. Zoho does not document `invalid_grant`. **The throttle:** `{"error_description":"You have made too many requests continuously. Please try again after some time.","error":"Access Denied"}`, and Kaizen #43 says the status stays 200. **Limits:** 10 token requests in 10 minutes. 10 live access tokens for each refresh token, and the 11th removes the oldest. 20 live refresh tokens for each user and client, and the 21st removes the oldest. An access token lives 3600 seconds. A refresh token lives until someone revokes it. A code lives 2 minutes and works once | [token](https://www.zoho.com/accounts/protocol/oauth/web-apps/access-token.html) · [CRM tokens](https://www.zoho.com/crm/developer/docs/api/v8/access-refresh.html) · [refresh](https://www.zoho.com/crm/developer/docs/api/v8/refresh.html) · [token limits](https://www.zoho.com/accounts/protocol/oauth/token-limits.html) · [Kaizen #43](https://help.zoho.com/portal/en/community/topic/kaizen-43-tokens-and-limitations) |
+| 8 | The deep link to a record | **Not confirmed by a Zoho page.** A community post gives `https://crm.zoho.<tld>/crm/<org>/tab/<Tab>/<record id>`, with `Potentials` as the tab of Deals. `<org>` is most likely `domain_name` from `GET /crm/{version}/org`, which looks like `org808232144` and needs `ZohoCRM.org.READ`. **Measured:** the web host answers at `crm.zoho.com`, `.eu`, `.in`, `.com.au`, `.jp`, `.sa`, `.uk` and at `crm.zohocloud.ca`. `crm.zoho.ca` does not resolve. So the web host is the accounts host with `accounts.` changed to `crm.`. CRM-Z6 measures the full link on Fracktal's tenant | [record link post](https://help.zoho.com/portal/en/community/topic/sending-a-link-to-a-record-in-an-email-template) · [org](https://www.zoho.com/crm/developer/docs/api/v8/get-org-data.html) |
+| 9 | The data centres | `location` → accounts server → API host: `us` `accounts.zoho.com` `www.zohoapis.com`. `eu` `accounts.zoho.eu` `www.zohoapis.eu`. `in` `accounts.zoho.in` `www.zohoapis.in`. `au` `accounts.zoho.com.au` `www.zohoapis.com.au`. `jp` `accounts.zoho.jp` `www.zohoapis.jp`. `ca` `accounts.zohocloud.ca` `www.zohoapis.ca`. `sa` `accounts.zoho.sa` `www.zohoapis.sa`. `uk` `accounts.zoho.uk` `www.zohoapis.uk`. The token response gives the API host. **Measured:** `www.zohoapis.ca`, `.sa` and `.uk` answer. **CN is not on the multi-DC list.** The CRM page says a CN consent starts at `accounts.zoho.com.cn`, so one client on `accounts.zoho.com` cannot reach it. **Measured:** the live `oauth/serverinfo` also names `ae`, `sg` and `inec`, which no doc names. **By default each data centre gets its own client secret.** An option in the console gives one secret to all | [multi-DC](https://www.zoho.com/accounts/protocol/oauth/multi-dc.html) · [multi-DC (developer)](https://www.zoho.com/developer/oauth/multi-dc-support.html) · [CRM multi-DC](https://www.zoho.com/crm/developer/docs/api/v8/multi-dc.html) · [serverinfo](https://accounts.zoho.com/oauth/serverinfo) |
+| 10 | Revoke for Disconnect | `POST {accounts-server}/oauth/v2/token/revoke?token=<refresh token>`. The revoke touches one org only. **Not confirmed:** the success body, and whether the access tokens of that refresh token die with it. **Measured:** a fake token gives HTTP 400 with an HTML page, not JSON | [CRM revoke](https://www.zoho.com/crm/developer/docs/api/v8/revoke-tokens.html) · [Analytics revoke](https://www.zoho.com/analytics/api/v2/authentication/revoke-token.html) |
+| 11 | Stages and pipelines | **A stage is a value of the one Deals Stage picklist.** The standard pipeline holds every value of that picklist. Pipelines belong to a layout, and one layout can hold many pipelines. One stage can sit in many pipelines, and it keeps one probability in all of them. The v8 sample shows one stage `id` in two pipelines. So one stage name is one stage across the pipelines. **Not confirmed:** that Zoho refuses two picklist values with one name. The API is `GET settings/pipeline?layout_id=`, and `layout_id` is mandatory. The key is `pipeline`, and each stage in `maps` has `display_value`, `actual_value`, `id`, `sequence_number` and `forecast_category` | [pipelines API](https://www.zoho.com/crm/developer/docs/api/v8/get-pipelines.html) · [multiple pipelines](https://help.zoho.com/portal/en/kb/crm/customize-crm-account/pipelines/articles/multiple-sales-pipeline) · [overview](https://www.zoho.com/crm/tutorials/multiple-sales-pipeline/overview.html) |
+| 12 | Zoho's CRM MCP servers | §7.2 holds the answer. In short: one click works, with no step in the customer's Zoho console | §7.2 |
+| 13 | Register the client | `api-console.zoho.com` → **Server-based Applications** → Client Name, Homepage URL and Authorized Redirect URIs → Client ID and Client Secret. The redirect URI must match the one in the console. Multi-DC is a set of switches on the Settings tab. **The console sets no scopes.** The consent request asks for them. **Not confirmed:** any Zoho review before users of other organizations can consent. No Zoho page names one | [register](https://www.zoho.com/crm/developer/docs/api/v8/register-client.html) · [authorization](https://www.zoho.com/accounts/protocol/oauth/web-apps/authorization.html) · [multi-DC](https://www.zoho.com/accounts/protocol/oauth/multi-dc.html) |
+| 14 | A Notification API channel | `channel_expiry` is one week at most. With no value, or with more than a week, Zoho closes the channel after one hour. So CRM-Z8 must renew each channel within a week | [notifications](https://www.zoho.com/crm/developer/docs/api/v8/notifications/enable.html) |
+
+**What changes in the adapter.** These are the places where a fact above does
+not match the merged CRM-Z1 code. Each item names the slice that owns it.
+
+1. **Remove `cn` from `ZOHO_DATA_CENTRES`** in `crm_sources/zoho/auth.py`, and
+   change its comment from nine centres to eight. A CN org cannot consent
+   through `accounts.zoho.com`. Do not add `ae`, `sg` or `inec` until a Zoho
+   page names them. Until then a consent from them fails closed with
+   `UntrustedHost`. Slice: CRM-Z2.
+2. **Ask for one client secret for all data centres.** `OAuthClientConfig`
+   holds one secret. The owner sets "Use the same OAuth credentials for all
+   data centers" (`docs/ZOHO_OAUTH_SETUP.md`). With a secret for each centre,
+   every centre but one answers `invalid_client`. No code changes.
+3. **Correct a comment in `auth.py`.** `_is_token_throttle` says the throttle
+   comes "often with HTTP 400". Kaizen #43 says 200. The code reads the body
+   and not the status, so it is correct.
+4. **Add `revoke` to `auth.py`** (CRM-Z2 already plans it). It posts to
+   `{accounts_server}/oauth/v2/token/revoke`. Zoho documents the token in the
+   query string, and httpx logs the URL. So try the form body first, and
+   measure it. If Zoho needs the query, keep the URL out of every log line.
+5. **Count 2 credits for `list_deleted`** in `crm_sources/zoho/client.py`.
+   `_spend_credit` counts 1 for every call. Keep 1 credit for a refused call,
+   because Zoho does not say, and the high count is the safe one. Slice: CRM-Z5.
+6. **Build `credits_remaining`** in `client.py` from the
+   `X-API-CREDITS-REMAINING` header of the last response. Zoho sends it only
+   after half of the daily credits are spent. So the protocol in
+   `crm_sources/base.py` changes to `int | None`. `None` means "Zoho has not
+   reported it, so more than half is left". Slice: CRM-Z5.
+7. **Build `deep_link`** in `client.py` as
+   `https://crm.<accounts host without "accounts.">/crm/<domain_name>/tab/<tab>/<id>`.
+   It needs an `org()` read of `GET /crm/{version}/org` (scope
+   `ZohoCRM.org.READ`) at connect time, and `domain_name` in `provider_meta`.
+   The tab of each module comes from `GET settings/modules` (scope
+   `ZohoCRM.settings.modules.READ`). CRM-Z6 measures the full link on Fracktal
+   before it ships.
+8. **Delete "CRM-Z0 confirms the exact name"** from the `FIELDS_SCOPE` comment.
+   The three settings scopes in `client.py` are correct as written.
+9. **Keep `RECORDS_API_VERSION = "v2"` until CRM-Z3.** Then move the record
+   reads to v8. Version 2 still serves. No Zoho CRM page that CRM-Z0 found
+   gives it an end date. Five things change with v8:
+   - `fields` becomes mandatory, with 50 API names at most. CRM-Z3 builds the
+     list from `list_field_defs`. A module with more than 50 fields needs a
+     second read for each page, or a smaller set of custom fields.
+   - `sort_by` takes `Modified_Time`, so the keyset read stays as it is.
+   - The offset fallback must send `page_token` after page 10. A stored
+     cursor with a token past `page_token_expiry` starts its window again.
+   - `_with_modified_since` sends RFC 1123. The docs show ISO 8601. Measure the
+     RFC 1123 form on v8 with the `crm_app.md` §7.1 `curl` before the move. If
+     v8 ignores it, change to ISO 8601 in that one helper.
+   - `list_users` and `list_deleted` keep their shape on v8.
+10. **Keep a reconcile for deletes in CRM-Z5.** Zoho keeps a recycle-bin row
+    for 60 days. A connection that stops for longer loses deletes, and only a
+    full id compare finds them.
+11. **Share one access token across workers in CRM-Z2.** Zoho allows 10 token
+    requests in 10 minutes. The single-flight lock of `ZohoSource` covers one
+    instance only. So CRM-Z2 stores each refreshed token in
+    `integration_connections`, and every worker reads it from there.
+12. **Revoke the old refresh token on a reconnect in CRM-Z2.** Each consent
+    makes a new one, and Zoho keeps 20 for each user and client. The 21st
+    removes the oldest. That can kill a live connection of the same Zoho user
+    in another Metorite org.
+13. **Hold the concurrency low in CRM-Z5.** A record read with `sort_by` falls
+    under the sub-limit of 10 for the org, and other apps of the customer use
+    it too. One read at a time for each org is the safe default. The backoff
+    of CRM-Z1 already handles `TOO_MANY_REQUESTS`.
+14. **Add `"task": "Tasks"` to `ZOHO_MODULES`** only if a slice decides to mirror
+    Zoho Tasks. CRM-S1 keeps follow-ups in `pm_tasks`, so the minimal scope
+    set leaves Tasks out.
+15. **Use Bulk Read for a first import of a large module in CRM-Z4.** One job
+    costs 50 credits, and 50 record pages read 10,000 rows. So a module with
+    more than 10,000 rows is cheaper in Bulk Read. Notes are not in Bulk Read
+    and stay on the record read.
 
 **What follows from the budget.** The mirror spends the customer's own credits,
 so it must be a polite guest. The default sync budget is **10 % of the daily
@@ -518,7 +607,65 @@ its records. Every other concern belongs to the app that owns it.
 - **Two checks come before CRM-Z9.** First, MCP injection reaches only the
   Copilot-SDK agents today, and D92 moves every agent to MAF (WS-8c). WS-54
   owns that fix. Second, Zoho's MCP must connect with one click, with no step
-  in the customer's Zoho console. CRM-Z0 checks it.
+  in the customer's Zoho console. CRM-Z0 checks it, and the answer follows.
+
+**What CRM-Z0 found (2026-10-11).**
+
+- **What they are.** Zoho hosts four ready-made MCP servers for Zoho CRM. Data
+  Insights reads and is read-only. Data Operations creates, reads, updates and
+  deletes records, in bulk too, and converts leads. Module Customization
+  changes modules, fields and layouts. Workflow and Process Automation changes
+  workflow rules. Sources:
+  [overview](https://www.zoho.com/crm/developer/docs/mcp/overview.html),
+  [product page](https://www.zoho.com/crm/developer/mcp.html),
+  [announcement](https://help.zoho.com/portal/en/community/topic/zoho-crm-with-built-in-mcp-support).
+- **How a client connects.** Each server has one fixed remote URL that is the
+  same for every customer, for example
+  `https://zoho-crm-data-operations-60065097786.zohomcp.in/mcp/<key>/message`.
+  Zoho's Claude Desktop guide adds that URL as a custom connector and then
+  clicks Connect. It names no step in a Zoho console
+  ([Claude setup](https://www.zoho.com/crm/developer/docs/mcp/setup/claude.html)).
+- **Measured: the servers follow the MCP authorization spec.** A call with no
+  token gets HTTP 401 and a `WWW-Authenticate` header that names the resource
+  metadata. The metadata names an authorization server with a
+  `registration_endpoint` (dynamic client registration), PKCE `S256`, the
+  grants `authorization_code` and `refresh_token`, and a `revocation_endpoint`.
+  So an MCP client registers itself. **The customer creates nothing in Zoho,
+  and Metorite registers nothing by hand.** The one-click check passes.
+- **The OAuth is per member.** The first tool call opens a Zoho sign-in.
+  Zoho's overview says that each action stays inside the permissions of the
+  user, and that a user can do only what the CRM role allows. So Zoho applies
+  the member's own role.
+- **The scopes are wide.** The metadata of Data Operations lists READ,
+  CREATE, UPDATE and DELETE on every module, plus `ZohoMCP.tool.execute`.
+  Metorite must keep its own list of the tools an agent may call, and leave
+  every delete tool out of v1.
+- **The cost.** "API calls executed through MCP consume API credits in the
+  same way as standard API calls." So an agent action spends the same budget
+  as the mirror. Zoho states no other price.
+- **Not confirmed.** (a) The tool names. The server lists them only after
+  sign-in. (b) The reach outside India. The URLs and the authorization server
+  are on `zohomcp.in` and `mcp.zoho.in`, and Zoho says it rolls the feature
+  out "in phases" to every data centre. Fracktal is on the IN data centre. (c)
+  Whether a server-side client may hold the refresh token for a member. The
+  metadata allows it, and no Zoho page says so.
+- **There is a second product, and CRM-Z9 must not use it.** "Zoho MCP" at
+  `mcp.zoho.com` makes a custom server in a console, and a Super Admin
+  creates it. That is a step in the customer's console, and it breaks one
+  click ([Zoho MCP setup](https://www.zoho.com/mail/help/mcp/mcp-server-configuration.html)).
+
+**The decision for CRM-Z9: use Zoho's ready-made Data Operations server.** It
+passes the one-click check, and Zoho applies the member's role. Each member
+connects it once, as a `member` row in `integration_connections` (D95.4).
+Metorite's confirmation step wraps each call. Metorite's list of allowed tools
+refuses every delete.
+
+**Fall back to our `writer.py`** only if the dispatch check of CRM-Z9 fails.
+Three failures count:
+
+1. An org outside the IN data centre cannot sign in.
+2. The tool list has no write that v1 needs.
+3. The agent runtime of WS-54 cannot do the MCP authorization flow.
 
 ---
 
@@ -650,7 +797,7 @@ These acts are the owner's. An agent writes the runbook and stops.
 | Act | Why it is the owner's | Slice |
 |---|---|---|
 | ✅ Confirm D95 and answer Q1 to Q7 | Product shape. **Done 2026-10-11** | Before CRM-T1 |
-| Register Metorite's Zoho OAuth client, with multi-DC on and the redirect URL | A third-party account | CRM-Z0 runbook, then the owner |
+| Register Metorite's Zoho OAuth client, with multi-DC on and the redirect URL | A third-party account | CRM-Z0 runbook `docs/ZOHO_OAUTH_SETUP.md`, then the owner (H-297) |
 | Drop the client id and secret into `~/.metorite/secrets` | Credentials. An agent pushes them with `scripts/secrets.sh` | CRM-Z2 |
 | Connect a real customer's Zoho for the first time | A third party's data (§3a rule 3) | CRM-Z5 |
 | Pick Fracktal's mode | Fracktal is customer zero (D36) | Q4 |
@@ -711,7 +858,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **CRM-Z0** | Verify the four open Zoho facts (§5.2). Write the runbook to register the client | 🟢 AGENT-SAFE (docs). 🔴 registration is the owner's | §5.2 lists each fact with its source. The runbook is in `docs/` |
+| **CRM-Z0** ✅ docs built 2026-10-11 (the owner's registration is still open, H-297) | Verify the four open Zoho facts (§5.2). Write the runbook to register the client | 🟢 AGENT-SAFE (docs). 🔴 registration is the owner's | §5.2 lists each fact with its source. The runbook is in `docs/` |
 | **CRM-Z1** ✅ built 2026-10-11 | `crm_sources/` with the protocol and the Zoho adapter: data centre, paging, rate limits, credits. No global credential | 🟢 AGENT-SAFE | `test_crm_sources_no_global_creds.py` passes. A 429 and a `TOO_MANY_REQUESTS` back off, measured with a fake server |
 | **CRM-Z2** | `integration_connections` and `crm_settings.connection_id`. The `purpose` argument on the signing seam. Revoke in the protocol. Connect, callback, refresh, disconnect, reconnect. Behind `CRM_MIRROR` (OFF) | 🟢 AGENT-SAFE to build. 🔴 needs the owner's client | A tampered state is refused. A refresh failure sets `needs_reconnect`. The blob never appears in a log or response (fence) |
 | **CRM-Z3** | The mirror columns, `crm_field_defs`, and pipelines if Zoho needs them | 🟢 AGENT-SAFE | R8: an upsert on `(organization_id, ext_source, ext_id)` is idempotent. Two orgs import one Zoho id with no collision |
