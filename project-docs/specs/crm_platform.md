@@ -1,8 +1,9 @@
 # CRM — the Metorite port, two modes, and the Zoho mirror
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
-> **Status:** 📝 **PLAN — verified against code and production on 2026-10-11** at
-> `origin/main` `7176fdf56` (#837). Nothing in this file is built yet.
+> **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
+> `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
+> agent to build it. D95 is decided (§16). Nothing is built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -173,6 +174,61 @@ boundary, and the UI is a courtesy.
 | no mode | Native or Mirror | Yes | The setup choice |
 | Mirror | Native | Yes | "Make Metorite your CRM": a final sync, then the mode flips and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10) |
 | Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
+
+### 3.5 The architecture: one store, two writers
+
+**Both modes use one store.** The `crm_*` tables hold the records in Native
+mode and in Mirror mode. There is no second schema for mirrored data, and no
+cache beside the tables. The mode decides only **who may write a record
+field**.
+
+```
+            Native mode                          Mirror mode
+            ───────────                          ───────────
+  member ─► /crm routes ─┐            Zoho ─► adapter ─► sync engine ─┐
+  agent  ─► /crm routes ─┤                                            │
+                         ▼                                            ▼
+                 core.insert_row / core.update_row          core.upsert_from_source
+                   (the write guard runs here)              (the only bypass of the guard)
+                         │                                            │
+                         └──────────────► crm_* tables ◄──────────────┘
+                                   (organization_id + FORCE RLS)
+                                               │
+          ┌──────────────┬──────────────┬──────┴───────┬──────────────┬──────────────┐
+          ▼              ▼              ▼              ▼              ▼              ▼
+       /crm UI      crm-assistant    reports       insights       shell search    exports
+```
+
+Four rules make this hold:
+
+1. **Every reader is blind to the mode.** The UI, the agent, the reports, the
+   insights, the search provider and the export read the same tables through
+   the same routes. So an AI agent reasons over Zoho data exactly as it
+   reasons over native data. No reader has a Zoho branch.
+2. **One write guard.** `core.insert_row` and `core.update_row` call
+   `assert_writable(org, entity, fields)`. In Mirror mode it refuses a write
+   to a field that came from the source, with a 409 that names the source.
+   A Metorite-only item (§3.3) passes. The fence is
+   `test_crm_mirror_readonly.py`.
+3. **One bypass.** The sync engine writes through
+   `core.upsert_from_source` only. No route, agent tool or skill imports it.
+   An AST fence holds that, in the shape of the WS-26h reachability fences.
+4. **The provider stays behind the adapter.** The sync engine calls the
+   `CrmSource` protocol (§5.1) and never a provider client. A second provider
+   adds one adapter, and the engine, the guard and every reader stay as they
+   are.
+
+**The sync engine is generic.** `sync_zoho.py` becomes `crm_sync/engine.py`.
+It loops over the orgs with an active connection, binds each tenant, takes an
+advisory lock for that connection, and calls the adapter. The push half that
+WS-26b built stays in the engine. It runs only for a connection with
+`write_back = true`, and every connection starts with `false` (D95.3).
+
+**What the AI agents read.** `crm-assistant` reads `/crm` routes as the
+member, so it sees the member's tenant and nothing else. Its read tools work
+in both modes. In Mirror mode it offers no write tool for a mirrored field.
+The insights of §9 run on the same rows. So a question such as "which Zoho
+deals went quiet this month" needs no Zoho call. It reads the mirror.
 
 ---
 
@@ -570,7 +626,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-T2** | Every request path through `_tenant_session()`. `_get_db` leaves `core.py` | 🟢 AGENT-SAFE | `test_db_engine_seam.py` lists no CRM file as exempt |
 | **CRM-T3** | The three background paths bind their tenant (§4.3). The advisory lock replaces `_cycle_lock` | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: two orgs, two cycles, each sees only its own rows. H-201's CRM half is deleted |
 | **CRM-T4** | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
-| **CRM-T5** | Per-org seeds of stages and lost reasons on first open. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` | 🟢 AGENT-SAFE | A new org opens `/crm` and gets its own 6 stages. A member who is not an admin gets 403 on `POST /crm/statuses/deal` |
+| **CRM-T5** | Per-org seeds of stages and lost reasons on first open. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` and `access` (Q3) | 🟢 AGENT-SAFE | A new org opens `/crm` and gets its own 6 stages. A member who is not an admin gets 403 on `POST /crm/statuses/deal`. With `access = admins`, a member gets 403 on every `/crm` route |
 
 ### 13.4 Phase 2 — the one look (§8)
 
@@ -669,10 +725,14 @@ Then run the `visual-review` skill on `/crm` (§8.4).
 
 ## 16. Proposed decisions and owner questions
 
-### D95 — The CRM has two modes, and a mirror is a product (proposed 2026-10-11)
+### D95 — The CRM has two modes, and a mirror is a product (2026-10-11)
 
-*Owner directive 2026-10-11, with the details proposed by the agent. The owner
-confirms or overrules each part.*
+*Owner directive 2026-10-11. The agent proposed the details. The owner read the
+plan and wrote: "if you are clear about the CRM implementation, then you can go
+ahead and start implementing it". The owner added two requirements. AI agents
+must run their inference over the Zoho data, and that data must sync into the
+Metorite CRM. §3.5 meets both. So the owner took the recommendations below,
+and D95 is in `work_plan.md` §3.*
 
 - **D95.1 Two modes per org.** Native or Mirror (§3). This replaces
   `crm_app.md` §1's end state, "Zoho is retired", as the product's end state.
@@ -695,15 +755,15 @@ Zoho and Gmail. D95.3 stays inside that.
 
 ### Owner questions
 
-| Id | Question | Recommendation |
+| Id | Question | Answer (2026-10-11) |
 |---|---|---|
-| **Q1** | Mirror v1: read only, or two-way from the start? | Read only (D95.3) |
-| **Q2** | Accept the in-migration rename (§4.1) under R6, because the tables are empty and the app is `preview`? | Yes. The fallback costs three releases |
-| **Q3** | Who sees the CRM in an org: every member, or the members an admin picks? | The admin picks. The default is admins only. Today `feature:*` gives it to every member, and H-141 says an admin cannot hide an app from a role yet |
-| **Q4** | Fracktal: Native, or Mirror of its Zoho? | Mirror first, then decide on CRM-Z10 with real use |
-| **Q5** | Which CRM comes after Zoho? | Pick from the market. Candidates: HubSpot, Salesforce, Freshsales, Pipedrive, LeadSquared |
-| **Q6** | The default sync budget: 10 % of the customer's daily Zoho credits? | Yes, and an admin can change it |
-| **Q7** | Is the mirror inside the ₹500 seat, with AI insights on credits? | Yes. No new SKU (`launch_surface.md` §4) |
+| **Q1** | Mirror v1: read only, or two-way from the start? | **Read only** (D95.3). Write-back is CRM-Z9 |
+| **Q2** | Accept the in-migration rename (§4.1) under R6, because the tables are empty and the app is `preview`? | **Yes** |
+| **Q3** | Who sees the CRM in an org: every member, or the members an admin picks? | **The admin picks, and the default is admins only.** `crm_settings.access` holds `admins`, `everyone` or a list of group slugs. One router dependency beside `feature:crm` reads it (CRM-T5) |
+| **Q4** | Fracktal: Native, or Mirror of its Zoho? | **Open.** Fracktal picks on its first open. The recommendation is Mirror first |
+| **Q5** | Which CRM comes after Zoho? | **Open.** Not needed until the Zoho mirror is live |
+| **Q6** | The default sync budget: 10 % of the customer's daily Zoho credits? | **Yes**, and an admin can change it |
+| **Q7** | Is the mirror inside the ₹500 seat, with AI insights on credits? | **Yes**. No new SKU |
 
 ---
 
