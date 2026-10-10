@@ -103,7 +103,7 @@ def run_cap_limit() -> int:
     A settings failure reads the default, 5. A negative value reads 0.
     """
     try:
-        from acb_common.settings import get_settings  # noqa: PLC0415
+        from acb_common.settings import get_settings
 
         return max(0, int(getattr(get_settings(), "chat_max_runs_per_member", 5)))
     except Exception:
@@ -148,9 +148,9 @@ async def member_runs(
     Call inside ``organization_scope(organization_id)``. *exclude* is the
     thread about to start.
     """
-    from acb_common.tenant_redis import TenantKey  # noqa: PLC0415
+    from acb_common.tenant_redis import TenantKey
 
-    from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+    from orchestrator.run_liveness import run_liveness
 
     held: list[str] = []
     live = await r.hgetall(TenantKey(organization_id, stream_relay.LIVE_RUNS_NAMESPACE)) or {}
@@ -203,7 +203,7 @@ async def admit_member_run(
     if limit <= 0 or not organization_id or "@" not in who or not thread_id:
         return Admission(True, limit)
     try:
-        from acb_common.tenant_redis import TenantKey, organization_scope  # noqa: PLC0415
+        from acb_common.tenant_redis import TenantKey, organization_scope
 
         with organization_scope(organization_id):
             r = await stream_relay._tenant_client()
@@ -229,7 +229,7 @@ async def admit_member_run(
             finally:
                 if locked:
                     await _drop_lock(r, lock, token)
-    except Exception:  # noqa: BLE001 — the cap is advisory, never a blocker
+    except Exception:
         _log.warning("run_cap.check_failed", thread_id=thread_id[:12])
         return Admission(True, limit)
 
