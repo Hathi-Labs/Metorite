@@ -214,8 +214,13 @@ describe("the key hint is said only where the keys work", () => {
       fileURLToPath(new URL("../components/UndoToast.tsx", import.meta.url)),
       "utf8",
     );
-    expect(src).toMatch(/\{ keys: !isMobile \}/);
-    const cleanup = src.slice(src.indexOf("return () => {"));
+    // NS-6 moved the sync into `useUndoToastSync`, so the shell bell's
+    // fallback can say the same toast with no keys. The page still passes
+    // `!isMobile`, and the hook still drops the hint on unmount.
+    expect(src).toMatch(/useUndoToastSync\(!isMobile\)/);
+    const hook = src.slice(src.indexOf("function useUndoToastSync("));
+    expect(hook).toMatch(/syncUndoToast\(undoSnapshot, toast, store, \{ keys \}\);/);
+    const cleanup = hook.slice(hook.indexOf("return () => {"));
     expect(cleanup).toMatch(/^return \(\) => \{\s*syncUndoToast\([\s\S]*?\{ keys: false \}\);/);
   });
 });
