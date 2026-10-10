@@ -413,6 +413,9 @@ export function CalendarView() {
 
   // The day's tools: due soon, the rituals, the planner, the settings and
   // the mode switch. The settings popover anchors to the box that holds them.
+  // Review and "Fit what's left" show their words from 2xl only: with every
+  // tool up, the bar must still fit one row beside an open sidebar at 1280.
+  // Each keeps its icon and its title.
   const dayTools = (
     <>
       {dueSoon.length > 0 && (
@@ -445,7 +448,7 @@ export function CalendarView() {
           className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
         >
           <Icon name="ClipboardCheck" className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Review</span>
+          <span className="hidden 2xl:inline">Review</span>
         </button>
       )}
       {canReplan && (
@@ -456,7 +459,7 @@ export function CalendarView() {
           className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
         >
           <Icon name="CalendarClock" className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Fit what&apos;s left</span>
+          <span className="hidden 2xl:inline">Fit what&apos;s left</span>
         </button>
       )}
       <button

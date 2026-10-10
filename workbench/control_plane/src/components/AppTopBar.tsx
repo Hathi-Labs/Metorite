@@ -29,6 +29,8 @@
  *
  * `compact` is the phone bar. It has no rail and no divider, and the title is
  * what you are looking at, so it reads at body size and takes the free width.
+ * On a phone the bar is ALWAYS the compact one, so an app that passes no
+ * `compact` still gets the phone's shape there, not the desktop row.
  *
  * History. Until 2026-09-24 the bar had no component, and Projects and My
  * Tasks each drew their own. From 2026-10-08 (NS-1) the desktop bar portalled
@@ -47,6 +49,7 @@ import { usePathname } from "next/navigation";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { PANES, type NavPane } from "@/lib/nav";
 import { contextPane, shellBarOn } from "@/lib/shell/registry";
 
@@ -103,9 +106,10 @@ export function AppTopBar({
   compact = false,
 }: AppTopBarProps) {
   const pathname = usePathname();
+  const { isMobile } = useViewMode();
   const glyph = icon === undefined ? appBarIcon(pathname) : icon;
 
-  if (compact) {
+  if (compact || isMobile) {
     return (
       <div data-app-bar="compact" className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
