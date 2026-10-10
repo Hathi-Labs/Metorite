@@ -10,8 +10,11 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *
  * Each test is written so the obvious wrong build fails it:
  *   1. Flag off: no shell bar, and My Tasks draws its own top row.
- *   2. Flag on: one bar on every page, and the app's name sits in it.
- *   3. My Tasks' title and tools move INTO the bar. No second row.
+ *   2. Flag on: one constant bar on every page. The app's name is in the
+ *      app's own title bar under it, never in the shell bar (owner,
+ *      2026-10-10, which reversed NS-1's merged row).
+ *   3. My Tasks' title and tools sit in its own title bar, under the shell
+ *      bar. The shell bar holds none of them.
  *   4. ⌘K opens ONE command bar, never the app's old palette, and closes it.
  *   5. "new task" finds the job, and Enter opens Capture in My Tasks.
  *   6. In Email, `/` focuses the page's filter, which says "Filter".
@@ -65,6 +68,8 @@ async function shellOn(page: Page) {
 }
 
 const bar = (page: Page) => page.locator("[data-shell-bar]");
+/** The app's own title bar (`AppTopBar`), on desktop. */
+const appBar = (page: Page) => page.locator('[data-app-bar="desktop"]');
 const commandBar = (page: Page) => page.getByRole("dialog", { name: "Search or ask" });
 const field = (page: Page) => commandBar(page).getByRole("combobox", { name: "Search or ask anything" });
 const mod = process.platform === "darwin" ? "Meta" : "Control";
@@ -75,28 +80,67 @@ test.describe("desktop", () => {
   test("flag off: no shell bar, and My Tasks draws its own row", async ({ page }) => {
     await stub(page);
     await page.goto("/tasks");
-    await expect(page.getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
+    await expect(appBar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
     await expect(bar(page)).toHaveCount(0);
   });
 
-  test("flag on: one bar on every page, naming the app", async ({ page }) => {
+  test("flag on: one constant bar, and the app's name is in the app's own title bar", async ({ page }) => {
     await shellOn(page);
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(bar(page)).toHaveCount(1);
-    await expect(bar(page)).toContainText("Appearance");
     await expect(bar(page).getByRole("button", { name: /Search or ask anything/ })).toBeVisible();
+    // The name is the app bar's h1, and the shell bar carries no heading.
+    await expect(appBar(page).getByRole("heading", { level: 1, name: "Appearance" })).toBeVisible();
+    await expect(bar(page).getByRole("heading")).toHaveCount(0);
+    // The only "Appearance" in the shell bar is the command bar's own chip.
+    await expect(bar(page).getByText("Appearance", { exact: true })).toHaveCount(0);
+    await expect(bar(page).getByRole("button", { name: /Search or ask anything/ })).toContainText("in Appearance");
+    // The title bar sits UNDER the shell bar, never inside it.
+    const shell = (await bar(page).boundingBox())!;
+    const app = (await appBar(page).boundingBox())!;
+    expect(app.y).toBeGreaterThanOrEqual(shell.y + shell.height - 1);
   });
 
-  test("My Tasks' title and tools move into the bar, with no second row", async ({ page }) => {
+  test("My Tasks' title and tools sit in its own title bar, and the shell bar holds none of them", async ({ page }) => {
     await shellOn(page);
     await stub(page);
     await page.goto("/tasks");
-    const h1 = page.getByRole("heading", { level: 1, name: "My Tasks" });
-    await expect(h1).toBeVisible();
-    await expect(bar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
+    const row = appBar(page);
+    await expect(row.getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
+    // The rail toggle at the left end, Capture next to the name.
+    await expect(row.getByRole("button", { name: "Hide your lists" })).toBeVisible();
+    await expect(row.getByRole("button", { name: /Capture/ })).toBeVisible();
+    // None of it is in the shell bar.
+    await expect(bar(page).getByRole("heading")).toHaveCount(0);
+    await expect(bar(page).getByRole("button", { name: /Capture|your lists/ })).toHaveCount(0);
     // The old "Search" button is gone: the command bar is the one search.
     await expect(page.getByRole("button", { name: "Search", exact: true })).toHaveCount(0);
+  });
+
+  test("the shell bar is the same on every app, but for the command bar's chip", async ({ page }) => {
+    await shellOn(page);
+    await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
+    await stub(page);
+    const shapes: string[] = [];
+    for (const path of ["/tasks", "/email", "/people", "/settings/appearance"]) {
+      await page.goto(path);
+      await expect(appBar(page)).toBeVisible();
+      shapes.push(
+        await bar(page).evaluate((el) => {
+          const copy = el.cloneNode(true) as HTMLElement;
+          // The chip is the command bar's own scope ("in My Tasks"), §6.4.
+          for (const chip of Array.from(copy.querySelectorAll("button span"))) {
+            if (/^in /.test(chip.textContent ?? "")) chip.textContent = "in ·";
+          }
+          return copy.innerHTML;
+        }),
+      );
+      // Each app's name is its own title bar's h1.
+      await expect(appBar(page).getByRole("heading", { level: 1 })).toHaveCount(1);
+    }
+    expect(new Set(shapes).size).toBe(1);
   });
 
   test("⌘K opens one command bar, never the app's own palette, and closes it", async ({ page }) => {
@@ -440,9 +484,11 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   });
 
   // Measured 2026-10-09: at 1280px My Tasks' title, Capture and My day ran
-  // under the command bar, because the brand zone keeps its width when the
-  // sidebar folds. The command bar must give way, never sit on top.
-  test("both flags at 1280: the app's buttons never run under the command bar", async ({ page }) => {
+  // under the command bar, because they shared its row. Since 2026-10-10 the
+  // app draws its own row under the shell bar (owner), so the rule is now:
+  // the shell bar's side zones hold nothing an app put there, and the app's
+  // title bar fits its own row, the name and the last tool both in view.
+  test("both flags at 1280: the app's title bar fits its own row, under the command bar", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await shellOn(page);
     await page.addInitScript(() => {
@@ -450,35 +496,36 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       localStorage.setItem("cc-sidebar-collapsed", "1");
     });
     await stub(page);
-    await page.goto("/tasks");
-    await expect(bar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
-    const search = await box(bar(page).getByRole("button", { name: /Search or ask anything/ }));
-    // ⚠️ Measure the CONTENT, not the slot's box. The defect is content that
-    // overflows a narrow slot, and the slot's own box stays left of the
-    // command bar while it does (verifier, 2026-10-09: the box check stayed
-    // green with the overlap put back).
-    const contentEdges = (slot: number) =>
-      bar(page)
-        .locator(":scope > div")
-        .nth(slot)
-        .evaluate((el) => {
-          let lo = Infinity;
-          let hi = -Infinity;
-          for (const d of Array.from(el.querySelectorAll("*"))) {
-            const r = d.getBoundingClientRect();
-            if (r.width === 0 || r.height === 0) continue;
-            lo = Math.min(lo, r.left);
-            hi = Math.max(hi, r.right);
-          }
-          return { lo, hi };
-        });
-    const left = await contentEdges(1);
-    const right = await contentEdges(2);
-    expect(left.hi, "the left slot's content ends before the command bar").toBeLessThanOrEqual(search.x);
-    if (Number.isFinite(right.lo)) {
-      expect(right.lo, "the right slot's content starts after the command bar").toBeGreaterThanOrEqual(search.x + search.width);
-      expect(right.hi).toBeLessThanOrEqual(1280);
+    // Calendar carries the most tools of any bar, so it is the hardest fit.
+    for (const path of ["/tasks", "/email", "/calendar"]) {
+      await page.goto(path);
+      const row = appBar(page);
+      await expect(row.getByRole("heading", { level: 1 })).toBeVisible();
+      const shell = await box(bar(page));
+      const app = await box(row);
+      // Under the shell bar, not beside the command bar.
+      expect(app.y, path).toBeGreaterThanOrEqual(shell.y + shell.height - 1);
+      // Nothing in the row runs past its right edge or out of the window.
+      const fit = await row.evaluate((el) => {
+        let hi = -Infinity;
+        for (const d of Array.from(el.querySelectorAll("*"))) {
+          const r = d.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          hi = Math.max(hi, r.right);
+        }
+        const own = el.getBoundingClientRect();
+        return { hi, right: own.right, overflow: el.scrollWidth > el.clientWidth + 1 };
+      });
+      expect(fit.overflow, `${path}: the title bar overflows`).toBe(false);
+      expect(fit.hi, `${path}: content past the bar's edge`).toBeLessThanOrEqual(fit.right + 1);
+      expect(fit.right).toBeLessThanOrEqual(1280);
     }
+    // The shell bar's left zone is empty: no app put anything in it.
+    const left = await bar(page)
+      .locator(":scope > div")
+      .nth(1)
+      .evaluate((el) => el.childElementCount);
+    expect(left).toBe(0);
   });
 });
 

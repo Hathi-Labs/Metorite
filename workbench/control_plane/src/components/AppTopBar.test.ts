@@ -1,10 +1,14 @@
 /**
- * The app bar: ONE component, rendered by Projects and by My Tasks.
+ * The app bar: ONE component, the title bar every app opens with.
  *
  * Until 2026-09-24 each app drew its own `h-10` bar, and the two drifted: My
  * Tasks had a hand-rolled rail toggle, no divider, its name in a `<span>`, and
- * no search and no bell. This file holds the bar to one shape, and holds both
- * apps to rendering it.
+ * no search and no bell. This file holds the bar to one shape, and holds the
+ * two task apps to rendering it. `lib/shell/appBar.test.ts` holds every live
+ * pane to it.
+ *
+ * Since 2026-10-10 (owner) the bar always draws its own row on desktop. It
+ * never portals into the shell bar, which is constant across the product.
  *
  * The runner is `environment: "node"`, so the markup is rendered to a string
  * (`renderToStaticMarkup`) and the pages are read as source.
@@ -18,7 +22,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { AppSearchButton, AppTopBar, railLabel } from "./AppTopBar";
+import { AppSearchButton, AppTopBar, appBarIcon, railLabel } from "./AppTopBar";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -54,7 +58,7 @@ describe("the app bar's shape", () => {
     const toggle = buttonWith(open, "aria-label", "Hide your lists");
     expect(toggle).toContain("cc-control");
     expect(toggle).toContain('aria-pressed="true"');
-    expect(open).toContain('class="h-4 w-px bg-border"');
+    expect(open).toContain('class="h-4 w-px shrink-0 bg-border"');
     // The toggle comes before the title, and the divider between them.
     expect(open.indexOf("Hide your lists")).toBeLessThan(open.indexOf("h-4 w-px"));
     expect(open.indexOf("h-4 w-px")).toBeLessThan(open.indexOf("<h1"));
@@ -76,6 +80,79 @@ describe("the app bar's shape", () => {
     expect(html).toContain("Every space you can see");
     expect(html.indexOf("ACTION")).toBeLessThan(html.indexOf("TOOL"));
     expect(html).toMatch(/<div class="ml-auto[^"]*"><span>TOOL<\/span><\/div>/);
+  });
+
+  it("draws its own row, in one order: toggle, icon, name, scope, actions, tools", () => {
+    const html = bar({
+      title: "Calendar",
+      icon: "Calendar",
+      subtitle: "SCOPE",
+      rail: { open: true, onToggle: () => {}, noun: "the rail" },
+      actions: createElement("span", null, "ACTION"),
+      tools: createElement("span", null, "TOOL"),
+    });
+    // One row, h-10, marked for the browser suite.
+    // One row, at least h-10, marked for the browser suite. It WRAPS when it
+    // runs out of room (round 2), so a tool never leaves the screen.
+    expect(html).toMatch(/^<div data-app-bar="desktop" class="flex min-h-10 [^"]*flex-wrap[^"]*"/);
+    const at = (needle: string) => {
+      const i = html.indexOf(needle);
+      expect(i, needle).toBeGreaterThan(-1);
+      return i;
+    };
+    const order = [
+      at("Hide the rail"),
+      at("lucide-calendar"),
+      at("<h1"),
+      at("SCOPE"),
+      at("ACTION"),
+      at("TOOL"),
+    ];
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("takes the icon of the pane that owns the route, so the bar and the sidebar agree", () => {
+    expect(appBarIcon("/tasks")).toBe("CheckSquare");
+    expect(appBarIcon("/email")).toBe("Mail");
+    // The longest pane wins: My Profile inside the People app.
+    expect(appBarIcon("/people/me")).toBe("User");
+    expect(appBarIcon("/people/chart")).toBe("Users");
+    expect(appBarIcon("/settings/organization")).toBe("Building2");
+    // `/` belongs to no pane. My Day names its icon itself.
+    expect(appBarIcon("/")).toBeNull();
+    expect(appBarIcon(null)).toBeNull();
+    // `null` draws no icon at all.
+    expect(bar({ title: "X", icon: null })).not.toContain("<svg");
+  });
+
+  it("never portals into the shell bar: the slot API is gone", () => {
+    const src = code(read("components/AppTopBar.tsx"));
+    expect(src).not.toMatch(/createPortal|useShellSlots|from "@\/lib\/shell\/ShellBar"/);
+  });
+
+  it("gives way in order: the scope line first, then the name with an ellipsis", () => {
+    const html = bar({ title: "Organisation", subtitle: "Acme · 3 active of 4" });
+    // The name keeps its width until the scope line is gone, and then it is
+    // held to its box (`max-w-full`) and truncates. It never overflows into
+    // the control beside it (round 2, measured at 1024px).
+    expect(html).toMatch(/<h1 class="max-w-full shrink-0 truncate [^"]*">Organisation<\/h1>/);
+    expect(html).toMatch(/<span class="ml-2 min-w-0 truncate [^"]*">Acme · 3 active of 4<\/span>/);
+    // The tools may wrap among themselves at the right end.
+    const tools = bar({ title: "X", tools: createElement("span", null, "TOOL") });
+    expect(tools).toMatch(/<div class="ml-auto flex min-w-0 max-w-full flex-wrap [^"]*"><span>TOOL<\/span><\/div>/);
+  });
+
+  it("a sub-page's back link sits at the left end, before the name", () => {
+    const html = bar({ title: "Teams", back: { href: "/settings/organization", label: "Back to Organisation" } });
+    expect(html).toMatch(/<a [^>]*href="\/settings\/organization"/);
+    expect(html).toContain('aria-label="Back to Organisation"');
+    expect(html.indexOf("Back to Organisation")).toBeLessThan(html.indexOf("<h1"));
+  });
+
+  it("the phone bar keeps the scope line, after the name", () => {
+    const html = bar({ compact: true, title: "Approvals", subtitle: "3 waiting" });
+    expect(html).toMatch(/^<div data-app-bar="compact"/);
+    expect(html.indexOf(">Approvals</h1>")).toBeLessThan(html.indexOf(">3 waiting</span>"));
   });
 
   it("the phone bar has no rail and titles what you are looking at", () => {

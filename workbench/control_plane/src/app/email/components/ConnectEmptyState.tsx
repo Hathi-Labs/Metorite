@@ -16,6 +16,9 @@
  * only, it reads as it did before EM-G8.
  */
 
+import type { ReactNode } from "react";
+
+import { AppTopBar } from "@/components/AppTopBar";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import {
@@ -25,6 +28,20 @@ import {
   type ProviderAvailability,
 } from "../lib/connect";
 import { ConnectChoices } from "./ConnectChoices";
+
+/**
+ * The app's title bar over the card (owner, 2026-10-10). A member with no
+ * mailbox is still in My Email, so the bar names it. On a phone it is the
+ * compact bar.
+ */
+function EmailFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-full w-full flex-col">
+      <AppTopBar title="My Email" />
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  );
+}
 
 export function ConnectEmptyState({
   onConnect,
@@ -45,6 +62,7 @@ export function ConnectEmptyState({
 }) {
   if (loadError) {
     return (
+      <EmailFrame>
       <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-background p-4">
         <div className="w-full max-w-md rounded-lg border border-border bg-card p-6 text-center">
           <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10 text-destructive">
@@ -61,10 +79,12 @@ export function ConnectEmptyState({
           )}
         </div>
       </div>
+      </EmailFrame>
     );
   }
 
   return (
+    <EmailFrame>
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-background p-4">
       <div className="w-full max-w-md">
         <div className="rounded-lg border border-border bg-card p-6">
@@ -97,5 +117,6 @@ export function ConnectEmptyState({
         </div>
       </div>
     </div>
+    </EmailFrame>
   );
 }

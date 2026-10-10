@@ -16,6 +16,10 @@
  *
  * "All apps" at the foot opens the shell's one launcher, so the old grid is
  * one tap away.
+ *
+ * It opens with its title bar, `AppTopBar` (owner, 2026-10-10), as every app
+ * does. The greeting stays a `PageHeader` under it: a sentence and the date
+ * are the page's content, and the bar carries the name only.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -25,6 +29,7 @@ import TodayCard, { useTodayItems } from "@/app/calendar/components/TodayCard";
 import { UndoToast } from "@/app/tasks/components/UndoToast";
 import NextActionsCard from "@/app/tasks/components/NextActionsCard";
 import { useAccess } from "@/components/AccessProvider";
+import { AppTopBar } from "@/components/AppTopBar";
 import PageHeader from "@/components/PageHeader";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -33,6 +38,7 @@ import { visibleSections } from "@/lib/nav";
 import AppLauncher from "./AppLauncher";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardsFor, dateLine, failedLines, greetingLine, summaryLine } from "./myDay";
+import { homePane } from "./shellNav";
 
 /**
  * The clock, by the minute, on the client only. The server renders no time,
@@ -56,6 +62,8 @@ export default function MyDay() {
   const { data: session } = useSession();
   const now = useMinute();
   const [launcherOpen, setLauncherOpen] = useState(false);
+  // This page renders only with the flag on, so its pane is My Day.
+  const home = homePane(true);
 
   const cards = cardsFor(accessLoading ? [] : access.features);
   const needs = useNeedsYou(!accessLoading && cards.needs);
@@ -78,6 +86,11 @@ export default function MyDay() {
         : summaryLine(needs.count ?? 0, todayCount, failedLines(needs.sources).length > 0);
 
   return (
+    <div className="flex h-full min-h-0 flex-col">
+    {/* The compact bar on a phone (AppTopBar decides), so the page keeps
+        its one h1 there too. */}
+    <AppTopBar title={home.label} icon={home.icon} />
+    <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-testid="my-day">
       <div>
         {now ? (
@@ -152,6 +165,8 @@ export default function MyDay() {
         sections={sections}
         pathname="/"
       />
+    </div>
+    </div>
     </div>
   );
 }

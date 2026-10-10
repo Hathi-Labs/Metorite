@@ -15,6 +15,7 @@
  * write auto-applies through the broker (chokepointed + audited, no hold).
  */
 
+import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useState } from "react";
 
@@ -80,19 +81,27 @@ export default function ApprovalsPage() {
   };
 
   return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* The app's title bar (owner, 2026-10-10): the name, how many wait,
+          and Refresh at the right end. */}
+      <AppTopBar
+        title="Approvals"
+        subtitle={rows.length > 0 ? `${rows.length} waiting` : undefined}
+        tools={
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="RefreshCw"
+            onClick={() => void load()}
+            disabled={loading}
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
+      />
+      <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto max-w-3xl px-4 py-6">
-      <div className="flex items-center gap-3">
-        <h1 className="text-lg font-semibold">Approvals</h1>
-        {rows.length > 0 && (
-          <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-white">
-            {rows.length}
-          </span>
-        )}
-        <Button variant="text" size="none" layout="" onClick={() => void load()} className="ml-auto text-xs">
-          {loading ? "Refreshing…" : "Refresh"}
-        </Button>
-      </div>
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         Outward writes an agent proposed through the Action Broker. Approving
         runs the write; rejecting refuses it. Empty unless
         <code className="mx-1 rounded bg-secondary/50 px-1 py-0.5 font-mono text-[11px]">
@@ -177,6 +186,8 @@ export default function ApprovalsPage() {
             </div>
           );
         })}
+      </div>
+    </div>
       </div>
     </div>
   );

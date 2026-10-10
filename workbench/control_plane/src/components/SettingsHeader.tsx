@@ -26,6 +26,9 @@
  * name of the shared one. That is the CLAUDE.md §5 defect exactly: a second
  * implementation of an existing seam, discoverable only by reading the import.
  *
+ * Its title is an `<h2>`. The app's one `<h1>` is in its title bar,
+ * `AppTopBar` (owner, 2026-10-10).
+ *
  * The fence is `src/components/pageHeading.test.ts`.
  */
 
@@ -78,9 +81,9 @@ export function SettingsHeader({
           </Link>
         ) : null}
         <div className="min-w-0">
-          <h1 className={`${HEADING_TITLE}${truncate ? " truncate" : ""}`}>
+          <h2 className={`${HEADING_TITLE}${truncate ? " truncate" : ""}`}>
             {title}
-          </h1>
+          </h2>
           {subtitle ? (
             <p className={HEADING_SUBTITLE}>{subtitle}</p>
           ) : null}

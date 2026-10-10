@@ -31,7 +31,7 @@ import { useAppearanceStore, effectiveDensity } from "@/lib/theme/store";
 import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
-import SettingsHeader from "@/components/SettingsHeader";
+import { AppTopBar } from "@/components/AppTopBar";
 import {
   AUTO_FOLD_EVENT,
   autoFoldEnabled,
@@ -99,18 +99,18 @@ export default function AppearancePage() {
 }
 
 /**
+ * The app's title bar (owner, 2026-10-10). It replaced a `SettingsHeader`:
+ * the pane has no back link and no actions, so the bar carries all of it.
+ *
  * ⚠️ This used to declare a LOCAL component called `PageHeader` — a different
- * component wearing the shared one's name (CLAUDE.md §5). It is now the
- * shared `SettingsHeader`, inside the bordered bar this pane still wants.
+ * component wearing the shared one's name (CLAUDE.md §5).
  */
 function AppearanceHeader() {
   return (
-    <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-      <SettingsHeader
-        title="Appearance"
-        subtitle="Colour mode, density, accent and the sidebar"
-      />
-    </div>
+    <AppTopBar
+      title="Appearance"
+      subtitle="Colour mode, density, accent and the sidebar"
+    />
   );
 }
 

@@ -40,10 +40,10 @@
  * seam: the one listener, the one bell, the one dock, the one palette. That
  * limit stops the folder from becoming a place to launder an app's debt.
  *
- * ⚠️ **What it cannot see.** An app that draws its own top bar imports nothing
- * a regex can name, so "no own top bar" stays advisory, review-only. A
- * hotkey library would also escape. The tree uses none today, and adding one
- * is a decision that names this file.
+ * ⚠️ **What it cannot see.** A hotkey library would escape. The tree uses none
+ * today, and adding one is a decision that names this file. The title bar is
+ * NOT this file's: since 2026-10-10 (owner) every app draws its own, through
+ * `AppTopBar`, and `appBar.test.ts` beside this file fences that rule.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";

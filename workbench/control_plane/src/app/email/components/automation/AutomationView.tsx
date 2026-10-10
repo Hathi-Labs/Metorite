@@ -122,12 +122,12 @@ export function AutomationHeader({
         <Icon size={15} />
       </div>
       <div className="min-w-0 flex-1">
-        <h1 className="text-sm font-semibold text-foreground leading-tight">
+        <h2 className="text-sm font-semibold text-foreground leading-tight">
           {meta.title}
           {mailbox ? (
             <span className="hidden sm:inline text-[11px] font-normal text-muted-foreground"> · {meta.subtitle}</span>
           ) : null}
-        </h1>
+        </h2>
         {mailbox ? (
           <p className="flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground leading-tight">
             <span className="flex-shrink-0">for</span>

@@ -13,6 +13,17 @@ and carries the organization's logo (§3.1). Organisation is an app in Admin,
 and it left the account menu (§3.2a item 4). Both ride the two shell flags,
 which are on in production.
 
+**BUILT 2026-10-10, by owner direction:** the shell bar is constant, and an
+app never renders into it. Every app opens with its own title bar,
+`AppTopBar`, under the shell bar (§3.1, §5.2 rule 3). This reverses NS-1's
+merged row and the default of §13.3 Q4. It rides the shell bar flag, which
+is on in production.
+
+Review round 2 added four rules to §3.1. The bar wraps,
+and a phone draws the compact bar. Chat on a phone has none, and the Settings
+sub-pages take the bar. Round 3 added a fifth: only the actions and the tools
+wrap, so a long name never parts the rail toggle from the name.
+
 NS-3 slice B (2026-10-09) builds My Day at `/`. It is dark behind
 `NEXT_PUBLIC_MY_DAY`, which is off by default. Only the owner turns it on in
 production (§13.1).
@@ -44,9 +55,9 @@ owning what happens inside the app.
 The shell gets six parts that every app shares. Each app plugs into them
 through one manifest, and no app builds its own copy.
 
-1. **One shell bar.** It holds the app title, the scope chip and the command
-   bar. It also holds the app's own buttons, the bell, the dock toggle and the
-   avatar. It takes one row, the height of today's app bar.
+1. **One shell bar, the same on every page.** It holds the logo, the command
+   bar and the shell's own controls, and nothing of an app. Each app opens
+   under it with its own title bar, `AppTopBar` (owner, 2026-10-10, §3.1).
 2. **My Day at `/`.** The personal rollup that Personal Center lacks today. It
    replaces the "Welcome back" grid, which repeats the sidebar with no data.
 3. **One Home at three altitudes (D87).** Personal, a team, and all my teams.
@@ -68,7 +79,7 @@ through one manifest, and no app builds its own copy.
 
 ### 1.1 In scope
 
-- The shell bar and the slots an app fills in it (§3.1).
+- The shell bar, and the title bar each app opens with under it (§3.1).
 - The sidebar shape and the account menu (§3.2, §3.3).
 - Home at three altitudes, and the jobs of the Personal Center apps (§4).
 - The app manifest and its rules for every app (§5).
@@ -127,8 +138,60 @@ had no seam to offer them.
 
 ### 3.1 The shell bar
 
-One row across the top of every desktop surface. Its height is `h-10`, the
-height of today's app bar, so no app loses height.
+One row across the top of every desktop surface, `h-11` tall.
+
+**The bar is constant. An app never renders into it** (owner, 2026-10-10).
+The owner's words: the top bar stays constant across all of Metorite, and no
+element of an app goes on it. The bar holds only shell things. So it draws the same
+pixels on every page, and the eye learns it once.
+
+**Every app opens with its own title bar, `AppTopBar`, under the shell bar.**
+The top bar is the product's frame. An app's name and tools belong to the app,
+where the eye looks for them, so the frame no longer changes from app to app.
+Left to right, the app bar holds:
+
+1. the app's rail toggle, when the app has a left rail. Email's toggle is the
+   model the owner named.
+2. the app's icon and its name. The name is the app's one `<h1>`.
+3. the scope line, such as "Every space you can see".
+4. the app's actions, such as Capture in My Tasks.
+5. the app's tools at the right end: the bell, the assistant, refresh and
+   settings.
+
+The app bar is `h-10`, in one order and one look in every app. A pane may keep
+its own header under it when it titles a pane, as Email's list does with
+"Inbox" and its filter. That header is an `<h2>`, and it never repeats the
+bar's toggle or tools. `DESIGN_SYSTEM.md` §6a holds the shape.
+
+Five more rules, from the review of 2026-10-10:
+
+- **The row wraps when it runs out of room.** The tools go to a second line at
+  the right end, so no control leaves the screen. The subtitle gives way
+  first, then the name truncates with an ellipsis. The name never paints over
+  a control. A "More" menu was the other choice, and it lost: the tools carry
+  their own anchored popovers, and `src/components/ui/` has no menu to hold
+  them.
+- **Only the actions and the tools wrap.** The left group is one item that
+  never wraps: the rail toggle or the way back, the icon and the name. So a
+  long name never parts the toggle from the name (round 3).
+- **On a phone the app bar is the compact one,** with the subtitle muted after
+  the name. My Day, People, My Profile, WhatsApp, the Email inbox and its
+  scenes all draw it.
+- **Chat draws no bar on a phone.** It opens there with the chat's own row,
+  the agent and Share, and the Chats tab names the app. A bar above that row
+  stacks a third row on the smallest screen. It had no `<h1>` before either.
+- **A Settings sub-page opens with the bar too.** Teams, Roles, Billing and a
+  member's page each carry a `back` link at the left end, to Organisation.
+
+Fences: `src/lib/shell/appBar.test.ts` (source) and
+`e2e/app-title-bar.spec.ts`. The e2e counts one `<h1>` and one bar on each
+page at 1440 and 390. It checks Calendar at 1024, 960 and 800, and Email and
+Projects at 1024. It checks a long name in Chat and on a member page at 900
+and 1024.
+
+**This reverses NS-1's merged row.** From 2026-10-08 to 2026-10-10,
+`AppTopBar` portalled its contents into slots in this bar, and a page with no
+app bar printed its app's name here. Both are gone, with the slot API.
 
 **The bar spans the full width, and it carries the logo** (owner,
 2026-10-09). The sidebar and the page sit under the bar. Before, the logo sat
@@ -149,22 +212,29 @@ over the page column, as NS-1 built it. `desktopFrame` in
 `src/lib/shell/shellNav.ts` holds the rule. Fences: `shellNav.test.ts`,
 `e2e/shell-bar.spec.ts` and `e2e/sidebar-fold.spec.ts`.
 
-| Slot | Owner | What it holds |
+| Zone | Owner | What it holds |
 |---|---|---|
 | Brand | The shell | The fold control and the organization's logo, on one line |
-| Title | The app | The rail toggle and the app's name. The app keeps its one `h1` |
-| Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked |
+| ~~Title~~ | — | Not in the bar. The app's name is in its own title bar (owner, 2026-10-10) |
+| Scope chip | The shell | Personal, a team, or all my teams (§4). A team app shows its own team, locked. Today the command bar's "in <App>" chip holds this place |
 | Command bar | The shell | Search, do or ask (§6). It sits in the centre and takes the free width |
-| App actions | The app | The app's own buttons, such as Capture in My Tasks or the view switch in Projects |
-| New | The shell | The jobs of the apps the member holds, in preset order (§8) |
-| Bell | The shell | "Needs you", from every app (§7.2) |
-| Assistant | The shell | The dock toggle (§7.1) |
+| ~~App actions~~ | — | Not in the bar. They are in the app's own title bar |
+| Activity | The shell | Every live assistant run, across apps (WS-51 S3), at the right end |
+| New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
+| Bell | The shell | "Needs you", from every app (§7.2). Not built. Today each app's bell is a tool in its own title bar, and an app's bell never moves into this bar |
+| Assistant | The shell | The dock toggle (§7.1). Not built. Today each app's assistant toggle is a tool in its own title bar |
 | ~~Avatar~~ | — | Not in the bar. The account menu is the sidebar's foot (§3.3, NS-2 slice 1) |
 
-An app fills its slots through one React context in `src/lib/shell/`. The
-ticket names it. An app does not render a bar of its own. A page body may
-still open with a `PageHeader`, because the bar is app scope and the header
-is page scope (`DESIGN_SYSTEM.md` §6a).
+**The command bar's "in <App>" chip stays.** It is the command bar's own
+scope (§6.4 rule 3), not the app's chrome. It is the one place the bar names
+an app.
+
+`AppShell` is the one importer of `src/lib/shell/ShellBar.tsx`, and it mounts
+`ShellFrame` only. Fence: `src/lib/shell/appBar.test.ts`. It fails on a slot
+API, and on a file outside `src/lib/shell/` that reaches into the bar. It
+fails on a live pane whose route does not render `AppTopBar`, and on an app
+name in the bar's markup. `e2e/shell-bar.spec.ts` checks the same rule in a
+browser.
 
 ### 3.2 The sidebar
 
@@ -461,8 +531,10 @@ label, a link or a gate drifts. NS-2 moves the jobs into each app's manifest.
    sidebar, the launcher or Home by hand.
 2. **An app mounts no ⌘K handler, palette, bell or assistant dock.** It
    declares jobs, search, needs and an agent, and the shell renders them.
-3. **An app renders inside the shell bar through slots.** It draws no top bar
-   of its own.
+3. **An app opens with its own title bar, `AppTopBar`, and never renders into
+   the shell bar.** The bar holds its rail toggle, name, subtitle, actions and
+   tools (§3.1). The owner reversed this rule on 2026-10-10. Until then it
+   said that an app renders inside the shell bar through slots.
 4. **A team app declares its team. A cross-team app reads the scope chip** and
    passes the value to its own routes. The server checks the grant on every
    read. The chip's value is never trusted (R5e).
@@ -503,8 +575,8 @@ manifest" section, and the spec-auditor refuses one without it.
 | App | `team` | Jobs | `search` | `needs` | Cards | `agent` | Work owed |
 |---|---|---|---|---|---|---|---|
 | My Tasks | personal | New task | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
-| Calendar | personal | Plan my day (built). Block focus time is a target | — | — | Today | `task-manager` | Move its `h1` into the title slot |
-| Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
+| Calendar | personal | Plan my day (built). Block focus time is a target | — | — | Today | `task-manager` | Done 2026-10-10: its name, its day arrows and its tools are in its `AppTopBar` |
+| Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its heading drift closed on 2026-10-10, when it took `AppTopBar` |
 | My WhatsApp | personal | Reply on WhatsApp (a link) | — | — | — | — | None beyond the manifest |
 | Projects | across | New space | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Find a colleague (built). Request leave is a target | the directory | — | Out today | — | None beyond the manifest |
@@ -938,13 +1010,13 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 |---|---|---|
 | `/` "Welcome back", a grid with no data | My Day at the personal altitude | NS-3 |
 | `/dashboard` "coming soon" | The all-teams altitude of Home. `/dashboard` stays for dashboards people build (WS-15) | NS-5 |
-| Search, bell and assistant inside each app's `AppTopBar` | One shell bar. `AppTopBar` becomes the title and actions slots | NS-1 |
+| Search, bell and assistant inside each app's `AppTopBar` | One constant shell bar with the one search. Each app keeps its own `AppTopBar` under it, with its name and its tools (owner, 2026-10-10) | NS-1 |
 | Three palettes | One command bar. `app/projects/lib/commands.ts` seeds the job list | NS-1, NS-2 |
 | The Projects `NotificationBell`, and no Approvals badge | The shell's "Needs you" | NS-6 |
 | Three assistant rails | One dock | NS-6 |
 | My Profile and Appearance in the sidebar | The account menu | NS-2 |
 | My Access in the sidebar | ✅ The People app's "My access" tab, 2026-10-05 | — |
-| Calendar's own header | The shell bar's title slot | NS-1 |
+| Calendar's own header | ✅ Calendar's `AppTopBar`, 2026-10-10 | — |
 | Projects shows "every space you can see" | Grouped by team (D22), driven by the scope chip | NS-5 |
 
 ---
@@ -960,12 +1032,12 @@ AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 
 **Built in slice 1:**
 
-- `lib/shell/ShellBar.tsx` holds the bar, its two slots and the ONE key
-  listener. `⌘K` is taken in the capture phase and stopped, so the three app
+- `lib/shell/ShellBar.tsx` holds the bar and the ONE key
+  listener. Its two slots went on 2026-10-10 (owner, §3.1). `⌘K` is taken in the capture phase and stopped, so the three app
   listeners never fire while the flag is on. `/` follows §6.1.
-- `AppTopBar` portals its contents into the slots, so Projects and My Tasks
-  changed nothing and lost no height. A page with no `AppTopBar` shows its
-  app's name and icon in the left slot.
+- ~~`AppTopBar` portals its contents into the slots.~~ Reversed by the owner
+  on 2026-10-10. Every app now draws its own `AppTopBar` row under the shell
+  bar, and the shell bar names no app (§3.1).
 - `lib/shell/CommandBar.tsx` has Do, Go to, "In this page" (§6.7 rule 3) and
   Ask. The Ask row opens `/chat?q=`, and Chat types the words in and does not
   send them. NS-4b makes Ask answer in place.
@@ -983,9 +1055,10 @@ AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
   (`localStorage["cc-shell-bar"]`), so `e2e/shell-bar.spec.ts` runs both
   sides. A production build drops that branch.
 
-**Still open in NS-1:** Calendar keeps its own header (done-when 2). Email
-keeps its toolbar row below the bar, on purpose: it holds the list filter,
-which §6.7 places above the list.
+**Closed on 2026-10-10:** Calendar took `AppTopBar`, so its own header went.
+Email took `AppTopBar` too. It keeps its list header under the bar, on
+purpose: it holds the folder and the list filter, which §6.7 places above
+the list.
 
 ✅ **NS-4a is built (2026-10-08), so the bar's Find group now holds what the
 three old searches found.** With the flag on, these searches go:
@@ -1005,8 +1078,9 @@ Projects, My Tasks, Calendar and Email.
 Done when:
 
 1. With the flag on, `AppShell` renders the shell bar on every desktop route.
-2. Projects, My Tasks, Calendar and Email fill the title and actions slots, and
-   draw no bar of their own.
+2. ~~Four apps fill the shell bar's slots and draw no bar of their own.~~ The
+   owner reversed this on 2026-10-10. Every live app draws its own
+   `AppTopBar` row under the shell bar (§3.1).
 3. The command bar answers tier 0 from the registry and from
    `app/projects/lib/commands.ts`.
 4. `src/lib/shell/seams.test.ts` already exists (2026-10-05). NS-1 puts the
@@ -1414,6 +1488,10 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 # The fences this spec adds, by name
 npx vitest run src/lib/nav.test.ts src/lib/shell/ src/lib/theme/
+npx vitest run src/components/AppTopBar.test.ts src/components/pageHeading.test.ts
+
+# The constant shell bar and each app's title bar, in a browser
+npx playwright test e2e/shell-bar.spec.ts --project=chromium
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
@@ -1459,7 +1537,7 @@ table is the only fence (R7, advisory).
 | # | Question | Default |
 |---|---|---|
 | Q2 | Does `/` become My Day for every member? | Answered on 2026-10-09. See §13.2 |
-| Q4 | Does the shell bar take one shared row with each app's bar? | Yes. One row, merged in NS-1 |
+| Q4 | Does the shell bar take one shared row with each app's bar? | No. The owner reversed this on 2026-10-10. The shell bar is constant, and each app draws its own title bar under it (§3.1). Until then the default was one row, merged in NS-1 |
 | Q5 | Fixed presets, or an editor for each organization? | Eight fixed presets first. Add the editor when a second customer asks |
 | Q6 | Does Desk mode hide All apps? | Yes. The command bar stays |
 
@@ -1477,7 +1555,9 @@ Each document below links here and adds nothing of its own.
   surface reads the one filter.
 - `department_centers.md`, its D49 banner: D22's three surfaces return as the
   three altitudes of Home.
-- `workbench/control_plane/DESIGN_SYSTEM.md` §6a: the shell bar.
+- `workbench/control_plane/DESIGN_SYSTEM.md` §6a: the shell bar and the app
+  bar, and the rule between them.
 - `workbench/control_plane/AGENTS.md` rule 10: an app plugs into the shell and
-  never builds one.
+  never builds one. Rule 11: the shell bar is constant, and every app opens
+  with `AppTopBar`.
 - Root `CLAUDE.md` §2: one bullet.

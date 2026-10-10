@@ -55,7 +55,7 @@ import {
   readMembers,
   releaseBody,
 } from "./lib/manage";
-import SettingsHeader from "@/components/SettingsHeader";
+import { AppTopBar } from "@/components/AppTopBar";
 
 interface BillingPayload {
   credits: CreditSummary;
@@ -170,14 +170,14 @@ export default function BillingPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <SettingsHeader
-          title="Billing"
-          subtitle="AI credits, subscription and bills"
-          backHref="/settings"
-          backLabel="Back to settings"
-        />
-      </div>
+      {/* The page's title bar (owner, 2026-10-10). Its way back leads to
+          Organisation, where an admin manages seats. `/settings` only
+          redirects to a page that no longer exists (round 3). */}
+      <AppTopBar
+        back={{ href: "/settings/organization", label: "Back to Organisation" }}
+        title="Billing"
+        subtitle="AI credits, subscription and bills"
+      />
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {loading ? (

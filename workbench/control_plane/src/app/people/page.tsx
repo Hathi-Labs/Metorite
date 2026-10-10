@@ -126,7 +126,7 @@ export default function PeoplePage() {
               `components/PageHeader.tsx` for the eight spellings this
               replaced. The wrap behaviour lives there now too. */}
           <PageHeader
-            title="People"
+            title="Directory"
             meta={loading ? "loading…" : `${rows.length} in the directory`}
             className="mb-2"
           />

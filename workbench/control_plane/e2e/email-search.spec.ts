@@ -90,18 +90,21 @@ test.describe("Email search bar", () => {
     const input = page.getByPlaceholder("Search Inbox");
     await expect(input).toBeVisible();
 
-    // It lives in the TOP bar — sharing a row with the folder heading, rather
-    // than down in the sidebar as it used to — and is centred ON THAT BAR (not
-    // on the viewport: the bar starts right of the sidebar).
+    // It lives in the LIST's header row — sharing a row with the folder
+    // heading, rather than down in the sidebar as it used to — and is centred
+    // ON THAT ROW (not on the viewport: the row starts right of the sidebar).
+    // Since 2026-10-10 the app's own title bar sits above this row, and the
+    // folder is the row's h2. The app's h1 is "My Email", in the title bar.
     const geom = await page.evaluate(() => {
       const el = document.querySelector('input[placeholder="Search Inbox"]')!;
       const wrap = el.closest("div.relative")!;          // the SearchBar root
-      const row = document.querySelector("h1")!.closest("div.flex.items-center.gap-3")!;
+      const row = document.querySelector("[data-email-list-header]")!;
+      const head = row.querySelector("h2")!;
       const c = (n: Element) => {
         const b = n.getBoundingClientRect();
         return { y: b.y, centre: b.x + b.width / 2 };
       };
-      return { bar: c(wrap), row: c(row), head: c(document.querySelector("h1")!) };
+      return { bar: c(wrap), row: c(row), head: c(head) };
     });
     // Same row as the heading.
     expect(Math.abs(geom.bar.y - geom.head.y)).toBeLessThan(30);

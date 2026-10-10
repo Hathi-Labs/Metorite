@@ -23,6 +23,7 @@ import {
 import { getAssistantSettings } from "@/app/email/lib/api";
 import { EMAIL_CHAT_TIER } from "@/app/email/lib/assistantSettings";
 import AgentChat from "@/components/AgentChat";
+import { AppTopBar } from "@/components/AppTopBar";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
 import { carriedText, findSession, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
 import { CHAT_GONE_NOTICE, OPEN_CHAT_JOB } from "@/lib/runActivity";
@@ -1139,7 +1140,7 @@ function ChatPageInner() {
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div className="relative flex h-full overflow-hidden">
+    <div className="relative flex h-full flex-col overflow-hidden">
       {/* NS-2: the command bar's "New chat" is the "+ New conversation"
           press. `handleNewSession` waits by itself while the agent list is
           still out. The job waits for the session load, which sets the
@@ -1165,54 +1166,47 @@ function ChatPageInner() {
         />
       )}
 
-      {/* ── Desktop: conversations sidebar ────────────────────────────── */}
-      {/* Collapsed → the same rail treatment as the Files / Documents
-          columns: reopen icon, conversation count, vertical label. */}
-      {!isMobile && !sessionPanelOpen && (
-        <aside className="flex w-10 shrink-0 flex-col border-r border-border bg-sidebar">
-          {/* The whole rail is the click target — a thin strip is fiddly to
-              hit an icon inside. */}
-          <button
-            onClick={() => setSessionPanelOpen(true)}
-            className="flex w-full flex-1 cursor-pointer flex-col items-center py-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
-            title="Open conversations"
-          >
-            <Icon name="MessagesSquare" size={15} />
-            {sessions.length > 0 && (
-              <span className="mt-1 rounded-full bg-secondary px-1 text-[10px]">
-                {sessions.length}
-              </span>
-            )}
-            <span className="mt-1.5 inline-flex">
+      {/* ── Desktop: the app's title bar (owner, 2026-10-10) ───────────── */}
+      {/* The conversations toggle, the app's name and the open
+          conversation. It replaced the rail's own collapse button and its
+          folded strip: one toggle, in the bar, as in every app. */}
+      {!isMobile && (
+        <AppTopBar
+          rail={{
+            open: sessionPanelOpen,
+            onToggle: () => setSessionPanelOpen((o) => !o),
+            noun: "conversations",
+          }}
+          title="Chat"
+          // Folded, the rail no longer shows how many conversations there
+          // are, so the scope line says it.
+          subtitle={
+            sessionPanelOpen
+              ? activeSession?.name
+              : [
+                  activeSession?.name,
+                  `${sessions.length} conversation${sessions.length === 1 ? "" : "s"}`,
+                ].filter(Boolean).join(" · ")
+          }
+          // WS-51 S5: with the rail folded, the bar still says that a run
+          // goes on or that a reply waits. The folded strip used to say it.
+          actions={
+            sessionPanelOpen ? undefined : (
               <SessionRunDot
                 running={sessions.some((s) => activeRunIds.has(s.id))}
                 unread={sessions.some((s) => unreadIds.has(s.id))}
               />
-            </span>
-            <span className="mt-3 flex flex-1 items-center justify-center">
-              <span
-                className="text-[10px] font-semibold tracking-widest"
-                style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
-              >
-                CONVERSATIONS
-              </span>
-            </span>
-          </button>
-        </aside>
+            )
+          }
+        />
       )}
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      {/* ── Desktop: conversations sidebar ────────────────────────────── */}
       {!isMobile && sessionPanelOpen && (
         <aside className="w-72 shrink-0 border-r border-border bg-sidebar flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <div className="text-sm font-semibold text-sidebar-foreground">Conversations</div>
-            <button
-              onClick={() => setSessionPanelOpen(false)}
-              className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
-              title="Collapse conversations"
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M10 3L5 8l5 5" />
-              </svg>
-            </button>
           </div>
 
           <div className="flex flex-col flex-1 p-4 overflow-y-auto">
@@ -1346,6 +1340,8 @@ function ChatPageInner() {
             </div>
           )}
         </div>
+      </div>
+
       </div>
 
       {/* File viewer modal (shared) */}
