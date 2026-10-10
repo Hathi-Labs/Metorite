@@ -327,6 +327,10 @@ class ZohoStore:
     page_size: int = 2
     inclusive: bool = False
     tokens: bool = False
+    #: When set, the store sorts and filters on ``times`` (the hidden
+    #: ``Modified_Time``) but sends only ``Created_Time``, like the old
+    #: Fracktal tenant (``crm_app.md`` 1483-1488).
+    created: dict[str, datetime] | None = None
     requests: list[httpx.Request] = field(default_factory=list)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -344,7 +348,10 @@ class ZohoStore:
         info: dict[str, Any] = {"more_records": page * self.page_size < len(items)}
         if info["more_records"] and self.tokens:
             info["next_page_token"] = f"tok-{page + 1}"
-        data = [{"id": i, "Modified_Time": t.isoformat()} for i, t in chunk]
+        if self.created is not None:
+            data = [{"id": i, "Created_Time": self.created[i].isoformat()} for i, _ in chunk]
+        else:
+            data = [{"id": i, "Modified_Time": t.isoformat()} for i, t in chunk]
         return ok({"data": data, "info": info})
 
     def source(self, **kw: Any) -> ZohoSource:
@@ -465,9 +472,22 @@ async def test_a_resume_reads_the_boundary_second_again(leaks: list[str]) -> Non
     assert parsedate_to_datetime(store.requests[1].headers["If-Modified-Since"]) == at(1)
 
 
-async def test_created_time_stands_in_for_a_missing_modified_time(leaks: list[str]) -> None:
-    """The old Fracktal tenant sent no ``Modified_Time`` on some modules
-    (``crm_app.md``). The record and the keyset use ``Created_Time``."""
+async def test_a_hidden_modified_time_loses_no_row(leaks: list[str]) -> None:
+    """Fix round 2, P1. Zoho sorts and filters on ``Modified_Time``, and this
+    tenant sends only ``Created_Time``. ``old`` was created long ago and edited
+    after ``y``, so it sits on page 2 with a ``Created_Time`` older than any
+    key the read could hold. A keyset on ``Created_Time`` dropped it."""
+    store = ZohoStore(
+        {"x": at(5), "y": at(6), "old": at(7), "z": at(8)},
+        created={"x": at(5), "y": at(6), "old": at(-400 * 86400), "z": at(8)},
+    )
+    got = await read_all(store.source())
+    assert sorted(got) == ["old", "x", "y", "z"]
+
+
+async def test_created_time_is_shown_but_never_keys_the_cursor(leaks: list[str]) -> None:
+    """``Created_Time`` stands in on the record, for a reader. The cursor
+    pages by offset, because the server does not key on ``Created_Time``."""
     body = {
         "data": [
             {"id": "1", "Modified_Time": None, "Created_Time": "2026-10-01T10:00:05+00:00"},
@@ -478,9 +498,7 @@ async def test_created_time_stands_in_for_a_missing_modified_time(leaks: list[st
     fake = Fake([ok(body)])
     page = await fake.source().list_changed("deal")
     assert [r.modified_at for r in page.records] == [at(5), at(7)]
-    assert page.next_cursor is not None
-    assert page.next_cursor.since == at(7)
-    assert page.next_cursor.seen_ids == ("2",)
+    assert page.next_cursor == SourceCursor(since=None, page=2, page_token=None, seen_ids=())
 
 
 @pytest.mark.parametrize("status", [204, 304])

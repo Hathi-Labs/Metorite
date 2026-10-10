@@ -211,10 +211,17 @@ def _page_params(cursor: SourceCursor, extra: Mapping[str, Any]) -> dict[str, An
     return params
 
 
-#: The time keys of a record, in order. The old Fracktal tenant sent no
-#: ``Modified_Time`` on some modules (``crm_app.md``), so ``Created_Time``
-#: stands in, for the record and for the keyset.
+#: The time keys of ``SourceRecord.modified_at``, in order. The old Fracktal
+#: tenant sent no ``Modified_Time`` on some modules (``crm_app.md``), so
+#: ``Created_Time`` stands in ON THE RECORD, for a reader. It never keys the
+#: cursor: see :data:`KEYSET_FIELD`.
 _CHANGED_TIME_KEYS = ("Modified_Time", "Created_Time")
+
+#: The ONE field the keyset reads. Zoho sorts on it and applies
+#: ``If-Modified-Since`` to it, so no other field may stand in. A lead created
+#: in 2024 and edited last week sorts by the edit, and a cursor keyed on its
+#: ``Created_Time`` would drop it as "older than since".
+KEYSET_FIELD = "Modified_Time"
 _DELETED_TIME_KEYS = ("deleted_time",)
 
 #: A keyset resume asks from this much before ``since``. ``If-Modified-Since``
@@ -258,11 +265,13 @@ def _keyset_next(
     more, token = _more(body, count)
     if not more:
         return None
-    times = [r.modified_at for r in records if r.modified_at is not None]
-    if not times:
+    keys = [_key_time(r) for r in records]
+    if not keys or any(k is None for k in keys):
+        # A row with no ``Modified_Time``: the server's order is hidden, so
+        # no key is safe. Page by offset.
         return _offset_next(cursor, body, count)
-    last = max(times)
-    at_last = tuple(r.ext_id for r in records if r.modified_at == last)
+    last = max(k for k in keys if k is not None)
+    at_last = tuple(r.ext_id for r, k in zip(records, keys, strict=True) if k == last)
     resuming = cursor.since is not None and bool(cursor.seen_ids)
     if resuming and cursor.since is not None and last <= cursor.since:
         seen = tuple(dict.fromkeys(cursor.seen_ids + at_last))
@@ -277,20 +286,25 @@ def _request_since(cursor: SourceCursor) -> datetime | None:
     return cursor.since
 
 
+def _key_time(record: SourceRecord) -> datetime | None:
+    """The keyset time of a record: its ``Modified_Time``, and nothing else."""
+    return _parse_time(record.fields.get(KEYSET_FIELD))
+
+
 def _unseen(cursor: SourceCursor, records: tuple[SourceRecord, ...]) -> tuple[SourceRecord, ...]:
     """Drop what a keyset resume returned before: rows older than ``since``,
-    and the ``seen_ids`` at ``since``. A row with no time is kept."""
+    and the ``seen_ids`` at ``since``, both by ``Modified_Time``. A row with
+    no ``Modified_Time`` is kept, because no other time says where it sorts."""
     since = cursor.since
     if since is None or not cursor.seen_ids:
         return records
     seen = set(cursor.seen_ids)
-    return tuple(
-        r
-        for r in records
-        if r.modified_at is None
-        or r.modified_at > since
-        or (r.modified_at == since and r.ext_id not in seen)
-    )
+    kept: list[SourceRecord] = []
+    for r in records:
+        key = _key_time(r)
+        if key is None or key > since or (key == since and r.ext_id not in seen):
+            kept.append(r)
+    return tuple(kept)
 
 
 def _row_time(row: Mapping[str, Any], time_keys: tuple[str, ...]) -> datetime | None:
@@ -602,9 +616,16 @@ class ZohoSource:
         the one window left, and it needs more than 200 rows with one
         ``Modified_Time``.
 
-        A row with no ``Modified_Time`` uses ``Created_Time``. A row with
-        neither is returned and keyed by offset. An edited row comes back
-        on a later page, so the caller dedupes by ``ext_id``.
+        The keyset reads ``Modified_Time`` only, because Zoho sorts and
+        filters on it. A tenant can hide that field (the old Fracktal tenant
+        sends only ``Created_Time`` on Leads, Accounts, Contacts and Notes,
+        and no time on Deals). Then the read pages by offset, and
+        ``Created_Time`` fills ``SourceRecord.modified_at`` for a reader and
+        never keys the cursor. With no ``Modified_Time``, a resumed read can
+        still skip a row when an edit shifts the offsets, which is the gap of
+        plain offset paging. The engine slice (CRM-Z5) owns a reconcile for
+        such a tenant. An edited row comes back on a later page, so the caller
+        dedupes by ``ext_id``.
         """
         module = _module(entity)
         return await self._page(
