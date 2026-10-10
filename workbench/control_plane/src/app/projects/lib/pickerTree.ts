@@ -197,8 +197,9 @@ export interface SearchHit {
  *
  * Ranked in three bands and kept in tree order inside each, so the list does
  * not reshuffle on every keystroke: the name starts with a word, then the name
- * contains one, then only the path does. A folder never appears — it holds no
- * tasks, and its projects already match through their path.
+ * contains one, then only the path does. Only rows the rule allows appear.
+ * Under the task rule that leaves folders out — they hold no tasks, and their
+ * projects already match through their path.
  */
 export function searchRows(nodes: readonly PickerNode[], query: string): SearchHit[] {
   const tokens = queryTokens(query);

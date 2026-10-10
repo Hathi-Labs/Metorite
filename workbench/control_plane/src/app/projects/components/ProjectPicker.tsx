@@ -184,7 +184,13 @@ export function ProjectPicker({
     });
 
   const groups = lead
-    .map((g) => ({ ...g, rows: g.rows.filter((r) => matchesTokens(tokens, r.label)) }))
+    // A search offers only what can be picked, as `searchRows` does for the tree.
+    .map((g) => ({
+      ...g,
+      rows: g.rows.filter(
+        (r) => matchesTokens(tokens, r.label) && !(searching && r.refusal),
+      ),
+    }))
     .filter((g) => !searching || g.rows.length > 0);
   const treeItems: Item[] = searching
     ? searchRows(nodes, query ?? "").map((h) => ({
@@ -207,7 +213,11 @@ export function ProjectPicker({
     key: null,
   });
   const cursor = held.query === (query ?? "") ? held.key : null;
-  const setCursor = (key: string | null) => setHeld({ query: query ?? "", key });
+  const setCursor = (key: string | null) => {
+    setHeld({ query: query ?? "", key });
+    // The note follows the cursor now. A reason for a row it left is stale.
+    setTried(null);
+  };
   const at = cursor ? items.findIndex((i) => i.key === cursor) : -1;
 
   const listId = useId();
@@ -239,6 +249,10 @@ export function ProjectPicker({
   // row the member reached for (owner, 2026-10-10). The reason on every row
   // was the wall of text. Hiding refused rows would change the tree's shape,
   // so they stay, muted, with the reason one click or one arrow away.
+  // Under the task rule a refused node WITH children is a folder, and opening
+  // it is the right move, not a mistake. It is the header its projects hang
+  // from, so it gets no note. Another rule's refusal is a real one, children
+  // or not (a node's own subtree in the project Move dialog).
   const [tried, setTried] = useState<string | null>(null);
   const refusalOf = (item: Item | undefined) =>
     !item
@@ -247,7 +261,7 @@ export function ProjectPicker({
         ? item.row.refusal
           ? { name: item.row.label, refusal: item.row.refusal }
           : null
-        : item.node.refusal
+        : item.node.refusal && (rule || !item.node.hasChildren)
           ? { name: item.node.name, refusal: item.node.refusal }
           : null;
   const explained =
@@ -405,7 +419,11 @@ export function ProjectPicker({
                 )
               }
               ariaExpanded={!searching && n.hasChildren ? open : undefined}
-              title={n.refusal ?? undefined}
+              title={
+                n.refusal && !rule && n.hasChildren
+                  ? `${n.refusal} Open it to pick one.`
+                  : (n.refusal ?? undefined)
+              }
               icon={<NodeIcon node={n} open={open} />}
               onClick={() => choose(item)}
               suggested={value !== n.id && suggestedId === n.id}
@@ -435,7 +453,7 @@ export function ProjectPicker({
 
       {/* `role="status"`, so a keyboard member hears the reason the moment
           the cursor reaches a refused row. */}
-      <p role="status" className="min-h-4 px-1 text-[11px] text-muted-foreground">
+      <p role="status" className="px-1 text-[11px] text-muted-foreground">
         {explained ? (
           <>
             <Icon name="Info" className="mr-1 -mt-0.5 inline h-3 w-3" />

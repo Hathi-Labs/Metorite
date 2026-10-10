@@ -64,8 +64,11 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import Button from "@/components/ui/Button";
 import { useOverflowTip } from "@/components/ui/OverflowTip";
 
-/** One indent step, in px. The tree's own step before this primitive. */
-export const RAIL_INDENT_PX = 12;
+/**
+ * One indent step, in px: the `w-4` below. 12 px until 2026-10-10, when the
+ * owner found the icon too close to the guide line.
+ */
+export const RAIL_INDENT_PX = 16;
 
 /** A level that groups (a space, a section head) or an item in it. */
 export type RailRowTier = "group" | "item";
