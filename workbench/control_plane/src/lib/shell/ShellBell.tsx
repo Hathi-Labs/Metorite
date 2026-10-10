@@ -28,7 +28,7 @@
  * `total`, every row the sources gave before the feed's cut to 30, less the
  * rows an act just took off. It is not a sum of unread mail. Each source gives
  * 15 rows at most, so it is a floor. The badge prints "99+" past 99, and
- * nothing at 0. When the feed was cut, the panel says "Showing 30 of 47".
+ * nothing at 0. When the feed was cut, the panel says "Showing 30 of 45".
  *
  * **A Done closes the panel.** Its Undo is THE toast, and the toast's
  * viewport sits under a dialog's scrim (`Toast.tsx`, and `DESIGN_SYSTEM.md`
@@ -215,7 +215,7 @@ const TICK_MS = 30_000;
 export const BELL_POLL_MS = 60_000;
 
 /**
- * What the panel says under a list the feed cut: "Showing 30 of 47", or
+ * What the panel says under a list the feed cut: "Showing 30 of 45", or
  * nothing when the list is whole.
  */
 export function shownOfTotal(shown: number, total: number | undefined): string | null {

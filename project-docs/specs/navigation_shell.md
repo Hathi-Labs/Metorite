@@ -823,7 +823,9 @@ an archived thread too.
 **The contract.** My Day and the bell read this shape:
 
 - `GET /shell/needs?limit=` gives 30 rows by default, and 50 at most.
-- The answer is `{count, items, sources}`. `count` is the length of `items`.
+- The answer is `{count, total, items, sources}`. `count` is the length of
+  `items`. `total` is every row that the sources gave before the cut to
+  `limit` (NS-6). Each source gives 15 rows at most, so `total` is a floor.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
 - `id` is `tasks:<task id>`, `projects:<notification id>` or
@@ -861,18 +863,30 @@ a member with more work than the cap.
 - **Its place follows the activity control.** It sits at the right end of the
   shell bar, before Activity. With the shell bar flag off, it sits in the
   sidebar's head. On a phone, it sits in the head of the Menu drawer.
-- **The badge is the feed's `count`,** the number of rows that need the
-  member. It is not a sum of unread mail. It shows "99+" past 99, and no
-  badge at 0. The spoken name is "Needs you, N items".
+- **The badge is the feed's `total`,** the number of rows that need the
+  member before the feed's cut to 30. It is not a sum of unread mail. Each
+  source gives 15 rows at most, so the number is a floor. It shows "99+"
+  past 99, and no badge at 0. The spoken name is "Needs you, N items".
 - **The panel draws `NeedsList`,** the same list as My Day's card. So the
   groups, the rows and the acts are one code. The foot of the panel opens
-  My Day. The panel is a `Modal`, as the activity panel beside it is, so
-  Escape closes it and focus goes back to the bell.
+  My Day. When the feed was cut, the foot also says "Showing 30 of 45". The
+  panel is a `Modal`, as the activity panel beside it is, so Escape closes
+  it and focus goes back to the bell.
 - **Each act works as on My Day.** Done runs the store's own gesture, with
-  the subtask question and the Undo. The rows that an act takes off live in
-  one store, so a Done in the bell takes the row off My Day's card too.
-- **The Undo shows on every page.** A page that mounts `UndoToast` shows it
-  already. On every other page, `UndoToastFallback` shows it, with no keys.
+  the subtask question and the Undo. Mark read runs the Projects route.
+- **A Done closes the panel.** The Undo is the shared toast. The toast sits
+  under a dialog's scrim, and `DESIGN_SYSTEM.md` §4a forbids a higher layer.
+  The dialog also hides the toast from a screen reader. So the panel closes,
+  and the Undo is in reach for each member. A Mark read has no Undo, so the
+  panel stays open.
+- **The marks of an act live in one store,** `src/lib/shell/needsActs.ts`.
+  So a Done in the bell takes the row off My Day's card too. The store
+  empties when the last reader unmounts. An answer that no longer holds a
+  row drops its marks. A mark ends 30 seconds after the act, so a task that
+  is open again shows again. A new member starts with no marks.
+- **The Undo shows on every page.** My Tasks, the Calendar and My Day mount
+  `UndoToast`, and no other page does. On each other page, Projects among
+  them, `UndoToastFallback` shows the Undo with no keys.
 - **The bell reads the feed each minute** while the tab shows, and each time
   the panel opens. The Projects bell read its list each minute too.
 
@@ -881,13 +895,17 @@ must know this before the flag goes on:
 
 - It shows unread notifications only. The Projects bell also listed the read
   rows.
-- It shows 15 rows from each source at most, and 30 in all.
+- It shows 15 rows from each source at most, and 30 in all. With three
+  sources, the badge counts 45 at most, so "99+" cannot show until more
+  sources join.
 - It has no "Mark all read".
 - It has no separate count of mentions.
 - A notification row opens its task at the feed's link. The Projects bell
   opened the task in the page's own panel.
 
-Fences: `src/lib/shell/shellBell.test.ts` and `e2e/shell-bell.spec.ts`.
+Fences: `src/lib/shell/shellBell.test.ts`, `src/lib/shell/needsActs.test.ts`,
+`e2e/shell-bell.spec.ts`, and `test_total_counts_each_sources_capped_rows_before_the_cut`
+in `tests/unit/test_shell_needs.py`.
 
 ---
 
