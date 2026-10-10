@@ -4965,7 +4965,7 @@ owner took five recommendations.
    code, and it is off for every connection until CRM-Z9.
 4. **One store and one connector seam.** Both modes use the `crm_*` tables, so
    every reader and every AI agent is blind to the mode. A provider is an
-   adapter, and its credential lives in `crm_connections` only.
+   adapter, and its credential lives in `integration_connections` only. *(Amended 2026-10-11: the store is general, not CRM-only, so the Integrations app, WS-54, reads one registry.)*
 5. **CRM follow-ups live in `pm_tasks`.** This applies D52 and D53 to the CRM.
 
 **What it does not change.** D52 still retires ClickUp. D52.4 already allows a
