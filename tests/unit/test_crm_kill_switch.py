@@ -17,6 +17,8 @@ The fence (item 7) walks the REAL gateway app, so a second router under the
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -352,3 +354,41 @@ async def test_search_crm_relays_a_404_as_a_refusal(
 @pytest.mark.parametrize("name", ["CRM_ENABLED", "CRM_ORGS", "crm_orgs"])
 def test_both_names_are_platform_env(name: str) -> None:
     assert is_platform_env(name) is True
+
+
+# ── 10. One reader (R7) ──────────────────────────────────────────────────────
+
+_REPO = Path(__file__).resolve().parents[2]
+_READER = _REPO / "apps/services/gateway/gateway/routes/crm/flags.py"
+
+
+def _setting_readers(roots: list[Path]) -> list[str]:
+    """Each file that reads `.crm_enabled` or `.crm_orgs` as an attribute."""
+    hits: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if ".venv" in path.parts or "node_modules" in path.parts:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in {"crm_enabled", "crm_orgs"}:
+                    hits.append(path.resolve().as_posix())
+                    break
+    return hits
+
+
+def test_flags_is_the_one_reader_of_the_switch() -> None:
+    readers = _setting_readers([_REPO / "apps", _REPO / "packages"])
+    assert readers == [_READER.as_posix()], (
+        "Only routes/crm/flags.py may read settings.crm_enabled or "
+        f"settings.crm_orgs. Readers found: {readers}"
+    )
+
+
+def test_the_one_reader_fence_sees_a_second_reader(tmp_path: Path) -> None:
+    plant = tmp_path / "second.py"
+    plant.write_text("def f(s):\n    return s.crm_orgs\n", encoding="utf-8")
+    assert _setting_readers([tmp_path]) == [plant.resolve().as_posix()]
