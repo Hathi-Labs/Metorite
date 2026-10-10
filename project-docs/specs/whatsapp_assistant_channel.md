@@ -828,14 +828,21 @@ to `WHATSAPP_ASSISTANT_ENABLED` and never replaces it. With the profile on,
 injection seam (`orchestrator._tool_injection._inject_agent_tools`) does three
 things for each agent of the run:
 
-1. **It strips.** The tools of `whatsapp_ui.WITHHELD_TOOLS` leave the scope,
-   the final list and each agent's own tools. They draw web cards, write
-   files, fix code, reach the open web, or build apps. The web prompt blocks
-   leave too: the generative UI directive and the output discipline block.
+1. **It strips the web DELIVERY tools, and only those.** The tools of
+   `whatsapp_ui.WITHHELD_TOOLS` leave the scope, the final list and each
+   agent's own tools. Each one is about HOW an answer reaches the web chat: a
+   card, the todo panel, a file card, an upload, or the web design kits. The
+   web prompt blocks leave too: the generative UI directive and the output
+   discipline block.
+   ⚠️ **The rule (owner, 2026-10-10):** the channel changes delivery, never
+   function. A tool that does something (search, diagnose, build, configure,
+   delegate) stays on WhatsApp, because a member may need it there. The
+   fence asserts that `web_search`, `get_errors`, `app_builder` and
+   `spawn_copilot_agent` stay. The D85 shell block still applies on top.
    We measured the real `orchestrator` on 2026-10-10. A web run sends 39
    tools and 52,073 characters of prompt and tool schemas. A WhatsApp run
-   sends 23 tools (`whatsapp_ui` included) and 28,293 characters, which is
-   46% less on each model request. **Known gap:** a Copilot-shaped agent's
+   sends 31 tools (`whatsapp_ui` included) and 35,189 characters, which is
+   32% less on each model request. **Known gap:** a Copilot-shaped agent's
    addendum keeps its fixed workspace section, which names `write_artifact`
    and `emit_generative_ui` whatever the scope. Every in-tree agent is native
    MAF, so no bot run carries that section today.

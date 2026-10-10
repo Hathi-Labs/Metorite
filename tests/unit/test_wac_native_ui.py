@@ -345,6 +345,10 @@ def test_a_whatsapp_run_strips_the_web_tools_and_blocks(_no_db: None) -> None:
     assert not names & wui.WITHHELD_TOOLS, sorted(names & wui.WITHHELD_TOOLS)
     assert {"whatsapp_ui", "retrieve_entity_context", "projects_assistant",
             "call_agent", "remember", "query_history"} <= names
+    # The owner's rule (2026-10-10): only DELIVERY tools leave. A tool that
+    # does something stays on WhatsApp, the build and set-up ones included.
+    assert {"web_search", "fetch_page", "get_errors", "run_diagnostics",
+            "list_integrations", "spawn_copilot_agent", "app_builder"} <= names
     text = wa.default_options["instructions"]
     assert "Rich UI by default" not in text
     assert not any(m in text for m in OUTPUT_DISCIPLINE_MARKERS)

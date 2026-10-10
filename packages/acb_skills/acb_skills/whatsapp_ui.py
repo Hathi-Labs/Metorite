@@ -6,9 +6,9 @@ Spec: ``project-docs/specs/whatsapp_assistant_channel.md`` §12.
 it is open, the tool injection seam (``orchestrator._tool_injection``) does
 three things for every agent of the run, nested runs too:
 
-* It takes :data:`WITHHELD_TOOLS` away. They draw web cards, write files or
-  fix code, and a WhatsApp member can see none of that. Each one only cost
-  context.
+* It takes :data:`WITHHELD_TOOLS` away: the tools that DELIVER an answer to
+  the web chat. A WhatsApp member can see none of it, so each one only cost
+  context. Every tool that does something stays.
 * It leaves out the web prompt blocks (the generative UI directive and the
   output discipline block).
 * It gives :func:`whatsapp_ui` to the run's OWN agent, and to no agent that
@@ -44,25 +44,26 @@ from urllib.parse import urlsplit, urlunsplit
 
 from acb_skills import whatsapp_render as render
 
-#: The tools a WhatsApp run does not get. Each one draws a web card, writes a
-#: file, fixes code or reaches the open web, and the member's scope is their
-#: own Metorite work (§5.5 "The scope rule"). ``ask_questions`` and
-#: ``request_confirmation`` stay refused by ``refuse_cards`` as well.
+#: The tools a WhatsApp run does not get: the WEB DELIVERY tools only.
+#:
+#: ⚠️ The rule (owner, 2026-10-10): a tool leaves a WhatsApp run only when its
+#: job is HOW an answer reaches the web chat (a card, the side panel, a file
+#: card, an upload, the web design kits). A tool that DOES something (search,
+#: diagnose, build, configure, delegate) stays, whatever its use on a phone,
+#: because a WhatsApp member may need it. The channel changes delivery, never
+#: what the assistant can do. ``whatsapp_ui`` is the WhatsApp delivery tool.
+#: The D85 shell block and the other gates of the seam still apply on top.
 WITHHELD_TOOLS: frozenset[str] = frozenset({
-    # web cards and the web canvas
-    "emit_generative_ui", "ask_questions", "manage_todo_list",
+    # web cards, and the web's own card for a question
+    "emit_generative_ui", "ask_questions",
+    # the "Todos (n/m)" panel above the web chat input
+    "manage_todo_list",
+    # the web design language for cards and reports
     "load_design_system", "load_artifact_kit",
-    # files and shares in the web workspace
+    # a file shows as a web download card, and an upload is a web upload
     "write_artifact", "share_artifact", "read_attachment",
-    # code, diagnostics and set-up
-    "get_errors", "run_diagnostics", "list_integrations", "run_script",
-    "code_task", "run_command", "install_dependency", "spawn_copilot_agent",
-    # the open web, outside the scope rule
-    "web_search", "fetch_page",
-    # a background run answers in the web chat, which this member is not in
+    # a background run posts its answer into the web chat thread
     "call_agent_background",
-    # specialists that build or configure, which a chat on a phone cannot do
-    "app_builder", "apis_config",
 })
 
 #: The most elements one reply sends. More reads as spam on a phone.
