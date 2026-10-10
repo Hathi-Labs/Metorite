@@ -142,6 +142,9 @@ function recorder() {
       error = m;
       log.push("fail");
     },
+    keep: () => {
+      log.push("keep");
+    },
   };
   return { row, log, hidden: () => hidden, error: () => error };
 }
@@ -221,7 +224,8 @@ describe("markDoneFromHome, the optimistic row", () => {
     const f = fakeStore({ backend: "live", items: [{ id: "t1" }] });
     const r = recorder();
     await expect(markDoneFromHome("t1", r.row, f.store)).resolves.toBe("done");
-    expect(r.log).toEqual(["hide"]);
+    // `keep` restarts the hold once the store has begun the write.
+    expect(r.log).toEqual(["hide", "keep"]);
     expect(r.hidden()).toBe(true);
   });
 
@@ -247,7 +251,7 @@ describe("markDoneFromHome, the optimistic row", () => {
     await tick();
     f.state.answerSubtaskPrompt(true);
     await expect(out).resolves.toBe("done");
-    expect(r.log).toEqual(["hide", "show", "hide"]);
+    expect(r.log).toEqual(["hide", "show", "hide", "keep"]);
     expect(f.disposed).toEqual([["p", "DONE"]]);
   });
 
@@ -280,7 +284,7 @@ describe("the store's Undo brings the row back", () => {
     expect(r.hidden()).toBe(true);
     f.state.undoLastChange();
     expect(r.hidden()).toBe(false);
-    expect(r.log).toEqual(["hide", "show"]);
+    expect(r.log).toEqual(["hide", "keep", "show"]);
   });
 
   it("watches nothing when the store holds no Undo for this task", () => {

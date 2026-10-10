@@ -150,6 +150,9 @@ export function rowMover(
       remove(id, false);
       setError(id, message);
     },
+    keep() {
+      remove(id, true);
+    },
   };
 }
 

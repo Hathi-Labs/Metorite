@@ -24,6 +24,7 @@ import {
   resetActs,
   setRowError,
 } from "./needsActs";
+import { rowMover } from "./HomeCard";
 
 const releases: Array<() => void> = [];
 const mount = () => {
@@ -94,6 +95,20 @@ describe("the shared acts store", () => {
     expect(actsSnapshot().removed.has("tasks:a")).toBe(true);
     // An answer after it that still holds the task is the truth: it is live.
     pruneActs(["tasks:a"], ACT_HOLD_MS);
+    expect(actsSnapshot().removed.has("tasks:a")).toBe(false);
+  });
+
+  it("a write that starts late restarts the hold, so a slow hydrate cannot bring the row back", () => {
+    mount();
+    let now = 0;
+    const row = rowMover("tasks:a", (id, gone) => removeRow(id, gone, now), (id, m) => setRowError(id, m, now));
+    row.hide(); // the click, at 0
+    now = ACT_HOLD_MS - 1;
+    row.keep?.(); // the store begins the write, after a cold hydrate
+    // An answer from before the write landed still holds the task.
+    pruneActs(["tasks:a"], ACT_HOLD_MS + 1);
+    expect(actsSnapshot().removed.has("tasks:a")).toBe(true);
+    pruneActs(["tasks:a"], 2 * ACT_HOLD_MS - 1);
     expect(actsSnapshot().removed.has("tasks:a")).toBe(false);
   });
 
