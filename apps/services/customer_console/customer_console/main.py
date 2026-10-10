@@ -141,9 +141,10 @@ from customer_console.decide import (
     questions_of,
 )
 from customer_console.dsml import (
-    declared_tool_names,
+    DsmlPolicy,
     normalise_response,
     normalise_stream,
+    policy_for,
 )
 from customer_console.handlers import DECIDE_TASK, DecidePayload, ProviderResult
 from customer_console.keys import (
@@ -7593,7 +7594,7 @@ async def _streamed_completion(
     declared_task: str | None = None,
     started_at: datetime | None = None,
     request_id: str | None = None,
-    declared_tools: frozenset[str] = frozenset(),
+    dsml_policy: DsmlPolicy | None = None,
 ) -> AsyncIterator[bytes]:
     """Replay the first chunk, relay the rest, and meter the result once.
 
@@ -7655,7 +7656,7 @@ async def _streamed_completion(
         # 🔴 DSML (owner report, 2026-10-11): DeepSeek can write its native
         # tool-call text into `content`. `normalise_stream` turns it into
         # real `tool_calls` deltas, and passes every other chunk unchanged.
-        relayed = normalise_stream(_replayed(), declared_tools)
+        relayed = normalise_stream(_replayed(), dsml_policy or DsmlPolicy())
         async for frame in relay_stream(relayed, on_finish=_on_finish):
             yield frame
     finally:
@@ -7726,6 +7727,16 @@ def _preflight_gates(
         )
 
     return credentials, refusal, hold_refusal
+
+
+def _dsml_policy(req: CompletionRequest) -> DsmlPolicy:
+    """What DSML text in this request's answer may run. `customer_console.dsml`."""
+    return policy_for(
+        tools=req.tools,
+        tool_choice=req.tool_choice,
+        parallel_tool_calls=req.parallel_tool_calls,
+        messages=req.messages,
+    )
 
 
 @app.post("/v1/chat/completions")
@@ -7981,8 +7992,8 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
                 declared_task=req.task,
                 started_at=started_at,
                 request_id=request_id,
-                # Only a tool the REQUEST offered may run from DSML text.
-                declared_tools=declared_tool_names(req.tools, req.tool_choice),
+                # What DSML text may run: offered tools, no echoed input.
+                dsml_policy=_dsml_policy(req),
             ),
             media_type="text/event-stream",
             headers=headers,
@@ -8037,9 +8048,7 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
     # 🔴 DSML (owner report, 2026-10-11): a tool call DeepSeek wrote as text
     # becomes a real `tool_calls` entry, and only for a tool the request
     # offered. `customer_console.dsml` holds the rules.
-    response = normalise_response(
-        response, declared_tool_names(req.tools, req.tool_choice)
-    )
+    response = normalise_response(response, _dsml_policy(req))
     return publish_reasoning_alias(response)
 
 

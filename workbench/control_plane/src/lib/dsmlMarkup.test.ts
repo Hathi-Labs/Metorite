@@ -62,6 +62,26 @@ describe("stripDsmlMarkup", () => {
     expect(stripDsmlMarkup(`done <${T}inv`)).toBe("done ");
   });
 
+  it.each(["```", "~~~", "````"])("keeps a block inside a %s fence as written", (fence) => {
+    const text = `The email says:\n${fence}\n${OWNER}\n${fence}\nThat is all.`;
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+
+  it("keeps an unclosed fence as written", () => {
+    const text = "```text\n" + OWNER;
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+
+  it("strips outside a fence and keeps inside it, in one message", () => {
+    const quoted = "```\n" + OWNER + "\n```\n";
+    expect(stripDsmlMarkup(`${quoted}Now: ${OWNER}`)).toBe(`${quoted}Now: `);
+  });
+
+  it("keeps a marker that never forms a tag", () => {
+    const text = `I saw <${T}hello world. More text follows.`;
+    expect(stripDsmlMarkup(text)).toBe(text);
+  });
+
   it("returns ordinary text as the SAME string", () => {
     const text = "a < b, c | d, a lone " + BAR + " and <b>html</b>";
     expect(stripDsmlMarkup(text)).toBe(text);

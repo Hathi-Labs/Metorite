@@ -24,20 +24,32 @@ Production runs with ``ROUTER_SERVING_ENABLED=true`` (read on the box,
 the agent runtimes through the gateway hop, and the in-product helpers through
 ``acb_llm.routed.completion_on_router``. The Router already normalises this
 vendor's other quirk (:mod:`customer_console.reasoning`), and it is the one
-place that sees the request's declared ``tools`` beside the vendor's answer.
+place that sees the request beside the vendor's answer.
 
 ## The rules
 
-* **A call runs only if the REQUEST offered that tool.** Model text is not a
-  trusted channel. A prompt-injected page could make the model write a DSML
-  block for any name, so a name outside the request's ``tools`` is dropped,
-  and so is every call when ``tool_choice`` is ``"none"``.
-* **Markup never reaches the member.** A block that does not parse, a refused
-  call, and an unterminated block are all removed from the text, and each one
-  logs ``router.dsml_dropped``.
-* **Ordinary text costs nothing.** A chunk with no ``<`` passes through as the
-  same object or the same bytes. The stream holds back only a tail that could
-  still grow into ``<｜DSML｜``, at most six characters.
+Model text is NOT a trusted channel. An email, a web page or a tool result can
+hold a DSML block, and a model that QUOTES it writes the block back out. So a
+call runs only when all five of these hold:
+
+1. **The request offered the tool** (:func:`declared_tool_names`).
+   ``tool_choice="none"`` offers nothing, and a forced choice offers one tool.
+2. **No input message holds DSML** (:func:`input_is_tainted`). If a system,
+   user or tool message carries the marker, the model may be echoing it, so
+   nothing runs (``echoed_input``).
+3. **The block is not inside a code fence.** A fenced block is a quote. It
+   stays visible and it never runs.
+4. **The block is the trailing content.** The vendor template puts calls at
+   the end of the answer. A block with prose after it is removed and never runs
+   (``not_trailing``).
+5. **The block parses**, and ``parallel_tool_calls=false`` keeps only one call.
+
+**Markup outside a fence never reaches the member.** Each block that does not
+run logs ``router.dsml_dropped`` with a ``dsml_reason``.
+
+**Ordinary text costs nothing.** A chunk that the filter does not change is
+yielded as the same object or the same bytes. The stream holds back only a
+tail that could still grow into ``<｜DSML｜``, at most eight characters.
 """
 from __future__ import annotations
 
@@ -51,21 +63,27 @@ from typing import Any
 
 __all__ = [
     "OPEN_MARKER",
+    "DsmlPolicy",
     "DsmlStream",
     "ParsedText",
     "declared_tool_names",
     "extract_tool_calls",
+    "input_is_tainted",
     "normalise_response",
     "normalise_stream",
+    "policy_for",
 ]
 
 _log = logging.getLogger("platform.router")
 
 #: The fullwidth vertical bar DeepSeek uses as its DSML delimiter.
-BAR = "\uff5c"
+BAR = chr(0xFF5C)
 
-#: Every DSML tag starts with this. Text that holds it is never shown.
-OPEN_MARKER = f"<{BAR}DSML{BAR}"
+#: The part every DSML tag shares. A message that holds it holds markup.
+TAG_CORE = f"{BAR}DSML{BAR}"
+
+#: Every opening DSML tag starts with this.
+OPEN_MARKER = f"<{TAG_CORE}"
 
 #: The names a block tag may carry. The owner's report showed ``calls``, the
 #: DeepSeek chat template writes ``function_calls``, and ``tool_calls`` is the
@@ -73,46 +91,57 @@ OPEN_MARKER = f"<{BAR}DSML{BAR}"
 _BLOCK_NAMES = r"(?:function_calls|tool_calls|calls)"
 
 _BLOCK_RE = re.compile(
-    rf"<{BAR}DSML{BAR}(?P<kind>{_BLOCK_NAMES})\s*>(?P<body>.*?)</{BAR}DSML{BAR}(?P=kind)\s*>",
+    rf"<{TAG_CORE}(?P<kind>{_BLOCK_NAMES})\s*>(?P<body>.*?)</{TAG_CORE}(?P=kind)\s*>",
     re.S,
 )
-_CLOSE_RE = re.compile(rf"</{BAR}DSML{BAR}{_BLOCK_NAMES}\s*>")
-_INVOKE_CLOSE_RE = re.compile(rf"</{BAR}DSML{BAR}invoke\s*>")
+_CLOSE_RE = re.compile(rf"</{TAG_CORE}{_BLOCK_NAMES}\s*>")
+_INVOKE_CLOSE_RE = re.compile(rf"</{TAG_CORE}invoke\s*>")
 #: The first tag of a region: a block or an invoke opens one, anything else
 #: (a stray closing tag, a lone parameter) is one tag long.
-_FIRST_TAG_RE = re.compile(rf"<(?P<slash>/?){BAR}DSML{BAR}(?P<name>[A-Za-z_]+)[^>]*>")
+_FIRST_TAG_RE = re.compile(rf"<(?P<slash>/?){TAG_CORE}(?P<name>[A-Za-z_]+)[^<>]*>")
 #: Where a region may start: an opening tag, or a stray closing one.
-_MARK_RE = re.compile(rf"</?{BAR}DSML{BAR}")
-_MARKERS = (OPEN_MARKER, f"</{BAR}DSML{BAR}")
-_OPEN_BLOCK_RE = re.compile(rf"<{BAR}DSML{BAR}{_BLOCK_NAMES}\b[^>]*>")
-_OPEN_REGION_RE = re.compile(rf"<{BAR}DSML{BAR}(?:{_BLOCK_NAMES}|invoke)\b[^>]*>")
+_MARK_RE = re.compile(rf"</?{TAG_CORE}")
+_MARKERS = (OPEN_MARKER, f"</{TAG_CORE}")
+#: A real tag name starts with one of these. A marker followed by anything
+#: else is plain text, not markup.
+_TAG_START_RE = re.compile(r"[A-Za-z_]")
+#: A region whose first tag has not closed within this many characters is
+#: released as text. A real first tag is far shorter.
+MAX_FIRST_TAG = 96
+#: The start of a tag that has not reached its ``>`` yet.
+_TAG_HEAD_RE = re.compile(
+    rf'</?{TAG_CORE}[A-Za-z_]+(?:\s+[A-Za-z_][\w-]*(?:\s*=\s*(?:"[^"]*"?)?)?)*\s*'
+)
 _INVOKE_RE = re.compile(
-    rf"<{BAR}DSML{BAR}invoke(?P<attrs>[^>]*)>(?P<body>.*?)</{BAR}DSML{BAR}invoke\s*>",
+    rf"<{TAG_CORE}invoke(?P<attrs>[^>]*)>(?P<body>.*?)</{TAG_CORE}invoke\s*>",
     re.S,
 )
 _PARAM_RE = re.compile(
-    rf"<{BAR}DSML{BAR}parameter(?P<attrs>[^>]*)>(?P<value>.*?)</{BAR}DSML{BAR}parameter\s*>",
+    rf"<{TAG_CORE}parameter(?P<attrs>[^>]*)>(?P<value>.*?)</{TAG_CORE}parameter\s*>",
     re.S,
 )
 _ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"')
-#: Any single DSML tag, for the clean-up pass after the blocks are gone.
-_ANY_TAG_RE = re.compile(rf"</?{BAR}DSML{BAR}[^>]*>")
+#: A CommonMark fence line: up to three spaces, then three or more ` or ~.
+_FENCE_LINE_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 
 
 class _Malformed(ValueError):
     """One invoke that cannot become a tool call."""
 
 
-@dataclass
-class ParsedText:
-    """What one piece of assistant text holds once its DSML is read."""
+# ── What the request allows ─────────────────────────────────────────────────
 
-    #: The text with every DSML block and stray tag removed.
-    content: str
-    #: OpenAI-shaped calls: ``{id, type: "function", function: {name, arguments}}``.
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    #: True when ANY markup was found, parsed or not.
-    found: bool = False
+
+@dataclass(frozen=True)
+class DsmlPolicy:
+    """What one request lets DSML text do."""
+
+    #: The tool names a DSML call may use. Empty means none may run.
+    declared: frozenset[str] = frozenset()
+    #: An input message holds DSML, so the answer may echo it. Nothing runs.
+    tainted: bool = False
+    #: ``parallel_tool_calls=false``: at most ONE call in the turn.
+    single_call: bool = False
 
 
 def declared_tool_names(tools: Any, tool_choice: Any = None) -> frozenset[str]:
@@ -121,7 +150,9 @@ def declared_tool_names(tools: Any, tool_choice: Any = None) -> frozenset[str]:
     ⚠️ ``tool_choice="none"`` empties the set. The caller offered the tools to
     describe them and forbade a call, and model text must not overrule that.
     A forced choice (``{"type": "function", "function": {"name": ...}}``)
-    narrows the set to that one tool, for the same reason.
+    narrows the set to that one tool, for the same reason. Both the Chat
+    Completions shape (``{"function": {"name": ...}}``) and the Responses
+    shape (``{"type": "function", "name": ...}``) are read.
     """
     if tool_choice == "none" or not isinstance(tools, list):
         return frozenset()
@@ -133,14 +164,70 @@ def declared_tool_names(tools: Any, tool_choice: Any = None) -> frozenset[str]:
         name = fn.get("name") if isinstance(fn, dict) else tool.get("name")
         if isinstance(name, str) and name:
             names.add(name)
-    forced = tool_choice.get("function") if isinstance(tool_choice, dict) else None
-    if isinstance(forced, dict) and isinstance(forced.get("name"), str):
-        names &= {forced["name"]}
+    if isinstance(tool_choice, dict):
+        forced = tool_choice.get("function")
+        forced_name = forced.get("name") if isinstance(forced, dict) else tool_choice.get("name")
+        if isinstance(forced_name, str):
+            names &= {forced_name}
     return frozenset(names)
 
 
+def _texts(content: Any) -> Iterable[str]:
+    if isinstance(content, str):
+        yield content
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, str):
+                yield part
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                yield part["text"]
+
+
+def input_is_tainted(messages: Any) -> bool:
+    """True when a system, user or tool message holds DSML markup.
+
+    🔴 **The echo attack.** An email body holds a DSML block. The member asks
+    to see the email, the model quotes it, and a Router that read every block
+    would run the quoted call. A request whose INPUT already carries the
+    marker cannot tell an echo from a call, so it runs none.
+
+    ⚠️ Assistant turns do not count. They are the model's own earlier output,
+    and a message stored before this fix can hold the markup.
+    """
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") == "assistant":
+            continue
+        if any(TAG_CORE in text for text in _texts(message.get("content"))):
+            return True
+    return False
+
+
+def policy_for(
+    *,
+    tools: Any,
+    tool_choice: Any = None,
+    parallel_tool_calls: Any = None,
+    messages: Any = None,
+) -> DsmlPolicy:
+    """The one place a request becomes a :class:`DsmlPolicy`."""
+    return DsmlPolicy(
+        declared=declared_tool_names(tools, tool_choice),
+        tainted=input_is_tainted(messages),
+        single_call=parallel_tool_calls is False,
+    )
+
+
+def _as_policy(policy: DsmlPolicy | frozenset[str]) -> DsmlPolicy:
+    return policy if isinstance(policy, DsmlPolicy) else DsmlPolicy(declared=frozenset(policy))
+
+
+# ── One region of markup ────────────────────────────────────────────────────
+
+
 def _attrs(raw: str) -> dict[str, str]:
-    return {k: v for k, v in _ATTR_RE.findall(raw or "")}
+    return dict(_ATTR_RE.findall(raw or ""))
 
 
 def _value(raw: str, string_flag: str | None) -> Any:
@@ -202,128 +289,60 @@ def _call_from_invoke(inv: re.Match[str], declared: frozenset[str]) -> dict[str,
     return _new_call(name, args)
 
 
-def _calls_from_block(body: str, declared: frozenset[str]) -> list[dict[str, Any]]:
-    """Every allowed call in one block. A bad invoke is dropped, not fatal."""
+def _calls_from_region(raw: str, policy: DsmlPolicy) -> list[dict[str, Any]]:
+    """The calls one closed region asks for, after the request's rules."""
+    first = _FIRST_TAG_RE.match(raw)
+    if first is None or first.group("slash") or first.group("name") not in (
+        "invoke", "calls", "function_calls", "tool_calls"
+    ):
+        _drop("stray_tag")
+        return []
+    if policy.tainted:
+        _drop("echoed_input")
+        return []
+    if first.group("name") == "invoke":
+        inv = _INVOKE_RE.match(raw)
+        if inv is None:
+            _drop("malformed_invoke", dsml_detail="unreadable invoke")
+            return []
+        call = _call_from_invoke(inv, policy.declared)
+        return [call] if call is not None else []
+    match = _BLOCK_RE.match(raw)
+    if match is None:
+        _drop("malformed_block")
+        return []
+    body = match.group("body")
     invokes = list(_INVOKE_RE.finditer(body))
     if not invokes:
         _drop("block_without_invoke")
         return []
     if _INVOKE_RE.sub("", body).strip():
         _drop("block_holds_text_outside_invokes")
-    return [c for c in (_call_from_invoke(inv, declared) for inv in invokes) if c is not None]
+    found = (_call_from_invoke(inv, policy.declared) for inv in invokes)
+    return [c for c in found if c is not None]
 
 
-def extract_tool_calls(text: str, declared: frozenset[str]) -> ParsedText:
-    """Read every DSML block out of *text*. Never raises.
+# ── The state machine ───────────────────────────────────────────────────────
 
-    Returns the visible text and the calls. A text with no marker comes back
-    as itself, with ``found`` False.
+
+def _not_a_tag(region: str) -> bool:
+    """True when the text after a marker can no longer become a DSML tag.
+
+    A first tag that closes within :data:`MAX_FIRST_TAG` characters is a tag.
+    Text that has no ``>`` yet is still a candidate only while it reads like
+    the head of one: a name, then ``attr="value"`` pairs.
     """
-    if not isinstance(text, str) or (
-        OPEN_MARKER not in text and f"</{BAR}DSML{BAR}" not in text
-    ):
-        return ParsedText(content=text)
-    calls: list[dict[str, Any]] = []
-
-    def _take_block(match: re.Match[str]) -> str:
-        calls.extend(_calls_from_block(match.group("body"), declared))
-        return ""
-
-    def _take_invoke(match: re.Match[str]) -> str:
-        # An invoke with no block around it is still a call the model meant.
-        call = _call_from_invoke(match, declared)
-        if call is not None:
-            calls.append(call)
-        return ""
-
-    rest = _BLOCK_RE.sub(_take_block, text)
-    # A block that opens and never closes (a truncated answer) is dropped with
-    # everything after it, complete invokes included. The stream does the
-    # same, and a truncated block may have lost the call that mattered.
-    unclosed = _OPEN_BLOCK_RE.search(rest)
-    if unclosed is not None:
-        _drop("unterminated_block")
-        rest = rest[: unclosed.start()]
-    rest = _INVOKE_RE.sub(_take_invoke, rest)
-    # An invoke that opens and never closes never runs with half its arguments.
-    unclosed = _OPEN_REGION_RE.search(rest)
-    if unclosed is not None:
-        _drop("unterminated_invoke")
-        rest = rest[: unclosed.start()]
-    if _ANY_TAG_RE.search(rest):
-        _drop("stray_tag")
-        rest = _ANY_TAG_RE.sub("", rest)
-    if OPEN_MARKER in rest:
-        # A bare marker with no closing ">" at the very end of the text.
-        _drop("unterminated_tag")
-        rest = rest[: rest.find(OPEN_MARKER)]
-    return ParsedText(content=rest, tool_calls=calls, found=True)
-
-
-# ── Buffered responses ──────────────────────────────────────────────────────
-
-
-def _field(obj: Any, name: str) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(name)
-    return getattr(obj, name, None)
-
-
-def _has_marker(response: Any) -> bool:
-    for choice in _field(response, "choices") or []:
-        content = _field(_field(choice, "message"), "content")
-        if isinstance(content, str) and f"{BAR}DSML{BAR}" in content:
-            return True
-    return False
-
-
-def normalise_response(response: Any, declared: frozenset[str]) -> Any:
-    """Move DSML calls in a buffered completion into ``message.tool_calls``.
-
-    ⚠️ **A response with no marker is returned as the SAME object**, so every
-    other completion keeps its exact shape. Only a response that holds a
-    marker is re-built as a dict, and FastAPI encodes a dict the same way.
-
-    ⚠️ **Swallows its own failures.** A shape we cannot walk is a reason to
-    leave the text alone, never a reason to lose a paid completion.
-    """
-    try:
-        if not _has_marker(response):
-            return response
-        dump = getattr(response, "model_dump", None)
-        body: dict[str, Any] = (
-            dump(mode="json") if callable(dump) else json.loads(json.dumps(response, default=str))
-        )
-        for choice in body.get("choices") or []:
-            message = choice.get("message")
-            if not isinstance(message, dict):
-                continue
-            parsed = extract_tool_calls(message.get("content"), declared)
-            if not parsed.found:
-                continue
-            text = parsed.content if parsed.content.strip() else ""
-            if parsed.tool_calls:
-                existing = message.get("tool_calls") or []
-                message["tool_calls"] = [*existing, *parsed.tool_calls]
-                message["content"] = text or None
-                if choice.get("finish_reason") in (None, "stop"):
-                    choice["finish_reason"] = "tool_calls"
-            else:
-                message["content"] = text
-        return body
-    except Exception:
-        _log.exception("router.dsml_normalise_failed")
-        return response
-
-
-# ── Streams ─────────────────────────────────────────────────────────────────
+    first = _FIRST_TAG_RE.match(region)
+    if first is not None:
+        return first.end() > MAX_FIRST_TAG
+    return len(region) > MAX_FIRST_TAG or _TAG_HEAD_RE.fullmatch(region) is None
 
 
 def _tail_that_may_grow(text: str) -> int:
-    """How many trailing characters could still become :data:`OPEN_MARKER`."""
+    """How many trailing characters could still become a DSML marker."""
     best = 0
     for marker in _MARKERS:
-        for k in range(min(len(marker) - 1, len(text)), best, -1):
+        for k in range(min(len(marker), len(text)), best, -1):
             if text.endswith(marker[:k]):
                 best = k
                 break
@@ -331,86 +350,148 @@ def _tail_that_may_grow(text: str) -> int:
 
 
 @dataclass
+class _Fence:
+    """Tracks whether the text shown so far sits inside a code fence."""
+
+    open: str | None = None
+    line: str = ""
+
+    def push(self, text: str) -> None:
+        parts = text.split("\n")
+        for i, part in enumerate(parts):
+            if i:
+                self._end_line()
+            if len(self.line) < 80:
+                self.line += part[: 80 - len(self.line)]
+
+    def _end_line(self) -> None:
+        match = _FENCE_LINE_RE.fullmatch(self.line)
+        self.line = ""
+        if match is None:
+            return
+        run, rest = match.group(1), match.group(2)
+        if self.open is None:
+            # A backtick fence may not hold a backtick in its info string.
+            if not (run[0] == "`" and "`" in rest):
+                self.open = run
+        elif run[0] == self.open[0] and len(run) >= len(self.open) and not rest.strip():
+            self.open = None
+
+    @property
+    def inside(self) -> bool:
+        return self.open is not None
+
+
+@dataclass
 class _Choice:
     held: str = ""
-    block: str | None = None
-    calls_out: int = 0
+    region: str | None = None
+    #: Calls from the trailing group, held until the choice finishes.
+    pending: list[dict[str, Any]] = field(default_factory=list)
     native_next: int = 0
+    calls_out: int = 0
     finished: bool = False
+    saw_markup: bool = False
+    fence: _Fence = field(default_factory=_Fence)
 
 
 class DsmlStream:
-    """The per-stream state that turns text deltas into tool-call deltas.
+    """The per-stream state that turns DSML text into tool calls.
 
-    One instance per stream. :meth:`feed` takes one choice's text delta and
-    returns what may be shown now, plus any calls that just completed.
+    One instance per stream (or per buffered answer). :meth:`feed` takes one
+    choice's text and returns what may be shown now. :meth:`finish` ends the
+    choice and returns the calls that may run.
+
+    ⚠️ **Calls leave only at the finish.** A block runs only if it is the
+    trailing content, and that is not known until the text ends. Holding the
+    calls also means their indexes follow every vendor call in the turn.
     """
 
-    def __init__(self, declared: frozenset[str]) -> None:
-        self._declared = declared
+    def __init__(self, policy: DsmlPolicy | frozenset[str]) -> None:
+        self._policy = _as_policy(policy)
         self._choices: dict[int, _Choice] = {}
 
     def _state(self, index: int) -> _Choice:
         return self._choices.setdefault(index, _Choice())
-
-    @property
-    def idle(self) -> bool:
-        """No choice holds text back or owes a finish reason.
-
-        A chunk with no ``<`` may then pass as is. A choice that sent a call
-        and has not finished yet is NOT idle: its ``stop`` must still become
-        ``tool_calls``.
-        """
-        return all(
-            c.held == "" and c.block is None and (c.calls_out == 0 or c.finished)
-            for c in self._choices.values()
-        )
 
     def note_native(self, index: int, tool_calls: Any) -> None:
         """Remember the vendor's own call indexes, so ours never collide."""
         st = self._state(index)
         for call in tool_calls or []:
             i = _field(call, "index")
-            if isinstance(i, int) and i + 1 > st.native_next:
+            if not isinstance(i, int):
+                i = st.native_next
+            if i + 1 > st.native_next:
                 st.native_next = i + 1
 
-    def feed(self, index: int, text: str) -> tuple[str, list[dict[str, Any]]]:
+    def saw_markup(self, index: int) -> bool:
+        return self._state(index).saw_markup
+
+    def _show(self, st: _Choice, text: str, out: list[str]) -> None:
+        if not text:
+            return
+        out.append(text)
+        st.fence.push(text)
+        if st.pending and text.strip():
+            # 🔴 Prose after a block: the block was not the trailing content.
+            _drop("not_trailing", dsml_calls=len(st.pending))
+            st.pending = []
+
+    def feed(self, index: int, text: str) -> str:
+        """Take one text delta. Returns the text that may be shown now."""
         st = self._state(index)
-        shown: list[str] = []
-        calls: list[dict[str, Any]] = []
+        out: list[str] = []
         data = st.held + text
         st.held = ""
         while data:
-            if st.block is None:
-                mark = _MARK_RE.search(data)
-                if mark is not None:
-                    shown.append(data[: mark.start()])
-                    st.block = ""
-                    data = data[mark.start() :]
-                    continue
-                keep = _tail_that_may_grow(data)
-                shown.append(data[: len(data) - keep])
-                st.held = data[len(data) - keep :]
-                break
-            # Inside a region: swallow until it closes. The search starts a
-            # little before the new text, because the closing tag itself can
-            # be split across two deltas.
-            start = max(0, len(st.block) - 32)
-            st.block += data
+            if st.region is None:
+                data = self._outside(st, data, out)
+                continue
+            start = max(0, len(st.region) - 32)
+            st.region += data
             data = ""
-            end = self._region_end(st.block, start)
+            if _not_a_tag(st.region):
+                # No tag formed: the marker was text after all. Show the
+                # marker and scan the rest again, so a later real block in
+                # the same text is still found.
+                data, st.region = st.region, None
+                lead = _MARK_RE.match(data)
+                cut = lead.end() if lead else 1
+                self._show(st, data[:cut], out)
+                data = data[cut:]
+                continue
+            end = self._region_end(st.region, start)
             if end is None:
                 break
-            raw, data = st.block[:end], st.block[end:]
-            st.block = None
-            parsed = extract_tool_calls(raw, self._declared)
-            shown.append(parsed.content)
-            calls.extend(self._indexed(st, parsed.tool_calls))
-        return "".join(shown), calls
+            raw, data = st.region[:end], st.region[end:]
+            st.region = None
+            st.pending.extend(_calls_from_region(raw, self._policy))
+        return "".join(out)
+
+    def _outside(self, st: _Choice, data: str, out: list[str]) -> str:
+        """Scan text outside any region. Returns what is left to scan."""
+        mark = _MARK_RE.search(data)
+        if mark is None:
+            keep = _tail_that_may_grow(data)
+            self._show(st, data[: len(data) - keep], out)
+            st.held = data[len(data) - keep :]
+            return ""
+        self._show(st, data[: mark.start()], out)
+        after = data[mark.end() :]
+        if not after:
+            st.held = data[mark.start() :]
+            return ""
+        if st.fence.inside or not _TAG_START_RE.match(after):
+            # A quote inside a fence, or a marker with no tag name: text.
+            self._show(st, mark.group(0), out)
+            return after
+        st.region = ""
+        st.saw_markup = True
+        return data[mark.start() :]
 
     @staticmethod
     def _region_end(region: str, start: int) -> int | None:
-        """Where the region that starts at :data:`OPEN_MARKER` ends, or None.
+        """Where the region that starts at a marker ends, or None.
 
         A block tag waits for its closing block tag, and an invoke tag for its
         closing invoke tag. Any other tag is a region of its own, so a stray
@@ -431,30 +512,131 @@ class DsmlStream:
         close = closer.search(region, max(start, first.end()))
         return close.end() if close is not None else None
 
-    def finish(self, index: int) -> str:
-        """End one choice. Returns held text that turned out to be plain text."""
+    def finish(self, index: int) -> tuple[str, list[dict[str, Any]]]:
+        """End one choice. Returns the last text and the calls that may run."""
         st = self._state(index)
+        out: list[str] = []
+        if st.held:
+            held, st.held = st.held, ""
+            self._show(st, held, out)
+        if st.region is not None:
+            _drop("unterminated_block", dsml_chars=len(st.region))
+            st.region = None
+        calls, st.pending = st.pending, []
+        if self._policy.single_call:
+            room = max(0, 1 - st.native_next)
+            if len(calls) > room:
+                _drop("parallel_disabled", dsml_calls=len(calls) - room)
+                calls = calls[:room]
         st.finished = True
-        out = st.held
-        st.held = ""
-        if st.block is not None:
-            _drop("unterminated_block", dsml_chars=len(st.block))
-            st.block = None
-        return out
+        return "".join(out), calls
 
-    def calls_emitted(self, index: int) -> int:
-        return self._state(index).calls_out
-
-    def pending(self) -> Iterable[int]:
-        return [i for i, c in self._choices.items() if c.held or c.block is not None]
-
-    @staticmethod
-    def _indexed(st: _Choice, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def indexed(self, index: int, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Give each call its stream index, after every vendor call."""
+        st = self._state(index)
         out = []
         for call in calls:
             out.append({"index": st.native_next + st.calls_out, **call})
             st.calls_out += 1
         return out
+
+    def calls_emitted(self, index: int) -> int:
+        return self._state(index).calls_out
+
+    def unfinished(self) -> list[int]:
+        return [i for i, c in self._choices.items() if not c.finished]
+
+
+# ── Buffered text and responses ─────────────────────────────────────────────
+
+
+@dataclass
+class ParsedText:
+    """What one piece of assistant text holds once its DSML is read."""
+
+    #: The text with every unfenced DSML region removed.
+    content: str
+    #: OpenAI-shaped calls: ``{id, type: "function", function: {name, arguments}}``.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    #: True when markup outside a fence was found, parsed or not.
+    found: bool = False
+
+
+def extract_tool_calls(
+    text: str, policy: DsmlPolicy | frozenset[str], *, native: int = 0
+) -> ParsedText:
+    """Read the DSML out of one whole answer. Never raises.
+
+    It runs the SAME machine as the stream, in one step, so the buffered and
+    the streamed path cannot disagree. ``native`` is the number of calls the
+    vendor already made in this turn.
+    """
+    if not isinstance(text, str) or TAG_CORE not in text:
+        return ParsedText(content=text)
+    machine = DsmlStream(policy)
+    machine.note_native(0, [{"index": i} for i in range(native)])
+    shown = machine.feed(0, text)
+    tail, calls = machine.finish(0)
+    return ParsedText(content=shown + tail, tool_calls=calls, found=machine.saw_markup(0))
+
+
+def _field(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _has_marker(response: Any) -> bool:
+    for choice in _field(response, "choices") or []:
+        content = _field(_field(choice, "message"), "content")
+        if isinstance(content, str) and TAG_CORE in content:
+            return True
+    return False
+
+
+def normalise_response(response: Any, policy: DsmlPolicy | frozenset[str]) -> Any:
+    """Move DSML calls in a buffered completion into ``message.tool_calls``.
+
+    ⚠️ **A response with no unfenced marker is returned as the SAME object**,
+    so every other completion keeps its exact shape. Only a response that the
+    filter changes is re-built as a dict, and FastAPI encodes a dict the same
+    way.
+
+    ⚠️ **Swallows its own failures.** A shape we cannot walk is a reason to
+    leave the text alone, never a reason to lose a paid completion.
+    """
+    try:
+        if not _has_marker(response):
+            return response
+        dump = getattr(response, "model_dump", None)
+        body: dict[str, Any] = (
+            dump(mode="json") if callable(dump) else json.loads(json.dumps(response, default=str))
+        )
+        changed = False
+        for choice in body.get("choices") or []:
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            existing = message.get("tool_calls") or []
+            parsed = extract_tool_calls(message.get("content"), policy, native=len(existing))
+            if not parsed.found:
+                continue
+            changed = True
+            text = parsed.content if parsed.content.strip() else ""
+            if parsed.tool_calls:
+                message["tool_calls"] = [*existing, *parsed.tool_calls]
+                message["content"] = text or None
+                if choice.get("finish_reason") in (None, "stop"):
+                    choice["finish_reason"] = "tool_calls"
+            else:
+                message["content"] = text
+        return body if changed else response
+    except Exception:
+        _log.exception("router.dsml_normalise_failed")
+        return response
+
+
+# ── Streams ─────────────────────────────────────────────────────────────────
 
 
 _DATA = b"data:"
@@ -478,121 +660,127 @@ def _encode(body: dict[str, Any]) -> bytes:
     return b"data: " + json.dumps(body, ensure_ascii=False).encode("utf-8") + b"\n\n"
 
 
-def _may_hold_marker_bytes(frame: bytes) -> bool:
-    # Python's encoder never escapes `<`, but other encoders write it as a
-    # `\u003c` escape. Either spelling sends the frame through the parser.
-    return b"<" in frame or b"\\u003c" in frame.lower()
+def _plan(state: DsmlStream, chunk: Any) -> dict[int, dict[str, Any]]:
+    """Run one chunk through the machine. Returns the edits, by choice position.
 
-
-def _may_hold_marker_obj(chunk: Any) -> bool:
-    for choice in _field(chunk, "choices") or []:
-        content = _field(_field(choice, "delta"), "content")
-        if isinstance(content, str) and "<" in content:
-            return True
-    return False
-
-
-def _note_native(state: DsmlStream, chunk: Any) -> None:
-    """Record the vendor's own call indexes from a chunk that passes as is."""
-    for choice in _field(chunk, "choices") or []:
-        calls = _field(_field(choice, "delta"), "tool_calls")
+    Reads the chunk without copying it, so a chunk that needs no edit costs
+    one attribute walk and nothing else.
+    """
+    edits: dict[int, dict[str, Any]] = {}
+    for pos, choice in enumerate(_field(chunk, "choices") or []):
+        index = _field(choice, "index")
+        index = index if isinstance(index, int) else 0
+        delta = _field(choice, "delta")
+        state.note_native(index, _field(delta, "tool_calls"))
+        content = _field(delta, "content")
+        shown = state.feed(index, content) if isinstance(content, str) and content else ""
+        calls: list[dict[str, Any]] = []
+        finish = _field(choice, "finish_reason")
+        if finish:
+            tail, ready = state.finish(index)
+            shown += tail
+            calls = state.indexed(index, ready)
+        edit: dict[str, Any] = {}
+        if (isinstance(content, str) and shown != content) or (
+            not isinstance(content, str) and shown
+        ):
+            edit["content"] = shown
         if calls:
-            index = _field(choice, "index")
-            state.note_native(index if isinstance(index, int) else 0, calls)
+            edit["tool_calls"] = calls
+        if finish == "stop" and state.calls_emitted(index):
+            edit["finish_reason"] = "tool_calls"
+        if edit:
+            edits[pos] = edit
+    return edits
 
 
-def _rewrite(state: DsmlStream, body: dict[str, Any]) -> bool:
-    """Apply the filter to one chunk dict in place. True when it changed."""
-    changed = False
-    for choice in body.get("choices") or []:
-        if not isinstance(choice, dict):
-            continue
-        index = choice.get("index") if isinstance(choice.get("index"), int) else 0
+def _apply(body: dict[str, Any], edits: dict[int, dict[str, Any]]) -> None:
+    choices = body.get("choices") or []
+    for pos, edit in edits.items():
+        choice = choices[pos]
         delta = choice.get("delta")
         if not isinstance(delta, dict):
-            delta = {}
-        state.note_native(index, delta.get("tool_calls"))
-        content = delta.get("content")
-        shown, calls = ("", [])
-        if isinstance(content, str) and content:
-            shown, calls = state.feed(index, content)
-        finish = choice.get("finish_reason")
-        if finish:
-            shown += state.finish(index)
-        if (isinstance(content, str) and shown != content) or (not isinstance(content, str) and shown):
-            delta["content"] = shown
-            changed = True
-        if calls:
-            delta["tool_calls"] = [*(delta.get("tool_calls") or []), *calls]
-            changed = True
-        if changed and delta and choice.get("delta") is not delta:
-            choice["delta"] = delta
-        if finish == "stop" and state.calls_emitted(index):
-            choice["finish_reason"] = "tool_calls"
-            changed = True
-    return changed
+            delta = choice["delta"] = {}
+        if "content" in edit:
+            delta["content"] = edit["content"]
+        if "tool_calls" in edit:
+            delta["tool_calls"] = [*(delta.get("tool_calls") or []), *edit["tool_calls"]]
+        if "finish_reason" in edit:
+            choice["finish_reason"] = edit["finish_reason"]
 
 
-def _flush_chunk(state: DsmlStream, last: dict[str, Any] | None) -> dict[str, Any] | None:
-    """A closing chunk for text still held when the stream ended without a finish."""
+def _head(chunk: Any) -> dict[str, Any]:
+    return {k: v for k in ("id", "object", "created", "model") if (v := _field(chunk, k))}
+
+
+def _flush_chunk(state: DsmlStream, head: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A closing chunk for a stream that ended without a finish reason."""
     choices = []
-    for index in state.pending():
-        text = state.finish(index)
+    for index in state.unfinished():
+        text, ready = state.finish(index)
+        calls = state.indexed(index, ready)
+        if not text and not calls:
+            continue
+        delta: dict[str, Any] = {}
         if text:
-            choices.append({"index": index, "delta": {"content": text}})
+            delta["content"] = text
+        if calls:
+            delta["tool_calls"] = calls
+        choices.append({"index": index, "delta": delta})
     if not choices:
         return None
-    head = {k: last[k] for k in ("id", "object", "created", "model") if last and k in last}
-    head.setdefault("object", "chat.completion.chunk")
-    return {**head, "choices": choices}
+    return {"object": "chat.completion.chunk", **(head or {}), "choices": choices}
 
 
-async def normalise_stream(source: Any, declared: frozenset[str]) -> AsyncIterator[Any]:
+async def normalise_stream(
+    source: Any, policy: DsmlPolicy | frozenset[str]
+) -> AsyncIterator[Any]:
     """Relay *source*, turning DSML text deltas into ``tool_calls`` deltas.
 
     Yields ONE chunk for each chunk in, so usage frames and finish reasons
-    keep their place, plus at most one closing chunk.
+    keep their place, plus at most one closing chunk before the end.
 
     ⚠️ **A chunk that is not changed is yielded as the same object.** A byte
     frame stays the same bytes, which keeps ``relay_stream``'s byte-identity
     promise for every stream with no DSML in it. A changed object chunk is
     yielded as a dict, and ``frame_of`` already serialises a dict.
     """
-    state = DsmlStream(declared)
-    last: dict[str, Any] | None = None
+    state = DsmlStream(policy)
+    head: dict[str, Any] | None = None
     async for chunk in source:
-        if isinstance(chunk, (bytes, bytearray)):
+        raw = isinstance(chunk, (bytes, bytearray))
+        if raw:
             frame = bytes(chunk)
             if frame.strip() == b"data: [DONE]":
-                flush = _flush_chunk(state, last)
+                flush = _flush_chunk(state, head)
                 if flush is not None:
                     yield _encode(flush)
                 yield frame
                 continue
-            if state.idle and not _may_hold_marker_bytes(frame):
-                if b"tool_calls" in frame:
-                    _note_native(state, _frame_body(frame))
+            view: Any = _frame_body(frame)
+            if view is None:
                 yield frame
                 continue
-            body = _frame_body(frame)
-            if body is None:
-                yield frame
-                continue
-            last = body
-            yield _encode(body) if _rewrite(state, body) else frame
-            continue
-        if state.idle and not _may_hold_marker_obj(chunk):
-            _note_native(state, chunk)
+        else:
+            view = chunk
+        edits = _plan(state, view)
+        head = _head(view) or head
+        if not edits:
             yield chunk
+            continue
+        if raw:
+            _apply(view, edits)
+            yield _encode(view)
             continue
         dump = getattr(chunk, "model_dump", None)
         try:
             body = dump(mode="json", exclude_none=True) if callable(dump) else dict(chunk)
         except Exception:
+            _log.exception("router.dsml_chunk_unreadable")
             yield chunk
             continue
-        last = body
-        yield body if _rewrite(state, body) else chunk
-    flush = _flush_chunk(state, last)
+        _apply(body, edits)
+        yield body
+    flush = _flush_chunk(state, head)
     if flush is not None:
         yield flush

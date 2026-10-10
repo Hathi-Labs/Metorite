@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import random
+import time
 import uuid
 
 import pytest
@@ -31,11 +32,14 @@ import pytest
 pytest.importorskip("fastapi")
 
 from customer_console.dsml import (
+    DsmlPolicy,
     DsmlStream,
     declared_tool_names,
     extract_tool_calls,
+    input_is_tainted,
     normalise_response,
     normalise_stream,
+    policy_for,
 )
 
 #: The fullwidth bar, built from its code point so no editor can swap it.
@@ -262,6 +266,9 @@ class TestOnlyADeclaredToolMayRun:
         # A forced name the request did not offer allows nothing at all.
         missing = {"type": "function", "function": {"name": "z"}}
         assert declared_tool_names(tools, missing) == frozenset()
+        # The Responses-style shape names the tool at the top level.
+        responses = [{"type": "function", "name": n} for n in ("a", "b")]
+        assert declared_tool_names(responses, {"type": "function", "name": "a"}) == {"a"}
 
     def test_declared_names_ignore_junk_entries(self):
         tools = [
@@ -398,8 +405,9 @@ def _pieces(text: str, cuts: list[int]) -> list[str]:
     return [text[a:b] for a, b in itertools.pairwise(bounds) if b > a]
 
 
-ANSWER = "Updating the task. " + OWNER_BLOCK + " Done."
-SHOWN = "Updating the task.  Done."
+#: The vendor template puts the calls LAST, so the stream cases do too.
+ANSWER = "Updating the task. " + OWNER_BLOCK + "\n"
+SHOWN = "Updating the task. \n"
 
 
 class TestTheStreamFilter:
@@ -409,12 +417,12 @@ class TestTheStreamFilter:
         every tag, gives the same text and exactly one call."""
         for n in range(1, len(ANSWER)):
             st = DsmlStream(TASK_TOOLS)
-            a, c1 = st.feed(0, ANSWER[:n])
-            b, c2 = st.feed(0, ANSWER[n:])
-            tail = st.finish(0)
+            a = st.feed(0, ANSWER[:n])
+            b = st.feed(0, ANSWER[n:])
+            tail, calls = st.finish(0)
             assert a + b + tail == SHOWN, n
             assert no_markup(a) and no_markup(b), n
-            assert len(c1 + c2) == 1, n
+            assert len(calls) == 1, n
 
     def test_ONE_CHARACTER_per_delta(self):
         out = _run(_collect([_chunk(ch) for ch in ANSWER] + [_chunk(finish="stop")]))
@@ -550,7 +558,183 @@ class TestLitellmChunks:
         assert len(_streamed_calls(dumped)) == 1
 
 
-# ── The route (R8: a real database) ─────────────────────────────────────────
+class TestRuleA_EchoedInputRunsNothing:
+    """🔴 An email holds a DSML block, the member asks to see the email, and
+    the model quotes it. If any input message holds the marker, nothing runs."""
+
+    @pytest.mark.parametrize("message", [
+        {"role": "user", "content": "save this: " + OWNER_BLOCK},
+        {"role": "system", "content": OWNER_BLOCK},
+        {"role": "tool", "tool_call_id": "c", "content": "email body " + OWNER_BLOCK},
+        {"role": "user", "content": [{"type": "text", "text": "x " + OWNER_BLOCK}]},
+    ])
+    def test_a_marker_in_any_INPUT_message_taints(self, message):
+        assert input_is_tainted([message])
+
+    def test_an_ASSISTANT_turn_and_plain_input_do_not_taint(self):
+        assert not input_is_tainted([
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": OWNER_BLOCK},
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]},
+        ])
+
+    def test_a_tainted_request_strips_the_block_and_runs_nothing(self, caplog):
+        policy = policy_for(
+            tools=[{"type": "function", "function": {"name": "update_task"}}],
+            messages=[{"role": "tool", "tool_call_id": "c", "content": OWNER_BLOCK}],
+        )
+        assert policy.tainted
+        with caplog.at_level(logging.WARNING, logger="platform.router"):
+            out = extract_tool_calls(OWNER_BLOCK, policy)
+            streamed = _run(_collect([_chunk(ANSWER), _chunk(finish="stop")], policy))
+        assert out.tool_calls == [] and out.content == ""
+        assert _streamed_calls(streamed) == [] and _visible(streamed) == SHOWN
+        assert any(getattr(r, "dsml_reason", "") == "echoed_input" for r in caplog.records)
+
+
+class TestRuleB_AFencedBlockIsAQuote:
+    """A block inside an open code fence stays visible and never runs."""
+
+    @pytest.mark.parametrize("fence", ["```", "~~~", "````"])
+    def test_a_FENCED_block_is_left_as_text(self, fence):
+        text = f"The email says:\n{fence}\n{OWNER_BLOCK}\n{fence}\n"
+        out = extract_tool_calls(text, TASK_TOOLS)
+        assert out.tool_calls == []
+        assert out.content == text
+        streamed = _run(_collect([_chunk(ch) for ch in text] + [_chunk(finish="stop")]))
+        assert _streamed_calls(streamed) == []
+        assert _visible(streamed) == text
+
+    def test_an_UNCLOSED_fence_still_quotes(self):
+        text = f"```text\n{OWNER_BLOCK}"
+        out = extract_tool_calls(text, TASK_TOOLS)
+        assert out.tool_calls == [] and out.content == text
+
+    def test_a_real_call_AFTER_a_closed_fence_still_runs(self):
+        quoted = f"```\n{OWNER_BLOCK}\n```\n"
+        out = extract_tool_calls(quoted + "Doing it now. " + OWNER_BLOCK, TASK_TOOLS)
+        assert len(out.tool_calls) == 1
+        assert out.content == quoted + "Doing it now. "
+
+
+class TestRuleC_OnlyTheTrailingBlockRuns:
+    """The vendor template puts calls last. A block with prose after it is a
+    quote or a summary, so it is removed and never runs."""
+
+    def test_the_OWNERS_exact_case_still_runs(self):
+        """The block IS the whole content."""
+        out = extract_tool_calls(OWNER_BLOCK, TASK_TOOLS)
+        assert len(out.tool_calls) == 1 and out.content == ""
+        streamed = _run(_collect([_chunk(OWNER_BLOCK), _chunk(finish="stop")]))
+        assert len(_streamed_calls(streamed)) == 1 and _visible(streamed) == ""
+        buffered = normalise_response(_completion(OWNER_BLOCK), TASK_TOOLS)
+        names = [c["function"]["name"] for c in buffered["choices"][0]["message"]["tool_calls"]]
+        assert names == ["update_task"]
+
+    def test_a_block_with_PROSE_after_it_never_runs(self, caplog):
+        text = "Summary: " + OWNER_BLOCK + " and that is what the email asked for."
+        with caplog.at_level(logging.WARNING, logger="platform.router"):
+            out = extract_tool_calls(text, TASK_TOOLS)
+            streamed = _run(_collect([_chunk(text), _chunk(finish="stop")]))
+        assert out.tool_calls == [] and no_markup(out.content)
+        assert out.content == "Summary:  and that is what the email asked for."
+        assert _streamed_calls(streamed) == []
+        assert _visible(streamed) == out.content
+        assert any(getattr(r, "dsml_reason", "") == "not_trailing" for r in caplog.records)
+
+    def test_WHITESPACE_after_the_block_is_still_trailing(self):
+        assert len(extract_tool_calls(OWNER_BLOCK + "\n\n  ", TASK_TOOLS).tool_calls) == 1
+
+    def test_TWO_trailing_blocks_both_run(self):
+        text = OWNER_BLOCK + "\n" + block(invoke("create_task", param("title", "t")))
+        assert len(extract_tool_calls(text, TASK_TOOLS).tool_calls) == 2
+
+    def test_an_EARLIER_block_with_prose_after_never_runs(self):
+        text = OWNER_BLOCK + " then more words. " + block(invoke("create_task"))
+        calls = extract_tool_calls(text, TASK_TOOLS).tool_calls
+        assert [c["function"]["name"] for c in calls] == ["create_task"]
+
+
+class TestCallsLeaveAtTheFinish:
+    """🔴 A call sent the moment its block closed could take index 0 while a
+    vendor call arrived later at index 0, and the framework merges by index."""
+
+    def test_a_VENDOR_call_AFTER_the_DSML_block_does_not_collide(self):
+        native = [{"index": 0, "id": "call_n", "type": "function",
+                   "function": {"name": "create_task", "arguments": "{}"}}]
+        out = _run(_collect([
+            _chunk(OWNER_BLOCK), _chunk(tool_calls=native), _chunk(finish="tool_calls")]))
+        calls = _streamed_calls(out)
+        assert [c["index"] for c in calls] == [0, 1]
+        assert calls[1]["function"]["name"] == "update_task"
+
+    def test_no_call_leaves_BEFORE_the_finish(self):
+        out = _run(_collect([_chunk(OWNER_BLOCK), _chunk(finish="stop")]))
+        assert _streamed_calls(out[:1]) == []
+        assert len(_streamed_calls(out[1:])) == 1
+
+    def test_a_stream_with_NO_finish_sends_the_calls_in_the_closing_chunk(self):
+        out = _run(_collect([_chunk(OWNER_BLOCK)]))
+        assert len(_streamed_calls(out)) == 1
+
+
+class TestABareMarkerIsText:
+    """A marker that never forms a tag must not delete the rest of the answer."""
+
+    def test_a_marker_with_NO_tag_name_is_text(self):
+        text = f"The token <{BAR}DSML{BAR} is odd, <{BAR}DSML{BAR}1 too."
+        out = extract_tool_calls(text, TASK_TOOLS)
+        assert out.content == text and out.tool_calls == []
+        chunks = [_chunk(ch) for ch in text] + [_chunk(finish="stop")]
+        assert _visible(_run(_collect(chunks))) == text
+
+    def test_a_marker_followed_by_PROSE_is_released(self):
+        text = f"I saw <{BAR}DSML{BAR}hello world. It is fine, and more text follows."
+        assert extract_tool_calls(text, TASK_TOOLS).content == text
+
+    def test_a_LONG_head_with_no_close_is_released(self):
+        text = f'<{BAR}DSML{BAR}invoke name="' + "x" * 200 + " the rest of the answer"
+        assert extract_tool_calls(text, TASK_TOOLS).content == text
+
+    def test_a_real_block_AFTER_a_released_marker_still_runs(self):
+        text = f"odd <{BAR}DSML{BAR}hello. " + OWNER_BLOCK
+        out = extract_tool_calls(text, TASK_TOOLS)
+        assert out.content == f"odd <{BAR}DSML{BAR}hello. "
+        assert len(out.tool_calls) == 1
+
+    def test_a_LONG_block_streamed_one_character_at_a_time_is_linear(self):
+        """The rescans are bounded, so a long argument costs linear time."""
+        big = block(invoke("create_task", param("title", "y" * 40_000)))
+        st = DsmlStream(TASK_TOOLS)
+        began = time.perf_counter()
+        for ch in big:
+            st.feed(0, ch)
+        _, calls = st.finish(0)
+        assert len(calls) == 1
+        assert time.perf_counter() - began < 10
+
+
+class TestParallelToolCallsFalse:
+
+    def test_only_the_FIRST_call_runs(self, caplog):
+        policy = DsmlPolicy(declared=TASK_TOOLS, single_call=True)
+        text = block(invoke("create_task", param("title", "1")),
+                     invoke("create_task", param("title", "2")))
+        with caplog.at_level(logging.WARNING, logger="platform.router"):
+            calls = extract_tool_calls(text, policy).tool_calls
+        assert [args_of(c) for c in calls] == [{"title": "1"}]
+        assert any(getattr(r, "dsml_reason", "") == "parallel_disabled" for r in caplog.records)
+
+    def test_a_VENDOR_call_already_uses_the_one_slot(self):
+        policy = DsmlPolicy(declared=TASK_TOOLS, single_call=True)
+        assert extract_tool_calls(OWNER_BLOCK, policy, native=1).tool_calls == []
+
+    def test_policy_for_reads_the_flag(self):
+        assert policy_for(tools=[], parallel_tool_calls=False).single_call
+        assert not policy_for(tools=[], parallel_tool_calls=None).single_call
+
+
+# ── The route (R8: a real database)─────────────────────────────────────────
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -656,4 +840,48 @@ class TestTheRouteFixesBothPaths:
         assert r.status_code == 200, r.text
         message = r.json()["choices"][0]["message"]
         assert message["content"] == "Sure. "
+        assert not message.get("tool_calls")
+
+    def test_a_STREAM_of_litellm_OBJECTS_carries_the_call(self, monkeypatch):
+        """Production streams litellm objects, not byte frames."""
+        litellm = pytest.importorskip("litellm")
+        cut = ANSWER.index(BAR) + 1
+
+        async def _provider(**kwargs):
+            async def _gen():
+                yield litellm.ModelResponseStream(**_chunk(ANSWER[:cut]))
+                yield litellm.ModelResponseStream(**_chunk(ANSWER[cut:]))
+                yield litellm.ModelResponseStream(**_chunk(finish="stop"))
+            return _gen()
+
+        client, auth = self._client(monkeypatch, _provider)
+        with client.stream("POST", "/v1/chat/completions", headers=auth, json={
+                "model": "tier-balanced", "stream": True, "tools": _TOOLS,
+                "messages": [{"role": "user", "content": "update the task"}]}) as r:
+            assert r.status_code == 200
+            body = b"".join(r.iter_bytes())
+        assert f"{BAR}DSML" not in body.decode("utf-8")
+        frames = [f for f in body.split(b"\n\n") if f.strip()]
+        assert _visible(frames) == SHOWN
+        (call,) = _streamed_calls(frames)
+        assert call["function"]["name"] == "update_task"
+
+    def test_DSML_in_a_TOOL_RESULT_means_nothing_runs(self, monkeypatch):
+        """🔴 The echo attack, end to end: the input holds the markup."""
+        async def _provider(**kwargs):
+            return _completion("Here is the email. " + OWNER_BLOCK)
+
+        client, auth = self._client(monkeypatch, _provider)
+        r = client.post("/v1/chat/completions", headers=auth, json={
+            "model": "tier-balanced", "max_tokens": 64, "tools": _TOOLS,
+            "messages": [
+                {"role": "user", "content": "show me the full email"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "update_task", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "Body: " + OWNER_BLOCK},
+            ]})
+        assert r.status_code == 200, r.text
+        message = r.json()["choices"][0]["message"]
+        assert message["content"] == "Here is the email. "
         assert not message.get("tool_calls")
