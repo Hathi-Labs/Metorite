@@ -143,6 +143,84 @@ test.describe("rail rows", () => {
   });
 });
 
+/** The computed opacity of the first element `selector` finds in a row. */
+const opacityOf = (target: Locator, selector: string) =>
+  target.locator(selector).first().evaluate((el) => Number(getComputedStyle(el).opacity));
+
+test.describe("the chevron takes the icon's slot", () => {
+  test.setTimeout(90_000);
+
+  test("at rest the chevron is hidden, but the toggle is focusable and opens on Enter", async ({ page }) => {
+    await openProjects(page);
+    await rest(page);
+    const space = row(page, "Company Operations");
+    const toggle = space.locator("[data-rail-toggle]");
+    expect(await opacityOf(space, "[data-rail-toggle]")).toBe(0);
+    expect(await opacityOf(space, "[data-rail-icon]")).toBe(1);
+    await expect(toggle).toHaveAttribute("aria-label", "Collapse Company Operations");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    // A keyboard reaches it: Shift+Tab from the label lands on the toggle,
+    // and reaching it by key shows it.
+    await space.locator("[data-rail-label]").focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(toggle).toBeFocused();
+    await expect.poll(() => opacityOf(space, "[data-rail-toggle]")).toBe(1);
+
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByText("Finance & Accounts", { exact: true })).toHaveCount(0);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Finance & Accounts", { exact: true }).first()).toBeVisible();
+  });
+
+  test("ArrowLeft on the label closes the row, and ArrowRight opens it", async ({ page }) => {
+    await openProjects(page);
+    const space = row(page, "Fracktal Care");
+    const label = space.locator("[data-rail-label]");
+    await label.focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect(space.locator("[data-rail-toggle]")).toHaveAttribute("aria-expanded", "false");
+    await page.keyboard.press("ArrowRight");
+    await expect(space.locator("[data-rail-toggle]")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  test("on hover the chevron shows in the icon's place, and the icon gives way", async ({ page }) => {
+    await openProjects(page);
+    await rest(page);
+    const space = row(page, "Fracktory");
+    await space.hover();
+    // Polled: the control fades over the house motion duration.
+    await expect.poll(() => opacityOf(space, "[data-rail-toggle]")).toBe(1);
+    await expect.poll(() => opacityOf(space, "[data-rail-icon]")).toBe(0);
+    const [chevron, icon] = await Promise.all(
+      ["[data-rail-toggle]", "[data-rail-icon]"].map((s) =>
+        space.locator(s).first().evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }),
+      ),
+    );
+    expect(Math.abs(chevron.x - icon.x)).toBeLessThanOrEqual(3);
+    expect(Math.abs(chevron.y - icon.y)).toBeLessThanOrEqual(3);
+  });
+
+  test("no row keeps a chevron column: the name starts right after the icon", async ({ page }) => {
+    await openProjects(page);
+    await rest(page);
+    // Depth 1: 8 px row padding, one 12 px step, a 16 px icon, an 8 px gap.
+    // The old chevron column added 22 px to this.
+    for (const name of ["Finance & Accounts", "Knowledge Base"]) {
+      const target = row(page, name);
+      const offset = await target.evaluate((el, n) => {
+        const label = Array.from(el.querySelectorAll("span")).find((s) => s.textContent === n)!;
+        return label.getBoundingClientRect().left - el.getBoundingClientRect().left;
+      }, name);
+      expect(offset, name).toBeLessThanOrEqual(8 + 12 + 16 + 8 + 1);
+    }
+  });
+});
+
 test.describe("rail rows on a touch-capable display", () => {
   // Chromium reports `hover: none` here, which is what hid every
   // `group-hover:` control on a touchscreen laptop (H-131).

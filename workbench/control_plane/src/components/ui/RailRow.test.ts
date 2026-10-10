@@ -11,7 +11,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { RailRow, railRowClass, type RailRowProps } from "./RailRow";
+import { RailRow, expandKey, railRowClass, type RailRowProps } from "./RailRow";
 
 const draw = (props: Partial<RailRowProps> = {}) =>
   renderToStaticMarkup(
@@ -110,6 +110,51 @@ describe("the row", () => {
   });
 });
 
+describe("the chevron takes the icon's slot", () => {
+  const icon = createElement("svg", { "aria-label": "Space — Company Operations" });
+  const open = (expanded: boolean) =>
+    draw({ icon, expand: { expanded, onToggle: () => {} } });
+
+  it("is a labelled toggle at rest, with aria-expanded, so a keyboard reaches it", () => {
+    const html = open(true);
+    expect(html).toMatch(/<button[^>]*aria-label="Collapse Company Operations"[^>]*>/);
+    expect(html).toMatch(/aria-expanded="true"/);
+    expect(open(false)).toMatch(/aria-label="Expand Company Operations"/);
+    expect(open(false)).toMatch(/aria-expanded="false"/);
+  });
+
+  it("is transparent at rest through rail-row-chevron, and the icon gives way on hover", () => {
+    const html = open(true);
+    expect(classOf(html, "rail-row-chevron")).toContain("absolute");
+    // The icon stays inside the label button, so its words stay in the row's name.
+    expect(html).toMatch(/<button type="button"[^>]*><span data-rail-icon="" class="[^"]*rail-row-icon/);
+  });
+
+  it("adds no chevron column: the toggle hangs from a zero-width anchor", () => {
+    expect(open(true)).toMatch(/<span class="relative w-0 shrink-0 self-stretch"><button/);
+    expect(open(true)).not.toContain("w-4.5");
+  });
+
+  it("draws no toggle on a leaf, and none over an editor", () => {
+    expect(draw({ icon })).not.toContain("data-rail-toggle");
+    expect(draw({ icon })).not.toContain("rail-row-icon");
+    const editing = draw({
+      icon,
+      expand: { expanded: true, onToggle: () => {} },
+      editor: createElement("input", { "aria-label": "Rename" }),
+    });
+    expect(editing).not.toContain("data-rail-toggle");
+  });
+
+  it("opens on ArrowRight and closes on ArrowLeft, and leaves other keys alone", () => {
+    expect(expandKey("ArrowRight", false)).toBe(true);
+    expect(expandKey("ArrowRight", true)).toBe(false);
+    expect(expandKey("ArrowLeft", true)).toBe(true);
+    expect(expandKey("ArrowLeft", false)).toBe(false);
+    expect(expandKey("Enter", false)).toBe(false);
+  });
+});
+
 describe("the utilities it relies on", () => {
   const css = readFileSync(fileURLToPath(new URL("../../app/globals.css", import.meta.url)), "utf8");
   const block = (name: string) => {
@@ -126,6 +171,18 @@ describe("the utilities it relies on", () => {
     expect(body).toContain(".group:has(:focus-visible) &");
     expect(body).toContain(".group[data-pinned] &");
     expect(body, "a media query here hides the actions on a touchscreen laptop").not.toContain("@media");
+  });
+
+  it("rail-row-chevron hides at rest and shows on hover or focus, and rail-row-icon gives way", () => {
+    const chevron = block("rail-row-chevron");
+    expect(chevron).toContain("opacity: 0");
+    expect(chevron).toContain(".group:hover &");
+    expect(chevron).toContain(".group:has(:focus-visible) &");
+    expect(chevron).not.toContain("@media");
+    const iconBody = block("rail-row-icon");
+    expect(iconBody).toContain(".group:hover &");
+    expect(iconBody).toContain("opacity: 0");
+    expect(iconBody).not.toContain("@media");
   });
 
   it("rail-row-meta gives its place to the actions on the same three states", () => {

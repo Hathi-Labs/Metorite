@@ -207,6 +207,7 @@ export function RailRow({
         <button
           type="button"
           {...buttonProps}
+          data-rail-label=""
           onClick={onSelect}
           onFocus={onFocus}
           onBlur={onBlur}
