@@ -13,7 +13,9 @@
 > (2026-10-11). CRM-T3, narrowed (2026-10-11): the auto-lead step and the broker
 > push handler bind their tenant. The Zoho sync stays off until CRM-Z5. CRM-T5,
 > the access rule, the admin floor on stages and the seed when the mode becomes
-> Native (migration 243, 2026-10-11). The other slices are not built yet.
+> Native (migration 243, 2026-10-11). CRM-Z2, the Zoho connection: migration 245,
+> the connect routes behind `CRM_MIRROR`, and the shared token (2026-10-11). The
+> other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -870,7 +872,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 |---|---|---|---|
 | **CRM-Z0** ✅ docs built 2026-10-11 (the owner's registration is still open, H-297) | Verify the four open Zoho facts (§5.2). Write the runbook to register the client | 🟢 AGENT-SAFE (docs). 🔴 registration is the owner's | §5.2 lists each fact with its source. The runbook is in `docs/` |
 | **CRM-Z1** ✅ built 2026-10-11 | `crm_sources/` with the protocol and the Zoho adapter: data centre, paging, rate limits, credits. No global credential | 🟢 AGENT-SAFE | `test_crm_sources_no_global_creds.py` passes. A 429 and a `TOO_MANY_REQUESTS` back off, measured with a fake server |
-| **CRM-Z2** | `integration_connections` and `crm_settings.connection_id`. The `purpose` argument on the signing seam. Revoke in the protocol. Connect, callback, refresh, disconnect, reconnect. Behind `CRM_MIRROR` (OFF) | 🟢 AGENT-SAFE to build. 🔴 needs the owner's client | A tampered state is refused. A refresh failure sets `needs_reconnect`. The blob never appears in a log or response (fence) |
+| **CRM-Z2** ✅ built 2026-10-11 | `integration_connections` and `crm_settings.connection_id`. The `purpose` argument on the signing seam. Revoke in the protocol. Connect, callback, refresh, disconnect, reconnect. Behind `CRM_MIRROR` (OFF). Built as: the callback route is `/crm/oauth/zoho/callback`, so the `/api/crm` proxy reaches it at the URI in the owner runbook. A dedicated BFF route for that redirect is still open (CRM-Z7). The fence on the blob names the table `integration_connections`, because the email and WhatsApp tables have a column with the same name | 🟢 AGENT-SAFE to build. 🔴 needs the owner's client | A tampered state is refused. A refresh failure sets `needs_reconnect`. The blob never appears in a log or response (fence) |
 | **CRM-Z3** | The mirror columns, `crm_field_defs`, and pipelines if Zoho needs them | 🟢 AGENT-SAFE | R8: an upsert on `(organization_id, ext_source, ext_id)` is idempotent. Two orgs import one Zoho id with no collision |
 | **CRM-Z4** | The first import, with progress, estimate and resume. The owner map | 🟢 AGENT-SAFE | A paused import resumes with no duplicate. Counts per entity match the source |
 | **CRM-Z5** | The incremental loop per org, Sync now, the credit budget, `crm_sync_runs`. From CRM-T3: one `tenant_session(org)` per step, the advisory lock in place of `_cycle_lock`, and a working `POST /crm/sync/zoho` | 🟢 AGENT-SAFE to build. 🔴 first real customer connect is the owner's | Two orgs sync on one loop with no crossover. A run stops at its budget |
