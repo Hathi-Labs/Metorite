@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-03. `apis-config` runs on native MAF now, and `task-manager` stays on the Copilot path until H-215 (§11.3.1). The same PR fixed two bugs on the native path.
+**Updated:** 2026-10-11. §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -767,8 +767,9 @@ Four things worked only on the Copilot path:
    `_build_event_message`. WS-43t1 (PR #595) repaired the branch behind
    `MAF_NATIVE_SESSIONS`, which is off by default (`maf_coding_engine.md` §15.9).
 3. **Registry MCP servers do not reach apis-config now.** `merge_mcp_servers` is a no-op on
-   MAF (WS-8c). So an `mcp_servers` row with agent scope `*` reaches only Copilot agents
-   (H-217).
+   MAF. So an `mcp_servers` row with agent scope `*` reaches only Copilot agents (H-217).
+   WS-8c gives MAF agents an MCP client, behind the setting `MAF_MCP_ORGS`. Until the flag
+   allows an org, this item stays true for that org.
 4. **A delegated run is a batch run, and the addendum is Copilot-only.** When another agent
    calls apis-config, it returns one result. A native agent gets the registry block, the UI
    directive and the output-discipline block, not "Metorite Platform Tools".
@@ -918,19 +919,91 @@ which contradicts AGENTS.md Global Constraint #6.
 
 #### A — make the manifest authoritative
 
-**WS-8c — MCP injection is a silent no-op on native MAF. AGENT-SAFE.** `work_plan.md` D7
-instructs *"scope it into WS-8 Phase A/B"*; that instruction was never carried into this spec
-until 2026-08-03. `_inject_mcp_servers` (`_tool_injection.py:1086`) runs for every agent and
-routes to `merge_mcp_servers` (`:1056`), which writes `agent._mcp_servers` (`:1081`). The
-**only** readers of that attribute are `copilot_agent.py:169` and `:276` — both inside the
-Copilot agent class. No `MCPStdioTool` / `MCPStreamableHTTPTool` wiring exists anywhere in the
-tree. So for a native-MAF agent, MCP injection silently does nothing, while
-`CapabilitySpec.mcp_servers` (`manifest.py:122`) already accepts the field and §6 promises it
-works. Done when a native MAF agent with a declared MCP server exposes that server's tools in
-its tool surface; a test asserts a MAF agent built with one declared MCP server has the
-server's tools attached (and that a `manifest.capabilities.mcp_servers` entry that cannot be
-resolved is logged rather than silently dropped); and `grep -rn "_mcp_servers" apps/` shows a
-non-Copilot reader.
+**WS-8c — MAF agents get an MCP client. AGENT-SAFE to build. The production flip is gate
+`enforcement-flip`.** Re-scoped on 2026-10-11, with owner approval and a spec-auditor verdict
+of GO-NARROWED. `work_plan.md` D7 put this gap into WS-8. D92 moves every agent to MAF, so
+without this ticket a registry MCP server reaches no agent.
+
+**The gap.** The builder checked these anchors at `origin/main` `c1850b5d9`. `_inject_mcp_servers`
+(`_tool_injection.py:2075`) runs for every agent and calls `merge_mcp_servers` (`:2042`).
+Since H-181, that function writes `_default_options["mcp_servers"]`. Only the Copilot agent
+class reads that key (`copilot_agent.py:401` and `:518`).
+
+A native MAF `Agent` has no `_default_options` dict. So `merge_mcp_servers` returns at `:2063-2064`, and the agent gets
+nothing.
+
+**Scope.**
+
+1. For a native MAF `Agent`, the injection builds one `MCPStreamableHTTPTool` for each enabled
+   `http-sse` row of the run's org. Each tool gets the pinned client of
+   `gateway/outbound_guard.py` and `tool_name_prefix=<row name>`. The injection appends the
+   tool to `agent.mcp_tools`.
+2. The setting `MAF_MCP_ORGS` allows an org. It is a list of org ids on the model of
+   `CRM_ORGS`. Empty means off, and `*` means every org. The default is empty.
+3. The org comes from the run binding: the `organization_id` of the run, else
+   `_current_run_org()`. It never comes from input. With no org, the run reads no row.
+4. The org filter applies in every case, on both paths. Before this ticket, the Copilot path
+   read the rows of every org when `ACB_GRAPH_TENANT_BIND` was off.
+5. On the MAF path, the grant `integrations:use:mcp-<name>` applies. The injection leaves out
+   a row that the run's authority denies, and logs `mcp.not_authorized` with the name only.
+6. A `no_egress` run gets no MCP tool. `WithholdEgressTools` withholds a tool that joins later.
+7. An unreachable server does not fail the run. The log names the host and the reason only.
+   The run closes each MCP connection and its client when the run ends.
+8. The MCP functions go through the MAF tool gate, `permission_policy.decide()`. The injection
+   does not set `approval_mode`.
+9. IN-D6 moves here from IN-4. `POST /mcp` and plugin install use named binds, write
+   `organization_id = current_tenant()`, use `ON CONFLICT (organization_id, name)`, and refuse
+   a request with no tenant. `schema.generated.sql` still keys by name only, so do not copy it.
+
+**The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
+request to the address that the check resolved, with the host name as SNI. It allows `https` on
+port 443 only. It sets `follow_redirects=False` and `trust_env=False`.
+
+The client refuses a 3xx answer and a request to another origin. The default client of MAF follows redirects
+(`agent_framework/_mcp.py`), so the injection always passes this client.
+
+**Non-goals.**
+
+- Metorite refuses stdio everywhere (D85). Nothing builds an `MCPStdioTool`. `POST /mcp` and
+  `/mcp/test` answer 422 for stdio. Both injection paths drop a stdio row and log
+  `mcp.stdio_refused`.
+- A repo-declared `.mcp.json` does not reach a MAF agent in v1. It reaches the Copilot path
+  only, as before.
+- `CapabilitySpec.mcp_servers` (`manifest.py`) is not read in v1.
+- The move of the MCP rows into `integration_connections` stays in IN-4.
+- The encryption of the stored headers stays in IN-4.
+
+**Acceptance.** Each item has a fence test that failed first.
+
+| # | Acceptance | Fence |
+|---|---|---|
+| A1 | With the flag OFF, a native agent gets no MCP tool. The Copilot path changes only by the stdio drop and the org filter. | `test_maf_mcp_injection.py` |
+| A2 | With the flag ON for org A, and enabled rows in A and in B, a run in A carries one tool, from the row of A. An `organization_id` in the payload changes nothing. R8, two orgs. | `test_maf_mcp_org_scope_r8.py` |
+| A3 | With no org, the agent gets no tool and the run reads no row. | `test_maf_mcp_injection.py`, `test_maf_mcp_org_scope_r8.py` |
+| A4 | A `no_egress` run gets no MCP tool. | `test_maf_mcp_injection.py` |
+| A5 | A deny on `integrations:use:mcp-<name>` removes that server. | `test_maf_mcp_injection.py` |
+| A6 | Before a socket opens, the guard refuses `127.0.0.1`, `169.254.169.254`, an RFC 1918 address, an `http` URL and a port that is not 443. It refuses a 3xx answer. The run continues without that server. | `test_mcp_outbound_pin.py` |
+| A7 | No `MCPStdioTool(` call is in `apps/` or `packages/`. Stdio gets 422 at `POST /mcp`. Both paths drop a stdio row. | `test_no_mcp_stdio.py` |
+| A8 | A header value never shows in a log line, on success, on a failed connect or on a refusal. | `test_maf_mcp_injection.py` |
+| A9 | IN-D6. Orgs A and B register one name and get two rows. A registers it again and updates its row. A request with no tenant gets 4xx and writes no row. R8. | `test_mcp_register_r8.py` |
+| A10 | The WS-43q done-when lists WS-8c, and the anchor of `maf_coding_engine.md` §15.2 is correct. | `test_maf_mcp_injection.py` |
+| A11 | An unreachable server does not fail the run. The connections close when the run ends. | `test_maf_mcp_injection.py` |
+
+This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
+off, the Copilot path reads the rows of the run's org only.
+
+**Verify.**
+
+    bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+    uv run pytest tests/unit/test_maf_mcp_injection.py tests/unit/test_maf_mcp_org_scope_r8.py \
+      tests/unit/test_mcp_outbound_pin.py tests/unit/test_no_mcp_stdio.py \
+      tests/unit/test_mcp_register_r8.py tests/unit/test_mcp_servers_org_scope.py -v -rs
+
+No R8 suite may skip.
+
+**Done when** the fences above pass with no skip. Then a native MAF agent in an allowed org
+shows the tools of the server of its org. The production flip of `MAF_MCP_ORGS` is gate
+`enforcement-flip`. The flip names the org and the box.
 
 **WS-8d — enforce `validate()` / `warnings()` at registration. AGENT-SAFE.** Done when agent
 registration calls `AgentManifest.from_config(...).validate()` and `.warnings()`, logs each
