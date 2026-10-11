@@ -1,7 +1,7 @@
 """H-299 — an MCP tool that can change data waits for the member's card.
 
 Spec: ``project-docs/specs/agent_architecture.md`` §12.2 WS-8c, items 13 to 17
-and acceptance A12 to A17.
+and acceptance A12 to A18.
 
 WS-8c gave a native MAF agent the tools of its org's MCP servers. Each call
 went through ``permission_policy.decide()``, and ``decide()`` approved any name
@@ -45,6 +45,8 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | M10 | the gate skips the card for the code ``gate_error`` | ``test_a_gate_fault_still_needs_the_card`` |
 | M11 | the ``tools/list`` record keeps no hints | ``test_a_read_only_tool_runs_with_no_card_end_to_end`` |
 | M12 | ``decide()`` checks the platform annotations before the MCP rule | ``test_an_mcp_tool_never_borrows_a_platform_tool_s_hints`` |
+| M13 | ``card_text`` cuts long arguments in place of a refusal | ``test_a_call_too_long_for_the_card_is_refused_and_never_runs`` |
+| M14 | a later ``tools/list`` may relax the hints of a tool | ``test_a_later_list_cannot_relax_a_tool_and_each_change_is_logged`` |
 """
 from __future__ import annotations
 
@@ -429,7 +431,7 @@ async def test_the_card_redacts_sensitive_arguments() -> None:
         assert secret not in shown, secret
     assert "r-1" in shown and '"X-Trace": "ok"' in shown
     assert _maf_mcp.REDACTED in shown
-    assert "x" * 600 not in shown and "x" * 200 in shown
+    assert "x" * 600 in shown, "the card cut a value that it did not redact"
 
 
 async def test_the_card_names_the_server_and_labels_its_description() -> None:
@@ -449,14 +451,55 @@ async def test_the_card_names_the_server_and_labels_its_description() -> None:
     assert body.index("Arguments:") < body.index(label)
 
 
-def test_redaction_cuts_deep_and_wide_arguments() -> None:
-    deep: dict[str, Any] = {"a": {"b": {"c": {"d": {"e": "deep"}}}}}
-    out = _maf_mcp.redact_arguments(deep)
-    assert "deep" not in str(out)
-    wide = _maf_mcp.redact_arguments(list(range(50)))
-    assert len(wide) == 21 and "30 more" in wide[-1]
-    assert _maf_mcp.redact_arguments({"accessToken": "t", "max": 3}) == {
-        "accessToken": _maf_mcp.REDACTED, "max": 3}
+def test_the_card_shows_every_argument_it_does_not_redact() -> None:
+    """Review of PR #888, P1: the old card cut a value at 200 characters and
+    nested values at depth 4, so Approve ran a call the member never saw."""
+    args = {
+        "sql": "SELECT " + "a" * 250 + "; DELETE FROM customers",
+        "deep": {"a": {"b": {"c": {"to": "attacker@x.com"}}}},
+        "rows": list(range(30)),
+        "accessToken": "t-h299",
+    }
+    _title, _detail, body = _maf_mcp.card_text("db", "run_sql", args, None)
+    assert "DELETE FROM customers" in body and "attacker@x.com" in body
+    assert '"rows": [' in body and "29" in body
+    assert "t-h299" not in body and _maf_mcp.REDACTED in body
+
+
+async def test_a_call_too_long_for_the_card_is_refused_and_never_runs() -> None:
+    fn = _function()
+    ctx = _ctx(fn, {"sql": "SELECT " + "a" * 3000 + "; DELETE FROM customers"})
+    ran = _Ran()
+    with _card_channel() as queue:
+        await _bounded(_gate(fn, None).process(ctx, ran))
+    assert ran.count == 0 and queue.empty(), "a card hid part of the call"
+    assert ctx.result == _maf_mcp.CARD_TOO_LONG_TEXT.format(tool="srv_delete_record")
+
+
+async def test_a_call_nested_too_deep_is_refused_and_never_runs() -> None:
+    deep: dict[str, Any] = {"v": "DELETE"}
+    for _ in range(12):
+        deep = {"k": deep}
+    fn = _function()
+    ctx = _ctx(fn, deep)
+    ran = _Ran()
+    with _card_channel() as queue:
+        await _bounded(_gate(fn, None).process(ctx, ran))
+    assert ran.count == 0 and queue.empty()
+    assert ctx.result == _maf_mcp.CARD_TOO_LONG_TEXT.format(tool="srv_delete_record")
+
+
+def test_an_invisible_character_shows_on_the_card() -> None:
+    _t, _d, body = _maf_mcp.card_text("db", "run_sql", {"q": "safe‮evil"}, None)
+    assert "‮" not in body and "\\u202e" in body
+
+
+def test_a_long_description_is_cut_and_the_arguments_are_not() -> None:
+    meta = _maf_mcp.ToolMeta(hints=None, description="d" * 5000)
+    args = {"note": "n" * 2000}
+    _t, _d, body = _maf_mcp.card_text("db", "x", args, meta)
+    assert len(body) <= 4000
+    assert "n" * 2000 in body and body.endswith("…")
 
 
 # ── A17: the hints are logged for audit ──────────────────────────────────────
@@ -474,6 +517,34 @@ def test_the_tools_list_record_keeps_hints_and_description() -> None:
     _maf_mcp._record_tool_list(meta, page)
     assert meta["echo"].hints == {"readOnlyHint": True}
     assert meta["wipe"].hints is None and meta["wipe"].description == "d2"
+
+
+def test_a_later_list_cannot_relax_a_tool_and_each_change_is_logged() -> None:
+    """Review of PR #888, P2: ``tools/list_changed`` reloads the list. A tool
+    that needed the card keeps its hints, and the change is logged."""
+    from mcp.types import ListToolsResult, Tool, ToolAnnotations
+
+    def _page(**hints: bool) -> Any:
+        return ListToolsResult(tools=[Tool(
+            name="delete_record", inputSchema={"type": "object"}, description="d",
+            annotations=ToolAnnotations(**hints))])
+
+    meta: dict[str, Any] = {}
+    with structlog.testing.capture_logs() as logs:
+        _maf_mcp._record_tool_list(meta, _page(destructiveHint=True), server="srv")
+        _maf_mcp._record_tool_list(meta, _page(readOnlyHint=True), server="srv")
+    assert meta["delete_record"].hints == {"destructiveHint": True}
+    changed = [e for e in logs if e["event"] == "mcp.tool_annotations_changed"]
+    assert len(changed) == 1 and changed[0]["kept_before"] is True
+    assert changed[0]["server"] == "srv" and changed[0]["after"] == {"readOnlyHint": True}
+
+    meta2: dict[str, Any] = {}
+    with structlog.testing.capture_logs() as logs2:
+        _maf_mcp._record_tool_list(meta2, _page(readOnlyHint=True), server="srv")
+        _maf_mcp._record_tool_list(meta2, _page(destructiveHint=True), server="srv")
+    assert meta2["delete_record"].hints == {"destructiveHint": True}, "a stricter list was lost"
+    assert [e["kept_before"] for e in logs2
+            if e["event"] == "mcp.tool_annotations_changed"] == [False]
 
 
 # ── End to end: the real agent, the real executor, a real MCP server ────────

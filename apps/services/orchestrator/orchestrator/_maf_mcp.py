@@ -49,6 +49,7 @@ import contextlib
 import functools
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -341,16 +342,33 @@ class ToolMeta:
     description: str
 
 
-def _record_tool_list(meta: dict[str, ToolMeta], result: Any) -> None:
-    """Keep the hints and the description of each tool on one page."""
+def _record_tool_list(meta: dict[str, ToolMeta], result: Any, server: str = "") -> None:
+    """Keep the hints and the description of each tool on one page.
+
+    A later list (``notifications/tools/list_changed``) can only make a tool
+    stricter in this run. A tool that needed the card keeps its old hints,
+    so a server cannot list a tool as destructive at the attach and then
+    relax it. Each change of the hints of a known tool is logged as
+    ``mcp.tool_annotations_changed``, so the audit sees every claim that
+    decided a call (review of PR #888, P2)."""
+    from acb_skills.permission_policy import mcp_needs_confirmation
+
     for listed in getattr(result, "tools", None) or []:
         remote = str(getattr(listed, "name", "") or "")
-        if remote:
-            meta[remote] = ToolMeta(
-                hints=tool_hints(getattr(listed, "annotations", None)),
-                description=str(getattr(listed, "description", "") or "")[
-                    :_DESCRIPTION_CHARS],
-            )
+        if not remote:
+            continue
+        hints = tool_hints(getattr(listed, "annotations", None))
+        description = str(getattr(listed, "description", "") or "")[:_DESCRIPTION_CHARS]
+        before = meta.get(remote)
+        if before is not None and before.hints != hints:
+            relaxed = (mcp_needs_confirmation(before.hints)
+                       and not mcp_needs_confirmation(hints))
+            _log.warning("mcp.tool_annotations_changed", server=server,
+                         tool=remote[:100], before=before.hints, after=hints,
+                         kept_before=relaxed)
+            if relaxed:
+                hints = before.hints
+        meta[remote] = ToolMeta(hints=hints, description=description)
 
 
 def tool_meta(tool: Any, remote_name: str) -> ToolMeta | None:
@@ -400,7 +418,8 @@ def _run_scoped_tool_class() -> type:
         def session(self, value: Any) -> None:
             if value is not None:
                 meta = self.__dict__.setdefault("_ws8c_tool_meta", {})
-                _cap_list_tools(value, functools.partial(_record_tool_list, meta))
+                _cap_list_tools(value, functools.partial(
+                    _record_tool_list, meta, server=str(getattr(self, "name", "") or "")))
             self.__dict__["_ws8c_session"] = value
 
         async def __aenter__(self) -> Any:
@@ -554,6 +573,13 @@ NO_CARD_CHANNEL_TEXT = (
     "from the Metorite web chat.]"
 )
 
+#: What the model reads when the card cannot show the whole call.
+CARD_TOO_LONG_TEXT = (
+    "[not run: the arguments of {tool} are too long or too deeply nested "
+    "for the member to see them all on the card, and a card that hides part "
+    "of a call is not consent. Make a smaller call, or split it.]"
+)
+
 #: The value that takes the place of a sensitive argument on the card.
 REDACTED = "[redacted]"
 #: Parts of an argument name that mark its value as sensitive. The name is
@@ -574,14 +600,21 @@ _SECRET_VALUES = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*"),
 )
-#: The card shows at most this much of one string argument.
-_ARG_TEXT_CHARS = 200
-#: The card shows at most this many keys of a mapping, or items of a list.
-_ARG_ITEMS = 20
-#: The card shows nested arguments to this depth.
-_ARG_DEPTH = 4
-#: The card shows at most this much of the arguments in all.
-_ARGS_CHARS = 2500
+#: The deepest nesting that a card shows. A deeper call is refused, never cut.
+_ARG_DEPTH = 8
+#: The most characters of arguments that a card shows. ``request_confirmation``
+#: keeps 4000 characters of the body, and the server's description takes the
+#: rest. A longer call is refused, never cut (review of PR #888, P1).
+_ARGS_CHARS = 2800
+#: The most characters of the whole card body (``ask_tools.request_confirmation``).
+_BODY_CHARS = 4000
+#: The label above the server's description on the card.
+DESCRIPTION_LABEL = "Description from the MCP server (Metorite did not check this text):"
+
+
+class CardTooLong(ValueError):
+    """The card cannot show the whole call. ``ask_tools`` says a cut card is
+    not consent, so the gate refuses the call."""
 
 
 def _sensitive_name(name: Any) -> bool:
@@ -589,36 +622,41 @@ def _sensitive_name(name: Any) -> bool:
     return flat in _SENSITIVE_NAMES or any(part in flat for part in _SENSITIVE_NAME_PARTS)
 
 
+def _visible(text: str) -> str:
+    """*text* with each invisible format character written as ``\\uXXXX``.
+
+    A bidi override or a zero-width character can hide part of a value on
+    the card. JSON already escapes the control characters."""
+    return "".join(
+        f"\\u{ord(ch):04x}" if unicodedata.category(ch) == "Cf" else ch for ch in text
+    )
+
+
 def redact_arguments(value: Any, depth: int = 0) -> Any:
-    """*value* with each sensitive value replaced by :data:`REDACTED`, and cut.
+    """*value* with each sensitive value replaced by :data:`REDACTED`.
 
     A value is sensitive when its argument name says so (``password``,
     ``api_key``, ``token``) or when it looks like a credential (a bearer
-    token, a key with a known prefix, a JWT). The card shows the rest, cut to
-    a size that a member can read. No shared redaction helper fits structured
-    arguments, so this one is local to the card."""
-    if depth >= _ARG_DEPTH:
-        return "[…]"
+    token, a key with a known prefix, a JWT). Nothing else is cut: a call
+    nested deeper than :data:`_ARG_DEPTH` raises :class:`CardTooLong`. No
+    shared redaction helper fits structured arguments, so this one is local
+    to the card."""
+    if depth > _ARG_DEPTH:
+        raise CardTooLong("depth")
     if isinstance(value, Mapping):
-        out: dict[str, Any] = {}
-        for index, (name, inner) in enumerate(value.items()):
-            if index >= _ARG_ITEMS:
-                out["…"] = f"{len(value) - _ARG_ITEMS} more"
-                break
-            out[str(name)[:80]] = (REDACTED if _sensitive_name(name)
-                                   else redact_arguments(inner, depth + 1))
-        return out
+        return {
+            _visible(str(name)): (REDACTED if _sensitive_name(name)
+                                  else redact_arguments(inner, depth + 1))
+            for name, inner in value.items()
+        }
     if isinstance(value, list | tuple):
-        items = [redact_arguments(v, depth + 1) for v in list(value)[:_ARG_ITEMS]]
-        if len(value) > _ARG_ITEMS:
-            items.append(f"… {len(value) - _ARG_ITEMS} more")
-        return items
+        return [redact_arguments(v, depth + 1) for v in value]
     if value is None or isinstance(value, bool | int | float):
         return value
     text = str(value)
     for pattern in _SECRET_VALUES:
         text = pattern.sub(REDACTED, text)
-    return text if len(text) <= _ARG_TEXT_CHARS else text[:_ARG_TEXT_CHARS] + "…"
+    return _visible(text)
 
 
 def _hint_line(hints: dict[str, bool] | None) -> str:
@@ -633,23 +671,24 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
               meta: ToolMeta | None, fallback_description: str = "") -> tuple[str, str, str]:
     """The title, detail and body of the card for one MCP call.
 
-    The body shows the arguments with :func:`redact_arguments`, and then the
-    server's description of the tool, under a label that says Metorite did
-    not check it."""
+    The body shows EVERY argument, with :func:`redact_arguments`, and then
+    the server's description of the tool under :data:`DESCRIPTION_LABEL`.
+    Only the description is cut to fit. Arguments that do not fit raise
+    :class:`CardTooLong`, because a member must see the whole call that
+    Approve runs."""
     shown = json.dumps(redact_arguments(arguments), indent=2, ensure_ascii=False,
                        default=str)
     if len(shown) > _ARGS_CHARS:
-        shown = shown[:_ARGS_CHARS] + "\n…"
+        raise CardTooLong("size")
+    head = f"Arguments:\n{shown}\n\n{DESCRIPTION_LABEL}\n"
     description = (meta.description if meta is not None else fallback_description) or ""
-    description = description.strip()[:_DESCRIPTION_CHARS] or "(no description)"
+    description = _visible(description.strip()) or "(no description)"
+    room = max(0, _BODY_CHARS - len(head))
+    if len(description) > room:
+        description = description[: max(0, room - 1)] + "…"
     title = f"Run the MCP tool {tool} from {server}?"
     detail = f"Server: {server} · Tool: {tool} · {_hint_line(meta.hints if meta else None)}"
-    body = (
-        f"Arguments:\n{shown}\n\n"
-        "Description from the MCP server (Metorite did not check this text):\n"
-        f"{description}"
-    )
-    return title, detail, body
+    return title, detail, head + description
 
 
 def _card_refusal(member_present: bool) -> tuple[str, str] | None:
@@ -674,6 +713,28 @@ def _card_refusal(member_present: bool) -> tuple[str, str] | None:
     return None
 
 
+def _tool_functions(tool: Any) -> list[Any]:
+    return list(getattr(tool, "_functions", None) or getattr(tool, "functions", None) or [])
+
+
+def _owner_of(tools: list[Any], function: Any) -> tuple[str, str, ToolMeta | None]:
+    """The server name, the remote tool name and its hints, for *function*.
+
+    The same object first. Else a name that exactly ONE tool holds. Else an
+    unknown server with no hints, which needs the card."""
+    name = str(getattr(function, "name", "") or "")
+    props = getattr(function, "additional_properties", None) or {}
+    remote = str(props.get("_mcp_remote_name") or name)
+    same = [t for t in tools if any(f is function for f in _tool_functions(t))]
+    if not same:
+        same = [t for t in tools
+                if any(getattr(f, "name", None) == name for f in _tool_functions(t))]
+    if len(same) != 1:
+        return "(unknown server)", remote, None
+    owner = same[0]
+    return str(getattr(owner, "name", "") or ""), remote, tool_meta(owner, remote)
+
+
 def _make_gate_class() -> type:
     from agent_framework import FunctionMiddleware
 
@@ -696,25 +757,8 @@ def _make_gate_class() -> type:
             self.member_present = bool(member_present)
 
         def owner_of(self, function: Any) -> tuple[str, str, ToolMeta | None]:
-            """The server name, the remote tool name and its hints, for *function*.
-
-            The same object first. Else a name that exactly ONE tool holds. Else
-            an unknown server with no hints, which needs the card."""
-            name = str(getattr(function, "name", "") or "")
-            props = getattr(function, "additional_properties", None) or {}
-            remote = str(props.get("_mcp_remote_name") or name)
-
-            def _functions(tool: Any) -> list[Any]:
-                return list(getattr(tool, "_functions", None) or getattr(tool, "functions", None) or [])
-
-            same = [t for t in self.tools if any(f is function for f in _functions(t))]
-            if not same:
-                same = [t for t in self.tools
-                        if any(getattr(f, "name", None) == name for f in _functions(t))]
-            if len(same) != 1:
-                return "(unknown server)", remote, None
-            owner = same[0]
-            return str(getattr(owner, "name", "") or ""), remote, tool_meta(owner, remote)
+            """The server name, the remote tool name and its hints (:func:`_owner_of`)."""
+            return _owner_of(self.tools, function)
 
         async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
             from acb_skills.egress import _from_mcp
@@ -747,7 +791,14 @@ def _make_gate_class() -> type:
                 _log.info("mcp.confirm", server=server, tool=name, outcome=code)
                 context.result = text.format(tool=name)
                 return
-            if not await self._confirmed(server, remote, arguments, meta, function):
+            try:
+                card = card_text(server, remote, arguments, meta,
+                                 str(getattr(function, "description", "") or ""))
+            except Exception:  # CardTooLong, or a fault: no whole card, no call
+                _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
+                context.result = CARD_TOO_LONG_TEXT.format(tool=name)
+                return
+            if not await self._confirmed(card):
                 _log.info("mcp.confirm", server=server, tool=name, outcome="denied")
                 context.result = DENIED_TEXT.format(tool=name)
                 return
@@ -755,17 +806,12 @@ def _make_gate_class() -> type:
             await call_next()
 
         @staticmethod
-        async def _confirmed(server: str, remote: str, arguments: dict[str, Any],
-                             meta: ToolMeta | None, function: Any) -> bool:
+        async def _confirmed(card: tuple[str, str, str]) -> bool:
             """True only when the member approved the card. A fault is a no."""
             from acb_skills.ask_tools import request_confirmation
 
             try:
-                title, detail, body = card_text(
-                    server, remote, arguments, meta,
-                    str(getattr(function, "description", "") or ""),
-                )
-                return await request_confirmation(title, detail, body) is True
+                return await request_confirmation(*card) is True
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -779,6 +825,7 @@ McpPermissionGate: type = _make_gate_class()
 
 __all__ = [
     "ALL_ORGS",
+    "CARD_TOO_LONG_TEXT",
     "DENIED_TEXT",
     "NO_CARD_CHANNEL_TEXT",
     "NO_MEMBER_TEXT",

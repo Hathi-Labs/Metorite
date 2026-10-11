@@ -983,10 +983,12 @@ that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
     shows the server, the tool, the arguments and the server's description of the tool. The
     description has the label "Description from the MCP server (Metorite did not check this
     text)". The card redacts a sensitive argument by its name (`password`, `api_key`, `token`
-    and more) and by its value (a bearer token, a key with a known prefix, a JWT). It cuts a
-    long value. No
-    shared redaction helper fits structured arguments, so `_maf_mcp.redact_arguments` is local
-    to the card.
+    and more) and by its value (a bearer token, a key with a known prefix, a JWT). It shows
+    every other value whole, and it writes an invisible format character as `\uXXXX`. **A cut
+    card is not consent** (`ask_tools.py`). So a call whose arguments do not fit (2800
+    characters, or 8 levels of nesting) is refused with a plain message, and shows no card.
+    Only the server's description is cut to fit. No shared redaction helper fits structured
+    arguments, so `_maf_mcp.redact_arguments` is local to the card.
 15. **Deny and timeout.** Approve runs the tool. Deny, a timeout and a card fault return a
     refusal to the model, and the tool never reaches the server. The card closes with
     `confirmation_resolved` as before.
@@ -1001,7 +1003,9 @@ that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
 
 **Known limit: nobody checks the hints.** The server writes its own hints, and a hostile server
 can mark a destructive tool read-only. Each attach logs `mcp.tool_annotations` with the
-server, the tool and the hints, so an admin can audit them. A per-server admin setting
+server, the tool and the hints, so an admin can audit them. A later `tools/list` (after
+`notifications/tools/list_changed`) can only make a tool stricter in the run, and each change
+logs `mcp.tool_annotations_changed`. A per-server admin setting
 "always confirm" is H-300. It waits for an owner decision.
 
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
@@ -1042,7 +1046,8 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A13 | Approve runs the tool. Deny and a timeout return a refusal, and the tool never runs. | `test_maf_mcp_confirm.py` |
 | A14 | A run with no member, or with no card channel, refuses a tool that needs a card, and shows no card. | `test_maf_mcp_confirm.py` |
 | A15 | A WhatsApp run refuses, and parks nothing. | `test_maf_mcp_confirm.py` |
-| A16 | The card redacts sensitive arguments, and labels the server's description. | `test_maf_mcp_confirm.py` |
+| A16 | The card redacts sensitive arguments, shows every other argument whole, and labels the server's description. A call that the card cannot show whole is refused. | `test_maf_mcp_confirm.py` |
+| A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
 | A17 | Each attach logs `mcp.tool_annotations`. A destructive tool on the real `run_agent_stream` emits the card, and the server runs it only after Approve. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
