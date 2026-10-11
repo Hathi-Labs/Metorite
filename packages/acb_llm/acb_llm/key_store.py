@@ -390,6 +390,28 @@ class ProviderKeyStore:
         )
         return await self._decrypt_rows(org, rows)
 
+    async def list_names(
+        self, credential_type: str, organization_id: str,
+    ) -> list[dict[str, Any]]:
+        """The NAMES of this org's keys of one type. No value, and no ciphertext.
+
+        Each row is ``{provider, service, updated_at}``. The Integrations
+        console (WS-54 IN-1) uses it to show which services hold a key. The
+        SELECT names no ``encrypted`` column, so a caller cannot read a key
+        through it. An empty *organization_id* answers ``[]`` and never
+        resolves to the sole organization, because a console read must not
+        guess a tenant.
+        """
+        if not organization_id:
+            return []
+        return await self._execute(
+            "SELECT provider, service, updated_at FROM provider_keys "
+            " WHERE organization_id = :org_id AND credential_type = :credential_type "
+            " ORDER BY provider",
+            org_id=str(organization_id),
+            credential_type=credential_type,
+        )
+
     async def get_by_service(
         self, service: str, organization_id: str | None = None,
     ) -> dict[str, str]:
