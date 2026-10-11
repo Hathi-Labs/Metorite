@@ -24,6 +24,7 @@ import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { announceInAppLink, externalHost } from "@/lib/inAppLink";
@@ -354,6 +355,10 @@ export function MarkdownBody({
    *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
   caret?: boolean;
 }) {
+  // DeepSeek's DSML tool-call text never shows (owner report, 2026-10-11).
+  // The Router turns it into real tool calls. This catches a message stored
+  // before that fix, and a box that serves without the Router.
+  const visible = stripDsmlMarkup(content);
   return (
     <ReactMarkdown
       remarkPlugins={
@@ -542,10 +547,10 @@ export function MarkdownBody({
       }}
     >
       {entityPills
-        ? spaceBeforeBold(typedBulletsToList(content))
+        ? spaceBeforeBold(typedBulletsToList(visible))
         : fences
-          ? typedBulletsToList(content)
-          : content}
+          ? typedBulletsToList(visible)
+          : visible}
     </ReactMarkdown>
   );
 }
