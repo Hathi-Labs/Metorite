@@ -32,6 +32,10 @@ The rules, in order:
 A refusal raises :class:`OutboundRefused`, which names the host and a short
 reason. It never holds the path or the query of the URL.
 
+WS-8c adds :func:`mcp_client`, the client of an MCP session for a native MAF
+agent (``orchestrator/_maf_mcp.py``). It is the third caller, and it keeps
+rules 1 to 3. The section above :func:`mcp_client` says what it adds.
+
 ``_host_is_public`` and ``_is_safe_external_url`` keep the names that they had
 in ``senders.py``, which imports them again.
 
@@ -316,15 +320,116 @@ async def request(
         raise OutboundRefused(_host_of(url), "timeout") from None
 
 
+# ── The MCP client (WS-8c) ──────────────────────────────────────────────────
+#
+# Spec: ``project-docs/specs/agent_architecture.md`` §12.2 WS-8c. An MCP
+# session streams for the whole run, so :func:`request` and :func:`send`,
+# which read 64 KiB in 10 seconds, cannot carry it. :func:`mcp_client` gives a
+# client for the session instead. It keeps the same rules: the URL passes
+# :func:`check_url` once, and each request goes to the address that the check
+# resolved. It adds two rules for MCP: ``https`` on port 443 only, and each
+# request goes to the origin of the URL only.
+#
+# ⚠️ The MCP SDK follows a redirect on the same origin by itself, and it does
+# not read ``follow_redirects``. So the transport refuses each 3xx answer, and
+# the SDK never sees one.
+#
+# Fence: ``tests/unit/test_mcp_outbound_pin.py``.
+
+#: The one port that an MCP server may use.
+MCP_PORT = 443
+#: The time caps of an MCP session. The read cap is long, because the server
+#: streams its answers.
+MCP_TIMEOUT = httpx.Timeout(30.0, connect=CONNECT_TIMEOUT_S, read=300.0)
+
+
+async def check_mcp_url(url: str) -> Target:
+    """:func:`check_url` for an MCP server, which must use ``https`` on 443.
+
+    The scheme and the port are checked first, so a refused URL causes no
+    DNS lookup."""
+    if not isinstance(url, str):
+        raise OutboundRefused("", "bad url")
+    try:
+        parsed = httpx.URL(url)
+    except Exception:  # httpx raises InvalidURL or TypeError
+        raise OutboundRefused("", "bad url") from None
+    host = _host_of(url)
+    if parsed.scheme != "https":
+        raise OutboundRefused(host, "scheme")
+    if (parsed.port or MCP_PORT) != MCP_PORT:
+        raise OutboundRefused(host, "port")
+    return await check_url(url)
+
+
+def _mcp_inner_transport() -> httpx.AsyncBaseTransport:
+    """The transport that opens the socket. A test replaces it."""
+    return httpx.AsyncHTTPTransport(retries=0)
+
+
+class _PinnedTransport(httpx.AsyncBaseTransport):
+    """Sends each request to the address of ONE :class:`Target`.
+
+    A request to another origin is refused, and so is a 3xx answer. The
+    ``Host`` header keeps the name of the URL, and ``sni_hostname`` carries
+    the name, so TLS checks the certificate against the name."""
+
+    def __init__(self, target: Target) -> None:
+        self._target = target
+        self._origin = (target.url.scheme, target.host, target.url.port or MCP_PORT)
+        self._inner = _mcp_inner_transport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        url = request.url
+        try:
+            host = url.raw_host.decode("ascii")
+        except UnicodeDecodeError:
+            raise OutboundRefused("", "bad url") from None
+        if (url.scheme, host, url.port or MCP_PORT) != self._origin:
+            raise OutboundRefused(host, "other origin")
+        pinned = httpx.Request(
+            request.method,
+            url.copy_with(host=self._target.ip),
+            headers=request.headers,
+            stream=request.stream,
+            extensions={**request.extensions, "sni_hostname": self._target.host},
+        )
+        response = await self._inner.handle_async_request(pinned)
+        if 300 <= response.status_code < 400:
+            await response.aclose()
+            raise OutboundRefused(self._target.host, f"redirect {response.status_code}")
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+async def mcp_client(url: str) -> httpx.AsyncClient:
+    """A client for ONE MCP session to ``url``, or :class:`OutboundRefused`.
+
+    The caller owns the client and closes it when the run ends."""
+    target = await check_mcp_url(url)
+    return httpx.AsyncClient(
+        transport=_PinnedTransport(target),
+        follow_redirects=False,
+        trust_env=False,
+        timeout=MCP_TIMEOUT,
+    )
+
+
 __all__ = [
     "CONNECT_TIMEOUT_S",
     "MAX_ANSWER_BYTES",
+    "MCP_PORT",
+    "MCP_TIMEOUT",
     "TOTAL_TIMEOUT_S",
     "Answer",
     "OutboundRefused",
     "Target",
+    "check_mcp_url",
     "check_url",
     "deadline",
+    "mcp_client",
     "request",
     "send",
 ]

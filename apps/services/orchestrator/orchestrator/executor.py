@@ -95,6 +95,7 @@ from orchestrator._tool_injection import (
     _gate_injected_tool,
     _host_shell_refused,
     _inject_agent_tools,
+    _close_mcp_tools,
     _inject_mcp_servers,
     NoEgressRefused,
     _run_no_egress,
@@ -3873,6 +3874,9 @@ async def run_agent_stream(
     # B6 Phase-5 Tier 0: initialised here so the finally can always restore,
     # even if load_agent / build_integrations raises before creds are injected.
     _integration_env_token: IntegrationEnvToken = None
+    # WS-8c: the MCP tools and clients this run opened. The finally closes
+    # each one, however the run ends.
+    _mcp_opened: list[Any] = []
 
     try:
         if _relay_mark_active is not None:
@@ -3907,12 +3911,15 @@ async def run_agent_stream(
         ) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
+            # One access lookup for the run. The integrations below and the
+            # MCP servers of a native agent (WS-8c) read the same answer.
+            _authorizer = await _integration_authorizer(event_payload, thread_id)
             # Filter BEFORE the env injection below, so a credential the
             # acting member may not use never enters the run's environment at
             # all — not merely absent from state["integrations"].
             integrations, integration_warnings = build_integrations(
                 mandatory, optional, settings,
-                is_authorized=await _integration_authorizer(event_payload, thread_id),
+                is_authorized=_authorizer,
             )
             # B6 Phase-5 Tier 0: scope creds to this run; token restored in the
             # finally below so they don't linger in the shared process env.
@@ -3942,9 +3949,16 @@ async def run_agent_stream(
             _log_agent_tools_resolved(agent_name, agents, _own_tools)
             # Inject MCP servers from the registry into every agent at runtime.
             # H-236: an MCP server reaches outside the platform, so a
-            # no_egress run gets none.
+            # no_egress run gets none. WS-8c: the org is the gateway's
+            # server-side stamp (never the payload), a native agent's servers
+            # pass the run's grant check, and the finally closes them.
             for _a in agents if not _stream_no_egress else []:
-                await _inject_mcp_servers(_a, agent_name)
+                await _inject_mcp_servers(
+                    _a, agent_name,
+                    organization_id=organization_id,
+                    is_authorized=_authorizer,
+                    opened=_mcp_opened,
+                )
 
             # Per-session workspace override (Custom Apps builder sessions):
             # resolved once here, reused for the artifact context and the
@@ -5808,6 +5822,8 @@ async def run_agent_stream(
         # whatever way it ends. Read from the run's own context, so before
         # that context is reset. A no-op when no sandbox ran.
         await _end_sandbox_run()
+        # WS-8c: close each MCP session this run opened. Never raises.
+        await _close_mcp_tools(_mcp_opened)
         _stream_relay_thread_id.reset(_relay_token)
         _active_run_model.reset(_model_token)
         # H-201: the run's workspace, tenant key and session end with it.

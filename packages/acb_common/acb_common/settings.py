@@ -826,6 +826,21 @@ class Settings(BaseSettings):
     # `orchestrator.native_session_store.finish_turn`.
     maf_session_max_bytes: int = 2 * 1024 * 1024
 
+    # ── MCP servers on native MAF agents (WS-8c, agent_architecture.md §12.2) ─
+    #
+    # `MAF_MCP_ORGS` lists the organization ids whose native MAF agents get
+    # the MCP servers of their org, with a comma between ids. `*` allows each
+    # organization. An empty list, the default, allows none, and then a native
+    # agent reads no `mcp_servers` row. The Copilot path does not read it. The
+    # one reader is `orchestrator._maf_mcp.maf_mcp_org_allowed`, and the org it
+    # checks is the run binding, never request input. `env_guard` refuses each
+    # `MAF_*` name on each Integrations write. Restart the gateway after a
+    # change.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. Name the org and the box.
+    # Fence: tests/unit/test_maf_mcp_injection.py.
+    maf_mcp_orgs: str = ""
+
     # ── A durable "needs input" (WS-51 S2, chat_run_continuity.md §4 S2) ────
     #
     # `CHAT_DURABLE_ASKS`, default OFF. OFF means no change: no row is written,

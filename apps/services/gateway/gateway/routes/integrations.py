@@ -1800,6 +1800,28 @@ async def list_mcp_servers(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
+#: WS-8c (IN-D6): the upsert of ONE organization's row. Named binds, the org
+#: from the session, and the conflict key of migration 158.
+_MCP_REGISTER_SQL = (
+    "INSERT INTO mcp_servers (organization_id, name, label, description, "
+    "transport, command, url, env_vars, headers, agent_scope, enabled, "
+    "updated_at) VALUES (:org, :name, :label, :description, :transport, "
+    ":command, :url, CAST(:env_vars AS jsonb), CAST(:headers AS jsonb), "
+    "CAST(:agent_scope AS jsonb), :enabled, now()) "
+    "ON CONFLICT (organization_id, name) DO UPDATE SET "
+    "label = EXCLUDED.label, description = EXCLUDED.description, "
+    "transport = EXCLUDED.transport, command = EXCLUDED.command, "
+    "url = EXCLUDED.url, env_vars = EXCLUDED.env_vars, "
+    "headers = EXCLUDED.headers, agent_scope = EXCLUDED.agent_scope, "
+    "enabled = EXCLUDED.enabled, updated_at = now()"
+)
+
+#: D85: an MCP server over stdio starts a process on the host.
+_MCP_STDIO_REFUSED = (
+    "Metorite does not run MCP servers over stdio. Use an http-sse server."
+)
+
+
 @router.post(
     "/mcp", status_code=status.HTTP_201_CREATED,
     summary="Register or update an MCP server", dependencies=[_REQUIRE_MANAGE],
@@ -1808,42 +1830,55 @@ async def register_mcp_server(
     req: McpServerRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Add or update an MCP server configuration."""
+    """Add or update an MCP server of the caller's organization.
+
+    WS-8c (IN-D6). ``mcp_servers`` is exempt from RLS and keyed
+    ``(organization_id, name)`` by migration 158 (``mcp_servers_org_name_pkey``).
+    So the INSERT writes ``organization_id = current_tenant()``, and the
+    conflict key is that pair. Two orgs can hold one name, and a second
+    register of a name updates the row of the caller's org only. With no
+    tenant bound, it is 403 and nothing is written. ⚠️
+    ``schema.generated.sql`` still keys this table by name only. Do not copy
+    it.
+
+    A stdio server starts a process on the host, so it is 422 (D85).
+    """
     if not re.match(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$", req.name):
         raise HTTPException(
             422,
             "MCP server name must be 2-50 lowercase letters, digits, "
             "or hyphens.",
         )
-    if req.transport == "stdio" and not req.command:
-        raise HTTPException(422, "stdio transport requires a 'command'.")
+    if req.transport == "stdio":
+        raise HTTPException(422, _MCP_STDIO_REFUSED)
     if req.transport == "http-sse" and not req.url:
         raise HTTPException(422, "http-sse transport requires a 'url'.")
+    org = current_tenant()
+    if not org:
+        raise HTTPException(403, "No organization is bound to this session.")
 
     try:
         from acb_graph import get_session  # noqa: PLC0415
         with get_session() as s:
             s.execute(
-                text("""INSERT INTO mcp_servers (name, label, description, transport, command, url,
-                   env_vars, headers, agent_scope, enabled, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,now())
-                   ON CONFLICT (name) DO UPDATE SET
-                   label=EXCLUDED.label, description=EXCLUDED.description,
-                   transport=EXCLUDED.transport, command=EXCLUDED.command,
-                   url=EXCLUDED.url, env_vars=EXCLUDED.env_vars,
-                   headers=EXCLUDED.headers, agent_scope=EXCLUDED.agent_scope,
-                   enabled=EXCLUDED.enabled, updated_at=now()"""),
-                (req.name, req.label or req.name, req.description,
-                 req.transport, req.command, req.url,
-                 json.dumps(req.env_vars), json.dumps(req.headers),
-                 json.dumps(req.agent_scope), req.enabled),
+                text(_MCP_REGISTER_SQL),
+                {
+                    "org": org, "name": req.name, "label": req.label or req.name,
+                    "description": req.description, "transport": req.transport,
+                    "command": req.command, "url": req.url,
+                    "env_vars": json.dumps(req.env_vars),
+                    "headers": json.dumps(req.headers),
+                    "agent_scope": json.dumps(req.agent_scope),
+                    "enabled": req.enabled,
+                },
             )
             s.commit()
         _log.info("mcp.registered", name=req.name, actor=user.email)
         return {"ok": True, "name": req.name}
     except Exception as exc:
-        _log.warning("mcp.register_failed", name=req.name, error=str(exc))
-        raise HTTPException(500, f"DB error: {exc}") from exc
+        # The class of the error only: a DB message can echo a bound header.
+        _log.warning("mcp.register_failed", name=req.name, error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be saved.") from exc
 
 
 @router.delete(
@@ -1895,7 +1930,7 @@ async def test_mcp_server(
     """Perform a lightweight connectivity check for an MCP server.
 
     For http-sse: makes a GET to the URL to verify reachability.
-    For stdio: checks that the command is executable.
+    For stdio: 422, because Metorite runs no stdio server (D85, WS-8c).
     Returns {ok, detail}.
 
     🔒 WS-54 IN-0. The URL is customer input, so the GET goes through the
@@ -1926,13 +1961,14 @@ async def test_mcp_server(
         if answer.status_code < 500:
             return {"ok": True, "detail": f"Server reachable (HTTP {answer.status_code})."}
         return {"ok": False, "detail": f"Server returned HTTP {answer.status_code}."}
-    if req.transport == "stdio" and req.command:
-        import shutil  # noqa: PLC0415
-        exe = (req.command or "").split()[0]
-        if shutil.which(exe):
-            return {"ok": True, "detail": f"Command '{exe}' found on PATH."}
-        return {"ok": False, "detail": f"Command '{exe}' not found on PATH."}
-    return {"ok": False, "detail": "No URL or command to test."}
+    if req.transport == "stdio":
+        # D85 (WS-8c): no stdio server runs, so there is nothing to test, and
+        # a tenant may not probe the PATH of the host.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_MCP_STDIO_REFUSED,
+        )
+    return {"ok": False, "detail": "No URL to test."}
 
 
 # ---------------------------------------------------------------------------
@@ -1941,6 +1977,28 @@ async def test_mcp_server(
 
 class PluginInstallRequest(BaseModel):
     manifest_url: str
+
+
+#: WS-8c (IN-D6): the upsert of ONE organization's plugin. Migration 158
+#: replaced ``plugins_name_key`` with the unique index ``plugins_org_name_key``
+#: on ``(organization_id, name)``, so that pair is the conflict key.
+_PLUGIN_INSTALL_SQL = (
+    "INSERT INTO plugins (organization_id, name, label, description, "
+    "manifest_url, openapi_url, logo_url, auth_type, auth_config, manifest, "
+    "openapi_spec, tools_generated, enabled, version, updated_at) VALUES "
+    "(:org, :name, :label, :description, :manifest_url, :openapi_url, "
+    ":logo_url, :auth_type, CAST(:auth_config AS jsonb), "
+    "CAST(:manifest AS jsonb), CAST(:openapi_spec AS jsonb), "
+    "CAST(:tools_generated AS jsonb), :enabled, :version, now()) "
+    "ON CONFLICT (organization_id, name) DO UPDATE SET "
+    "label = EXCLUDED.label, description = EXCLUDED.description, "
+    "manifest_url = EXCLUDED.manifest_url, openapi_url = EXCLUDED.openapi_url, "
+    "logo_url = EXCLUDED.logo_url, auth_type = EXCLUDED.auth_type, "
+    "auth_config = EXCLUDED.auth_config, manifest = EXCLUDED.manifest, "
+    "openapi_spec = EXCLUDED.openapi_spec, "
+    "tools_generated = EXCLUDED.tools_generated, "
+    "enabled = EXCLUDED.enabled, version = EXCLUDED.version, updated_at = now()"
+)
 
 
 @router.get("/plugins", summary="List installed plugins")
@@ -1998,6 +2056,11 @@ async def install_plugin(
     manifest_url = req.manifest_url.strip()
     if not manifest_url.startswith(("https://", "http://")):
         raise HTTPException(422, "Manifest URL must start with http:// or https://.")
+    # WS-8c (IN-D6): the row belongs to the caller's org. With no tenant, no
+    # fetch goes out and no row is written.
+    org = current_tenant()
+    if not org:
+        raise HTTPException(403, "No organization is bound to this session.")
 
     # 1. Fetch the manifest
     try:
@@ -2064,31 +2127,25 @@ async def install_plugin(
         except Exception as exc:
             _log.warning("plugins.openapi_fetch_failed", name=plugin_name, error=str(exc))
 
-    # 4. Store in DB
+    # 4. Store in DB. ``plugins`` has FORCE RLS (phase 4), so the write binds
+    # the tenant. An unbound session would write nothing once RLS applies.
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session  # noqa: PLC0415
+        with tenant_session(org) as s:
             s.execute(
-                text("""INSERT INTO plugins (name, label, description, manifest_url, openapi_url,
-                   logo_url, auth_type, auth_config, manifest, openapi_spec,
-                   tools_generated, enabled, version, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,
-                           %s::jsonb,%s,%s,now())
-                   ON CONFLICT (name) DO UPDATE SET
-                   label=EXCLUDED.label, description=EXCLUDED.description,
-                   manifest_url=EXCLUDED.manifest_url, openapi_url=EXCLUDED.openapi_url,
-                   logo_url=EXCLUDED.logo_url, auth_type=EXCLUDED.auth_type,
-                   auth_config=EXCLUDED.auth_config, manifest=EXCLUDED.manifest,
-                   openapi_spec=EXCLUDED.openapi_spec,
-                   tools_generated=EXCLUDED.tools_generated,
-                   enabled=EXCLUDED.enabled, version=EXCLUDED.version,
-                   updated_at=now()"""),
-                (plugin_name, label, description, manifest_url, api_url,
-                 logo_url, auth_type, json.dumps(manifest.get("auth", {}) or {}),
-                 json.dumps(manifest), json.dumps(openapi_spec),
-                 json.dumps(tools_generated), True, version),
+                text(_PLUGIN_INSTALL_SQL),
+                {
+                    "org": org, "name": plugin_name, "label": label,
+                    "description": description, "manifest_url": manifest_url,
+                    "openapi_url": api_url, "logo_url": logo_url,
+                    "auth_type": auth_type,
+                    "auth_config": json.dumps(manifest.get("auth", {}) or {}),
+                    "manifest": json.dumps(manifest),
+                    "openapi_spec": json.dumps(openapi_spec),
+                    "tools_generated": json.dumps(tools_generated),
+                    "enabled": True, "version": version,
+                },
             )
-            s.commit()
         _log.info("plugin.installed", name=plugin_name, actor=user.email)
         return {
             "ok": True, "name": plugin_name, "label": label,
