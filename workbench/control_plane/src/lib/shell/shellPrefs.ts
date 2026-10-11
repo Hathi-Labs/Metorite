@@ -8,24 +8,31 @@
  * sign-in question all read this key, so a pin toggled in one shows in all of
  * them at once.
  *
+ * ⚠️ **`pins` holds the STARRED apps** (owner, 2026-10-11). The field keeps
+ * its NS-7 name, so no stored row changes (R6). `known` beside it holds the
+ * apps the member could see at their last save. `starredHrefs` in
+ * `presets.ts` reads the two, and `routes/admin/me.py` stores them.
+ *
  * The rules:
  *
  * - **The first frame draws the last known layout** (round 2). The browser
  *   keeps the layout the server last confirmed, per account
  *   (`shellCache.ts`). The read then confirms it or replaces it. With no
- *   such copy, as on a first visit, "My apps" waits for the read.
+ *   such copy, as on a first visit, the sidebar shows every held app until
+ *   the read answers.
  * - **The read starts with the access read, not after it.** The route needs
  *   only the session. So `AppShell` calls this hook before access resolves,
  *   and the answer is often in memory by the first frame of the sidebar.
  * - **A read that fails never blanks the sidebar.** The layout falls back to
- *   the role's preset (`shellLayout`), and the first sign-in question does
+ *   the role's preset and every held app (`shellLayout`), and the first
+ *   sign-in question does
  *   not open, because "never asked" is a fact only the server knows.
- * - **A write shows at once.** A pin that the server refuses goes back. An
+ * - **A write shows at once.** A star that the server refuses goes back. An
  *   answer to the question that the server refuses STAYS for this page
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
  */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -55,11 +62,18 @@ let confirmed: StoredShell | undefined;
 let unsaved: StoredShell | undefined;
 /** The question was asked in this page. It is never asked twice in one. */
 let askedHere = false;
+/** Each save takes the next number. Only the newest writes the cache. */
+let saveSeq = 0;
+/** The number of the newest save that the server confirmed. */
+let confirmedSeq = 0;
+/** The number of the newest save when it settled, success or failure. */
+let settledSeq = 0;
 
 onClear(() => {
   confirmed = undefined;
   unsaved = undefined;
   askedHere = false;
+  confirmedSeq = saveSeq;
 });
 
 /** Tests only: start a new page. */
@@ -67,6 +81,7 @@ export function __newShellPageForTests(): void {
   confirmed = undefined;
   unsaved = undefined;
   askedHere = false;
+  confirmedSeq = saveSeq;
 }
 
 export function markAsked(): void {
@@ -80,6 +95,16 @@ export function askedInThisPage(): boolean {
 /** The layout to keep in the browser: the server's last word, never a guess. */
 export function confirmedLayout(): StoredShell | undefined {
   return confirmed;
+}
+
+/**
+ * The layout as the read cache holds it NOW, with every optimistic write in
+ * it. A toggle builds on this and not on its render's copy. Two quick
+ * clicks on two stars then save both, where the render's copy lost the
+ * first (measured in `e2e/shell-presets.spec.ts`, 2026-10-11).
+ */
+export function latestShell(): StoredShell | undefined {
+  return peek<StoredShell>(SHELL_PREFS_PATH)?.data;
 }
 
 export async function readShellPrefs(): Promise<StoredShell> {
@@ -96,12 +121,20 @@ export async function readShellPrefs(): Promise<StoredShell> {
  *
  * On a refusal it throws, so the caller can say so. With `keep`, the chosen
  * layout stays for this page (an answer to the question). Without it, the
- * cache goes back to what it held (a pin).
+ * cache goes back to what it held (a star).
+ *
+ * ⚠️ **Saves can overlap** (two quick stars). Each save takes a number, and
+ * only the NEWEST one writes the cache or reverts it. An older success must
+ * not paint over the newer choice, and an older failure must not undo it.
+ * A newer save carries the older change too, because a toggle builds on
+ * `latestShell()`. Fence: `shellCache.test.ts`, "overlapping saves".
  */
 export async function saveShellPrefs(
   next: StoredShell | null,
   opts: { keep?: boolean } = {},
 ): Promise<StoredShell> {
+  const seq = ++saveSeq;
+  const newest = () => seq === saveSeq;
   const before = peek<StoredShell>(SHELL_PREFS_PATH)?.data;
   const shown = next ?? EMPTY_SHELL;
   put(SHELL_PREFS_PATH, shown);
@@ -113,22 +146,67 @@ export async function saveShellPrefs(
     });
     if (!res.ok) throw new Error(`shell layout ${res.status}`);
     const saved = asLayout(await res.json()) ?? shown;
-    confirmed = saved;
-    unsaved = undefined;
-    put(SHELL_PREFS_PATH, saved);
+    // The server's word, unless a newer save already confirmed a later one.
+    if (seq > confirmedSeq) {
+      confirmedSeq = seq;
+      confirmed = saved;
+    }
+    if (newest()) {
+      settledSeq = seq;
+      unsaved = undefined;
+      put(SHELL_PREFS_PATH, saved);
+    } else if (settledSeq === saveSeq && confirmedSeq === seq) {
+      // The newer save already failed and reverted. This older one is now
+      // the server's latest word, so the screen shows it.
+      put(SHELL_PREFS_PATH, saved);
+    }
     return saved;
   } catch (err) {
-    if (opts.keep) {
+    const back = confirmed ?? before;
+    if (!newest()) {
+      // A newer save owns the cache now. It carries this change too.
+    } else if (opts.keep) {
+      settledSeq = seq;
       unsaved = shown;
       put(SHELL_PREFS_PATH, shown);
-    } else if (before) {
-      put(SHELL_PREFS_PATH, before);
+    } else if (back) {
+      // Back to what the SERVER last confirmed, not to `before`: when two
+      // saves overlap, `before` is the older save's guess, which the server
+      // may never have stored.
+      settledSeq = seq;
+      put(SHELL_PREFS_PATH, back);
     } else {
+      settledSeq = seq;
       // Nothing was known before: drop the guess, and read the truth again.
       invalidate(SHELL_PREFS_PATH);
     }
     throw err;
   }
+}
+
+/**
+ * How long the sidebar waits for the layout before it draws every app. Short
+ * on purpose: Home and Add apps wait with it, and a late narrowing costs less
+ * than a blank rail (review, 2026-10-11). The skeleton shows only with no
+ * browser copy, so a page waits at most once.
+ */
+export const SHELL_WAIT_MS = 2_000;
+
+/**
+ * True while the sidebar should draw its skeleton: nothing is known yet (no
+ * read answered, and no browser copy), and the wait has not run out. A
+ * failed read ends it at once (`loading` goes false), and so does the wait
+ * of `SHELL_WAIT_MS`. Then every held app shows.
+ * Without it, every app painted and then the sidebar narrowed to the stars.
+ */
+export function useShellPending(loading: boolean): boolean {
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    if (!loading) return;
+    const t = setTimeout(() => setWaited(true), SHELL_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [loading]);
+  return loading && !waited;
 }
 
 export interface ShellPrefsState {

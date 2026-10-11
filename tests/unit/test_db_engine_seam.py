@@ -337,19 +337,17 @@ _GET_DB_CALL = re.compile(r"await _?get_db\(\)")
 #: `tenant_session(that_org)`. The file needs no exemption because it has no
 #: unbound site left, which is what `test_converted_packages_stay_converted`
 #: now enforces for it.
+#:
+#: ⚠️ `routes/crm/auto_lead.py` and `routes/crm/broker_handlers.py` LEFT this
+#: list on 2026-10-11 (WS-53 CRM-T3, `crm_platform.md` §4.3). The auto-lead
+#: step opens `tenant_session(org)` with the tenant the email hook bound, and
+#: the broker handler with the tenant the `approve` call bound. With none
+#: bound, each opens no session. `test_crm_sync_tenancy.py` is the fence.
 H2_EXEMPT_FILES: dict[str, str] = {
-    "apps/services/gateway/gateway/routes/crm/auto_lead.py":
-        "background job fired from the email scheduler's new-mail hook — H4 "
-        "threads the mailbox owner's tenant explicitly; ambient inheritance "
-        "is forbidden",
     "apps/services/gateway/gateway/routes/crm/sync_zoho.py":
-        "scheduled sync engine running as `crm:zoho-sync` with per-phase "
-        "commits — H4 threads an explicit tenant through the sync "
-        "configuration; ambient inheritance is forbidden",
-    "apps/services/gateway/gateway/routes/crm/broker_handlers.py":
-        "approval-time broker handler running as `crm:zoho-sync` — H4/H6 "
-        "derives the tenant from the proposal payload's native row, never "
-        "from the approver's ambient binding",
+        "unreachable until CRM-Z5: the sync loop starts no task and "
+        "`POST /crm/sync/zoho` answers 409 (WS-53 CRM-T3). The old engine's "
+        "one unbound session stays for CRM-Z5 to rebuild per tenant",
 }
 
 #: The route packages H2 has converted to ZERO unbound sites (modulo the
@@ -450,7 +448,10 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `classify_chats` and `process_new_messages` moved to `_tenant_session()`
 #: (-2). The webhook's `_resolve_account` became a tenant-discovery entry
 #: (-1). `test_whatsapp_webhook_under_rls.py` fences the path under FORCE RLS.
-H2_BASELINE_ELSEWHERE = 77
+#: 77 → 75: WS-53 CRM-T3 (2026-10-11). `routes/crm/auto_lead.py` and
+#: `routes/crm/broker_handlers.py` moved their one site each to
+#: `tenant_session(org)` (-2). `sync_zoho.py` keeps its site until CRM-Z5.
+H2_BASELINE_ELSEWHERE = 75
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -566,12 +567,11 @@ def test_h2_exempt_files_still_use_the_unbound_seam() -> None:
 #: `TenantUnbound` at runtime, and no file-scoped ratchet or hermetic fake can
 #: see it (the fakes yield unconditionally). Found by the H2 adversarial
 #: review — the exemption markers are file-scoped, but the call graph is not.
-H2_EXEMPT_CALL_EDGES: dict[tuple[str, str], str] = {
-    ("apps/services/gateway/gateway/routes/crm/auto_lead.py", "create_record"):
-        "_create_lead binds the mailbox owner's organization explicitly "
-        "(bind_tenant around the call — the H4 shape, done early because the "
-        "unbound call was a today-failure that stalled the watermark)",
-}
+#:
+#: The one entry, `auto_lead.py` → `create_record`, left on 2026-10-11 with
+#: its file (WS-53 CRM-T3). The auto-lead step is no longer an exempt file,
+#: so the edge is no longer an exempt edge.
+H2_EXEMPT_CALL_EDGES: dict[tuple[str, str], str] = {}
 
 
 def _h4_files() -> set[str]:
@@ -664,7 +664,7 @@ def test_exempt_call_edge_allowlist_has_no_stale_entries() -> None:
         assert name in _called_names(_REPO / rel), (
             f"{rel} no longer calls {name}() — remove the stale edge"
         )
-        assert f"bind_tenant(" in src, (
+        assert "bind_tenant(" in src, (
             f"{rel} holds a reviewed edge but no longer binds an explicit "
             f"tenant anywhere — the edge's justification is gone"
         )
@@ -678,8 +678,8 @@ def test_exempt_call_edge_allowlist_has_no_stale_entries() -> None:
 #: counted against H2_BASELINE_ELSEWHERE.
 #:
 #: ⚠️ **Each read returns ZERO rows once FORCE RLS covers its table**, the
-#: same limit every H4 resolver has (`_workflow_organization`, auto_lead's
-#: `_owner_organization`). Each function fails CLOSED on that: it returns
+#: same limit every H4 resolver has (`_workflow_organization`). Each
+#: function fails CLOSED on that: it returns
 #: `None`, the job runs memberless, and the deployment key's Router refuses
 #: it with a 400. It never bills a guessed member. H-152 records the move to
 #: an RLS-EXEMPT read before FORCE RLS lands on these tables.

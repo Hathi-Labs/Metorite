@@ -8,7 +8,7 @@ import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
 import { autoFoldEnabled, floatingOpen, isWorkEvent, shouldFold } from "@/lib/sidebarFold";
-import Icon from "@/components/Icon";
+import Icon, { themedIcon } from "@/components/Icon";
 import NavBadge, { type NavBadgeTone } from "@/components/NavBadge";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import { runBadge } from "@/lib/runActivity";
@@ -21,8 +21,23 @@ import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
-import { accountLinks, homePane, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
-import { useShellPrefs } from "@/lib/shell/shellPrefs";
+import {
+  ADD_APPS_HINT,
+  accountLinks,
+  homePane,
+  isActive,
+  launcherGroups,
+  shellNavOn,
+  shellSidebar,
+  strayCount,
+} from "@/lib/shell/shellNav";
+import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
+import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
+import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
+import { chatScope } from "@/lib/sessions";
+import { ContextMenu } from "@/components/ContextMenu";
+import { useToast } from "@/components/ui/Toast";
+import Button from "@/components/ui/Button";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -80,12 +95,20 @@ export default function Sidebar() {
   // because it swaps the whole page; a label here does not.
   const [home] = useState(() => homePane());
   const [launcherOpen, setLauncherOpen] = useState(false);
-  // The member's pins (NS-7): "My apps" first, from their layout. While the
-  // first read is out the groups draw without it, which is complete, not
-  // blank. A failed read draws the role's preset (`shellLayout`).
+  // The hint All apps shows when "Add apps" opened it, and none otherwise.
+  const [launcherHint, setLauncherHint] = useState<string | undefined>(undefined);
+  const openLauncher = (hint?: string) => {
+    setLauncherHint(hint);
+    setLauncherOpen(true);
+  };
+  // The member's stars (owner, 2026-10-11): each category lists only the
+  // apps they starred. While the first read is out, with no browser copy,
+  // the skeleton holds the place (`useShellPending`). A failed read, or a
+  // read that takes longer than the proxy's timeout, draws every held app.
   const shell = useShellPrefs();
+  const shellPending = useShellPending(shellNav && shell.loading);
   const railSections = shellNav
-    ? shellSidebar(sections, shell.loading ? undefined : shell.layout.pins)
+    ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
@@ -106,20 +129,78 @@ export default function Sidebar() {
     [railSections.map((s) => s.items.map((p) => p.href).join(",")).join("|")],
   );
   const { byApp: runCounts, needsByApp: needsCounts, unreadByApp: unreadCounts } = useRunActivity(railHrefs, canPoll);
+  // A run on a pane the sidebar does not show, Chat included, counts on
+  // "Add apps", the door to the hidden apps (`strayCount`).
+  const strayBadge = runBadge(
+    strayCount(runCounts, railHrefs),
+    strayCount(needsCounts, railHrefs),
+    strayCount(unreadCounts, railHrefs),
+  );
 
-  // Per-section fold state, persisted so the layout survives reloads. Stored
-  // as a map of FOLDED ids — unknown/new sections therefore default to open.
-  const [foldedSections, setFoldedSections] = useState<Record<string, boolean>>({});
+  // Per-category fold state, kept per ACCOUNT (owner, 2026-10-11), so a
+  // reload keeps it and another account on this browser never reads it
+  // (`lib/shell/sidebarFolds.ts`). Stored as a map of FOLDED ids, so a new
+  // category starts open.
+  const foldScope = accessLoading ? null : chatScope(access.email, access.organization?.id);
+  const [foldedSections, setFoldedSections] = useState<Folds>({});
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(FOLD_KEY);
-      if (raw) setFoldedSections(JSON.parse(raw));
-    } catch {
-      // Corrupt/unavailable storage — start with everything open.
-    }
-  }, []);
+    setFoldedSections(readFolds(foldScope));
+  }, [foldScope]);
   const toggleSection = (id: string) =>
-    setFoldedSections((prev) => persistFolds({ ...prev, [id]: !prev[id] }));
+    setFoldedSections((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      writeFolds(foldScope, next);
+      return next;
+    });
+
+  // "Hide from sidebar" on a row (owner, 2026-10-11). The same optimistic
+  // save as the star in All apps, built on the latest layout, and it goes
+  // back when the server refuses it. The toast offers Undo.
+  const toast = useToast();
+  const canHide = shellNav && shell.enabled && shell.stored !== undefined;
+  const flipStar = (href: string) => {
+    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
+  };
+  const hideFromSidebar = (pane: NavPane) => {
+    // Undo puts back the layout from BEFORE the hide, exactly. A second
+    // toggle would build on whatever changed since.
+    const before = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    // The focus goes to the next row, as the hidden row leaves the page.
+    const next = nextFocusAfterHide(asideRef.current, pane.href);
+    requestAnimationFrame(() => {
+      const target = next();
+      target?.focus();
+    });
+    flipStar(pane.href).then(
+      () =>
+        toast.show({
+          key: "sidebar-hide",
+          title: `${pane.label} hidden from your sidebar.`,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              saveShellPrefs(before).catch(() =>
+                toast.show({ key: "sidebar-hide", variant: "error", title: "Your sidebar was not saved. Try again." }),
+              );
+            },
+          },
+        }),
+      () => toast.show({ key: "sidebar-hide", variant: "error", title: "Your sidebar was not saved. Try again." }),
+    );
+  };
+  // The row menu: at the pointer for a right-click, under the "···" for a
+  // press. `trigger` gets the focus back when the menu closes.
+  const [rowMenu, setRowMenu] = useState<{ pane: NavPane; x: number; y: number; keyboard: boolean; trigger: HTMLElement | null } | null>(null);
+  const closeRowMenu = () => {
+    const back = rowMenu?.trigger;
+    setRowMenu(null);
+    back?.focus();
+  };
+  const rowMenuFor = canHide
+    ? (pane: NavPane, at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null }) =>
+        setRowMenu({ pane, ...at })
+    : undefined;
 
   // Navigating into a folded section unfolds it (once per navigation — the
   // user can still fold it again while staying on the page).
@@ -132,9 +213,11 @@ export default function Sidebar() {
       const shape = shellNav ? shellSidebar(NAV_SECTIONS) : NAV_SECTIONS;
       const owner = shape.find((s) => s.items.some((p) => pathname.startsWith(p.href)));
       if (!owner || !prev[owner.id]) return prev;
-      return persistFolds({ ...prev, [owner.id]: false });
+      const next = { ...prev, [owner.id]: false };
+      writeFolds(foldScope, next);
+      return next;
     });
-  }, [pathname, shellNav]);
+  }, [pathname, shellNav, foldScope]);
 
   // Poll agent list for behind_by counts — shows "N updates" badge on Agents
   useEffect(() => {
@@ -308,7 +391,7 @@ export default function Sidebar() {
         key={collapsed ? "rail" : "full"}
         className="sidebar-swap scrollbar-thin flex flex-col flex-1 overflow-y-auto overflow-x-hidden"
       >
-        {accessLoading ? (
+        {accessLoading || shellPending ? (
           <NavSkeleton collapsed={collapsed} />
         ) : (
           <>
@@ -318,13 +401,20 @@ export default function Sidebar() {
               <NavLink pane={home} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
             </div>
           )}
-          {railSections.map((section) => (
+          {railSections.map((section) => {
+            const holdsCurrent = section.items.some((p) =>
+              shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href),
+            );
+            return (
             <NavSectionBlock
               key={section.id}
               section={section}
               pathname={pathname}
               collapsed={collapsed}
-              folded={!!foldedSections[section.id]}
+              folded={isFolded(foldedSections, section.id, holdsCurrent)}
+              holdsCurrent={shellNav && holdsCurrent}
+              onRowMenu={rowMenuFor}
+              menuHref={rowMenu?.pane.href ?? null}
               onToggle={() => toggleSection(section.id)}
               onNavigate={armFold}
               agentUpdateCount={agentUpdateCount}
@@ -334,17 +424,48 @@ export default function Sidebar() {
               pinnedApps={pinnedApps}
               shellNav={shellNav}
             />
-          ))}
+            );
+          })}
+          {shellNav && (
+            <AddAppsRow
+              collapsed={collapsed}
+              onOpen={() => openLauncher(ADD_APPS_HINT)}
+              badge={strayBadge}
+            />
+          )}
           </>
         )}
       </nav>
+
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          autoFocus={rowMenu.keyboard}
+          onClose={closeRowMenu}
+          items={[
+            {
+              kind: "item",
+              label: "Hide from sidebar",
+              icon: themedIcon("EyeOff"),
+              onSelect: () => hideFromSidebar(rowMenu.pane),
+            },
+            {
+              kind: "item",
+              label: "Open in new tab",
+              icon: themedIcon("ExternalLink"),
+              onSelect: () => window.open(rowMenu.pane.href, "_blank", "noopener"),
+            },
+          ]}
+        />
+      )}
 
       {/* All apps (NS-2): every app the member holds, each with its purpose. */}
       {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
         <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
           <button
             type="button"
-            onClick={() => setLauncherOpen(true)}
+            onClick={() => openLauncher()}
             title={collapsed ? "All apps" : undefined}
             aria-label="All apps"
             aria-haspopup="dialog"
@@ -363,6 +484,7 @@ export default function Sidebar() {
           onClose={() => setLauncherOpen(false)}
           sections={sections}
           pathname={pathname}
+          hint={launcherHint}
         />
       )}
 
@@ -406,7 +528,68 @@ export default function Sidebar() {
 }
 
 // ---------------------------------------------------------------------------
+// "Add apps" — the last item of the list (owner, 2026-10-11)
+// ---------------------------------------------------------------------------
+
+/**
+ * The way to add an app, always at the end of the list, so a member who
+ * starred nothing still sees where to start. It opens All apps, where the
+ * star on each app says what the sidebar shows.
+ *
+ * ⚠️ It takes the geometry of `NavLink` on purpose, and not that of
+ * `RailRow`. The block is `px-2`, the row is `px-3 py-2`, and the icon
+ * column is the same, so its icon sits in line with the app icons above it,
+ * open or folded. `e2e/shell-presets.spec.ts` measures that. It is a button
+ * that opens a dialog, not a place, so it has no active state.
+ */
+function AddAppsRow({
+  collapsed,
+  onOpen,
+  badge,
+}: {
+  collapsed: boolean;
+  onOpen: () => void;
+  /** Runs on apps the sidebar does not show (`strayCount`). */
+  badge: ReturnType<typeof runBadge>;
+}) {
+  if (collapsed) {
+    return (
+      <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Add apps"
+          aria-label="Add apps"
+          aria-haspopup="dialog"
+          className="relative flex items-center justify-center rounded-lg p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+        >
+          <Icon name="Plus" size={18} />
+          {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-0.5 px-2 py-1.5" data-nav-add-apps="">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-haspopup="dialog"
+        className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
+      >
+        <span className="flex items-center gap-2.5">
+          <Icon name="Plus" size={16} />
+          <span className="text-[13px]">Add apps</span>
+          {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} /> : null}
+        </span>
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Nav skeleton — what an unresolved viewer sees
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -451,17 +634,35 @@ function NavSkeleton({ collapsed }: { collapsed: boolean }) {
 // Section block
 // ---------------------------------------------------------------------------
 
-/** localStorage key for the folded-section map (Record<sectionId, true>). */
-const FOLD_KEY = "cc-nav-folded-sections";
-
-function persistFolds(next: Record<string, boolean>): Record<string, boolean> {
-  try {
-    localStorage.setItem(FOLD_KEY, JSON.stringify(next));
-  } catch {
-    // Storage unavailable (private mode) — fold state just won't persist.
-  }
-  return next;
+/**
+ * Where the focus goes when a row is hidden: the next row of its category,
+ * else the one before it, else the next row of the sidebar, else "Add
+ * apps". Read now, while the row is on the page. The returned function
+ * resolves the target after the row has gone.
+ */
+function nextFocusAfterHide(aside: HTMLElement | null, href: string): () => HTMLElement | null {
+  if (!aside) return () => null;
+  const rows = [...aside.querySelectorAll<HTMLElement>("[data-nav-section] [data-nav-row]")];
+  const at = rows.findIndex((r) => r.dataset.navRow === href);
+  const section = rows[at]?.closest("[data-nav-section]");
+  const same = rows.filter((r) => r.closest("[data-nav-section]") === section && r.dataset.navRow !== href);
+  const after = same.find((r) => rows.indexOf(r) > at) ?? [...same].reverse().find((r) => rows.indexOf(r) < at);
+  const pick = (after ?? rows[at + 1] ?? null)?.dataset.navRow ?? null;
+  return () => {
+    if (pick) {
+      const row = aside.querySelector<HTMLElement>(`[data-nav-row="${pick}"]`);
+      const link = row?.matches("a") ? row : row?.querySelector<HTMLElement>("a");
+      if (link) return link;
+    }
+    return aside.querySelector<HTMLElement>("[data-nav-add-apps] button");
+  };
 }
+
+/** Opens a row's menu at a point. `keyboard` moves the focus into it. */
+type RowMenuOpen = (
+  pane: NavPane,
+  at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null },
+) => void;
 
 function NavSectionBlock({
   section,
@@ -476,6 +677,9 @@ function NavSectionBlock({
   unreadCounts = {},
   pinnedApps = [],
   shellNav = false,
+  onRowMenu,
+  menuHref = null,
+  holdsCurrent = false,
 }: {
   section: NavSection;
   pathname: string | null;
@@ -494,6 +698,16 @@ function NavSectionBlock({
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
+  /** Opens a row's menu (owner, 2026-10-11). Absent: the rows have none. */
+  onRowMenu?: RowMenuOpen;
+  /** The href whose menu is open. Its "···" stays in view. */
+  menuHref?: string | null;
+  /**
+   * The member is on one of this category's apps. Its fold is off while
+   * they are there, so the toggle never seems to do nothing (the current
+   * row would stay in view).
+   */
+  holdsCurrent?: boolean;
 }) {
   const badgeFor = (href: string) => paneBadge(href, agentUpdateCount, runCounts, needsCounts, unreadCounts);
   if (collapsed) {
@@ -509,6 +723,8 @@ function NavSectionBlock({
               onNavigate={onNavigate}
               {...badgeFor(p.href)}
               shellNav={shellNav}
+              onRowMenu={onRowMenu}
+              menuOpen={menuHref === p.href}
             />
           ))}
         </div>
@@ -518,7 +734,8 @@ function NavSectionBlock({
   }
 
   // A folded section keeps showing the item you are ON — the current location
-  // must never vanish from the nav.
+  // must never vanish from the nav. With the shell nav, the category of the
+  // current route is never folded at all (`isFolded`).
   const items = folded
     ? section.items.filter((p) => pathname?.startsWith(p.href))
     : section.items;
@@ -527,22 +744,27 @@ function NavSectionBlock({
     <div className="px-2 py-1.5" data-nav-section={section.id}>
       {/* Section heading — click to fold/unfold */}
       <button
-        onClick={onToggle}
+        onClick={holdsCurrent ? undefined : onToggle}
         aria-expanded={!folded}
+        aria-disabled={holdsCurrent || undefined}
+        title={holdsCurrent ? "Stays open while you use one of its apps" : undefined}
+        data-nav-heading=""
         className={`group flex w-full items-center justify-between rounded-md px-2 text-left uppercase tracking-wider font-semibold hover:text-sidebar-foreground tech-transition ${
           section.sub
             ? "py-1 text-[10px] text-muted-foreground/70"
             : "py-1.5 text-[11px] text-muted-foreground"
         }`}
       >
-        <span>{section.label}</span>
-        <Icon
-          name="ChevronDown"
-          size={12}
-          className={`shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground tech-transition ${
-            folded ? "-rotate-90" : ""
-          }`}
-        />
+        <span>{shellNav ? foldHeading(section.label, section.items.length, folded) : section.label}</span>
+        {holdsCurrent ? null : (
+          <Icon
+            name="ChevronDown"
+            size={12}
+            className={`shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground tech-transition ${
+              folded ? "-rotate-90" : ""
+            }`}
+          />
+        )}
       </button>
 
       {/* Section items */}
@@ -557,6 +779,8 @@ function NavSectionBlock({
               {...badgeFor(p.href)}
               pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
               shellNav={shellNav}
+              onRowMenu={onRowMenu}
+              menuOpen={menuHref === p.href}
             />
           ))}
         </div>
@@ -606,6 +830,8 @@ export function NavLink({
   badgeLabel,
   pinnedApps,
   shellNav = false,
+  onRowMenu,
+  menuOpen = false,
 }: {
   pane: NavPane;
   pathname: string | null;
@@ -618,6 +844,15 @@ export function NavLink({
   badgeLabel?: string;
   pinnedApps?: PinnedApp[];
   shellNav?: boolean;
+  /**
+   * The row's menu: "Hide from sidebar" and "Open in new tab" (owner,
+   * 2026-10-11). A right-click opens it, open or folded. Open, a "···" at
+   * the row's end opens it too. It is a SIBLING of the link, so the link
+   * keeps its own name and stays the click target. Home passes none.
+   */
+  onRowMenu?: RowMenuOpen;
+  /** This row's menu is open, so its "···" stays in view (`data-pinned`). */
+  menuOpen?: boolean;
 }) {
   // The shell nav matches by segment, so Home ("/") is active on Home only.
   const active = shellNav ? isActive(pathname, pane.href) : pathname?.startsWith(pane.href);
@@ -636,6 +871,15 @@ export function NavLink({
         href={pane.href}
         title={shellNav ? `${pane.label}: ${purpose}` : pane.label}
         onClick={onNavigate}
+        onContextMenu={
+          onRowMenu
+            ? (e) => {
+                e.preventDefault();
+                onRowMenu(pane, { x: e.clientX, y: e.clientY, keyboard: false, trigger: e.currentTarget });
+              }
+            : undefined
+        }
+        data-nav-row={pane.href}
         className={`rounded-lg tech-transition flex items-center justify-center p-2.5 relative ${
           active
             ? "bg-primary/15 text-primary"
@@ -655,28 +899,81 @@ export function NavLink({
     );
   }
 
-  return (
-    <>
+  const tone = active
+    ? "bg-primary/15 text-primary"
+    : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground";
+  const link = (
       <Link
         key={pane.href}
         href={pane.href}
         onClick={onNavigate}
+        onContextMenu={
+          onRowMenu
+            ? (e) => {
+                e.preventDefault();
+                onRowMenu(pane, { x: e.clientX, y: e.clientY, keyboard: false, trigger: e.currentTarget });
+              }
+            : undefined
+        }
         title={shellNav ? purpose : undefined}
-        className={`rounded-lg tech-transition px-3 py-2 text-sm ${
-          active
-            ? "bg-primary/15 text-primary"
-            : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
-        }`}
+        data-nav-row={onRowMenu ? undefined : pane.href}
+        // With a menu, the ROW carries the tone, so the "···" sits on the
+        // same tint. The link keeps the full width at rest.
+        className={`rounded-lg tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
           <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} />
           <span className="font-medium text-[13px]">{pane.label}</span>
-          <NavBadge count={badge ?? 0} tone={badgeTone} label={badgeLabel ?? String(badge ?? 0)} />
+          {/* With a menu, the badge gives its place to the "···" on hover or
+              focus, as a `RailRow` count does (`rail-row-meta`). It is
+              hidden from sight only, so it stays in the link's name. */}
+          <span className={onRowMenu ? "rail-row-meta" : "contents"}>
+            <NavBadge count={badge ?? 0} tone={badgeTone} label={badgeLabel ?? String(badge ?? 0)} />
+          </span>
         </div>
         {!shellNav && (
           <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>
         )}
       </Link>
+  );
+
+  return (
+    <>
+      {onRowMenu ? (
+        // The `RailRow` idiom (`rail-row-actions`, `rail-row-meta` in
+        // globals.css): at rest the "···" takes NO width, so the name keeps
+        // the whole row (the owner saw 60px lost on 2026-10-10). Hover, or
+        // keyboard focus anywhere in the row, shows it, and `data-pinned`
+        // holds it while its menu is open. It takes no click at rest.
+        <div
+          className={`group relative flex items-center rounded-lg tech-transition ${tone}`}
+          data-nav-row={pane.href}
+          data-has-actions=""
+          data-pinned={menuOpen ? "" : undefined}
+        >
+          {link}
+          <span className="reveal-on-hover rail-row-actions flex shrink-0 items-center">
+            {/* The gap lives INSIDE the zone, so it folds away with it at rest. */}
+            <span className="flex items-center pr-1.5">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="MoreHorizontal"
+              aria-label={`More for ${pane.label}`}
+              aria-haspopup="menu"
+              title="More"
+              data-row-more=""
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                onRowMenu(pane, { x: r.left, y: r.bottom + 4, keyboard: e.detail === 0, trigger: e.currentTarget });
+              }}
+            />
+          </span>
+          </span>
+        </div>
+      ) : (
+        link
+      )}
       {pinnedApps && pinnedApps.length > 0 && (
         <div className="flex flex-col gap-0.5 ml-[26px] mt-0.5 mb-1">
           {pinnedApps.map((a) => {
