@@ -206,8 +206,10 @@ def _seed_account(
     db: FakeCrmDB, *, owner: str = OWNER, address: str = OWNER,
     org_domains: list[str] | None = None,
 ) -> None:
+    # The mailbox belongs to the tenant the `db` fixture binds. `_load_account`
+    # filters on it (RLS on `email_accounts` is not on prod yet).
     db.seed("email_accounts", id=ACCOUNT_ID, user_id=owner,
-            email_address=address)
+            email_address=address, organization_id=MAILBOX_ORG)
     if org_domains is not None:
         db.seed("email_assistant_settings", account_id=ACCOUNT_ID,
                 org_domains=org_domains)
@@ -498,6 +500,26 @@ async def test_dw3_an_unknown_external_sender_becomes_exactly_one_lead(
     assert rows[0]["owner_email"] == OWNER
     assert rows[0]["lead_name"] == "Asha Menon"
     assert rows[0]["status_id"]  # `_resolve_status` ran — NOT NULL satisfied
+
+
+async def test_a_mailbox_of_another_org_makes_no_lead_without_rls(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """The fake has no RLS, like prod's `email_accounts` today. A mailbox of
+    another org must still make no lead in the bound org: `_load_account`
+    filters on `organization_id` by itself (CRM-T3 review, P2)."""
+    db.seed("email_accounts", id=ACCOUNT_ID, user_id=OWNER,
+            email_address=OWNER,
+            organization_id="88888888-8888-8888-8888-888888888888")
+    _seed_status(db)
+    _seed_cursor(db)
+    _message(db, received_at=_at(5))
+
+    stats = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert stats["candidates"] == 0
+    assert stats["created"] == 0
+    assert _leads(db) == []
 
 
 async def test_dw3_the_display_name_is_stripped_before_it_is_split(

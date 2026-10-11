@@ -294,7 +294,7 @@ async def create_leads_from_new_mail(account_id: str) -> dict[str, int]:
         _log.warning("crm.auto_lead_unbound", account_id=account_id)
         return stats
     async with _tenant_session(org) as db:
-        account = await _load_account(db, account_id)
+        account = await _load_account(db, account_id, org)
     if account is None:
         # The row is gone, has no owner, or belongs to ANOTHER tenant — under
         # FORCE RLS the three read the same. Write nothing in each case.
@@ -302,7 +302,11 @@ async def create_leads_from_new_mail(account_id: str) -> dict[str, int]:
         return stats
     async with _tenant_session(org) as db:
         cursor = await _load_or_activate_cursor(db, account_id)
-    if cursor is None:  # pragma: no cover — the row was just written
+    if cursor is None:
+        # The insert was `ON CONFLICT DO NOTHING`, so None means a cursor row
+        # for this account exists that this tenant cannot see. Say so: a
+        # silent return here stops auto-lead for the mailbox with no trace.
+        _log.warning("crm.auto_lead_cursor_unavailable", account_id=account_id)
         return stats
     async with _tenant_session(org) as db:
         cursor, reanchored = await _reanchor_if_dormant(db, account_id, cursor)
@@ -379,7 +383,7 @@ async def _run_batch(
 
 # ── The account, and the cursor that decides what is history ────────────────
 
-async def _load_account(db: Any, account_id: str) -> Any | None:
+async def _load_account(db: Any, account_id: str, org: str) -> Any | None:
     """The mailbox's own address and its owner.
 
     ``email_accounts.user_id`` holds the owner's EMAIL (the column is TEXT and
@@ -387,10 +391,18 @@ async def _load_account(db: Any, account_id: str) -> Any | None:
     which is what makes a created lead somebody's follow-up rather than
     'anonymous'. An account with no owner recorded is skipped: attributing a
     lead to nobody is worse than not creating it.
+
+    ⚠️ The ``organization_id`` predicate is not redundant with RLS. FORCE RLS
+    on ``email_accounts`` lives only in the generated phase 4, which production
+    has not applied, so without the predicate a call bound to tenant Y would
+    read tenant X's mailbox and write X's senders into Y's CRM. Every later
+    read of the batch keys on this account, so this one check gates them all.
+    The email scheduler filters each per-org statement the same way.
     """
     row = (await db.execute(text(
-        "SELECT id, user_id, email_address FROM email_accounts WHERE id = :id"
-    ), {"id": account_id})).fetchone()
+        "SELECT id, user_id, email_address FROM email_accounts "
+        "WHERE id = :id AND organization_id = CAST(:org AS uuid)"
+    ), {"id": account_id, "org": org})).fetchone()
     if row is None or not str(getattr(row, "user_id", "") or "").strip():
         return None
     return row
