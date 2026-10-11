@@ -1,10 +1,11 @@
 /**
  * The Metorite comet, the one mark of our own brand in the app.
  *
- * Owner decisions, 2026-10-11. The shell bar's left end shows the customer's
- * logo alone, with no words of ours. Our comet signs the bar at its right end
- * (`BarSignature` in `lib/shell/ShellBar.tsx`). A workspace with no logo
- * shows the comet in its lockup instead (`BrandMark`).
+ * Owner decisions, 2026-10-11 and 2026-10-12. The shell bar's left end shows
+ * the customer's logo alone, with no words of ours. Our comet signs the
+ * sidebar's foot, as the button that opens the Metorite menu
+ * (`MetoriteFoot.tsx`). A workspace with no logo also shows the comet in its
+ * lockup (`BrandMark`).
  *
  * ⚠️ **This file is the ONE in-app component that draws the comet.** The only
  * other copy of the path is the tab-icon asset `src/app/icon.svg` (#854),
@@ -19,8 +20,8 @@
  * decision: an accent of Rose must not turn our comet pink. The exception is
  * argued in `src/lib/theme/conformance.test.ts` (`COLOR_EXCEPTIONS`).
  *
- * Fences: `src/components/metoriteMark.test.ts` and
- * `e2e/shell-signature.spec.ts`.
+ * Fences: `src/components/metoriteMark.test.ts`,
+ * `e2e/shell-signature.spec.ts` and `e2e/shell-account.spec.ts`.
  */
 
 import { useId } from "react";

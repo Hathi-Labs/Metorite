@@ -147,6 +147,53 @@ export async function removeAccount(slot: number): Promise<boolean> {
 }
 
 /**
+ * Sign out of the ACTIVE account only, and keep the others (owner,
+ * 2026-10-12, the top-right account menu). It uses the two server actions
+ * that exist, so no new route moves a token:
+ *
+ *   1. `switch` to `next`. The server puts the active session in `next`'s
+ *      slot and makes `next` the active one.
+ *   2. `remove` that slot, which now holds the account that signs out.
+ *
+ * Then it clears the browser storage of the account that left (rule 4) and
+ * reloads at `/` as `next`. False if the switch was refused, and then
+ * nothing changed. ⚠️ With only one account, call `signOutAll`: there is no
+ * other account to land on.
+ */
+export async function signOutThis(
+  activeEmail: string,
+  next: { slot: number },
+  go: (url: string) => void = (u) => window.location.assign(u),
+): Promise<boolean> {
+  const res = await act("switch", { slot: next.slot });
+  if (!res.ok) return false;
+  // This tab leaves now. Its own channel listener must not start a second
+  // navigation (see `switchTo`).
+  leaving = true;
+  let email: string | undefined;
+  try {
+    ({ email } = (await res.json()) as { email?: string });
+  } catch {
+    /* no body: the announcement on mount still runs */
+  }
+  // The switch moved the leaving account into `next.slot`. Forget it there.
+  try {
+    await act("remove", { slot: next.slot });
+  } catch {
+    /* the reload still runs, and the menu then lists the account */
+  }
+  clearAccountNamespaces([activeEmail]);
+  clearAppearanceForAccounts([activeEmail]);
+  if (email) {
+    announceAccount(email);
+    pointAppearanceAt(email);
+  }
+  clearOrgScopedStorage();
+  go("/");
+  return true;
+}
+
+/**
  * Sign out of every account in this browser: empty the slots, clear each
  * account's chat namespace (rule 4), then end the active session.
  */

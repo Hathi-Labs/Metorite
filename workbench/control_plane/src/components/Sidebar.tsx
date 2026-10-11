@@ -20,6 +20,7 @@ import { ShellBell } from "@/lib/shell/ShellBell";
 import { shellBarOn } from "@/lib/shell/registry";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
+import MetoriteFoot from "@/components/MetoriteFoot";
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   ADD_APPS_HINT,
@@ -488,14 +489,20 @@ export default function Sidebar() {
         />
       )}
 
-      {/* User / sign-out footer */}
-      <SidebarAccountFooter
-        collapsed={collapsed}
-        accounts={accounts}
-        reload={reloadAccounts}
-        you={shellNav ? accountLinks(sections) : undefined}
-      />
-      {!shellNav && !accounts.enabled && !collapsed && (
+      {/* The foot. With the shell bar on, the account is the bar's right end
+          (`BarAccount`), and the foot is our comet, which opens the Metorite
+          menu (owner, 2026-10-12). The classic frame keeps its account foot. */}
+      {barOn ? (
+        <MetoriteFoot collapsed={collapsed} sections={sections} layout={shellNav} />
+      ) : (
+        <SidebarAccountFooter
+          collapsed={collapsed}
+          accounts={accounts}
+          reload={reloadAccounts}
+          you={shellNav ? accountLinks(sections) : undefined}
+        />
+      )}
+      {!barOn && !shellNav && !accounts.enabled && !collapsed && (
         <div className="border-t border-sidebar-border px-4 py-3">
           {session?.user ? (
             <div className="flex items-center justify-between">

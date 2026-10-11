@@ -11,6 +11,7 @@ import {
   resetLeaving,
   shouldReloadFor,
   signOutAll,
+  signOutThis,
   switchTo,
 } from "./accountSwitch";
 import { clearAccountNamespaces } from "./sessions";
@@ -179,6 +180,52 @@ describe("rule 4: sign out of all accounts", () => {
   it("clearAccountNamespaces uses the chat key shape that sessions.ts writes", () => {
     expect(read("lib/sessions.ts")).toContain('"cc-chat::"');
     clearAccountNamespaces([]);
+  });
+});
+
+/**
+ * Sign out of ONE account and keep the others (owner, 2026-10-12, the
+ * top-right account menu). It is built from the two server actions that
+ * exist: switch to the next account, then remove the slot the leaving
+ * account went into.
+ */
+describe("sign out of this account only", () => {
+  it("switches to the next account, removes the SAME slot, clears only the leaving account, then loads /", async () => {
+    const { signOut } = await import("next-auth/react");
+    vi.mocked(signOut).mockClear();
+    localStorage.setItem("cc-chat::a@one.test|org1::sessions", "1");
+    localStorage.setItem("cc-chat::b@two.test|org2::sessions", "1");
+    localStorage.setItem("cc-org-branding-v1", "logo of org A");
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${url} ${init?.body ?? ""}`);
+        return Response.json({ ok: true, email: "b@two.test" });
+      }),
+    );
+    const go = vi.fn();
+    expect(await signOutThis("a@one.test", { slot: 2 }, go)).toBe(true);
+    expect(calls).toEqual(['/api/accounts/switch {"slot":2}', '/api/accounts/remove {"slot":2}']);
+    expect(localStorage.getItem("cc-chat::a@one.test|org1::sessions")).toBeNull();
+    expect(localStorage.getItem("cc-chat::b@two.test|org2::sessions")).toBe("1");
+    expect(localStorage.getItem("cc-org-branding-v1")).toBeNull();
+    expect(go).toHaveBeenCalledWith("/");
+    // Not a sign-out of the browser: the next account stays signed in.
+    expect(signOut).not.toHaveBeenCalled();
+    // This tab is leaving, so its own channel never starts a second load.
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(false);
+  });
+
+  it("changes nothing when the switch is refused", async () => {
+    localStorage.setItem("cc-chat::a@one.test|org1::sessions", "1");
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const go = vi.fn();
+    expect(await signOutThis("a@one.test", { slot: 2 }, go)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
+    expect(localStorage.getItem("cc-chat::a@one.test|org1::sessions")).toBe("1");
   });
 });
 

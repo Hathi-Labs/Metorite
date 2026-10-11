@@ -4,11 +4,18 @@
  * The account switcher (MT-1k slice A2, `saas_multitenancy.md`). The Gmail
  * model: every account this browser is signed in to, one tap apart.
  *
- * Three places, one menu:
- *   • `SidebarAccountFooter` — the desktop sidebar's foot. Expanded, a button
- *     with the name and email. Folded, an avatar at the foot of the rail.
- *   • `DrawerAccountSection` — the phone drawer's foot. The same list unfolds
- *     in place, so a phone needs no second overlay over the drawer.
+ * Three places:
+ *   • `BarAccount` — the shell bar's right end, on the desktop with the shell
+ *     bar on (owner, 2026-10-12). An avatar and the email open a menu that
+ *     holds only account acts: the current account, the others, "Add another
+ *     account" and sign-out. The member's own pages moved to the Metorite
+ *     menu at the sidebar's foot (`MetoriteFoot.tsx`).
+ *   • `SidebarAccountFooter` — the desktop sidebar's foot, in the classic
+ *     frame only (shell bar off). Expanded, a button with the name and email.
+ *     Folded, an avatar at the foot of the rail.
+ *   • `DrawerAccountHeader` and `DrawerAccountFoot` — the phone drawer. The
+ *     same list unfolds in place, so a phone needs no second overlay over the
+ *     drawer. The phone did not change on 2026-10-12.
  *
  * `useAccounts()` reads `/api/accounts`. While the flag is off it answers
  * `enabled: false`, and the callers keep the footer they had.
@@ -23,13 +30,14 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { useAccess } from "@/components/AccessProvider";
 import { BrandMark, useOrgBranding } from "@/components/OrgBrandLockup";
 import { categoricalAccent } from "@/lib/categorical";
-import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { useDismiss } from "@/hooks/useDismiss";
 import {
   NO_ACCOUNTS,
   addAccount,
   fetchAccounts,
   removeAccount,
   signOutAll,
+  signOutThis,
   switchTo,
   type Accounts,
   type OtherAccount,
@@ -95,8 +103,15 @@ function initial(name: string | null | undefined, email: string): string {
 }
 
 /** A round initial, in the account's own stable hue, as Gmail does. */
-function Avatar({ email, name, size = "md" }: { email: string; name?: string | null; size?: "sm" | "md" | "lg" }) {
-  const box = size === "lg" ? "h-10 w-10 text-base" : size === "sm" ? "h-7 w-7 text-xs" : "h-8 w-8 text-sm";
+function Avatar({ email, name, size = "md" }: { email: string; name?: string | null; size?: "xs" | "sm" | "md" | "lg" }) {
+  const box =
+    size === "lg"
+      ? "h-10 w-10 text-base"
+      : size === "sm"
+        ? "h-7 w-7 text-xs"
+        : size === "xs"
+          ? "h-6 w-6 text-[11px]"
+          : "h-8 w-8 text-sm";
   return (
     <span
       aria-hidden
@@ -294,25 +309,6 @@ function withSessionFallback(
   return { ...accounts, active: { email: session.user.email, name: session.user.name ?? null } };
 }
 
-/** Close on a click outside `root`, or on Escape. */
-function useDismiss(open: boolean, close: () => void, root: React.RefObject<HTMLElement | null>) {
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (shouldDismiss(e.target as Element | null, domClickWalk(root.current))) close();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("pointerdown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("pointerdown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open, close, root]);
-}
-
 /**
  * The desktop sidebar's foot. Null while the switcher is off: the sidebar then
  * draws the footer it always had.
@@ -401,6 +397,212 @@ export function SidebarAccountFooter({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The account widget at the shell bar's right end (owner, 2026-10-12): "place
+ * the account selector in the top-right corner … Show the email ID and avatar
+ * tastefully, similar to other popular apps."
+ *
+ * The trigger is quiet, as Google's and GitHub's are: the avatar, then the
+ * email in muted text. No border and no fill at rest. It has the height of the
+ * bar's other controls and the bar's focus ring (`Button`).
+ *
+ * ⚠️ **The email shows from 1400px up, and it gives way first.** The bar's
+ * right group is a `basis-0` share of the free width, and the command bar
+ * sits in the centre. Content wider than that share spills over the command
+ * bar. So the trigger and the email are `min-w-0` and shrink, and the email
+ * truncates to the room there is. Below 1400px the room is too small for an
+ * email that reads, so the avatar shows alone (measured 2026-10-12). Fence:
+ * `e2e/shell-account.spec.ts` "never crowds the bell".
+ *
+ * The menu holds account acts only. The member's own pages and settings are
+ * in the Metorite menu at the sidebar's foot (`MetoriteFoot.tsx`).
+ */
+export function BarAccount() {
+  const { accounts: switcher, reload } = useAccounts();
+  const { data: session } = useSession();
+  const { access } = useAccess();
+  // With the switcher off, the session names the account. Access answers
+  // first in a fresh tab, so it stands in until the session does.
+  const fallback = session?.user?.email ? session : access.email ? { user: { email: access.email } } : null;
+  const accounts = withSessionFallback(switcher, fallback);
+  const orgName = access.organization?.display_name?.trim() || access.organization?.slug?.trim() || "";
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  // The React Compiler keeps these two stable. A manual `useCallback` here
+  // made it skip the whole component (react-hooks/preserve-manual-memoization).
+  const close = () => setOpen(false);
+  // Escape gives the focus back to the trigger, as a menu button does.
+  const escape = () => {
+    setOpen(false);
+    rootRef.current?.querySelector<HTMLButtonElement>("button[data-account-trigger]")?.focus();
+  };
+  useDismiss(open, close, rootRef, escape);
+  const active = accounts.active;
+  // The avatar's place, held while nobody is known yet, so nothing moves.
+  if (!active) return <span aria-hidden data-shell-account="" className="h-7 w-7 shrink-0" />;
+
+  const name = active.name?.trim() || null;
+  const tip = [name, active.email, orgName].filter(Boolean).join("\n");
+  const toggle = () => {
+    if (!open) void reload(true);
+    setOpen((o) => !o);
+  };
+
+  return (
+    <div ref={rootRef} data-shell-account="" className="relative flex min-w-0 shrink items-center">
+      <Button
+        variant="ghost"
+        size="none"
+        radius="keep"
+        layout="flex items-center"
+        data-account-trigger=""
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Account: ${active.email}`}
+        title={tip}
+        onClick={toggle}
+        className="h-7 min-w-0 max-w-full gap-2 rounded-full p-0.5 min-[1400px]:pr-2.5"
+      >
+        <Avatar email={active.email} name={active.name} size="xs" />
+        <span data-account-email="" className="hidden min-w-0 max-w-56 truncate text-xs min-[1400px]:block">
+          {active.email}
+        </span>
+      </Button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Account"
+          className="absolute right-0 top-full z-[60] mt-2 max-h-[calc(100vh-4rem)] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-md border border-border bg-card shadow-md"
+        >
+          <BarAccountMenu accounts={accounts} orgName={orgName} onChanged={() => void reload(true)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The top-right menu's body: the current account, marked, then the other
+ * accounts, then "Add another account", then sign-out.
+ *
+ * Sign-out follows the count. One account signs out with "Sign out". With
+ * more, "Sign out" leaves this account and lands on the next one
+ * (`signOutThis`), and "Sign out of all accounts" ends them all. With the
+ * switcher flag off, the menu shows the current account and "Sign out".
+ * Exported for `shellAccount.test.ts`. Only `BarAccount` mounts it.
+ */
+export function BarAccountMenu({
+  accounts,
+  orgName,
+  onChanged,
+}: {
+  accounts: Accounts;
+  orgName: string;
+  onChanged: () => void;
+}) {
+  const { switching, error, pick } = useSwitchAccount(onChanged);
+  const [leaving, setLeaving] = useState(false);
+  const active = accounts.active;
+  if (!active) return null;
+  const others = accounts.enabled ? accounts.others.filter((o) => o.email.toLowerCase() !== active.email.toLowerCase()) : [];
+  const row = "w-full gap-3 px-3 py-2 text-[13px]";
+
+  const signOut = async () => {
+    setLeaving(true);
+    if (others.length === 0) {
+      await signOutAll();
+      return;
+    }
+    if (!(await signOutThis(active.email, others[0]))) {
+      setLeaving(false);
+      onChanged();
+    }
+  };
+
+  return (
+    <div className="text-sm">
+      {/* The account that is loaded now. The check and `aria-current` say
+          so, for the eye and for a screen reader. */}
+      <div data-current-account="" aria-current="true" className="flex items-center gap-3 px-4 pb-3 pt-4">
+        <Avatar email={active.email} name={active.name} size="lg" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium text-foreground">{active.name ?? active.email}</div>
+          {active.name && <div className="truncate text-xs text-muted-foreground">{active.email}</div>}
+          {orgName && (
+            <div className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
+              <Icon name="Building2" size={11} className="shrink-0" />
+              {orgName}
+            </div>
+          )}
+        </div>
+        <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary">
+          <Icon name="Check" size={13} />
+          Signed in
+        </span>
+      </div>
+
+      {others.length > 0 && (
+        <div className="border-t border-border py-1">
+          <div className="px-4 pb-1 pt-1.5 text-[11px] text-muted-foreground">Switch account</div>
+          <div role="list" aria-label="Other accounts">
+            {others.map((o) => (
+              <div key={o.slot} role="listitem" className="flex items-center gap-1 px-1">
+                <button
+                  type="button"
+                  onClick={() => void pick(o)}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-secondary tech-transition"
+                >
+                  <Avatar email={o.email} name={o.name} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] text-foreground">{o.name ?? o.email}</span>
+                    {(o.organization || o.name) && (
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {[o.organization, o.name ? o.email : null].filter(Boolean).join(" · ")}
+                      </span>
+                    )}
+                  </span>
+                </button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  aria-label={`Remove ${o.email} from this browser`}
+                  title="Remove from this browser"
+                  onClick={async () => {
+                    await removeAccount(o.slot);
+                    onChanged();
+                  }}
+                  className="mr-1 text-muted-foreground"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {error && <p className="px-4 pb-2 text-xs text-destructive">{error}</p>}
+
+      <div className="border-t border-border p-1">
+        {/* Only with the switcher on: off, there is no second slot to add. */}
+        {accounts.enabled && (
+          <Button variant="ghost" size="none" layout="flex items-center" icon="UserPlus" onClick={() => void addAccount()} className={row}>
+            Add another account
+          </Button>
+        )}
+        <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" loading={leaving} onClick={() => void signOut()} className={row}>
+          Sign out
+        </Button>
+        {others.length > 0 && (
+          <Button variant="ghost" size="none" layout="flex items-center" icon="LogOut" onClick={() => void signOutAll()} className={row}>
+            Sign out of all accounts
+          </Button>
+        )}
+      </div>
+      {switching && <SwitchingCover email={switching} />}
     </div>
   );
 }
