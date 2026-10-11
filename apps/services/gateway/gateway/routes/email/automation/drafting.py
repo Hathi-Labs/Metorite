@@ -53,6 +53,7 @@ from gateway.routes.email.signature import (
 from gateway.routes.email.transport.send import (
     ArtifactAttachment,
     SendAttachment,
+    _as_uuid,
     load_artifact_attachments,
 )
 from pydantic import BaseModel
@@ -2212,6 +2213,24 @@ async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
     return _row_to_message(row).model_dump() if row else {}
 
 
+def _reply_row_match(reply_to: str) -> tuple[str, dict[str, str]]:
+    """The WHERE arm and the params that find the mail a reply answers.
+
+    ``reply_to`` is the local row id or the provider id of the mail. The
+    column ``id`` is a uuid and ``provider_message_id`` is text, so each one
+    gets its own typed parameter. One parameter for both made Postgres raise
+    ``operator does not exist: text = uuid``, and every first save of a reply
+    answered 500 (live defect, 2026-10-11, ``email_app_master_plan.md``
+    §17.11). A value that is not a UUID can only be a provider id. This is
+    the match of ``transport/send.py`` ``_reply_target``. Fence:
+    ``tests/unit/test_email_reply_draft_save.py``."""
+    local_id = _as_uuid(reply_to)
+    if local_id is None:
+        return "provider_message_id = :rid", {"rid": reply_to}
+    return ("(id = CAST(:lid AS uuid) OR provider_message_id = :rid)",
+            {"lid": local_id, "rid": reply_to})
+
+
 class DraftUpsertRequest(BaseModel):
     account_id: str
     # Local id of an existing draft to UPDATE in place (omit to create a new one).
@@ -2302,13 +2321,12 @@ async def upsert_draft(
                 # Accept either the local message id (inline reply) or the
                 # provider message id (full composer pop-out passes
                 # providerMessageId).
+                match, params = _reply_row_match(req.reply_to_message_id)
                 rrow = (await db.execute(text(
                     "SELECT provider_message_id, thread_id, subject, from_address"
-                    " FROM email_messages WHERE account_id = :aid"
-                    " AND (id = :id OR provider_message_id = :id)"
-                    " LIMIT 1"
-                ), {"id": req.reply_to_message_id,
-                    "aid": req.account_id})).fetchone()
+                    f" FROM email_messages WHERE account_id = :aid AND {match}"
+                    " ORDER BY (provider_message_id = :rid) DESC LIMIT 1"
+                ), {**params, "aid": req.account_id})).fetchone()
                 if not rrow:
                     raise HTTPException(
                         status_code=404, detail="Reply target not found")
