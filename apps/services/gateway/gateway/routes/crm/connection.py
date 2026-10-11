@@ -220,6 +220,22 @@ def _refuse_native(mode: str | None) -> None:
         raise HTTPException(status_code=409, detail="mode_is_native")
 
 
+async def _old_credential_locked(db: Any, org: str) -> SourceCredential | None:
+    """The stored credential, with ``FOR UPDATE`` on its row, or ``None``.
+
+    A blob that does not open counts as no old token. A new consent is the
+    repair for it, so it must not fail here (CRM-Z2 review P1).
+    """
+    row = await store.get(db, org, PROVIDER, OWNING_APP)
+    if row is None:
+        return None
+    try:
+        return await store.load_credential_locked(db, org, row.id)
+    except store.Undecryptable:
+        _log.warning("zoho reconnect: the old blob does not open")
+        return None
+
+
 async def _best_effort_revoke(credential: SourceCredential | None, why: str) -> None:
     """Revoke at Zoho and go on, whatever happens. Log the outcome only."""
     if credential is None or not credential.refresh_token:
@@ -309,10 +325,9 @@ async def zoho_callback(
     except UntrustedHost as exc:
         raise HTTPException(status_code=400, detail="untrusted_host") from exc
     source = _source()
-    # 4. The mode and the old credential, read once.
+    # 4. The mode, before Zoho is called. _adopt_mirror checks it again.
     async with _tenant_session() as db:
         _refuse_native(await _read_mode(db, org))
-        old = await store.load_credential(db, org, PROVIDER, OWNING_APP)
     # 5. The code for tokens. Zoho is called here and not before.
     params: Mapping[str, str] = {
         "code": code, "accounts-server": server, **({"location": location} if location else {}),
@@ -322,15 +337,21 @@ async def zoho_callback(
     except SourceError as exc:
         _log.warning("zoho consent not finished: %s", auth.safe_code(exc.code) or "error")
         return _failed(exc.code or ("untrusted_host" if isinstance(exc, UntrustedHost) else "exchange_failed"))
-    # 6. A reconnect: revoke the old refresh token (Zoho keeps 20 per user).
-    await _best_effort_revoke(old, "reconnect")
-    # 7. The credential, the mode and the pointer: one transaction.
+    # 6. The old credential, the new one, the mode and the pointer: one
+    #    transaction. The old token is read under the row lock, so two
+    #    callbacks at one time each see the token that the other replaced.
     async with _tenant_session() as db:
+        old = await _old_credential_locked(db, org)
         row = await store.save_credential(
             db, org, PROVIDER, OWNING_APP, credential,
             connected_by=member, scopes=ZOHO_READ_SCOPES,
         )
         await _adopt_mirror(db, org, row.id, member)
+    # 7. A reconnect: revoke the old refresh token (Zoho keeps 20 per user).
+    #    Only after the commit, so a failed save never kills the old token
+    #    (CRM-Z2 review P2).
+    if old is not None and old.refresh_token != credential.refresh_token:
+        await _best_effort_revoke(old, "reconnect")
     _log.info("zoho connected for an organization")
     return RedirectResponse(RETURN_OK, status_code=302)
 

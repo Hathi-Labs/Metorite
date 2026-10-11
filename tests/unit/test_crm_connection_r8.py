@@ -344,6 +344,94 @@ async def test_disconnect_deletes_the_blob_and_keeps_the_mode(ns, app_engine) ->
     assert _raw(ns, ns.org_b) == []
 
 
+def _spoil_the_blob(p: Any, org: str) -> None:
+    """A blob that the key does not open: a rotated master key, or damage."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE integration_connections SET credentials_encrypted = 'bm90LWEtYmxvYg==' "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+
+
+async def test_a_blob_that_does_not_open_blocks_neither_reconnect_nor_disconnect(ns, app_engine) -> None:  # noqa: F811
+    """CRM-Z2 review P1: a new consent and a disconnect are the two repairs."""
+    _assert_non_priv(app_engine)
+    assert (await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")).status_code == 302
+    _spoil_the_blob(ns, ns.org_a)
+    ZOHO_A.fake.requests.clear()
+    again = await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")
+    assert again.status_code == 302, again.text
+    assert not any(r.url.path.endswith("/token/revoke") for r in ZOHO_A.fake.requests)
+    (row,) = _raw(ns, ns.org_a)
+    assert row.status == "connected" and row.credentials_encrypted != "bm90LWEtYmxvYg=="
+
+    _spoil_the_blob(ns, ns.org_a)
+    ZOHO_A.fake.requests.clear()
+    gone = await _call(ns, _admin(ADMIN_A, ns.org_a), "POST", "/crm/connection/disconnect")
+    assert gone.status_code == 200, gone.text
+    (row,) = _raw(ns, ns.org_a)
+    assert row.status == "disconnected" and row.credentials_encrypted is None
+    assert ZOHO_A.fake.requests == []
+
+
+async def test_a_blob_that_does_not_open_stops_the_shared_token(ns, app_engine) -> None:  # noqa: F811
+    from gateway.crm_sources.base import NeedsReconnect
+    from gateway.routes.crm import connection as conn
+
+    _assert_non_priv(app_engine)
+    assert (await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")).status_code == 302
+    _spoil_the_blob(ns, ns.org_a)
+    ZOHO_A.fake.requests.clear()
+    async with tenant_engine_scope(_app_dsn(ns)):
+        with pytest.raises(NeedsReconnect):
+            await conn.fresh_zoho_credential(ns.org_a, transport=ZOHO_A.fake.transport)
+    (row,) = _raw(ns, ns.org_a)
+    assert (row.status, row.last_error) == ("needs_reconnect", "undecryptable")
+    assert ZOHO_A.fake.requests == []
+
+
+async def test_a_failed_save_revokes_nothing(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """CRM-Z2 review P2: the old token is revoked only after the commit."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import connection as conn
+
+    _assert_non_priv(app_engine)
+    assert (await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")).status_code == 302
+    (before,) = _raw(ns, ns.org_a)
+
+    async def _refused(*_a: Any, **_k: Any) -> None:
+        raise HTTPException(status_code=409, detail="mode_is_native")
+
+    monkeypatch.setattr(conn, "_adopt_mirror", _refused)
+    ZOHO_A.fake.requests.clear()
+    ZOHO_A.fake.token_body = {**ZOHO_A.fake.token_body, "refresh_token": "REFRESH-A2"}
+    try:
+        refused = await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")
+    finally:
+        ZOHO_A.fake.token_body["refresh_token"] = "REFRESH-A"
+    assert refused.status_code == 409, refused.text
+    assert not any(r.url.path.endswith("/token/revoke") for r in ZOHO_A.fake.requests)
+    (after,) = _raw(ns, ns.org_a)
+    assert after.credentials_encrypted == before.credentials_encrypted, "the save rolled back"
+
+
+async def test_a_patch_that_read_a_stale_mode_writes_nothing(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """CRM-Z2 review P2: the callback set 'mirror' after the PATCH read the mode."""
+    from gateway.routes.crm import settings as crm_settings
+
+    _assert_non_priv(app_engine)
+    assert (await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")).status_code == 302
+
+    async def _stale(*_a: Any, **_k: Any) -> None:
+        return None  # what the PATCH read before the callback committed
+
+    monkeypatch.setattr(crm_settings, "read_settings", _stale)
+    for body in ({"access": "everyone"}, {"mode": "native"}):
+        refused = await _call(ns, _admin(ADMIN_A, ns.org_a), "PATCH", "/crm/settings", body)
+        assert refused.status_code == 409, (body, refused.text)
+    (row,) = _raw(ns, ns.org_a)
+    assert _settings_row(ns, ns.org_a) == ("mirror", row.id)
+
+
 # ── The shared token and a failed refresh ────────────────────────────────────
 
 async def _age_the_token(p: Any, org: str) -> None:

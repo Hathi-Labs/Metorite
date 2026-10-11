@@ -64,26 +64,32 @@ async def fresh_credential(
                 f"The {provider} connection needs an admin to connect again "
                 f"({row.last_error or 'unknown'})"
             )
-        credential = await store.load_credential_locked(db, org, row.id)
-        if credential is None:
-            return None
-        if not needs_refresh(credential, now()):
-            return credential
         try:
-            fresh = await refresh(credential)
-        except SourceError as exc:
-            if isinstance(exc, NeedsReconnect) or exc.code in _STOP_CODES:
-                code = exc.code or "invalid_code"
-                stop = exc
+            credential = await store.load_credential_locked(db, org, row.id)
+        except store.Undecryptable:
+            # The master key changed or the blob is damaged. Only a new
+            # consent repairs it (CRM-Z2 review P1).
+            credential, code = None, "undecryptable"
+        if credential is None and not code:
+            return None
+        if credential is not None:
+            if not needs_refresh(credential, now()):
+                return credential
+            try:
+                fresh = await refresh(credential)
+            except SourceError as exc:
+                if isinstance(exc, NeedsReconnect) or exc.code in _STOP_CODES:
+                    code = exc.code or "invalid_code"
+                    stop = exc
+                else:
+                    raise
             else:
-                raise
-        else:
-            await store.update_tokens(db, org, row.id, fresh)
-            return fresh
+                await store.update_tokens(db, org, row.id, fresh)
+                return fresh
         # The mark is written inside the session and commits when it ends. An
         # exception here would roll it back, so it is raised after the block.
         await store.mark_needs_reconnect(db, org, row.id, code)
     _log.warning("%s connection needs reconnect (%s)", provider, store.safe_error_code(code))
     if isinstance(stop, NeedsReconnect):
         raise stop
-    raise NeedsReconnect(f"The {provider} client was refused ({store.safe_error_code(code)})")
+    raise NeedsReconnect(f"The {provider} connection stopped ({store.safe_error_code(code)})")

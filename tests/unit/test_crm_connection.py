@@ -590,6 +590,25 @@ async def test_a_throttle_does_not_mark_the_connection(
     assert registry.rows[ORG_A]["status"] == "connected"
 
 
+async def test_a_blob_that_does_not_open_is_none_or_undecryptable_with_no_cause() -> None:
+    """CRM-Z2 review P1. The plain read gives ``None``, so a disconnect and a
+    reconnect go on. The locked read raises, so the shared token can stop."""
+    from types import SimpleNamespace
+
+    class _OneRow:
+        async def execute(self, *_a: Any, **_k: Any) -> Any:
+            return SimpleNamespace(first=lambda: SimpleNamespace(
+                credentials_encrypted="bm90LWEtYmxvYg=="))
+
+    db = _OneRow()
+    assert await store.load_credential(db, ORG_A, "zoho", "crm") is None
+    with pytest.raises(store.Undecryptable) as caught:
+        await store.load_credential_locked(db, ORG_A, "conn-0001")
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert "bm90" not in str(caught.value)
+
+
 def test_the_last_error_keeps_a_code_and_never_free_text() -> None:
     assert store.safe_error_code("invalid_code") == "invalid_code"
     assert store.safe_error_code(f"bad {S_REFRESH} token") == "refresh_failed"

@@ -29,10 +29,22 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from acb_common import get_logger
 from acb_llm.key_store import get_key_store
 from sqlalchemy import text
 
 from gateway.crm_sources.base import SourceCredential
+
+_log = get_logger("connections.store")
+
+
+class Undecryptable(Exception):
+    """The stored blob does not open.
+
+    The master key changed, or the blob is damaged. The message holds the name
+    of the exception class only, never a byte of the blob.
+    """
+
 
 #: The ``status`` vocabulary, mirrored from the CHECK in migration 245.
 STATUS_CONNECTED = "connected"
@@ -184,14 +196,23 @@ def _seal(credential: SourceCredential) -> str:
 
 
 def _unseal(blob: str) -> SourceCredential:
-    data = json.loads(get_key_store().decrypt(blob))
-    return SourceCredential(
-        access_token=str(data["access_token"]),
-        refresh_token=str(data["refresh_token"]),
-        expires_at=datetime.fromisoformat(data["expires_at"]),
-        scopes=tuple(data.get("scopes") or ()),
-        provider_meta={str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()},
-    )
+    """Open the blob, or raise :class:`Undecryptable` with no cause attached.
+
+    ``from None`` drops the cause, so no trace can carry the blob or a token.
+    """
+    try:
+        data = json.loads(get_key_store().decrypt(blob))
+        return SourceCredential(
+            access_token=str(data["access_token"]),
+            refresh_token=str(data["refresh_token"]),
+            expires_at=datetime.fromisoformat(data["expires_at"]),
+            scopes=tuple(data.get("scopes") or ()),
+            provider_meta={
+                str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()
+            },
+        )
+    except Exception as exc:  # InvalidToken, binascii.Error, ValueError, KeyError
+        raise Undecryptable(type(exc).__name__) from None
 
 
 # ── Reads ───────────────────────────────────────────────────────────────────
@@ -225,12 +246,20 @@ async def load_credential(
 
     A connection in ``needs_reconnect`` still returns its credential, because
     the callback needs the old refresh token to revoke it.
+
+    A blob that does not open also returns ``None``. A disconnect must still
+    clear the row, so nothing on that path may fail on the old blob
+    (CRM-Z2 review P1).
     """
     params = _key(org, provider, owning_app, scope_kind, member_email)
     row = (await db.execute(text(_BLOB_SQL), params)).first()
     if row is None or not row.credentials_encrypted:
         return None
-    return _unseal(row.credentials_encrypted)
+    try:
+        return _unseal(row.credentials_encrypted)
+    except Undecryptable as exc:
+        _log.warning("connection blob does not open (%s)", exc)
+        return None
 
 
 async def load_credential_locked(
@@ -239,7 +268,8 @@ async def load_credential_locked(
     """Like :func:`load_credential`, by id, with ``FOR UPDATE`` on the row.
 
     The shared token helper uses it: a second worker waits on the row lock,
-    then reads the token that the first worker wrote.
+    then reads the token that the first worker wrote. A blob that does not
+    open raises :class:`Undecryptable`, so the helper can stop the connection.
     """
     row = (await db.execute(
         text(_BLOB_BY_ID_SQL), {"id": str(connection_id), "org": str(org)},
