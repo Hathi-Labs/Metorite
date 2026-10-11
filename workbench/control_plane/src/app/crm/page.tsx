@@ -33,6 +33,7 @@ import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
+import { SetupSection } from "./components/SetupPanel";
 import ConnectionPanel from "./components/ConnectionPanel";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail from "./components/CrmRail";
@@ -415,6 +416,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 ctx.isAdmin ? (
                   <div className="flex flex-col gap-4">
                     <AccessSection />
+                    <SetupSection mode={ctx.mode} connection={ctx.connection} />
                     {ctx.connection && (
                       <ConnectionPanel
                         mode={ctx.mode}

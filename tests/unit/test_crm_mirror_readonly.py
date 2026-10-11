@@ -456,6 +456,9 @@ _RAW_ALLOW = {
     "import_zoho.py", "sync_zoho.py",
     # The seed runs when the mode becomes Native only.
     "seed.py",
+    # CRM-U5b: Change CRM setup. Deletes the org's stages and lost reasons
+    # only after the route proved 0 records and no connected Zoho.
+    "settings.py::_reset_setup",
 }
 _REFUSES = {"assert_writable", "refuse_in_mirror_mode"}
 
