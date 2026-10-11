@@ -115,7 +115,14 @@ class SourcePage:
 
 
 class SourceError(RuntimeError):
-    """A provider call failed. The message never holds a token or a secret."""
+    """A provider call failed. The message never holds a token or a secret.
+
+    ``code`` is the provider's error code when it looks like a code
+    (``invalid_code``, for example) and ``""`` otherwise. The caller stores it
+    as ``last_error``, so it never holds a token either.
+    """
+
+    code: str = ""
 
 
 class NeedsReconnect(SourceError):
@@ -151,7 +158,7 @@ class UntrustedHost(SourceError):
 
 
 class CrmSource(Protocol):
-    """The eight operations of ``crm_platform.md`` §5.1.
+    """The nine operations of ``crm_platform.md`` §5.1.
 
     Each numbered comment names the operation of the spec.
     """
@@ -208,6 +215,10 @@ class CrmSource(Protocol):
     def credits_used(self) -> int: ...
 
     async def credits_remaining(self) -> int: ...
+
+    # 9. Revoke the credential at the provider. True when the provider
+    # confirms. The caller treats a revoke as best effort.
+    async def revoke(self) -> bool: ...
 
 
 __all__ = [

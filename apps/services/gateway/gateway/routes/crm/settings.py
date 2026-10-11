@@ -13,9 +13,11 @@ reaches this page.
 
 **The mode.** CRM-T5 allows ONE change of mode: from NULL (not chosen) to
 ``native``. The same transaction seeds the organization's stages and lost
-reasons (``seed.seed_native_pipeline``). Each other change of mode is a 422
-until CRM-Z2 builds the connection that Mirror mode needs. A ``mode`` equal to
-the stored one is not a change, so it is a 200 that writes no seed.
+reasons (``seed.seed_native_pipeline``). Each other change of mode is a 422.
+Only the Zoho callback of ``connection.py`` (CRM-Z2) sets ``mirror``. A
+``mode`` equal to the stored one is not a change, so it is a 200 that writes no
+seed. The upsert writes only if the mode is still the one this request read,
+else it answers 409.
 
 **The access rule.** ``access`` is ``admins``, ``everyone`` or ``groups``.
 Each entry of ``access_groups`` goes through the Projects grant vocabulary
@@ -64,6 +66,10 @@ _UPSERT_SQL = (
     "mode = EXCLUDED.mode, access = EXCLUDED.access, "
     "access_groups = EXCLUDED.access_groups, "
     "updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at "
+    # The mode this request read. The Zoho callback can set 'mirror' between
+    # the read and this write. Without the guard, this write puts the stale
+    # mode back over it (CRM-Z2 review P2). No row back means the guard refused.
+    "WHERE crm_settings.mode IS NOT DISTINCT FROM :expected_mode "
     "RETURNING organization_id, mode, access, access_groups, updated_by, "
     "updated_at"
 )
@@ -119,7 +125,7 @@ def _check_mode(stored: str | None, requested: str | None) -> bool:
             detail=(
                 f"The CRM mode cannot change from {stored or 'not chosen'} to "
                 f"{requested or 'not chosen'} yet. Only the first choice of "
-                "'native' is open. Mirror mode comes with CRM-Z2."
+                "'native' is open. Mirror mode starts from Connect Zoho."
             ),
         )
     return True
@@ -194,8 +200,17 @@ async def patch_crm_settings(
             "access": values.get("access", current.access),
             "access_groups": values.get("access_groups", current.access_groups),
             "updated_by": (user.email or "").strip().lower() or None,
+            "expected_mode": current.mode,
         }
         row = (await db.execute(text(_UPSERT_SQL), merged)).first()
+        if row is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The CRM mode changed while this request ran. Load the "
+                    "settings again, then send the change again."
+                ),
+            )
         if mode_changes and merged["mode"] == "native":
             await seed_native_pipeline(db, org)
         return _wire(row)

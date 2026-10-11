@@ -115,7 +115,7 @@ SETTINGS_API_VERSION = "v8"
 LAYOUTS_SCOPE = "ZohoCRM.settings.layouts.READ"
 PIPELINE_SCOPE = "ZohoCRM.settings.pipeline.READ"
 
-#: The scope of the field definitions read. CRM-Z0 confirms the exact name.
+#: The scope of the field definitions read.
 FIELDS_SCOPE = "ZohoCRM.settings.fields.READ"
 
 #: Zoho's own error codes. A scope refusal and a version refusal arrive as the
@@ -445,6 +445,12 @@ class ZohoSource:
             self._dead = exc
             raise
         return self._credential
+
+    # ── 9. Revoke ───────────────────────────────────────────────────────────
+
+    async def revoke(self) -> bool:
+        """Revoke the refresh token at Zoho. True when Zoho confirms."""
+        return await auth.revoke(self._config, self._connected(), transport=self._transport)
 
     async def _fresh_credential(self) -> SourceCredential:
         """The credential, refreshed first when it expires within five minutes."""

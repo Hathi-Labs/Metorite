@@ -9,6 +9,9 @@ gateway reads them.
 * ``CRM_ORGS`` — the organization ids that may reach ``/crm``, with a comma
   between ids. ``*`` allows each organization with a bound tenant. An empty
   list allows no organization.
+* ``CRM_MIRROR`` — the kill switch of the Zoho connection routes (WS-53
+  CRM-Z2), default OFF. :func:`require_crm_mirror` is their dependency. It
+  adds to ``CRM_ENABLED`` and never replaces it.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -42,6 +45,11 @@ ALL_ORGS = "*"
 def crm_enabled() -> bool:
     """True when the kill switch is on. Default OFF."""
     return get_settings().crm_enabled is True
+
+
+def crm_mirror_enabled() -> bool:
+    """True when the mirror switch is on. Default OFF."""
+    return get_settings().crm_mirror is True
 
 
 @functools.lru_cache(maxsize=16)
@@ -78,4 +86,10 @@ async def require_crm_enabled(
     It reads ``user.organization_id`` and nothing else from the request.
     """
     if not crm_org_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_crm_mirror() -> None:
+    """404 unless the mirror switch is on. It reads no request input."""
+    if not crm_mirror_enabled():
         raise HTTPException(status_code=404, detail="Not Found")
