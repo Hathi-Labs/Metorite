@@ -538,7 +538,11 @@ async def test_a_reconcile_removes_an_id_an_offset_paged_module_no_longer_lists(
                        "AND module = 'zoho:company'"), {"o": ns.org_a})
     result = await engine.run_org(ns.org_a)
     assert (result.kind, result.status) == ("reconcile", "ok")
-    assert _count(ns, "crm_companies", ns.org_a) == 4
+    assert _count(ns, "crm_companies", ns.org_a) == 5  # strike one: nothing goes
+    _make_due_for_reconcile(ns)
+    result = await engine.run_org(ns.org_a)
+    assert (result.kind, result.status) == ("reconcile", "ok")
+    assert _count(ns, "crm_companies", ns.org_a) == 4  # strike two
     assert _count(ns, "crm_companies", ns.org_a, "ext_id = 'Aa5'") == 0
     # A second run inside 24 hours is not a reconcile.
     assert (await engine.run_org(ns.org_a)).kind == "incremental"
@@ -758,6 +762,9 @@ async def test_p1_2_a_reconcile_that_stops_resumes_where_it_stopped(ns) -> None:
     second = await engine.run_org(ns.org_a)
     assert (second.kind, second.status) == ("reconcile", "ok"), second
     assert ZOHO_A.reads["Accounts"] - mark == 2, "the walk restarted at page 1"
+    assert _count(ns, "crm_companies", ns.org_a) == 6  # strike one
+    _make_due_for_reconcile(ns)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
     assert _count(ns, "crm_companies", ns.org_a, "ext_id = 'Aa6'") == 0
     assert _count(ns, "crm_companies", ns.org_a) == 5
 
@@ -780,7 +787,8 @@ async def test_p1_3_a_delete_of_more_than_a_fifth_of_the_rows_is_refused(ns) -> 
     await _import_hidden(ns, 12)
     for i in (1, 2, 3, 4):
         ZOHO_A.drop("Accounts", f"Aa{i}", tombstone=False)
-    ZOHO_A.no_count = True  # no count to compare: the 20% rule must hold alone
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)  # strike one
     _make_due_for_reconcile(ns)
     result = await engine.run_org(ns.org_a)
     assert _count(ns, "crm_companies", ns.org_a) == 12
@@ -871,3 +879,86 @@ async def test_p2_4_a_run_stops_when_the_mode_changes_between_pages(ns) -> None:
     result = await engine.run_org(ns.org_a)
     assert (result.status, result.error) == ("stopped", "mode_changed")
     assert _count(ns, "crm_companies", ns.org_a) < 5
+
+
+# ── Review round 2 ───────────────────────────────────────────────────────────
+
+async def test_r2_p1_a_reconcile_with_no_count_deletes_nothing(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 5)
+    ZOHO_A.drop("Accounts", "Aa5", tombstone=False)
+    ZOHO_A.no_count = True
+    for _ in range(2):
+        _make_due_for_reconcile(ns)
+        result = await engine.run_org(ns.org_a)
+    assert result.counts["organizations"]["refused"] == 1
+    assert _count(ns, "crm_companies", ns.org_a) == 5
+
+
+async def test_r2_a_row_must_be_missed_by_two_walks_in_a_row(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 5)
+    ZOHO_A.drop("Accounts", "Aa5", tombstone=False)
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)
+    assert _count(ns, "crm_companies", ns.org_a) == 5, "one missed walk deleted a row"
+    # Zoho shows the row again, the next walk reads it, and a later miss is strike one.
+    ZOHO_A.add("Accounts", "Aa5", 5, Account_Name="Co-5")
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)
+    ZOHO_A.drop("Accounts", "Aa5", tombstone=False)
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)
+    assert _count(ns, "crm_companies", ns.org_a) == 5
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)
+    assert _count(ns, "crm_companies", ns.org_a) == 4
+
+
+async def test_r2_p2b_the_count_does_not_drop_the_last_page_of_a_walk(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 2)
+    before = _q(ns, "SELECT max(ext_seen_at) FROM crm_companies WHERE organization_id = "
+                    "CAST(:o AS uuid)", o=ns.org_a)[0][0]
+    ZOHO_A.low_credits.add("Accounts")
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)
+    fresh = _q(ns, "SELECT count(*) FROM crm_companies WHERE organization_id = "
+                   "CAST(:o AS uuid) AND ext_seen_at > :b", o=ns.org_a, b=before)[0][0]
+    assert fresh == 2, "the page of the walk was dropped"
+
+
+async def test_r2_p2c_a_failing_record_expires_after_its_retries(ns, monkeypatch) -> None:
+    from gateway.crm_sync import engine
+
+    seed_basic(ZOHO_A, "A")
+    await _connect(ns, ns.org_a, ZOHO_A)
+    real = engine._write_record
+
+    async def always(ctx, db, entity, record, caches):
+        if record.ext_id == "Aa3":
+            raise RuntimeError("boom")
+        return await real(ctx, db, entity, record, caches)
+
+    monkeypatch.setattr(engine, "_write_record", always)
+    for _ in range(engine.RETRY_LIMIT + 2):
+        assert (await engine.run_org(ns.org_a)).status == "ok"
+    state = _q(ns, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
+                   "CAST(:o AS uuid) AND module = 'zoho:company'", o=ns.org_a)[0][0]
+    assert state["failed"] == {}
+    assert state.get("retry_from") is None
+
+
+async def test_r2_an_empty_walk_keeps_the_offset_paged_flag(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 3)
+    ZOHO_A.data["Accounts"] = []
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)
+    state = _q(ns, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
+                   "CAST(:o AS uuid) AND module = 'zoho:company'", o=ns.org_a)[0][0]
+    assert state["offset_paged"] is True

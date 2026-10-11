@@ -782,9 +782,13 @@ def _later(left: datetime | None, right: datetime | None) -> datetime | None:
 
 async def _safe_count(ctx: _Ctx, entity: str) -> int | None:
     """The provider count of an entity, or None. A failure other than a stop is
-    not an answer, so the caller keeps its guard."""
+    not an answer, so the reconcile then refuses to delete (``count_unknown``).
+
+    It runs BEFORE the walk reads its first page, and it skips the credit floor,
+    so a stop here can never drop a page that was already paid for.
+    """
     try:
-        return await ctx.call(lambda s: s.count_records(entity))
+        return await ctx.call(lambda s: s.count_records(entity), floor=False)
     except (NotConnected, Stopped, ModeChanged):
         raise
     except SourceError as exc:
@@ -798,34 +802,63 @@ def _merge_failed(
     landed: set[str],
     bad: list[tuple[str, str | None]],
 ) -> dict[str, list[Any]]:
-    """The ids to read again: ``{id: [modified_time, attempts]}``, capped."""
+    """The ids to read again: ``{id: [modified_time, runs_retried]}``, capped."""
     merged = {k: v for k, v in failed.items() if k not in landed}
     for ext_id, stamp in bad:
-        attempts = int(merged[ext_id][1]) + 1 if ext_id in merged else 1
-        merged[ext_id] = [stamp, attempts]
+        merged.setdefault(ext_id, [stamp, 0])
     while len(merged) > FAILED_CAP:
         merged.pop(next(iter(merged)))
     return merged
 
 
+def _tick_failed(failed: dict[str, list[Any]]) -> dict[str, list[Any]]:
+    """One run spends one retry of each failed id. An id past its retries
+    expires. The log gets the id only."""
+    kept: dict[str, list[Any]] = {}
+    for ext_id, (stamp, used) in failed.items():
+        if int(used) + 1 >= RETRY_LIMIT:
+            _log.warning("crm.sync.record_expired ext_id=%s", ext_id)
+            continue
+        kept[ext_id] = [stamp, int(used) + 1]
+    return kept
+
+
 def _pin(failed: dict[str, list[Any]]) -> datetime | None:
-    """The earliest time that a failed record, still inside its retries, needs."""
-    stamps = [
-        _parse(v[0]) for v in failed.values()
-        if v[0] and int(v[1]) < RETRY_LIMIT
-    ]
-    stamps = [t for t in stamps if t is not None]
+    """The earliest time that a failed record needs a re-read from."""
+    stamps = [t for t in (_parse(v[0]) for v in failed.values() if v[0]) if t is not None]
     return min(stamps) - timedelta(seconds=1) if stamps else None
 
 
-async def _changed_pass(ctx: _Ctx, entity: str) -> None:
+async def _retry_page(
+    ctx: _Ctx, entity: str, failed: dict[str, list[Any]],
+) -> dict[str, list[Any]]:
+    """Read failed records again: ONE page from the oldest of them, no more.
+
+    An old failing record must not make each run re-read many pages.
+    """
+    failed = _tick_failed(failed)
+    since = _pin(failed)
+    if since is None:
+        return failed
+    page = await ctx.call(lambda s: s.list_changed(entity, SourceCursor(since=since)))
+    if page.records and ctx.owners is None:
+        await ctx.load_owners()
+    async with ctx.page() as db:
+        landed, bad = await _apply_records(ctx, db, entity, page.records)
+    return _merge_failed(failed, landed, bad)
+
+
+async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one resumable loop
     """Read the records changed since the cursor, one page at a time.
 
     A module that hides ``Modified_Time`` has no cursor to move, so an
     incremental run does not list it. A reconcile (a full id walk) reads it, at
-    most once in 24 hours. The walk stamps each row it reads with its start, so
-    it can stop and resume across runs. At the end it deletes the rows that it
-    did not read, unless the walk looks cut short (:func:`_drop_stale`).
+    most once in 24 hours. A walk stamps each row it reads with its start, and
+    it can stop and resume across runs. The first import is also a walk.
+
+    A walk deletes only a row that the PREVIOUS complete walk and this one both
+    missed (two strikes), and only when the walk looks whole
+    (:func:`_drop_stale`).
     """
     module = changed_module(entity)
     row = _row(ctx, module)
@@ -833,18 +866,25 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:
     walking = entity in ctx.reconcile
     if row.initial_done_at is not None and saved.get("offset_paged") and not walking:
         return
-    in_progress = bool(saved.get("in_progress"))
-    resumed = in_progress and (bool(saved.get("walk_start")) or not walking)
+    stamping = walking or row.initial_done_at is None
+    resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
     hidden = bool(saved.get("offset_paged")) if resumed else False
     walk_start = ctx.started
     walk_count = 0
-    if walking and resumed:
+    known: int | None = None
+    if resumed and stamping:
         walk_start = _parse(saved.get("walk_start")) or ctx.started
         walk_count = int(saved.get("walk_count") or 0)
-    ctx.stamp = walk_start if walking else None
+        known = saved.get("walk_known")
+    elif walking:
+        known = await _safe_count(ctx, entity)
+    prev_walk = _parse(saved.get("prev_walk_start"))
+    ctx.stamp = walk_start if stamping else None
     failed_map: dict[str, list[Any]] = {
         str(k): list(v) for k, v in (saved.get("failed") or {}).items()
     }
+    if not stamping and not resumed and failed_map:
+        failed_map = await _retry_page(ctx, entity, failed_map)
     if resumed:
         cursor = cursor_from(saved)
         newest = _parse(saved.get("max_modified"))
@@ -873,20 +913,24 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:
                     newest_ids.add(record.ext_id)
             walk_count += len(page.records)
             last_page = page.next_cursor is None
-            known = await _safe_count(ctx, entity) if (walking and last_page) else None
             async with ctx.page() as db:
                 landed, bad = await _apply_records(ctx, db, entity, page.records)
                 failed_map = _merge_failed(failed_map, landed, bad)
                 if not last_page and page.next_cursor is not None:
                     extra: dict[str, Any] = {}
-                    if walking:
-                        extra = {"walk_start": _iso(walk_start), "walk_count": walk_count}
+                    if stamping:
+                        extra = {
+                            "walk_start": _iso(walk_start), "walk_count": walk_count,
+                            "walk_known": known,
+                        }
                     state = cursor_state(
                         page.next_cursor,
                         max_modified=_iso(newest),
                         watermark_ids=sorted(newest_ids),
                         offset_paged=hidden,
                         failed=failed_map,
+                        retry_from=_iso(_pin(failed_map)),
+                        prev_walk_start=_iso(prev_walk),
                         **extra,
                     )
                     row = CursorRow(
@@ -895,23 +939,28 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:
                     )
                 else:
                     complete_at = _now()
+                    # A walk of nothing says nothing about the paging mode.
+                    final_hidden = hidden if walk_count else bool(saved.get("offset_paged"))
+                    next_prev = prev_walk
                     if walking:
-                        await _drop_stale(
-                            ctx, db, entity, table, walk_start, walk_count, known,
+                        if await _drop_stale(
+                            ctx, db, entity, table, prev_walk, walk_count, known,
                             set(failed_map),
-                        )
-                    pin = None if hidden else _pin(failed_map)
-                    mark = None if hidden else _later(row.last_pulled_at, newest)
-                    if pin is not None and mark is not None:
-                        mark = min(mark, pin)
+                        ):
+                            next_prev = walk_start
+                    elif stamping:
+                        next_prev = walk_start
+                    mark = None if final_hidden else _later(row.last_pulled_at, newest)
                     row = CursorRow(
                         module,
                         mark,
                         {
                             "in_progress": False,
-                            "offset_paged": hidden,
-                            "watermark_ids": [] if hidden or pin else sorted(newest_ids),
+                            "offset_paged": final_hidden,
+                            "watermark_ids": [] if final_hidden else sorted(newest_ids),
                             "failed": failed_map,
+                            "retry_from": _iso(_pin(failed_map)),
+                            "prev_walk_start": _iso(next_prev),
                         },
                         row.initial_done_at or complete_at,
                         complete_at if (walking or first_pass) else row.last_reconciled_at,
@@ -926,22 +975,28 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:
 
 
 async def _drop_stale(
-    ctx: _Ctx, db: Any, entity: str, table: str, walk_start: datetime,
+    ctx: _Ctx, db: Any, entity: str, table: str, prev_walk: datetime | None,
     walked: int, known: int | None, failed_ids: set[str],
-) -> None:
-    """Delete the local rows that the walk did not read (reconcile).
+) -> bool:
+    """Delete the rows that two complete walks in a row did not read (reconcile).
 
-    The delete cannot be undone, so it refuses when the walk looks cut short:
+    The delete cannot be undone, so it refuses when the walk may be short:
 
-    * the walk read nothing while rows exist here;
-    * the walk read fewer records than the provider counts;
-    * the delete is more than 20 % of the local rows, for more than 10 rows.
+    * ``count_unknown``: the provider count is not known, so nothing proves
+      that the walk read everything;
+    * ``empty_walk``: the walk read nothing while rows exist here;
+    * ``short_walk``: the walk read fewer records than the provider counts;
+    * ``large_delete``: more than 20 % of more than 10 local rows.
 
-    A refusal keeps the rows, logs ``reconcile_refused`` with the figures, and
-    counts in ``refused``. A record that failed to write is never deleted.
+    Offset paging can skip a row when the provider changes under the walk, so a
+    row goes only when its stamp is older than the start of the previous complete
+    walk. A refusal keeps the rows and their stamps, logs ``reconcile_refused``
+    with the figures and counts in ``refused``. It returns False for a refusal,
+    and the caller then keeps its old previous-walk time. A record that failed
+    to write is never deleted.
     """
     kind_clause = " AND type = :type" if table == "crm_activities" else ""
-    params: dict[str, Any] = {"org": ctx.org, "src": EXT_SOURCE, "start": walk_start}
+    params: dict[str, Any] = {"org": ctx.org, "src": EXT_SOURCE}
     if kind_clause:
         params["type"] = ACTIVITY_TYPES[entity]
     base = (
@@ -949,17 +1004,21 @@ async def _drop_stale(
         f"AND ext_source = :src{kind_clause}"
     )
     local = (await db.execute(text(f"SELECT count(*) AS n {base}"), params)).first().n
-    stale = [
-        str(r.ext_id) for r in (await db.execute(
-            text(f"SELECT ext_id {base} AND (ext_seen_at IS NULL OR ext_seen_at < :start)"),
-            params,
-        )).fetchall()
-        if str(r.ext_id) not in failed_ids
-    ]
+    stale: list[str] = []
+    if prev_walk is not None:
+        stale = [
+            str(r.ext_id) for r in (await db.execute(
+                text(f"SELECT ext_id {base} AND (ext_seen_at IS NULL OR ext_seen_at < :prev)"),
+                {**params, "prev": prev_walk},
+            )).fetchall()
+            if str(r.ext_id) not in failed_ids
+        ]
     reason = None
-    if local and walked == 0:
+    if known is None:
+        reason = "count_unknown"
+    elif local and walked == 0:
         reason = "empty_walk"
-    elif known is not None and walked < known:
+    elif walked < known:
         reason = "short_walk"
     elif local > REFUSE_MIN_ROWS and len(stale) > REFUSE_FRACTION * local:
         reason = "large_delete"
@@ -969,10 +1028,11 @@ async def _drop_stale(
             "crm.sync.reconcile_refused entity=%s reason=%s walked=%s known=%s "
             "local=%s stale=%s", entity, reason, walked, known, local, len(stale),
         )
-        return
+        return False
     if stale:
         removed = await delete_from_source(db, table, EXT_SOURCE, sorted(stale))
         ctx.bump(entity, "deleted", removed)
+    return True
 
 
 async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
