@@ -467,3 +467,11 @@ export function convertLead(
 }
 
 export type { Contact, Deal, Lead, Organization };
+
+/** Admin only. Back to "no mode" (CRM-U5b). A 409 carries a `message` to show. */
+export function resetMode(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify({ mode: null }),
+  });
+}
