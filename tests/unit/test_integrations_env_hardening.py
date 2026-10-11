@@ -1000,11 +1000,22 @@ class TestTheByokGateOnGithubToken:
         await _expect(403, integrations.github_connect_cli(user=USER))
         _assert_untouched(env_file, before)
 
-    async def test_put_keys_saves_github_token_with_byok_on(self, env_file, store, byok_on):
+    async def test_put_keys_saves_github_token_with_byok_on(
+        self, env_file, store, byok_on, monkeypatch,
+    ):
+        # IN-7 review: the token is the org connection, not a `provider_keys`
+        # row. The BYOK gate still runs first.
+        saved: list[str] = []
+
+        async def _pat(token: str, user: Any) -> None:
+            saved.append(token)
+
+        monkeypatch.setattr(integrations, "_store_github_pat", _pat)
         before = _snapshot(env_file)
         out = await _put("github", "token", "ghp_AbCdEf0123456789")
         assert out["env_var"] == "GITHUB_TOKEN"
-        assert store.puts == [("github:token", "ghp_AbCdEf0123456789")]
+        assert store.puts == []
+        assert saved == ["ghp_AbCdEf0123456789"]
         _assert_untouched(env_file, before)  # IN-0: the store only
 
 
@@ -1186,11 +1197,19 @@ class TestEveryCallerStillWorks:
         assert out["written"] == ["GITHUB_CLIENT_ID"]
 
     async def test_github_device_connect_saves_a_pat_when_byok_is_on(
-        self, env_file, store, custom, byok_on,
+        self, env_file, store, custom, byok_on, monkeypatch,
     ):
         # Option A. GITHUB_TOKEN is in `_PROVIDER_ENV_MAP`, so BYOK gates it.
+        # IN-7 review: it saves the org connection, not a `provider_keys` row.
+        saved: list[str] = []
+
+        async def _pat(token: str, user: Any) -> None:
+            saved.append(token)
+
+        monkeypatch.setattr(integrations, "_store_github_pat", _pat)
         out = await _configure(("GITHUB_TOKEN", "ghp_AbCdEf0123456789"))
         assert out["written"] == ["GITHUB_TOKEN"]
+        assert store.puts == [] and saved == ["ghp_AbCdEf0123456789"]
 
     @pytest.mark.parametrize("pattern", _setup_patterns())
     async def test_a_setup_token_saves_a_declared_key(self, pattern, env_file, store, custom):

@@ -824,7 +824,12 @@ def test_every_builtin_key_has_one_startup_name() -> None:
         assert len(names.get(key, [])) == 1, (key, names.get(key))
 
 
-@pytest.mark.parametrize("key", sorted(integrations.BUILTIN_ENV_KEYS))
+# IN-7 review: GITHUB_TOKEN is the org connection, no `provider_keys` row. The
+# two tests below keep every OTHER key on the name the startup copy reads.
+_PROVIDER_KEYS = sorted(integrations.BUILTIN_ENV_KEYS - {"GITHUB_TOKEN"})
+
+
+@pytest.mark.parametrize("key", _PROVIDER_KEYS)
 async def test_configure_stores_the_name_the_startup_copy_reads(
     key: str, env_file, store, tenant, byok_on,
 ) -> None:
@@ -835,7 +840,7 @@ async def test_configure_stores_the_name_the_startup_copy_reads(
     assert [p for p, _, _ in store.puts] == [_startup_provider()[key]]
 
 
-@pytest.mark.parametrize("key", sorted(integrations.BUILTIN_ENV_KEYS))
+@pytest.mark.parametrize("key", _PROVIDER_KEYS)
 async def test_put_keys_stores_the_name_the_startup_copy_reads(
     key: str, env_file, store, tenant, byok_on,
 ) -> None:
@@ -844,6 +849,59 @@ async def test_put_keys_stores_the_name_the_startup_copy_reads(
     out = await integrations.put_integration_key(req, user=USER)
     assert out["env_var"] == key
     assert [p for p, _, _ in store.puts] == [_startup_provider()[key]]
+
+
+# ── IN-7 review: a typed GITHUB_TOKEN is the org connection, never a key row ─
+
+
+class TestAPatIsTheOrgConnection:
+    async def test_configure(self, env_file, store, tenant, byok_on, gh_saves, monkeypatch) -> None:
+        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
+        req = integrations.ConfigureRequest(
+            vars=[integrations.IntegrationVar(key="GITHUB_TOKEN", value="ghp_Typed0123456789")],
+        )
+        out = await integrations.configure_integrations(req, user=USER)
+        assert out["written"] == ["GITHUB_TOKEN"]
+        assert store.puts == [], "nothing may write the legacy github:token row"
+        assert [(g["org"], g["access_token"], g["login"]) for g in gh_saves] == [
+            (tenant, "ghp_Typed0123456789", "octocat"),
+        ]
+
+    async def test_put_keys(self, env_file, store, tenant, byok_on, gh_saves, monkeypatch) -> None:
+        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
+        req = integrations.IntegrationKeyRequest(
+            service="github", key_name="token", value="ghp_Typed0123456789",
+        )
+        out = await integrations.put_integration_key(req, user=USER)
+        assert out["env_var"] == "GITHUB_TOKEN"
+        assert store.puts == []
+        assert [g["access_token"] for g in gh_saves] == ["ghp_Typed0123456789"]
+
+    async def test_a_failed_save_is_503(self, env_file, store, tenant, byok_on, gh_saves, monkeypatch) -> None:
+        async def failing(*_: Any, **__: Any) -> None:
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(integrations.httpx, "AsyncClient", _FakeGithub)
+        monkeypatch.setattr(integrations.github_connection, "save_device_token", failing)
+        req = integrations.IntegrationKeyRequest(
+            service="github", key_name="token", value="ghp_Typed0123456789",
+        )
+        with pytest.raises(HTTPException) as caught:
+            await integrations.put_integration_key(req, user=USER)
+        assert caught.value.status_code == 503
+
+    async def test_delete_keys_disconnects(self, env_file, store, tenant, byok_on, monkeypatch) -> None:
+        called: list[str] = []
+
+        async def fake_disconnect(org: str) -> bool:
+            called.append(org)
+            return True
+
+        monkeypatch.setattr(integrations.github_connection, "disconnect", fake_disconnect)
+        req = integrations.IntegrationKeyDelete(service="github", key_name="token")
+        await integrations.delete_integration_key(req, user=USER)
+        assert called == [tenant]
+        assert store.deletes == []
 
 
 # ── Fix round 1, P2: the device flow reads the client id of the org ─────────

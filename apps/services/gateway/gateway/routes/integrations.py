@@ -1064,6 +1064,13 @@ async def configure_integrations(
         #    answer 200 with nothing written. Layer C makes every key here a
         #    built-in key, so `BUILTIN_PROVIDER` always holds it, under the
         #    name that the startup copy reads.
+        if var.key == "GITHUB_TOKEN":
+            # IN-7: the org connection, not a `provider_keys` row.
+            await _store_github_pat(value, user)
+            db_written.append("github:connection")
+            written.append(var.key)
+            _log.info("integrations.configure", key=var.key, actor=user.email)
+            continue
         svc, suffix = BUILTIN_PROVIDER[var.key]
         provider = f"{svc}:{suffix}"
         try:
@@ -1209,15 +1216,20 @@ async def put_integration_key(
         )
     svc, suffix = BUILTIN_PROVIDER[env_var]
     provider = f"{svc}:{suffix}"
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    await store.put(
-        provider,
-        value,
-        credential_type="integration",
-        service=svc,
-        organization_id=current_tenant(),
-    )
+    if env_var == "GITHUB_TOKEN":
+        # IN-7: the org connection, not a `provider_keys` row.
+        await _store_github_pat(value, user)
+        provider = "github:connection"
+    else:
+        from acb_llm.key_store import get_key_store
+        store = get_key_store()
+        await store.put(
+            provider,
+            value,
+            credential_type="integration",
+            service=svc,
+            organization_id=current_tenant(),
+        )
 
     _log.info(
         "integrations.key_put",
@@ -1263,9 +1275,13 @@ async def delete_integration_key(
         _refuse_provider_key_without_byok([popped])
 
     provider = f"{req.service}:{req.key_name}"
-    from acb_llm.key_store import get_key_store
-    store = get_key_store()
-    await store.delete(provider, organization_id=current_tenant())
+    if popped == "GITHUB_TOKEN":
+        # IN-7: the token is the org connection. This deletes it, and any old row.
+        await github_connection.disconnect(_github_org())
+    else:
+        from acb_llm.key_store import get_key_store
+        store = get_key_store()
+        await store.delete(provider, organization_id=current_tenant())
 
     _log.info(
         "integrations.key_deleted",
@@ -2468,6 +2484,47 @@ def _github_org() -> str:
             status_code=status.HTTP_403_FORBIDDEN, detail="No organization is bound.",
         )
     return str(org)
+
+
+async def _store_github_pat(token: str, user: UserContext) -> None:
+    """Save a token that a member typed as the org GitHub connection.
+
+    WS-54 IN-7 review. ``GITHUB_TOKEN`` in configure and ``PUT /keys`` used to
+    land in ``provider_keys``, where no reader looks once a connection row
+    exists. It is the same org connection as the device flow now. The login
+    and the scopes come from ``GET /user``. A lookup that fails leaves them
+    empty, and the token is still saved.
+    """
+    org = _github_org()
+    login = ""
+    scopes: tuple[str, ...] = ()
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            ur = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+            )
+        if ur.status_code == 200:
+            login = str(ur.json().get("login") or "")
+            scopes = github_connection.parse_scopes(ur.headers.get("X-OAuth-Scopes", ""))
+    except Exception:
+        pass
+    try:
+        async with tenant_session(org) as db:
+            await github_connection.save_device_token(
+                db, org, access_token=token, login=login, scopes=scopes,
+                connected_by=user.email,
+            )
+    except Exception as exc:
+        _log.warning("github.pat.store_failed", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not store GITHUB_TOKEN for this organization.",
+        ) from None
+    _log.info("github.pat.saved", actor=user.email)
 
 
 @router.get("/github/account")
