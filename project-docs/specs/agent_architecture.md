@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-11. §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-10-12. §12.2 WS-8c adds the MCP confirmation card (H-299, items 13 to 17). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -967,6 +967,43 @@ nothing.
     after the run is marked inactive. The session DELETE has a 2 s timeout. A Stop is never
     swallowed.
 
+**The confirmation card (H-299, added 2026-10-12).** Item 8 approved every MCP tool, because
+`decide()` approves a name that it does not know as `unknown_allowed`. Items 13 to 17 close
+that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
+
+13. **When the gate asks for a card.** `RunScopedMCPTool` keeps the `annotations` of each tool from
+    `tools/list` (MCP 2025-03-26), because MAF drops them. `McpPermissionGate` gives the hints
+    to `decide()` as `mcp_tool` and `mcp_annotations`. `decide()` answers `mcp_read_only` only
+    when `readOnlyHint` is `true` and `destructiveHint` is not `true`. It answers `mcp_confirm`
+    for every other case: no hints, a hint that is not a JSON boolean, and a destructive tool.
+    The MCP rule runs before the platform annotations, so a server tool never borrows the hints
+    of a platform tool of the same name. The gate shows a card for every code except
+    `mcp_read_only`, so `gate_error` also needs the card. `decide()` stays the one gate.
+14. **The card.** The gate calls `ask_tools.request_confirmation`, the one card seam. The card
+    shows the server, the tool, the arguments and the server's description of the tool. The
+    description has the label "Description from the MCP server (Metorite did not check this
+    text)". The card redacts a sensitive argument by its name (`password`, `api_key`, `token`
+    and more) and by its value (a bearer token, a key with a known prefix, a JWT). It cuts a
+    long value. No
+    shared redaction helper fits structured arguments, so `_maf_mcp.redact_arguments` is local
+    to the card.
+15. **Deny and timeout.** Approve runs the tool. Deny, a timeout and a card fault return a
+    refusal to the model, and the tool never reaches the server. The card closes with
+    `confirmation_resolved` as before.
+16. **No member, no card.** A run that cannot show a card refuses the tool with a plain message,
+    and shows no card. The executor passes `member_present` only when
+    `_integration_authorizer` gave an authority and the run is not a batch run. A run with no
+    channel (no event queue and no relay thread) is refused too. A delegated run gets no MCP
+    server today, and the default of `member_present` is `False`, so it fails closed.
+17. **Channels.** A WhatsApp run refuses the tool. The WhatsApp profile parks only the acts of
+    `whatsapp_acts.ALLOWED_ACTS`, and an MCP tool is not one. The gate reads the profile
+    itself, so it never approves on WhatsApp.
+
+**Known limit: nobody checks the hints.** The server writes its own hints, and a hostile server
+can mark a destructive tool read-only. Each attach logs `mcp.tool_annotations` with the
+server, the tool and the hints, so an admin can audit them. A per-server admin setting
+"always confirm" is H-300. It waits for an owner decision.
+
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
 port 443 only. It sets `follow_redirects=False` and `trust_env=False`.
@@ -1001,6 +1038,12 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A9 | IN-D6. Orgs A and B register one name and get two rows. A registers it again and updates its row. A request with no tenant gets 4xx and writes no row. R8. | `test_mcp_register_r8.py` |
 | A10 | The WS-43q done-when lists WS-8c, and the anchor of `maf_coding_engine.md` §15.2 is correct. | `test_maf_mcp_injection.py` |
 | A11 | An unreachable server does not fail the run. The connections close when the run ends. | `test_maf_mcp_injection.py` |
+| A12 | A tool with `destructiveHint` true, `readOnlyHint` false, or no hints waits for the card. A read-only tool that is not destructive runs at once. | `test_maf_mcp_confirm.py` |
+| A13 | Approve runs the tool. Deny and a timeout return a refusal, and the tool never runs. | `test_maf_mcp_confirm.py` |
+| A14 | A run with no member, or with no card channel, refuses a tool that needs a card, and shows no card. | `test_maf_mcp_confirm.py` |
+| A15 | A WhatsApp run refuses, and parks nothing. | `test_maf_mcp_confirm.py` |
+| A16 | The card redacts sensitive arguments, and labels the server's description. | `test_maf_mcp_confirm.py` |
+| A17 | Each attach logs `mcp.tool_annotations`. A destructive tool on the real `run_agent_stream` emits the card, and the server runs it only after Approve. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.
@@ -1010,7 +1053,8 @@ off, the Copilot path reads the rows of the run's org only.
     bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_maf_mcp_injection.py tests/unit/test_maf_mcp_org_scope_r8.py \
       tests/unit/test_mcp_outbound_pin.py tests/unit/test_no_mcp_stdio.py \
-      tests/unit/test_mcp_register_r8.py tests/unit/test_mcp_servers_org_scope.py -v -rs
+      tests/unit/test_mcp_register_r8.py tests/unit/test_mcp_servers_org_scope.py \
+      tests/unit/test_maf_mcp_confirm.py -v -rs
 
 No R8 suite may skip.
 
@@ -1018,8 +1062,8 @@ The second review added `test_maf_mcp_lifecycle.py`: a slow connect, endless pag
 tool cap, a Stop during the attach, a slow session DELETE, the total close cap, and a 40 s
 DELETE through the real run.
 
-**Left open.** H-299: `decide()` approves an unknown MCP tool name, so a destructive MCP tool
-runs with no confirmation card. Fix it before the first production flip of `MAF_MCP_ORGS`.
+**Left open.** H-300: an admin setting "always confirm" for each MCP server, which waits for an
+owner decision. Items 13 to 17 close H-299 (the card).
 
 **Done when** the fences above pass with no skip. Then a native MAF agent in an allowed org
 shows the tools of the server of its org. The production flip of `MAF_MCP_ORGS` is gate
