@@ -826,6 +826,7 @@ async def test_p2_3_due_orgs_run_at_the_same_time(ns, monkeypatch) -> None:
 
     await _connect(ns, ns.org_a, ZOHO_A)
     await _connect(ns, ns.org_b, ZOHO_B)
+    scheduler._stopping.clear()  # an earlier test stopped the loop
     entered: list[str] = []
     both = asyncio.Event()
 
