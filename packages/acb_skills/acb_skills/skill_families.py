@@ -86,6 +86,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "load_artifact_kit",
             "load_design_system",
             "manage_todo_list",
+            "package_artifacts",
             "read_attachment",
             "recall_notes",
             "run_diagnostics",

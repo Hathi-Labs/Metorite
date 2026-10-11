@@ -78,6 +78,11 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'load_design_system': {'params': {'section': 'string'}, 'required': []},
     'manage_todo_list': {'params': {'todoList': 'string'},
                          'required': ['todoList']},
+    # 2026-10-11: one zip of this chat's files. The paths are a JSON list in
+    # a string, like get_errors. No workspace, member or thread argument: the
+    # run binds them (R5).
+    'package_artifacts': {'params': {'name': 'string', 'paths': 'string'},
+                          'required': []},
     # MT-0c-1 (D16): query_history no longer takes SQL. The contract change is
     # deliberate — a model-composed `query` string was a raw-SQL tool, which
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All
@@ -126,7 +131,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 21 with decide and read_attachment)
+# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 22 with decide, read_attachment and package_artifacts)
 # ---------------------------------------------------------------------------
 # Post-diet measurement 2026-08-01 (chars/4 run-context tokenizer), rounded up
 # with ~10% headroom so ordinary wording edits don't fail CI. The floor summed
@@ -156,6 +161,9 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "load_artifact_kit": 430,
     "load_design_system": 390,
     "manage_todo_list": 610,
+    # 2026-10-11: zip this chat's files. Measured 139. share_artifact paid
+    # for it (332 -> 201), so the floor measured 6692, under the total.
+    "package_artifacts": 160,
     # 2026-10-09 (#780): every agent reads a chat attachment, so the tool
     # joined the floor. Measured 277. The floor then measured 6534, under
     # the total ceiling.
@@ -164,7 +172,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "run_diagnostics": 240,
     "run_script": 270,
     "save_note": 290,
-    "share_artifact": 370,
+    "share_artifact": 230,
     "web_search": 280,
     "write_artifact": 600,
 }

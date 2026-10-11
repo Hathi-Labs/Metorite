@@ -17,9 +17,11 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { archiveNotice, fetchArchive, saveBlob } from "@/lib/archiveDownload";
 import {
   canDownloadPdf,
   classifyArtifact,
+  isArchive,
   isRenderable,
   pdfNameFor,
   workspaceFileUrl,
@@ -103,6 +105,8 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
     return <Icon name="FileText" size={15} className="shrink-0 text-red-400" />;
   if (["xlsx", "xls"].includes(ext))
     return <Icon name="FileSpreadsheet" size={15} className="shrink-0 text-emerald-400" />;
+  if (isArchive(artifact.name, mime))
+    return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground" />;
   return <Icon name="File" size={15} className="shrink-0 text-muted-foreground" />;
 }
 
@@ -123,6 +127,18 @@ export default function ArtifactCard({
   const image = isImage(artifact);
   const { isMobile } = useViewMode();
   const isDoc = hasRenderedView(artifact.name, artifact.path);
+  // A zip has nothing to preview, so its card offers the download alone.
+  const archive = isArchive(artifact.name, artifact.mimeType);
+  // A zip lives on disk only, so its download can answer 410 (expired). The
+  // card fetches it first and says so, instead of a failed browser download.
+  const [notice, setNotice] = useState<string | null>(null);
+  const downloadArchive = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const result = await fetchArchive(fileUrl);
+    setNotice(archiveNotice(result));
+    if (result.kind === "ok") saveBlob(result.blob, artifact.name);
+  };
   const [imgError, setImgError] = useState(false);
 
   // Build a FileEntry-compatible object for the ArtifactViewerModal
@@ -247,6 +263,11 @@ export default function ArtifactCard({
             </span>
           )}
         </div>
+        {notice && (
+          <p role="status" className="mt-1 text-[11px] text-muted-foreground">
+            {notice}
+          </p>
+        )}
       </div>
 
       {/* Actions */}
@@ -261,7 +282,7 @@ export default function ArtifactCard({
             Open
           </button>
         )}
-        {!isMobile && (
+        {!isMobile && !archive && (
           <Button variant="ghost" size="icon-sm" layout="" onClick={(e) => { e.stopPropagation(); handleOpen(); }} title={isDoc ? "Open in modal viewer" : "Open in viewer"}>
             <Icon name="Maximize2" size={14} />
           </Button>
@@ -269,9 +290,10 @@ export default function ArtifactCard({
         <a
           href={fileUrl}
           download={artifact.name}
-          onClick={(e) => e.stopPropagation()}
+          onClick={archive ? downloadArchive : (e) => e.stopPropagation()}
           className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
           title="Download"
+          aria-label={`Download ${artifact.name}`}
         >
           <Icon name="Download" size={14} />
         </a>
