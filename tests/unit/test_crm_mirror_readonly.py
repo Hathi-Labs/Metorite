@@ -345,9 +345,9 @@ async def test_a_mirrored_activity_is_read_only(ns, app_engine) -> None:  # noqa
     ids = _seed(ns, mirrored=True)
     with ns.admin_engine.begin() as c:
         aid = str(c.execute(text(
-            "INSERT INTO crm_activities (organization_id, type, subject, deal_id, "
+            "INSERT INTO crm_activities (organization_id, type, subject, deal_id, created_by, "
             "ext_source, ext_id) VALUES (CAST(:o AS uuid), 'note', 's', "
-            "CAST(:d AS uuid), 'zoho', 'a-1') RETURNING id"),
+            "CAST(:d AS uuid), 'sync', 'zoho', 'a-1') RETURNING id"),
             {"o": ns.org_a, "d": ids["deals"]}).scalar())
     admin = _admin(ns.org_a)
     for method, body in (("PATCH", {"body": "x"}), ("DELETE", None)):
@@ -414,7 +414,7 @@ async def test_the_wire_carries_the_mirror_fields(ns, app_engine) -> None:  # no
         assert one.status_code == 200, one.text
         assert one.json()["ext_source"] == "zoho"
         listed = (await _call(ns, admin, "GET", f"/crm/{slug}")).json()
-        assert listed["items"][0]["ext_source"] == "zoho"
+        assert listed["rows"][0]["ext_source"] == "zoho"
     deal = (await _call(ns, admin, "GET", f"/crm/deals/{ids['deals']}")).json()
     assert deal["custom"] == {"k": 1}
     assert deal["ext_modified_at"] and deal["ext_id"]
