@@ -174,8 +174,13 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 - **Authenticated half:** `apps/services/gateway/gateway/routes/agent_access.py`, prefix `/agent-access`, behind default-deny.
 - **Edge unit:** a new uv member `apps/services/agent_edge/`. EA-3 adds `/mcp` to it.
 - **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`.
-- **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py` (reuse it, never edit it), `nav.ts` and `launch_surface.md`. Do not name a new module `oauth.py`.
-- **Lifetimes** are `Settings` defaults, so a test can assert them: access token 3600 seconds, refresh token 30 days, authorization code 60 seconds, idle connection 90 days, unused registered client 1 day.
+- **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py`, `nav.ts` and `launch_surface.md`. Reuse `outbound_guard.py` and never edit it. Do not name a new module `oauth.py`.
+- **Lifetimes** are `Settings` defaults, so a test can assert them.
+  - Access token: 3600 seconds.
+  - Refresh token: 30 days.
+  - Authorization code: 60 seconds.
+  - Idle connection: 90 days.
+  - Unused registered client: 1 day.
 - **No grace window.** A client that sends two refreshes at once loses the connection. The client must serialize its refreshes.
 
 ## 6. Decisions D-EA-1 to D-EA-9 (D-EA-1 to D-EA-8 taken, D97)
@@ -434,7 +439,9 @@ Name each test file in the PR that creates it. Name the files you mean when you 
 
 ## 16. Shell manifest (R9)
 
-This spec adds **no app**. Its screens join the Integrations app (§5.4, D-EA-9). That app owns the shell manifest entry. This spec adds two jobs to it. The jobs are "Connect an agent" and "Review agent activity". Both use `ManagerFrame` and the shared primitives. They add no palette, bell, assistant rail or command-bar listener. The consent page is a standalone screen on the control plane and uses the same design system.
+This spec adds **no app**. Its screens join the Integrations app (§5.4, D-EA-9). That app owns the shell manifest entry. This spec adds two jobs to it. The jobs are "Connect an agent" and "Review agent activity".
+
+Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bell, assistant rail or command-bar listener. The consent page is a standalone screen on the control plane and uses the same design system.
 
 ## 17. Open risks
 
