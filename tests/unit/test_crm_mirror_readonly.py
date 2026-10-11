@@ -447,6 +447,10 @@ _RAW_ALLOW = {
     "core.py::bump_last_activity",
     # The mirror's own bypass and the legacy upsert helpers (not routes).
     "core.py::upsert_by_zoho_id", "core.py::upsert_from_source",
+    # CRM-Z5: the delete half of the same bypass. Only `crm_sync/` calls it,
+    # and `test_crm_upsert_from_source_fence.py` keeps routes, agents and
+    # skills from naming it.
+    "core.py::delete_from_source",
     "core.py::insert_row", "core.py::update_row",
     # The legacy importer, the sync and the stage repair refuse Mirror mode.
     "import_zoho.py", "sync_zoho.py",

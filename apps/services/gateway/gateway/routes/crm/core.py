@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -1322,6 +1322,41 @@ async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any
         ),
         _bindable(values),
     )).fetchone()
+
+
+async def delete_from_source(
+    db: Any, table: str, ext_source: str, ext_ids: Sequence[str],
+) -> int:
+    """Delete the mirror rows that a provider deleted. Returns how many went.
+
+    The second door of the mirror write path (WS-53 CRM-Z4), beside
+    :func:`upsert_from_source`, with the same table allowlist and the same
+    fence (``tests/unit/test_crm_upsert_from_source_fence.py`` refuses both
+    names outside ``gateway/crm_sync/``). It matches ``ext_source`` and
+    ``ext_id`` only, so a native row (both NULL) is never touched. The
+    tenant policy binds the organization.
+
+    It writes NO tombstone. A tombstone queues a delete for the provider, and
+    this delete came from the provider.
+    """
+    if table not in MIRROR_TABLES:
+        raise ValueError(
+            f"delete_from_source: {table!r} is not a mirror table "
+            f"(allowed: {sorted(MIRROR_TABLES)})"
+        )
+    if not ext_source:
+        raise ValueError("delete_from_source: 'ext_source' is required")
+    ids = sorted({str(i) for i in ext_ids if i})
+    if not ids:
+        return 0
+    result = await db.execute(
+        text(
+            f"DELETE FROM {table} WHERE ext_source = :ext_source "
+            f"AND ext_id = ANY(CAST(:ext_ids AS text[]))"
+        ),
+        {"ext_source": ext_source, "ext_ids": ids},
+    )
+    return int(result.rowcount or 0)
 
 
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:

@@ -52,6 +52,11 @@ def crm_mirror_enabled() -> bool:
     return get_settings().crm_mirror is True
 
 
+def mirror_sync_enabled() -> bool:
+    """True when the mirror sync loop may start: the CRM AND the mirror are on."""
+    return crm_enabled() and crm_mirror_enabled()
+
+
 @functools.lru_cache(maxsize=16)
 def _parse_orgs(raw: str) -> frozenset[str]:
     """The ids in *raw*, trimmed and in lower case. Cached on the raw value."""

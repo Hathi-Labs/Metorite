@@ -363,6 +363,14 @@ async def zoho_callback(
     if old is not None and old.refresh_token != credential.refresh_token:
         await _best_effort_revoke(old, "reconnect")
     _log.info("zoho connected for an organization")
+    # The first import runs in the background. A failure to start it is
+    # logged, and the sync loop picks the org up (CRM-Z4).
+    try:
+        from gateway.crm_sync.scheduler import start_first_import
+
+        await start_first_import(org)
+    except Exception as exc:  # the redirect must not fail for the import
+        _log.warning("first import not started: %s", type(exc).__name__)
     return RedirectResponse(RETURN_OK, status_code=302)
 
 

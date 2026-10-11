@@ -66,7 +66,6 @@ from acb_common.db import (
     clear_tenant,
     release_tenant,
 )
-from fastapi import HTTPException
 from gateway.routes.crm import auto_lead
 from gateway.routes.crm import broker_handlers as crm_broker
 from gateway.routes.crm import core as crm_core
@@ -424,21 +423,22 @@ async def test_the_flag_on_starts_no_loop_until_crm_z5(
     assert "crm.sync.off_until_crm_z5" in log.names()
 
 
-async def test_the_hand_run_cycle_answers_409_and_touches_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    opened = _trip_every_opener(monkeypatch)
-    reached: list[str] = []
-    monkeypatch.setattr(crm_sync, "_client", _tripwire(reached, "_client"))
-    monkeypatch.setattr(crm_sync, "_writer", _tripwire(reached, "_writer"))
+def test_the_old_engine_has_no_route_and_the_new_route_is_the_mirror() -> None:
+    """CRM-Z5 moved ``POST /crm/sync/zoho`` to ``routes/crm/sync.py``.
 
-    with pytest.raises(HTTPException) as exc:
-        await crm_sync.run_sync_cycle_now(USER)
+    The old two-way engine keeps no route, so nothing can run ``run_cycle``
+    (which pushes to Zoho) from a request.
+    """
+    assert not hasattr(crm_sync, "run_sync_cycle_now")
+    from gateway.routes.crm import sync as mirror_sync
+    from gateway.routes.crm.core import router
 
-    assert exc.value.status_code == 409
-    assert "CRM-Z5" in str(exc.value.detail)
-    assert opened == [], f"the hand-run cycle opened {opened}"
-    assert reached == [], f"the hand-run cycle reached {reached}"
+    paths = [
+        (r.path, tuple(sorted(r.methods)))
+        for r in router.routes if getattr(r, "path", "").endswith("/sync/zoho")
+    ]
+    assert paths == [("/crm/sync/zoho", ("POST",))], paths
+    assert mirror_sync.sync_now.__module__ == "gateway.routes.crm.sync"
 
 
 # ── R8 helpers ──────────────────────────────────────────────────────────────
