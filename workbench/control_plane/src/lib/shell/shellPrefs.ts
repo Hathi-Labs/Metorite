@@ -32,7 +32,7 @@
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
  */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -168,6 +168,26 @@ export async function saveShellPrefs(
     }
     throw err;
   }
+}
+
+/** How long the sidebar waits for the layout before it draws every app. */
+export const SHELL_WAIT_MS = 6_000;
+
+/**
+ * True while the sidebar should draw its skeleton: nothing is known yet (no
+ * read answered, and no browser copy), and the wait has not run out. A
+ * failed read ends it at once (`loading` goes false), and so does the wait
+ * of `SHELL_WAIT_MS`, the proxy's own timeout. Then every held app shows.
+ * Without it, every app painted and then the sidebar narrowed to the stars.
+ */
+export function useShellPending(loading: boolean): boolean {
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    if (!loading) return;
+    const t = setTimeout(() => setWaited(true), SHELL_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [loading]);
+  return loading && !waited;
 }
 
 export interface ShellPrefsState {

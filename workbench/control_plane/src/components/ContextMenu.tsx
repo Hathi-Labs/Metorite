@@ -39,6 +39,9 @@ export type CtxItem =
   | { kind: "label"; label: string }
   | { kind: "sep" };
 
+/** The items the arrow keys move between. */
+const MENU_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"]';
+
 export function ContextMenu({
   x,
   y,
@@ -82,7 +85,23 @@ export function ContextMenu({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // Arrow keys move between the items, and wrap. Home and End jump to
+      // the ends. From outside the menu, ArrowDown enters it at the top.
+      const items = [...(ref.current?.querySelectorAll<HTMLElement>(MENU_ITEMS) ?? [])];
+      if (items.length === 0) return;
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      const go = (i: number) => {
+        e.preventDefault();
+        items[(i + items.length) % items.length].focus();
+      };
+      if (e.key === "ArrowDown") go(at < 0 ? 0 : at + 1);
+      else if (e.key === "ArrowUp") go(at < 0 ? items.length - 1 : at - 1);
+      else if (e.key === "Home" && at >= 0) go(0);
+      else if (e.key === "End" && at >= 0) go(items.length - 1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -101,16 +120,18 @@ export function ContextMenu({
         ref={ref}
         style={{ left: pos.x, top: pos.y }}
         onClick={(e) => e.stopPropagation()}
+        role="menu"
         className="absolute min-w-[196px] max-w-[240px] overflow-hidden rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-xl"
       >
         {items.map((it, i) => {
           if (it.kind === "sep") {
-            return <div key={i} className="my-1 h-px bg-border" />;
+            return <div key={i} role="separator" className="my-1 h-px bg-border" />;
           }
           if (it.kind === "label") {
             return (
               <div
                 key={i}
+                role="presentation"
                 className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
               >
                 {it.label}
@@ -122,6 +143,8 @@ export function ContextMenu({
             <button
               key={i}
               type="button"
+              role={it.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+              aria-checked={it.checked === undefined ? undefined : it.checked}
               onClick={() => {
                 it.onSelect();
                 onClose();

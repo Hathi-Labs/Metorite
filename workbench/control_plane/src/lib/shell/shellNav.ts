@@ -134,6 +134,18 @@ export function shellSidebar(sections: readonly NavSection[], stars?: Stars | nu
 /** The line All apps shows when the sidebar's "Add apps" opens it. */
 export const ADD_APPS_HINT = "Star the apps you want in your sidebar.";
 
+/**
+ * The count on panes the sidebar does not show. A run on a hidden pane
+ * folds to Chat (`countRunsByApp`), and when Chat is hidden too its badge
+ * had no row. The sidebar shows this count on "Add apps", the door to the
+ * hidden apps, so a run is never out of sight.
+ */
+export function strayCount(counts: Record<string, number>, shown: ReadonlySet<string>): number {
+  let n = 0;
+  for (const [href, c] of Object.entries(counts)) if (!shown.has(href)) n += c;
+  return n;
+}
+
 /** The account menu's panes, in their manifest order. */
 export function accountPanes(sections: readonly NavSection[]): NavPane[] {
   return held(sections).filter((p) => p.door === "account");

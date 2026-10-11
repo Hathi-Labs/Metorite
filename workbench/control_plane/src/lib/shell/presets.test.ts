@@ -4,8 +4,8 @@
  *
  * ⚠️ **The subset rule is the one that matters.** A preset never grants. For
  * every preset and every grant set below, what the shell draws from the
- * preset is a subset of `visibleSections(features, isAdmin)`: the pins in
- * "My apps", the sidebar's whole shape, the My Day cards and the jobs of the
+ * preset is a subset of `visibleSections(features, isAdmin)`: the starred
+ * apps, the sidebar's whole shape, the My Day cards and the jobs of the
  * empty command bar.
  *
  * Mutation, seen to fail first: make `starrableHeld` read `PANES` instead of

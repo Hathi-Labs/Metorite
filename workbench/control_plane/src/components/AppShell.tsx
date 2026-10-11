@@ -60,7 +60,7 @@ import {
   shellSidebar,
 } from "@/lib/shell/shellNav";
 import { shouldPollWorkspace } from "@/lib/access";
-import { useShellPrefs } from "@/lib/shell/shellPrefs";
+import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldButton, SidebarFoldProvider } from "@/components/SidebarFold";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
@@ -437,6 +437,10 @@ function MobileBottomNavInner({
   const drawerSections = shellNav
     ? shellSidebar(navSections, shell.loading ? undefined : shell.layout)
     : navSections;
+  // The skeleton holds the place while the first layout read is out, as on
+  // the desktop sidebar (`useShellPending`).
+  const shellPending = useShellPending(shellNav && shell.loading);
+  const navWaiting = accessLoading || shellPending;
   // The run badge (WS-51 S1), from the one shared poller. Each drawer link
   // shows its app's count. The bottom bar shows the total on every page: on
   // the Chats tab on /chat, and on the Menu tab everywhere else, because the
@@ -489,7 +493,7 @@ function MobileBottomNavInner({
         {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
             placeholders, never the full list. The drawer opens on tap, so a
             list that rearranges under the thumb is worse here than on desktop. */}
-        {accessLoading ? (
+        {navWaiting ? (
           <div className="px-2 py-3" aria-hidden data-testid="nav-skeleton">
             {[0, 1, 2, 3, 4, 5].map((row) => (
               <div key={row} className="mb-1 flex items-center gap-2.5 px-3 py-2.5">
@@ -499,7 +503,7 @@ function MobileBottomNavInner({
             ))}
           </div>
         ) : null}
-        {shellNav && !accessLoading && (
+        {shellNav && !navWaiting && (
           <div className="px-2 pt-2">
             <Link
               href={home.href}
@@ -517,7 +521,7 @@ function MobileBottomNavInner({
             </Link>
           </div>
         )}
-        {drawerSections.map((section) => (
+        {!navWaiting && drawerSections.map((section) => (
           <div key={section.id} className="px-2 pt-1 pb-1.5" data-nav-section={section.id}>
             <div
               className={
@@ -558,7 +562,7 @@ function MobileBottomNavInner({
         ))}
         {/* "Add apps" (owner, 2026-10-11): the last item of the list, always,
             as on the desktop sidebar. The drawer closes first. */}
-        {shellNav && !accessLoading && (
+        {shellNav && !navWaiting && (
           <div className="px-2 pb-1">
             <button
               type="button"
@@ -580,7 +584,7 @@ function MobileBottomNavInner({
         )}
         {/* All apps (NS-2), only when it would list something. The drawer
             closes first, so one overlay shows. */}
-        {shellNav && !accessLoading && launcherGroups(navSections).length > 0 && (
+        {shellNav && !navWaiting && launcherGroups(navSections).length > 0 && (
           <div className="px-2 pb-2">
             <button
               type="button"

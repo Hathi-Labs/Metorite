@@ -16,8 +16,10 @@
  * 2. **The apps** (owner, 2026-10-11). After an answer, "Choose the apps for
  *    your sidebar" lists every app the member holds, by category, with a
  *    tick on each app that shows. "Done" saves the answer and the stars in
- *    ONE write. The X or Escape saves the answer with the ticks it started
- *    with, so an answer is never lost. "Back" goes to the question.
+ *    ONE write. On a first visit, the X or Escape saves the answer with the
+ *    ticks it started with, so an answer is never lost. Asked again from
+ *    the menu, the X or Escape closes and writes NOTHING, as "Keep my
+ *    layout" does. "Back" goes to the question.
  *    - A first answer ticks every Personal Center app and the preset's apps
  *      (`answerStars`, "Personal + preset").
  *    - Asked again, the same answer ticks the member's CURRENT stars. A
@@ -72,6 +74,7 @@ import {
   type PresetId,
 } from "@/lib/shell/presets";
 import { launcherGroups, shellNavOn } from "@/lib/shell/shellNav";
+import { layoutQuestionOpen } from "@/lib/shell/welcomeSteps";
 import { CHANGE_LAYOUT, askedInThisPage, markAsked, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export const WELCOME_PARAM = "welcome";
@@ -144,6 +147,8 @@ function WelcomeDialogInner() {
   const [chosen, setChosen] = useState<PresetId | null>(null);
   const [defaults, setDefaults] = useState<readonly string[]>([]);
   const [ticks, setTicks] = useState<ReadonlySet<string>>(new Set());
+  // The answer to focus when step 1 shows again ("Back").
+  const [refocus, setRefocus] = useState<PresetId | null>(null);
   const toast = useToast();
 
   // "Change my layout" in the account menu asks again.
@@ -156,12 +161,21 @@ function WelcomeDialogInner() {
     return () => window.removeEventListener(CHANGE_LAYOUT, onChange);
   }, []);
 
-  const questionOpen = navOn && (asking || reopened) && (step === "ask" || step === "apps");
+  // ⚠️ Only once access has resolved. Before that `sections` is empty, so
+  // step 2 would list no app, and "Done" would save `pins: []`.
+  const questionOpen = layoutQuestionOpen({ navOn, asking, reopened, step, accessLoading: loading });
   // The founder's welcome: after the question, or alone when there is none.
   // It waits for the layout read, or it would show first and then give way
   // to the question it should follow.
   const inviteOpen =
     newOrg && !questionOpen && !(navOn && shell.loading) && (step === "invite" || !(asking || reopened));
+
+  // "Back" puts the focus on the answer the member chose. The dialog stays
+  // open, so its own first focus does not run again.
+  useEffect(() => {
+    if (step !== "ask" || !refocus) return;
+    document.querySelector<HTMLElement>(`[data-answer="${refocus}"]`)?.focus();
+  }, [step, refocus]);
 
   // Step 2 opens with the focus on its first tick. The answer that had the
   // focus is gone, and the header's Close must not take it.
@@ -224,9 +238,14 @@ function WelcomeDialogInner() {
     save({ ...EMPTY_SHELL, preset: chosen, answered: "answered", ...stars }, askedAgain);
   };
   const done = () => finish(ticks);
-  // The X and Escape on step 2 keep the answer, with the ticks it started with.
-  const leaveApps = () => finish(defaults);
-  const back = () => setStep("ask");
+  // On a first visit the X and Escape on step 2 keep the answer, with the
+  // ticks it started with. Asked again, they change nothing.
+  const leaveApps = () => (again ? close() : finish(defaults));
+  // Back puts the focus on the answer the member chose.
+  const back = () => {
+    setStep("ask");
+    if (chosen) setRefocus(chosen);
+  };
   const tick = (href: string) =>
     setTicks((prev) => {
       const out = new Set(prev);
@@ -250,7 +269,7 @@ function WelcomeDialogInner() {
   // ⚠️ Focus an answer, never the header's Close button: Enter there would
   // skip the question (the trap `AppLauncher` records). Asked again, the
   // member's current preset; on a first visit, the first answer.
-  const focusPreset = current ?? ANSWERS[0].preset;
+  const focusPreset = refocus ?? current ?? ANSWERS[0].preset;
   // `Button` takes no ref, so the dialog finds the answer by its mark. A
   // miss falls back to the default (`null`).
   const focusAnswer = () =>
