@@ -2,8 +2,9 @@
  * POST /api/integrations/github/connect-cli
  *
  * Proxies to POST /integrations/github/connect-cli on the gateway.
- * Reads the active `gh` CLI token, writes it to GITHUB_TOKEN in .env,
- * and returns account details.
+ * Retired by WS-54 IN-0: the gateway answers 410 and reads no `gh` token,
+ * because that token is the identity of the operator. IN-7 removes the route.
+ * The response shape below is the one from before IN-0.
  *
  * Response:
  *   {

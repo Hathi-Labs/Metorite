@@ -29,8 +29,10 @@ the phone ever selects an org or a record (§5.11 "The tap is untrusted input").
 for the member's own message. ``bot_run`` sends it first and best effort, so
 a refused reaction never costs the member the answer.
 
-**Reads only, as in WAC-3.** Buttons and rows ask or narrow a question. A
-write still goes to the web app until WAC-4.
+**The model's buttons change no data.** Buttons and rows ask or narrow a
+question. WAC-4 (``acb_skills.whatsapp_acts``) adds the one exception: code,
+never the model, offers "Confirm" and "Cancel" for a parked write. So
+:func:`whatsapp_ui` refuses those two titles (:data:`RESERVED_TITLES`).
 
 Fence: ``tests/unit/test_wac_native_ui.py``.
 """
@@ -47,6 +49,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from acb_skills import whatsapp_cards as cards
+from acb_skills import whatsapp_engine as engine
 from acb_skills import whatsapp_render as render
 
 #: The tools a WhatsApp run does not get: the WEB DELIVERY tools only.
@@ -102,6 +105,14 @@ RENDITION_MARK = "⁣"
 #: At the start of the thread record of a reply that code built (a view, no
 #: AI call): U+2064, invisible. ``bot_run`` reads it (WAC-10c).
 VIEW_MARK = "⁤"
+#: The button and row titles that only code may offer (WAC-4, spec §14.3).
+#: A tap arrives as its title, and "Confirm" runs a parked write. So the
+#: model can offer neither title, in any case.
+RESERVED_TITLES: frozenset[str] = frozenset({"confirm", "cancel"})
+
+
+def _reserved(title: str) -> bool:
+    return " ".join(title.split()).casefold() in RESERVED_TITLES
 
 
 @dataclass(frozen=True)
@@ -119,6 +130,9 @@ class OutMessage:
     caption: str | None = None
     #: The emoji of a "reaction". It goes ON the member's message (WAC-10e).
     emoji: str | None = None
+    #: The pending act that this part offers (WAC-4: the Confirm and Cancel
+    #: buttons). ``bot_run`` marks the act offered once Meta took the part.
+    act_id: str | None = None
 
     @property
     def counts(self) -> bool:
@@ -143,6 +157,11 @@ class WhatsAppRun:
     notify: Callable[[str], Awaitable[bool]] | None = None
     #: True once the member heard that the job takes a while.
     notified: bool = False
+    #: The run may park ONE write for the member's Confirm (WAC-4). Only
+    #: ``bot_run`` sets it, from ``WHATSAPP_ASSISTANT_WRITES``.
+    writes: bool = False
+    #: The act that this run parked (``whatsapp_acts.ParkedAct``), or None.
+    parked: Any = None
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -153,14 +172,16 @@ def whatsapp_run(agent: str, *,
                  views: Callable[[str], Awaitable[Any]] | None = None,
                  org: str | None = None,
                  notify: Callable[[str], Awaitable[bool]] | None = None,
+                 writes: bool = False,
                  ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
-    value it found.
+    value it found. *writes* lets the run park one write (WAC-4).
     """
-    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify)
+    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
+                      writes=writes)
     token = _RUN.set(run)
     try:
         yield run
@@ -209,6 +230,10 @@ def _short(value: Any, limit: int, what: str) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
 
+_RESERVED_REFUSAL = ('"Confirm" and "Cancel" are Metorite\'s own buttons for a '
+                     "change, and only Metorite sends them. Use other titles")
+
+
 def _footer(data: dict[str, Any], interactive: dict[str, Any]) -> None:
     footer = _text(data, "footer", limit=FOOTER_MAX, required=False)
     if footer:
@@ -221,6 +246,8 @@ def _buttons(data: dict[str, Any]) -> OutMessage:
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_BUTTONS:
         raise _Refused(f'"buttons" must be a list of 1 to {MAX_BUTTONS} titles')
     titles = [_short(t, BUTTON_TITLE_MAX, "button") for t in raw]
+    if any(_reserved(t) for t in titles):
+        raise _Refused(_RESERVED_REFUSAL)
     if len({t.casefold() for t in titles}) != len(titles):
         raise _Refused("two buttons have the same title")
     interactive: dict[str, Any] = {
@@ -279,6 +306,8 @@ def _list(data: dict[str, Any]) -> OutMessage:
                 raise _Refused('each row must be {"title", "description"}')
             count += 1
             title = _unique(_short(row.get("title"), ROW_TITLE_MAX, "row"), seen)
+            if _reserved(title):
+                raise _Refused(_RESERVED_REFUSAL)
             seen.add(title.casefold())
             item: dict[str, Any] = {"id": f"r{count}", "title": title}
             desc = row.get("description")
@@ -366,11 +395,102 @@ def _list_of(data: dict[str, Any], key: str, *, required: bool = True) -> list[A
     return value
 
 
+#: The chart kinds the old SVG renderer draws: the fallback when the engine is
+#: off or cannot draw (WAC-10f).
+_OLD_KINDS = ("bar", "line", "progress", "donut")
+
+
+def _join(values: Any) -> str:
+    return ", ".join(map(str, values or []))
+
+
+def _chart_rendition(kind: str, title: str, data: dict[str, Any]) -> str:
+    """The thread's text of a chart: its kind, its title and its numbers.
+
+    It never raises: an odd shape gives the head alone. The thread keeps it,
+    so the next turn knows what the image showed (``thread_record``).
+    """
+    head = f"[Chart, {kind}: {title}]"
+    try:
+        series = data.get("series")
+        if isinstance(series, list) and kind in ("bar", "line", "area", "radar"):
+            axis = data.get("axes") if kind == "radar" else data.get("labels")
+            return f"{head} {_join(axis)}\n" + "\n".join(
+                f"{s.get('name')}: {_join(s.get('values'))}" for s in series if isinstance(s, dict))
+        if kind in ("bar", "line", "funnel", "donut", "progress"):
+            return head + " " + ", ".join(
+                f"{lab}: {val}" for lab, val in zip(data.get("labels") or [], data.get("values") or [],
+                                                    strict=False))
+        if kind == "waterfall":
+            return head + " " + ", ".join(
+                f"{s.get('label')}: {'total' if s.get('total') else s.get('value')}"
+                for s in data.get("steps") or [] if isinstance(s, dict))
+        if kind == "heatmap":
+            return f"{head} {_join(data.get('x'))}\n" + "\n".join(
+                f"{y}: {_join(r)}" for y, r in zip(data.get("y") or [], data.get("values") or [],
+                                                   strict=False))
+        if kind in ("scatter", "box"):
+            key = "points" if kind == "scatter" else "values"
+            return head + " " + "; ".join(
+                f"{g.get('name')}: {len(g.get(key) or [])} {key}"
+                for g in data.get("groups") or [] if isinstance(g, dict))
+        if kind == "calendar":
+            days = data.get("days") or []
+            return f"{head} {len(days)} days, total {sum(float(d[1]) for d in days):g}"
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+    return head
+
+
+def _engine_png(spec: dict[str, Any]) -> bytes | None:
+    """The chart from the chart engine (WAC-10f), or None to fall back.
+
+    A bad spec raises ``RenderError`` with the engine's reason, so the model
+    can fix the data. An engine that cannot draw (off, missing, broken) falls
+    back to the old renderer, and never costs the member the chart.
+    """
+    if not engine.enabled():
+        return None
+    try:
+        return engine.render_png(_with_hues(spec))
+    except engine.EngineUnavailable:
+        return None
+
+
+def _with_hues(spec: dict[str, Any]) -> dict[str, Any]:
+    """The spec with each status word as one of the six hue names.
+
+    The engine knows the hue NAMES only. The rule from a word ("On hold",
+    "Shipped") to a hue is ``statusAccent.ts``'s, which ``cards.hue``
+    mirrors under its own fence, so a chart and a card never disagree
+    (review, 2026-10-11).
+    """
+    out = dict(spec)
+    if isinstance(spec.get("tones"), list):
+        out["tones"] = [cards.hue(t) for t in spec["tones"]]
+    if isinstance(spec.get("rows"), list):
+        out["rows"] = [{**r, "status": cards.hue(r["status"])}
+                       if isinstance(r, dict) and r.get("status") is not None else r
+                       for r in spec["rows"]]
+    return out
+
+
 def _chart(data: dict[str, Any]) -> OutMessage:
-    kind = data.get("type") or "bar"
+    kind = str(data.get("type") or "bar").strip().lower()
     title = _text(data, "title", limit=80)
-    subtitle = _text(data, "subtitle", limit=120, required=False) or None
     caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+    png = _engine_png({**data, "type": kind})
+    if png is None and kind not in _OLD_KINDS:
+        raise _Refused(f'chart "type" must be one of: {", ".join(_OLD_KINDS)}')
+    if png is None:
+        png = render.to_png(_old_chart_svg(kind, title, data))
+    rendition = _chart_rendition(kind, title, data) + (f"\n{caption}" if caption else "")
+    return OutMessage("image", rendition, png=png, caption=caption or None)
+
+
+def _old_chart_svg(kind: str, title: str, data: dict[str, Any]) -> str:
+    """The old SVG renderer's chart: bar, line, progress or donut."""
+    subtitle = _text(data, "subtitle", limit=120, required=False) or None
     labels = [str(x) for x in (_list_of(data, "labels") or [])]
     values = _list_of(data, "values") or []
     unit = data.get("unit") if isinstance(data.get("unit"), str) else ""
@@ -381,14 +501,10 @@ def _chart(data: dict[str, Any]) -> OutMessage:
     elif kind == "progress":
         svg = render.progress_svg(title, labels, values, subtitle=subtitle,
                                   totals=_list_of(data, "totals", required=False))
-    elif kind == "donut":
+    else:
         svg = cards.donut_svg(title, labels, values, subtitle=subtitle,
                               tones=_list_of(data, "tones", required=False))
-    else:
-        raise _Refused('chart "type" must be "bar", "line", "progress" or "donut"')
-    pairs = ", ".join(f"{lab}: {val}" for lab, val in zip(labels, values, strict=True))
-    rendition = f"[Chart, {kind}: {title}] {pairs}" + (f"\n{caption}" if caption else "")
-    return OutMessage("image", rendition, png=render.to_png(svg), caption=caption or None)
+    return svg
 
 
 def _table(data: dict[str, Any]) -> OutMessage:
@@ -458,11 +574,17 @@ def _gantt(data: dict[str, Any]) -> OutMessage:
     title, subtitle = _head(data)
     rows = _list_of(data, "rows") or []
     today = data.get("today") if isinstance(data.get("today"), str) else None
-    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
     lines = [f"{r.get('label')}: {r.get('start')} to {r.get('end', r.get('start'))}"
              + (f", {r.get('progress')}%" if r.get("progress") is not None else "")
              for r in rows]
-    return _image(data, svg, f"[Schedule: {title}]\n" + "\n".join(lines))
+    rendition = f"[Schedule: {title}]\n" + "\n".join(lines)
+    png = _engine_png({**data, "type": "gantt"})  # the chart language (WAC-10f)
+    if png is not None:
+        caption = _text(data, "caption", limit=CAPTION_MAX, required=False)
+        return OutMessage("image", rendition + (f"\n{caption}" if caption else ""),
+                          png=png, caption=caption or None)
+    svg = cards.gantt_svg(title, rows, subtitle=subtitle, today=today)
+    return _image(data, svg, rendition)
 
 
 #: A family or a flag sequence is longer than one code point, and no emoji
@@ -559,6 +681,9 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - a short choice or the next question -> "buttons"
     - 2 to 8 headline numbers -> "stats"; a breakdown -> "chart" donut
     - numbers per item -> "chart" bar; a trend -> line; done/total -> progress
+    - a mix over time -> area; stages -> funnel; a running total -> waterfall;
+      spread -> box; x against y -> scatter; when -> heatmap or calendar;
+      many axes -> radar
     - work by status -> "board"; dates and milestones -> "timeline"
     - one day of the calendar -> "agenda"; a project schedule -> "gantt"
     - rows with 3+ columns -> "table"; anything else rich -> "link"
@@ -568,8 +693,14 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     - list: {"body", "button": "View tasks", "rows": [{"title" (24),
       "description" (72)}] x 1-10} or "sections": [{"title", "rows"}]
     - link: {"body", "label", "url": "https://app.metorite.com/<page>"}
-    - chart: {"type": "bar"|"line"|"progress"|"donut", "labels", "values",
-      "unit", "totals" (progress), "tones" (donut)}
+    - chart: {"type", ...}. bar, line, funnel, donut: "labels", "values"
+      (bar and line: or "series": [{"name", "values"}]), "unit", "tones".
+      area: "labels", "series". progress: "labels", "values" (done),
+      "totals". scatter: "groups": [{"name", "points": [[x, y]]}].
+      heatmap: "x", "y", "values" (a row of numbers per y). radar: "axes",
+      "series", "max". box: "groups": [{"name", "values"}]. waterfall:
+      "steps": [{"label", "value"} or {"label", "total": true}]. calendar:
+      "days": [["2026-10-01", 3]]
     - table: {"columns" (6), "rows": [[cell]] (20)}
     - stats: {"tiles": [{"label", "value", "delta", "good": "up"|"down",
       "hint", "tone"}] x 1-8}
@@ -596,7 +727,8 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     blue, violet, gray).
 
     A tap on a button or a row comes back as the member's next message. They
-    change no data. Do not repeat in your text what the element shows. At
+    change no data. "Confirm" and "Cancel" are Metorite's own titles, so
+    your buttons and rows never use them. Do not repeat in your text what the element shows. At
     most 3 elements in one reply. Returns {"ok": true}, or {"ok": false,
     "error"}: fix it and call again.
     """

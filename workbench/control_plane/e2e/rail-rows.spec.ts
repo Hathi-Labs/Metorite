@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { LONG_NAME, NO_COUNT_NAME, RAIL_TREE, SHORT_NAME } from "./rail-rows-fixture";
 import { SAFE_EMPTY } from "./visual/harness";
+import { openAllRows } from "./railOpen";
 
 /**
  * The rail row, in a real browser (owner, 2026-10-10).
@@ -26,6 +27,8 @@ async function openProjects(page: Page) {
   await page.route("**/api/projects/tree", (route) => route.fulfill({ json: RAIL_TREE }));
   await page.goto("/projects");
   await expect(page.getByText("Company Operations").first()).toBeVisible({ timeout: 20_000 });
+  // The rail starts closed (treeFold.ts). These specs measure open rows.
+  await openAllRows(page);
 }
 
 /** The visible row whose label is exactly `name`. */
@@ -288,6 +291,7 @@ test.describe("the phone drawer", () => {
       window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail: "projects-tree" })),
     );
     await expect(page.getByText("Company Operations").first()).toBeVisible({ timeout: 20_000 });
+    await openAllRows(page);
   }
 
   test("a row that opens shows its glyph AND its chevron", async ({ page }) => {

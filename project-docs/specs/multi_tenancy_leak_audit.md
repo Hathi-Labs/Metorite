@@ -493,6 +493,10 @@ Checked against the live database:
 `crm_*.organization_id` points at **`crm_organizations`** — the *customer company* on a deal —
 not at the tenant root (`infra/postgres/144_crm.sql:74,197,289`). The CRM is **not** tenant-scoped.
 
+**2026-10-11 (WS-53 CRM-T1):** CRM-T1 closes consequence 4. The company column is now
+`company_id` (D95.2), and migration 241 (`infra/postgres/241_crm_tenancy.sql`) gives
+all 13 `crm_*` tables the tenant `organization_id` with FORCE RLS.
+
 Consequences:
 
 1. `multi_tenancy.md` §1's table should read **3 scoped / 140 unscoped** at the moment it was

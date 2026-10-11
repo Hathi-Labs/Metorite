@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openAllRows } from "./railOpen";
 
 /**
  * The timeline scrolls itself while you drag near its edge.
@@ -137,6 +138,8 @@ async function openTimeline(
 
   await page.goto("/projects");
   await page.waitForTimeout(3500);
+  // The rail starts closed (treeFold.ts): open it like a member does.
+  await openAllRows(page);
   await page.getByText("Bootloader").first().click();
   await page.waitForTimeout(2500);
   await page.getByRole("button", { name: "Timeline" }).first().click();

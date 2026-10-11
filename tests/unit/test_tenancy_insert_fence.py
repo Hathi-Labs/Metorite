@@ -185,9 +185,12 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     ("133_workflows_publish_permission.sql", "org_role_permission"): (3, "SEED"),
     ("138_groups_and_session_participants.sql", "chat_session_participant"): (2, "SEED"),
     ("139_room_authorship_and_agents.sql", "chat_session_agent"): (1, "SEED"),
-    ("144_crm.sql", "crm_deal_statuses"): (1, "SEED"),
-    ("144_crm.sql", "crm_lead_statuses"): (1, "SEED"),
-    ("144_crm.sql", "crm_lost_reasons"): (1, "SEED"),
+    # WS-53 CRM-T1: each 144 seed now runs only on a table with no
+    # `organization_id` column (`pg_attribute`), which is a fresh install
+    # before migration 241. The counted INSERT is that no-column arm.
+    ("144_crm.sql", "crm_deal_statuses"): (1, "GUARDED"),
+    ("144_crm.sql", "crm_lead_statuses"): (1, "GUARDED"),
+    ("144_crm.sql", "crm_lost_reasons"): (1, "GUARDED"),
     ("156_projects_tags.sql", "pm_tags"): (1, "SEED"),
     ("178_billing_purchase_permission.sql", "org_role_permission"): (2, "SEED"),
     ("179_org_provisioning.sql", "org_role_permission"): (1, "SUPERSEDED by 200"),
@@ -281,11 +284,12 @@ class TestTheFenceCanActuallyFail:
         # 143 until 2026-09-23. Migration 217 (WS-39 S8) dropped six `gtd_*`
         # tables, and the phase files lost them in the same PR.
         assert len(tables) >= 130
-        # The two that H-104 actually broke, and the one the homonym rule keeps
-        # OUT (its `organization_id` is the customer company, not the tenant).
+        # The two that H-104 actually broke. And `crm_contacts`, which the
+        # homonym rule kept OUT until WS-53 CRM-T1 renamed its company column
+        # to `company_id` (2026-10-11). The phases scope it now.
         assert "org_role_permission" in tables
         assert "user_role" in tables
-        assert "crm_contacts" not in tables
+        assert "crm_contacts" in tables
 
     def test_it_finds_the_omissions_that_are_really_there(self):
         found = omissions()

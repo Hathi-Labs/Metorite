@@ -417,9 +417,9 @@ async def test_the_acquired_zoho_id_is_committed_before_anything_else_runs(
     await crm_sync.run_cycle()
 
     kinds = [
-        "stamp" if s.startswith("UPDATE crm_organizations SET") else "commit"
+        "stamp" if s.startswith("UPDATE crm_companies SET") else "commit"
         for s in db.statements
-        if s.startswith("UPDATE crm_organizations SET") or s == "COMMIT"
+        if s.startswith("UPDATE crm_companies SET") or s == "COMMIT"
     ]
     # The fake records commits as a counter, not a statement, so assert the
     # weaker-but-real property: two creates, two stamps, and at least one
@@ -436,13 +436,13 @@ async def test_a_push_that_succeeds_but_cannot_be_stamped_is_loud(
     local stamp failed. It must be an ERROR in the report, not a silent
     success — a human has to reconcile it."""
     db.seed(ORGANIZATIONS.table, name="One", zoho_dirty=True)
-    db.fail_on("UPDATE crm_organizations SET", times=1)
+    db.fail_on("UPDATE crm_companies SET", times=1)
 
     report = await crm_sync.run_cycle()
 
     assert len(writer.creates) == 1
     assert report.pushed.created == 0
-    assert any("crm_organizations" in e for e in report.pushed.errors)
+    assert any("crm_companies" in e for e in report.pushed.errors)
 
 
 # ── Retry, backoff and giving up ───────────────────────────────────────────
@@ -483,7 +483,7 @@ async def test_a_row_inside_its_backoff_window_is_not_offered(
     assert writer.pushes == 0
     [statement] = [
         s for s in db.statements
-        if s.startswith("SELECT * FROM crm_organizations WHERE zoho_dirty")
+        if s.startswith("SELECT * FROM crm_companies WHERE zoho_dirty")
     ]
     assert "coalesce(zoho_next_attempt_at, :epoch) <= :now" in statement
 
@@ -710,7 +710,7 @@ async def test_a_deal_push_carries_its_stage_name_not_its_status_uuid(
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed(
         DEALS.table, name="10 printers", amount=450000,
-        status_id=deal_status.id, organization_id=org.id, zoho_dirty=True,
+        status_id=deal_status.id, company_id=org.id, zoho_dirty=True,
     )
     await crm_sync.run_cycle()
 
@@ -780,7 +780,7 @@ async def test_a_driver_level_statement_error_does_not_take_the_cycle_with_it(
     going, the savepoint takes the hit, the cursor is still written, and the
     cycle still commits.
     """
-    db.fail_on("INSERT INTO crm_organizations")
+    db.fail_on("INSERT INTO crm_companies")
     zoho.data["Accounts"] = [
         {"id": "z-bad", "Account_Name": "Boom",
          "Modified_Time": "2026-08-01T00:00:00+00:00"},
@@ -853,7 +853,7 @@ async def test_the_cursor_upsert_is_keyed_on_the_module(
 
     inserts = db.statements_touching("INSERT INTO crm_sync_cursors")
     assert inserts
-    assert "ON CONFLICT (module) DO UPDATE SET" in inserts[0]
+    assert "ON CONFLICT (organization_id, module) DO UPDATE SET" in inserts[0]
 
 
 async def test_the_deleted_records_read_uses_the_PRE_cycle_cursor(
@@ -1162,7 +1162,7 @@ async def test_a_conflict_where_zoho_is_newer_applies_the_pull(
     # measuring the mirror's gap, not the engine.
     [(statement, params)] = [
         (s, p) for s, p in db.calls
-        if s.startswith("INSERT INTO crm_organizations (")
+        if s.startswith("INSERT INTO crm_companies (")
     ]
     assert params["name"] == "Zoho name"
     assert params["zoho_dirty"] is False
@@ -1289,7 +1289,7 @@ async def test_a_pull_never_rewrites_the_source_provenance(
 
     await crm_sync.run_cycle()
 
-    [statement] = db.statements_touching("INSERT INTO crm_organizations (")
+    [statement] = db.statements_touching("INSERT INTO crm_companies (")
     arm = statement.split("DO UPDATE SET", 1)[1]
     assert "source = EXCLUDED.source" not in arm
     assert "zoho_id = EXCLUDED.zoho_id" not in arm
@@ -1511,7 +1511,7 @@ def test_the_dirty_flag_is_set_at_the_one_write_choke_point() -> None:
     Reusing it means the pull's ``touch=False`` and "do not push this back"
     are ONE switch that cannot disagree, and a route added tomorrow inherits
     both without remembering either."""
-    tracked = "crm_organizations"
+    tracked = "crm_companies"
     assert crm_core.mark_dirty_on_update(
         tracked, {"name": "x"}, touch=True,
     ) == {"name": "x", "zoho_dirty": True}
@@ -1567,7 +1567,7 @@ async def test_a_native_delete_writes_a_tombstone_inside_the_transaction(
     ]
     deletes = [
         i for i, s in enumerate(db.statements)
-        if s.startswith("DELETE FROM crm_organizations")
+        if s.startswith("DELETE FROM crm_companies")
     ]
     assert inserts[0] < deletes[0]
     assert db.committed == 1
@@ -1654,7 +1654,7 @@ async def test_a_native_note_pushes_as_a_zoho_note(
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed(
         "crm_activities", type="note", subject="Called", body="Wants a quote",
-        organization_id=org.id, created_by="vjvarada@fracktal.in", zoho_id=None,
+        company_id=org.id, created_by="vjvarada@fracktal.in", zoho_id=None,
     )
     report = await crm_sync.run_cycle()
 
@@ -1676,9 +1676,9 @@ async def test_a_status_change_activity_is_never_pushed(
     the PREDICATE, so a new push path cannot reach them by another route."""
     org = db.seed(ORGANIZATIONS.table, name="Fracktal", zoho_id="z-acc-1")
     db.seed("crm_activities", type="status_change", subject="New → Won",
-            organization_id=org.id, created_by="platform", zoho_id=None)
+            company_id=org.id, created_by="platform", zoho_id=None)
     db.seed("crm_activities", type="system", subject="Imported",
-            organization_id=org.id, created_by="platform", zoho_id=None)
+            company_id=org.id, created_by="platform", zoho_id=None)
 
     report = await crm_sync.run_cycle()
 
@@ -1696,7 +1696,7 @@ async def test_an_activity_whose_parent_has_no_zoho_id_yet_waits(
     given the parent an id."""
     org = db.seed(ORGANIZATIONS.table, name="Fracktal")
     db.seed("crm_activities", type="note", subject="Called",
-            organization_id=org.id, created_by="a@b.in", zoho_id=None)
+            company_id=org.id, created_by="a@b.in", zoho_id=None)
 
     report = await crm_sync.run_cycle()
 

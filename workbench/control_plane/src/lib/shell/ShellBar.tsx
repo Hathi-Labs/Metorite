@@ -118,6 +118,9 @@ export function ShellFrame({
 
   const pathname = usePathname() ?? "/";
   const { access, loading } = useAccess();
+  // ⚠️ EVERY held pane, never the pins. The sidebar shows only the pinned
+  // apps, so the command bar is how a member opens the rest (owner,
+  // 2026-10-11). Fence: `registry.test.ts`.
   const panes = useMemo(
     () => heldPanes(visibleSections(loading ? null : access.features, access.is_admin)),
     [loading, access.features, access.is_admin],

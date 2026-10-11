@@ -116,7 +116,7 @@ async def test_a_holder_with_no_mailbox_sees_no_email(db: FakeCrmDB) -> None:
         (LEADS, lead),
         (CONTACTS, db.seed("crm_contacts", first_name="Buyer",
                            email="buyer@acme.example")),
-        (ORGANIZATIONS, db.seed("crm_organizations", name="Acme",
+        (ORGANIZATIONS, db.seed("crm_companies", name="Acme",
                                 email="buyer@acme.example")),
         (DEALS, db.seed("crm_deals", name="Acme deal", lead_id=lead.id)),
     ):
@@ -326,7 +326,7 @@ async def test_the_same_thread_in_two_accounts_is_two_entries(
     [
         (LEADS, "crm_leads", {"lead_name": "Acme"}),
         (CONTACTS, "crm_contacts", {"first_name": "Buyer"}),
-        (ORGANIZATIONS, "crm_organizations", {"name": "Acme"}),
+        (ORGANIZATIONS, "crm_companies", {"name": "Acme"}),
     ],
 )
 async def test_records_with_an_email_column_join_by_it(
@@ -680,7 +680,7 @@ def _record_reaching(db: FakeCrmDB, table: str) -> Any:
     columns = {
         "crm_leads": {"lead_name": "A"},
         "crm_contacts": {"first_name": "A"},
-        "crm_organizations": {"name": "A"},
+        "crm_companies": {"name": "A"},
     }[table]
     return db.seed(table, email="buyer@acme.example", **columns)
 
@@ -691,7 +691,7 @@ def _record_reaching(db: FakeCrmDB, table: str) -> Any:
         (crm_activities.lead_timeline, "crm_leads"),
         (crm_activities.deal_timeline, "crm_deals"),
         (crm_activities.contact_timeline, "crm_contacts"),
-        (crm_activities.organization_timeline, "crm_organizations"),
+        (crm_activities.organization_timeline, "crm_companies"),
     ],
 )
 async def test_every_timeline_route_passes_the_caller_through(

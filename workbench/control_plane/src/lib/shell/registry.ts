@@ -6,8 +6,13 @@
  *
  *   • **Do** — jobs, such as "New task" or "Write an email". A job is a link
  *     that opens its form (`?do=<id>`, `doJob.ts`), so it works from any page.
- *   • **Go to** — the apps this member holds, from the same `visibleSections`
- *     the sidebar draws. The bar never offers an app the sidebar hides.
+ *   • **Go to** — EVERY app this member holds, from `visibleSections`, the
+ *     same input the sidebar reads. It is NOT the sidebar's list. The sidebar
+ *     shows only the apps a member pins, so the bar is the one door to an
+ *     app the member did not pin (owner, 2026-10-11). Never build this group
+ *     from the pins, from `shellSidebar` or from `pinnedPanes`. A preview
+ *     pane, or a pane the member lacks, is not in `visibleSections`, so the
+ *     bar never offers it.
  *
  * Everything here is pure, so the ranking rules are assertions, not clicks.
  * Fence: `registry.test.ts`.
@@ -181,9 +186,21 @@ export interface BarItem {
   words: readonly string[];
 }
 
-/** The panes this member holds, flattened from the sidebar's own sections. */
+/** A Center's landing page. D49 keeps the route, and nothing links to it. */
+const CENTER_ROUTE = "/centers/";
+
+/**
+ * Every pane this member holds, from ALL of `visibleSections`, never from the
+ * pins. The bar offers each one as "Open <App>".
+ *
+ * A Center's landing page is left out. It is in `visibleSections` only with
+ * the preview flag on, and D49 says nothing links to a Center. A setting
+ * (My Profile, Appearance) stays: the account menu opens it as a page, and
+ * two jobs belong to it. Fence: `registry.test.ts`, "every app the member
+ * holds, with nothing pinned".
+ */
 export function heldPanes(sections: readonly NavSection[]): NavPane[] {
-  return sections.flatMap((s) => s.items);
+  return sections.flatMap((s) => s.items).filter((p) => !p.href.startsWith(CENTER_ROUTE));
 }
 
 /**

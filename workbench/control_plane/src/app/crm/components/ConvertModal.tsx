@@ -7,7 +7,7 @@
  * person or the same company. The server has a rule for each — email for the
  * contact, exact name for the organization — and this modal is where a human
  * confirms or overrides it BEFORE the server guesses, which is what
- * `contact_id` / `organization_id` in the request body are for.
+ * `contact_id` / `company_id` in the request body are for.
  *
  * The pre-selection IS the server's rule, shown (lib/convert.ts), so the
  * modal reads as a confirmation rather than as a second opinion.
@@ -76,7 +76,7 @@ export default function ConvertModal({
             <h2 className="text-base font-bold text-foreground">Convert lead</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {lead.lead_name} becomes a deal, with a contact and an
-              organization behind it.
+              company behind it.
             </p>
           </div>
           <button
@@ -121,11 +121,11 @@ export default function ConvertModal({
 
           <section>
             <h3 className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-              Organization
+              Company
             </h3>
             {!lead.organization_name?.trim() ? (
               <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                This lead names no company, so no organization is created —
+                This lead names no company, so no company is created —
                 minting one named after a person is how a CRM fills with noise.
               </p>
             ) : (
@@ -172,7 +172,7 @@ export default function ConvertModal({
                     setChoice((c) => ({ ...c, organization: { kind: "new" } }))
                   }
                   title={`Create “${lead.organization_name}”`}
-                  note="A new organization from this lead's company fields"
+                  note="A new company from this lead's company fields"
                 />
               </>
             )}

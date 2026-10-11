@@ -1049,6 +1049,21 @@ class Settings(BaseSettings):
     # typing indicator. OFF, the run is the WAC-3 run. Default OFF. Fence:
     # tests/unit/test_wac_native_ui.py.
     whatsapp_assistant_native_ui: bool = False
+    # WAC-10f (spec §13.8): WhatsApp charts drawn by the web app's chart
+    # engine (`src/lib/charts/render.mjs`, run as a child process), in the
+    # product's one chart language. OFF, the old SVG renderer draws the four
+    # old kinds. Default OFF. `whatsapp_chart_node` names the Node binary.
+    # Fence: tests/unit/test_wac_chart_engine.py.
+    whatsapp_chart_engine: bool = False
+    whatsapp_chart_node: str = "node"
+    # WAC-4 (spec §14): a confirmed write from WhatsApp. ON, with the profile
+    # above also ON, `create_task` parks its act in an org of
+    # `whatsapp_assistant_writes_orgs`, and the member's Confirm runs it. OFF,
+    # or an org off the list, every card stays refused. Default OFF, and an
+    # empty list allows no org. Turning it on for an org is the owner's act
+    # (WAC-9). Fence: tests/unit/test_wac_writes.py.
+    whatsapp_assistant_writes: bool = False
+    whatsapp_assistant_writes_orgs: str = ""
 
     # ── Token accessors ────────────────────────────────────────────────────
 

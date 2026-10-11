@@ -58,7 +58,7 @@ const FORMS: Record<EntitySlug, { title: string; fields: FieldDef[] }> = {
     ],
   },
   organizations: {
-    title: "New organization",
+    title: "New company",
     fields: [
       { key: "name", label: "Name", required: true },
       { key: "website", label: "Website" },

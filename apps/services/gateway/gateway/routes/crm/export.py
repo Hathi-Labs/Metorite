@@ -124,7 +124,7 @@ MAX_EXPORT_ROWS = 10_000
 COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "deals": (
         ("name", "Deal"),
-        ("organization_name", "Organization"),
+        ("organization_name", "Company"),
         ("amount", "Amount"),
         ("expected_close_date", "Closing"),
         ("owner_email", "Owner"),
@@ -144,7 +144,7 @@ COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("owner_email", "Owner"),
     ),
     "organizations": (
-        ("name", "Organization"),
+        ("name", "Company"),
         ("industry", "Industry"),
         ("phone", "Phone"),
         ("owner_email", "Owner"),
@@ -271,7 +271,7 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         rows = (await db.execute(
             # The same `project_joined` wrapper `core.run_list` uses, so a deal
             # carries its organization's name here exactly as it does on the
-            # board. Without it the Organization column would be empty on every
+            # board. Without it the Company column would be empty on every
             # row, which reads as missing data rather than a missing join.
             text(project_joined(entity, inner, qualify(query.order_by, "base"))),
             # ⚠️ **cap + 1, and the check below is what makes it a refusal.**

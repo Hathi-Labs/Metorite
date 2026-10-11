@@ -245,8 +245,9 @@ async def test_another_key_still_works_on_each_route(box) -> None:
     )
     out = await integrations.configure_integrations(req, user=_executive())
     assert out["written"] == [OTHER_KEY]
-    assert os.environ[OTHER_KEY] == "configured"
-    assert f"{OTHER_KEY}=configured" in box.env_file.read_text(encoding="utf-8")
+    # WS-54 IN-0: the store only, and the env stays as it was.
+    assert os.environ[OTHER_KEY] == "before"
+    assert box.env_file.read_text(encoding="utf-8") == box.file_before
     assert box.store.puts[-1] == ("apollo:api_key", "configured")
 
     put = integrations.IntegrationKeyRequest(
@@ -254,14 +255,15 @@ async def test_another_key_still_works_on_each_route(box) -> None:
     )
     out = await integrations.put_integration_key(put, user=_executive())
     assert out["ok"] is True and out["env_var"] == OTHER_KEY
-    assert os.environ[OTHER_KEY] == "put"
-    assert f"{OTHER_KEY}=put" in box.env_file.read_text(encoding="utf-8")
+    assert os.environ[OTHER_KEY] == "before"
+    assert box.env_file.read_text(encoding="utf-8") == box.file_before
+    assert box.store.puts[-1] == ("apollo:api_key", "put")
 
     gone = integrations.IntegrationKeyDelete(service="apollo", key_name="api_key")
     out = await integrations.delete_integration_key(gone, user=_executive())
     assert out["deleted"] is True
     assert box.store.deletes == ["apollo:api_key"]
-    assert OTHER_KEY not in os.environ
+    assert os.environ[OTHER_KEY] == "before"  # IN-0: the row goes, the env stays
 
     # The mail apps of the box are unchanged through all three writes.
     for name in MAIL_KEYS:

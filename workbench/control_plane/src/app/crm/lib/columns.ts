@@ -50,7 +50,7 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
       sort: "name",
       className: "font-medium text-foreground",
     },
-    { key: "organization_name", label: "Organization" },
+    { key: "organization_name", label: "Company" },
     { key: "amount", label: "Amount", sort: "amount" },
     {
       key: "expected_close_date",
@@ -93,7 +93,7 @@ export const COLUMNS: Record<EntitySlug, CrmColumn[]> = {
   organizations: [
     {
       key: "name",
-      label: "Organization",
+      label: "Company",
       sort: "name",
       className: "font-medium text-foreground",
     },

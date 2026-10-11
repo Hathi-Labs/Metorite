@@ -13,7 +13,12 @@ these files, because that subtree forbids external asset fetches
 | `metorite-logo.svg` | Primary vector. Faithful navy→purple gradient — for **light** surfaces. |
 | `metorite-logo-dark.svg` | Same shape, gradient floor lifted so the base stays legible on **dark** surfaces (≈`#0b1020`). |
 | `metorite-logo.png` | Transparent raster master (918×933). All white knocked out — the "M" and streak-gaps are see-through, edges de-fringed. Source for socials/exports. |
-| `favicon.svg` | Rounded dark tile + comet, for browser tabs / app icons. |
+| `favicon.svg` | Rounded dark tile + comet. The app does not use it: its tab icon is the transparent comet. |
+| `make_icons.py` | Makes the app's tab, home-screen and dot icons from `metorite-logo.png`. Run `uv run --with pillow python brand/make_icons.py`. Its docstring lists each output. |
+
+The app's vector tab icon is `workbench/control_plane/src/app/icon.svg`. It is
+`metorite-logo.svg` on a square canvas, and it switches to the `-dark` stops
+when the browser frame is dark (`prefers-color-scheme`).
 
 The mark is a **knockout**: the "M" and the gaps between the motion streaks are
 holes (`fill-rule="evenodd"`), so they show whatever is behind them. It reads on
