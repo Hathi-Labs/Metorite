@@ -405,7 +405,10 @@ def map_record(
 
     values["custom"] = custom_fields(entity, fields)
     values["ext_modified_at"] = instant(fields.get("Modified_Time")) or modified_at
-    values["source"] = "import"
+    if entity not in _ACTIVITY_TYPES:
+        # ``crm_activities`` has no ``source`` column. The four others do, and
+        # the CHECK allows ``import``.
+        values["source"] = "import"
     return Mapped(
         entity=entity,
         table=table,
