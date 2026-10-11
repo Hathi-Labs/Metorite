@@ -2061,10 +2061,16 @@ def _apply_agent_md_overrides(
         _repo_mcp = load_repo_mcp_servers(agent_dir)
     except Exception:
         _repo_mcp = {}
+    # D85 (WS-8c review round 2): a stdio server starts a process on the
+    # host, so a repo's stdio entry is dropped here too.
+    for _name in [n for n, c in _repo_mcp.items()
+                  if isinstance(c, dict) and (c.get("type") == "stdio" or c.get("command"))]:
+        _log.warning("mcp.stdio_refused", name=_name, source="repo")
+        _repo_mcp.pop(_name, None)
     if _repo_mcp:
         from orchestrator._tool_injection import merge_mcp_servers
         for _ag in agents:
-            # override=False: the DB registry runs later and outranks the repo.
+            # override=False: nothing from the registry reaches Copilot now.
             merge_mcp_servers(_ag, _repo_mcp, override=False)
         _log.info(
             "executor.agent_md_repo_mcp_applied",
@@ -5822,8 +5828,6 @@ async def run_agent_stream(
         # whatever way it ends. Read from the run's own context, so before
         # that context is reset. A no-op when no sandbox ran.
         await _end_sandbox_run()
-        # WS-8c: close each MCP session this run opened. Never raises.
-        await _close_mcp_tools(_mcp_opened)
         _stream_relay_thread_id.reset(_relay_token)
         _active_run_model.reset(_model_token)
         # H-201: the run's workspace, tenant key and session end with it.
@@ -5873,6 +5877,12 @@ async def run_agent_stream(
                 await _relay_unregister_live(
                     thread_id, organization_id=organization_id, token=run_id,
                 )
+        # WS-8c: close each MCP session this run opened. It runs LAST, after
+        # the run is marked inactive and its org record is gone, so a slow
+        # session DELETE can never keep the run live (review round 2 of
+        # #869). The close is capped at _maf_mcp.CLOSE_TOTAL_S, and the
+        # servers close at the same time.
+        await _close_mcp_tools(_mcp_opened)
 
 
 # ---------------------------------------------------------------------------

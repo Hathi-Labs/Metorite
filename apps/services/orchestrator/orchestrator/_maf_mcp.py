@@ -52,6 +52,16 @@ ALL_ORGS = "*"
 CONNECT_BUDGET_S = 10.0
 #: Seconds for one MCP request after the connect.
 REQUEST_TIMEOUT_S = 30
+#: Seconds to close ONE tool. A close that runs past it is abandoned, and its
+#: client is closed (review round 2 of PR #869).
+CLOSE_BUDGET_S = 3.0
+#: Seconds to close EVERY tool of one run. The servers close at the same time.
+CLOSE_TOTAL_S = 5.0
+#: The most ``tools/list`` pages that one server may send in one load.
+MAX_TOOL_PAGES = 10
+#: The most tools that one server may expose. A server past it is left out,
+#: because hundreds of tools crowd the model and each one is egress.
+MAX_TOOLS = 128
 #: The longest reason that a log line carries.
 _REASON_CHARS = 80
 
@@ -144,21 +154,126 @@ def _reason(exc: BaseException) -> str:
     return leaf[:_REASON_CHARS]
 
 
-async def _close_one(tool: Any, client: Any) -> None:
-    """Close one tool and its client. Never raises."""
-    if tool is not None:
-        with contextlib.suppress(BaseException):
-            await tool.close()
+async def _aclose_client(client: Any) -> None:
+    """Close one pinned client. Never raises an ``Exception``."""
     if client is not None:
-        with contextlib.suppress(BaseException):
+        with contextlib.suppress(Exception):
             await client.aclose()
 
 
+async def _stop_owner(tool: Any) -> None:
+    """Cancel the MAF lifecycle task of *tool*, if one still runs.
+
+    MAF runs each connect and close on one task per tool. A cancel of the
+    waiter leaves that task running, so a close abandons it here, or it
+    would keep the socket and the session for ever."""
+    task = getattr(tool, "_lifecycle_owner_task", None)
+    if task is None or task.done():
+        return
+    task.cancel()
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        async with asyncio.timeout(0.5):
+            await asyncio.shield(task)
+
+
+async def _close_tool(tool: Any) -> bool:
+    """Close one tool within :data:`CLOSE_BUDGET_S`. True when it closed.
+
+    A close that runs past the budget stops the lifecycle task of MAF."""
+    if tool is None:
+        return True
+    try:
+        async with asyncio.timeout(CLOSE_BUDGET_S):
+            await tool.close()
+        return True
+    except Exception:  # a timeout or a transport fault: the caller goes on
+        await _stop_owner(tool)
+        return False
+
+
+async def _close_one(tool: Any, client: Any, *, client_first: bool = False) -> None:
+    """Close one tool and its client. Raises nothing but a cancel.
+
+    ``client_first`` is the failure path (review round 2 of PR #869). When a
+    connect runs past its budget, MAF cancels only the waiter, and its
+    lifecycle task goes on with the connect. ``tool.close()`` waits behind
+    that connect. Closing the client first makes the connect fail at once.
+    At the end of a run the tool closes first, so the server gets its
+    session DELETE, and then the client closes.
+
+    It suppresses ``Exception`` only, never ``BaseException``: a Stop is a
+    ``CancelledError``, and the run must see it (review round 2).
+    """
+    if client_first:
+        await _aclose_client(client)
+        await _stop_owner(tool)
+        await _close_tool(tool)
+        return
+    await _close_tool(tool)
+    await _aclose_client(client)
+
+
 async def close_mcp_tools(opened: Opened) -> None:
-    """Close each tool and client of *opened*, and empty it. Never raises."""
-    while opened:
-        tool, client = opened.pop()
-        await _close_one(tool, client)
+    """Close each tool and client of *opened*, and empty it.
+
+    The servers close at the same time, under one cap of
+    :data:`CLOSE_TOTAL_S`. A slow session DELETE cannot hold the end of the
+    run (review round 2 of PR #869). Each client closes in the end, also when
+    the cap fires. Raises nothing but a cancel."""
+    pairs = list(opened)
+    opened.clear()
+    if not pairs:
+        return
+    try:
+        async with asyncio.timeout(CLOSE_TOTAL_S):
+            await asyncio.gather(
+                *(_close_one(tool, client) for tool, client in pairs),
+                return_exceptions=True,
+            )
+    except TimeoutError:
+        _log.warning("mcp.close_timeout", servers=len(pairs))
+    finally:
+        # Each client closes, also when the cap fired. A client close sends
+        # nothing, so one more second is enough, and it is capped too.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(1.0):
+                for _tool, client in pairs:
+                    await _aclose_client(client)
+
+
+class McpListTooLong(Exception):
+    """A server sent more ``tools/list`` pages or tools than the caps allow."""
+
+
+def _cap_list_tools(session: Any) -> None:
+    """Cap the ``tools/list`` paging of ONE MCP session.
+
+    MAF follows ``nextCursor`` with no end, so a server that always sends a
+    cursor holds the connect for ever (review round 2 of PR #869). A load
+    starts at the page with no cursor. Past :data:`MAX_TOOL_PAGES` pages or
+    :data:`MAX_TOOLS` tools, it raises :class:`McpListTooLong`, the connect
+    fails, and the server is left out."""
+    real = getattr(session, "list_tools", None)
+    if real is None or getattr(real, "__ws8c_capped__", False):
+        return
+    count = {"pages": 0, "tools": 0}
+
+    async def _capped(*args: Any, **kwargs: Any) -> Any:
+        params = kwargs.get("params", args[0] if args else None)
+        if getattr(params, "cursor", None) is None:
+            count["pages"] = count["tools"] = 0
+        count["pages"] += 1
+        if count["pages"] > MAX_TOOL_PAGES:
+            raise McpListTooLong("pages")
+        result = await real(*args, **kwargs)
+        count["tools"] += len(getattr(result, "tools", None) or [])
+        if count["tools"] > MAX_TOOLS:
+            raise McpListTooLong("tools")
+        return result
+
+    _capped.__ws8c_capped__ = True  # type: ignore[attr-defined]
+    with contextlib.suppress(AttributeError, TypeError):
+        session.list_tools = _capped
 
 
 @functools.lru_cache(maxsize=1)
@@ -176,21 +291,35 @@ def _run_scoped_tool_class() -> type:
       the tool stays with no function, so the run goes on without it;
     * ``__aexit__`` does nothing. The run closes the tool in its ``finally``
       (:func:`close_mcp_tools`).
+
+    Each session it opens gets the ``tools/list`` caps (:func:`_cap_list_tools`).
     """
     from agent_framework import MCPStreamableHTTPTool
 
     class RunScopedMCPTool(MCPStreamableHTTPTool):
+        @property  # type: ignore[override]
+        def session(self) -> Any:
+            return self.__dict__.get("_ws8c_session")
+
+        @session.setter
+        def session(self, value: Any) -> None:
+            if value is not None:
+                _cap_list_tools(value)
+            self.__dict__["_ws8c_session"] = value
+
         async def __aenter__(self) -> Any:
             if self.is_connected:
                 return self
             try:
                 async with asyncio.timeout(CONNECT_BUDGET_S):
                     await self.connect()
+            except asyncio.CancelledError:
+                await _close_one(self, self._httpx_client, client_first=True)
+                raise
             except Exception as exc:
                 _log.warning("mcp.unreachable", name=self.name, host=_host(self.url),
                              reason=_reason(exc))
-                with contextlib.suppress(Exception):
-                    await self.close()
+                await _close_one(self, self._httpx_client, client_first=True)
             return self
 
         async def __aexit__(self, *_exc: Any) -> None:
@@ -255,9 +384,13 @@ async def attach_mcp_tools(
             )
             async with asyncio.timeout(CONNECT_BUDGET_S):
                 await tool.connect()
+        except asyncio.CancelledError:
+            # A Stop. Close what this server opened, then let the run see it.
+            await _close_one(tool, client, client_first=True)
+            raise
         except Exception as exc:
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
-            await _close_one(tool, client)
+            await _close_one(tool, client, client_first=True)
             continue
         exposed = {getattr(f, "name", "") for f in tool.functions}
         clash = exposed & held

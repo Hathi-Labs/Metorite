@@ -69,8 +69,12 @@ def _mcp_rows(admin_engine, name: str) -> dict[str, tuple]:
 
 
 @pytest.fixture
-def name(graph_on_promoted):  # noqa: F811
+def name(graph_on_promoted, monkeypatch):  # noqa: F811
     p = graph_on_promoted
+    # Review round 2: POST /mcp checks the URL with the guard. The test hosts
+    # resolve to one public address, so the check passes with no network.
+    monkeypatch.setattr(outbound_guard, "_resolve", lambda _h, _p: ["93.184.216.34"])
+    monkeypatch.setattr(outbound_guard, "_is_local_address", lambda _a: False)
     n = f"reg-{uuid.uuid4().hex[:8]}"
     clear_tenant()
     try:

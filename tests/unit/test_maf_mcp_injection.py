@@ -108,21 +108,30 @@ async def test_a_flag_for_another_org_reads_nothing(monkeypatch, offline):
     assert _names(agent) == [] and spy.reads == 0
 
 
-async def test_flag_off_the_copilot_path_still_gets_its_http_rows(monkeypatch):
-    set_flag(monkeypatch, "")
+@pytest.mark.parametrize("flag", ["", "*"], ids=["flag-off", "flag-on"])
+async def test_a_copilot_agent_gets_no_registry_server(monkeypatch, flag, caplog):
+    """Review round 2 of #869 (P0). Registry MCP is MAF-only. The Copilot
+    CLI connects with its own client, with no pin, flag or grant, so a row
+    must never reach it. Each in-scope row of the run's org is logged by name
+    and dropped. The read still names the org, so org B's row is not even
+    logged."""
+    set_flag(monkeypatch, flag)
     spy = RegistrySpy([
-        row("srv-a", org=ORG_A, headers={"Authorization": SENTINEL}),
+        row("srv-a", org=ORG_A, url="https://169.254.169.254/latest",
+            headers={"Authorization": SENTINEL}),
         row("srv-b", org=ORG_B),
     ]).install(monkeypatch)
     agent = CopilotStub()
-    await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A)
-    assert set(agent.servers) == {"srv-a"}
-    assert agent.servers["srv-a"] == {
-        "type": "http", "url": "https://mcp.example.com/mcp", "tools": ["*"],
-        "headers": {"Authorization": SENTINEL},
-    }
+    with structlog.testing.capture_logs() as logs:
+        await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A)
+    assert agent.servers == {} and agent._default_options == {}
+    skipped = [e for e in logs if e["event"] == "mcp.copilot_registry_skipped"]
+    assert skipped == [{"event": "mcp.copilot_registry_skipped", "name": "srv-a",
+                        "log_level": "info"}]
     sql, binds = spy.statements[0]
     assert "organization_id = :org" in sql and binds == {"org": ORG_A}
+    text = logged_text(logs, caplog)
+    assert SENTINEL not in text and "169.254" not in text
 
 
 # ── A3: no org ───────────────────────────────────────────────────────────────

@@ -341,6 +341,10 @@ MCP_PORT = 443
 #: The time caps of an MCP session. The read cap is long, because the server
 #: streams its answers.
 MCP_TIMEOUT = httpx.Timeout(30.0, connect=CONNECT_TIMEOUT_S, read=300.0)
+#: Seconds for the session DELETE that ends an MCP session. The run waits on
+#: it in its ``finally``, so the long read cap above must not apply (review
+#: round 2 of PR #869).
+MCP_DELETE_TIMEOUT_S = 2.0
 
 
 async def check_mcp_url(url: str) -> Target:
@@ -387,12 +391,16 @@ class _PinnedTransport(httpx.AsyncBaseTransport):
             raise OutboundRefused("", "bad url") from None
         if (url.scheme, host, url.port or MCP_PORT) != self._origin:
             raise OutboundRefused(host, "other origin")
+        extensions = {**request.extensions, "sni_hostname": self._target.host}
+        if request.method == "DELETE":
+            cap = MCP_DELETE_TIMEOUT_S
+            extensions["timeout"] = {"connect": cap, "read": cap, "write": cap, "pool": cap}
         pinned = httpx.Request(
             request.method,
             url.copy_with(host=self._target.ip),
             headers=request.headers,
             stream=request.stream,
-            extensions={**request.extensions, "sni_hostname": self._target.host},
+            extensions=extensions,
         )
         response = await self._inner.handle_async_request(pinned)
         if 300 <= response.status_code < 400:
@@ -420,6 +428,7 @@ async def mcp_client(url: str) -> httpx.AsyncClient:
 __all__ = [
     "CONNECT_TIMEOUT_S",
     "MAX_ANSWER_BYTES",
+    "MCP_DELETE_TIMEOUT_S",
     "MCP_PORT",
     "MCP_TIMEOUT",
     "TOTAL_TIMEOUT_S",

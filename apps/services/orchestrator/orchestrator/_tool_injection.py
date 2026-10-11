@@ -2123,10 +2123,15 @@ async def _inject_mcp_servers(
 ) -> None:
     """Give *agent* the enabled MCP servers of the run's organization.
 
-    Two paths, one registry read (WS-8c, ``agent_architecture.md`` §12.2):
+    Registry MCP is MAF-only (WS-8c, ``agent_architecture.md`` §12.2):
 
-    * **A Copilot agent** gets the servers merged into
-      ``_default_options["mcp_servers"]`` (:func:`merge_mcp_servers`, H-181).
+    * **A Copilot agent gets NO registry server** (review round 2 of #869).
+      The Copilot CLI connects with its own client, so no URL check at
+      register time can stop DNS rebinding there, and no pin, flag or grant
+      applies. Each in-scope row is dropped and logged as
+      ``mcp.copilot_registry_skipped``, with the name only. Copilot leaves
+      with WS-43q, and production held 0 rows. A repo ``.mcp.json`` still
+      reaches a Copilot agent through :func:`merge_mcp_servers`.
     * **A native MAF agent** gets one ``MCPStreamableHTTPTool`` for each
       ``http-sse`` server (``orchestrator._maf_mcp``), only when
       ``MAF_MCP_ORGS`` allows the org. With the flag off, it reads no row.
@@ -2181,9 +2186,8 @@ async def _inject_mcp_servers(
             )
         return
 
-    mcp_config = _copilot_mcp_config(servers)
-    if mcp_config:
-        merge_mcp_servers(agent, mcp_config, override=True)
+    for name, *_rest in servers:
+        _log.info("mcp.copilot_registry_skipped", name=name)
 
 
 def _run_org_or_none() -> str | None:
@@ -2224,29 +2228,6 @@ def _maf_servers(rows: list[Any], is_authorized: Any) -> list[Any]:
             name=str(name), url=str(url), headers=_str_map(headers),
         ))
     return out
-
-
-def _copilot_mcp_config(rows: list[Any]) -> dict[str, dict[str, Any]]:
-    """The rows in the shape of the SDK's ``MCPServerConfig``, for Copilot.
-
-    The key is ``type`` (NOT ``transport``). ``tools: ["*"]`` because the SDK
-    treats an absent/empty list as "expose none" — an enabled server is meant
-    to be usable.
-    """
-    config: dict[str, dict[str, Any]] = {}
-    for name, transport, url, headers, _scope in rows:
-        if transport not in ("http-sse", "http", "sse") or not url:
-            continue
-        entry: dict[str, Any] = {
-            "type": "sse" if transport == "sse" else "http",
-            "url": url,
-            "tools": ["*"],
-        }
-        resolved_headers = _str_map(headers)
-        if resolved_headers:
-            entry["headers"] = resolved_headers
-        config[name] = entry
-    return config
 
 
 async def _close_mcp_tools(opened: list[Any]) -> None:

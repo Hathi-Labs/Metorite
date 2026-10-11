@@ -160,3 +160,67 @@ async def test_the_client_follows_no_redirect_and_reads_no_proxy_env(monkeypatch
 def test_a_refusal_names_no_path_and_no_query() -> None:
     exc = outbound_guard.OutboundRefused("mcp.example.com", "redirect 302")
     assert str(exc) == "mcp.example.com redirect 302"
+
+
+async def test_the_session_delete_gets_a_short_timeout(monkeypatch) -> None:
+    """Review round 2 of #869: the run waits on the session DELETE in its
+    ``finally``, so the 300 s read cap must not apply to it."""
+    inner = _Inner().install(monkeypatch)
+    _public(monkeypatch)
+    client = await outbound_guard.mcp_client("https://mcp.example.com/mcp")
+    try:
+        await client.delete("https://mcp.example.com/mcp")
+        await client.post("https://mcp.example.com/mcp", content=b"{}")
+    finally:
+        await client.aclose()
+    delete, post = inner.requests
+    cap = outbound_guard.MCP_DELETE_TIMEOUT_S
+    assert delete.extensions["timeout"]["read"] == cap <= 5
+    assert post.extensions["timeout"]["read"] == 300.0
+
+
+# ── POST /mcp checks the URL before it writes a row (review round 2, P0) ────
+
+
+REGISTER_REFUSED = [
+    pytest.param("https://169.254.169.254/latest/meta-data", {}, id="metadata"),
+    pytest.param("https://127.0.0.1/mcp", {}, id="loopback"),
+    pytest.param("https://10.0.0.8/mcp", {}, id="rfc1918"),
+    pytest.param("https://mcp.example.com/mcp", {"mcp.example.com": ["192.168.4.4"]},
+                 id="name-to-rfc1918"),
+    pytest.param("http://mcp.example.com/mcp", {"mcp.example.com": [PUBLIC_IP]}, id="http"),
+    pytest.param("https://mcp.example.com:8443/mcp", {"mcp.example.com": [PUBLIC_IP]},
+                 id="port"),
+]
+
+
+@pytest.mark.parametrize(("url", "dns"), REGISTER_REFUSED)
+async def test_post_mcp_refuses_an_internal_url_and_writes_nothing(url, dns, monkeypatch):
+    import acb_graph
+    from acb_auth import UserContext, UserRole
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import HTTPException
+    from gateway.routes import integrations
+
+    _Dns(dns).install(monkeypatch)
+
+    def _no_db():
+        raise AssertionError("a refused URL reached the database")
+
+    monkeypatch.setattr(acb_graph, "get_session", _no_db)
+    org = "dddddddd-0000-0000-0000-00000000000d"
+    user = UserContext(email="admin@example.test", role=UserRole.EXECUTIVE, organization_id=org)
+    req = integrations.McpServerRequest(
+        name="probe", transport="http-sse", url=url, headers={"X-Internal": "1"},
+        agent_scope=["*"],
+    )
+    clear_tenant()
+    token = bind_tenant(org)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            await integrations.register_mcp_server(req, user=user)
+    finally:
+        release_tenant(token)
+        clear_tenant()
+    assert caught.value.status_code == 422
+    assert "does not connect" in caught.value.detail

@@ -955,6 +955,18 @@ nothing.
    `organization_id = current_tenant()`, use `ON CONFLICT (organization_id, name)`, and refuse
    a request with no tenant. `schema.generated.sql` still keys by name only, so do not copy it.
 
+10. **Registry MCP is MAF-only** (review round 2 of PR #869). A Copilot agent gets no
+    registry server: the injection drops each row and logs `mcp.copilot_registry_skipped`
+    with the name only. The Copilot CLI connects with its own client, so a URL check at
+    register time cannot stop DNS rebinding there, and no pin, flag or grant applies.
+11. `POST /mcp` runs `outbound_guard.check_mcp_url` on the URL and answers 422 on a refusal,
+    before it writes a row.
+12. A server never holds a run. A connect past its budget closes the client first, and then
+    stops the lifecycle task of MAF. One server sends at most 10 `tools/list` pages and
+    128 tools. The end of a run closes the servers at the same time, under a cap of 5 s,
+    after the run is marked inactive. The session DELETE has a 2 s timeout. A Stop is never
+    swallowed.
+
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
 port 443 only. It sets `follow_redirects=False` and `trust_env=False`.
@@ -968,7 +980,8 @@ The client refuses a 3xx answer and a request to another origin. The default cli
   `/mcp/test` answer 422 for stdio. Both injection paths drop a stdio row and log
   `mcp.stdio_refused`.
 - A repo-declared `.mcp.json` does not reach a MAF agent in v1. It reaches the Copilot path
-  only, as before.
+  only, as before, and its stdio entries are dropped there too.
+- A registry row never reaches a Copilot agent (item 10).
 - `CapabilitySpec.mcp_servers` (`manifest.py`) is not read in v1.
 - The move of the MCP rows into `integration_connections` stays in IN-4.
 - The encryption of the stored headers stays in IN-4.
@@ -1000,6 +1013,13 @@ off, the Copilot path reads the rows of the run's org only.
       tests/unit/test_mcp_register_r8.py tests/unit/test_mcp_servers_org_scope.py -v -rs
 
 No R8 suite may skip.
+
+The second review added `test_maf_mcp_lifecycle.py`: a slow connect, endless paging, the
+tool cap, a Stop during the attach, a slow session DELETE, the total close cap, and a 40 s
+DELETE through the real run.
+
+**Left open.** H-299: `decide()` approves an unknown MCP tool name, so a destructive MCP tool
+runs with no confirmation card. Fix it before the first production flip of `MAF_MCP_ORGS`.
 
 **Done when** the fences above pass with no skip. Then a native MAF agent in an allowed org
 shows the tools of the server of its org. The production flip of `MAF_MCP_ORGS` is gate

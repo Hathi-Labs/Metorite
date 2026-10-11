@@ -5178,6 +5178,23 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
 - **Added:** 2026-10-10 · the person names session
 
+### H-299 · A destructive MCP tool runs with no confirmation card · [AGENT]
+- **Check:** `grep -n "destructiveHint" apps/services/orchestrator/orchestrator/_maf_mcp.py`
+  → no hit means this is open.
+- **Why:** an MCP function of a native MAF agent goes through
+  `permission_policy.decide()` (WS-8c), and `decide()` approves any name
+  it does not know as `unknown_allowed`. So a server tool that deletes or
+  sends runs with no confirmation card. The review of PR #869 found it.
+- **Do:** read the MCP tool annotations. A tool with `destructiveHint` true,
+  or with `readOnlyHint` false or missing, asks for a confirmation card
+  before it runs. Fence it with a test that a destructive tool waits for
+  the card.
+- **When:** before the first production flip of `MAF_MCP_ORGS` (gate
+  `enforcement-flip`).
+- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (left open) ·
+  PR #869 review, round 2
+- **Added:** 2026-10-11 · WS-8c
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

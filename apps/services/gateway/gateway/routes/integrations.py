@@ -1856,6 +1856,22 @@ async def register_mcp_server(
     org = current_tenant()
     if not org:
         raise HTTPException(403, "No organization is bound to this session.")
+    # WS-8c review round 2 (P0): the URL is customer input, and a stored row
+    # reaches an agent. It passes the MCP rule of the one URL guard (https,
+    # port 443, public addresses only) before any row is written. The run
+    # checks it again and pins it, because DNS can change after this.
+    if req.url:
+        try:
+            await outbound_guard.check_mcp_url(req.url)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "mcp.register_refused", name=req.name, host=exc.host, reason=exc.reason,
+                actor=user.email,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Metorite does not connect to this URL: {exc.reason}.",
+            ) from None
 
     try:
         from acb_graph import get_session  # noqa: PLC0415

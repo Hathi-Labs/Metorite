@@ -16,6 +16,13 @@ else the async ``current_tenant()``) — NEVER from tool args / the message (R11
 org-less "global" servers: the filter is strictly ``organization_id = :org`` and
 the fail-closed subset (flag ON, no resolvable org) is EMPTY.
 
+⚠️ **WS-8c review round 2 (2026-10-11): registry MCP is MAF-only.** A
+Copilot agent now gets NO registry server. It logs each in-scope row of the
+run's org as ``mcp.copilot_registry_skipped`` and drops it. So these fences
+read the org filter from those log lines: the names logged are exactly the
+rows that the filtered read returned. The MAF half is
+``tests/unit/test_maf_mcp_org_scope_r8.py``.
+
 Fences (R7):
 
 * ``mcp-servers-scoped-to-run-org`` (R8 — real Postgres, the two-org phase-4
@@ -91,6 +98,19 @@ def graph_on_promoted(promoted, monkeypatch):  # noqa: F811
 _UNFILTERED_SQL = "SELECT name FROM mcp_servers WHERE enabled = true"
 
 
+async def _rows_read(agent) -> set[str]:
+    """Run the REAL injection, and return the names the read returned.
+
+    The Copilot path writes nothing (WS-8c). The rows the filtered read
+    returned are the ones it logs as ``mcp.copilot_registry_skipped``."""
+    import structlog
+
+    with structlog.testing.capture_logs() as logs:
+        await _inject_mcp_servers(agent, _AGENT)
+    assert agent._default_options == {}, "a registry row reached a Copilot agent"
+    return {e["name"] for e in logs if e["event"] == "mcp.copilot_registry_skipped"}
+
+
 class _Agent:
     """A bare agent stub: ``merge_mcp_servers`` only reads/writes
     ``_default_options["mcp_servers"]`` (the 2.0 wrapper's field, H-181)."""
@@ -146,11 +166,10 @@ class TestMcpServersScopedToRunOrg:
             clear_tenant()
             tok = bind_tenant(p.org_a)
             try:
-                await _inject_mcp_servers(agent, _AGENT)
+                injected = await _rows_read(agent)
             finally:
                 release_tenant(tok)
 
-            injected = set(agent._default_options.get("mcp_servers") or {})
             assert srv_a in injected, (
                 "the org-A-bound injection did not include org A's own MCP "
                 f"server: {sorted(injected)!r}"
@@ -193,11 +212,10 @@ class TestMcpServersScopedToRunOrg:
             clear_tenant()
             tok = bind_tenant(p.org_a)  # bound, and the flag is OFF
             try:
-                await _inject_mcp_servers(agent, _AGENT)
+                injected = await _rows_read(agent)
             finally:
                 release_tenant(tok)
 
-            injected = set(agent._default_options.get("mcp_servers") or {})
             assert srv_a in injected, (
                 f"org A's own server did not inject: {sorted(injected)!r}"
             )
@@ -234,9 +252,7 @@ class TestMcpServersScopedToRunOrg:
             assert executor._stream_relay_thread_id.get(None) is None
             assert executor._current_run_org() is None
 
-            await _inject_mcp_servers(agent, _AGENT)
-
-            injected = set(agent._default_options.get("mcp_servers") or {})
+            injected = await _rows_read(agent)
             assert injected == set(), (
                 "flag ON + no resolvable org must inject NOTHING (fail closed), "
                 f"never another org's servers: {sorted(injected)!r}"
