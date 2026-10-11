@@ -27,9 +27,10 @@ So the tests that matter are the ones about what it must NOT do:
   ``sync_zoho``'s own push statement rather than from a comment about it.
 
 Hermetic, in ``test_crm_routes.py``'s convention: no Postgres, no network, no
-TestClient; the step is called directly with ``_get_db`` monkeypatched onto the
-SUT submodules against the shared ``_crm_fakes.FakeCrmDB``. The real settings
-object is never mutated — the ON state is the module's own
+TestClient; the step is called directly with ``_tenant_session`` monkeypatched
+onto the SUT submodules against the shared ``_crm_fakes.FakeCrmDB``, and with
+the mailbox's tenant bound, as the email hook binds it (WS-53 CRM-T3). The real
+settings object is never mutated — the ON state is the module's own
 ``auto_lead_enabled`` predicate, monkeypatched, exactly as
 ``test_crm_zoho_sync.py`` does for ``sync_enabled``.
 """
@@ -40,11 +41,13 @@ import ast
 import inspect
 import json
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_common.db import bind_tenant, release_tenant
 from gateway.routes.crm import auto_lead
 from gateway.routes.crm import core as crm_core
 from gateway.routes.crm import pipeline as crm_pipeline
@@ -78,18 +81,29 @@ ACTIVATED = _at(1)
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
+#: The tenant the email hook binds before it runs the step. The fake does not
+#: model RLS. The R8 suite ``test_crm_sync_tenancy.py`` does.
+MAILBOX_ORG = "99999999-9999-9999-9999-999999999999"
+
+
 @pytest.fixture
-def db(monkeypatch: pytest.MonkeyPatch) -> FakeCrmDB:
+def db(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeCrmDB]:
     """The in-memory schema, bound to every module that opens a session.
 
-    ``auto_lead`` is in the tuple because it imports ``_get_db`` from ``core``
-    by name; ``records`` is in it because ``create_record`` opens its OWN
-    session and the lead has to land in the same fake.
+    ``auto_lead`` is in the tuple because it imports ``_tenant_session`` from
+    ``core`` by name; ``records`` is in it because ``create_record`` opens its
+    OWN session and the lead has to land in the same fake. The mailbox's
+    tenant is bound for the test, because with none bound the step opens no
+    session at all (WS-53 CRM-T3).
     """
     fake = FakeCrmDB()
     bind_db(monkeypatch, fake,
             (crm_core, crm_records, crm_pipeline, auto_lead))
-    return fake
+    token = bind_tenant(MAILBOX_ORG)
+    try:
+        yield fake
+    finally:
+        release_tenant(token)
 
 
 @pytest.fixture
@@ -194,10 +208,6 @@ def _seed_account(
 ) -> None:
     db.seed("email_accounts", id=ACCOUNT_ID, user_id=owner,
             email_address=address)
-    # H4 fix: _create_lead binds the owner's organization explicitly before
-    # calling the converted create_record — the lookup reads app_user.
-    db.seed("app_user", email=owner,
-            organization_id="99999999-9999-9999-9999-999999999999")
     if org_domains is not None:
         db.seed("email_assistant_settings", account_id=ACCOUNT_ID,
                 org_domains=org_domains)
