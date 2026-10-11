@@ -311,7 +311,7 @@ _PLANTED = ("SUBJWORD41", "BODYWORD42", "INSTRWORD43", "plant44@x.test",
 
 async def _timed_run(req, user, on_activity=None, on_delta=None):
     await on_activity({"kind": "stage", "id": "context", "status": "start"})
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.08)
     await on_activity({"kind": "stage", "id": "draft", "status": "start"})
     await asyncio.sleep(0.01)
     await on_delta("content", "DELTAWORD46")
@@ -332,7 +332,8 @@ async def test_the_timing_line_has_its_keys_and_no_tenant_text(monkeypatch) -> N
     for key in ("context_ms", "first_chunk_ms", "total_ms", "outcome", "mode"):
         assert key in line, (key, line)
     assert line["outcome"] == "done"
-    assert line["context_ms"] >= 15
+    # Windows ticks the clock at about 15.6 ms, so the floor has a margin.
+    assert line["context_ms"] >= 50
     assert line["total_ms"] >= line["context_ms"]
     assert isinstance(line["first_chunk_ms"], int)
     text = repr(line)
