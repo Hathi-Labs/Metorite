@@ -26,6 +26,8 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useState } from "react";
+import Badge from "@/components/ui/Badge";
+import { ONLY_IN_METORITE, onlyInMetorite } from "../lib/connect";
 import { dateTime, dwellLabel } from "../lib/format";
 import { threadStatusLabel, timelineBranch, timelineKey } from "../lib/timeline";
 import type { TimelineEntry } from "../lib/types";
@@ -44,7 +46,10 @@ export default function Timeline({
   onLog,
   onToggleTask,
   saving,
+  parentMirrored = false,
 }: {
+  /** The record is owned by Zoho, so Metorite-only entries get a badge. */
+  parentMirrored?: boolean;
   entries: TimelineEntry[];
   onLog: (body: {
     type: Composable;
@@ -133,7 +138,7 @@ export default function Timeline({
         <ol className="space-y-3">
           {entries.map((entry, index) => (
             <li key={timelineKey(entry, index)}>
-              <Entry entry={entry} onToggleTask={onToggleTask} />
+              <Entry entry={entry} onToggleTask={onToggleTask} parentMirrored={parentMirrored} />
             </li>
           ))}
         </ol>
@@ -154,7 +159,9 @@ export default function Timeline({
 function Entry({
   entry,
   onToggleTask,
+  parentMirrored,
 }: {
+  parentMirrored: boolean;
   entry: TimelineEntry;
   onToggleTask: (activityId: string, completed: boolean) => void;
 }) {
@@ -164,7 +171,7 @@ function Entry({
     case "email_thread":
       return <EmailEntry entry={entry} />;
     case "activity":
-      return <ActivityEntry entry={entry} onToggleTask={onToggleTask} />;
+      return <ActivityEntry entry={entry} onToggleTask={onToggleTask} parentMirrored={parentMirrored} />;
     default:
       return null;
   }
@@ -275,7 +282,9 @@ const ACTIVITY_ICONS: Record<string, string> = {
 function ActivityEntry({
   entry,
   onToggleTask,
+  parentMirrored,
 }: {
+  parentMirrored: boolean;
   entry: TimelineEntry;
   onToggleTask: (activityId: string, completed: boolean) => void;
 }) {
@@ -327,6 +336,9 @@ function ActivityEntry({
             </>
           )}
           <Origin origin={entry.origin} />
+          {onlyInMetorite(activity, parentMirrored) && (
+            <Badge size="xs">{ONLY_IN_METORITE}</Badge>
+          )}
         </p>
       </div>
     </div>

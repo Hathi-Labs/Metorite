@@ -72,7 +72,10 @@ export default function PipelineSettings({
   onRemoveLostReason,
   onReorderLostReasons,
   onPullStages,
+  top,
 }: {
+  /** The connection panel of an admin in a mirrored org (CRM-Z7). */
+  top?: React.ReactNode;
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
@@ -98,6 +101,7 @@ export default function PipelineSettings({
 }) {
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
+      {top}
       <StagePull canPull={canPullStages} saving={saving} onPull={onPullStages} />
 
       <StatusGrid

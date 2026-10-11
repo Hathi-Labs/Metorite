@@ -213,6 +213,14 @@ type Provenance = {
   created_at?: string | null;
   updated_at?: string | null;
   owner_email?: string | null;
+  /**
+   * Mirror fields (WS-53 CRM-Z6). `ext_source` names the system that owns the
+   * record (`zoho`). Null or absent means a record made in Metorite.
+   */
+  ext_source?: string | null;
+  ext_id?: string | null;
+  ext_modified_at?: string | null;
+  custom?: Record<string, unknown> | null;
 };
 
 export type Organization = Provenance & {
@@ -320,6 +328,8 @@ export type Activity = {
   completed_at?: string | null;
   created_by?: string | null;
   created_at?: string | null;
+  /** Set on an activity that Zoho owns (CRM-Z6). Null: only in Metorite. */
+  ext_source?: string | null;
 };
 
 export type StatusChange = {

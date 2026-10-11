@@ -16,6 +16,7 @@ import { create } from "zustand";
 import * as api from "./api";
 import { CrmError } from "./api";
 import { applyMove, toBoardLanes, type BoardLane, type DealMove } from "./board";
+import { MIRROR_REFUSALS } from "./connect";
 import { exportQuery, listQuery } from "./filters";
 import {
   applyPatches,
@@ -143,8 +144,29 @@ type CrmState = {
   pullZohoStages: (apply: boolean) => Promise<StageMetadataReport | null>;
 };
 
-function message(err: unknown): string {
-  if (err instanceof CrmError) return err.message;
+/**
+ * Where a mirror-guard refusal goes (WS-53 CRM-Z7). The page registers a
+ * toast here. With no sink the refusal reads in the banner, as every other
+ * refusal does.
+ */
+let refusalSink: ((text: string) => void) | null = null;
+export function setRefusalSink(sink: ((text: string) => void) | null): void {
+  refusalSink = sink;
+}
+
+/**
+ * The words for a failure, or `null` when the toast said them already.
+ * A 409 `mirrored_record` is a rule of the mirror and not a fault, so it
+ * leaves no red banner behind.
+ */
+function message(err: unknown): string | null {
+  if (err instanceof CrmError) {
+    if (refusalSink && err.code && MIRROR_REFUSALS.has(err.code)) {
+      refusalSink(err.message);
+      return null;
+    }
+    return err.message;
+  }
   return err instanceof Error ? err.message : String(err);
 }
 

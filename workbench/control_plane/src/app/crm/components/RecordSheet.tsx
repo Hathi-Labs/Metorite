@@ -15,6 +15,7 @@
 
 import Modal from "@/components/ui/Modal";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { isMirrored } from "../lib/connect";
 import FieldsPanel from "./FieldsPanel";
 import Timeline from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
@@ -113,6 +114,7 @@ export default function RecordSheet({
               onLog={onLog}
               onToggleTask={onToggleTask}
               saving={saving}
+              parentMirrored={isMirrored(record)}
             />
           </div>
           <div className={isMobile ? "" : "w-[340px] shrink-0"}>

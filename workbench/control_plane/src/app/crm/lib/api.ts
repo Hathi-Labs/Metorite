@@ -12,6 +12,7 @@
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
+import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type {
   Activity,
   Contact,
@@ -36,10 +37,16 @@ import type {
 
 export class CrmError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The machine code of a refusal: a string `detail` (`sync_running`) or the
+   * `code` of an object `detail` (`mirrored_record`, `mirror_mode_create`).
+   */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "CrmError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -53,7 +60,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       detail?: unknown;
       error?: string;
     };
-    throw new CrmError(detailOf(body) || `Gateway error ${res.status}`, res.status);
+    throw new CrmError(
+      detailOf(body) || `Gateway error ${res.status}`,
+      res.status,
+      codeOf(body)
+    );
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -68,6 +79,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 function detailOf(body: { detail?: unknown; error?: string }): string {
   const { detail } = body;
   if (typeof detail === "string") return detail;
+  // The write guard (CRM-Z6) answers `{code, source, message}`.
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
   if (Array.isArray(detail)) {
     return detail
       .map((item) =>
@@ -78,6 +94,16 @@ function detailOf(body: { detail?: unknown; error?: string }): string {
       .join("; ");
   }
   return body.error ?? "";
+}
+
+function codeOf(body: { detail?: unknown }): string | undefined {
+  const { detail } = body;
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const code = (detail as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
 }
 
 // ── Records ───────────────────────────────────────────────────────────────
@@ -296,6 +322,53 @@ export function getWinLossReport(): Promise<WinLossReport> {
 
 export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
+}
+
+// ── Mode, connection and sync (WS-53 CRM-U5, CRM-Z7) ───────────────────────
+//
+// A 404 from the three reads below means the Zoho mirror is dark for this
+// deployment (`CRM_MIRROR` off). It is an answer, not a failure: each read
+// then returns `null` and the mirror UI stays hidden.
+
+async function orNullOn404<T>(work: Promise<T>): Promise<T | null> {
+  try {
+    return await work;
+  } catch (err) {
+    if (err instanceof CrmError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export function getConnection(): Promise<ConnectionInfo | null> {
+  return orNullOn404(call<ConnectionInfo>("/connection"));
+}
+
+export function getSyncStatus(): Promise<SyncStatus | null> {
+  return orNullOn404(call<SyncStatus>("/sync/status"));
+}
+
+/** Admin only. A member gets 403, which the caller treats as "unknown". */
+export function getCrmSettings(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings");
+}
+
+export function chooseNativeMode(): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify({ mode: "native" }),
+  });
+}
+
+export function startZohoConnect(): Promise<{ url: string }> {
+  return call<{ url: string }>("/connection/zoho/start", { method: "POST" });
+}
+
+export function disconnectCrm(): Promise<ConnectionInfo> {
+  return call<ConnectionInfo>("/connection/disconnect", { method: "POST" });
+}
+
+export function syncZohoNow(): Promise<{ started: boolean }> {
+  return call<{ started: boolean }>("/sync/zoho", { method: "POST" });
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────

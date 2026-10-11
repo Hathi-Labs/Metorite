@@ -18,8 +18,10 @@
 > CRM-Z3, the mirror columns, `crm_field_defs` and `upsert_from_source`
 > (2026-10-11, migration 244).
 > CRM-Z2, the Zoho connection: migration 245, the connect routes behind
-> `CRM_MIRROR`, and the shared token (2026-10-11). The other slices are not
-> built yet.
+> `CRM_MIRROR`, and the shared token (2026-10-11).
+> CRM-U5, the first-open choice, and CRM-Z7, narrowed (2026-10-11): the Zoho
+> connect flow, the sync progress, the title bar mode and the mirror marks.
+> The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -869,7 +871,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-U2** ✅ built 2026-10-11 | `Modal`, `ConfirmDialog` and the `ui/` controls replace the hand-rolled ones | 🟢 AGENT-SAFE | The 5 dialog files join `CONVERTED` in `conformance.test.ts`. The `PipelineSettings` rows in `SELECT_DEBT` and `CHECKBOX_DEBT` are deleted, not set to 0. `grep "fixed inset-0" src/app/crm` finds nothing |
 | **CRM-U3** | Stage colour through `statusAccent`, categories through `categoricalAccent`, drops through `boardDrop.ts` | 🟢 AGENT-SAFE | `TONES` is gone. The `SCOPE` regex in `sharedTaskUi.test.ts:479` includes `app/crm/`, the comment at lines 467-477 is deleted, and the suite passes |
 | **CRM-U4** | Reads through `useCachedResource`. Skeletons and `EmptyState` | 🟢 AGENT-SAFE | `dataCache.test.ts` patterns hold. No "Loading…" text remains |
-| **CRM-U5** | The first-open choice (§8.3) | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |
+| **CRM-U5** ✅ built 2026-10-11 | The first-open choice (§8.3). Built as: an admin sees two cards, and a member sees "An admin must set up the CRM first." With `CRM_MIRROR` off, only the Native card shows. `GET /crm/connection` now carries `mode`, because `GET /crm/settings` is for admins only | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |
 | **CRM-U6** | Settings → CRM. `PipelineSettings` moves there | 🟢 AGENT-SAFE | Only an admin sees the page. Stages, lost reasons and the mode work from it |
 
 ### 13.5 Phase 3 — the Zoho mirror (§5)
@@ -883,7 +885,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-Z4** | The first import, with progress, estimate and resume. The owner map | 🟢 AGENT-SAFE | A paused import resumes with no duplicate. Counts per entity match the source |
 | **CRM-Z5** | The incremental loop per org, Sync now, the credit budget, `crm_sync_runs`. From CRM-T3: one `tenant_session(org)` per step, the advisory lock in place of `_cycle_lock`, and a working `POST /crm/sync/zoho` | 🟢 AGENT-SAFE to build. 🔴 first real customer connect is the owner's | Two orgs sync on one loop with no crossover. A run stops at its budget |
 | **CRM-Z6** | Read-only enforcement in Mirror mode, "Only in Metorite" items, deep links | 🟢 AGENT-SAFE | `test_crm_mirror_readonly.py`: each write route returns 409 on a mirrored field, for each of the 4 entities. A Metorite-only note saves |
-| **CRM-Z7** | The mirror UI: connect flow, mirror marks, custom fields in the panel and the filters, sync health | 🟢 AGENT-SAFE | Visual review passes. A custom field filters a list |
+| **CRM-Z7** ✅ built 2026-10-11 (narrowed) | The mirror UI: connect flow, mirror marks, custom fields in the panel and the filters, sync health. Built as: the BFF route `api/crm/oauth/zoho/callback` passes the 302 on with a relative Location. The title bar names the mode. A banner asks for a new consent, and a bar shows the import. The Settings view holds the connection panel, with Sync now and Disconnect. A mirrored record shows locked fields, and its deal cannot be dragged. Notes and calls stay open and carry an "Only in Metorite" badge. A 409 from the write guard shows as a toast. Left: the "Open in Zoho" link, the custom-field filters and the field map | 🟢 AGENT-SAFE | Visual review passes. A custom field filters a list |
 
 ### 13.6 Phase 4 — launch
 
