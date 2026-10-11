@@ -10,6 +10,7 @@
  */
 
 import { clearCachedLayouts } from "@/lib/shell/shellCache";
+import { clearSidebarFolds } from "@/lib/shell/sidebarFolds";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
 
 export interface ChatSession {
@@ -303,8 +304,10 @@ export function clearSignedOutAccount(): void {
       const email = last.slice(0, last.indexOf("|"));
       const prefix = accountPrefix(email);
       removeKeys(keysWhere((k) => k.startsWith(prefix)));
-      // The shell layout of the same account (NS-7), under the same scope.
+      // The shell layout of the same account (NS-7), under the same scope,
+      // and its sidebar folds (owner, 2026-10-11).
       clearCachedLayouts([email]);
+      clearSidebarFolds([email]);
     }
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
@@ -332,8 +335,10 @@ export function clearAccountNamespaces(emails: readonly string[]): void {
       const prefix = accountPrefix(email);
       removeKeys(keysWhere((k) => k.startsWith(prefix)));
     }
-    // The shell layouts of the same accounts (NS-7), in every organization.
+    // The shell layouts of the same accounts (NS-7), in every organization,
+    // and their sidebar folds (owner, 2026-10-11).
     clearCachedLayouts(emails);
+    clearSidebarFolds(emails);
     localStorage.removeItem(LAST_SCOPE_KEY);
   } catch {
     /* storage unavailable: nothing is stored */

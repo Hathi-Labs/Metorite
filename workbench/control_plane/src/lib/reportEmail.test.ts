@@ -283,7 +283,7 @@ describe("reportEmail · capacity", () => {
 
   it("never prints 0h for a row whose hours mean nothing", () => {
     const { text, html } = reportEmail(withCapacity);
-    expect(text).toContain("bo@example.test: 2 open, no hours");
+    expect(text).toContain("bo: 2 open, no hours");
     expect(text).not.toMatch(/\b0h\b/);
     expect(html).not.toMatch(/style=/);
   });
@@ -519,7 +519,7 @@ describe("reportEmail · pulse", () => {
     expect(text).not.toContain("Idle");
     // No HR half: no status, and the bar is overdue of open tasks.
     expect(text).toContain(
-      `eli@example.test: 4 open · ${textBar(1, 4)} 1 of 4 overdue · 0 focus`,
+      `eli: 4 open · ${textBar(1, 4)} 1 of 4 overdue · 0 focus`,
     );
     expect(text).toContain("two runs in a row");
     expect(text).not.toContain("This report hides");
@@ -781,7 +781,7 @@ describe("reportEmail · the exact HTML", () => {
         "</ul>",
       "<p>…and 2 more projects</p>",
       "<p>Who has the hours (next 14 days): 6 open</p>",
-      "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo@example.test: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
+      "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
       "<p>People's hours, leave and skills are private, so only admins see them. Ask an admin if you need them.</p>",
       "<p>Where the plan conflicts: 2</p>",
       "<ul><li>High: &quot;Order &lt;steel&gt;&quot; is late.</li><li>Medium: Bo holds 3.</li></ul>",

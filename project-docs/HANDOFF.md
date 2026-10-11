@@ -4619,15 +4619,20 @@ line — never reclaim a number by deleting the other entry.
 - **Still open from the broker work.** Two kinds of caller bind no tenant,
   so the broker refuses their queue write. The RLS policy refused it before
   too. A third note follows them.
-  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). With
-    `ACTION_BROKER_ENFORCE` off it never reaches the queue.
+  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). Since WS-53 CRM-T3
+    the loop starts no task, so it reaches no queue. CRM-Z5 rebuilds the
+    cycle with one `tenant_session(org)` for each step. Do this work there.
   - A CRON or webhook workflow run (`workflows/service.py` and
     `workflows/tools.py`). A manual run has the request's tenant. A trigger
     run would inherit the tenant of the request that emits its event, but
     `triggers.py` reads `workflow_triggers` unbound, so no trigger run starts.
-  - A manual `POST /crm/sync/zoho` runs the cycle in the request. So its
-    queue row goes to the admin's tenant. The sync configuration has no
-    tenant yet. When it gets one, bind that tenant.
+  - `POST /crm/sync/zoho`. Since WS-53 CRM-T3 it answers 409 and runs no
+    cycle. CRM-Z5 makes it run the cycle of one connection, with the tenant
+    of that connection. Do this work there.
+- **Done, the CRM auto-lead step and the CRM push handler (WS-53 CRM-T3,
+  2026-10-11).** Each binds the tenant that its caller bound, and with no
+  tenant it opens no session. The fence is
+  `tests/unit/test_crm_sync_tenancy.py`. Do not do it again.
 - **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
   artifact context is a ContextVar, and `artifact_context()` is its one
   reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
@@ -5123,23 +5128,6 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.1
 - **Added:** 2026-10-04 · PR #622
 
-### H-296 · Three more project pickers still draw the whole tree as one list · [AGENT]
-- **Check:** `grep -rln "ProjectPicker" workbench/control_plane/src/app/projects/components/AssistantRail.tsx workbench/control_plane/src/app/projects/components/ReportsView.tsx workbench/control_plane/src/app/projects/components/StatusSetControl.tsx`
-  → fewer than three files means this is open.
-- **Why:** on 2026-10-10 the owner found the Move pickers hard to read. They
-  drew every node of every space as one open list. `ProjectPicker` (search,
-  spaces closed, a path on each result) now serves the task doors (Move,
-  Clarify, the capture chip) and the project "Move to…" dialog. Three
-  pickers still draw the old list: the chat focus (`AssistantRail.tsx`),
-  the report scope (`ReportsView.tsx`) and "Copy statuses from"
-  (`StatusSetControl.tsx`).
-- **Do:** pass a `rule` to `ProjectPicker`. The chat and the report may pick
-  a space or a folder, so their rule refuses nothing. The three sites are
-  `SelectButton`s, so add a popover host around the picker (a trigger and
-  `AnchoredPanel`). Do not add a second tree model.
-- **Authority:** owner ask, 2026-10-10 · `app/projects/lib/pickerTree.ts`
-- **Added:** 2026-10-10 · the project picker session
-
 ### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
 - **Check:** `grep -cE '^CRM_ZOHO_CLIENT_(ID|SECRET)=.+' "$HOME/.metorite/secrets/app.env"`
   on the owner's PC. A count below 2, or no file, means this is open. When it
@@ -5158,6 +5146,30 @@ line — never reclaim a number by deleting the other entry.
   `deploy/secrets/manifest.json`, and runs `scripts/secrets.sh push app-env`.
 - **Authority:** `specs/crm_platform.md` §12 and §13.5 CRM-Z0 · `work_plan.md` WS-53
 - **Added:** 2026-10-11 · branch `crm-z0`
+
+### H-298 · Nine directory names are email addresses, and two paths still write more · [AGENT]
+- **Check:** `SELECT count(*) FROM people WHERE name LIKE '%@%'` on production
+  → above 0 means this is open. 9 of 38 on 2026-10-10.
+- **Why:** the owner saw their own address where a name belongs (Projects,
+  "Who has the hours"). The Projects app and its report email no longer
+  print an address as a name (`src/lib/personName.ts`, `PersonName`, fenced
+  by a sweep of `src/app/projects`), but the rows are still wrong. Readers
+  outside that sweep still print them: the server's conflict text
+  (`analytics_conflicts._label`), the chat tools and the People app.
+  Three causes, all in the code:
+  - The founder bootstrap (`acb_auth/access.py`, `_BOOTSTRAP_OWNER_SQL`)
+    writes the address into `app_user.display_name`, which is `NOT NULL`.
+  - The directory trigger (migration 206, restated in 209) copies any
+    non-empty `display_name` into `people.name`, an address included.
+  - The trigger only inserts (`ON CONFLICT DO NOTHING`). So a later rename
+    through `PATCH /admin/members/{email}` never reaches `people.name`.
+- **Do:** one migration. The trigger function treats a `display_name` that
+  holds an "@" as empty, so it falls back to the address's left half, and it
+  updates `people.name` while that row's name is still the member-derived one.
+  Verify it on a real database (R8). Then decide the nine rows: a member or an
+  admin sets the real name in People. Do not invent names.
+- **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
+- **Added:** 2026-10-10 · the person names session
 
 # DONE — deleted, not archived
 

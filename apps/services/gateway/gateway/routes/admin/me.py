@@ -266,8 +266,8 @@ SHELL_CARDS: frozenset[str] = frozenset({
     "needs", "today", "next", "team-pulse", "out-today",
 })
 
-#: Every pane `src/lib/nav.ts` declares by a literal `href`. A pin names one of
-#: these. A preview pane (CRM) may be stored, and it draws when it goes live.
+#: Every pane `src/lib/nav.ts` declares by a literal `href`. A star (``pins``)
+#: and a ``known`` entry each name one of these. A preview pane (CRM) may be stored, and it draws when it goes live.
 SHELL_PANES: frozenset[str] = frozenset({
     "/tasks", "/calendar", "/people/me", "/dashboard", "/email", "/whatsapp",
     "/notes", "/memory", "/artifacts", "/projects", "/crm", "/people", "/chat",
@@ -313,7 +313,17 @@ class ShellPrefs(BaseModel):
 
     ``answered`` is ``"skipped"`` when the member chose "Skip for now". That
     is a choice, and the shell does not ask again. ``None`` means never asked.
-    ``pins`` of ``None`` means "the preset's pins". An empty list means none.
+    ⚠️ ``pins`` holds the STARRED apps since the star model (owner,
+    2026-10-11, `navigation_shell.md` §3.2). The field keeps its NS-7 name, so
+    no stored row changes (R6). ``None`` means the member never chose, and
+    every held app shows. An empty list means that no app is starred.
+
+    ``known`` holds the hrefs the member could see when they last saved. An
+    app that is not in it is new to them, and the shell shows it starred
+    (`starredHrefs` in `presets.ts`). A row with no ``known`` is a row that
+    NS-7 saved, when ``pins`` were shortcuts on top of the full sidebar, so
+    the shell shows EVERY held app for it. The member's first save writes
+    ``known``, and the stars filter from then on.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -321,6 +331,7 @@ class ShellPrefs(BaseModel):
     preset: str | None = None
     answered: Literal["answered", "skipped"] | None = None
     pins: list[str] | None = Field(default=None, max_length=MAX_PINS)
+    known: list[str] | None = Field(default=None, max_length=MAX_PINS)
     card_order: list[str] | None = Field(
         default=None, alias="cardOrder", max_length=MAX_CARDS)
     new_order: list[str] | None = Field(
@@ -333,7 +344,7 @@ class ShellPrefs(BaseModel):
             raise ValueError(f"unknown preset: {v[:40]}")
         return v
 
-    @field_validator("pins")
+    @field_validator("pins", "known")
     @classmethod
     def _pins(cls, v: list[str] | None) -> list[str] | None:
         return None if v is None else _known(v, SHELL_PANES, "pane")
@@ -353,7 +364,7 @@ class ShellPrefs(BaseModel):
 #: role's preset (`presetForRole` in `presets.ts`), so the gateway holds no
 #: second copy of that rule.
 EMPTY_SHELL: dict[str, Any] = {
-    "preset": None, "answered": None, "pins": None,
+    "preset": None, "answered": None, "pins": None, "known": None,
     "cardOrder": None, "newOrder": None,
 }
 
@@ -385,6 +396,7 @@ def stored_shell(raw: Any) -> dict[str, Any]:
         "preset": preset if preset in SHELL_PRESETS else None,
         "answered": answered if answered in ("answered", "skipped") else None,
         "pins": _list("pins", SHELL_PANES, MAX_PINS),
+        "known": _list("known", SHELL_PANES, MAX_PINS),
         "cardOrder": _list("cardOrder", SHELL_CARDS, MAX_CARDS),
         "newOrder": _list("newOrder", _job_ids(), MAX_JOBS),
     }

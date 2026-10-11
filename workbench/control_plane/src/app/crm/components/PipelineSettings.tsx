@@ -20,7 +20,10 @@
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
+import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
 import { useState } from "react";
 import {
   REQUIREABLE_FIELD_LABELS,
@@ -45,6 +48,16 @@ import type {
 } from "../lib/types";
 
 const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
+
+/** The two pickers of a status row, as `SelectButton` options (CRM-U2). */
+const COLOR_OPTIONS: SelectOption[] = TONE_COLORS.map((color) => ({
+  value: color,
+  label: color,
+}));
+const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
+  value: type,
+  label: type,
+}));
 
 export default function PipelineSettings({
   dealStatuses,
@@ -483,33 +496,23 @@ function StatusRow({
         className="min-w-32 flex-1"
       />
 
-      <select
+      <SelectButton
+        label="Colour"
         value={draft.color || "gray"}
-        onChange={(e) => setDraft({ ...draft, color: e.target.value })}
-        aria-label="Colour"
-        className="tech-transition h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:border-primary focus:outline-none"
-      >
-        {TONE_COLORS.map((color) => (
-          <option key={color} value={color}>
-            {color}
-          </option>
-        ))}
-      </select>
+        options={COLOR_OPTIONS}
+        defaultValue="gray"
+        onChange={(color) => setDraft({ ...draft, color })}
+        widthClass="w-24"
+      />
 
-      <select
+      <SelectButton
+        label="Type"
         value={draft.type}
-        onChange={(e) =>
-          setDraft({ ...draft, type: e.target.value as StatusType })
-        }
-        aria-label="Type"
-        className="tech-transition h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:border-primary focus:outline-none"
-      >
-        {STATUS_TYPES.map((type) => (
-          <option key={type} value={type}>
-            {type}
-          </option>
-        ))}
-      </select>
+        options={TYPE_OPTIONS}
+        defaultValue="open"
+        onChange={(type) => setDraft({ ...draft, type: type as StatusType })}
+        widthClass="w-24"
+      />
 
       {kind === "deal" && (
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -533,11 +536,10 @@ function StatusRow({
         className="flex items-center gap-1 text-xs text-muted-foreground"
         title="New records land here"
       >
-        <input
-          type="checkbox"
+        <Checkbox
+          size="sm"
           checked={draft.is_default}
           onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })}
-          className="accent-primary"
         />
         default
       </label>
@@ -574,8 +576,8 @@ function StatusRow({
                 key={field}
                 className="flex items-center gap-1 text-xs text-muted-foreground"
               >
-                <input
-                  type="checkbox"
+                <Checkbox
+                  size="sm"
                   checked={on}
                   onChange={() =>
                     setDraft({
@@ -592,7 +594,6 @@ function StatusRow({
                       ),
                     })
                   }
-                  className="accent-primary"
                 />
                 {REQUIREABLE_FIELD_LABELS[field]}
               </label>
@@ -810,17 +811,16 @@ function ReasonRow({
         onClick={() => setConfirming(true)}
       />
       {invalid && <p className="w-full text-xs text-destructive">{invalid}</p>}
-      {confirming && (
-        <DeleteReasonDialog
-          reason={reason}
-          saving={saving}
-          onCancel={() => setConfirming(false)}
-          onConfirm={async () => {
-            setConfirming(false);
-            await onRemove();
-          }}
-        />
-      )}
+      <DeleteReasonDialog
+        open={confirming}
+        reason={reason}
+        saving={saving}
+        onCancel={() => setConfirming(false)}
+        onConfirm={async () => {
+          setConfirming(false);
+          await onRemove();
+        }}
+      />
     </div>
   );
 }
@@ -841,56 +841,37 @@ function ReasonRow({
  * before deleting is the better answer and is deferred, recorded in the ticket.
  */
 function DeleteReasonDialog({
+  open,
   reason,
   saving,
   onCancel,
   onConfirm,
 }: {
+  open: boolean;
   reason: LostReason;
   saving: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  // On `ConfirmDialog` (CRM-U2): the one "are you sure?" dialog, on the
+  // alert layer, with focus on the delete button so Enter confirms and
+  // Escape cancels.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        aria-label="Cancel"
-        onClick={onCancel}
-        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
-      />
-      <div className="relative w-full max-w-sm rounded-xl border border-border bg-card shadow-xl">
-        <header className="border-b border-border px-4 py-3">
-          <h2 className="text-base font-bold text-foreground">
-            Delete &ldquo;{reason.label}&rdquo;?
-          </h2>
-        </header>
-        <div className="space-y-2 px-4 py-3 text-xs text-muted-foreground">
-          <p>
-            Every deal closed for this reason keeps its note but{" "}
-            <span className="text-foreground">loses the reason itself</span> —
-            the lost-reason breakdown in the reports will no longer count them.
-          </p>
-          <p>
-            Nothing on the board changes, so this is not something you will
-            notice later. Renaming the reason keeps the attribution; deleting it
-            does not.
-          </p>
-        </div>
-        <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
-          <Button variant="secondary" size="sm" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            icon="Trash2"
-            loading={saving}
-            onClick={onConfirm}
-          >
-            Delete anyway
-          </Button>
-        </footer>
-      </div>
-    </div>
+    <ConfirmDialog
+      open={open}
+      title={`Delete “${reason.label}”?`}
+      body={
+        "Every deal closed for this reason keeps its note but loses the reason itself. " +
+        "The lost-reason breakdown in the reports will no longer count them."
+      }
+      note={
+        "Nothing on the board changes, so this is not something you will notice later. " +
+        "Renaming the reason keeps the attribution. Deleting it does not."
+      }
+      confirmLabel="Delete anyway"
+      busy={saving}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }

@@ -1168,9 +1168,10 @@ def bind_db(monkeypatch: Any, fake: FakeCrmDB, modules: tuple[Any, ...]) -> None
     nothing here just as it commits nothing against Postgres. Transaction/GUC
     plumbing stays out of the mirror — ``test_tenant_session.py`` owns that.
 
-    The three H4 leaves (``sync_zoho``, ``auto_lead``, ``broker_handlers``)
-    deliberately stay on the unbound ``_get_db`` seam, so both names are
-    patched wherever a module carries them.
+    ``sync_zoho`` stays on the unbound ``_get_db`` seam until CRM-Z5, so both
+    names are patched wherever a module carries them. ``auto_lead`` and
+    ``broker_handlers`` open ``_tenant_session(org)`` since WS-53 CRM-T3, and
+    the fake ignores the tenant it is given.
     """
     @asynccontextmanager
     async def _tenant_session(organization_id: str | None = None) -> Any:

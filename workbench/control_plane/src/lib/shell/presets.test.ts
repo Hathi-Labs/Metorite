@@ -4,13 +4,16 @@
  *
  * ⚠️ **The subset rule is the one that matters.** A preset never grants. For
  * every preset and every grant set below, what the shell draws from the
- * preset is a subset of `visibleSections(features, isAdmin)`: the pins in
- * "My apps", the sidebar's whole shape, the My Day cards and the jobs of the
+ * preset is a subset of `visibleSections(features, isAdmin)`: the starred
+ * apps, the sidebar's whole shape, the My Day cards and the jobs of the
  * empty command bar.
  *
- * Mutation, seen to fail first: make `pinnedPanes` look a pin up in `PANES`
- * instead of in `sections`, and "draws no pin outside visibleSections" fails
- * for every preset with no grants.
+ * Mutation, seen to fail first: make `starrableHeld` read `PANES` instead of
+ * `sections`, and "draws no star outside visibleSections" fails for every
+ * preset with no grants.
+ *
+ * The star model (owner, 2026-10-11) has its own block below: null stars
+ * show every app, the `known` rule, an answer, and a skip.
  */
 import { describe, expect, it } from "vitest";
 
@@ -20,20 +23,24 @@ import { cardsFor } from "./myDay";
 import {
   ANSWERS,
   BUILT_CARDS,
-  PINNABLE,
   CARD_KEYS,
   EMPTY_SHELL,
   PRESETS,
   PRESET_IDS,
   QUESTION,
+  STARRABLE,
+  answerStars,
+  isStarred,
   orderCards,
-  pinnedPanes,
   presetById,
+  presetExtras,
   presetForAnswer,
   presetForRole,
   roleDefault,
   shellLayout,
-  togglePin,
+  starredHrefs,
+  starsToSave,
+  toggleStar,
 } from "./presets";
 import { JOBS, buildItems, heldPanes, rank } from "./registry";
 import { shellSidebar } from "./shellNav";
@@ -62,15 +69,23 @@ describe("the subset rule: a preset never draws what the member does not hold (�
         const held = hrefs(sections);
         const label = `${preset.label}, ${g.name}${preview ? ", preview apps restored" : ""}`;
 
-        it(`${label}: draws no pin outside visibleSections`, () => {
-          for (const p of pinnedPanes(preset.pins, sections)) expect(held.has(p.href)).toBe(true);
+        const stars = { pins: answerStars(preset, sections), known: [...held] };
+        const raw = { pins: [...preset.pins, "/tasks", "/approvals"], known: [] };
+
+        it(`${label}: draws no star outside visibleSections`, () => {
+          for (const h of starredHrefs(stars, sections) ?? []) expect(held.has(h)).toBe(true);
+          // A stored list that names apps the member lacks, and a `known`
+          // that makes every app new, still draws only what they hold.
+          for (const h of starredHrefs(raw, sections) ?? []) expect(held.has(h)).toBe(true);
         });
 
-        it(`${label}: the sidebar with its pins is still a subset`, () => {
-          const drawn = shellSidebar(sections, preset.pins).flatMap((s) => s.items.map((p) => p.href));
-          for (const h of drawn) expect(held.has(h)).toBe(true);
-          // And it draws each held app once: a pin moves the app, never copies it.
-          expect(new Set(drawn).size).toBe(drawn.length);
+        it(`${label}: the sidebar with its stars is still a subset`, () => {
+          for (const s of [stars, raw]) {
+            const drawn = shellSidebar(sections, s).flatMap((g) => g.items.map((p) => p.href));
+            for (const h of drawn) expect(held.has(h)).toBe(true);
+            // And it draws each held app once: nothing moves, nothing copies.
+            expect(new Set(drawn).size).toBe(drawn.length);
+          }
         });
 
         it(`${label}: the empty command bar offers only held jobs`, () => {
@@ -94,15 +109,15 @@ describe("the subset rule: a preset never draws what the member does not hold (�
   it("draws a preview pin only when the app is promoted (CRM)", () => {
     const sales = presetById("sales-manager")!;
     expect(sales.pins).toContain("/crm");
-    const live = pinnedPanes(sales.pins, visibleSections(ALL, false, false)).map((p) => p.href);
-    expect(live).not.toContain("/crm");
-    const promoted = pinnedPanes(sales.pins, visibleSections(ALL, false, true)).map((p) => p.href);
-    expect(promoted).toContain("/crm");
+    const stars = { pins: sales.pins, known: [] };
+    expect([...starredHrefs(stars, visibleSections(ALL, false, false))!]).not.toContain("/crm");
+    expect([...starredHrefs(stars, visibleSections(ALL, false, true))!]).toContain("/crm");
   });
 
   it("never pins a page about the member, even when one is named", () => {
     const sections = visibleSections(ALL, true);
-    expect(pinnedPanes(["/people/me", "/settings/appearance", "/tasks"], sections).map((p) => p.href)).toEqual(["/tasks"]);
+    const stars = { pins: ["/people/me", "/settings/appearance", "/tasks"], known: PANES.map((p) => p.href) };
+    expect([...starredHrefs(stars, sections)!]).toEqual(["/tasks"]);
   });
 });
 
@@ -199,32 +214,32 @@ describe("without an answer, the role picks (rule 2)", () => {
   it("lets the highest role win, and reads a custom role as a member", () => {
     expect(presetForRole(["member", "admin"])).toBe("founder");
     expect(presetForRole(["guest", "manager"])).toBe("operations-manager");
-    expect(roleDefault(["sales-team"])).toEqual({ preset: "new-hire", pins: true });
-    expect(roleDefault([])).toEqual({ preset: "new-hire", pins: true });
+    expect(roleDefault(["sales-team"])).toEqual({ preset: "new-hire" });
+    expect(roleDefault([])).toEqual({ preset: "new-hire" });
   });
 
-  it("gives a guest New hire with no pins", () => {
-    expect(roleDefault(["guest"])).toEqual({ preset: "new-hire", pins: false });
-    expect(shellLayout(null, ["guest"]).pins).toEqual([]);
-    expect(shellLayout({ ...EMPTY_SHELL, answered: "skipped" }, ["guest"]).pins).toEqual([]);
+  it("gives a guest New hire, and every app they hold shows", () => {
+    expect(roleDefault(["guest"])).toEqual({ preset: "new-hire" });
+    expect(shellLayout(null, ["guest"]).pins).toBeNull();
+    expect(shellLayout({ ...EMPTY_SHELL, answered: "skipped" }, ["guest"]).pins).toBeNull();
   });
 
-  it("gives a guest the pins of a preset they choose", () => {
-    const chose = shellLayout({ ...EMPTY_SHELL, preset: "engineer", answered: "answered" }, ["guest"]);
-    expect(chose.pins).toEqual(presetById("engineer")!.pins);
-  });
-
-  it("uses the role's preset when the read failed or never came", () => {
+  it("uses the role's preset when the read failed or never came, and hides no app", () => {
     expect(shellLayout(undefined, ["owner"]).preset.id).toBe("founder");
-    expect(shellLayout(undefined, ["member"]).pins).toEqual(presetById("new-hire")!.pins);
+    expect(shellLayout(undefined, ["owner"]).cards).toEqual(presetById("founder")!.cards);
+    expect(shellLayout(undefined, ["member"]).pins).toBeNull();
   });
 });
 
 describe("a stored layout wins, field by field", () => {
   it("keeps the member's own pins over the preset's", () => {
-    const l = shellLayout({ ...EMPTY_SHELL, preset: "founder", answered: "answered", pins: ["/calendar"] }, ["member"]);
+    const l = shellLayout(
+      { ...EMPTY_SHELL, preset: "founder", answered: "answered", pins: ["/calendar"], known: ["/calendar"] },
+      ["member"],
+    );
     expect(l.preset.id).toBe("founder");
     expect(l.pins).toEqual(["/calendar"]);
+    expect(l.known).toEqual(["/calendar"]);
     expect(l.jobs).toEqual(presetById("founder")!.jobs);
   });
 
@@ -242,25 +257,132 @@ describe("a star only where the save can land (round 2)", () => {
   // The gateway accepts the panes nav.ts declares by a literal href
   // (`SHELL_PANES`, held to nav.ts by `test_auth_me_shell.py`). The six
   // Center panes are derived, D49 keeps them unlinked, and the PUT refuses
-  // them. So with the preview apps on, a Center tile gets no star.
-  it("holds no Center pane, and every other pane", () => {
-    expect([...PINNABLE].some((h) => h.startsWith("/centers/"))).toBe(false);
-    const literal = PANES.filter((p) => !p.href.startsWith("/centers/")).map((p) => p.href);
-    expect([...PINNABLE].sort()).toEqual([...literal].sort());
+  // them. So with the preview apps on, a Center tile gets no star. A setting
+  // lives in the account menu, so it is never starred either.
+  it("holds no Center pane and no setting, and every other pane", () => {
+    expect([...STARRABLE].some((h) => h.startsWith("/centers/"))).toBe(false);
+    const literal = PANES.filter((p) => !p.href.startsWith("/centers/") && !p.setting).map((p) => p.href);
+    expect([...STARRABLE].sort()).toEqual([...literal].sort());
     expect(PANES.some((p) => p.href.startsWith("/centers/"))).toBe(true);
+    expect(STARRABLE.has("/people/me")).toBe(false);
+    expect(STARRABLE.has("/settings/appearance")).toBe(false);
+    // Home is not a nav.ts pane, so it can never be starred away.
+    expect(STARRABLE.has("/")).toBe(false);
   });
 
-  it("holds every pin of every preset", () => {
-    for (const p of PRESETS) for (const h of p.pins) expect(PINNABLE.has(h), `${p.id} pins ${h}`).toBe(true);
+  it("holds every app of every preset", () => {
+    for (const p of PRESETS) for (const h of p.pins) expect(STARRABLE.has(h), `${p.id} stars ${h}`).toBe(true);
   });
 });
 
-describe("pins and card order", () => {
-  it("toggles a pin on at the end, and off", () => {
-    expect(togglePin(["/tasks"], "/email")).toEqual(["/tasks", "/email"]);
-    expect(togglePin(["/tasks", "/email"], "/tasks")).toEqual(["/email"]);
+// ── The star model (owner, 2026-10-11) ─────────────────────────────────────
+
+describe("the star model: only starred apps show, under their own category", () => {
+  const sections = visibleSections(ALL, true);
+  const heldApps = () => [...STARRABLE].filter((h) => hrefs(sections).has(h));
+
+  it("with no stored stars (never asked, or skipped), every held app shows", () => {
+    expect(starredHrefs(null, sections)).toBeNull();
+    expect(starredHrefs({ pins: null, known: ["/tasks"] }, sections)).toBeNull();
+    for (const h of heldApps()) expect(isStarred({ pins: null, known: null }, sections, h)).toBe(true);
+    // The sidebar is the one it was before stars.
+    expect(shellSidebar(sections, { pins: null, known: null })).toEqual(shellSidebar(sections));
   });
 
+  it("a skip stores no stars, so every app shows", () => {
+    const skipped = shellLayout({ ...EMPTY_SHELL, answered: "skipped" }, ["member"]);
+    expect(skipped.pins).toBeNull();
+    expect(starredHrefs(skipped, sections)).toBeNull();
+  });
+
+  it("an answer stars every held Personal Center app, and the preset's apps", () => {
+    const personal = PANES.filter((p) => p.team === "personal" && !p.setting && hrefs(sections).has(p.href)).map(
+      (p) => p.href,
+    );
+    expect(personal).toEqual(["/tasks", "/calendar", "/email", "/whatsapp"]);
+    expect(answerStars(presetById("founder")!, sections)).toEqual([...personal, "/projects", "/chat", "/approvals"]);
+    // Approvals is starred for every answer of a member who holds it.
+    expect(answerStars(presetById("accounts-assistant")!, sections)).toEqual([...personal, "/approvals"]);
+    // A member who lacks an app gets no star for it.
+    const few = visibleSections(["tasks", "projects"], false);
+    expect(answerStars(presetById("founder")!, few)).toEqual(["/tasks", "/calendar", "/projects"]);
+    // Each answer names only its extras, which the member holds.
+    expect(presetExtras(presetById("founder")!, sections).map((p) => p.label)).toEqual([
+      "Projects",
+      "Chat",
+      "Approvals",
+    ]);
+  });
+
+  // Orchestrator decision, 2026-10-11: the sidebar row is an approver's main
+  // door to the queue, because the bell and My Day are not reliably on.
+  it("an approver who answers Engineer gets Approvals starred, and a member without it does not", () => {
+    const engineer = presetById("engineer")!;
+    expect(engineer.pins).not.toContain("/approvals");
+    expect(answerStars(engineer, visibleSections(["tasks", "approvals"], false))).toContain("/approvals");
+    expect(answerStars(engineer, visibleSections(["tasks"], false))).not.toContain("/approvals");
+  });
+
+  it("a new app shows starred until a save covers it (the known rule)", () => {
+    const stars = { pins: ["/projects"], known: ["/projects", "/people", "/tasks"] };
+    const shown = starredHrefs(stars, sections)!;
+    // Known and not starred: hidden.
+    expect(shown.has("/people")).toBe(false);
+    expect(shown.has("/tasks")).toBe(false);
+    // Not known: new to the member, so it shows.
+    expect(shown.has("/chat")).toBe(true);
+    expect(shown.has("/email")).toBe(true);
+    // A save writes every held app as known, so it is no longer new.
+    const saved = starsToSave(shown, sections, stars);
+    expect([...saved.known].sort()).toEqual(heldApps().sort());
+    const hidden = toggleStar(saved, sections, "/chat");
+    expect(hidden.pins).not.toContain("/chat");
+    expect(starredHrefs(hidden, sections)!.has("/chat")).toBe(false);
+  });
+
+  // NS-7's pins were a "My apps" list on top of the whole sidebar, never a
+  // filter. So a row with no `known` shows every held app, as on the day
+  // before the merge.
+  it("an NS-7 row with no known shows every held app, as the day before", () => {
+    const old = { pins: ["/tasks", "/projects"], known: null };
+    expect(starredHrefs(old, sections)).toBeNull();
+    expect(shellSidebar(sections, old)).toEqual(shellSidebar(sections));
+  });
+
+  it("an NS-7 row that pinned and then unpinned (pins: [], no known) still shows every app", () => {
+    const emptied = { pins: [], known: null };
+    expect(starredHrefs(emptied, sections)).toBeNull();
+    expect(shellSidebar(sections, emptied)).toEqual(shellSidebar(sections));
+    for (const h of heldApps()) expect(isStarred(emptied, sections, h)).toBe(true);
+  });
+
+  it("the first star-model save of an NS-7 row writes known, and the stars filter from then on", () => {
+    const old = { pins: ["/tasks"], known: null };
+    const saved = toggleStar(old, sections, "/chat");
+    expect([...saved.known].sort()).toEqual(heldApps().sort());
+    expect(saved.pins).not.toContain("/chat");
+    expect(saved.pins).toContain("/projects");
+    expect(starredHrefs(saved, sections)!.has("/chat")).toBe(false);
+  });
+
+  it("toggles a star on and off, and saves every held app as known", () => {
+    const all = toggleStar({ pins: null, known: null }, sections, "/chat");
+    expect(all.pins).not.toContain("/chat");
+    expect(all.pins).toContain("/projects");
+    const back = toggleStar(all, sections, "/chat");
+    expect(back.pins).toContain("/chat");
+    expect([...back.known].sort()).toEqual(heldApps().sort());
+  });
+
+  it("keeps a star for an app the member lost, so it shows again when the grant returns", () => {
+    const few = visibleSections(["tasks"], false);
+    const saved = starsToSave(["/tasks"], few, { pins: ["/projects"], known: ["/projects"] });
+    expect(saved.pins).toEqual(["/tasks", "/projects"]);
+    expect(saved.known).toEqual(["/tasks", "/calendar"]);
+  });
+});
+
+describe("card order", () => {
   it("puts the named cards first and keeps every other card", () => {
     expect(orderCards(["needs", "today", "next"], ["next", "today", "needs"])).toEqual(["next", "today", "needs"]);
     expect(orderCards(["needs", "today", "next"], ["today", "next"])).toEqual(["today", "next", "needs"]);

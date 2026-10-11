@@ -55,11 +55,11 @@ from fastapi import APIRouter, Depends, HTTPException
 # bound request raises `TenantUnbound` rather than defaulting: fail closed,
 # never "the usual org".
 #
-# `_get_db` stays exported for the package's three NON-request leaves only —
-# `sync_zoho` (the scheduled sync engine), `auto_lead` (the email scheduler's
-# hook) and `broker_handlers` (the approval-time push handler). Those run
-# outside a member's request, so inheriting the ambient tenant is exactly what
-# H4 forbids; they stay unbound until H4 threads an explicit tenant through.
+# `_get_db` stays exported for ONE non-request leaf: `sync_zoho`, the sync
+# engine, which no path reaches until CRM-Z5 rebuilds it per tenant. WS-53
+# CRM-T3 moved the other two leaves to `tenant_session(org)`: `auto_lead`
+# takes the tenant the email hook bound, and `broker_handlers` takes the
+# tenant the `approve` call bound. Each passes that tenant by value.
 from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from gateway.routes.crm.access import require_crm_access

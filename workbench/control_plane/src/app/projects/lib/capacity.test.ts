@@ -87,7 +87,7 @@ describe("capacity rows", () => {
   it("names the unassigned row, and a person by their directory name", () => {
     expect(rowLabel(unassigned)).toBe("Unassigned");
     expect(rowLabel(task)).toBe("Ana");
-    expect(rowLabel({ ...task, name: null })).toBe("ana@example.test");
+    expect(rowLabel({ ...task, name: null })).toBe("ana");
     expect(rowLabel({ ...task, kind: "agent", assignee: "agent:triage", name: "triage" })).toBe(
       "agent:triage"
     );
