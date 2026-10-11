@@ -43,6 +43,8 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | M8 | ``_card_refusal`` skips the WhatsApp check | ``test_a_whatsapp_run_refuses_and_parks_nothing`` |
 | M9 | ``_sensitive_name`` returns False | ``test_the_card_redacts_sensitive_arguments`` |
 | M10 | the gate skips the card for the code ``gate_error`` | ``test_a_gate_fault_still_needs_the_card`` |
+| M11 | the ``tools/list`` record keeps no hints | ``test_a_read_only_tool_runs_with_no_card_end_to_end`` |
+| M12 | ``decide()`` checks the platform annotations before the MCP rule | ``test_an_mcp_tool_never_borrows_a_platform_tool_s_hints`` |
 """
 from __future__ import annotations
 
@@ -142,6 +144,11 @@ def _answer(request_id: str, answer: str) -> None:
     executor._pending_user_input[request_id].set_result({"answer": answer})
 
 
+def _bounded(coro: Any) -> Any:
+    """A gate call that a mutation turns into a card fails, and never hangs."""
+    return asyncio.wait_for(coro, timeout=5)
+
+
 def _gate(fn: Any, hints: dict[str, Any] | None, *, member: bool = True, **kw: Any) -> Any:
     return _maf_mcp.McpPermissionGate(tools=[_server(fn, hints, **kw)], member_present=member)
 
@@ -201,7 +208,7 @@ async def test_a_read_only_tool_runs_at_once_with_no_card() -> None:
     fn = _function("srv_echo", "echo")
     ran = _Ran()
     with _card_channel() as queue:
-        await _gate(fn, {"readOnlyHint": True}).process(_ctx(fn), ran)
+        await _bounded(_gate(fn, {"readOnlyHint": True}).process(_ctx(fn), ran))
     assert ran.count == 1
     assert queue.empty(), "a read-only tool showed a card"
 
@@ -278,7 +285,7 @@ async def test_a_policy_deny_still_blocks_before_any_card(monkeypatch) -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue:
-        await _gate(fn, None).process(ctx, ran)
+        await _bounded(_gate(fn, None).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
     assert ctx.result == "[blocked by permission policy: probe_denied]"
 
@@ -327,7 +334,7 @@ async def test_a_card_fault_is_a_deny(monkeypatch) -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel():
-        await _gate(fn, None).process(ctx, ran)
+        await _bounded(_gate(fn, None).process(ctx, ran))
     assert ran.count == 0
     assert ctx.result == _maf_mcp.DENIED_TEXT.format(tool="srv_delete_record")
 
@@ -340,7 +347,7 @@ async def test_a_run_with_no_member_refuses_and_shows_no_card() -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue, structlog.testing.capture_logs() as logs:
-        await _gate(fn, {"destructiveHint": True}, member=False).process(ctx, ran)
+        await _bounded(_gate(fn, {"destructiveHint": True}, member=False).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
     assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
     assert [e for e in logs if e["event"] == "mcp.confirm" and e["outcome"] == "no_member"]
@@ -351,7 +358,7 @@ async def test_a_member_with_no_card_channel_is_refused() -> None:
     fn = _function()
     ctx = _ctx(fn)
     ran = _Ran()
-    await _gate(fn, None).process(ctx, ran)
+    await _bounded(_gate(fn, None).process(ctx, ran))
     assert ran.count == 0
     assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool="srv_delete_record")
 
@@ -359,7 +366,7 @@ async def test_a_member_with_no_card_channel_is_refused() -> None:
 async def test_a_no_member_run_still_runs_a_read_only_tool() -> None:
     fn = _function("srv_echo", "echo")
     ran = _Ran()
-    await _gate(fn, {"readOnlyHint": True}, member=False).process(_ctx(fn), ran)
+    await _bounded(_gate(fn, {"readOnlyHint": True}, member=False).process(_ctx(fn), ran))
     assert ran.count == 1
 
 
@@ -382,7 +389,7 @@ async def test_a_whatsapp_run_refuses_and_parks_nothing(writes) -> None:
     ran = _Ran()
     with _card_channel() as queue, ask_tools.refuse_cards(), \
             wui.whatsapp_run("apis-config", writes=writes) as run:
-        await _gate(fn, None).process(ctx, ran)
+        await _bounded(_gate(fn, None).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
     assert run.parked is None, "an MCP call was parked for a WhatsApp Confirm"
     assert ctx.result == _maf_mcp.NO_CARD_CHANNEL_TEXT.format(tool="srv_delete_record")
@@ -395,7 +402,7 @@ async def test_a_whatsapp_profile_with_no_refuse_scope_still_refuses() -> None:
     ctx = _ctx(fn)
     ran = _Ran()
     with _card_channel() as queue, wui.whatsapp_run("apis-config", writes=True):
-        await _gate(fn, None).process(ctx, ran)
+        await _bounded(_gate(fn, None).process(ctx, ran))
     assert ran.count == 0 and queue.empty()
 
 
@@ -511,8 +518,9 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
             value = event["value"]
             seen["cards"].append(value)
             seen["calls_at_card"] = list(srv.calls)
-            if answer is not None:
-                _answer(value["request_id"], answer)
+            # A card that a test does not expect is still answered, so a
+            # mutation fails the test and never parks the run for an hour.
+            _answer(value["request_id"], answer or "REJECT")
 
     with structlog.testing.capture_logs() as logs:
         events, built = drive_native(
