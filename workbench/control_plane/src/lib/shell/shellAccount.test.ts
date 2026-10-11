@@ -193,6 +193,12 @@ describe("the sidebar foot is the Metorite menu, with the shell bar on", () => {
     }
     expect(text(open)).toBe("Metorite");
     expect(text(folded)).toBe("");
+    // The word in the type of the sidebar rows beside it, as "All apps" is.
+    expect(open).toMatch(/<span class="[^"]*text-\[13px\] font-medium[^"]*">Metorite<\/span>/);
+    // The house focus ring (`.cc-link:focus-visible` shares `.cc-control`'s
+    // declaration in globals.css), not the browser's default outline.
+    for (const html of [open, folded]) expect(html).toMatch(/<button[^>]*class="cc-link /);
+    expect(read("app/globals.css")).toMatch(/\.cc-control:focus-visible,\s*\.cc-link:focus-visible\s*\{/);
     // The folded geometry of a nav row: a `p-2` block, a centred `p-2.5` button.
     expect(folded).toMatch(/data-metorite-foot="" class="[^"]*\bp-2\b/);
     expect(folded).toMatch(/<button[^>]*class="[^"]*justify-center p-2\.5/);

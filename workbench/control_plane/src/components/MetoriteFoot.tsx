@@ -11,8 +11,11 @@
  * configuring Metorite, such as appearance, layout, and future options. The
  * user's profile and access controls also appear alongside the Metorite logo."
  *
- * - **Open rail.** The comet at 20px, then "Metorite" in the type the old
- *   account foot used for the name.
+ * - **Open rail.** The comet at 20px, then "Metorite" in the type of the
+ *   sidebar rows beside it (13px, medium), as "All apps" is.
+ * - **Focus.** `cc-link` gives it the house focus ring, the one
+ *   `globals.css` shares with `.cc-control` and so with `Button`. It does not
+ *   take the rest of `.cc-control` (label weight, state layer).
  * - **Folded rail.** The comet alone, in the geometry of a folded nav row
  *   (`p-2` block, `p-2.5` button, centred), so it sits on the rail's icon
  *   column. `e2e/shell-account.spec.ts` measures that within 1px.
@@ -96,14 +99,14 @@ export default function MetoriteFoot({
           aria-expanded={open}
           aria-label="Metorite settings"
           title="Metorite"
-          className={`flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
+          className={`cc-link flex items-center rounded-lg text-left hover:bg-sidebar-accent tech-transition ${
             collapsed ? "justify-center p-2.5" : "w-full gap-2.5 px-3 py-2"
           }`}
         >
           <MetoriteMark size={20} />
           {!collapsed && (
             <>
-              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-sidebar-foreground/90">Metorite</span>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-sidebar-foreground/90">Metorite</span>
               <Icon name="ChevronsUpDown" size={13} className="shrink-0 text-muted-foreground" />
             </>
           )}

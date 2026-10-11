@@ -281,6 +281,32 @@ test.describe("the sidebar foot is the Metorite menu", () => {
     await expect(aside(page).getByRole("button", { name: /Switch to (light|dark) mode/ })).toHaveCount(0);
   });
 
+  test("the foot wears the house focus ring, the same as the bar's Button", async ({ page }) => {
+    await flags(page);
+    await stub(page);
+    await page.goto("/settings/appearance");
+    const ring = (l: ReturnType<Page["locator"]>) =>
+      l.evaluate((el) => {
+        const s = getComputedStyle(el);
+        return { style: s.outlineStyle, width: s.outlineWidth, color: s.outlineColor, offset: s.outlineOffset };
+      });
+    // From the keyboard, so `:focus-visible` matches.
+    await trigger(page).focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(trigger(page)).toBeFocused();
+    const house = await ring(trigger(page));
+    expect(house.style).toBe("solid");
+    await metorite(page).focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(metorite(page)).toBeFocused();
+    expect(await ring(metorite(page))).toEqual(house);
+    // The word in the rows' type: the same size as "All apps".
+    const size = (l: ReturnType<Page["locator"]>) => l.evaluate((el) => getComputedStyle(el).fontSize);
+    expect(await size(metorite(page).getByText("Metorite"))).toBe(await size(aside(page).getByText("All apps")));
+  });
+
   test("its menu holds You and Settings, and no account act", async ({ page }) => {
     await flags(page);
     await stub(page);
