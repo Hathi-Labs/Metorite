@@ -15,15 +15,24 @@
 import { create } from "zustand";
 import * as api from "./api";
 import { CrmError } from "./api";
-import { applyMove, toBoardLanes, type BoardLane, type DealMove } from "./board";
+import {
+  applyLeadMove,
+  applyMove,
+  toBoardLanes,
+  toLeadLanes,
+  type BoardLane,
+  type DealMove,
+  type LeadLane,
+} from "./board";
 import { MIRROR_REFUSALS } from "./connect";
+import { NO_RELATED, type RelatedLists } from "./related";
 import { exportQuery, listQuery } from "./filters";
 import {
   applyPatches,
   reorderFailureMessage,
   type PositionPatch,
 } from "./settings";
-import { isEntity, type CrmView } from "./urlState";
+import { isBoardView, isEntity, type CrmView } from "./urlState";
 import type {
   Contact,
   CrmReports,
@@ -43,6 +52,9 @@ type Rows = Record<string, unknown>[];
 
 type CrmState = {
   lanes: BoardLane[];
+  /** The Leads board: one lane per Lead Status (CRM-Q3). */
+  leadLanes: LeadLane[];
+  related: RelatedLists;
   rows: Rows;
   total: number;
   dealStatuses: Status[];
@@ -75,6 +87,9 @@ type CrmState = {
   refreshCollection: () => Promise<void>;
   loadVocabulary: () => Promise<void>;
   loadBoard: (view: CrmView) => Promise<void>;
+  loadLeadBoard: (view: CrmView) => Promise<void>;
+  /** A lead dropped on a Lead Status lane. `move.dealId` holds the lead id. */
+  moveLead: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
   /** WS-26g — the reports tab's read. All four blocks, in one pass. */
   loadReports: (view: CrmView) => Promise<void>;
   loadList: (entity: EntitySlug, view: CrmView) => Promise<void>;
@@ -89,6 +104,7 @@ type CrmState = {
    */
   exportList: (entity: EntitySlug, view: CrmView) => Promise<void>;
   loadRecord: (entity: EntitySlug, id: string) => Promise<void>;
+  loadRelated: (entity: EntitySlug, id: string) => Promise<void>;
   loadDirectories: () => Promise<void>;
   moveDeal: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
   patchRecord: (
@@ -172,6 +188,8 @@ function message(err: unknown): string | null {
 
 export const useCrmStore = create<CrmState>((set, get) => ({
   lanes: [],
+  leadLanes: [],
+  related: NO_RELATED,
   rows: [],
   total: 0,
   dealStatuses: [],
@@ -193,7 +211,10 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async refreshCollection() {
     const view = get().lastView;
     if (!view) return;
-    if (view.tab === "board") await get().loadBoard(view);
+    if (isBoardView(view)) {
+      if (view.tab === "leads") await get().loadLeadBoard(view);
+      else await get().loadBoard(view);
+    }
     // The reports tab has no writes of its own, but the record sheet opens
     // OVER it (`?tab=reports&deal=<id>`) and moving a deal from there changes
     // every number behind the sheet. The store's one rule — a write re-reads
@@ -222,12 +243,55 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async loadBoard(view) {
     set({ loading: true, lastView: view });
     try {
-      const pipeline = await api.getPipeline(view.owner);
+      const pipeline = await api.getPipeline(view.owner, view.pipelineId);
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
       set({ error: message(err) });
     } finally {
       set({ loading: false });
+    }
+  },
+
+  async loadLeadBoard(view) {
+    set({ loading: true, lastView: view });
+    try {
+      // The statuses come from the vocabulary when it is loaded, and from the
+      // gateway when it is not. One page of leads for each status: the lane
+      // count is the status total, as on the deals board.
+      const statuses =
+        get().leadStatuses.length > 0 ? get().leadStatuses : await api.listStatuses("lead");
+      const pages = await Promise.all(
+        statuses.map((status) =>
+          api.listRecords<Lead>("leads", {
+            status_id: status.id,
+            page_size: 50,
+            ...(view.owner ? { owner: view.owner } : {}),
+          }),
+        ),
+      );
+      const byStatus: Record<string, { rows: Lead[]; total: number }> = {};
+      statuses.forEach((status, i) => {
+        byStatus[status.id] = pages[i];
+      });
+      set({ leadLanes: toLeadLanes(statuses, byStatus), error: null });
+    } catch (err) {
+      set({ error: message(err), leadLanes: [] });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  async moveLead(move, extra = {}) {
+    // Optimistic, like the deals board. A refusal puts the card back.
+    const previous = get().leadLanes;
+    set({ leadLanes: applyLeadMove(previous, move), saving: true, error: null });
+    try {
+      await api.patchRecord("leads", move.dealId, { status_id: move.toStatusId, ...extra });
+      await get().refreshCollection();
+    } catch (err) {
+      set({ leadLanes: previous, error: message(err) });
+    } finally {
+      set({ saving: false });
     }
   },
 
@@ -281,7 +345,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadRecord(entity, id) {
-    set({ record: null, timeline: [], dealContacts: [] });
+    set({ record: null, timeline: [], dealContacts: [], related: NO_RELATED });
     try {
       const [record, timeline] = await Promise.all([
         api.getRecord<Record<string, unknown>>(entity, id),
@@ -294,6 +358,30 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       }
     } catch (err) {
       set({ error: message(err) });
+    }
+    await get().loadRelated(entity, id);
+  },
+
+  async loadRelated(entity, id) {
+    // A company shows its contacts and deals. A contact shows its deals. Both
+    // are the existing list routes with a filter, so a related row is the same
+    // row the list shows. A failed read leaves the section empty and says so
+    // nowhere else: the record itself loaded.
+    const page = (target: EntitySlug, query: Parameters<typeof api.listRecords>[1]) =>
+      api.listRecords(target, { page_size: 50, ...query }).then((r) => r.rows);
+    try {
+      if (entity === "organizations") {
+        const [contacts, deals] = await Promise.all([
+          page("contacts", { company_id: id }),
+          page("deals", { company_id: id }),
+        ]);
+        set({ related: { contacts, deals } });
+      } else if (entity === "contacts") {
+        const deals = await page("deals", { contact_id: id });
+        set({ related: { contacts: [], deals } });
+      }
+    } catch {
+      set({ related: NO_RELATED });
     }
   },
 

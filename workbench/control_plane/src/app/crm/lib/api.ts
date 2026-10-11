@@ -19,6 +19,7 @@ import type {
   ConvertResult,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   FunnelReport,
   Lead,
@@ -188,8 +189,23 @@ export async function exportRecords(
 
 // ── The board ─────────────────────────────────────────────────────────────
 
-export function getPipeline(owner?: string | null): Promise<Pipeline> {
-  return call<Pipeline>(`/pipeline${owner ? `?owner=${encodeURIComponent(owner)}` : ""}`);
+export function getPipeline(
+  owner?: string | null,
+  pipelineId?: string | null,
+): Promise<Pipeline> {
+  const params = new URLSearchParams();
+  if (owner) params.set("owner", owner);
+  if (pipelineId) params.set("pipeline_id", pipelineId);
+  const qs = params.toString();
+  return call<Pipeline>(`/pipeline${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * The deal pipelines (CRM-Q2). `null` when the gateway has no such route yet:
+ * the CRM then has one implicit pipeline and shows no picker.
+ */
+export function listPipelines(): Promise<DealPipeline[] | null> {
+  return orNullOn404(call<DealPipeline[]>("/pipelines"));
 }
 
 /**

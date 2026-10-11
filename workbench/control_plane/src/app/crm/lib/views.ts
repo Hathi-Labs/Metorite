@@ -19,29 +19,30 @@ export interface CrmRailView {
 }
 
 /**
- * The views, in rail order.
+ * The views, in rail order (spec crm_platform.md section 18.4). There is no
+ * "Pipeline" row: the board is a layout of Deals. Activities has no view yet,
+ * so it has no row.
  *
  * ⚠️ The `organizations` view reads "Companies" (D95.2), and its id stays
  * `organizations`. The id is the URL and the gateway's collection name. A
  * rename there would break each saved link and each agent that names it.
  */
 export const CRM_VIEWS: readonly CrmRailView[] = [
-  { id: "board", label: "Pipeline", icon: "Kanban" },
-  { id: "deals", label: "Deals", icon: "Handshake" },
   { id: "leads", label: "Leads", icon: "Target" },
   { id: "contacts", label: "Contacts", icon: "Contact" },
   { id: "organizations", label: "Companies", icon: "Building2" },
+  { id: "deals", label: "Deals", icon: "Handshake" },
   { id: "reports", label: "Reports", icon: "BarChart3" },
 ];
 
 /**
- * The settings row, apart from the views below a divider. It is a place to
- * change the pipeline, not a view of the data. CRM-U6 moves it to
- * Settings → CRM, and until then the rail keeps it in reach.
+ * The settings row, apart from the views below a divider. It is the place to
+ * set the CRM up, not a view of the data. The id stays `settings`, so every
+ * saved link to the old "Pipeline settings" still opens it.
  */
 export const CRM_SETTINGS_VIEW: CrmRailView = {
   id: "settings",
-  label: "Pipeline settings",
+  label: "CRM settings",
   icon: "Settings",
 };
 
@@ -50,5 +51,5 @@ export const CRM_RAIL: readonly CrmRailView[] = [...CRM_VIEWS, CRM_SETTINGS_VIEW
 
 /** The label of a view, for the phone bar's title. */
 export function viewLabel(tab: CrmView["tab"]): string {
-  return CRM_RAIL.find((v) => v.id === tab)?.label ?? "Pipeline";
+  return CRM_RAIL.find((v) => v.id === tab)?.label ?? "Deals";
 }

@@ -25,6 +25,8 @@
 > title bar mode and the mirror marks. CRM-L2, the promotion of `/crm` to live,
 > with the per-org list `CRM_MIRROR_ORGS` (2026-10-11, owner decision in chat).
 > The other slices are not built yet.
+>
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -1156,7 +1158,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 |---|---|---|
 | **CRM-Q1** | Discovery and the source profile. The edition-aware budget. `domain_name` and the deep link ("Open in Zoho") | P0 |
 | **CRM-Q2** | Deal pipelines: `crm_pipelines`, the stages of each pipeline, `crm_deals.pipeline_id`, and the forecast category | P0 |
-| **CRM-Q3** | The new layout of §18.4: no "Pipeline" row, the list or board switch, the pipeline picker, the Leads board, "CRM settings", and related lists | P0 |
+| **CRM-Q3** | ✅ built 2026-10-12. The new layout of §18.4: no "Pipeline" row, the list or board switch, the pipeline picker, the Leads board, "CRM settings", and related lists | P0 |
 | **CRM-Q4** | Field definitions in the UI: `GET /crm/fields/{entity}`, custom fields with label, type and order on the record page | P0 |
 | **CRM-Q5** | Data that the mirror loses: converted leads (`converted=both`), Zoho Tasks, and deal contact roles | P0 |
 | **CRM-Q6** | The generic record store and its views. Products and Quotes first, then each custom module | P0 |
@@ -1167,6 +1169,17 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
+
+**CRM-Q3 built as (2026-10-12).**
+
+- The rail reads Leads, Contacts, Companies, Deals, Reports and CRM settings. It has no Activities row, because no Activities view exists yet.
+- `?tab=pipeline` and `?tab=board` open Deals as a board. `?tab=settings` opens CRM settings. Deals opens as a board, and `?layout=list` shows the list.
+- Deals and Leads have a list or board switch in the title bar. The Leads board has one column for each Lead Status. A card does not drag in Mirror mode or with an `ext_source`.
+- The pipeline picker shows for two pipelines or more. It needs `GET /crm/pipelines` from CRM-Q2. A 404 gives one implicit pipeline and no picker. The browser keeps the last choice.
+- The record page shows related lists. The list routes take `?company_id=` for contacts and deals, and `?contact_id=` for deals. A filter on another entity gives 422. Fence: `tests/unit/test_crm_related_r8.py`.
+- CRM settings is one page of cards in this order: Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health. Fields and Sync health say "Coming soon" until CRM-Q4 and CRM-Q9.
+- §18.6: an error boundary wraps the CRM views. It shows "Something went wrong on this page. Reload to get the newest version." The Access card reads the group list only for the rule "groups".
+- Not built: stage rename, add and remove for a second pipeline. The CRM-Q2 routes for them are not in this build, so several pipelines show read-only.
 
 The earlier native gaps of §6 (CRM-S1 to CRM-S12) and the insights of §9 keep
 their own rows. CRM-Q8 builds the saved views of CRM-S2.

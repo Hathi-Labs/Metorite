@@ -26,6 +26,7 @@ import {
   adminsOnly,
   groupSubject,
   toggleGroup,
+  wantsGroups,
   type CrmAccess,
 } from "../lib/access";
 import * as api from "../lib/api";
@@ -125,8 +126,14 @@ export function AccessSection() {
   const settings = useCachedResource<CrmSettings | null | typeof CRM_OFF>("crm:settings", readSettings);
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [saving, setSaving] = useState(false);
+  const access = typeof settings.data === "object" ? settings.data?.access : undefined;
+  // The group list is read only when the rule is "groups", and only after the
+  // settings have loaded (spec section 18.6). It is the one request this panel
+  // makes that the page could do without.
+  const needGroups = !settings.loading && wantsGroups(access);
 
   useEffect(() => {
+    if (!needGroups) return;
     let live = true;
     api.listGroups().then((rows) => {
       if (live) setGroups(rows);
@@ -134,7 +141,7 @@ export function AccessSection() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [needGroups]);
 
   if (settings.loading) return null;
 
@@ -156,7 +163,7 @@ export function AccessSection() {
 
   return (
     <AccessPanel
-      access={typeof settings.data === "object" ? settings.data?.access : undefined}
+      access={access}
       groups={(typeof settings.data === "object" && settings.data?.access_groups) || []}
       allGroups={groups}
       saving={saving}

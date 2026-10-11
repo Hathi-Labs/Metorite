@@ -15,7 +15,9 @@ import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { customRows, isMirrored, LOCK_TIP } from "../lib/connect";
 import { money, shortDate } from "../lib/format";
+import RelatedLists from "./RelatedLists";
 import StatusPill from "./StatusPill";
+import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
 import type { DealContact, EntitySlug, Status } from "../lib/types";
 
 type Row = Record<string, unknown>;
@@ -112,6 +114,8 @@ export default function FieldsPanel({
   onSetPrimary,
   onDetach,
   onOpenContact,
+  related = NO_RELATED,
+  onOpenRelated,
 }: {
   entity: EntitySlug;
   record: Row;
@@ -124,6 +128,9 @@ export default function FieldsPanel({
   onSetPrimary: (contactId: string) => void;
   onDetach: (contactId: string) => void;
   onOpenContact: (contactId: string) => void;
+  /** The related lists of a company or a contact (CRM-Q3). */
+  related?: Related;
+  onOpenRelated?: (entity: EntitySlug, id: string) => void;
 }) {
   const status =
     statuses.find((s) => s.id === record.status_id) ?? null;
@@ -160,11 +167,11 @@ export default function FieldsPanel({
       {entity === "deals" && (
         <section className="border-b border-border px-4 py-3">
           <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-            People
+            Contacts
           </h3>
           {dealContacts.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Nobody is attached to this deal.
+              No contacts on this deal.
             </p>
           ) : (
             <ul className="space-y-1.5">
@@ -230,6 +237,10 @@ export default function FieldsPanel({
           />
         ))}
       </dl>
+
+      {onOpenRelated && (
+        <RelatedLists entity={entity} related={related} onOpen={onOpenRelated} />
+      )}
 
       {custom.length > 0 && (
         <section className="border-t border-border">
