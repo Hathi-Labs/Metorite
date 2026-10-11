@@ -16,10 +16,13 @@
  *
  * ## Why a popover here and inline in the Move dialogs
  *
- * These three sit in a page, a rail and a settings panel, never in a `Modal`.
- * A portalled panel falls outside a Modal's focus trap, which is why the
- * dialogs draw the picker inline instead (`MoveTasksDialog`). Do not mount
- * this inside a `Modal`.
+ * A portalled panel falls outside a Modal's focus trap, and a search box that
+ * loses the caret to the trap does not work. So the Move dialogs draw the
+ * picker inline (`MoveTasksDialog`). One host here does sit in a `Modal`:
+ * "Copy statuses from" when the Statuses screen opens from a row menu
+ * (`ManagerFrame`). Traced through Base UI for #866: its outside press
+ * ignores a panel added later, and focusout does not pull focus back. Look at
+ * it again before adding another host in a dialog.
  *
  * Dismissal is `SelectButton`'s: the shared outside-click walker, Escape
  * returning focus to the trigger (`ProjectPicker`'s `onEscape`).
@@ -83,8 +86,19 @@ export function ProjectSelect({
     const onDown = (event: MouseEvent) => {
       if (shouldDismiss(event.target as Element | null, domClickWalk(root.current))) setOpen(false);
     };
+    // Escape from anywhere in the panel, not only the search box: a click on
+    // a chevron or a row moves focus off it (review of #866). As SelectButton.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      root.current?.querySelector("button")?.focus();
+    };
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   const close = () => {
@@ -123,7 +137,8 @@ export function ProjectSelect({
           roots={roots}
           rule={rule ?? ANY_NODE}
           lead={lead}
-          value={value || null}
+          // As it is: `""` is a real value ("Whole organization").
+          value={value}
           autoFocus
           label={label}
           onEscape={close}

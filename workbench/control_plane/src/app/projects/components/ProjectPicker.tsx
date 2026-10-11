@@ -212,13 +212,15 @@ export function ProjectPicker({
     query: query ?? "",
     key: null,
   });
+  // ⚠️ `""` is a real key: "Whole organization" has it (review of #866).
+  // Every test below is `!== null`, never truthiness.
   const cursor = held.query === (query ?? "") ? held.key : null;
   const setCursor = (key: string | null) => {
     setHeld({ query: query ?? "", key });
     // The note follows the cursor now. A reason for a row it left is stale.
     setTried(null);
   };
-  const at = cursor ? items.findIndex((i) => i.key === cursor) : -1;
+  const at = cursor !== null ? items.findIndex((i) => i.key === cursor) : -1;
 
   const listId = useId();
   const optionId = (key: string) => `${listId}-${key}`;
@@ -240,7 +242,7 @@ export function ProjectPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target, nodes]);
   useEffect(() => {
-    if (!cursor) return;
+    if (cursor === null) return;
     document.getElementById(optionId(cursor))?.scrollIntoView({ block: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursor]);
@@ -345,7 +347,7 @@ export function ProjectPicker({
           aria-haspopup="tree"
           aria-expanded
           aria-controls={listId}
-          aria-activedescendant={cursor ? optionId(cursor) : undefined}
+          aria-activedescendant={cursor !== null ? optionId(cursor) : undefined}
           autoComplete="off"
         />
       )}
@@ -457,8 +459,8 @@ export function ProjectPicker({
         {explained ? (
           <>
             <Icon name="Info" className="mr-1 -mt-0.5 inline h-3 w-3" />
-            <span className="font-medium text-foreground">{explained.name}</span> cannot take
-            it. {explained.refusal}
+            <span className="font-medium text-foreground">{explained.name}</span>:{" "}
+            {explained.refusal}
           </>
         ) : null}
       </p>

@@ -111,9 +111,12 @@ export function StatusSetControl({
 
   /** Rows the human actually has to answer: they carry tasks and they move. */
   /**
-   * Which nodes may lend their lanes. This one cannot (a copy from yourself is
-   * a no-op), and a folder holds no status set (`hasStatusSet`). Both stay in
-   * the tree, refused with the reason, so the tree keeps its shape.
+   * Which nodes may lend their lanes: only a node that OWNS a set. This one
+   * cannot (a copy from yourself is a no-op), a folder holds none
+   * (`hasStatusSet`), and a node that inherits would lend its owner's lanes
+   * under its own name — or this node's own, a silent no-op (review of #866).
+   * Every refused node stays in the tree, with the reason, so the tree keeps
+   * its shape. `owns_statuses` absent (an old gateway) refuses nothing more.
    */
   const copyRule = useCallback(
     (node: ProjectNode) =>
@@ -121,7 +124,9 @@ export function StatusSetControl({
         ? "This is the project you are changing."
         : nodeKind(node) === "folder"
           ? "A folder has no statuses of its own."
-          : null,
+          : node.owns_statuses === false
+            ? "It uses the statuses of a project above it. Pick that one."
+            : null,
     [projectId],
   );
 
