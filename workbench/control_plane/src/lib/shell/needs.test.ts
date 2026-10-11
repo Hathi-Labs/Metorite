@@ -72,8 +72,8 @@ const item = (extra: Partial<NeedsItem>): NeedsItem => ({
 
 describe("readFeed", () => {
   it("reads a missing field as empty", () => {
-    expect(readFeed(undefined)).toEqual({ count: 0, total: 0, items: [], sources: {}, totals: {} });
-    expect(readFeed({ items: "nope" })).toEqual({ count: 0, total: 0, items: [], sources: {}, totals: {} });
+    expect(readFeed(undefined)).toEqual({ count: 0, total: 0, items: [], sources: {}, totals: {}, capped: [] });
+    expect(readFeed({ items: "nope" })).toEqual({ count: 0, total: 0, items: [], sources: {}, totals: {}, capped: [] });
   });
 
   it("drops a row it cannot draw, and keeps the rest", () => {

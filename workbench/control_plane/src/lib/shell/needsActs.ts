@@ -2,17 +2,22 @@
  * The rows an act took off the needs feed, and each row's error, for EVERY
  * reader of the feed (NS-6 slice 6a).
  *
- * My Day's "Needs you" card and the shell's bell each read the feed through
- * `useNeedsYou`. If each held its own "removed" set, a Done in the bell would
- * leave the card's row in place until the feed read again. So the two share
- * this one store. Memory only, as `ActivityControl`'s open state is.
+ * My Day's "Needs you" card, the shell's bell and the sidebar's row counts
+ * each read the feed through `useNeedsYou`. If each held its own "removed"
+ * set, a Done in the bell would leave the card's row and the row count in
+ * place until the feed read again. So they share this one store. Memory
+ * only, as `ActivityControl`'s open state is.
  *
  * A shared store outlives a page, which a card's own state never did. Four
- * rules keep it from hiding a live task or showing a stale error:
+ * rules keep it from hiding a live task or showing a stale error. ⚠️ Since
+ * the row counts (`useNavNeeds`, 2026-10-11), the sidebar is a reader on
+ * every page of a member with the shell nav on. So rules 2 and 3 end the
+ * marks in practice, and rule 1 applies only where no sidebar is mounted.
  *
  *   1. **No reader, no memory.** When the last reader unmounts, the store
  *      empties. An act that settles while no reader is mounted writes
- *      nothing. This is what a card's own state did before.
+ *      nothing. With the shell nav on, that is a sign-out or a page with no
+ *      sidebar, such as `/signin`.
  *   2. **An answer that no longer holds a row forgets it.** A removed id or
  *      an error for a row the newest answer does not hold is dropped.
  *   3. **A hold window, `ACT_HOLD_MS`.** An answer that still holds a removed

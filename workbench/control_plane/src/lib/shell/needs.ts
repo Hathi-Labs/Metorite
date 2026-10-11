@@ -54,12 +54,20 @@ export interface NeedsFeed {
   items: NeedsItem[];
   sources: Partial<Record<NeedsApp, SourceState>>;
   /**
-   * `total` for each source that answered `ok`: its rows before the cut.
+   * How many need the member in each source that answered `ok`. It is the
+   * app's own count where its read has one (the Projects bell's unread
+   * count, a mailbox's Needs-reply count), else the rows the source found.
    * The sidebar's row counts read it, because the cut can drop one app's
    * rows from `items` entirely. An older gateway leaves it out, and a count
    * then reads the rows in `items`.
    */
   totals: Partial<Record<NeedsApp, number>>;
+  /**
+   * The sources whose `totals` entry is a FLOOR: the read stopped at its
+   * cap of 15 and has no count, so the source holds that many OR MORE. The
+   * row prints "15+" (`navNeeds.ts`). An older gateway leaves it out.
+   */
+  capped: NeedsApp[];
 }
 
 /**
@@ -103,11 +111,42 @@ export function countsByApp(
 }
 
 /**
+ * The apps whose count is a floor (`capped`), among the ones that have a
+ * count. A failed source has no count, so it is never a floor either.
+ */
+export function floorApps(feed: NeedsFeed, approvals: boolean): Set<NeedsApp> {
+  const out = new Set<NeedsApp>();
+  for (const app of Array.isArray(feed.capped) ? feed.capped : []) {
+    if (!(app in NEEDS_APP_HREF) || feed.sources?.[app] !== "ok") continue;
+    if (app === "approvals" && !approvals) continue;
+    out.add(app);
+  }
+  return out;
+}
+
+/**
  * The counts by the href of the row that shows them. A zero has no entry.
  * With `held`, an app the member cannot open has no entry either: the
  * sidebar has no row for it, and All apps does not list it.
  */
 export function needsByHref(
+  counts: Partial<Record<NeedsApp, number>>,
+  held?: ReadonlySet<string>,
+): Record<string, number> {
+  return byHref(counts, held);
+}
+
+/** The hrefs whose count is a floor, by the same map and the same `held`. */
+export function floorHrefs(floors: ReadonlySet<NeedsApp>, held?: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>();
+  for (const app of floors) {
+    const href = NEEDS_APP_HREF[app];
+    if (href && (!held || held.has(href))) out.add(href);
+  }
+  return out;
+}
+
+function byHref(
   counts: Partial<Record<NeedsApp, number>>,
   held?: ReadonlySet<string>,
 ): Record<string, number> {
@@ -156,6 +195,7 @@ export function readFeed(raw: unknown): NeedsFeed {
     items,
     sources: body.sources && typeof body.sources === "object" ? body.sources : {},
     totals: body.totals && typeof body.totals === "object" ? body.totals : {},
+    capped: Array.isArray(body.capped) ? body.capped : [],
   };
 }
 

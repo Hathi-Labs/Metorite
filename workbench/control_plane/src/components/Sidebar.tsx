@@ -34,7 +34,7 @@ import {
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
-import { needsLabel, needsSuffix, rowMeta, rowName, strayNeedsLabel } from "@/lib/shell/navNeeds";
+import { addAppsName, needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { chatScope } from "@/lib/sessions";
 import { ContextMenu } from "@/components/ContextMenu";
@@ -142,8 +142,11 @@ export default function Sidebar() {
   // My Day and the bell, counted on its app's row (`useNavNeeds`). An app
   // the sidebar does not show counts on "Add apps", as a run does.
   const heldHrefs = sections.flatMap((s) => s.items.map((p) => p.href));
-  const appNeeds = useNavNeeds(shellNav && canPoll, heldHrefs);
+  const navNeeds = useNavNeeds(shellNav && canPoll, heldHrefs);
+  const appNeeds = navNeeds.counts;
   const strayNeeds = strayCount(appNeeds, railHrefs);
+  // The stray count is a floor when any hidden app's count is one.
+  const strayFloor = [...navNeeds.floors].some((href) => !railHrefs.has(href));
 
   // Per-category fold state, kept per ACCOUNT (owner, 2026-10-11), so a
   // reload keeps it and another account on this browser never reads it
@@ -430,6 +433,7 @@ export default function Sidebar() {
               needsCounts={needsCounts}
               unreadCounts={unreadCounts}
               appNeeds={appNeeds}
+              appFloors={navNeeds.floors}
               pinnedApps={pinnedApps}
               shellNav={shellNav}
             />
@@ -441,6 +445,7 @@ export default function Sidebar() {
               onOpen={() => openLauncher(ADD_APPS_HINT)}
               badge={strayBadge}
               needs={strayNeeds}
+              needsFloor={strayFloor}
             />
           )}
           </>
@@ -557,6 +562,7 @@ function AddAppsRow({
   onOpen,
   badge,
   needs = 0,
+  needsFloor = false,
 }: {
   collapsed: boolean;
   onOpen: () => void;
@@ -564,11 +570,14 @@ function AddAppsRow({
   badge: ReturnType<typeof runBadge>;
   /** The needs rows in apps the sidebar does not show (`strayCount`). */
   needs?: number;
+  /** That count is a floor: one hidden app's read stopped at its cap. */
+  needsFloor?: boolean;
 }) {
   // The slot rule of an app row (`rowMeta`): a run badge wins it. The
   // needs count stays in the name either way.
-  const meta = rowMeta(badge?.count, needs);
-  const name = needsSuffix(needs) ? `Add apps, ${strayNeedsLabel(needs)}` : "Add apps";
+  const meta = rowMeta(badge?.count, needs, needsFloor);
+  // One name for both forms, with the run badge's words and the needs.
+  const name = addAppsName(needs, badge?.label, needsFloor);
   if (collapsed) {
     return (
       <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
@@ -593,7 +602,7 @@ function AddAppsRow({
         type="button"
         onClick={onOpen}
         aria-haspopup="dialog"
-        aria-label={needs > 0 ? name : undefined}
+        aria-label={name === "Add apps" ? undefined : name}
         className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
       >
         <span className="flex items-center gap-2.5">
@@ -696,6 +705,7 @@ function NavSectionBlock({
   needsCounts = {},
   unreadCounts = {},
   appNeeds = {},
+  appFloors,
   pinnedApps = [],
   shellNav = false,
   onRowMenu,
@@ -718,6 +728,8 @@ function NavSectionBlock({
   unreadCounts?: Record<string, number>;
   /** The needs rows per pane href (`useNavNeeds`). */
   appNeeds?: Record<string, number>;
+  /** The hrefs whose needs count is a floor ("15+"). */
+  appFloors?: ReadonlySet<string>;
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
@@ -746,6 +758,7 @@ function NavSectionBlock({
               onNavigate={onNavigate}
               {...badgeFor(p.href)}
               needs={appNeeds[p.href]}
+              needsFloor={appFloors?.has(p.href)}
               shellNav={shellNav}
               onRowMenu={onRowMenu}
               menuOpen={menuHref === p.href}
@@ -802,6 +815,7 @@ function NavSectionBlock({
               onNavigate={onNavigate}
               {...badgeFor(p.href)}
               needs={appNeeds[p.href]}
+              needsFloor={appFloors?.has(p.href)}
               pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
               shellNav={shellNav}
               onRowMenu={onRowMenu}
@@ -854,6 +868,7 @@ export function NavLink({
   badgeTone = "warning",
   badgeLabel,
   needs,
+  needsFloor = false,
   pinnedApps,
   shellNav = false,
   onRowMenu,
@@ -873,6 +888,8 @@ export function NavLink({
    * number in the trailing slot, which a run badge wins (`rowMeta`).
    */
   needs?: number;
+  /** That count is a floor: "15+", "15 or more need you". */
+  needsFloor?: boolean;
   pinnedApps?: PinnedApp[];
   shellNav?: boolean;
   /**
@@ -896,9 +913,14 @@ export function NavLink({
   const purpose = pane.blurb ?? pane.note;
   // One trailing slot: a run badge wins it, else the needs count (`rowMeta`).
   // The count stays in the link's name either way (`rowName`).
-  const meta = rowMeta(badge, needs);
-  const spoken = needsSuffix(needs);
-  const name = rowName(pane.label, needs, badge !== undefined && badge > 0 ? (badgeLabel ?? String(badge)) : undefined);
+  const meta = rowMeta(badge, needs, needsFloor);
+  const spoken = needsSuffix(needs, needsFloor);
+  const name = rowName(
+    pane.label,
+    needs,
+    badge !== undefined && badge > 0 ? (badgeLabel ?? String(badge)) : undefined,
+    needsFloor,
+  );
 
   if (collapsed) {
     return (
@@ -907,7 +929,7 @@ export function NavLink({
         href={pane.href}
         title={
           (shellNav ? `${pane.label}: ${purpose}` : pane.label) +
-          (spoken && needs !== undefined ? ` (${needsLabel(needs)})` : "")
+          (spoken && needs !== undefined ? ` (${needsLabel(needs, needsFloor)})` : "")
         }
         onClick={onNavigate}
         onContextMenu={

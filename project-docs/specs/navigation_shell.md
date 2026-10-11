@@ -482,10 +482,25 @@ The owner said: "Each app row shows what needs you there, from the same feed
 as My Day and the bell. A quiet number, never a red badge storm."
 
 **The source.** The count reads the needs feed (§7.2) through `useNeedsYou`,
-the hook of My Day and the bell. It uses the same cache key, so the sidebar
-adds no request. One poll serves the bell's host and the sidebar together
-(`joinNeedsPoll` in `ShellBell.tsx`), so a tab reads the feed once a minute.
+the hook of My Day and the bell. It uses the same cache key and the same
+fetch, so it adds no second route and no second poll. One poll serves the
+bell's host and the sidebar together (`joinNeedsPoll` in `ShellBell.tsx`).
+
+**How often the sidebar reads the feed** (`useNavNeeds`). The sidebar is
+mounted on every page, so it adds reads that My Day alone did not make.
 Before this, the feed was read on My Day only while the bell flag was off.
+
+1. Once when the sidebar mounts.
+2. Once a minute while the tab shows. A hidden tab reads nothing. When it
+   shows again after a missed minute, it reads once.
+3. At most once in 15 seconds because of writes elsewhere (`NAV_WAKE_MS`).
+   Each Projects write drops the feed's key (`NEEDS_CACHE`). With no limit,
+   a drag on a board would read the feed after each burst. The first write reads at
+   once. The writes after it in the window make one read at its end.
+4. On a window focus, when the answer is older than 5 seconds.
+
+An act in My Day or the bell needs no read. It takes the row out of the
+count through the one store (`needsActs.ts`).
 
 **Which row counts a feed row.** `NEEDS_APP_HREF` in `needs.ts` is the one
 map. The `email` rows count on My Email, `tasks` on My Tasks, `projects` on
@@ -495,13 +510,20 @@ member's own due task.
 
 **The number** (`countsByApp`).
 
-1. The number is the source's rows before the cut, from `totals` (§7.2).
-   The cut to 30 can drop every reply, so a count from `items` would say
-   that Email holds nothing.
+1. The number comes from `totals` (§7.2), never from `items`. The cut to 30
+   can drop every reply, so a count from `items` would say that Email holds
+   nothing. Each list stops at 15, so `totals` sends the app's own count
+   where its read has one. Projects sends the bell's unread count, and a
+   mailbox whose list is full sends the digest's Needs-reply count. My
+   Tasks and Approvals have no count. So a full list of them is a FLOOR
+   (`capped`). The row shows "15+", and its name says "15 or more need you".
 2. The rows that an act took off do not count (`needsActs.ts`). So a Done
    in My Day or the bell takes the task out of the count at once.
 3. A source that failed shows no number on its row. It never shows a 0,
-   and it never shows the last number.
+   and it never shows the last number. The whole read can fail too, with
+   a 500, a 502 or a 504. The cache then keeps the last answer. But each
+   row shows no number until a read succeeds. My Day keeps the last answer
+   with its own caveat line.
 4. A source with nothing shows nothing.
 5. An app that the member cannot open has no row, so its count does not
    show in the sidebar. My Day and the bell still show its rows.
@@ -528,12 +550,17 @@ bell does (`bellBadge`).
 - **Folded.** The icon shows a small muted dot. The link's name and its
   tooltip hold the number.
 - **A hidden app.** Its count adds to "Add apps" (`strayCount`), as a run
-  does. Its name reads "Add apps, 2 need you in hidden apps".
+  does. Its name reads "Add apps, 2 need you in hidden apps". With a run
+  badge there too, the name says both: "Add apps, 1 assistant running, 2
+  need you in hidden apps" (`addAppsName`). The open and folded forms use
+  the same name.
 - **The phone drawer.** Its rows show the same counts, by the same rule.
 
-Fences: `src/lib/shell/navNeeds.test.ts` (the map, the counts, the slot,
-the stray count, the cap and the one poll) and
-`e2e/sidebar-row-counts.spec.ts`.
+Fences: `src/lib/shell/navNeeds.test.ts` holds the map, the counts, the
+floor, the slot, the stray count and the cap. It also holds the one poll,
+the hidden tab and the write limit. `e2e/sidebar-row-counts.spec.ts` holds
+the browser cases. The `totals` and `capped` tests are in
+`test_shell_needs.py` and `test_shell_needs_r8.py`.
 
 ### 3.3 The account menu
 
@@ -1101,10 +1128,17 @@ display order stays as below.
   an email always have a null `act`.
 - `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
   that the member does not hold the feature.
-- `totals` gives the rows of each `ok` source before the cut (2026-10-11).
-  A source that failed or is absent has no entry. The sidebar's row counts
-  read it (§3.2c). An older gateway leaves it out, and the client then
-  counts the rows in `items`.
+- `totals` gives how many need the member in each `ok` source (2026-10-11).
+  It is the app's own count where the read has one: the Projects bell's
+  unread count, and the digest's Needs-reply count for a full mailbox.
+  Else it is the rows that the source found. A source that failed or is
+  absent has no entry. The sidebar's row counts read it (§3.2c). An older
+  gateway leaves it out, and the client then counts the rows in `items`.
+- `capped` lists the sources whose `totals` entry is a floor: the read
+  stopped at 15 and has no count. Today that is `tasks` or `approvals` with
+  15 rows, or `email` when the count of a full mailbox failed.
+- `total` is unchanged. It counts the rows before the cut, so the bell's
+  number is still a floor of 60 at most.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent

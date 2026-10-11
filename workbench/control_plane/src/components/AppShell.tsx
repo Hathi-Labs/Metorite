@@ -60,7 +60,7 @@ import {
   shellSidebar,
   strayCount,
 } from "@/lib/shell/shellNav";
-import { needsSuffix, rowMeta, rowName, strayNeedsLabel } from "@/lib/shell/navNeeds";
+import { addAppsName, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
@@ -466,8 +466,11 @@ function MobileBottomNavInner({
   // What needs the member in each app, as on the desktop sidebar: the one
   // feed and the one slot rule (`useNavNeeds`, `rowMeta`).
   const heldHrefs = navSections.flatMap((s) => s.items.map((p) => p.href));
-  const appNeeds = useNavNeeds(shellNav, heldHrefs);
+  // The same gate as the desktop sidebar: no workspace, no read.
+  const navNeeds = useNavNeeds(shellNav && shouldPollWorkspace(access, accessLoading), heldHrefs);
+  const appNeeds = navNeeds.counts;
   const strayNeeds = strayCount(appNeeds, drawerHrefs);
+  const strayFloor = [...navNeeds.floors].some((href) => !drawerHrefs.has(href));
 
   const menuContent = (
     <>
@@ -547,13 +550,14 @@ function MobileBottomNavInner({
                 const active = shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href);
                 // One slot: the run badge wins it, else the needs count (`rowMeta`).
                 const b = drawerBadge(p.href);
-                const meta = rowMeta(b?.count, appNeeds[p.href]);
+                const floor = navNeeds.floors.has(p.href);
+                const meta = rowMeta(b?.count, appNeeds[p.href], floor);
                 return (
                   <Link
                     key={p.href}
                     href={p.href}
                     onClick={close}
-                    aria-label={rowName(p.label, appNeeds[p.href], b?.label)}
+                    aria-label={rowName(p.label, appNeeds[p.href], b?.label, floor)}
                     className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                       active
                         ? "bg-primary/10 text-primary"
@@ -587,7 +591,7 @@ function MobileBottomNavInner({
                 setLauncherOpen(true);
               }}
               aria-haspopup="dialog"
-              aria-label={needsSuffix(strayNeeds) ? `Add apps, ${strayNeedsLabel(strayNeeds)}` : undefined}
+              aria-label={strayNeeds > 0 ? addAppsName(strayNeeds, undefined, strayFloor) : undefined}
               data-nav-add-apps=""
               className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
             >
@@ -596,7 +600,7 @@ function MobileBottomNavInner({
               </span>
               <span className="text-sm">Add apps</span>
               {(() => {
-                const meta = rowMeta(undefined, strayNeeds);
+                const meta = rowMeta(undefined, strayNeeds, strayFloor);
                 return meta?.kind === "needs" ? <NeedsCount text={meta.text} /> : null;
               })()}
             </button>

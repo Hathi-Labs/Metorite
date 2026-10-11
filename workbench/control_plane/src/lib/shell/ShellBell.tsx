@@ -232,15 +232,40 @@ export const BELL_POLL_MS = 60_000;
 
 const _pollers = new Set<() => void>();
 let _pollTimer: ReturnType<typeof setInterval> | null = null;
+/** A tick came while the tab was hidden, so the feed was not read. */
+let _missed = false;
 
-/** Join the one poll. Returns the leave. The last leave stops the timer. */
+const _hidden = () => typeof document !== "undefined" && document.visibilityState !== "visible";
+const _tick = () => _pollers.values().next().value?.();
+
+/**
+ * The tab shows again. If a tick came while it was hidden, read once now,
+ * so the counts do not wait up to a minute. Else read nothing.
+ */
+function _onVisible(): void {
+  if (_hidden() || !_missed) return;
+  _missed = false;
+  _tick();
+}
+
+/**
+ * Join the one poll. Returns the leave. The last leave stops the timer.
+ *
+ * A hidden tab reads nothing: its tick is skipped, and the poll reads once
+ * when the tab shows again (`visibilitychange`).
+ */
 export function joinNeedsPoll(refresh: () => void, every = BELL_POLL_MS): () => void {
   _pollers.add(refresh);
   if (_pollTimer === null) {
+    _missed = false;
     _pollTimer = setInterval(() => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      _pollers.values().next().value?.();
+      if (_hidden()) {
+        _missed = true;
+        return;
+      }
+      _tick();
     }, every);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", _onVisible);
   }
   let left = false;
   return () => {
@@ -250,6 +275,7 @@ export function joinNeedsPoll(refresh: () => void, every = BELL_POLL_MS): () => 
     if (_pollers.size === 0 && _pollTimer !== null) {
       clearInterval(_pollTimer);
       _pollTimer = null;
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", _onVisible);
     }
   };
 }

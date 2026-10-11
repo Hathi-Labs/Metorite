@@ -16,6 +16,9 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   6. A Done in My Day takes the task out of the count at once.
  *   7. The page reads the feed once: no second fetch for the sidebar.
  *   8. The phone drawer shows the same counts.
+ *   9. A feed read that fails as a whole (502) takes every number off.
+ *  10. A capped source prints "15+" and says "15 or more need you".
+ *  11. "Add apps" says the run badge's words and the needs, open and folded.
  *
  * Mutations, run by hand (2026-10-11), each seen to fail:
  *   - drop `needs={appNeeds[p.href]}` from the open rail's `NavLink`: seven
@@ -82,15 +85,19 @@ const reply = (id: string) => ({
   act_ref: null,
 });
 
-/** Email 3 and Tasks 2, all sent, and Projects with nothing. */
-function feed(email: "ok" | "failed" = "ok") {
+/**
+ * Email 3 and Tasks 2, all sent, and Projects with nothing. With `capped`,
+ * the email source stopped at its cap and reports 15 as a floor.
+ */
+function feed(email: "ok" | "failed" = "ok", capped = false) {
   const items = [task("t1", "Send the quote"), task("t2", "Book the venue"), ...(email === "ok" ? [reply("a"), reply("b"), reply("c")] : [])];
   return {
     count: items.length,
     total: items.length,
     items,
     sources: { tasks: "ok", projects: "ok", email },
-    totals: email === "ok" ? { tasks: 2, projects: 0, email: 3 } : { tasks: 2, projects: 0 },
+    totals: email === "ok" ? { tasks: 2, projects: 0, email: capped ? 15 : 3 } : { tasks: 2, projects: 0 },
+    capped: email === "ok" && capped ? ["email"] : [],
   };
 }
 
@@ -110,14 +117,26 @@ interface Store {
   needsGets: number;
   /** The email source the next answer reports. A test may flip it. */
   email: "ok" | "failed";
+  /** The status the next feed read answers with. 502 fails it as a whole. */
+  status: number;
 }
 
 async function stub(
   page: Page,
-  opts: { email?: "ok" | "failed"; folded?: boolean; myDay?: boolean; nav?: boolean } = {},
+  opts: {
+    email?: "ok" | "failed";
+    folded?: boolean;
+    myDay?: boolean;
+    nav?: boolean;
+    capped?: boolean;
+    /** The starred apps. Default: every app. */
+    pins?: string[];
+    /** The live runs of `/api/chat/active-sessions`. */
+    runs?: unknown[];
+  } = {},
 ): Promise<Store> {
-  const store: Store = { needsGets: 0, email: opts.email ?? "ok" };
-  let layout: Record<string, unknown> = { ...LAYOUT };
+  const store: Store = { needsGets: 0, email: opts.email ?? "ok", status: 200 };
+  let layout: Record<string, unknown> = { ...LAYOUT, ...(opts.pins ? { pins: opts.pins } : {}) };
   await page.addInitScript(
     ({ folded, myDay, nav }) => {
       localStorage.setItem("cc-shell-bar", "1");
@@ -147,10 +166,12 @@ async function stub(
     if (path === "/api/settings/branding") return json({ logo: null, updatedBy: "", updatedAt: "" });
     if (path === "/api/shell/needs") {
       store.needsGets += 1;
-      return json(feed(store.email));
+      if (store.status !== 200) return json({ error: "needs_unavailable" }, store.status);
+      return json(feed(store.email, opts.capped));
     }
     if (path === "/api/projects/my/inbox") return json({ rows: [LENS_ROW], total: 1 });
     if (path.startsWith("/api/projects/notifications")) return json({ rows: [], total: 0, unread: { total: 0, mentions: 0 } });
+    if (path === "/api/chat/active-sessions") return json(opts.runs ?? []);
     if (/^\/api\/(notes|chat|agent|apps|agents|email\/accounts)\b/.test(path)) return json([]);
     return json({ rows: [], items: [], total: 0 });
   });
@@ -204,6 +225,49 @@ test.describe("desktop", () => {
     await expect(count(page, "/tasks")).toHaveText("2");
   });
 
+  test("a feed read that fails as a whole takes every number off", async ({ page }) => {
+    await page.clock.install();
+    const store = await stub(page);
+    await page.goto("/settings/appearance");
+    await expect(count(page, "/email")).toHaveText("3");
+    await expect(count(page, "/tasks")).toHaveText("2");
+    // The next poll gets a 502. The cache keeps the last answer, so a row
+    // that read the cache would keep its old number.
+    store.status = 502;
+    const before = store.needsGets;
+    await page.clock.fastForward(61_000);
+    await expect.poll(() => store.needsGets).toBeGreaterThan(before);
+    await expect(sidebar(page).locator("[data-nav-needs]")).toHaveCount(0);
+    await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
+    // The feed answers again, and the numbers come back.
+    store.status = 200;
+    await page.clock.fastForward(61_000);
+    await expect(count(page, "/email")).toHaveText("3");
+  });
+
+  test("a capped source shows 15+, and its name says 15 or more", async ({ page }) => {
+    await stub(page, { capped: true });
+    await page.goto("/settings/appearance");
+    await expect(count(page, "/email")).toHaveText("15+");
+    await expect(sidebar(page).getByRole("link", { name: "My Email, 15 or more need you", exact: true })).toBeVisible();
+    await expect(count(page, "/tasks")).toHaveText("2");
+  });
+
+  test("Add apps keeps the run badge's words beside the needs, open and folded", async ({ page }) => {
+    // Tasks and Chat are not starred. A run of the Tasks agent folds to
+    // Chat, and Chat is hidden too, so the run counts on Add apps.
+    const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
+    const pins = ["/calendar", "/email", "/projects", "/people"];
+    await stub(page, { runs, pins });
+    await page.goto("/settings/appearance");
+    const addApps = sidebar(page).locator("[data-nav-add-apps] button");
+    const name = "Add apps, 1 assistant running, 2 need you in hidden apps";
+    await expect(addApps).toHaveAccessibleName(name, { timeout: 15_000 });
+    // The run badge wins the slot, so the quiet count does not show.
+    await expect(addApps.locator("[data-nav-badge]")).toHaveText("1");
+    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
+  });
+
   test("hiding Tasks moves its 2 onto Add apps", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
@@ -235,6 +299,16 @@ test.describe("desktop", () => {
     await expect(sidebar(page).getByRole("link", { name: "My Email, 3 need you", exact: true })).toBeVisible();
     await more.click();
     await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeVisible();
+  });
+
+  test("folded, Add apps keeps the run badge's words beside the needs", async ({ page }) => {
+    const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
+    await stub(page, { folded: true, runs, pins: ["/calendar", "/email", "/projects", "/people"] });
+    await page.goto("/settings/appearance");
+    const addApps = sidebar(page).locator("[data-nav-add-apps] button");
+    await expect(addApps).toHaveAccessibleName("Add apps, 1 assistant running, 2 need you in hidden apps", {
+      timeout: 15_000,
+    });
   });
 
   test("the folded rail shows a quiet dot, and the name keeps the number", async ({ page }) => {
