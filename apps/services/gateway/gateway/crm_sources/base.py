@@ -190,6 +190,11 @@ class CrmSource(Protocol):
 
     async def list_pipelines(self, entity: str) -> list[dict[str, Any]]: ...
 
+    # 3b. The shape of the customer's account: edition, modules, layouts,
+    # fields and pipelines. METADATA ONLY, never a record (CRM-Q1). The answer
+    # is raw provider data. The mapping builds the source profile from it.
+    async def discover(self) -> dict[str, Any]: ...
+
     # 4. The records changed since a cursor, one page for each call.
     async def list_changed(
         self,

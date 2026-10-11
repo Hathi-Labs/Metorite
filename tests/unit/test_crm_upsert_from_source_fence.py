@@ -27,8 +27,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = "upsert_from_source"
-#: The second door of the mirror write path (CRM-Z4). Same fence.
-NAMES = (NAME, "delete_from_source")
+#: The second door of the mirror write path (CRM-Z4), and the third (CRM-Q2,
+#: the stages of a mirrored pipeline). Same fence.
+NAMES = (NAME, "delete_from_source", "set_pipeline_stages_from_source")
 
 #: The trees that must never name the function.
 SCAN_ROOTS = (
@@ -88,6 +89,7 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
     definer_text = DEFINER.read_text(encoding="utf-8")
     assert "async def upsert_from_source" in definer_text
     assert "async def delete_from_source" in definer_text
+    assert "async def set_pipeline_stages_from_source" in definer_text
     assert any(r.is_dir() for r in SCAN_ROOTS)
     assert (ROOT / "apps" / "services" / "gateway" / "gateway" / "routes").is_dir()
 
@@ -108,6 +110,9 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
         "from gateway.routes.crm.core import *\n\nupsert_from_source(None, 'x', {})\n",
         "import importlib\n\nF = getattr(importlib.import_module('x'), 'upsert_from_source')\n",
         "from gateway.routes.crm.core import delete_from_source\n",
+        "from gateway.routes.crm.core import set_pipeline_stages_from_source\n",
+        "from gateway.routes.crm import core\n\nasync def go(db):\n"
+        "    await core.set_pipeline_stages_from_source(db, 'p', [])\n",
         "from gateway.routes.crm import core\n\nasync def go(db):\n"
         "    await core.delete_from_source(db, 'crm_leads', 'zoho', [])\n",
         "import importlib\n\nF = getattr(importlib.import_module('x'), 'delete_from_source')\n",

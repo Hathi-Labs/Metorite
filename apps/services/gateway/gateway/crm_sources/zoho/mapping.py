@@ -101,6 +101,9 @@ class Mapped:
     deal_contact: Link | None = None
     owner_email: str | None = None
     owner_name: str | None = None
+    #: A deal's pipeline: ``(ext_id, name)``. The engine resolves it to a local
+    #: pipeline id. ``None`` for any other entity (CRM-Q2).
+    pipeline: tuple[str | None, str | None] | None = None
     #: A free note on what the engine must derive, for example the lead name.
     derived: tuple[str, ...] = field(default=())
 
@@ -381,6 +384,7 @@ def map_record(
     status_name: str | None = None
     deal_contact: Link | None = None
     derived: tuple[str, ...] = ()
+    pipeline: tuple[str | None, str | None] | None = None
 
     if entity in _ACTIVITY_TYPES:
         values = _activity(entity, fields)
@@ -396,6 +400,7 @@ def map_record(
             derived = ("lead_name",)
         elif entity == "deal":
             status_name = text_value(fields.get("Stage"))
+            pipeline = pipeline_ref(fields)
             account = lookup_id(fields.get("Account_Name"))
             if account:
                 links = (Link(account, (("company_id", "company"),)),)
@@ -418,6 +423,7 @@ def map_record(
         deal_contact=deal_contact,
         owner_email=owner_email,
         owner_name=owner_name,
+        pipeline=pipeline,
         derived=derived,
     )
 
@@ -478,13 +484,302 @@ def map_field_def(
     }
 
 
+# ── Pipelines (CRM-Q2) ──────────────────────────────────────────────────────
+
+
+def _name_of(value: Any) -> str | None:
+    """A name from a plain string or from a ``{"name": ...}`` lookup object."""
+    if isinstance(value, dict):
+        return text_value(value.get("name") or value.get("display_value"))
+    return text_value(value)
+
+
+def pipeline_ref(fields: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """``(ext_id, name)`` of the pipeline that a deal names.
+
+    A live tenant sends ``Pipeline`` as a name string (``"Standard"``) or as an
+    object (``{"id": "...", "name": "Standard"}``). Both give a name, and the
+    object gives the id too. A deal with none names no pipeline, so the engine
+    falls back to the default pipeline.
+    """
+    value = fields.get("Pipeline")
+    ext_id = text_value(value.get("id")) if isinstance(value, dict) else None
+    return ext_id, _name_of(value)
+
+
+def forecast_category_of(entry: Mapping[str, Any]) -> str | None:
+    """The forecast category of a stage entry, from a picklist item or a
+    pipeline map. Zoho sends an object (``{"name": ...}``) or a plain string."""
+    forecast = entry.get("forecast_category")
+    if isinstance(forecast, dict):
+        return text_value(forecast.get("name") or forecast.get("display_value"))
+    return text_value(forecast)
+
+
+_forecast_name = forecast_category_of
+
+
+def stage_type_hint(entry: Mapping[str, Any]) -> str | None:
+    """``won`` or ``lost`` when the stage entry says so, else ``None``.
+
+    Zoho puts the word in ``forecast_type`` ("Closed Won") on a pipeline map
+    and in ``forecast_category`` on a picklist item. The engine falls back to
+    its own name guess for ``None``.
+    """
+    label = " ".join(
+        part.lower() for part in (
+            text_value(entry.get("forecast_type")), _forecast_name(entry),
+        ) if part
+    )
+    if "won" in label:
+        return "won"
+    if "lost" in label:
+        return "lost"
+    return None
+
+
+def pipeline_stages(pipeline: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The stages of one pipeline in Zoho's order: ``name``, ``sequence``,
+    ``forecast_category`` and ``type`` (``won``, ``lost`` or ``None``).
+
+    The key is ``maps`` (what the API documents). ``stages`` is read too, for
+    the same reason the adapter reads two keys for the pipelines.
+    """
+    raw: list[Any] = []
+    for key in ("maps", "stages"):
+        found = pipeline.get(key)
+        if isinstance(found, list):
+            raw = found
+            break
+    out: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            continue
+        name = text_value(entry.get("actual_value") or entry.get("display_value"))
+        if not name or name == "-None-":
+            continue
+        sequence = integer(entry.get("sequence_number"))
+        out.append({
+            "name": name,
+            "sequence": sequence if sequence is not None else index + 1,
+            "forecast_category": _forecast_name(entry),
+            "type": stage_type_hint(entry),
+        })
+    return sorted(out, key=lambda s: s["sequence"])
+
+
+def pipeline_rows(pipelines: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The discovered pipelines as profile rows, in Zoho's order.
+
+    Exactly one row has ``default`` true: the first pipeline that Zoho marks as
+    the default, or the first pipeline when none is marked. A name that
+    repeats across layouts stays, because the ``ext_id`` tells them apart.
+    """
+    rows: list[dict[str, Any]] = []
+    for pipeline in pipelines:
+        ext_id = text_value(pipeline.get("id"))
+        name = text_value(pipeline.get("display_value") or pipeline.get("actual_value"))
+        if not ext_id or not name:
+            continue
+        rows.append({
+            "ext_id": ext_id,
+            "name": name,
+            "layout_ext_id": text_value(pipeline.get("layout_id")),
+            "default": pipeline.get("default") is True,
+            "stages": pipeline_stages(pipeline),
+        })
+    chosen = next((i for i, r in enumerate(rows) if r["default"]), 0)
+    for index, row in enumerate(rows):
+        row["default"] = index == chosen
+    return rows
+
+
+# ── The source profile (CRM-Q1) ─────────────────────────────────────────────
+
+#: The modules this mapping reads records from. A module in the profile is
+#: ``mirrored`` when its API name is here.
+MIRRORED_MODULES: frozenset[str] = frozenset(
+    {"Leads", "Contacts", "Accounts", "Deals", "Notes", "Calls", "Events"}
+)
+
+#: The editions that Zoho names in ``license_details.paid_type``.
+EDITIONS: tuple[str, ...] = ("free", "standard", "professional", "enterprise", "ultimate")
+
+#: Credits per 24 hours, by edition: ``(base, per licence, cap)``. ``cap`` is
+#: ``None`` for no cap. Source: ``crm_platform.md`` §5.2 row 6.
+EDITION_CREDITS: Mapping[str, tuple[int, int, int | None]] = {
+    "free": (5_000, 0, None),
+    "standard": (50_000, 250, 100_000),
+    "professional": (50_000, 500, 3_000_000),
+    "enterprise": (50_000, 1_000, 5_000_000),
+    "ultimate": (50_000, 2_000, None),
+}
+
+
+def daily_credits(edition: str | None, licences: int | None = None) -> int | None:
+    """The API credits that an edition gets in 24 hours, or ``None`` when the
+    edition is not known. ``licences`` is the count of paid licences. With none
+    given, an edition gets its base."""
+    plan = EDITION_CREDITS.get((edition or "").strip().lower())
+    if plan is None:
+        return None
+    base, per_licence, cap = plan
+    total = base + per_licence * max(int(licences or 0), 0)
+    return min(total, cap) if cap is not None else total
+
+
+def edition_of(org: Mapping[str, Any] | None) -> str | None:
+    """The edition from a ``GET org`` row, or ``None`` when it is not known.
+
+    ``license_details.paid_type`` names the edition of a paid org. An org that is
+    not paid and has no trial is on Free. A trial or an edition this list does
+    not know (CRM Plus, for example) is ``None``, so the budget keeps its floor.
+    """
+    if not isinstance(org, Mapping):
+        return None
+    details = org.get("license_details")
+    if not isinstance(details, Mapping):
+        return None
+    paid_type = (text_value(details.get("paid_type")) or "").lower()
+    if details.get("paid") is True and paid_type in EDITIONS:
+        return paid_type
+    if details.get("paid") is False and not text_value(details.get("trial_type")):
+        return "free"
+    return paid_type if paid_type in EDITIONS else None
+
+
+def _org_summary(org: Mapping[str, Any] | None) -> dict[str, Any]:
+    org = org or {}
+    details = org.get("license_details")
+    licences = (
+        integer(details.get("users_license_purchased"))
+        if isinstance(details, Mapping) else None
+    )
+    multi = org.get("mc_status")
+    return {
+        "edition": edition_of(org),
+        "currency": text_value(org.get("iso_currency") or org.get("currency")),
+        "multi_currency": multi if isinstance(multi, bool) else None,
+        "time_zone": text_value(org.get("time_zone")),
+        "domain_name": text_value(org.get("domain_name")),
+        "licences": licences,
+    }
+
+
+def _module_rows(modules: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for module in modules:
+        api_name = text_value(module.get("api_name"))
+        if not api_name:
+            continue
+        rows.append({
+            "api_name": api_name,
+            "tab": text_value(module.get("module_name")) or api_name,
+            "label": text_value(module.get("plural_label")) or api_name,
+            "singular_label": text_value(module.get("singular_label")),
+            "custom": text_value(module.get("generated_type")) == "custom",
+            "generated_type": text_value(module.get("generated_type")),
+            "api_supported": module.get("api_supported") is True,
+            "visible": module.get("visible") is not False,
+            "mirrored": api_name in MIRRORED_MODULES,
+        })
+    return sorted(rows, key=lambda r: r["api_name"])
+
+
+def _layout_rows(
+    layouts: Mapping[str, list[Mapping[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for module, rows in sorted(layouts.items()):
+        summary = []
+        for layout in rows:
+            sections = [s for s in layout.get("sections") or [] if isinstance(s, dict)]
+            summary.append({
+                "id": text_value(layout.get("id")),
+                "name": text_value(layout.get("name")),
+                "status": text_value(layout.get("status")),
+                "sections": len(sections),
+                "fields": sum(
+                    len([f for f in s.get("fields") or [] if isinstance(f, dict)])
+                    for s in sections
+                ),
+            })
+        out[module] = sorted(summary, key=lambda r: r["id"] or "")
+    return out
+
+
+def _field_counts(
+    fields: Mapping[str, list[Mapping[str, Any]]],
+) -> dict[str, dict[str, int]]:
+    return {
+        module: {
+            "total": len(rows),
+            "custom": sum(1 for f in rows if f.get("custom_field") is True),
+        }
+        for module, rows in sorted(fields.items())
+    }
+
+
+def build_profile(
+    raw: Mapping[str, Any], previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The source profile from the raw discovery (``ZohoSource.discover``).
+
+    **Metadata only.** The profile holds the edition, the currency, the module
+    list, a summary of each layout, the count of fields, and the pipelines with
+    their stages. It holds no record, no token and no company name.
+
+    A section that the read could not get (``raw["failed"]``) is copied from
+    ``previous``, so one failed call does not erase the edition or start a new
+    version. With no ``previous`` it stays empty.
+    """
+    failed = set(raw.get("failed") or ())
+    old = previous or {}
+
+    def pick(section: str, fresh: Any) -> Any:
+        return old.get(section) if section in failed and section in old else fresh
+
+    return {
+        "org": pick("org", _org_summary(raw.get("org"))),
+        "modules": pick("modules", _module_rows(raw.get("modules") or [])),
+        "layouts": pick("layouts", _layout_rows(raw.get("layouts") or {})),
+        "fields": pick("fields", _field_counts(raw.get("fields") or {})),
+        "pipelines": pick("pipelines", pipeline_rows(raw.get("pipelines") or [])),
+        # The sections the read could not get. A section named here is the
+        # copy of the previous profile, or empty.
+        "unreadable": sorted(failed),
+    }
+
+
+def profile_tabs(profile: Mapping[str, Any]) -> dict[str, str]:
+    """Module API name to tab, for the four modules that have a deep link."""
+    wanted = {"Leads", "Contacts", "Accounts", "Deals"}
+    return {
+        m["api_name"]: m["tab"]
+        for m in profile.get("modules") or []
+        if isinstance(m, dict) and m.get("api_name") in wanted and m.get("tab")
+    }
+
+
 __all__ = [
+    "EDITIONS",
+    "EDITION_CREDITS",
     "ENTITY_TABLES",
+    "MIRRORED_MODULES",
     "OWNER_NAME_KEY",
     "Link",
     "Mapped",
+    "build_profile",
     "custom_field_keys",
     "custom_fields",
+    "daily_credits",
+    "edition_of",
+    "forecast_category_of",
     "map_field_def",
     "map_record",
+    "pipeline_ref",
+    "pipeline_rows",
+    "pipeline_stages",
+    "profile_tabs",
+    "stage_type_hint",
 ]

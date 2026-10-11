@@ -181,6 +181,7 @@ class ExportParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
         company_id: str | None = None,
         contact_id: str | None = None,
     ) -> None:
@@ -191,6 +192,7 @@ class ExportParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        self.pipeline_id = pipeline_id
         self.company_id = company_id
         self.contact_id = contact_id
 
@@ -261,7 +263,7 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
         status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra, extra_params=related_params,
+        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=related_params,
     )
 
     async with _tenant_session() as db:
