@@ -575,8 +575,11 @@ test.describe("a row's menu hides an app, and Undo brings it back", () => {
     await more.click();
     await expect(page.getByRole("menu")).toBeVisible();
     // The "···" stays in view while its menu is open, with the pointer gone.
+    // Read the paint: Playwright calls an element at opacity 0 "visible".
     await page.mouse.move(900, 600);
-    await expect(more).toBeVisible();
+    await expect
+      .poll(() => more.evaluate((el) => getComputedStyle(el.closest(".rail-row-actions")!).opacity))
+      .toBe("1");
     await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
     await expect.poll(() => store.puts.length).toBe(1);
     // Projects was the last of its category, so the focus goes to the next
@@ -707,6 +710,10 @@ test.describe("a category folds, per account", () => {
     await heading(page, "across").click({ force: true });
     await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
     await expect(heading(page, "studio")).not.toHaveAttribute("aria-disabled", "true");
+    // The presses stored nothing: away from People, Apps is still open.
+    await page.goto("/settings/appearance");
+    await expect(heading(page, "studio")).toHaveAttribute("aria-expanded", "false");
+    await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
   });
 });
 
