@@ -161,20 +161,76 @@ async def close_mcp_tools(opened: Opened) -> None:
         await _close_one(tool, client)
 
 
+@functools.lru_cache(maxsize=1)
+def _run_scoped_tool_class() -> type:
+    """``MCPStreamableHTTPTool``, with the connection owned by the run.
+
+    MAF enters each tool of ``agent.mcp_tools`` again: ``Agent.__aenter__``
+    (the native tier of the executor) and ``agent.run`` both do. The base
+    ``__aenter__`` connects again and lists the tools again, with no time
+    budget, and a failure there fails the run (review of PR #869). So:
+
+    * a connected tool is not entered again;
+    * a tool that is not connected gets one try within
+      :data:`CONNECT_BUDGET_S`. A failure is logged like the first one, and
+      the tool stays with no function, so the run goes on without it;
+    * ``__aexit__`` does nothing. The run closes the tool in its ``finally``
+      (:func:`close_mcp_tools`).
+    """
+    from agent_framework import MCPStreamableHTTPTool
+
+    class RunScopedMCPTool(MCPStreamableHTTPTool):
+        async def __aenter__(self) -> Any:
+            if self.is_connected:
+                return self
+            try:
+                async with asyncio.timeout(CONNECT_BUDGET_S):
+                    await self.connect()
+            except Exception as exc:
+                _log.warning("mcp.unreachable", name=self.name, host=_host(self.url),
+                             reason=_reason(exc))
+                with contextlib.suppress(Exception):
+                    await self.close()
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+    return RunScopedMCPTool
+
+
+def _names_held(agent: Any) -> set[str]:
+    """The names of the functions that *agent* already holds."""
+    from acb_skills.tool_guard import tool_name
+
+    opts = getattr(agent, "default_options", None)
+    held = {tool_name(t) for t in (opts.get("tools") or [])} if isinstance(opts, dict) else set()
+    for tool in getattr(agent, "mcp_tools", None) or []:
+        held |= {tool_name(f) for f in getattr(tool, "functions", None) or []}
+    return {n for n in held if n}
+
+
 async def attach_mcp_tools(
     agent: Any, servers: list[McpServer], opened: Opened,
 ) -> list[str]:
     """Connect each server and add its tool to ``agent.mcp_tools``.
 
     Returns the names of the servers that the agent got. Each one goes into
-    *opened*, and the run closes it. A server that fails is left out."""
+    *opened*, and the run closes it. A server that fails is left out.
+
+    So is a server whose function names collide with a function that the
+    agent already holds, for example a server ``web`` with a tool ``search``
+    beside the platform's ``web_search``. MAF refuses a duplicate name when
+    the run starts, so one such server would fail every run of the agent
+    (review of PR #869)."""
     try:
-        from agent_framework import MCPStreamableHTTPTool
+        tool_cls = _run_scoped_tool_class()
         from gateway import outbound_guard
     except ImportError as exc:
         _log.warning("mcp.client_unavailable", reason=type(exc).__name__)
         return []
 
+    held = _names_held(agent)
     tools: list[Any] = []
     for server in servers:
         host = _host(server.url)
@@ -188,7 +244,7 @@ async def attach_mcp_tools(
             continue
         tool = None
         try:
-            tool = MCPStreamableHTTPTool(
+            tool = tool_cls(
                 name=server.name,
                 url=server.url,
                 tool_name_prefix=server.name,
@@ -203,6 +259,13 @@ async def attach_mcp_tools(
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
             await _close_one(tool, client)
             continue
+        exposed = {getattr(f, "name", "") for f in tool.functions}
+        clash = exposed & held
+        if clash:
+            _log.warning("mcp.name_collision", name=server.name, tools=sorted(clash)[:5])
+            await _close_one(tool, client)
+            continue
+        held |= exposed
         opened.append((tool, client))
         tools.append(tool)
 

@@ -342,6 +342,82 @@ async def test_an_mcp_call_goes_through_decide(monkeypatch):
     assert ran == [True], "the MCP gate must leave a non-MCP function to its own gate"
 
 
+# ── Review of PR #869: a server must never fail the run after the attach ────
+
+
+async def test_a_server_whose_names_collide_is_left_out(monkeypatch, offline):
+    """A server ``web`` with a tool ``search`` exposes ``web_search``, which
+    the agent already holds. MAF refuses a duplicate name when the run starts,
+    so the server must be left out at the attach, and closed."""
+    from agent_framework import FunctionTool, MCPStreamableHTTPTool
+
+    async def _connect(self: Any, *, reset: bool = False) -> None:
+        self._functions.append(FunctionTool(
+            name=f"{self.tool_name_prefix}_search", func=lambda: "x",
+            additional_properties={"_mcp_is_tool": True},
+        ))
+
+    monkeypatch.setattr(MCPStreamableHTTPTool, "connect", _connect)
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("web", org=ORG_A), row("crm", org=ORG_A)]).install(monkeypatch)
+    agent = native_agent()
+    agent.default_options["tools"] = [FunctionTool(name="web_search", func=lambda: "y")]
+    with structlog.testing.capture_logs() as logs:
+        await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
+    assert _names(agent) == ["crm"]
+    assert offline["closed"] == ["web"] and offline["clients"][0].closed
+    clash = [e for e in logs if e["event"] == "mcp.name_collision"]
+    assert clash and clash[0]["name"] == "web" and clash[0]["tools"] == ["web_search"]
+
+
+async def test_a_connected_tool_is_not_connected_again_by_the_agent(monkeypatch, offline):
+    """``Agent.__aenter__`` (the native tier) enters each MCP tool again. A
+    connected tool must not reconnect and list its tools a second time."""
+    from agent_framework import MCPStreamableHTTPTool
+
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("srv-a", org=ORG_A)]).install(monkeypatch)
+    agent = native_agent()
+    await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
+    tool = agent.mcp_tools[0]
+    connects: list[str] = []
+
+    async def _count(self: Any, *, reset: bool = False) -> None:
+        connects.append(self.name)
+
+    monkeypatch.setattr(MCPStreamableHTTPTool, "connect", _count)
+    tool.is_connected = True  # MAF sets this instance flag after initialize
+    async with tool:
+        pass
+    assert connects == [], "a connected MCP tool was connected again"
+    assert offline["closed"] == [], "leaving the agent's context closed the run's tool"
+
+
+async def test_a_failed_second_entry_does_not_fail_the_run(monkeypatch, offline, caplog):
+    """A tool that lost its session and cannot reconnect stays with no
+    function. ``agent.run`` then goes on without that server."""
+    from agent_framework import MCPStreamableHTTPTool
+
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("srv-a", org=ORG_A, headers={"Authorization": SENTINEL})]).install(
+        monkeypatch)
+    agent = native_agent()
+    await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
+    tool = agent.mcp_tools[0]
+
+    async def _boom(self: Any, *, reset: bool = False) -> None:
+        raise httpx.ConnectError(f"429 from {self.url} {SENTINEL}")
+
+    monkeypatch.setattr(MCPStreamableHTTPTool, "connect", _boom)
+    tool.is_connected = False  # the session was lost
+    with structlog.testing.capture_logs() as logs:
+        async with tool:
+            pass
+    assert tool.functions == []
+    assert [e for e in logs if e["event"] == "mcp.unreachable"]
+    assert SENTINEL not in logged_text(logs, caplog)
+
+
 # ── A4: no_egress ────────────────────────────────────────────────────────────
 
 
