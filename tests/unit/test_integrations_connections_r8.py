@@ -159,12 +159,11 @@ async def _seed(p: Any, org: str, tag: str, *, url: str = "https://mcp.example.c
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         scopes=("ZohoCRM.modules.leads.READ",), provider_meta={"location": "in", "accounts_server": "https://accounts.zoho.in"},
     )
-    async with tenant_engine_scope(_app_dsn(p)):
-        async with tenant_session(org) as db:
-            row = await store.save_credential(
-                db, org, "zoho", "crm", credential, connected_by=f"admin-{tag}@in1-r8.test",
-                scopes=("ZohoCRM.modules.leads.READ",),
-            )
+    async with tenant_engine_scope(_app_dsn(p)), tenant_session(org) as db:
+        row = await store.save_credential(
+            db, org, "zoho", "crm", credential, connected_by=f"admin-{tag}@in1-r8.test",
+            scopes=("ZohoCRM.modules.leads.READ",),
+        )
     s.zoho_id = row.id
     with p.admin_engine.begin() as c:
         s.mailbox_id = str(c.execute(text(
@@ -298,7 +297,7 @@ async def test_the_rows_carry_the_contract_fields_and_sort(ns, app_engine) -> No
         "whatsapp", "connected", "Shop a", "/whatsapp")
     mcp = by_id[f"mcp:{a.mcp}"]
     assert mcp["detail"] == {
-        "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com"}
+        "name": a.mcp, "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com"}
     key = by_id["key:apollo"]
     assert (key["kind"], key["status"], key["scope"]) == ("api_key", "configured", "org")
 

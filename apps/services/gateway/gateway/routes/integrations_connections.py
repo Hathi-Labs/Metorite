@@ -6,7 +6,7 @@ Spec: ``project-docs/specs/integrations_console.md`` §3.2, §3.5, §4 and §7.2
     POST  /integrations/connections/{id}/disconnect
     POST  /integrations/mcp/{name}/test
 
-**One row shape over five sources.** ``integration_connections`` (Zoho, and
+**One row shape over five sources.** the registry table (Zoho, and
 the next providers), ``email_accounts``, ``wa_accounts``, ``mcp_servers`` and
 ``provider_keys``. The console never sees a credential. Each SELECT below names
 its columns, and none names a blob, a header value, a key value or a message
@@ -14,7 +14,7 @@ column (D-EM-4). A free text from a provider never reaches ``last_error``:
 only a short code does.
 
 **Tenancy (R5).** The organization comes from the server-side ``UserContext``,
-never from the request. ``integration_connections``, ``email_accounts`` and
+never from the request. the registry table, ``email_accounts`` and
 ``wa_accounts`` are read inside ``tenant_session(org)`` (FORCE RLS binds the
 tenant). ``mcp_servers`` and ``provider_keys`` are RLS-exempt, so their
 ``organization_id`` predicate is the boundary.
@@ -135,7 +135,7 @@ def _host_only(url: str | None) -> str:
 
 
 def _registry_row(conn: store.Connection, user: UserContext) -> Row:
-    """A row of ``integration_connections``. The Zoho CRM row is the first."""
+    """A row of the registry table. The Zoho CRM row is the first."""
     app = conn.owning_app if conn.owning_app in _KNOWN_APPS else "integrations"
     detail: dict[str, str] = {}
     location = conn.provider_meta.get("location") if conn.provider_meta else None
@@ -223,7 +223,7 @@ def _whatsapp_row(r: Any) -> Row:
 
 def _mcp_rows(org: str, user: UserContext) -> list[Row]:
     """The MCP servers of *org*. Key names only, never a header value."""
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import get_session
 
     with get_session() as s:
         rows = s.execute(text(integrations._MCP_LIST_SQL), {"org": org}).fetchall()
@@ -232,6 +232,7 @@ def _mcp_rows(org: str, user: UserContext) -> list[Row]:
         name, label, _desc, transport, _cmd, url = r[0], r[1], r[2], r[3], r[4], r[5]
         scope = r[8] or ["*"]
         detail = {
+            "name": str(name),
             "transport": str(transport or ""),
             "agent_scope": ", ".join(str(a) for a in scope),
         }
@@ -254,11 +255,22 @@ def _mcp_rows(org: str, user: UserContext) -> list[Row]:
     return out
 
 
+#: The names of one org's stored keys. No ``encrypted`` column, so no value.
+_KEY_NAMES_SQL = (
+    "SELECT provider, service FROM provider_keys "
+    "WHERE organization_id = :org_id AND credential_type = 'integration' "
+    "ORDER BY provider"
+)
+
+
+async def _key_names(org: str) -> list[dict[str, Any]]:
+    """Through the one key-store query site of ``routes/integrations.py``."""
+    return await integrations._db_query(_KEY_NAMES_SQL, org_id=org)
+
+
 async def _key_rows(org: str, user: UserContext) -> list[Row]:
     """One row for each service that holds a stored key. Never a value."""
-    from acb_llm.key_store import get_key_store  # noqa: PLC0415
-
-    names = await get_key_store().list_names("integration", org)
+    names = await _key_names(org)
     by_service: dict[str, int] = {}
     for item in names:
         service = str(item.get("service") or str(item["provider"]).split(":", 1)[0])
@@ -345,7 +357,7 @@ async def list_connections(
 def _audit(user: UserContext, org: str, target: str, **payload: Any) -> None:
     """One audit event: who, what, when, which organization (spec §4.4)."""
     try:
-        from acb_audit import AuditEvent, record  # noqa: PLC0415
+        from acb_audit import AuditEvent, record
 
         record(AuditEvent(
             actor=f"user:{user.email}",
@@ -394,7 +406,7 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
     if conn.scope_kind != store.SCOPE_ORG:
         raise _member_refusal(conn.owning_app)
     if conn.provider == "zoho" and conn.owning_app == "crm":
-        from gateway.routes.crm.connection import disconnect_zoho  # noqa: PLC0415
+        from gateway.routes.crm.connection import disconnect_zoho
 
         after = await disconnect_zoho(org)
     else:
@@ -406,9 +418,7 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
 
 
 async def _disconnect_keys(org: str, service: str, user: UserContext) -> dict[str, Any]:
-    from acb_llm.key_store import get_key_store  # noqa: PLC0415
-
-    names = await get_key_store().list_names("integration", org)
+    names = await _key_names(org)
     suffixes = [
         str(n["provider"]).split(":", 1)[1] for n in names
         if str(n["provider"]).split(":", 1)[0] == service and ":" in str(n["provider"])
@@ -490,7 +500,7 @@ async def run_stored_mcp_test(
     refused URL sends no request. The answer holds a short code and never a
     header, a URL or a provider message.
     """
-    from acb_graph import get_session  # noqa: PLC0415
+    from acb_graph import get_session
 
     org = _org(user)
     with get_session() as s:
