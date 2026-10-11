@@ -76,6 +76,12 @@ _EXEMPT = {
     "import_zoho.py", "sync_zoho.py",
     # Writes the organization's own mode. It is not a CRM record write.
     "settings.py",
+    # CRM-Z2: writes the connection registry and sets the mode to Mirror. It
+    # is not a CRM record write.
+    "connection.py",
+    # CRM-Z5: starts a sync run. Its records go through upsert_from_source,
+    # the one bypass, and never through a route.
+    "sync.py",
 }
 
 
