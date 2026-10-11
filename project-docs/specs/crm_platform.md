@@ -9,7 +9,9 @@
 > kill switch, default OFF (2026-10-11). CRM-Z1, the `crm_sources` seam and the
 > Zoho read adapter (2026-10-11). CRM-Z0, the Zoho facts (§5.2, §7.2) and the
 > OAuth runbook `docs/ZOHO_OAUTH_SETUP.md` (2026-10-11). CRM-T1, the tenant port
-> (2026-10-11). The other slices are not built yet.
+> (2026-10-11). CRM-T5, the access rule, the admin floor on stages and the seed
+> when the mode becomes Native (migration 242, 2026-10-11, not merged). The
+> other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -845,7 +847,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | ~~**CRM-T2**~~ | ✅ **Already true** (audit, 2026-10-11). Every request handler uses `_tenant_session` (`test_db_engine_seam.py:359-361`). `_get_db` stays only in the three background paths, and CRM-T3 removes them | — | Moved into CRM-T3 |
 | **CRM-T3** | The three background paths bind their tenant (§4.3). The advisory lock replaces `_cycle_lock` | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: two orgs, two cycles, each sees only its own rows. `test_db_engine_seam.py` exempts no CRM file. H-201's CRM half is deleted |
 | **CRM-T4** | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
-| **CRM-T5** | Per-org seeds of stages and lost reasons, in the write that sets the mode to `native`. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` and `access` (Q3). Groups resolve through the Projects grant model (D12) | 🟢 AGENT-SAFE | An admin sets a new org to Native, and the org gets its own 6 deal stages, 5 lead stages and 6 lost reasons. A member who is not an admin gets 403 on `POST /crm/statuses/deal`. With `access = admins`, a member gets 403 on every `/crm` route |
+| **CRM-T5** ✅ built 2026-10-11 | Per-org seeds of stages and lost reasons, in the write that sets the mode to `native`. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` and `access` (Q3). Groups resolve through the Projects grant model (D12) | 🟢 AGENT-SAFE | An admin sets a new org to Native, and the org gets its own 6 deal stages, 5 lead stages and 6 lost reasons. A member who is not an admin gets 403 on `POST /crm/statuses/deal`. With `access = admins`, a member gets 403 on every `/crm` route |
 
 **For CRM-T4 (found in CRM-T1, 2026-10-11).** Intra-CRM FKs (`company_id`, `deal_id`, `status_id` and others) can point at another tenant's row, because referential checks bypass RLS. A composite `(organization_id, id)` key closes it.
 
@@ -935,6 +937,7 @@ Then run the `visual-review` skill on `/crm` (§8.4).
 | Org B reads none of org A's CRM rows | `test_crm_tenancy_r8.py` | New (CRM-T4), R8 |
 | The rename answers install, upgrade and replay | the `test_gtd_rename_upgrade.py` shape | New (CRM-T1) |
 | A background CRM path binds its own tenant | `test_crm_sync_tenancy.py` | New (CRM-T3) |
+| Only the members that the admin picks can open the CRM. Only an admin manages stages, lost reasons and the mode | `test_crm_access.py`, `test_crm_access_r8.py` | New (CRM-T5), R8 |
 | An adapter reads no global credential | `test_crm_sources_no_global_creds.py` | New (CRM-Z1) |
 | Mirror mode refuses a write to a mirrored field | `test_crm_mirror_readonly.py` | New (CRM-Z6) |
 | The CRM uses the shared stage colours | `sharedTaskUi.test.ts`, exemption deleted | Existing (CRM-U3) |
