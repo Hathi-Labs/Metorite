@@ -176,7 +176,7 @@ async def _call(
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
     from fastapi import FastAPI
-    from gateway.routes import integrations
+    from gateway.routes import integrations, integrations_connections
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
@@ -184,6 +184,7 @@ async def _call(
 
     app = FastAPI()
     app.include_router(integrations.router)
+    app.include_router(integrations_connections.router)
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:
@@ -527,3 +528,35 @@ async def test_the_github_test_button_needs_the_manage_right(ns, app_engine) -> 
     res = await _call(ns, reader, "GET", "/integrations/test", params={"service": "github"})
     assert res.status_code == 403 and "integrations:manage" in res.text
     assert ns.github.requests == [], "the org token was spent for a member without the right"
+
+
+async def test_the_console_disconnect_of_a_github_row_uses_the_github_disconnect(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """The console row drops the blob AND the old row, with an audit event and no revoke call."""
+    import acb_audit
+
+    events: list[Any] = []
+    monkeypatch.setattr(acb_audit, "record", events.append)
+    await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    await _connect(ns, ns.org_b, ADMIN_B, "DEV-B")
+    async with tenant_engine_scope(_app_dsn(ns)):
+        await _seed_legacy(ns, ns.org_a, LEGACY_A)
+    with ns.admin_engine.connect() as c:
+        gid = c.execute(text(
+            "SELECT id::text FROM integration_connections WHERE provider = 'github' "
+            "AND organization_id = CAST(:o AS uuid)"), {"o": ns.org_a}).scalar_one()
+    ns.github.requests.clear()
+
+    res = await _call(ns, _user(ADMIN_A, ns.org_a), "POST",
+                      f"/integrations/connections/github:{gid}/disconnect")
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "disconnected" and res.json()["can_disconnect"] is False
+    assert res.json()["provider"] == "github"
+    assert _legacy_rows(ns, ns.org_a) == 0, "the console must clear the old row too"
+    (row_a,) = _rows(ns, ns.org_a)
+    assert row_a.status == "disconnected" and row_a.credentials_encrypted is None
+    assert await _read_token(ns, ns.org_a) is None
+    assert await _read_token(ns, ns.org_b) == TOKEN_B
+    assert ns.github.requests == []
+    (event,) = events
+    assert event.target == f"github:{gid}" and event.action == "integration.disconnect"
+    assert TOKEN_A not in res.text and LEGACY_A not in res.text
