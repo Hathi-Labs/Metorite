@@ -98,6 +98,61 @@ def _counts(conn, org: str) -> dict[str, int]:
     return out
 
 
+_CRM_TABLES = (
+    "crm_companies", "crm_contacts", "crm_lead_statuses", "crm_deal_statuses",
+    "crm_leads", "crm_deals", "crm_activities",
+)
+
+
+def _seed_crm(conn, org: str) -> None:
+    """One company, contact, lead, deal and activity, each lead and deal in a
+    seeded stage of its own org (WS-53 CRM-T4).
+
+    The stages are what make the purge hazard reachable: ``crm_leads.status_id``
+    and ``crm_deals.status_id`` are ``ON DELETE RESTRICT``.
+    """
+    p = {"o": org}
+    ids = {}
+    for key, sql in (
+        ("company", "INSERT INTO crm_companies (name, organization_id) "
+                    "VALUES ('Acme', CAST(:o AS uuid)) RETURNING id"),
+        ("lstage", "INSERT INTO crm_lead_statuses (name, position, type, "
+                   "organization_id) VALUES ('New', 1, 'open', "
+                   "CAST(:o AS uuid)) RETURNING id"),
+        ("dstage", "INSERT INTO crm_deal_statuses (name, position, type, "
+                   "organization_id) VALUES ('Proposal', 1, 'open', "
+                   "CAST(:o AS uuid)) RETURNING id"),
+    ):
+        ids[key] = str(conn.execute(text(sql), p).scalar_one())
+    ids["contact"] = str(conn.execute(text(
+        "INSERT INTO crm_contacts (first_name, company_id, organization_id) "
+        "VALUES ('Ada', CAST(:c AS uuid), CAST(:o AS uuid)) RETURNING id"),
+        {**p, "c": ids["company"]}).scalar_one())
+    conn.execute(text(
+        "INSERT INTO crm_leads (lead_name, status_id, organization_id) "
+        "VALUES ('Lead', CAST(:s AS uuid), CAST(:o AS uuid))"),
+        {**p, "s": ids["lstage"]})
+    ids["deal"] = str(conn.execute(text(
+        "INSERT INTO crm_deals (name, company_id, status_id, organization_id) "
+        "VALUES ('Deal', CAST(:c AS uuid), CAST(:s AS uuid), CAST(:o AS uuid)) "
+        "RETURNING id"), {**p, "c": ids["company"], "s": ids["dstage"]}
+    ).scalar_one())
+    conn.execute(text(
+        "INSERT INTO crm_activities (type, deal_id, created_by, "
+        "organization_id) VALUES ('note', CAST(:d AS uuid), 'a@x.test', "
+        "CAST(:o AS uuid))"), {**p, "d": ids["deal"]})
+
+
+def _crm_counts(conn, org: str) -> dict[str, int]:
+    return {
+        t: conn.execute(
+            text(f"SELECT count(*) FROM {t} WHERE organization_id = "
+                 "CAST(:o AS uuid)"), {"o": org},
+        ).scalar_one()
+        for t in _CRM_TABLES
+    }
+
+
 def _cleanup(conn, *, slug: str, org: str):
     conn.execute(
         text("DELETE FROM organization WHERE id = CAST(:o AS uuid)"), {"o": org}
@@ -201,6 +256,49 @@ class TestThePurge:
             await purge_tenant_organization(slug="   ")
 
 
+class TestTheCrmPurge:
+    async def test_an_org_holding_leads_and_deals_in_stages_purges_whole(self, eng):
+        """WS-53 CRM-T4. ``crm_leads.status_id`` and ``crm_deals.status_id`` are
+        ``ON DELETE RESTRICT``, so the one cascading DELETE can reach a stage
+        before the lead or deal that sits in it.
+
+        **Measured 2026-10-11 on Postgres 16: the hazard did NOT reproduce
+        with the bare cascade.** Without the explicit deletes in
+        ``purge_tenant_organization`` the org still purged whole, because the
+        referential triggers fire after the statement and by then the
+        cascade has removed the leads and deals too. The test stays, and
+        the explicit deletes stay, so the purge does not depend on that
+        trigger order.
+        """
+        from acb_auth.offboard import purge_tenant_organization
+
+        victim = f"purge-{uuid.uuid4().hex[:8]}"
+        bystander = f"stays-{uuid.uuid4().hex[:8]}"
+        with eng.begin() as conn:
+            v_org = _seed_org(conn, slug=victim)
+            b_org = _seed_org(conn, slug=bystander)
+            _seed_crm(conn, v_org)
+            _seed_crm(conn, b_org)
+            assert set(_crm_counts(conn, v_org).values()) == {1}
+        try:
+            async with tenant_engine_scope(_URL):
+                receipt = await purge_tenant_organization(slug=victim)
+            assert receipt["already_absent"] is False
+            assert receipt["deleted"] == {
+                "organization": 1, "crm_activities": 1, "crm_deals": 1,
+                "crm_leads": 1,
+            }, receipt["deleted"]
+            with eng.begin() as conn:
+                gone = _crm_counts(conn, v_org)
+                kept = _crm_counts(conn, b_org)
+            assert gone == {t: 0 for t in _CRM_TABLES}, gone
+            assert kept == {t: 1 for t in _CRM_TABLES}, kept
+        finally:
+            with eng.begin() as conn:
+                _cleanup(conn, slug=victim, org=v_org)
+                _cleanup(conn, slug=bystander, org=b_org)
+
+
 class TestTheExclusionCannotGoStale:
     def test_every_organization_id_cascades_to_the_tenant(self, eng):
         """Every column NAMED ``organization_id`` must cascade to the tenant
@@ -246,7 +344,9 @@ class TestTheExclusionCannotGoStale:
     def test_every_crm_table_cascades_from_the_tenant(self, eng):
         """WS-53 CRM-T1: the positive half, so the empty set above is not
         vacuous for the CRM. Each of the 13 ``crm_*`` tables carries an
-        ``organization_id`` that cascades from ``organization``."""
+        ``organization_id`` that cascades from ``organization``. WS-53 CRM-T5
+        adds the 14th, ``crm_settings`` (migration 243), whose primary key is
+        that column."""
         with eng.begin() as conn:
             cascading = {
                 r[0]
@@ -266,5 +366,6 @@ class TestTheExclusionCannotGoStale:
             "crm_activities", "crm_auto_lead_cursors", "crm_companies",
             "crm_contacts", "crm_deal_contacts", "crm_deal_statuses",
             "crm_deals", "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
-            "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
+            "crm_settings", "crm_status_changes", "crm_sync_cursors",
+            "crm_zoho_tombstones",
         }

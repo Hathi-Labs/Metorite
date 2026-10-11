@@ -95,6 +95,20 @@ def test_the_pending_ask_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE chat_pending_ask FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_crm_settings_table_is_tenant_scoped() -> None:
+    """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
+    the CRM mode of an organization and who in it may open the CRM. It must
+    never be exempt, and the committed policy phase must carry it."""
+    gen = _generator()
+    assert "crm_settings" in gen.discover_tables()
+    assert "crm_settings" not in gen.EXEMPT
+    assert "crm_settings" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE crm_settings FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the
