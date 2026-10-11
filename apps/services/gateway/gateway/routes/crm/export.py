@@ -180,6 +180,7 @@ class ExportParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
     ) -> None:
         self.q = q
         self.sort = sort
@@ -188,6 +189,7 @@ class ExportParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        self.pipeline_id = pipeline_id
 
 
 def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
@@ -250,7 +252,7 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
         status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
+        pipeline_id=params.pipeline_id, extra_where=extra,
     )
 
     async with _tenant_session() as db:
