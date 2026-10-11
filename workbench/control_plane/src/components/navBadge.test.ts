@@ -141,7 +141,10 @@ describe("the phone nav wears the run badge on every page", () => {
     expect(shell).toContain(
       "const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);",
     );
-    expect(shell).toMatch(/const b = drawerBadge\(p\.href\);\s*return b \? <NavBadge count=\{b\.count\} tone=\{b\.tone\} label=\{b\.label\} \/> : null;/);
+    // The run badge wins the row's one slot. Else the needs count (`rowMeta`).
+    expect(shell).toMatch(
+      /const b = drawerBadge\(p\.href\);[\s\S]{0,1500}?\{b \? \(\s*<NavBadge count=\{b\.count\} tone=\{b\.tone\} label=\{b\.label\} \/>\s*\) : meta\?\.kind === "needs"/,
+    );
   });
 
   it("no phone badge hard-codes its tone", () => {

@@ -295,7 +295,7 @@ class TestTheFeatureGate:
 
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
-        assert answer == {"count": 0, "total": 0, "items": [],
+        assert answer == {"count": 0, "total": 0, "items": [], "totals": {},
                           "sources": {"tasks": "absent", "approvals": "absent",
                                       "projects": "absent", "email": "absent"}}
         assert fakes.calls == []
@@ -606,6 +606,27 @@ class TestTheCaps:
         assert answer["total"] == 3 * shell.PER_APP == 45
         assert run(member(*ALL), limit=2)["total"] == 45
         assert run(member(*ALL), limit=500)["count"] == run(member(*ALL), limit=500)["total"] == 45
+
+    def test_totals_count_each_answering_sources_rows_before_the_cut(self, fakes):
+        # The sidebar's row counts read ``totals``. The replies sort last, so
+        # the cut to 30 drops every one of them from ``items``, and a count
+        # taken from ``items`` would say Email has nothing.
+        fakes.tasks[ME] = [_task(f"t-{n}", "x", NOW - timedelta(hours=n + 1))
+                           for n in range(20)]
+        fakes.notes[ME] = [dict(fakes.notes[ME][0], id=f"n-{n}") for n in range(20)]
+        fakes.threads["a-mine"] = [
+            _thread(f"th-{n}", f"m-{n}", "s", NOW - timedelta(hours=n)) for n in range(20)]
+        answer = run(member(*ALL))
+        assert "email" not in {i["app"] for i in answer["items"]}
+        assert answer["totals"] == {"tasks": 15, "projects": 15, "email": 15}
+        assert sum(answer["totals"].values()) == answer["total"]
+
+    def test_totals_leave_out_a_failed_and_an_absent_source(self, fakes):
+        fakes.fail["list_notifications"] = RuntimeError("db down")
+        answer = run(member("email", "projects"))
+        assert answer["sources"]["projects"] == "failed"
+        assert answer["sources"]["approvals"] == "absent"
+        assert set(answer["totals"]) == {"tasks", "email"}
 
 
 class TestAFailingAppIsLeftOut:

@@ -440,6 +440,7 @@ async def shell_needs(
 
     items: list[Item] = []
     sources: dict[str, str] = {}
+    totals: dict[str, int] = {}
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TOTAL_BUDGET_S
     for key, (feature, provider) in PROVIDERS.items():
@@ -471,8 +472,13 @@ async def shell_needs(
             continue
         sources[key] = "ok"
         items.extend(rows[:PER_APP])
+        totals[key] = len(rows[:PER_APP])
 
-    return {**_fit(items, size), "sources": sources}
+    # ``totals`` is ``total`` for each source that answered. The sidebar
+    # counts each app's rows from it, because the cut to ``size`` can drop
+    # one app's rows from ``items`` entirely (the replies sort last). A
+    # source that failed or is absent has no entry.
+    return {**_fit(items, size), "totals": totals, "sources": sources}
 
 
 def _fit(items: list[Item], size: int) -> dict[str, Any]:

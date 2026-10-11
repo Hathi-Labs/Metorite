@@ -122,9 +122,9 @@ export function bellLabel(count: number | undefined): string {
 /**
  * Whether this member can have a feed at all, and whether it holds the
  * approvals group. Both are My Day's own rules (`cardsFor`, `seesApprovals`),
- * so the bell and the card show the same rows.
+ * so the bell, the card and the sidebar's row counts show the same rows.
  */
-function useBellAllowed(): { allowed: boolean; approvals: boolean } {
+export function useNeedsAllowed(): { allowed: boolean; approvals: boolean } {
   const { access, loading } = useAccess();
   if (loading) return { allowed: false, approvals: false };
   return {
@@ -194,7 +194,7 @@ export function ShellBell({
   /** Layout only. */
   className?: string;
 }) {
-  const { allowed, approvals } = useBellAllowed();
+  const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
   if (!allowed) return null;
@@ -221,6 +221,43 @@ const TICK_MS = 30_000;
  * Projects bell it replaces read its list once a minute too.
  */
 export const BELL_POLL_MS = 60_000;
+
+// ── The one poll ─────────────────────────────────────────────────────────────
+//
+// The bell's host and the sidebar's row counts both want the feed read each
+// minute. Each joins this one poll, so a tab reads the feed once a minute
+// however many surfaces show it. Every reader's `refresh` forces the one
+// cache key (`needsKey`), and the answer reaches every reader through the
+// cache, so one call refreshes them all.
+
+const _pollers = new Set<() => void>();
+let _pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Join the one poll. Returns the leave. The last leave stops the timer. */
+export function joinNeedsPoll(refresh: () => void, every = BELL_POLL_MS): () => void {
+  _pollers.add(refresh);
+  if (_pollTimer === null) {
+    _pollTimer = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      _pollers.values().next().value?.();
+    }, every);
+  }
+  let left = false;
+  return () => {
+    if (left) return;
+    left = true;
+    _pollers.delete(refresh);
+    if (_pollers.size === 0 && _pollTimer !== null) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+  };
+}
+
+/** Join the one poll while `allowed`. */
+export function useNeedsPoll(allowed: boolean, refresh: () => void): void {
+  useEffect(() => (allowed ? joinNeedsPoll(refresh) : undefined), [allowed, refresh]);
+}
 
 /**
  * What the panel says under a list the feed cut: "Showing 30 of 45", or
@@ -324,8 +361,8 @@ export function BellPanel({
 
 /**
  * The one panel, for every layout. `AppShell` renders it while the flag is
- * on. It also reads the feed again once a minute while the tab is in view,
- * and once each time the panel opens.
+ * on. It also joins the one poll (`joinNeedsPoll`), and it reads the feed
+ * again each time the panel opens.
  *
  * It mounts `UndoToastFallback` too. A page that mounts `UndoToast` (My
  * Tasks, the Calendar and My Day, and no other) says the Undo already. On
@@ -333,18 +370,12 @@ export function BellPanel({
  * bell offers the store's Undo everywhere.
  */
 export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
-  const { allowed, approvals } = useBellAllowed();
+  const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
   const { refresh } = needs;
 
-  useEffect(() => {
-    if (!allowed) return;
-    const id = setInterval(() => {
-      if (document.visibilityState === "visible") refresh();
-    }, BELL_POLL_MS);
-    return () => clearInterval(id);
-  }, [allowed, refresh]);
+  useNeedsPoll(allowed, refresh);
 
   useEffect(() => {
     if (allowed && open) refresh();

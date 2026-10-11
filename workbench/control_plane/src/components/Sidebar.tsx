@@ -34,6 +34,8 @@ import {
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
+import { needsLabel, needsSuffix, rowMeta, rowName, strayNeedsLabel } from "@/lib/shell/navNeeds";
+import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { chatScope } from "@/lib/sessions";
 import { ContextMenu } from "@/components/ContextMenu";
 import { useToast } from "@/components/ui/Toast";
@@ -136,6 +138,12 @@ export default function Sidebar() {
     strayCount(needsCounts, railHrefs),
     strayCount(unreadCounts, railHrefs),
   );
+  // What needs the member in each app (owner, 2026-10-11): the one feed of
+  // My Day and the bell, counted on its app's row (`useNavNeeds`). An app
+  // the sidebar does not show counts on "Add apps", as a run does.
+  const heldHrefs = sections.flatMap((s) => s.items.map((p) => p.href));
+  const appNeeds = useNavNeeds(shellNav && canPoll, heldHrefs);
+  const strayNeeds = strayCount(appNeeds, railHrefs);
 
   // Per-category fold state, kept per ACCOUNT (owner, 2026-10-11), so a
   // reload keeps it and another account on this browser never reads it
@@ -421,6 +429,7 @@ export default function Sidebar() {
               runCounts={runCounts}
               needsCounts={needsCounts}
               unreadCounts={unreadCounts}
+              appNeeds={appNeeds}
               pinnedApps={pinnedApps}
               shellNav={shellNav}
             />
@@ -431,6 +440,7 @@ export default function Sidebar() {
               collapsed={collapsed}
               onOpen={() => openLauncher(ADD_APPS_HINT)}
               badge={strayBadge}
+              needs={strayNeeds}
             />
           )}
           </>
@@ -546,25 +556,33 @@ function AddAppsRow({
   collapsed,
   onOpen,
   badge,
+  needs = 0,
 }: {
   collapsed: boolean;
   onOpen: () => void;
   /** Runs on apps the sidebar does not show (`strayCount`). */
   badge: ReturnType<typeof runBadge>;
+  /** The needs rows in apps the sidebar does not show (`strayCount`). */
+  needs?: number;
 }) {
+  // The slot rule of an app row (`rowMeta`): a run badge wins it. The
+  // needs count stays in the name either way.
+  const meta = rowMeta(badge?.count, needs);
+  const name = needsSuffix(needs) ? `Add apps, ${strayNeedsLabel(needs)}` : "Add apps";
   if (collapsed) {
     return (
       <div className="flex flex-col gap-1 p-2" data-nav-add-apps="">
         <button
           type="button"
           onClick={onOpen}
-          title="Add apps"
-          aria-label="Add apps"
+          title={name}
+          aria-label={name}
           aria-haspopup="dialog"
           className="relative flex items-center justify-center rounded-lg p-2.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
         >
           <Icon name="Plus" size={18} />
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} placement="corner" /> : null}
+          {meta?.kind === "needs" ? <NeedsDot /> : null}
         </button>
       </div>
     );
@@ -575,12 +593,14 @@ function AddAppsRow({
         type="button"
         onClick={onOpen}
         aria-haspopup="dialog"
+        aria-label={needs > 0 ? name : undefined}
         className="rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
       >
         <span className="flex items-center gap-2.5">
           <Icon name="Plus" size={16} />
           <span className="text-[13px]">Add apps</span>
           {badge ? <NavBadge count={badge.count} tone={badge.tone} label={badge.label} /> : null}
+          {meta?.kind === "needs" ? <NeedsCount text={meta.text} /> : null}
         </span>
       </button>
     </div>
@@ -675,6 +695,7 @@ function NavSectionBlock({
   runCounts = {},
   needsCounts = {},
   unreadCounts = {},
+  appNeeds = {},
   pinnedApps = [],
   shellNav = false,
   onRowMenu,
@@ -695,6 +716,8 @@ function NavSectionBlock({
   needsCounts?: Record<string, number>;
   /** The unread chats per pane href (WS-51 S5). */
   unreadCounts?: Record<string, number>;
+  /** The needs rows per pane href (`useNavNeeds`). */
+  appNeeds?: Record<string, number>;
   pinnedApps?: PinnedApp[];
   /** The shell nav's line under each item: the manifest's purpose. */
   shellNav?: boolean;
@@ -722,6 +745,7 @@ function NavSectionBlock({
               collapsed
               onNavigate={onNavigate}
               {...badgeFor(p.href)}
+              needs={appNeeds[p.href]}
               shellNav={shellNav}
               onRowMenu={onRowMenu}
               menuOpen={menuHref === p.href}
@@ -777,6 +801,7 @@ function NavSectionBlock({
               pathname={pathname}
               onNavigate={onNavigate}
               {...badgeFor(p.href)}
+              needs={appNeeds[p.href]}
               pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
               shellNav={shellNav}
               onRowMenu={onRowMenu}
@@ -828,6 +853,7 @@ export function NavLink({
   badge,
   badgeTone = "warning",
   badgeLabel,
+  needs,
   pinnedApps,
   shellNav = false,
   onRowMenu,
@@ -842,6 +868,11 @@ export function NavLink({
   badgeTone?: NavBadgeTone;
   /** The badge's spoken name. Defaults to the bare count. */
   badgeLabel?: string;
+  /**
+   * The rows that need the member in this app (`useNavNeeds`). A quiet
+   * number in the trailing slot, which a run badge wins (`rowMeta`).
+   */
+  needs?: number;
   pinnedApps?: PinnedApp[];
   shellNav?: boolean;
   /**
@@ -863,13 +894,21 @@ export function NavLink({
   // a member is finding out what an app is, and All apps prints it there.
   // Off, the older operator line, as before.
   const purpose = pane.blurb ?? pane.note;
+  // One trailing slot: a run badge wins it, else the needs count (`rowMeta`).
+  // The count stays in the link's name either way (`rowName`).
+  const meta = rowMeta(badge, needs);
+  const spoken = needsSuffix(needs);
+  const name = rowName(pane.label, needs, badge !== undefined && badge > 0 ? (badgeLabel ?? String(badge)) : undefined);
 
   if (collapsed) {
     return (
       <Link
         key={pane.href}
         href={pane.href}
-        title={shellNav ? `${pane.label}: ${purpose}` : pane.label}
+        title={
+          (shellNav ? `${pane.label}: ${purpose}` : pane.label) +
+          (spoken && needs !== undefined ? ` (${needsLabel(needs)})` : "")
+        }
         onClick={onNavigate}
         onContextMenu={
           onRowMenu
@@ -880,6 +919,7 @@ export function NavLink({
             : undefined
         }
         data-nav-row={pane.href}
+        aria-label={name}
         className={`rounded-lg tech-transition flex items-center justify-center p-2.5 relative ${
           active
             ? "bg-primary/15 text-primary"
@@ -895,6 +935,9 @@ export function NavLink({
           label={badgeLabel ?? String(badge ?? 0)}
           placement="corner"
         />
+        {/* Folded, the needs count is a quiet dot. The number is in the
+            link's name and in its tooltip. */}
+        {meta?.kind === "needs" ? <NeedsDot /> : null}
       </Link>
     );
   }
@@ -916,6 +959,7 @@ export function NavLink({
             : undefined
         }
         title={shellNav ? purpose : undefined}
+        aria-label={name}
         data-nav-row={onRowMenu ? undefined : pane.href}
         // With a menu, the ROW carries the tone, so the "···" sits on the
         // same tint. The link keeps the full width at rest.
@@ -926,9 +970,14 @@ export function NavLink({
           <span className="font-medium text-[13px]">{pane.label}</span>
           {/* With a menu, the badge gives its place to the "···" on hover or
               focus, as a `RailRow` count does (`rail-row-meta`). It is
-              hidden from sight only, so it stays in the link's name. */}
-          <span className={onRowMenu ? "rail-row-meta" : "contents"}>
-            <NavBadge count={badge ?? 0} tone={badgeTone} label={badgeLabel ?? String(badge ?? 0)} />
+              hidden from sight only, so it stays in the link's name. The
+              slot sits at the row's end, as a `RailRow` count does. */}
+          <span className={onRowMenu ? "rail-row-meta ml-auto" : "contents"}>
+            {meta?.kind === "needs" ? (
+              <NeedsCount text={meta.text} />
+            ) : (
+              <NavBadge count={badge ?? 0} tone={badgeTone} label={badgeLabel ?? String(badge ?? 0)} />
+            )}
           </span>
         </div>
         {!shellNav && (
@@ -998,5 +1047,34 @@ export function NavLink({
         </div>
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The needs count (owner, 2026-10-11)
+// ---------------------------------------------------------------------------
+
+/**
+ * The needs count in a row's trailing slot: a muted number in the type of a
+ * `RailRow` count (`rail-row-meta`), with no fill and no colour of its own.
+ * A screen reader skips it, because the link's name says it in words
+ * (`needsSuffix`). The phone drawer draws the same one.
+ */
+export function NeedsCount({ text }: { text: string }) {
+  return (
+    <span aria-hidden data-nav-needs="count" className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
+      {text}
+    </span>
+  );
+}
+
+/** The folded rail's form of the count: a small muted dot on the icon. */
+function NeedsDot() {
+  return (
+    <span
+      aria-hidden
+      data-nav-needs="dot"
+      className="pointer-events-none absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground"
+    />
   );
 }

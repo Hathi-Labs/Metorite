@@ -44,7 +44,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
-import { type NeedsFeed, type NeedsItem, fetchNeeds, needsKey, runAct } from "./needs";
+import { type NeedsApp, type NeedsFeed, type NeedsItem, countsByApp, fetchNeeds, needsKey, runAct } from "./needs";
 import {
   EMPTY_ACTS,
   acquireReader,
@@ -68,6 +68,12 @@ export interface NeedsYou {
    */
   total: number | undefined;
   sources: NeedsFeed["sources"];
+  /**
+   * The rows that need the member in each app, by `total` semantics, less
+   * the removed rows (`countsByApp`). Only a source that answered `ok` has
+   * an entry. The sidebar's rows read it.
+   */
+  byApp: Partial<Record<NeedsApp, number>>;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -114,11 +120,16 @@ export function useNeedsYou(
     [feed.data, removed, approvals],
   );
   const gone = feed.data ? feed.data.items.length - (items?.length ?? 0) : 0;
+  const byApp = useMemo(
+    () => (feed.data && items ? countsByApp(feed.data, items, approvals) : {}),
+    [feed.data, items, approvals],
+  );
   return {
     items,
     count: feed.data ? Math.max(0, feed.data.count - gone) : undefined,
     total: feed.data ? Math.max(0, feed.data.total - gone) : undefined,
     sources: feed.data?.sources ?? {},
+    byApp,
     loading: feed.loading,
     error: feed.error,
     refresh: feed.refresh,

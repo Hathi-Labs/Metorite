@@ -45,6 +45,11 @@ starred. The first sign-in dialog has a second step to choose them. A row
 menu hides an app, and a category folds. It rides the same flag, so the
 merge is its release. §3.2b holds the model.
 
+**BUILT 2026-10-11, by owner direction: row counts.** Each app row in the
+sidebar and the phone drawer shows a quiet count of what needs the member
+there. The count comes from the needs feed of My Day and the bell. It rides
+the same flag, so the merge is its release. §3.2c holds the rules.
+
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -470,6 +475,65 @@ Fences: `presets.test.ts` (the four rules, the defaults and the subset
 rule), `shellNav.test.ts` (the order and the dropped category),
 `sidebarFolds.test.ts`, `test_auth_me_shell.py` and
 `test_auth_me_shell_r8.py` (`known`), and `e2e/shell-presets.spec.ts`.
+
+### 3.2c Row counts (owner, 2026-10-11)
+
+The owner said: "Each app row shows what needs you there, from the same feed
+as My Day and the bell. A quiet number, never a red badge storm."
+
+**The source.** The count reads the needs feed (§7.2) through `useNeedsYou`,
+the hook of My Day and the bell. It uses the same cache key, so the sidebar
+adds no request. One poll serves the bell's host and the sidebar together
+(`joinNeedsPoll` in `ShellBell.tsx`), so a tab reads the feed once a minute.
+Before this, the feed was read on My Day only while the bell flag was off.
+
+**Which row counts a feed row.** `NEEDS_APP_HREF` in `needs.ts` is the one
+map. The `email` rows count on My Email, `tasks` on My Tasks, `projects` on
+Projects and `approvals` on Approvals. A new provider adds one line there.
+A task row opens in Projects, but it counts on My Tasks, because it is the
+member's own due task.
+
+**The number** (`countsByApp`).
+
+1. The number is the source's rows before the cut, from `totals` (§7.2).
+   The cut to 30 can drop every reply, so a count from `items` would say
+   that Email holds nothing.
+2. The rows that an act took off do not count (`needsActs.ts`). So a Done
+   in My Day or the bell takes the task out of the count at once.
+3. A source that failed shows no number on its row. It never shows a 0,
+   and it never shows the last number.
+4. A source with nothing shows nothing.
+5. An app that the member cannot open has no row, so its count does not
+   show in the sidebar. My Day and the bell still show its rows.
+
+**One slot** (`rowMeta` in `navNeeds.ts`).
+
+1. A run badge wins the slot. That is the amber, blue or green badge of
+   `runBadge`.
+2. Else the needs count shows, as a muted number with no fill.
+3. Else the slot is empty.
+4. On hover or keyboard focus, the "···" takes the slot, as a `RailRow`
+   count does (`rail-row-meta`).
+
+The run badge wins because it is live. It changes while the member looks,
+and the needs count is the quiet signal.
+
+**The words.** The link's name is "My Email, 3 need you" (`rowName`). It
+keeps the count when a run badge holds the slot. My Day's own words are
+"need you", so the row uses them. The number shows "99+" past 99, as the
+bell does (`bellBadge`).
+
+**The other forms.**
+
+- **Folded.** The icon shows a small muted dot. The link's name and its
+  tooltip hold the number.
+- **A hidden app.** Its count adds to "Add apps" (`strayCount`), as a run
+  does. Its name reads "Add apps, 2 need you in hidden apps".
+- **The phone drawer.** Its rows show the same counts, by the same rule.
+
+Fences: `src/lib/shell/navNeeds.test.ts` (the map, the counts, the slot,
+the stray count, the cap and the one poll) and
+`e2e/sidebar-row-counts.spec.ts`.
 
 ### 3.3 The account menu
 
@@ -1037,6 +1101,10 @@ display order stays as below.
   an email always have a null `act`.
 - `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
   that the member does not hold the feature.
+- `totals` gives the rows of each `ok` source before the cut (2026-10-11).
+  A source that failed or is absent has no entry. The sidebar's row counts
+  read it (§3.2c). An older gateway leaves it out, and the client then
+  counts the rows in `items`.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent
@@ -1979,6 +2047,10 @@ uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.
 
 # The one bell (NS-6 slice 6a), in a browser
 npx playwright test e2e/shell-bell.spec.ts --project=chromium
+
+# Row counts (§3.2c)
+npx vitest run src/lib/shell/navNeeds.test.ts
+npx playwright test e2e/sidebar-row-counts.spec.ts --project=chromium
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
