@@ -44,8 +44,10 @@ clone cache.
    other dir, it reads the files of `acb_memory.session_paths`. A named path
    goes through the `share_artifact` rules. Every read and the write go
    through `safe_open`. `agent_paths.is_blocked_rel` is the ONE secret-name
-   rule. The gateway's file routes read it too. Fence:
-   tests/unit/test_package_artifacts.py.
+   rule. The gateway's file routes read it too. A zip is a derived file, so
+   it lives on disk only and never in the blob store. It always lies at
+   `agent_paths.thread_package_rel`, and the chat delete removes it there.
+   Fence: `tests/unit/test_package_artifacts.py`.
    A batch run (no chat, `batch_thread` from the executor) writes the flat
    `outputs/`, never replaces a file, and records the actor `batch`
    (`_is_batch_run`, `BATCH_ACTOR`). Its document is the organization's to
