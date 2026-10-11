@@ -309,6 +309,20 @@ def test_native_seeds_6_deal_5_lead_6_lost_for_the_org(db: FakeCrmDB) -> None:
     assert counts(db, ORG_B) == (1, 0, 0)
 
 
+def test_an_org_with_its_own_stages_keeps_them(db: FakeCrmDB) -> None:
+    """The review P2: the conflict key is the NAME, so seeding over an org's
+    own (renamed) pipeline brings the old names back, with a second default
+    lane. A table that already has a row for the org gets nothing."""
+    db.seed("crm_deal_statuses", organization_id=ORG_A, name="Our lane",
+            type="open", is_default=True)
+    c = client(admin(ORG_A))
+
+    response = c.patch("/crm/settings", json={"mode": "native"})
+
+    assert response.status_code == 200, response.text
+    assert counts(db, ORG_A) == (1, 5, 6)
+
+
 def test_the_seed_runs_once_on_the_change_and_not_on_a_repeat(
     db: FakeCrmDB, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

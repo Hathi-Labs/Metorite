@@ -91,27 +91,44 @@ async def _insert(db: Any, sql: str, params: dict[str, Any]) -> int:
     return len((await db.execute(text(sql), params)).fetchall())
 
 
+async def _has_rows(db: Any, table: str, org: str) -> bool:
+    """True when *org* already has a row in *table*."""
+    row = (await db.execute(text(
+        f"SELECT 1 FROM {table} "  # table is one of three constants
+        "WHERE organization_id = CAST(:organization_id AS uuid) LIMIT 1"
+    ), {"organization_id": org})).fetchone()
+    return row is not None
+
+
 async def seed_native_pipeline(db: Any, organization_id: str) -> dict[str, int]:
     """Insert the starting pipeline of *organization_id*. Return the new counts.
 
     The caller owns the transaction. One row per statement, so each row meets
     its own ``ON CONFLICT`` and the count of new rows is exact.
+
+    ⚠️ Each list goes in only when the org has NO row in that table yet. The
+    ``ON CONFLICT`` key is the NAME, so an org that renamed or deleted a stage
+    would get the old name back, and a second ``is_default`` lane beside its
+    own (CRM-T5 review, P2). An org with any stage keeps its own pipeline.
     """
     org = str(organization_id)
     added = {"lead_statuses": 0, "deal_statuses": 0, "lost_reasons": 0}
-    for name, color, position, kind, is_default in LEAD_STATUSES:
-        added["lead_statuses"] += await _insert(db, _LEAD_SQL, {
-            "organization_id": org, "name": name, "color": color,
-            "position": position, "type": kind, "is_default": is_default,
-        })
-    for name, color, position, kind, is_default, probability in DEAL_STATUSES:
-        added["deal_statuses"] += await _insert(db, _DEAL_SQL, {
-            "organization_id": org, "name": name, "color": color,
-            "position": position, "type": kind, "is_default": is_default,
-            "probability": probability,
-        })
-    for label, position in LOST_REASONS:
-        added["lost_reasons"] += await _insert(db, _REASON_SQL, {
-            "organization_id": org, "label": label, "position": position,
-        })
+    if not await _has_rows(db, "crm_lead_statuses", org):
+        for name, color, position, kind, is_default in LEAD_STATUSES:
+            added["lead_statuses"] += await _insert(db, _LEAD_SQL, {
+                "organization_id": org, "name": name, "color": color,
+                "position": position, "type": kind, "is_default": is_default,
+            })
+    if not await _has_rows(db, "crm_deal_statuses", org):
+        for name, color, position, kind, is_default, probability in DEAL_STATUSES:
+            added["deal_statuses"] += await _insert(db, _DEAL_SQL, {
+                "organization_id": org, "name": name, "color": color,
+                "position": position, "type": kind, "is_default": is_default,
+                "probability": probability,
+            })
+    if not await _has_rows(db, "crm_lost_reasons", org):
+        for label, position in LOST_REASONS:
+            added["lost_reasons"] += await _insert(db, _REASON_SQL, {
+                "organization_id": org, "label": label, "position": position,
+            })
     return added
