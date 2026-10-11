@@ -168,25 +168,25 @@ async def test_an_organization_is_created_from_the_lead_company(
 async def test_an_existing_organization_is_matched_by_exact_name(
     db: FakeCrmDB,
 ) -> None:
-    existing = db.seed("crm_organizations", name="Bosch India")
+    existing = db.seed("crm_companies", name="Bosch India")
     lead = _lead(db)
 
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.organization["id"] == str(existing.id)
-    assert len(db.rows("crm_organizations")) == 1
+    assert len(db.rows("crm_companies")) == 1
 
 
 async def test_the_organization_match_is_exact_not_fuzzy(db: FakeCrmDB) -> None:
     """§3.7 says exact name. Fuzzy matching a company is how two real
     customers get merged, which is unrecoverable without an audit trail."""
-    db.seed("crm_organizations", name="Bosch India Pvt Ltd")
+    db.seed("crm_companies", name="Bosch India Pvt Ltd")
     lead = _lead(db)
 
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.organization["name"] == "Bosch India"
-    assert len(db.rows("crm_organizations")) == 2
+    assert len(db.rows("crm_companies")) == 2
 
 
 @pytest.mark.parametrize("blank", [None, "", "   "])
@@ -200,7 +200,7 @@ async def test_a_lead_with_no_company_gets_no_organization(
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.organization is None
-    assert db.rows("crm_organizations") == []
+    assert db.rows("crm_companies") == []
     # ...and the deal still gets made, named off the lead.
     assert result.deal["name"] == "Anitha Kumar"
 
@@ -212,7 +212,7 @@ async def test_conversion_is_never_refusable_by_a_settings_grid_edit(
 
     `_create_deal` always calls `load_default_status` and `ConvertDeal` has no
     `status_id` field at all, so a converted deal ALWAYS lands in the default
-    lane. Gate the defaulted path and an owner requiring `organization_id`
+    lane. Gate the defaulted path and an owner requiring `company_id`
     there makes every lead that names no company permanently unconvertible —
     `ConvertModal.tsx` renders "This lead names no company, so no organization
     is created" and offers no picker, so there is no request the user could
@@ -220,24 +220,24 @@ async def test_conversion_is_never_refusable_by_a_settings_grid_edit(
     conversion must still succeed.
     """
     for row in db.rows("crm_deal_statuses"):
-        row["required_fields"] = ["organization_id", "amount"]
+        row["required_fields"] = ["company_id", "amount"]
     lead = _lead(db, organization_name=None)
 
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.organization is None
-    assert result.deal["organization_id"] is None
+    assert result.deal["company_id"] is None
     assert result.deal["amount"] is None
     assert len(db.rows("crm_deals")) == 1
 
 
 async def test_a_caller_chosen_organization_wins(db: FakeCrmDB) -> None:
-    db.seed("crm_organizations", name="Bosch India")
-    chosen = db.seed("crm_organizations", name="Bosch Rexroth")
+    db.seed("crm_companies", name="Bosch India")
+    chosen = db.seed("crm_companies", name="Bosch Rexroth")
     lead = _lead(db)
 
     result = await convert_lead(
-        str(lead.id), ConvertRequest(organization_id=str(chosen.id)), USER,
+        str(lead.id), ConvertRequest(company_id=str(chosen.id)), USER,
     )
     assert result.organization["id"] == str(chosen.id)
 
@@ -251,7 +251,7 @@ async def test_the_deal_carries_its_lead_provenance(db: FakeCrmDB) -> None:
     result = await convert_lead(str(lead.id), ConvertRequest(), USER)
 
     assert result.deal["lead_id"] == str(lead.id)
-    assert result.deal["organization_id"] == result.organization["id"]
+    assert result.deal["company_id"] == result.organization["id"]
 
 
 async def test_the_deal_is_named_after_the_company_then_the_lead(
@@ -424,7 +424,7 @@ async def test_a_refused_re_conversion_creates_nothing(db: FakeCrmDB) -> None:
 
     assert len(db.rows("crm_deals")) == 1  # only the seeded prior deal
     assert db.rows("crm_contacts") == []
-    assert db.rows("crm_organizations") == []
+    assert db.rows("crm_companies") == []
     assert db.committed == 0
 
 

@@ -244,7 +244,7 @@ def _require_entry_fields(
     3. ``import_zoho.apply_record`` → ``core.upsert_by_zoho_id``, reached by the
        backfill route **and by ``sync_zoho.pull_phase`` — the ENABLED 600s
        production loop** → **ungated, and it must stay that way.** It builds its
-       own ``INSERT … ON CONFLICT (zoho_id)`` and calls neither
+       own ``INSERT … ON CONFLICT (organization_id, zoho_id)`` and calls neither
        ``core.insert_row`` nor ``records.create_record``. A pulled deal carries
        whatever stage Zoho has it in and owes nothing to a requirement set here
        afterwards; a gate on that path would start refusing rows from the live
@@ -438,7 +438,7 @@ class ConvertRequest(BaseModel):
     #: Caller-chosen matches, resolved by the convert modal (§5 surface 4).
     #: Absent means "work it out": email for the contact, exact name for the org.
     contact_id: str | None = None
-    organization_id: str | None = None
+    company_id: str | None = None
     deal: ConvertDeal | None = None
 
 
@@ -533,9 +533,9 @@ async def _resolve_organization(
     """Caller's choice → exact-name match → create. Skipped when the lead has
     no ``organization_name``: an individual buyer is not a company, and minting
     an organization row named after a person is how a CRM fills with noise."""
-    if body.organization_id:
+    if body.company_id:
         return await require_row(
-            db, ORGANIZATIONS.table, body.organization_id, "Organization",
+            db, ORGANIZATIONS.table, body.company_id, "Organization",
         )
 
     name = (getattr(lead, "organization_name", None) or "").strip()
@@ -544,7 +544,7 @@ async def _resolve_organization(
 
     existing = (await db.execute(
         text(
-            "SELECT * FROM crm_organizations WHERE name = :name "
+            "SELECT * FROM crm_companies WHERE name = :name "
             "ORDER BY created_at LIMIT 1"
         ),
         {"name": name},
@@ -577,7 +577,7 @@ async def _create_deal(
     )
     deal = await insert_row(db, DEALS.table, {
         "name": name,
-        "organization_id": str(organization.id) if organization is not None else None,
+        "company_id": str(organization.id) if organization is not None else None,
         "status_id": str(status.id),
         "amount": wanted.amount,
         "currency": wanted.currency or "INR",

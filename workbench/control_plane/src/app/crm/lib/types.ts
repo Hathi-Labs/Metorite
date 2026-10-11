@@ -236,7 +236,7 @@ export type Contact = Provenance & {
   phone?: string | null;
   mobile?: string | null;
   title?: string | null;
-  organization_id?: string | null;
+  company_id?: string | null;
   description?: string | null;
   linkedin_url?: string | null;
 };
@@ -268,7 +268,7 @@ export type Lead = Provenance & {
 export type Deal = Provenance & {
   id: string;
   name: string;
-  organization_id?: string | null;
+  company_id?: string | null;
   /** Projected by the gateway's LEFT JOIN — never client-side joined. */
   organization_name?: string | null;
   status_id?: string | null;

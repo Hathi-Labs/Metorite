@@ -6,15 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 143
---
--- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
--- else on these tables, so scoping them by that name would corrupt a
--- business column. They carry NO tenant isolation until the column is
--- renamed (owner call; see gen_tenant_migration.HOMONYM_BLOCKED):
---   crm_activities     organization_id = the customer company (144_crm.sql:289)
---   crm_contacts       organization_id = the customer company (144_crm.sql:74)
---   crm_deals          organization_id = the customer company (144_crm.sql:197)
+-- Tables in this phase: 146
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -98,13 +90,22 @@ UPDATE copilot_config SET organization_id = (SELECT id FROM organization WHERE s
 UPDATE copilot_event SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE crm_activities SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE crm_auto_lead_cursors SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_contacts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE crm_deal_contacts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE crm_deal_statuses SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_deals SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE crm_lead_statuses SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -116,7 +117,7 @@ UPDATE crm_leads SET organization_id = (SELECT id FROM organization WHERE slug =
 UPDATE crm_lost_reasons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE crm_organizations SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE crm_companies SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE crm_status_changes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

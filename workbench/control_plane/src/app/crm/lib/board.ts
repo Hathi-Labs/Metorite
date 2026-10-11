@@ -278,7 +278,7 @@ export function needsLostReason(
 export const REQUIREABLE_FIELDS = [
   "amount",
   "expected_close_date",
-  "organization_id",
+  "company_id",
   "owner_email",
 ] as const;
 
@@ -288,7 +288,7 @@ export type RequireableField = (typeof REQUIREABLE_FIELDS)[number];
 export const REQUIREABLE_FIELD_LABELS: Record<RequireableField, string> = {
   amount: "Amount",
   expected_close_date: "Expected close date",
-  organization_id: "Organization",
+  company_id: "Company",
   owner_email: "Owner",
 };
 

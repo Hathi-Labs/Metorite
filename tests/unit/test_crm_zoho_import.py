@@ -198,7 +198,7 @@ async def test_dry_run_still_reports_what_it_would_touch(
 async def test_every_record_upsert_carries_on_conflict_zoho_id(
     db: FakeCrmDB, zoho: FakeZoho,
 ) -> None:
-    """§7.1's ``ON CONFLICT (zoho_id)``. Static, because the fake models no
+    """§7.1's ``ON CONFLICT (organization_id, zoho_id)``. Static, because the fake models no
     conflict arm: a second run against it appends rather than converging, so
     only the SQL can say whether a replayed import duplicates the tenant."""
     _seed_pipeline(db)
@@ -209,11 +209,11 @@ async def test_every_record_upsert_carries_on_conflict_zoho_id(
 
     await _run()
 
-    for table in ("crm_organizations", "crm_contacts", "crm_leads", "crm_deals"):
+    for table in ("crm_companies", "crm_contacts", "crm_leads", "crm_deals"):
         [insert] = [
             s for s in db.statements if s.startswith(f"INSERT INTO {table} (")
         ]
-        assert "ON CONFLICT (zoho_id) DO UPDATE SET" in insert, table
+        assert "ON CONFLICT (organization_id, zoho_id) DO UPDATE SET" in insert, table
         # The conflict arm must not rewrite the key it matched on.
         assert "zoho_id = EXCLUDED.zoho_id" not in insert
 
@@ -228,7 +228,7 @@ async def test_the_upsert_never_bumps_updated_at(
     zoho.data["Accounts"] = [{"id": "z-acc-1", "Account_Name": "Fracktal"}]
     await _run()
 
-    [insert] = db.statements_touching("INSERT INTO crm_organizations (")
+    [insert] = db.statements_touching("INSERT INTO crm_companies (")
     assert "updated_at" not in insert
 
 
@@ -245,7 +245,7 @@ async def test_the_status_upsert_carries_on_conflict(
     await _run()
 
     [insert] = db.statements_touching("INSERT INTO crm_deal_statuses (")
-    assert "ON CONFLICT (name) DO NOTHING" in insert
+    assert "ON CONFLICT (organization_id, name) DO NOTHING" in insert
 
 
 async def test_the_activity_upsert_carries_on_conflict_zoho_id(
@@ -260,7 +260,7 @@ async def test_the_activity_upsert_carries_on_conflict_zoho_id(
     await _run()
 
     [insert] = db.statements_touching("INSERT INTO crm_activities (")
-    assert "ON CONFLICT (zoho_id) DO UPDATE SET" in insert
+    assert "ON CONFLICT (organization_id, zoho_id) DO UPDATE SET" in insert
 
 
 # ── §7.1's mapping table ────────────────────────────────────────────────────
@@ -328,7 +328,7 @@ async def test_contacts_map_and_link_to_their_account(
     assert contact["last_name"] == "Varada"
     assert contact["title"] == "Founder"
     # Accounts import before Contacts precisely so this link resolves.
-    assert contact["organization_id"] == str(org["id"])
+    assert contact["company_id"] == str(org["id"])
 
 
 async def test_a_surname_only_contact_still_satisfies_not_null(
@@ -574,7 +574,7 @@ async def test_a_note_lands_on_its_parent_and_bumps_its_recency(
     [note] = db.rows("crm_activities")
     assert note["type"] == "note"
     assert note["subject"] == "Called"
-    assert note["organization_id"] == str(org["id"])
+    assert note["company_id"] == str(org["id"])
     # §3.8's discipline — an imported record must not sort as never-touched on
     # the day it arrives.
     assert org["last_activity_at"] is not None
@@ -649,7 +649,7 @@ async def test_a_bare_string_parent_id_still_resolves(
 
     [org] = db.rows(ORGANIZATIONS.table)
     [note] = db.rows("crm_activities")
-    assert note["organization_id"] == str(org["id"])
+    assert note["company_id"] == str(org["id"])
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────

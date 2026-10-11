@@ -60,6 +60,11 @@ The three that are scoped: `app_user`, `org_group`, `org_role` — all
 > company**, not the tenant root. Verified against the live database's
 > `pg_constraint`. The CRM is unscoped, like everything else.
 >
+> **2026-10-11 (WS-53 CRM-T1):** the CRM is now scoped. `144_crm.sql` renames
+> the company column to `company_id`, and migration 241
+> (`infra/postgres/241_crm_tenancy.sql`) gives all 13 `crm_*` tables the tenant
+> `organization_id` with FORCE RLS (D95.2).
+>
 > **Two consequences, and the second is worse than the miscount.** First, the
 > column name is *taken*: scoping the CRM needs a rename or a different name,
 > and that must be decided before WS-29d touches `crm_*`. Second,

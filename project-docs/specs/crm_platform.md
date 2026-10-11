@@ -8,8 +8,8 @@
 > **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-0, the
 > kill switch, default OFF (2026-10-11). CRM-Z1, the `crm_sources` seam and the
 > Zoho read adapter (2026-10-11). CRM-Z0, the Zoho facts (§5.2, §7.2) and the
-> OAuth runbook `docs/ZOHO_OAUTH_SETUP.md` (2026-10-11). The other slices are
-> not built yet.
+> OAuth runbook `docs/ZOHO_OAUTH_SETUP.md` (2026-10-11). CRM-T1, the tenant port
+> (2026-10-11). The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -301,12 +301,16 @@ each step is `IF NOT EXISTS` or guarded.
    to each of the 13 `crm_*` tables where it is missing. Declare the foreign
    key inline, because generated phase 3 adds `<t>_org_fk` by name.
 2. Fill a NULL `organization_id` with the id of `fracktalworks` if it
-   exists, else with the only org. With two or more orgs and no
-   `fracktalworks`, stop and name the table. The seed rows on prod already
-   belong to `default`, and they stay there. An org gets its own seed when
-   its mode becomes `native` (CRM-T5). A Mirror org gets its stages from
-   the source.
-3. Set `NOT NULL`.
+   exists, else with the only org. The seed rows on prod already belong to
+   `default`, and they stay there. An org gets its own seed when its mode
+   becomes `native` (CRM-T5). A Mirror org gets its stages from the source.
+3. Set `NOT NULL` on each table with no NULL row. *(Changed in the build,
+   2026-10-11.)* With two or more orgs and no `fracktalworks`, the migration
+   does not stop. That table keeps a nullable column, FORCE RLS hides its
+   orphan rows, and a NOTICE names the table. Prod never reaches this, and a
+   fresh install has one org. Only a shared dev database does. A stop there
+   would break `scripts/dev_db.sh`. The migration looks up no `default`
+   slug, because the D43-A ratchet refuses a new one.
 4. `ENABLE` and `FORCE ROW LEVEL SECURITY`, with one `USING` and `WITH CHECK`
    policy on `app.tenant_id`.
 5. Replace each global unique key with a per-tenant one (CR-3).
@@ -837,11 +841,13 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **CRM-T1** | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE. After CRM-0 is merged and deployed | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
+| **CRM-T1** ✅ built 2026-10-11 | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE. After CRM-0 is merged and deployed | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
 | ~~**CRM-T2**~~ | ✅ **Already true** (audit, 2026-10-11). Every request handler uses `_tenant_session` (`test_db_engine_seam.py:359-361`). `_get_db` stays only in the three background paths, and CRM-T3 removes them | — | Moved into CRM-T3 |
 | **CRM-T3** | The three background paths bind their tenant (§4.3). The advisory lock replaces `_cycle_lock` | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: two orgs, two cycles, each sees only its own rows. `test_db_engine_seam.py` exempts no CRM file. H-201's CRM half is deleted |
 | **CRM-T4** | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
 | **CRM-T5** | Per-org seeds of stages and lost reasons, in the write that sets the mode to `native`. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` and `access` (Q3). Groups resolve through the Projects grant model (D12) | 🟢 AGENT-SAFE | An admin sets a new org to Native, and the org gets its own 6 deal stages, 5 lead stages and 6 lost reasons. A member who is not an admin gets 403 on `POST /crm/statuses/deal`. With `access = admins`, a member gets 403 on every `/crm` route |
+
+**For CRM-T4 (found in CRM-T1, 2026-10-11).** Intra-CRM FKs (`company_id`, `deal_id`, `status_id` and others) can point at another tenant's row, because referential checks bypass RLS. A composite `(organization_id, id)` key closes it.
 
 ### 13.4 Phase 2 — the one look (§8)
 
