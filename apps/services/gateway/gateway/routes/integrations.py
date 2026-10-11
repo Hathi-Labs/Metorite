@@ -443,7 +443,9 @@ def _is_configured(service_name: str, settings: Any) -> bool:
     }
     checker = checkers.get(service_name)
     if checker is None:
-        return True  # Unknown service — assume configured (don't block)
+        # IN-D8 (WS-54 IN-1): an unknown service is NOT configured. It used to
+        # answer True, so a typo or a service with no checker read as set up.
+        return False
     try:
         return checker(settings)
     except Exception:  # noqa: BLE001
