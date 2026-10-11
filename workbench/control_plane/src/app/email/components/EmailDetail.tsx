@@ -1742,6 +1742,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 revisions={ai.revisions}
                 activeRevision={ai.activeRevision}
                 elapsedMs={ai.elapsedMs}
+                notice={ai.notice}
+                onStop={ai.stop}
                 onRun={runAiDraft}
                 onRestore={(id) => ai.restore(id)}
                 onClose={() => setAiOpen(false)}

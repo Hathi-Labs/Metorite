@@ -663,6 +663,8 @@ export function ComposePanel({
             revisions={ai.revisions}
             activeRevision={ai.activeRevision}
             elapsedMs={ai.elapsedMs}
+            notice={ai.notice}
+            onStop={ai.stop}
             onRun={runAi}
             onRestore={(id) => ai.restore(id, splitQuotedText(body).quoted)}
             onClose={() => setAiOpen(false)}
