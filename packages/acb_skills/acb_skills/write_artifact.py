@@ -305,6 +305,17 @@ def announce_artifact(rel_path: str, data: bytes) -> str | None:
     that a command or a file tool wrote under the thread's output folder.
     Returns the download link, or ``None`` when no run is bound.
     """
+    return announce_file(rel_path, len(data), _sha256(data))
+
+
+def announce_file(
+    rel_path: str, size: int, sha256: str, *, mime_type: str | None = None,
+) -> str | None:
+    """:func:`announce_artifact` for a file the caller does not hold in memory.
+
+    The same card and the same :func:`_notify`, from the size and the digest.
+    ``package_artifacts`` streams its zip to disk, and calls this.
+    """
     import asyncio
 
     ctx = artifact_context()
@@ -314,12 +325,12 @@ def announce_artifact(rel_path: str, data: bytes) -> str | None:
         return None
     rel = rel_path.replace("\\", "/")
     name = rel.rsplit("/", 1)[-1]
-    mime, _ = mimetypes.guess_type(name)
+    mime = mime_type or mimetypes.guess_type(name)[0]
     artifact = {
         "path": rel,
         "name": name,
-        "size": len(data),
-        "sha256": _sha256(data),
+        "size": size,
+        "sha256": sha256,
         "mime_type": mime or "application/octet-stream",
         "modified_at": datetime.now(tz=UTC).isoformat(),
         "is_dir": False,

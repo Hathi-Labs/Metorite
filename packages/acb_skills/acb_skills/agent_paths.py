@@ -333,6 +333,33 @@ def thread_scoped_rel(rel: str, thread_id: object) -> str:
     return "/".join([parts[0], thread_slug(thread_id), *parts[1:]])
 
 
+def thread_package_rel(thread_id: object, name: str) -> str:
+    """``outputs/<thread slug>/<name>``: where ``package_artifacts`` puts a zip.
+
+    THE one rule for a chat's packages, in EVERY kind of working dir, also a
+    personal or a team one. A zip is never in the blob store, so the chat
+    delete finds it by this place (``workspace._purge_thread_files``), and
+    the file route tells an expired package by it (:func:`is_thread_package_rel`).
+    Raises ``ValueError`` for a thread id that names no folder.
+    """
+    if not name or "/" in name or "\\" in name or not name.lower().endswith(".zip"):
+        raise ValueError(f"not a package name: {name[:80]!r}")
+    return f"{thread_outputs_rel(thread_id)}/{name}"
+
+
+def is_thread_package_rel(rel: str, thread_id: object) -> bool:
+    """True when *rel* is a package of *thread_id*: a ``.zip`` right in its folder."""
+    parts = _rel_parts(rel)
+    try:
+        own = thread_slug(thread_id)
+    except ValueError:
+        return False
+    return (
+        len(parts) == 3 and parts[0] == "outputs" and parts[1] == own
+        and parts[2].lower().endswith(".zip")
+    )
+
+
 def run_data_rel(organization_id: object, thread_id: object) -> str:
     """``.run-data/<org slug>/<thread slug>``, relative to :func:`state_root`."""
     org = str(organization_id or "").strip()

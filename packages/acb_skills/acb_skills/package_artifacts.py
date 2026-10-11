@@ -33,10 +33,22 @@ folder it is unpacked into (zip-slip). A second entry with the same name gets
 ``name (n).ext``. At most :data:`MAX_FILES` files and :data:`MAX_TOTAL_BYTES`
 of input, and the zip itself at most the download cap of the file route. Over
 a cap the tool writes nothing and says why: never a partial zip. The zip is
-written with ``safe_open.publish_bytes`` (a temp file, then one link), under
-the broker's dir lock, then shown through :func:`write_artifact.announce_artifact`,
-the card seam of every other file tool, and mirrored to the blob store like
-every ``outputs/`` file, so it survives a restart.
+streamed into ``safe_open.publish_stream`` (a temp file, then one link) under
+the broker's dir lock, one chunk of input at a time, so one call holds about
+one chunk in memory. It is shown through :func:`write_artifact.announce_file`,
+the card seam of every other file tool. An earlier zip never goes into a
+folder walk, so packages never nest. Only a zip named as a file goes in.
+
+**Where the zip lives, and for how long.** Always in the chat's own folder,
+``outputs/<thread slug>/<name>.zip`` (``agent_paths.thread_package_rel``), in
+every kind of working dir. The zip is a DERIVED file, so it lives on disk
+only: it is NOT mirrored to the blob store (owner decision, 2026-10-11). The
+input files are stored already, and a zip row of up to 50 MB in Postgres,
+which every run start then rehydrates, doubled what the store held. After a
+restart that wiped the disk, the card's download answers that the package
+expired (``workspace.PACKAGE_EXPIRED``), and the member asks again. Deleting
+the chat removes its zips (``workspace._purge_thread_files``): the thread
+folder of a tenant dir, and the packages in the chat's own working dir.
 
 **Channels.** A WhatsApp run cannot receive a file today: ``bot_run`` sends
 text, interactive parts and images only. So in a WhatsApp run the tool says
@@ -52,7 +64,6 @@ Fence: ``tests/unit/test_package_artifacts.py``.
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import mimetypes
 import os
@@ -61,7 +72,7 @@ import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
 #: The most files one zip holds.
 MAX_FILES = 200
@@ -84,6 +95,16 @@ _STORED_SUFFIXES = frozenset({
     ".jpeg", ".gif", ".webp", ".mp3", ".mp4", ".mov", ".m4a", ".pdf",
     ".docx", ".xlsx", ".pptx",
 })
+
+#: One read of an input file. The zip streams, so memory stays near this.
+CHUNK_BYTES = 1024 * 1024
+
+#: Names that Windows Explorer cannot extract, with or without an extension.
+_WINDOWS_DEVICES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 #: A character that may not stand in an entry name or a zip name.
 _ENTRY_UNSAFE = re.compile(r'[\x00-\x1f\x7f\\/:*?"<>|]')
@@ -172,7 +193,11 @@ def entry_name(parts: list[str]) -> str:
     clean: list[str] = []
     for part in parts:
         p = _ENTRY_UNSAFE.sub("_", str(part)).strip().rstrip(".").strip()
-        clean.append(p if p not in ("", ".", "..") else "_")
+        if p in ("", ".", ".."):
+            p = "_"
+        elif p.split(".", 1)[0].strip().upper() in _WINDOWS_DEVICES:
+            p = f"_{p}"  # CON, NUL.txt, COM1.log: Explorer cannot extract them
+        clean.append(p)
     return "/".join(clean) or "_"
 
 
@@ -274,10 +299,14 @@ def _kind_of(root: Path, rel: str) -> str | None:
 
 def _collect_named(
     root: Path, named: list[str], ctx: Mapping[str, Any],
-) -> tuple[list[str], list[str]]:
-    """The files that the named paths give, and the files a folder walk left out.
+) -> tuple[list[str], list[str], list[str]]:
+    """The files that the named paths give, the files a folder walk left out,
+    and the zips it left out.
 
-    Raises ``ValueError`` for a refused path, so the call packages nothing.
+    A folder walk never takes a ``.zip``, so an earlier package never goes
+    into the next one (review 2, P1: four calls on ``outputs`` doubled the
+    zip each time). A zip that the member names as a FILE goes in. Raises
+    ``ValueError`` for a refused path, so the call packages nothing.
     """
     from acb_skills import safe_open
     from acb_skills.agent_paths import is_blocked_rel
@@ -286,6 +315,7 @@ def _collect_named(
     not_this_chats = _not_this_chats(ctx)
     files: dict[str, None] = {}
     skipped: list[str] = []
+    zips: list[str] = []
     for raw in named:
         rel = _named_rel(raw, root, ctx)
         try:
@@ -303,17 +333,27 @@ def _collect_named(
                 raise ValueError(f"'{raw}' was refused: it goes through a link.") from exc
             _refuse_a_full_walk(found, raw)
             for path, _size, _mtime in found:
+                if _is_zip(path):
+                    zips.append(path)
+                    continue
                 if not_this_chats(path) or is_blocked_rel(path):
                     skipped.append(path)
                     continue
                 files[path] = None
         else:
             raise ValueError(f"File not found: {raw}")
-    return list(files), skipped
+    return list(files), skipped, [z for z in dict.fromkeys(zips) if z not in files]
 
 
-async def _collect_chat(root: Path, ctx: Mapping[str, Any]) -> tuple[list[str], list[str]]:
-    """Every file that this chat produced in ``outputs/``, and the names left out.
+def _is_zip(rel: str) -> bool:
+    return rel.lower().endswith(".zip")
+
+
+async def _collect_chat(
+    root: Path, ctx: Mapping[str, Any],
+) -> tuple[list[str], list[str], list[str]]:
+    """Every file that this chat produced in ``outputs/``, the names left
+    out, and the zips left out (an earlier package never goes in).
 
     Raises ``ValueError`` when the files cannot be known.
     """
@@ -354,30 +394,35 @@ async def _collect_chat(root: Path, ctx: Mapping[str, Any]) -> tuple[list[str], 
     not_this_chats = _not_this_chats(ctx)
     files: list[str] = []
     skipped: list[str] = []
+    zips: list[str] = []
     for path in candidates:
-        if path.lower().endswith(".zip"):
-            continue  # an earlier package never goes into the next one
+        if _is_zip(path):
+            zips.append(path)  # an earlier package never goes into the next one
+            continue
         if not_this_chats(path) or is_blocked_rel(path):
             skipped.append(path)
             continue
         files.append(path)
-    return files, skipped
+    return files, skipped, zips
 
 
-def _build_zip(root: Path, files: list[str]) -> tuple[bytes, list[str], list[str]]:
-    """The zip of *files*, its entry names, and the files that vanished. Raises ``ValueError``.
+def _write_zip(out: BinaryIO, root: Path, files: list[str]) -> tuple[list[str], list[str]]:
+    """Stream the zip of *files* into *out*. Returns its entry names and the
+    files that vanished. Raises ``ValueError``.
 
-    Every read goes through the safe opener, so a link at any depth fails
-    the call. Over a cap, the call fails with no zip.
+    Each input is read in chunks of :data:`CHUNK_BYTES` and written through
+    ``ZipFile.open(..., "w")``, so the call never holds a whole file or the
+    whole zip in memory (review 2, P2: it peaked near 150 MB). Every read goes
+    through the safe opener, so a link at any depth fails the call. Over a
+    cap, the call fails, and the caller removes the temp file: no zip.
     """
     from acb_skills import safe_open
 
-    buf = io.BytesIO()
     names: list[str] = []
     gone: list[str] = []
     seen: set[str] = set()
     total = 0
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for rel in files:
             try:
                 fh = safe_open.open_read(root, rel)
@@ -390,25 +435,25 @@ def _build_zip(root: Path, files: list[str]) -> tuple[bytes, list[str], list[str
                 st = os.fstat(fh.fileno())
                 if total + st.st_size > MAX_TOTAL_BYTES:
                     raise ValueError(_size_error())
-                data = fh.read(MAX_TOTAL_BYTES - total + 1)
-            total += len(data)
-            if total > MAX_TOTAL_BYTES:
-                raise ValueError(_size_error())
-            arcname = _unique(entry_name(_entry_parts(rel)), seen)
-            stamp = datetime.fromtimestamp(st.st_mtime, tz=UTC)
-            info = zipfile.ZipInfo(arcname, date_time=_zip_time(stamp))
-            info.external_attr = 0o644 << 16
-            info.compress_type = (
-                zipfile.ZIP_STORED
-                if PurePosixPath(rel).suffix.lower() in _STORED_SUFFIXES
-                else zipfile.ZIP_DEFLATED
-            )
-            zf.writestr(info, data)
+                arcname = _unique(entry_name(_entry_parts(rel)), seen)
+                stamp = datetime.fromtimestamp(st.st_mtime, tz=UTC)
+                info = zipfile.ZipInfo(arcname, date_time=_zip_time(stamp))
+                info.external_attr = 0o644 << 16
+                info.compress_type = (
+                    zipfile.ZIP_STORED
+                    if PurePosixPath(rel).suffix.lower() in _STORED_SUFFIXES
+                    else zipfile.ZIP_DEFLATED
+                )
+                with zf.open(info, "w") as dest:
+                    while chunk := fh.read(CHUNK_BYTES):
+                        total += len(chunk)
+                        if total > MAX_TOTAL_BYTES:
+                            raise ValueError(_size_error())
+                        dest.write(chunk)
             names.append(arcname)
-    data = buf.getvalue()
-    if len(data) > MAX_ZIP_BYTES:
+    if out.tell() > MAX_ZIP_BYTES:
         raise ValueError(_size_error())
-    return data, names, gone
+    return names, gone
 
 
 def _zip_time(stamp: datetime) -> tuple[int, int, int, int, int, int]:
@@ -428,32 +473,61 @@ def _size_error() -> str:
     )
 
 
-def _publish(root: Path, rel: str, data: bytes) -> str:
-    """Write *data* as a NEW file at *rel*, or at ``name (n).zip``. Returns the path taken."""
+def _publish_zip(
+    root: Path, rel: str, files: list[str],
+) -> tuple[str, int, str, list[str], list[str]]:
+    """Stream the zip into a NEW file at *rel*, or at ``name (n).zip``.
+
+    Returns the path taken, its size and sha256, the entry names, and the
+    files that vanished. The temp file is written once, and then linked at
+    the first free name (``safe_open.publish_stream``).
+    """
+    import hashlib
+
     from acb_skills import safe_open
 
     p = PurePosixPath(rel)
     parent = str(p.parent) if str(p.parent) != "." else ""
     taken = {n.casefold() for n, _kind in (safe_open.list_dir(root, parent) or [])}
-    for counter in range(1000):
-        name = p.name if counter == 0 else f"{p.stem} ({counter}){p.suffix}"
-        if name.casefold() in taken:
-            continue
-        candidate = str(p.with_name(name))
-        try:
-            safe_open.publish_bytes(root, candidate, data)
-        except FileExistsError:
-            continue
-        return candidate
-    raise FileExistsError(rel)
+    candidates = [
+        str(p.with_name(name))
+        for name in (p.name if n == 0 else f"{p.stem} ({n}){p.suffix}" for n in range(1000))
+        if name.casefold() not in taken
+    ]
+    if not candidates:
+        raise FileExistsError(rel)
+    made: dict[str, Any] = {}
+
+    def write(out: BinaryIO) -> None:
+        made["names"], made["gone"] = _write_zip(out, root, files)
+        if made["names"]:
+            # The card's digest, read back in chunks from the temp file.
+            digest = hashlib.sha256()
+            out.seek(0)
+            while chunk := out.read(CHUNK_BYTES):
+                digest.update(chunk)
+            made["size"], made["sha256"] = out.tell(), digest.hexdigest()
+        else:
+            raise _NothingToZip
+
+    try:
+        taken_rel = safe_open.publish_stream(root, candidates, write)
+    except _NothingToZip:
+        raise ValueError("The files are gone from the workspace, so nothing was packaged.") from None
+    return taken_rel, made["size"], made["sha256"], made["names"], made["gone"]
+
+
+class _NothingToZip(Exception):
+    """Every file vanished before the read: write no zip at all."""
 
 
 async def _make(
     root: Path, ctx: Mapping[str, Any], named: list[str], out_rel: str,
-) -> tuple[str, bytes, list[str], list[str]]:
+) -> dict[str, Any]:
     """Collect, zip and write, under the broker's dir lock. Raises ``ValueError``.
 
-    Returns the path taken, the zip, its entry names and the files left out.
+    Returns the path taken, its size and sha256, the entry names, the files
+    left out, and the zips left out.
     The lock means that no container on this dir runs an exec while the host
     reads and writes it, and its quota rule applies (§7.5, §7.1).
     """
@@ -463,9 +537,9 @@ async def _make(
         if over_quota:
             raise ValueError("The working dir is over its quota, so nothing was packaged.")
         if named:
-            files, skipped = await asyncio.to_thread(_collect_named, root, named, ctx)
+            files, skipped, zips = await asyncio.to_thread(_collect_named, root, named, ctx)
         else:
-            files, skipped = await _collect_chat(root, ctx)
+            files, skipped, zips = await _collect_chat(root, ctx)
         if not files:
             what = "the paths you named" if named else "this chat"
             raise ValueError(f"There are no files to package in {what}.")
@@ -474,11 +548,13 @@ async def _make(
                 f"That is more than {MAX_FILES} files, so nothing was "
                 "packaged. Name fewer files or folders."
             )
-        data, entries, gone = await asyncio.to_thread(_build_zip, root, files)
-        if not entries:
-            raise ValueError("The files are gone from the workspace, so nothing was packaged.")
-        rel = await asyncio.to_thread(_publish, root, out_rel, data)
-    return rel, data, entries, skipped + gone
+        rel, size, sha256, entries, gone = await asyncio.to_thread(
+            _publish_zip, root, out_rel, files,
+        )
+    return {
+        "rel": rel, "size": size, "sha256": sha256, "entries": entries,
+        "left_out": skipped + gone, "zips": zips,
+    }
 
 
 async def package_artifacts(paths: str = "", name: str = "") -> dict:
@@ -491,14 +567,11 @@ async def package_artifacts(paths: str = "", name: str = "") -> dict:
         paths: Optional JSON list of files or folders, e.g. ["outputs/a.md"].
         name:  Optional zip name.
     """
+    from urllib.parse import quote
+
     from acb_skills import safe_open
-    from acb_skills.agent_paths import refused_write
-    from acb_skills.write_artifact import (
-        _thread_scoped,
-        announce_artifact,
-        artifact_context,
-        mirror_to_blob_store,
-    )
+    from acb_skills.agent_paths import refused_write, thread_package_rel
+    from acb_skills.write_artifact import announce_file, artifact_context
 
     ctx = artifact_context()
     refusal = _refusal(ctx)
@@ -508,8 +581,10 @@ async def package_artifacts(paths: str = "", name: str = "") -> dict:
     if isinstance(named, str):
         return {"error": named}
     root = Path(str(ctx["workspace_root"])).resolve()
-    out_rel = _thread_scoped(f"outputs/{zip_name(name)}", ctx)
-    if out_rel is None:
+    try:
+        # The chat's own folder in EVERY dir, so the chat delete finds it.
+        out_rel = thread_package_rel(ctx.get("session_id"), zip_name(name))
+    except ValueError:
         return {"error": "This chat has no thread folder, so nothing was packaged."}
     reason = refused_write(
         root, out_rel, member=ctx.get("member"), thread_id=ctx.get("session_id"),
@@ -526,25 +601,34 @@ async def package_artifacts(paths: str = "", name: str = "") -> dict:
         return {"error": "No free name for the zip, so nothing was packaged."}
     except OSError as exc:
         return {"error": f"The zip could not be written: {exc.strerror or exc}."}
-    rel, data, entries, left_out = made
-    # The same write-through as every outputs/ file, so a restart keeps it.
-    asyncio.ensure_future(mirror_to_blob_store(rel, data, mime_type=ZIP_MIME, action="create"))
-    # The card seam of every file tool: the artifact_created event.
-    download_url = announce_artifact(rel, data)
+    rel, entries, left_out, zips = made["rel"], made["entries"], made["left_out"], made["zips"]
+    # A zip is derived, so it is NOT mirrored to the blob store (module
+    # docstring). The card seam of every file tool: the artifact_created event.
+    announce_file(rel, made["size"], made["sha256"], mime_type=ZIP_MIME)
+    session_id = str(ctx.get("session_id") or "")
     result: dict[str, Any] = {
         "path": rel,
         "name": rel.rsplit("/", 1)[-1],
-        "size": len(data),
+        "size": made["size"],
         "mime_type": ZIP_MIME,
         "files": len(entries),
         "entries": entries[:20],
+        "download_url": f"/api/agent/workspace/{quote(session_id, safe='')}/file"
+                        f"?path={quote(rel, safe='/')}",
     }
-    if download_url:
-        result["download_url"] = download_url
+    notes: list[str] = []
     if left_out:
         result["left_out"] = left_out[:20]
-        result["note"] = (
+        notes.append(
             f"{len(left_out)} file(s) were left out: hidden, secret, another "
-            "chat's, or gone. Tell the member."
+            "chat's, or gone."
         )
+    if zips:
+        result["zips_left_out"] = zips[:20]
+        notes.append(
+            f"{len(zips)} earlier zip(s) were left out, so packages do not nest. "
+            "Name a zip as a file to put it in."
+        )
+    if notes:
+        result["note"] = " ".join(notes) + " Tell the member."
     return result

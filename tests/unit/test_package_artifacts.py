@@ -14,9 +14,14 @@ docstring holds the rules. This file is their fence (R7):
 * **Zip safety.** No entry name can climb out (zip-slip), names are made
   unique, and the file count and the size are capped. Over a cap, nothing is
   written and no card shows.
-* **Delivery.** The zip is a NEW file, written atomically, and shown through
-  ``write_artifact.announce_artifact`` (the ``artifact_created`` card) and
-  the blob mirror, the seams of every other file tool.
+* **Delivery.** The zip is a NEW file, streamed and written atomically, and
+  shown through ``write_artifact.announce_file`` (the ``artifact_created``
+  card). It is NOT mirrored to the blob store: a zip is derived, and lives
+  on disk only (owner decision, review 2). A named folder walk never takes
+  an earlier zip, so packages never nest.
+* **Expiry and delete (R8).** A package gone from the disk answers 410 with
+  ``PACKAGE_EXPIRED`` to its own chat, and a plain 404 to everyone else.
+  Deleting the chat removes its zips, in a tenant dir and in a personal dir.
 * **Channels and runs.** WhatsApp, a delegated run and a batch run get a
   plain refusal.
 * **Injection.** In the core floor, for MAF and Copilot agents, in a
@@ -29,7 +34,12 @@ Mutations this file catches (the PR carries the table):
 * ``_named_rel`` drops ``_not_this_chats``: another chat's file goes in;
 * ``_build_zip`` reads with plain ``open`` (no safe opener): a link goes in;
 * a cap check is removed: an over-cap zip is written;
-* ``package_artifacts`` drops ``announce_artifact``: no card.
+* ``package_artifacts`` drops ``announce_file``: no card;
+* the zip is mirrored to the blob store again;
+* the chat delete leaves a personal dir's zips;
+* the route answers a plain 404 for an expired package;
+* a named folder walk takes an earlier zip;
+* the zip is built in memory, not streamed.
 
 Run::
 
@@ -85,6 +95,16 @@ def test_no_entry_name_can_climb_out(parts: list[str]) -> None:
 
 def test_an_entry_keeps_its_plain_path() -> None:
     assert pa.entry_name(["reports", "q3.md"]) == "reports/q3.md"
+
+
+@pytest.mark.parametrize("name", ["CON", "con.txt", "NUL", "aux.md", "COM1", "lpt9.log", "PRN.tar.gz"])
+def test_a_windows_device_name_gets_a_prefix(name: str) -> None:
+    assert pa.entry_name(["docs", name]) == f"docs/_{name}"
+
+
+@pytest.mark.parametrize("name", ["console.md", "COM10.txt", "nul-report.md", "LPT.md"])
+def test_a_name_like_a_device_name_stays(name: str) -> None:
+    assert pa.entry_name([name]) == name
 
 
 def test_the_zip_name_is_one_clean_base_name() -> None:
@@ -161,6 +181,33 @@ def test_each_side_names_a_zip_application_zip_by_itself(module: str) -> None:
         encoding="utf-8", timeout=120, check=True,
     )
     assert out.stdout.strip().splitlines()[-1] == "application/zip", out.stderr[-500:]
+
+
+def test_publish_stream_takes_the_first_free_name_once(tmp_path: Path) -> None:
+    from acb_skills import safe_open
+
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "a.zip").write_bytes(b"OLD")
+    writes: list[int] = []
+
+    def write(fh: Any) -> None:
+        writes.append(1)
+        fh.write(b"NEW")
+
+    got = safe_open.publish_stream(tmp_path, ["outputs/a.zip", "outputs/a (1).zip"], write)
+    assert got == "outputs/a (1).zip" and writes == [1], "the temp file is written once"
+    assert (tmp_path / "outputs" / "a.zip").read_bytes() == b"OLD"
+    assert (tmp_path / "outputs" / "a (1).zip").read_bytes() == b"NEW"
+    with pytest.raises(FileExistsError):
+        safe_open.publish_stream(tmp_path, ["outputs/a.zip"], write)
+
+    def boom(fh: Any) -> None:
+        fh.write(b"HALF")
+        raise ValueError("over the cap")
+
+    with pytest.raises(ValueError):
+        safe_open.publish_stream(tmp_path, ["outputs/b.zip"], boom)
+    assert sorted(p.name for p in (tmp_path / "outputs").iterdir()) == ["a (1).zip", "a.zip"]
 
 
 def test_publish_never_replaces_a_file_and_leaves_no_temp(tmp_path: Path) -> None:
@@ -242,9 +289,11 @@ async def test_no_paths_zips_every_file_of_this_chat_and_only_those(runs) -> Non
     assert out["download_url"] == f"/api/agent/workspace/{t}/file?path={out['path']}"
     assert _entries(ws, out["path"]) == {"report.md": b"# Plan", "data/sheet.csv": b"a,b"}
     assert out["left_out"] == [f"outputs/{slug}/.env"], "a left-out file is reported"
-    # The card and the blob row: the seams of every other file tool.
+    assert out["zips_left_out"] == [f"outputs/{slug}/old.zip"], "the zip skip is reported"
+    # The card: the seam of every other file tool.
     assert runs["cards"] == [(out["path"], "application/zip", t)]
-    assert runs["mirrored"] == [(out["path"], "application/zip")]
+    # A zip is derived and lives on disk only: never a blob row (review 2).
+    assert runs["mirrored"] == []
 
 
 async def test_a_second_package_is_a_new_file(runs) -> None:
@@ -343,9 +392,21 @@ def test_each_layer_refuses_a_link_alone(tmp_path: Path) -> None:
     assert pa._kind_of(tmp_path, "outputs/planted.md") is None
     assert pa._kind_of(tmp_path, "outputs/planted-dir") is None
     with pytest.raises(ValueError, match="link"):
-        pa._build_zip(tmp_path, ["outputs/planted.md"])
+        pa._publish_zip(tmp_path, "outputs/a.zip", ["outputs/planted.md"])
     with pytest.raises(ValueError, match="link"):
-        pa._build_zip(tmp_path, ["outputs/planted-dir/secret.txt"])
+        pa._publish_zip(tmp_path, "outputs/b.zip", ["outputs/planted-dir/secret.txt"])
+    assert not list((tmp_path / "outputs").glob("*.zip")), "a refused zip was written"
+
+
+async def test_the_link_is_encoded(runs) -> None:
+    from acb_skills.agent_paths import thread_slug
+
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t) as ws:
+        _put(ws, f"outputs/{thread_slug(t)}/a.md", "A")
+        out = await _pack(name="Q3 & Q4 (final)")
+    assert out["path"].endswith("/Q3 - Q4 (final).zip"), out["path"]
+    assert out["download_url"].endswith("/Q3%20-%20Q4%20%28final%29.zip"), out["download_url"]
 
 
 async def test_named_files_and_folders_go_in_with_unique_names(runs) -> None:
@@ -364,6 +425,74 @@ async def test_named_files_and_folders_go_in_with_unique_names(runs) -> None:
         "inputs/a (1).txt": b"AN UPLOAD",
         "charts/one.png": b"\x89PNG one",
     }
+
+
+async def test_a_named_folder_never_nests_earlier_packages(runs) -> None:
+    """Review 2, P1: four calls on ["outputs"] grew the zip 102512, 205118,
+    410338 and 820778 bytes. The reviewer's probe, kept as a fence."""
+    from acb_skills.agent_paths import thread_slug
+
+    t = new_thread()
+    slug = thread_slug(t)
+    sizes: list[int] = []
+    with bound_run(ORG_A, agent=PA, thread=t) as ws:
+        _put(ws, f"outputs/{slug}/a.png", b"\x89PNG" + bytes(range(256)) * 400)
+        for _ in range(4):
+            out = await _pack(["outputs"])
+            assert "error" not in out, out
+            assert sorted(_entries(ws, out["path"])) == ["a.png"], out
+            sizes.append(out["size"])
+        assert len(set(sizes)) == 1, sizes
+        assert len(out["zips_left_out"]) == 3 and "earlier zip" in out["note"]
+        # A zip named as a FILE goes in.
+        named = await _pack([f"outputs/{slug}/files.zip", "outputs/a.png"], "with-zip")
+    assert sorted(_entries(ws, named["path"])) == ["a.png", "files.zip"]
+
+
+def test_the_zip_streams_one_chunk_at_a_time(tmp_path: Path, monkeypatch) -> None:
+    """Review 2, P2: the zip was built in memory (input, BytesIO, getvalue)."""
+    import tracemalloc
+
+    from acb_skills import safe_open
+
+    monkeypatch.setattr(pa, "CHUNK_BYTES", 256 * 1024)
+    (tmp_path / "outputs").mkdir()
+    size = 12 * 1024 * 1024
+    with open(tmp_path / "outputs" / "big.bin", "wb") as fh:
+        fh.write(os.urandom(size))
+    reads: list[int] = []
+    real_open = safe_open.open_read
+
+    def counting_open(root: Path, rel: str) -> Any:
+        fh = real_open(root, rel)
+        real_read = fh.read
+
+        class _Counted:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(fh, name)
+
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *a: Any) -> None:
+                fh.close()
+
+            def read(self, n: int = -1) -> bytes:
+                reads.append(n)
+                return real_read(n)
+
+        return _Counted()
+
+    monkeypatch.setattr(safe_open, "open_read", counting_open)
+    tracemalloc.start()
+    try:
+        _rel, got, _sha, names, _gone = pa._publish_zip(tmp_path, "outputs/a.zip", ["outputs/big.bin"])
+        _cur, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert names == ["big.bin"] and got > size // 2
+    assert reads and all(0 < n <= pa.CHUNK_BYTES for n in reads), reads[:5]
+    assert peak < 4 * 1024 * 1024, f"peak {peak} bytes for a {size}-byte input"
 
 
 async def test_over_the_file_cap_nothing_is_written(runs, monkeypatch) -> None:
@@ -441,7 +570,7 @@ async def test_a_chat_with_no_files_gets_a_plain_error(runs) -> None:
 
 async def test_a_personal_dir_takes_the_files_this_session_wrote(runs, monkeypatch) -> None:
     import acb_memory
-    from acb_skills.agent_paths import ensure_state_dir
+    from acb_skills.agent_paths import ensure_state_dir, thread_slug
 
     key = "u:alice@example.com"
     ws = ensure_state_dir(PA, key)
@@ -461,7 +590,8 @@ async def test_a_personal_dir_takes_the_files_this_session_wrote(runs, monkeypat
         out = await _pack()
     assert seen["asked"] == (t, key), "the session and the key come from the run"
     assert "error" not in out, out
-    assert out["path"] == "outputs/files.zip"
+    # The chat's own folder in every dir, so the chat delete finds it.
+    assert out["path"] == f"outputs/{thread_slug(t)}/files.zip"
     assert _entries(ws, out["path"]) == {"mine.md": b"outputs/mine.md"}
     assert out["left_out"] == ["outputs/gone.md"]
 
@@ -599,6 +729,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: E402,F401
 )
 from tests.unit.test_h201_readers_under_rls import _seed_session  # noqa: E402
 from tests.unit.test_h201_tenant_workdirs import (  # noqa: E402,F401 — fixtures by name
+    _P,
     _S,
     _cfg,
     _client,
@@ -657,3 +788,114 @@ def test_the_route_serves_the_zip_to_its_chat_only(graph_as_app, disk) -> None: 
     assert bob.get(f"/agent/workspace/{sbob}/file", params={"path": out["path"]}).status_code == 404
     assert carol.get(url).status_code == 404
     assert carol.get(f"/agent/workspace/{sc}/file", params={"path": out["path"]}).status_code == 404
+
+
+def _chat_client(user: Any) -> Any:
+    """The real chat create and delete routes, beside the real workspace router."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import workspace
+    from gateway.routes.chat import delete_session, upsert_session
+
+    app = FastAPI()
+    app.include_router(workspace.router)
+    app.post("/chat/sessions")(upsert_session)
+    app.delete("/chat/sessions/{session_id}", status_code=204)(delete_session)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+def _package_in(
+    disk: Any, org: str, sid: str, member: str, kind: str,  # noqa: F811
+) -> tuple[dict, Path]:
+    """One run of the shared or the personal agent: one document, then a zip."""
+    from acb_common.db import bind_tenant, release_tenant
+    from orchestrator.executor import _resolve_run_workspace
+
+    if kind == "personal":
+        agent, agent_dir, instance = _P, disk.personal, f"u:{member}"
+        ws, key = _resolve_run_workspace(
+            agent_dir, _cfg("personal"), instance=instance, organization_id=org,
+        )
+    else:
+        agent, agent_dir = _S, disk.shared
+        ws, key = _resolve_run_workspace(agent_dir, _cfg(None), organization_id=org)
+
+    async def _go() -> dict:
+        token = bind_tenant(org)
+        wa.bind_artifact_context(
+            session_id=sid, agent_name=agent, run_id=f"r-{uuid.uuid4().hex[:6]}",
+            workspace_root=ws, instance=key, member=member,
+            gateway_url="http://127.0.0.1:9", gateway_token="x",
+        )
+        try:
+            doc = await wa.write_artifact("plan.md", "THE PLAN")
+            out = await pa.package_artifacts(f'["{doc["path"]}"]', "handover")
+            rest = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            await asyncio.gather(*rest, return_exceptions=True)
+            return out
+        finally:
+            release_tenant(token)
+
+    return asyncio.run(_go()), Path(ws)
+
+
+@_DB_GATE
+@pytest.mark.parametrize("kind", ["shared", "personal"])
+def test_an_expired_package_says_so_and_a_deleted_chat_takes_its_zips(
+    graph_as_app, disk, kind: str, short_tmp: Path, monkeypatch,  # noqa: F811
+) -> None:
+    """Review 2, P1: the zip is on disk only. Gone from the disk, it answers
+    410 with PACKAGE_EXPIRED to its own chat, and a plain 404 to everyone
+    else. Deleting the chat removes it, in a tenant dir and in a personal dir,
+    where ``session_paths`` cannot see an unmirrored zip."""
+    import shutil
+
+    from acb_common import get_settings
+    from gateway.routes.workspace import PACKAGE_EXPIRED
+
+    # A thread folder of a tenant dir passes the 260-character limit of a
+    # Windows path under pytest's long temp names. The same clone, shorter.
+    shutil.copytree(disk.repos, short_tmp / "agents" / "repos")
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(short_tmp / "agents"))
+    disk.repos = short_tmp / "agents" / "repos"
+    disk.shared, disk.personal = disk.repos / _S, disk.repos / _P
+
+    a, b = graph_as_app.org_a, graph_as_app.org_b
+    agent = _P if kind == "personal" else _S
+    sid = str(uuid.uuid4())
+    alice = _chat_client(_user(_ALICE, a))
+    made = alice.post("/chat/sessions", json={
+        "id": sid, "agent_name": agent, "title": "Alice", "last_preview": None,
+        "message_count": 0,
+    })
+    assert made.status_code == 200, made.text
+    sbob = _seed_session(graph_as_app, a, _BOB, None, agent=agent)
+    bob, carol = _client(_user(_BOB, a)), _client(_user(_CAROL, b))
+
+    out, ws = _package_in(disk, a, sid, _ALICE, kind)
+    assert "error" not in out, out
+    zip_rel, url = out["path"], out["download_url"][len("/api"):]
+    assert (ws / zip_rel).is_file()
+    assert alice.get(url).status_code == 200
+
+    # A disk wipe: the zip is gone, and no blob row brings it back.
+    (ws / zip_rel).unlink()
+    gone = alice.get(url)
+    assert gone.status_code == 410, gone.text
+    assert gone.json()["detail"] == PACKAGE_EXPIRED
+    assert not (ws / zip_rel).exists(), "a fault-in brought the zip back"
+    # Everyone else: the plain 404, never the expiry text.
+    for client, session in ((bob, sid), (bob, sbob), (carol, sid)):
+        other = client.get(f"/agent/workspace/{session}/file", params={"path": zip_rel})
+        assert other.status_code == 404, (session, other.text)
+        assert PACKAGE_EXPIRED not in other.text
+
+    # A second zip, then the chat delete takes it, and keeps the document.
+    again, _ = _package_in(disk, a, sid, _ALICE, kind)
+    assert (ws / again["path"]).is_file()
+    assert alice.delete(f"/chat/sessions/{sid}").status_code == 204
+    assert not (ws / again["path"]).exists(), "the chat delete left its zip"
+    if kind == "personal":
+        assert (ws / "outputs" / "plan.md").is_file(), "the member's own document went"

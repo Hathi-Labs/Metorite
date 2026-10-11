@@ -39,6 +39,7 @@ GET /agent/workspace/{session_id}/events
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import mimetypes
 import os
@@ -56,6 +57,7 @@ from acb_common import get_logger
 from acb_skills.agent_paths import EXCLUDED_DIRS as _EXCLUDED_DIRS
 from acb_skills.agent_paths import is_blocked_rel as _is_blocked_path
 from acb_skills.agent_paths import is_hidden_or_secret_name as _is_hidden_or_secret_file
+from acb_skills.agent_paths import is_thread_package_rel
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -1243,6 +1245,7 @@ class ThreadPurgeFailed(RuntimeError):
 
 async def purge_thread_files(
     session_id: str, organization_id: str | None, *, best_effort: bool = False,
+    member: str | None = None,
 ) -> None:
     """Delete the files of a chat that its owner deletes (H-227, PR #616 review).
 
@@ -1266,7 +1269,14 @@ async def purge_thread_files(
       ⚠️ Not when another session wrote its newest bytes (fix round 3). That
       file and its other rows stay, and only this chat's rows go;
     * every other history row of this chat under ``inputs/`` and ``outputs/``.
-      A row of a run with no chat stays (``blob_store._RUN_ROW``).
+      A row of a run with no chat stays (``blob_store._RUN_ROW``);
+    * the zips of ``package_artifacts`` in the chat's own working dir, also a
+      personal or a team one (2026-10-11). A zip is never in the blob store,
+      so ``session_paths`` cannot find it. It lies at
+      ``agent_paths.thread_package_rel``, and the dir is the session's
+      ``workspace_path``, resolved for *member* (:func:`_get_workspace_path`).
+      The delete route passes the member who deletes. A new chat has no row
+      yet, so it has no such dir.
 
     The organization is the caller's, from the authenticated identity. A
     failure is logged as ``workspace.thread_purge_failed``.
@@ -1274,7 +1284,7 @@ async def purge_thread_files(
     if not session_id or not organization_id:
         return
     try:
-        await _purge_thread_files(session_id, organization_id)
+        await _purge_thread_files(session_id, organization_id, member=member)
     except Exception as exc:
         _log.warning(
             "workspace.thread_purge_failed", session_id=session_id[:12],
@@ -1308,7 +1318,9 @@ def _tenant_dirs(organization_id: str) -> list[Path]:
     return found
 
 
-async def _purge_thread_files(session_id: str, organization_id: str) -> None:
+async def _purge_thread_files(
+    session_id: str, organization_id: str, *, member: str | None = None,
+) -> None:
     """Read first, then change (fix round 2 of PR #616). Every read that can
     fail runs before the first removal, so a failure changes nothing. The
     disk goes before the store, so a retry still finds the rows it needs."""
@@ -1352,6 +1364,8 @@ async def _purge_thread_files(session_id: str, organization_id: str) -> None:
             continue
         began.append((agent, path))
     dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
+    # The chat's own working dir, for its zips (a read, so it comes first).
+    chat_dir = await _chat_dir(session_id, member, organization_id, slug)
     # 2. The disk.
     if slug:
         for ws in dirs.values():
@@ -1360,6 +1374,7 @@ async def _purge_thread_files(session_id: str, organization_id: str) -> None:
                     await asyncio.to_thread(safe_open.remove_tree, ws, f"{head}/{slug}")
                 except safe_open.UnsafePath:
                     _log.warning("workspace.thread_purge_link", path=f"{head}/{slug}")
+        await asyncio.to_thread(_purge_packages, chat_dir, session_id, slug)
     for agent, path in began:
         if agent in dirs:
             try:
@@ -1376,6 +1391,46 @@ async def _purge_thread_files(session_id: str, organization_id: str) -> None:
         "workspace.thread_purged", session_id=session_id[:12],
         dirs=len(dirs), loose=len(began), rows=gone,
     )
+
+
+async def _chat_dir(
+    session_id: str, member: str | None, organization_id: str, slug: str | None,
+) -> Path | None:
+    """The chat's own working dir, resolved for *member*, or ``None``."""
+    if not (slug and member):
+        return None
+    return await asyncio.to_thread(_get_workspace_path, session_id, member, organization_id)
+
+
+def _purge_packages(workspace: Path | None, session_id: str, slug: str) -> int:
+    """Remove the zips of ``package_artifacts`` in ``outputs/<slug>/`` of *workspace*.
+
+    Only a ``.zip`` right in the folder goes (``is_thread_package_rel``), and
+    the folder too when it is then empty. Links are never followed. Returns
+    how many zips went.
+    """
+    from acb_skills import safe_open
+
+    if workspace is None:
+        return 0
+    folder = f"outputs/{slug}"
+    try:
+        entries = safe_open.list_dir(workspace, folder)
+    except safe_open.UnsafePath:
+        _log.warning("workspace.thread_purge_link", path=folder)
+        return 0
+    gone = 0
+    for name, kind in entries or []:
+        rel = f"{folder}/{name}"
+        if kind == "file" and is_thread_package_rel(rel, session_id):
+            try:
+                gone += bool(safe_open.unlink(workspace, rel))
+            except (safe_open.UnsafePath, OSError):
+                _log.warning("workspace.thread_purge_unlink_failed", path=rel[:200])
+    if entries is not None and not safe_open.list_dir(workspace, folder):
+        with contextlib.suppress(safe_open.UnsafePath, OSError):
+            safe_open.remove_tree(workspace, folder)
+    return gone
 
 
 def _safe_sha256(root: Path, rel: str) -> str | None:
@@ -1525,6 +1580,13 @@ _VISIBLE_WORKSPACE_DIRS = frozenset({"inputs", "outputs", "agent-data"})
 # Directories excluded from traversal (``_EXCLUDED_DIRS``, imported above):
 # VCS, dependency, build, and cache noise. Pruned wherever they appear so a
 # whole-repo clone doesn't flood the UI with node_modules/.git/etc.
+
+#: The answer for a package of THIS chat that is gone from the disk. A zip
+#: is derived and never in the blob store (``package_artifacts``), so a disk
+#: wipe ends it, and the member asks for it again. HTTP 410 Gone.
+PACKAGE_EXPIRED = (
+    "This package expired. Ask the assistant to zip the files again."
+)
 
 # A zip is served as application/zip on every box. A Windows registry can
 # map .zip to application/x-zip-compressed, and the file card reads the type
@@ -1763,6 +1825,11 @@ async def get_workspace_file(
         )
         st = await asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
         if st is None:
+            # A package of THIS session's own thread folder says why it is
+            # gone. The room check and the other-thread check ran first, so
+            # any other caller got the plain 404 above.
+            if is_thread_package_rel(rel, session_id):
+                raise HTTPException(status_code=410, detail=PACKAGE_EXPIRED)
             raise HTTPException(status_code=404, detail="File not found")
     elif loose and not await _session_may_read_disk_file(workspace, rel, session_id, org):
         raise HTTPException(status_code=404, detail="File not found")

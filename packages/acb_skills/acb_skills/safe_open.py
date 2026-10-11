@@ -40,7 +40,7 @@ import errno
 import os
 import shutil
 import stat as _stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import BinaryIO
 
@@ -51,6 +51,7 @@ __all__ = [
     "list_dir",
     "open_read",
     "publish_bytes",
+    "publish_stream",
     "read_bytes",
     "remove_tree",
     "replace_bytes",
@@ -369,7 +370,27 @@ def write_bytes(
     parts = split_rel(rel)
     if not parts:
         raise UnsafePath("A write needs a file name.")
-    flags = os.O_WRONLY | os.O_CREAT | _O_NONBLOCK | (os.O_EXCL if exclusive else os.O_TRUNC)
+    fd = _open_for_write(root, parts, exclusive=exclusive, make_parents=make_parents)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+    finally:
+        os.close(fd)
+
+
+def _open_for_write(
+    root: Path, parts: list[str], *, exclusive: bool, make_parents: bool,
+    readable: bool = False,
+) -> int:
+    """A write descriptor of the regular file ``root/parts``, with no link followed.
+
+    The caller closes it. *exclusive* refuses an existing file with
+    ``FileExistsError``.
+    """
+    mode = os.O_RDWR if readable else os.O_WRONLY
+    flags = mode | os.O_CREAT | _O_NONBLOCK | (os.O_EXCL if exclusive else os.O_TRUNC)
     if not _FD_WALK:
         parent = _windows_dir(root, parts[:-1], create=make_parents)
         target = parent / parts[-1]
@@ -391,12 +412,10 @@ def write_bytes(
                 raise
     try:
         _require_regular(fd)
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-    finally:
+    except BaseException:
         os.close(fd)
+        raise
+    return fd
 
 
 def replace_bytes(root: Path, rel: str, data: bytes) -> None:
@@ -435,33 +454,65 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
 def publish_bytes(root: Path, rel: str, data: bytes) -> None:
     """Make the NEW file ``root/rel`` with *data* in one step, and never replace one.
 
-    It writes a temp file with an exclusive create in the same dir, then
-    hard-links it at *rel* through the dir descriptor, and removes the temp
-    name. A reader sees no file or the whole file, never a partial one. An
-    existing *rel*, also a link, raises ``FileExistsError`` and keeps its
-    bytes. The temp file is removed on any failure. ``package_artifacts``
-    writes its zip with it.
+    :func:`publish_stream` with one name. An existing *rel*, also a link,
+    raises ``FileExistsError`` and keeps its bytes.
+    """
+    publish_stream(root, [rel], lambda fh: fh.write(data))
+
+
+def publish_stream(
+    root: Path, rels: Sequence[str], write: Callable[[BinaryIO], object],
+) -> str:
+    """Make a NEW file at the first free name of *rels*, filled by *write*.
+
+    *rels* are names in ONE dir. It opens a temp file in that dir with an
+    exclusive create, and *write* fills it through a seekable binary file
+    (``w+b``), so a caller can stream into it and never hold the whole file
+    in memory. Then it hard-links the temp file at the first name of *rels*
+    that is free, through the dir descriptor, and removes the temp name. A
+    reader sees no file or the whole file, never a partial one, and no
+    existing file, also a link, is ever replaced. Returns the name taken.
+
+    When every name is taken it raises ``FileExistsError``. An error from
+    *write* propagates. In every case the temp file is removed.
+    ``package_artifacts`` writes its zip with it.
     """
     import secrets
 
-    parts = split_rel(rel)
-    if not parts:
+    if not rels:
         raise UnsafePath("A publish needs a file name.")
+    all_parts = [split_rel(r) for r in rels]
+    if any(not p for p in all_parts):
+        raise UnsafePath("A publish needs a file name.")
+    head = all_parts[0][:-1]
+    if any(p[:-1] != head for p in all_parts):
+        raise UnsafePath("Every name of one publish must be in one dir.")
     # A short temp name: it must not push a long path past a Windows limit
     # that the final name stays under.
     tmp_name = f".{secrets.token_hex(6)}.tmp"
-    tmp_rel = "/".join([*parts[:-1], tmp_name])
+    tmp_rel = "/".join([*head, tmp_name])
     try:
-        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=True)
-        if _FD_WALK:
-            with _dir_fd(root, parts[:-1]) as fd:
-                os.link(
-                    tmp_name, parts[-1], src_dir_fd=fd, dst_dir_fd=fd,
-                    follow_symlinks=False,
-                )
-        else:
-            parent = _windows_dir(root, parts[:-1], create=False)
-            os.link(parent / tmp_name, parent / parts[-1])
+        fd = _open_for_write(
+            root, [*head, tmp_name], exclusive=True, make_parents=True, readable=True,
+        )
+        with os.fdopen(fd, "w+b") as fh:
+            write(fh)
+            fh.flush()
+        for parts in all_parts:
+            try:
+                if _FD_WALK:
+                    with _dir_fd(root, head) as dfd:
+                        os.link(
+                            tmp_name, parts[-1], src_dir_fd=dfd, dst_dir_fd=dfd,
+                            follow_symlinks=False,
+                        )
+                else:
+                    parent = _windows_dir(root, head, create=False)
+                    os.link(parent / tmp_name, parent / parts[-1])
+            except FileExistsError:
+                continue
+            return "/".join(parts)
+        raise FileExistsError(rels[0])
     finally:
         with contextlib.suppress(OSError, UnsafePath):
             unlink(root, tmp_rel)
