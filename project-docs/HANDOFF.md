@@ -744,7 +744,8 @@ line — never reclaim a number by deleting the other entry.
   listed part has a hit. On the box, this query shows the symptom:
   `SELECT pid, now() - state_change AS age, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND wait_event = 'ClientRead' ORDER BY age DESC;`
   A row older than a few seconds is a session that holds a transaction
-  across I/O.
+  across I/O. The split of `_compose_assist_run` left EM-T4a-4 on 2026-10-12
+  (§10.4.6 item 6). EM-T17 PR-A owns it, so this entry does not wait on it.
 - **Why.** During the incident of 2026-10-07, the cluster showed sessions
   `idle in transaction` with the wait event `ClientRead`. The email sync
   keeps a database session open while it waits on Gmail or Graph. Each such

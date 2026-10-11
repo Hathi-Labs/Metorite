@@ -562,6 +562,7 @@ or API client to create a pattern by hand.
 | **D-EM-15** | **After the import, Metorite asks the member to set up AI rules.** The rules then run over the imported mail and give insights. The step offers no model choice, because EM-T5b moves the rules to the `decide` tier. Reply drafting is a separate step that the member turns on (D-EM-6). (Owner, 2026-10-02.) |
 | **D-EM-16** | **A short guided setup takes the member through each stage.** The stages are connect, the range, the import, the storage notice when it applies, AI rules, and done. The import shows real progress: the count of messages, an estimate of the total and the phase. A spinner alone is not progress. (Owner, 2026-10-02.) |
 | **D-EM-62** | **Build the cheaper triage decisions of EM-T16, dark, in the order PR-0 to PR-D** (owner, 2026-10-09). After PR-C merges, `email.cold_check` and `email.sender_pin` go to `on`. Two questions stay open for the owner. The record follows this table, and §10.4.17 holds the build. |
+| **D-EM-63** | **The AI context of a conversation is chosen, not cut** (owner directive, 2026-10-12). A draft considers the whole conversation. It loads the target in full, an index of every message, and the earlier bodies that `decide` chooses. A body is never cut in silence. Drafting and analysis never hang: each wait has a bound, and a failure degrades to a fixed fallback. The same selector serves insights across inboxes. §17 holds the build (EM-T17). |
 
 **The owner answers to the three checks of EM-T6c (2026-10-02).** Each answer adds to D-EM-14. §10.4.7 gives the reason for each check.
 
@@ -2190,6 +2191,9 @@ This is the same class of race as the known limit of PR-B1, over the same window
    The download route and the text route hold one session across `authenticate()` and the
    provider download. Split it as the jobs are split, and keep the commit that stores a rotated
    token (EM-T4c). §10.4.12 records it as a known limit.
+6. **Moved to EM-T17 PR-A (2026-10-12).** The session split of `_compose_assist_run`
+   (`drafting.py:1820`). Its docstring (`drafting.py:1835-1836`) says that EM-T4a-4 owns the
+   I/O inside its block. EM-T17 PR-A owns it now (§17.3.7), so EM-T4a-4 does not touch it.
 
 **Non-goals.** No change to what a job does, or to its progress tracker.
 
@@ -2198,7 +2202,7 @@ This is the same class of race as the known limit of PR-B1, over the same window
 - An AST fence finds no `await _get_db()` in `routes/email` other than `mailbox_owner`. A companion test proves the fence can fail.
 - The watched fakes get each call with zero open sessions in each job.
 - R8: "Process past emails" over a seeded range in org B stamps `rules_processed_at` in org B. Org A reads none of it.
-- R8: `_compose_assist_run` (`drafting.py:1781`) for a member of org B finds the account of that member.
+- R8: `_compose_assist_run` for a member of org B finds the account of that member. EM-T17 PR-A owns this clause since 2026-10-12, with its fence `test_email_draft_store_rls.py` (§17.8, A4).
 
 ⚠️ **Cost note.** EM-T4a-0 turns these jobs on. "Process past emails" keeps its own ceiling in the
 API, and EM-T4b adds the shared cap and the budget.
@@ -15647,8 +15651,10 @@ or replying to messages but also when the email AI assistant generates insights 
 inboxes, intelligently incorporating relevant body content.
 ```
 
-**Status.** 📝 SPECIFIED 2026-10-12, not built. Slice **EM-T17**, six PRs (§17.7). No
-migration. Each behaviour that changes the context of a model ships dark. The stall bounds
+**Status.** 📝 SPECIFIED 2026-10-12, not built. The spec audit of 2026-10-12 returned
+GO-NARROWED, and its edits D1 to D14 are in this section. Slice **EM-T17** has six PRs (§17.7).
+
+No migration. Each behaviour that changes the context of a model ships dark. The stall bounds
 of PR-A and PR-A2 ship with no flag, because they bound a live defect (as EM-T9 did).
 
 Verified against code at `origin/main` `eb87b971e` (2026-10-12). The paths are under
@@ -15717,7 +15723,7 @@ quoted text, so each earlier message repeats the chain below it.
 | Consult answer | `[:1500]` | `drafting.py:1547` | The answer of an agent |
 | `read_thread` | 25 messages, `[:1500]` each | `agents.py:821`, `:828` | 🔴 The list is oldest first, so `msgs[:25]` keeps the OLDEST 25. The note "earlier message(s) omitted" (`:831`) is wrong |
 | `read_email` | `[:4000]`, and `[:12000]` with `full=true` | `agents.py:570`, `:538` | The body, with no label for the cut |
-| `/email/ai/chat` | `[:5000]` | `chat.py:137` | The open email. No UI calls this route (`lib/api.ts:1277-1281`) |
+| `/email/ai/chat` | `[:5000]` | `routes/email/automation/chat.py:137` | The open email. No UI calls this route (`lib/api.ts:1277-1281`) |
 | `narrow_and_read` | `BODY_CLIP = 6000`, `READ_CAP = 25` | `acb_skills/narrowing.py:146`, `:143`, `:1009` | Each kept body, with no label |
 | `fit_messages_to_context` | window − `max_tokens` − 512, 70% kept for each pass, 24 passes | `acb_llm/context.py:158-232` | The longest message of an oversized prompt. `compress_message_content` keeps the text after the last `From:` line (`acb_llm/message_compress.py:122`), and the thread block holds `From:` lines |
 
@@ -15729,7 +15735,7 @@ strips the target body, an earlier message of a draft, or a `read_thread` body.
 
 | # | Cause | Evidence |
 |---|---|---|
-| S1 | **The streamed draft has no timeout.** `_stream_text` calls `litellm.acompletion(stream=True)` with no `timeout` and reads `async for chunk` with no bound between chunks. It does not use the Router, so the 120 s bound of the Router does not apply | `acb_llm/context.py:442-501`. The non-stream path is bounded by `_ROUTER_TIMEOUT_SECONDS = 120.0` (`acb_auth/console_resolve.py:2252`) |
+| S1 | **The streamed draft has no timeout.** `_stream_text` calls `litellm.acompletion(stream=True)` with no `timeout` and reads `async for chunk` with no bound between chunks. It does not use the Router, so the 120 s bound of the Router does not apply | `acb_llm/context.py:442-507`. The non-stream path is bounded by `_ROUTER_TIMEOUT_SECONDS = 120.0` (`acb_auth/console_resolve.py:2252`) |
 | S2 | **The draft holds one DB session for the whole run.** `_compose_assist_run` opens `_tenant_session()` (`drafting.py:1837`) and holds it across the provider fetch, the embedding, Mem0, the consult plan, a consult of up to 18 s and the whole stream. The rule draft runs inside Block W (`runner.py:1838`) | The box logged 12 `db.unavailable` and 15 `auth.identity_pool_timeout` lines in 3 days, at 06, 12 and 16 UTC on 2026-10-09. EM-T4a removed this pattern from the jobs, not from the request path |
 | S3 | **The body fetch downloads the files.** `hydrate_message_body` (`routes/email/core.py:378`) calls `get_message`, which asks Graph for `$expand=attachments` (`providers/outlook.py:1035-1042`). The lighter `get_message_body` (`:1044`) exists. The httpx bound is 30 s for each phase (`outlook.py:740`), not a total | Code |
 | S4 | **The context step is serial.** `_build_reply_context` awaits the hydrate, the mailbox, the domains, the files, the thread, the examples, the memories, the few-shot embedding and the calendar, one after the other (`drafting.py:1676-1710`). The embedding call has no bound | Code |
@@ -15753,7 +15759,7 @@ stalled stream also opens with 200. PR-A adds the log line that measures it (§1
 - **`read_thread` reads one thread of one mailbox** (`agents.py:794-817`), with the cuts of
   §17.1.2.
 - **`narrow_and_read` is the one cross-mail reader.** NARROW reads up to 200 summaries from
-  `GET /email/search` with `pooled_only` (`narrow_source.py:86-91`, `search.py:213`). PICK
+  `GET /email/search` with `pooled_only` (`narrow_source.py:86-91`, `routes/email/transport/search.py:213`). PICK
   asks `decide` with 16 questions to a request (`narrowing.py:121-162`). READ reads up to 25
   bodies in parallel, 5 at a time (`narrow_source.py:101`, `:338-361`). It cuts each body at
   6,000 characters with no label. It ships dark: `NARROWING_AGENTS` is empty
@@ -15790,9 +15796,8 @@ stalled stream also opens with 200. PR-A adds the log line that measures it (§1
 
 ### 17.2 Decision
 
-| Id | Decision |
-|---|---|
-| **D-EM-63** | **The AI context of a conversation is chosen, not cut** (owner directive, 2026-10-12). A draft considers the whole conversation. It loads the target in full, an index of every message, and the earlier bodies that `decide` chooses. A body is never cut in silence. Drafting and analysis never hang: each wait has a bound, and a failure degrades to a fixed fallback. The same selector serves insights across inboxes. §17 holds the build (EM-T17). |
+§10.2 records **D-EM-63**: the AI context of a conversation is chosen, not cut, and
+drafting never hangs. This section holds its build (EM-T17).
 
 D-EM-63 is text work in the sense of D-EM-7. The draft stays on its LLM tier. `decide`
 chooses only which bodies the LLM reads. So D-EM-8 does not bind it: with no answer, the
@@ -15868,9 +15873,12 @@ selector takes the fallback and the draft goes on.
 - **The state, with no body.** First the intent of the draft. That is the mode (`reply`,
   `forward` or `refine`) and the instruction of the member, cut to 500 characters. Then the
   subject, sender, date and snippet of the target. Then the index lines of the earlier
-  messages. Each text
-  goes through `decide_features.clip_fact`. 🔴 The state holds no `body_text`, no
-  `body_html` and no file text. A fence checks it (§17.8, C5).
+  messages. For the chat tool, the `purpose` of §17.3.8 takes the place of the
+  instruction. Each text goes through `decide_features.clip_fact`.
+- 🔴 **"No body" means no text beyond the stored snippet.** The snippet is the first 200
+  characters of the body (`persist.py:264`, `core.py` sync), and the index clips it to 160.
+  The state holds no other text of `body_text`, no `body_html` and no file text. Fence C5
+  checks it (§17.8).
 - **The question.** "Does the reply to the target need this earlier message?" `full`: the
   reply depends on its details, figures, dates or commitments. `summary`: its gist is
   enough. `skip`: it adds nothing to this reply.
@@ -15878,11 +15886,20 @@ selector takes the fallback and the draft goes on.
   `full` when the message is one of the 6 newest, and `summary` when it is older. So an
   unsure answer reads more, never less, as `narrowing.keep` does.
 - **The bound.** `CONTEXT_DECIDE_BOUND_S = 4.0`. The measured p99 is 2.48 s. PR-C adds an
-  optional `bound_s` argument to `decide_features.ask`, which extends the seam. The default
-  stays `ON_BOUND_S`.
+  optional `bound_s` argument to `decide_features.ask` AND to `decide_features.shadow`,
+  which extends the seam. The defaults stay `ON_BOUND_S` and `SHADOW_BOUND_S`.
+  - Why `shadow` too: after `old()` returns, `shadow` waits for the task, up to
+    `SHADOW_BOUND_S = 5` (`decide_features.py:765-768`). The fallback of this feature makes
+    no model call, so without `bound_s` the shadow adds up to 5 s to each long draft.
 - **The cache.** The selection keeps for `SELECT_CACHE_TTL_S = 900` seconds under
   `tenant_redis.key("email-ctx-select", account_id, thread_id, last_message_id, mode)`, with
-  one `setex`. So each refine round reuses it and makes no `decide` call. A new message
+  one `setex`.
+  - `account_id` is the mailbox that HOLDS the thread (`mail_account`, `drafting.py:1670`),
+    not the sending mailbox.
+  - `mode` is `req.mode`: `reply` or `forward`. A refine round sends the same mode, so it
+    reuses the choice and makes no `decide` call.
+  - The value is the choice map only: the message id and `full`, `summary` or `skip`. It
+    holds no text. A new message
   changes the last message id, and the next draft asks again. A Redis failure reads as a
   miss.
 - **The modes.** `off`: the fixed fallback, and no `decide` call. `shadow`: the fallback
@@ -15913,9 +15930,23 @@ The model can read a message that the context left out.
   the draft now."
 - **A tool call ends the first stream before any content.** The composer shows the status
   `Reading earlier messages 3, 4`.
+- **The change to the shared seam.** Today `_stream_text` reads only `content` and
+  `reasoning_content` (`acb_llm/context.py:479-498`), so a `tool_calls` delta is lost.
+  - PR-D adds `acompletion_stream_turn(..., tools=...)` beside `acompletion_stream_text` in
+    `acb_llm/context.py`. Both share `_stream_text`.
+  - `_stream_text` also joins the `delta.tool_calls` pieces by their `index`, and returns
+    them in a `StreamTurn(content, model, tool_calls)`.
+  - `acompletion_stream_text` keeps its return shape `(content, model)`, so its two callers
+    in `drafting.py` do not change.
+  - The `tools` value travels in `extra`. The Router path forwards `tools` and
+    `tool_choice` (`_FORWARDABLE`, `acb_llm/routed.py:73-77`).
 - **The chat agent.** It already has `read_email` and `read_thread`. Each index line in a
   tool result carries the email id, so the agent can call `read_email` for it.
-- **The rule draft.** It runs with no member present. It gets the same tool round.
+- **The rule draft.** It runs with no member present, and it gets the same tool round. It
+  calls `_agent_draft_reply(use_agent=True, ...)` (`actions.py:588`). `use_agent` is ignored
+  today (`drafting.py:1401`). The path reaches the non-stream `acompletion_with_fallback`
+  (`drafting.py:956`). PR-D passes `tools` in `extra` there, and reads
+  `resp.choices[0].message.tool_calls`.
 
 #### 17.3.7 No stall: the bounds
 
@@ -15928,8 +15959,9 @@ with the bound and the step, and no tenant text.
 | Body fetches in parallel | `BODY_FETCH_IN_FLIGHT = 4` | The fifth waits for a free slot |
 | All body fetches of one context | `BODY_STEP_BOUND_S = 12.0` | Each unfinished fetch is cancelled and labelled as above |
 | The `decide` call | `CONTEXT_DECIDE_BOUND_S = 4.0` | The fixed fallback |
-| Mem0 recall, few-shot embedding, consult plan | `SIDE_STEP_BOUND_S = 5.0` each | The step gives nothing, as a failed step does today |
-| The whole context step | `CONTEXT_STEP_BOUND_S = 20.0` | The draft goes on with what it has, and the fixed fallback for the thread |
+| Each await with no session: the provider body fetch of the target, `embed_query`, the Mem0 recall, the consult plan | `SIDE_STEP_BOUND_S = 5.0` each | The step gives nothing, as a failed step does today |
+| The whole context step | `CONTEXT_STEP_BOUND_S = 20.0` | See "The context step on expiry" below |
+| The whole server run of one draft | `SERVER_TOTAL_S = 170.0` | `error` event with the reason `server_timeout`. It stays under `CLIENT_TOTAL_MS` |
 | The first SSE event | 1 s | The route sends `{"type":"status","stage":"context"}` before it opens a session |
 | A quiet SSE stream | `HEARTBEAT_S = 10.0` | The route sends the SSE comment `: keepalive` |
 | The first model chunk | `STREAM_FIRST_CHUNK_S = 45.0` | `error` event with the reason `model_slow`. No retry on another model |
@@ -15937,31 +15969,75 @@ with the bound and the step, and no tenant text.
 | The whole model stream | `STREAM_TOTAL_S = 150.0` | The same, with the reason `model_timeout` |
 | The composer | `CLIENT_TOTAL_MS = 180000` and a Stop button | `AbortController` aborts the fetch. The composer keeps the text of the member, and shows "The draft took too long. Try again." |
 
+- **The bounds add up.** The worst server path is 193 seconds: 20 for the context, 5 for
+  the consult plan, 18 for the consult and 150 for the stream. The client limit is 180
+  seconds. So `SERVER_TOTAL_S = 170.0` bounds the whole run of `_compose_assist_run`, and
+  the client limit stays 180 seconds. The server ends first, and it sends a typed reason.
 - **The stream bound lives in the shared seam.** `acb_llm.context._stream_text` gets the
-  three stream bounds as keyword arguments with these defaults. So the WhatsApp drafts get
-  them too.
-- **No session across the model.** `_compose_assist_run` closes its session before the
-  model call. It opens a short new one for `_store_ai_draft`.
-- **The rule draft.** It moves its context step and its model call out of Block W, as
-  EM-T4a-2 did for the rule match. If that grows PR-A past about 600 lines, it becomes PR-A3.
+  three stream bounds as keyword arguments with these defaults. `acompletion_stream_text`
+  has two callers, both in `drafting.py`.
+- **H-287 edits `_stream_text` too.** It routes the stream through the Router. The PR that
+  merges second rebases onto the first and keeps both changes. A test of each must pass on
+  the merged code.
+- **No session across the model.** PR-A takes this from EM-T4a-4 (§10.4.6 item 6).
+  `_compose_assist_run` closes its session before the model call, and opens a short new one
+  for `_store_ai_draft`. Its docstring (`drafting.py:1835-1836`) changes to say so.
+- **The rule draft keeps its place in Block W.** EM-T4a-3 item 1 owns that move.
+
+**The DB reads stay serial (PR-A).** One `AsyncSession` refuses two operations at the same
+time. So the reads of `_build_reply_context` stay in order, in one short block. Only the
+awaits that use no session run at the same time, outside that block:
+
+1. The provider body fetch of the target. `hydrate_message_body` splits into a read, the
+   fetch with no session, and a write in its own short block.
+2. `embed_query`. `_fetch_sent_fewshot` (`drafting.py:199`) splits into the embed, with no
+   session, and the read, in the block.
+3. The Mem0 recall and the consult plan. These two run in `_orchestrate_draft`
+   (`drafting.py:1512`), not in `_build_reply_context`. They already run at the same time.
+   PR-A gives each one `SIDE_STEP_BOUND_S`.
+
+**The context step on expiry (before PR-B).** When `CONTEXT_STEP_BOUND_S` ends:
+
+- The target body is the stored `body_text`, or else the snippet.
+- The thread is the output of `_fetch_thread_context`, or empty.
+- Each other side block is empty: the examples, the few-shot, the memories and the calendar.
+- The session block exits before the draft goes on.
+- After PR-B, the thread is the fixed fallback of §17.3.5.
 - **The log line that measures it.** `email.draft_timing` holds the stage durations in ms
   (`context_ms`, `decide_ms`, `fetch_ms`, `first_chunk_ms`, `total_ms`), the counts and the
   outcome. It holds no tenant text.
 
 #### 17.3.8 Insights across inboxes
 
-- **`read_thread` uses the selector.** The tool gets an optional `purpose` argument: why the
-  agent reads the thread. The purpose is the intent of the `decide` state. With no purpose,
-  the selector takes the fixed fallback. The tool keeps the NEWEST messages. The cuts
-  `msgs[:25]` and `[:1500]` (`agents.py:821`, `:828`) go, and the budget is
-  `CHAT_THREAD_BUDGET_CHARS = 40,000`.
+- **`read_thread` uses the selector, through a new route.** Today the tool asks
+  `GET /email/messages?thread_id=...&page_size=50` (`agents.py:810`). The list of a thread is
+  oldest first (`routes/email/transport/messages.py:337`), so a thread of 61 messages gives
+  the 50 OLDEST. PR-E replaces that call.
+  - **The route.** `GET /email/messages/{message_id}/thread-context?purpose=...`, in
+    `routes/email/transport/messages.py`.
+  - **The auth.** The owner predicate of `get_message`: a join to `email_accounts` with
+    `ea.user_id` equal to the member (`messages.py:686`). A message of another member
+    answers 404.
+  - **The answer.** `{thread_id, account_id, total, fallback, index: [{n, id, from, date,
+    sent, snippet}], bodies: [{n, id, kind, text, chars}], left_out: [{n, id, reason}]}`.
+    `kind` is `full` or `summary`. `chars` is the full length of the new text. `reason` is
+    `budget`, `skipped` or `cap`.
+  - **The purpose.** The model writes it, so it is member input. The route clips it with
+    `clip_fact` to `PURPOSE_CLIP = 300` characters. It is the intent of the `decide` state.
+    With no purpose, the selector takes the fixed fallback.
+  - The tool keeps the NEWEST messages. The cuts `msgs[:25]` and `[:1500]`
+    (`agents.py:821`, `:828`) go, and the budget is `CHAT_THREAD_BUDGET_CHARS = 40,000`.
 - **`read_email` labels its cut.** A body over 4,000 or 12,000 characters ends with
   `[Cut: the first 4,000 of N characters. Call read_email with full=true.]`. A `full` read
   gets the same label with 12,000.
 - **`narrow_and_read` labels its cut.** `_item_block` (`narrowing.py:1009`) adds
-  `[Cut: the first 6,000 of N characters.]` to a clipped body. The email adapter strips the
-  quoted chain with `split_quoted_text` before the clip (`narrow_source.py:296-301`). PICK
-  already sends summaries only, so its state does not change.
+  `[Cut: the first 6,000 of N characters.]` to a clipped body. PICK already sends summaries
+  only, so its state does not change.
+  - Today the email adapter clips first: `narrow_source._body` cuts at `BODY_CLIP`
+    (`narrow_source.py:301`). Then `_item_block` sees no long body, and cannot label it.
+  - The agent app cannot import `gateway`, so it cannot call `split_quoted_text`.
+  - So the adapter stops its clip. The gateway read route returns the new text with the
+    quote stripped, and its full length. `_item_block` alone clips and labels.
 - **The flags of the chat side.** `read_thread` on the selector rides `EMAIL_CONTEXT_SELECT`
   and `email.context_select`. `narrow_and_read` stays dark behind `NARROWING_AGENTS`, and
   to add `email-assistant` to it is the owner's act (`settings.py:418-420`).
@@ -16041,12 +16117,12 @@ with the bound and the step, and no tenant text.
 
 | PR | Gate | Scope | Flag | Size |
 |---|---|---|---|---|
-| **EM-T17 PR-A** | 🟢 AGENT-SAFE | **No stall, the server.** The stream bounds in `acb_llm.context._stream_text`. The SSE `status` event, the heartbeat and the `model_*` error reasons. `hydrate_message_body` uses `get_message_body`. The side steps of `_build_reply_context` run at the same time under `SIDE_STEP_BOUND_S`, and the whole step under `CONTEXT_STEP_BOUND_S`. `_compose_assist_run` closes its session before the model call. The `email.draft_timing` log line. | None | about 550 lines with tests |
-| **EM-T17 PR-A2** | 🟢 AGENT-SAFE | **No stall, the composer.** `AbortController`, `CLIENT_TOTAL_MS`, a Stop button in `DraftAssistant.tsx`, and the `status` event shown as a step. Also the step-list defect: "Thread context" never gets its `done` event (`drafting.py:1905`, `:1926`). | None | about 250 lines |
-| **EM-T17 PR-B** | 🟢 AGENT-SAFE | **The selector seam and the fixed fallback.** `thread_context.py`, the index, quote stripping, the budget, the labels and the left-out note. Parallel body fetches under `BODY_FETCH_IN_FLIGHT` and `BODY_STEP_BOUND_S`. `_build_reply_context` and the rule action fallback call it. A refine round reuses the context of the session. | `EMAIL_CONTEXT_SELECT` | about 600 lines |
+| **EM-T17 PR-A** | 🟢 AGENT-SAFE | **No stall, the server.** The stream bounds in `acb_llm.context._stream_text`. The SSE `status` event, the heartbeat and the `model_*` error reasons, which reach the route as an `error` event and never become the neutral template. `hydrate_message_body` uses `get_message_body`. The DB reads of `_build_reply_context` stay serial in one short block. The awaits with no session (the provider fetch, `embed_query`) run outside it at the same time under `SIDE_STEP_BOUND_S`, and so do the Mem0 recall and the consult plan in `_orchestrate_draft`. The whole step runs under `CONTEXT_STEP_BOUND_S`, and the whole run under `SERVER_TOTAL_S`. The session split of `_compose_assist_run`, taken from EM-T4a-4. The `email.draft_timing` log line. | None | about 550 lines with tests |
+| **EM-T17 PR-A2** | 🟢 AGENT-SAFE | **No stall, the composer.** `AbortController`, `CLIENT_TOTAL_MS`, a Stop button in `DraftAssistant.tsx`, and the `status` event shown as a step. An `AbortError` never falls back to `composeAssist` (`api.ts:2503-2505`). A `model_*` error keeps the streamed preview. The reply path sends the `context` `done` event: today it returns at `drafting.py:1905`, before `:1926`. | None | about 250 lines |
+| **EM-T17 PR-B** | 🟢 AGENT-SAFE | **The selector seam and the fixed fallback.** `thread_context.py`, the index, quote stripping, the budget, the labels and the left-out note. Parallel body fetches under `BODY_FETCH_IN_FLIGHT` and `BODY_STEP_BOUND_S`. `_build_reply_context` and the rule action fallback call it. | `EMAIL_CONTEXT_SELECT` | about 600 lines |
 | **EM-T17 PR-C** | 🟢 AGENT-SAFE | **The choice by `decide`.** `email.context_select` joins the registry. The question, the read, the cache, `bound_s` on `ask`, `shadow` and `on`. `context_select` joins `EMAIL_AI_FEATURES`. | `email.context_select` | about 450 lines |
-| **EM-T17 PR-D** | 🟢 AGENT-SAFE | **Ask for more.** The tool `read_earlier_messages` on the draft call, one round, the reserve budget, and the composer status. | `EMAIL_CONTEXT_SELECT` | about 400 lines |
-| **EM-T17 PR-E** | 🟢 AGENT-SAFE | **Insights across inboxes.** A `read_thread` route on the selector with `purpose`, newest first. The labelled cuts of `read_email` and `narrow_and_read`, and the quote strip of the email adapter. | `EMAIL_CONTEXT_SELECT`, `email.context_select` | about 450 lines |
+| **EM-T17 PR-D** | 🟢 AGENT-SAFE | **Ask for more.** The tool `read_earlier_messages` on the draft call, one round, the reserve budget, and the composer status. `acompletion_stream_turn` in the shared seam, and `tools` on the rule draft path. | `EMAIL_CONTEXT_SELECT` | about 400 lines |
+| **EM-T17 PR-E** | 🟢 AGENT-SAFE | **Insights across inboxes.** The route `GET /email/messages/{message_id}/thread-context` on the selector, with `purpose`, newest first, and `read_thread` on it. The labelled cuts of `read_email` and `narrow_and_read`. The adapter stops its clip, and the gateway read route returns the stripped new text and its length. | `EMAIL_CONTEXT_SELECT`, `email.context_select` | about 450 lines |
 
 **The order.** PR-A and PR-A2 first, in either order. They fix the stall with every flag off.
 Then PR-B, PR-C, PR-D and PR-E in that order. Each PR gets its own audit, its own review and
@@ -16070,28 +16146,35 @@ Each clause is a done-when clause with a fence (R7).
 
 | # | Done when | Fence |
 |---|---|---|
-| A1 | A model stream that sends no chunk ends at `STREAM_FIRST_CHUNK_S`, a stream that stops ends at `STREAM_IDLE_S`, and every stream ends by `STREAM_TOTAL_S`. Each one raises a typed timeout and logs the bound | `tests/unit/test_llm_stream_bounds.py`, with a fake stream that hangs |
-| A2 | The stream route sends `status` before it opens a session, and `: keepalive` after 10 s of quiet. A client disconnect cancels the task | `tests/unit/test_email_draft_no_stall.py` |
+| A1 | A model stream that sends no chunk ends at `STREAM_FIRST_CHUNK_S`, a stream that stops ends at `STREAM_IDLE_S`, and every stream ends by `STREAM_TOTAL_S`. Each one raises a typed timeout and logs the bound | `tests/unit/test_llm_stream_bounds.py` (NEW), with a fake stream that hangs |
+| A1b | On the interactive path, a stream timeout reaches the route as an `error` event with `reason` set to `model_slow`, `model_stalled` or `model_timeout`, and the client gets that reason. It never becomes the neutral template: today `drafting.py:962` and `:1118` swallow the error. The rule path still gets `DRAFT_NO_DRAFT_SENTINEL` | `tests/unit/test_email_draft_no_stall.py` (NEW) |
+| A2 | The stream route sends `status` before it opens a session, and `: keepalive` after 10 s of quiet. A client disconnect cancels the task | `test_email_draft_no_stall.py` |
+| A2b | Past `SIDE_STEP_BOUND_S`, a side step gives nothing and the draft goes on. The DB reads of the context step run in order in one session block, and no await with no session runs inside it | `test_email_draft_no_stall.py`, with a session spy and a fake that hangs |
+| A2c | Past `CONTEXT_STEP_BOUND_S`, the target is the stored `body_text` or the snippet, the thread is the output of `_fetch_thread_context` or empty, each other side block is empty, and the session block has exited before the model call | `test_email_draft_no_stall.py` |
+| A2d | Past `SERVER_TOTAL_S`, the route sends `error` with `server_timeout`. `SERVER_TOTAL_S` is less than `CLIENT_TOTAL_MS` | `test_email_draft_no_stall.py`, and a constant check in `useDraftSession.test.ts` |
+| A2e | Each draft logs one `email.draft_timing` line. It has the keys `context_ms`, `decide_ms`, `fetch_ms`, `first_chunk_ms`, `total_ms` and `outcome`. It holds no tenant text: the test plants a unique word in the subject, the body and the sender, and finds none in the line | `test_email_draft_no_stall.py` |
 | A3 | `hydrate_message_body` calls `get_message_body`, never `get_message`, and each fetch ends at `BODY_FETCH_TIMEOUT_S` | `test_email_draft_no_stall.py` |
-| A4 | No session is open during the model call of `_compose_assist_run` | `test_email_draft_no_stall.py`, with a session spy. R8: `test_email_draft_context.py` in org B only |
-| A5 | The composer aborts at `CLIENT_TOTAL_MS` and on Stop, keeps the text of the member, and shows the message | `useDraftSession.test.ts` |
-| B1 | With `EMAIL_CONTEXT_SELECT` off, each draft prompt is the same as before, byte for byte | A golden-prompt test in `tests/unit/test_email_context_select.py` |
+| A4 | No session is open during the model call of `_compose_assist_run`. R8: `_store_ai_draft`, in its new session, writes in org B, and org A reads none of it | `test_email_draft_no_stall.py`, with a session spy. R8: `tests/unit/test_email_draft_store_rls.py` (NEW, `pytestmark = _DB_GATE`) |
+| A5 | The composer aborts at `CLIENT_TOTAL_MS` and on Stop, keeps the text of the member, and shows the message. An `AbortError` never falls back to `composeAssist` | `useDraftSession.test.ts` (NEW) |
+| A6 | On a `model_*` or `server_timeout` error, the streamed preview stays in the composer | `useDraftSession.test.ts` |
+| A7 | The reply path sends the `context` `done` event | `test_email_draft_no_stall.py` |
+| B1 | With `EMAIL_CONTEXT_SELECT` off, each draft prompt is the same as before, byte for byte | A golden-prompt test in `tests/unit/test_email_context_select.py` (NEW) |
 | B2 | With the flag on, the target is whole, the index lists each message, and no earlier body is cut without a label. The newest messages win the budget | `test_email_context_select.py`, with the measured 61-message shape |
 | B3 | The left-out note names each message that is not loaded in full | `test_email_context_select.py` |
-| B4 | The largest context gives `was_truncated=False` from `fit_messages_to_context` on `tier-fast` and `tier-powerful` | `test_email_context_select.py` |
+| B4 | The largest context gives `was_truncated=False` from `fit_messages_to_context` for a window of 128,000 tokens. The test pins that floor window, not the live tier binding | `test_email_context_select.py` |
 | B5 | At most 4 body fetches run at one time, and a fetch past its bound gives the label | `test_email_context_select.py`, with a counting fake provider |
-| B6 | R8: the selector reads only the thread of the tenant and the mailbox | `tests/unit/test_email_context_select_rls.py`, with `pytestmark = _DB_GATE` |
+| B6 | R8: the selector reads only the thread of the tenant and the mailbox | `tests/unit/test_email_context_select_rls.py` (NEW), with `pytestmark = _DB_GATE` |
 | C1 | `off` makes no `decide` call. `shadow` writes the fallback prompt and logs `decide.shadow`. `on` writes the prompt from the choice | `test_email_context_select.py`, a call-count test for each mode |
 | C2 | A thread under `SMALL_THREAD_CHARS` makes no `decide` call. One thread makes one `ask`, with at most 3 requests | The same |
 | C3 | No answer, a timeout past `CONTEXT_DECIDE_BOUND_S`, or a cool-down gives the fallback, and the draft goes on | The same |
 | C4 | A refine round inside `SELECT_CACHE_TTL_S` makes no `decide` call. A new message makes the next draft ask | The same, and `test_tenant_redis.py` for the key |
-| C5 | 🔴 The state of `email.context_select` holds no body text. The test plants a unique word in each body and finds none in the state | `test_email_context_select.py::test_the_state_holds_no_body` |
+| C5 | 🔴 The state of `email.context_select` holds no text beyond the stored snippet. The fake sets each `snippet` apart from its `body_text`. The test plants a unique word in each `body_text` after character 200, in each `body_html` and in each file text. It finds none of them in the `decide` state, in a summary excerpt of the state, or in the Redis value. PR-E adds a `purpose` longer than `PURPOSE_CLIP`, and its tail is not in the state | `test_email_context_select.py::test_the_state_holds_no_body` |
 | C6 | `DEFAULT_MODES` is `off` for the new feature, and the feature set of the shadow test includes it | `test_email_decide_shadow.py` |
 | C7 | The `decide` call runs inside `decide_features.ask` or `shadow` only, so inside `llm_slot` | `test_email_llm_cap.py` |
 | C8 | The usage row names `email.context_select`, and `context_select` is in `EMAIL_AI_FEATURES` | `test_usage_attribution.py` |
 | D1 | A tool call loads the asked bodies into `ASK_MORE_CHARS` and calls the model once more with no tool. A second tool call gets the refusal | `test_email_context_select.py` |
-| E1 | `read_thread` keeps the newest messages and labels each cut | `tests/unit/test_email_agent_read_thread.py` |
-| E2 | `read_email` and `narrow_and_read` label each cut | `test_email_agent_read_thread.py`, `tests/unit/test_narrowing_read.py` |
+| E1 | `read_thread` calls the new route, keeps the newest messages and labels each cut. The route answers 404 for a message of another member | `tests/unit/test_email_agent_read_thread.py` (NEW) |
+| E2 | `read_email` and `narrow_and_read` label each cut. The email adapter does not clip | `test_email_agent_read_thread.py`, `tests/unit/test_narrowing_read.py` (NEW), `test_email_narrow_source.py` |
 
 **Mutations.** Each PR runs these, and each one must turn a test red. The file must come back
 to the same SHA-256 after each one.
@@ -16108,14 +16191,17 @@ The R8 classes must show 0 SKIPPED. A skip means that no database ran.
 
 ```
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_llm_stream_bounds.py tests/unit/test_email_draft_no_stall.py tests/unit/test_email_context_select.py tests/unit/test_email_context_select_rls.py tests/unit/test_email_agent_read_thread.py tests/unit/test_narrowing_read.py -q -rs
+uv run pytest tests/unit/test_llm_stream_bounds.py tests/unit/test_email_draft_no_stall.py tests/unit/test_email_draft_store_rls.py tests/unit/test_email_context_select.py tests/unit/test_email_context_select_rls.py tests/unit/test_email_agent_read_thread.py tests/unit/test_narrowing_read.py -q -rs
+uv run pytest tests/unit/test_email_narrow_source.py tests/unit/test_narrowing_one_seam.py -q -rs
 uv run pytest tests/unit/test_email_draft_context.py tests/unit/test_email_draft_fallback.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py tests/unit/test_email_llm_cap.py tests/unit/test_usage_attribution.py tests/unit/test_tenant_redis.py tests/unit/test_integrations_env_hardening.py -q -rs
 uv run ruff check <each changed file>
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
 ```
 
-The ruff run on the changed files must find no more than the base finds. After each merge,
-check the box: the deployed SHA, and one `email.draft_timing` line for a draft.
+The files marked NEW in §17.8 do not exist yet. Each PR creates the files of its clauses.
+The second `pytest` line is for PR-E. The ruff run on the changed files must find no more
+than the base finds. After each merge, check the box: the deployed SHA, and one
+`email.draft_timing` line for a draft.
 
 ### 17.10 Anchors, at `origin/main` `eb87b971e` (2026-10-12)
 
@@ -16135,7 +16221,7 @@ check the box: the deployed SHA, and one `email.draft_timing` line for a draft.
 | `routes/email/core.py:771` | `EMAIL_AI_FEATURES` |
 | `routes/email/quoting.py:35`, `:342` | `split_quoted_text`, `strip_for_reading` |
 | `apps/services/email_ingestion/email_ingestion/providers/outlook.py:740`, `:1035-1044` | The httpx bound, `get_message`, `get_message_body` |
-| `packages/acb_llm/acb_llm/context.py:158-232`, `:396-501` | `fit_messages_to_context`, the stream path |
+| `packages/acb_llm/acb_llm/context.py:158-232`, `:396-507` | `fit_messages_to_context`, the stream path |
 | `packages/acb_auth/acb_auth/console_resolve.py:2252` | `_ROUTER_TIMEOUT_SECONDS` |
 | `decide_features.py:105`, `:122`, `:134`, `:145`, `:497`, `:633`, `:716` | The registry, the bound, `_ask_all`, `ask`, `shadow` |
 | `apps/agents/agent-email-assistant/agents.py:538`, `:570`, `:778-832` | `read_email`, `read_thread` |
@@ -16163,8 +16249,9 @@ check the box: the deployed SHA, and one `email.draft_timing` line for a draft.
   member who sees a lost line can turn the flag off for the box.
 - **The tool round adds a model call.** A draft that asks for more pays for two calls. The
   `email.draft_timing` line counts the rounds.
-- **`shadow` costs double.** In `shadow`, each long thread pays one `decide` call and keeps
-  the fallback. Run `shadow` for one week at most.
+- **`shadow` costs one more call.** In `shadow`, each long thread pays one `decide` call
+  and keeps the fallback. Run `shadow` for one week at most. `bound_s` on `shadow` keeps the
+  added wait at `CONTEXT_DECIDE_BOUND_S` (4 s) or less.
 
 ### 17.12 Owner questions
 
