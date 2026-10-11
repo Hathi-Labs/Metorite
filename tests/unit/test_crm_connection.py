@@ -389,6 +389,20 @@ def test_a_member_without_the_admin_right_gets_403_on_each_write(
     assert client.get("/crm/connection").status_code == 200
 
 
+def test_the_connection_read_carries_the_mode_for_a_plain_member(
+    world: tuple[FakeRegistry, FakeZoho],
+) -> None:
+    """CRM-Z7: each member needs the mode, and ``/crm/settings`` is admin-only."""
+    registry, _zoho = world
+    member = _client(_user(ADMIN, ORG_A, "feature:crm"))
+    # Not chosen: no row, and the mode is null.
+    assert member.get("/crm/connection").json()["mode"] is None
+    registry.modes[ORG_A] = "native"
+    assert member.get("/crm/connection").json()["mode"] == "native"
+    registry.modes[ORG_A] = "mirror"
+    assert member.get("/crm/connection").json()["mode"] == "mirror"
+
+
 # ── Start ────────────────────────────────────────────────────────────────────
 
 
@@ -699,7 +713,7 @@ def test_the_response_model_has_no_secret_field() -> None:
     names = set(conn.ConnectionModel.model_fields)
     assert names == {
         "connected", "provider", "owning_app", "status", "location", "scopes",
-        "connected_by", "last_sync_at", "last_error", "updated_at",
+        "connected_by", "last_sync_at", "last_error", "updated_at", "mode",
     }
     assert set(conn.StartModel.model_fields) == {"url"}
 

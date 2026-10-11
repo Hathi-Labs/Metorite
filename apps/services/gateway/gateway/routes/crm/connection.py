@@ -144,16 +144,20 @@ class ConnectionModel(BaseModel):
     last_sync_at: datetime | None = None
     last_error: str | None = None
     updated_at: datetime | None = None
+    #: ``crm_settings.mode``: ``native``, ``mirror`` or ``None`` (not chosen).
+    #: Each member needs it, and ``GET /crm/settings`` is for admins only.
+    mode: str | None = None
 
 
 class StartModel(BaseModel):
     url: str
 
 
-def _wire(row: store.Connection | None) -> ConnectionModel:
+def _wire(row: store.Connection | None, mode: str | None = None) -> ConnectionModel:
     if row is None:
-        return ConnectionModel()
+        return ConnectionModel(mode=mode)
     return ConnectionModel(
+        mode=mode,
         connected=row.status == store.STATUS_CONNECTED,
         status=row.status,
         location=str(row.provider_meta.get(auth.META_LOCATION) or "") or None,
@@ -279,7 +283,8 @@ async def get_crm_connection(
     """The state of the org's Zoho connection. No token, no blob."""
     org = _organization(user)
     async with _tenant_session() as db:
-        return _wire(await store.get(db, org, PROVIDER, OWNING_APP))
+        row = await store.get(db, org, PROVIDER, OWNING_APP)
+        return _wire(row, await _read_mode(db, org))
 
 
 @router.post(
