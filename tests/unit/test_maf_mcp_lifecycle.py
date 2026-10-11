@@ -345,9 +345,8 @@ def test_a_second_cancel_in_the_finally_still_closes_the_mcp_tools(monkeypatch):
     _Server().install(monkeypatch)
     set_flag(monkeypatch, "*")
     RegistrySpy([row("probe-srv", org="org-native-maf-probe", url=URL)]).install(monkeypatch)
-    built: list[Any] = []
     with pytest.raises(asyncio.CancelledError):
-        _events, built = drive_native(
+        drive_native(
             "apis-config", "apps/agents/agent-apis-config", monkeypatch,
             ScriptedModel([text_turn("done")]), thread_id="thread-ws8c-second-cancel",
         )
