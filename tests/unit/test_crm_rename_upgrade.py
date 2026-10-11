@@ -551,10 +551,15 @@ def test_an_existing_crm_upgrades_with_its_rows(eng, shape):
 
 # -- (e2) Who owns a row with no tenant ------------------------------------
 #
-# The shared dev database holds many organizations and no `fracktalworks`.
-# A fill that stopped there broke `scripts/dev_db.sh` for every session. So the
-# order is: `fracktalworks`, then `default` (migration 130 seeds it), then the
-# only organization, and only then a stop that names the table.
+# The owner of a row with no tenant is `fracktalworks`, else the only
+# organization. With many organizations and no `fracktalworks` there is no
+# owner, and 241 must not stop: the shared dev database is that shape, and a
+# stop there breaks `scripts/dev_db.sh` for every session. So that table keeps
+# a NULLABLE tenant column, FORCE row level security hides the orphan rows,
+# and a NOTICE names the table. A table with no orphan rows is NOT NULL.
+#
+# ⚠️ No `default` lookup: the D43-A ratchet in test_org_provisioning.py
+# (`TestTheDefaultSlugRatchet`) refuses a new ladder line that names it.
 
 
 def _hide_slug(conn, slug: str) -> None:
@@ -564,12 +569,12 @@ def _hide_slug(conn, slug: str) -> None:
         "substr(md5(random()::text), 1, 6) WHERE slug = :s"), {"s": slug})
 
 
-def _old_shape_with_orphans(conn) -> str:
-    """The ladder's old shape, two extra organizations, and one company row
-    with no tenant. Returns the company id."""
+def _old_shape_with_orphan(conn, *, extra_orgs: int) -> str:
+    """The ladder's old shape, *extra_orgs* more organizations, and one company
+    row with no tenant. Returns the company id."""
     conn.execute(text("TRUNCATE " + ", ".join(CRM_TABLES) + " CASCADE"))
     _restore_old_shape(conn, production=False)
-    for _ in range(2):
+    for _ in range(extra_orgs):
         conn.execute(text(
             "INSERT INTO organization (id, slug, display_name) VALUES "
             "(gen_random_uuid(), :s, 'crm-t1 extra')"),
@@ -579,53 +584,118 @@ def _old_shape_with_orphans(conn) -> str:
     ).scalar_one())
 
 
+def _nullable(conn, table: str) -> bool:
+    return conn.execute(text(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_name = :t AND column_name = 'organization_id'"),
+        {"t": table}).scalar_one() == "YES"
+
+
+def _apply_with_notices(conn) -> list[str]:
+    notices: list[str] = []
+    raw = conn.connection.dbapi_connection
+
+    def _keep(diag) -> None:
+        notices.append(diag.message_primary or "")
+
+    raw.add_notice_handler(_keep)
+    try:
+        _run(conn, _no_txn(_text(_spine())))
+        _run(conn, _no_txn(_text(_tenancy())))
+    finally:
+        raw.remove_notice_handler(_keep)
+    return notices
+
+
 @_DB_GATE
-def test_with_no_fracktalworks_the_default_org_owns_the_orphans(eng):
+def test_with_no_clear_owner_the_table_stays_nullable_and_hidden(eng):
+    """(a) Many organizations, no `fracktalworks`, rows with no tenant."""
     conn = eng.connect()
     trans = conn.begin()
     try:
-        company = _old_shape_with_orphans(conn)
+        company = _old_shape_with_orphan(conn, extra_orgs=2)
         _hide_slug(conn, "fracktalworks")
-        default = conn.execute(text(
-            "SELECT id::text FROM organization WHERE slug = 'default'")).scalar()
-        if default is None:
-            default = str(conn.execute(text(
-                "INSERT INTO organization (id, slug, display_name) VALUES "
-                "(gen_random_uuid(), 'default', 'Default') RETURNING id"),
-            ).scalar_one())
         assert conn.execute(text("SELECT count(*) FROM organization")).scalar() > 1
 
-        _run(conn, _no_txn(_text(_spine())))
-        _run(conn, _no_txn(_text(_tenancy())))
+        notices = _apply_with_notices(conn)
 
+        assert _nullable(conn, NEW_TABLE), (
+            f"{NEW_TABLE} has orphan rows and no owner, so it must stay nullable"
+        )
+        assert any(NEW_TABLE in n and "no tenant" in n for n in notices), notices
+        # A table with no orphan row is NOT NULL all the same.
+        assert not _nullable(conn, "crm_contacts")
+        assert _forced(conn, NEW_TABLE) and len(_policies(conn, NEW_TABLE)) == 1
         assert conn.execute(text(
-            f"SELECT organization_id::text FROM {NEW_TABLE} "
-            "WHERE id = CAST(:c AS uuid)"), {"c": company}).scalar_one() == default
-        # The 144 seeds landed with no tenant, and `default` owns them too.
-        assert conn.execute(text(
-            "SELECT count(*) FROM crm_deal_statuses "
-            "WHERE organization_id IS DISTINCT FROM CAST(:d AS uuid)"),
-            {"d": default}).scalar() == 0
+            f"SELECT organization_id FROM {NEW_TABLE} WHERE id = CAST(:c AS uuid)"),
+            {"c": company}).scalar_one() is None
+
+        # A tenant session, as a role that cannot bypass RLS, sees none of it.
+        some_org = str(conn.execute(text(
+            "SELECT id FROM organization LIMIT 1")).scalar_one())
+        conn.execute(text("CREATE ROLE crm_t1_probe NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+        conn.execute(text(f"GRANT SELECT ON {NEW_TABLE} TO crm_t1_probe"))
+        conn.execute(text("SET LOCAL ROLE crm_t1_probe"))
+        conn.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                     {"o": some_org})
+        seen = conn.execute(text(
+            f"SELECT count(*) FROM {NEW_TABLE} WHERE id = CAST(:c AS uuid)"),
+            {"c": company}).scalar_one()
+        conn.execute(text("RESET ROLE"))
+        assert seen == 0, "a tenant session can see a row with no tenant"
     finally:
         trans.rollback()
         conn.close()
 
 
 @_DB_GATE
-def test_with_no_clear_owner_241_stops_and_names_the_table(eng):
-    import psycopg
-
+def test_with_fracktalworks_the_orphans_are_its_rows_and_not_null(eng):
+    """(b) `fracktalworks` exists, among many organizations."""
     conn = eng.connect()
     trans = conn.begin()
     try:
-        _old_shape_with_orphans(conn)
+        company = _old_shape_with_orphan(conn, extra_orgs=2)
+        conn.execute(text(
+            "INSERT INTO organization (id, slug, display_name) "
+            "VALUES (gen_random_uuid(), 'fracktalworks', 'Fracktal Works') "
+            "ON CONFLICT (slug) DO NOTHING"))
+        owner = str(conn.execute(text(
+            "SELECT id FROM organization WHERE slug = 'fracktalworks'")).scalar_one())
+
+        _apply_with_notices(conn)
+
+        for table in CRM_TABLES:
+            assert not _nullable(conn, table), f"{table}.organization_id is nullable"
+        assert str(conn.execute(text(
+            f"SELECT organization_id FROM {NEW_TABLE} WHERE id = CAST(:c AS uuid)"),
+            {"c": company}).scalar_one()) == owner
+    finally:
+        trans.rollback()
+        conn.close()
+
+
+@_DB_GATE
+def test_with_exactly_one_organization_it_owns_the_orphans(eng):
+    """(c) A fresh install: one organization, which migration 130 seeds."""
+    conn = eng.connect()
+    trans = conn.begin()
+    try:
+        company = _old_shape_with_orphan(conn, extra_orgs=0)
         _hide_slug(conn, "fracktalworks")
-        _hide_slug(conn, "default")
-        _run(conn, _no_txn(_text(_spine())))
-        with pytest.raises(psycopg.Error) as err:
-            _run(conn, _no_txn(_text(_tenancy())))
-        assert "crm_companies" in str(err.value)
-        assert "no organization_id" in str(err.value)
+        keep = str(conn.execute(text(
+            "SELECT id FROM organization ORDER BY created_at LIMIT 1")).scalar_one())
+        # Every foreign key to `organization` cascades, and the arm rolls back.
+        conn.execute(text("DELETE FROM organization WHERE id <> CAST(:k AS uuid)"),
+                     {"k": keep})
+        assert conn.execute(text("SELECT count(*) FROM organization")).scalar() == 1
+
+        _apply_with_notices(conn)
+
+        for table in CRM_TABLES:
+            assert not _nullable(conn, table), f"{table}.organization_id is nullable"
+        assert str(conn.execute(text(
+            f"SELECT organization_id FROM {NEW_TABLE} WHERE id = CAST(:c AS uuid)"),
+            {"c": company}).scalar_one()) == keep
     finally:
         trans.rollback()
         conn.close()

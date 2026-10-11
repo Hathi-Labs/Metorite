@@ -29,6 +29,14 @@
 -- `REFERENCES` comes before `DEFAULT`: the tenancy ratchet in
 -- tests/unit/test_tenancy_boundary.py matches the two with no comma between.
 --
+-- ⚠️ Foreign key NAMES differ between the two shapes, so a later migration
+-- must find these keys through pg_constraint and never by name. On an
+-- upgraded database the COMPANY key keeps `crm_<t>_organization_id_fkey` (a
+-- column rename keeps the constraint name), and the tenant key from this file
+-- is `crm_<t>_organization_id_fkey1`. On a fresh install the company key is
+-- `crm_<t>_company_id_fkey`, and the tenant key is
+-- `crm_<t>_organization_id_fkey`. Here <t> is contacts, deals or activities.
+--
 -- Depends on: 130_org_access_control.sql (organization),
 --             144_crm.sql (the CRM tables, and the company rename),
 --             145_crm_zoho_sync.sql (crm_zoho_tombstones, crm_sync_cursors),
