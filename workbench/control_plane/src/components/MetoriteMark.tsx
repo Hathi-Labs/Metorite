@@ -6,7 +6,9 @@
  * (`BarSignature` in `lib/shell/ShellBar.tsx`). A workspace with no logo
  * shows the comet in its lockup instead (`BrandMark`).
  *
- * ⚠️ **This file holds the ONE copy of the comet path in the app.** The master
+ * ⚠️ **This file is the ONE in-app component that draws the comet.** The only
+ * other copy of the path is the tab-icon asset `src/app/icon.svg` (#854),
+ * which the browser loads as a file, outside the page. The master
  * is `brand/metorite-logo.svg` (light) and `brand/metorite-logo-dark.svg`
  * (dark), and `brand/README.md` says a surface inlines it from there. The two
  * masters share one path and differ only in the gradient stops, so this file

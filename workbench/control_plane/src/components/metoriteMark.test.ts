@@ -42,6 +42,15 @@ describe("the comet is the brand master's, once", () => {
     expect(html()).toContain('viewBox="0 0 918 933"');
   });
 
+  /**
+   * The one other holder, with its reason. `app/icon.svg` is the browser's tab
+   * icon (#854). Next serves it as a file, outside the page, so it cannot
+   * import a component. `brand/README.md` documents it. A new holder fails.
+   */
+  const ALLOWED: Record<string, string> = {
+    "app/icon.svg": "the browser's tab icon, served outside the page; brand/README.md documents it",
+  };
+
   it("no other source file carries a copy of the path", () => {
     const head = pathOf(master("metorite-logo.svg")).slice(0, 40);
     const files: string[] = [];
@@ -54,7 +63,9 @@ describe("the comet is the brand master's, once", () => {
     };
     walk(SRC);
     const holders = files.filter((f) => readFileSync(f, "utf8").includes(head)).map((f) => relative(SRC, f).split(sep).join("/"));
-    expect(holders).toEqual(["components/MetoriteMark.tsx"]);
+    expect(holders.filter((h) => !(h in ALLOWED))).toEqual(["components/MetoriteMark.tsx"]);
+    // An allowed holder that stopped holding the path is a stale entry.
+    for (const h of Object.keys(ALLOWED)) expect(holders, h).toContain(h);
   });
 });
 
