@@ -321,8 +321,9 @@ class ShellPrefs(BaseModel):
     ``known`` holds the hrefs the member could see when they last saved. An
     app that is not in it is new to them, and the shell shows it starred
     (`starredHrefs` in `presets.ts`). A row with no ``known`` is a row that
-    NS-7 saved, and the shell reads every app that is not in ``pins`` as
-    known, so no app appears by surprise.
+    NS-7 saved, when ``pins`` were shortcuts on top of the full sidebar, so
+    the shell shows EVERY held app for it. The member's first save writes
+    ``known``, and the stars filter from then on.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

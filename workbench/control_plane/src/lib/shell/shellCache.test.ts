@@ -222,6 +222,37 @@ describe("overlapping saves: only the newest writes the cache", () => {
     expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(TWO);
   });
 
+  it("when both fail, the screen goes back to what the server last confirmed", async () => {
+    // The page's read is the server's word, as on a real load.
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(ENGINEER), { status: 200 }));
+    await readShellPrefs();
+    put(SHELL_PREFS_PATH, ENGINEER);
+    const { answer } = heldFetch();
+    const first = saveShellPrefs(ONE);
+    const second = saveShellPrefs(TWO);
+    await flush();
+    answer(0, 503, { detail: "unavailable" });
+    await expect(first).rejects.toThrow();
+    answer(1, 503, { detail: "unavailable" });
+    await expect(second).rejects.toThrow();
+    // Not ONE, the older save's guess, which the server never stored.
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(ENGINEER);
+  });
+
+  it("an older success that lands after the newer failure is shown", async () => {
+    put(SHELL_PREFS_PATH, ENGINEER);
+    const { answer } = heldFetch();
+    const first = saveShellPrefs(ONE);
+    const second = saveShellPrefs(TWO);
+    await flush();
+    answer(1, 503, { detail: "unavailable" });
+    await expect(second).rejects.toThrow();
+    answer(0, 200, ONE);
+    await first;
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(ONE);
+    expect(confirmedLayout()).toEqual(ONE);
+  });
+
   it("a newer answer that lands first is not replaced by the older one", async () => {
     put(SHELL_PREFS_PATH, ENGINEER);
     const { answer } = heldFetch();

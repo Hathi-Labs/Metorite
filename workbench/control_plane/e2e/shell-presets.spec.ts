@@ -486,7 +486,7 @@ test.describe("a reload draws the last known layout on its first frame", () => {
     await stub(page, ENGINEER, { holdGet: true });
     await page.goto("/settings/appearance");
     await expect(sidebar(page).getByTestId("nav-skeleton")).toBeVisible();
-    // SHELL_WAIT_MS, the proxy's own timeout. Then the sidebar is complete.
+    // SHELL_WAIT_MS (2 s). Then the sidebar is complete.
     await expect(sidebar(page).getByRole("link", { name: "People", exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(sidebar(page).getByTestId("nav-skeleton")).toHaveCount(0);
   });

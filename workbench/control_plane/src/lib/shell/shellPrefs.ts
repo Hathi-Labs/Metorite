@@ -66,6 +66,8 @@ let askedHere = false;
 let saveSeq = 0;
 /** The number of the newest save that the server confirmed. */
 let confirmedSeq = 0;
+/** The number of the newest save when it settled, success or failure. */
+let settledSeq = 0;
 
 onClear(() => {
   confirmed = undefined;
@@ -150,19 +152,31 @@ export async function saveShellPrefs(
       confirmed = saved;
     }
     if (newest()) {
+      settledSeq = seq;
       unsaved = undefined;
+      put(SHELL_PREFS_PATH, saved);
+    } else if (settledSeq === saveSeq && confirmedSeq === seq) {
+      // The newer save already failed and reverted. This older one is now
+      // the server's latest word, so the screen shows it.
       put(SHELL_PREFS_PATH, saved);
     }
     return saved;
   } catch (err) {
+    const back = confirmed ?? before;
     if (!newest()) {
       // A newer save owns the cache now. It carries this change too.
     } else if (opts.keep) {
+      settledSeq = seq;
       unsaved = shown;
       put(SHELL_PREFS_PATH, shown);
-    } else if (before) {
-      put(SHELL_PREFS_PATH, before);
+    } else if (back) {
+      // Back to what the SERVER last confirmed, not to `before`: when two
+      // saves overlap, `before` is the older save's guess, which the server
+      // may never have stored.
+      settledSeq = seq;
+      put(SHELL_PREFS_PATH, back);
     } else {
+      settledSeq = seq;
       // Nothing was known before: drop the guess, and read the truth again.
       invalidate(SHELL_PREFS_PATH);
     }
@@ -170,14 +184,19 @@ export async function saveShellPrefs(
   }
 }
 
-/** How long the sidebar waits for the layout before it draws every app. */
-export const SHELL_WAIT_MS = 6_000;
+/**
+ * How long the sidebar waits for the layout before it draws every app. Short
+ * on purpose: Home and Add apps wait with it, and a late narrowing costs less
+ * than a blank rail (review, 2026-10-11). The skeleton shows only with no
+ * browser copy, so a page waits at most once.
+ */
+export const SHELL_WAIT_MS = 2_000;
 
 /**
  * True while the sidebar should draw its skeleton: nothing is known yet (no
  * read answered, and no browser copy), and the wait has not run out. A
  * failed read ends it at once (`loading` goes false), and so does the wait
- * of `SHELL_WAIT_MS`, the proxy's own timeout. Then every held app shows.
+ * of `SHELL_WAIT_MS`. Then every held app shows.
  * Without it, every app painted and then the sidebar narrowed to the stars.
  */
 export function useShellPending(loading: boolean): boolean {
