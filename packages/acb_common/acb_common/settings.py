@@ -1121,8 +1121,9 @@ class Settings(BaseSettings):
     #
     # An outside agent reaches Metorite over MCP with an opaque token (spec
     # project-docs/specs/external_agent_access.md §5.5). `agent_access_enabled`
-    # is the kill switch, default OFF. EA-1 adds no HTTP surface, so nothing
-    # reads it yet. EA-2 makes every new route answer 404 while it is false.
+    # is the kill switch, default OFF. While it is false, every route of
+    # EA-2a answers 404: the edge's metadata, `token` and `revoke`, and the
+    # gateway's `/agent-access/*`. `acb_auth.agent_oauth.enabled` reads it.
     #
     # The lifetimes, in seconds. `acb_auth.agent_tokens` reads the first four.
     # An access token lives one hour, a refresh token 30 days and an
@@ -1145,6 +1146,23 @@ class Settings(BaseSettings):
     agent_code_ttl_s: int = 60
     agent_connection_idle_ttl_s: int = 90 * 24 * 3600
     agent_client_unused_ttl_s: int = 24 * 3600
+    # EA-2a, the authorization server (spec §5.5). The issuer, the canonical
+    # resource and the consent page are fixed addresses. They are Settings
+    # so a test can assert them. `acb_auth.agent_oauth` is their one reader.
+    # The edge serves the metadata, `token` and `revoke` under the issuer.
+    # EA-4 builds the consent page at `agent_authorize_url`.
+    agent_issuer: str = "https://mcp.metorite.com"
+    agent_resource: str = "https://mcp.metorite.com/mcp"
+    agent_authorize_url: str = "https://app.metorite.com/connect/authorize"
+    # A Client ID Metadata Document: the gateway fetches it through
+    # `gateway.outbound_guard`, refuses a body over `agent_cimd_max_bytes`
+    # and a fetch slower than `agent_cimd_timeout_s`, and caches it in
+    # `agent_client` for `agent_cimd_cache_ttl_s`. The edge refuses a token
+    # or revoke body over `agent_oauth_max_body_bytes` with a 413.
+    agent_cimd_max_bytes: int = 5 * 1024
+    agent_cimd_timeout_s: float = 5.0
+    agent_cimd_cache_ttl_s: int = 3600
+    agent_oauth_max_body_bytes: int = 8 * 1024
 
     # ── Token accessors ────────────────────────────────────────────────────
 

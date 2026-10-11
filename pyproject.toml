@@ -28,6 +28,9 @@ dependencies = [
     # below: the root test suite imports `customer_console`, so it must be installed
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError.
     "customer-console",
+    # WS-55 EA-2a — the public edge for outside agents. Same reason: the root
+    # test suite imports `agent_edge` (tests/unit/test_agent_oauth_server.py).
+    "agent-edge",
     # Skill packages imported by the root test suite / evals — must be installed
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError
     # (they resolve locally only because a dev venv already has them editable).
@@ -99,6 +102,7 @@ ingestion     = { workspace = true }
 reconciler    = { workspace = true }
 action-broker  = { workspace = true }
 customer-console   = { workspace = true }
+agent-edge         = { workspace = true }
 email-ingestion = { workspace = true }
 whatsapp-ingestion = { workspace = true }
 skill-my-tasks  = { workspace = true }

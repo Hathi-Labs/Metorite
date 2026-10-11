@@ -20,6 +20,7 @@ members = [
     "agent-apis-config",
     "agent-app-builder",
     "agent-crm",
+    "agent-edge",
     "agent-email-assistant",
     "agent-orchestrator",
     "agent-projects",
@@ -313,6 +314,25 @@ requires-dist = [
     { name = "acb-skills", editable = "packages/acb_skills" },
     { name = "agent-framework-core", specifier = ">=1.19.0" },
     { name = "agent-framework-openai", specifier = ">=1.14.4" },
+]
+
+[[package]]
+name = "agent-edge"
+version = "0.0.1"
+source = { editable = "apps/services/agent_edge" }
+dependencies = [
+    { name = "acb-auth" },
+    { name = "acb-common" },
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "acb-auth", editable = "packages/acb_auth" },
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "fastapi", specifier = ">=0.141" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54" },
 ]
 
 [[package]]
@@ -2551,6 +2571,7 @@ dependencies = [
     { name = "acb-memory" },
     { name = "acb-skills" },
     { name = "action-broker" },
+    { name = "agent-edge" },
     { name = "bcrypt" },
     { name = "customer-console" },
     { name = "gateway" },
@@ -2590,6 +2611,7 @@ requires-dist = [
     { name = "acb-memory", editable = "packages/acb_memory" },
     { name = "acb-skills", editable = "packages/acb_skills" },
     { name = "action-broker", editable = "apps/services/action_broker" },
+    { name = "agent-edge", editable = "apps/services/agent_edge" },
     { name = "bcrypt", specifier = ">=5.0.0" },
     { name = "customer-console", editable = "apps/services/customer_console" },
     { name = "gateway", editable = "apps/services/gateway" },

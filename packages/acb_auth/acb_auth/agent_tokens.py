@@ -7,8 +7,11 @@ EA-1 · decision D97 · migration ``infra/postgres/241_agent_access_tokens.sql``
 the tokens an outside agent holds. An access token, a refresh token and an
 authorization code are all random opaque strings. The database keeps only the
 SHA-256 of each one, in ``agent_token``. The connection a token belongs to is a
-row of ``agent_connection``. EA-1 adds no HTTP surface. The authorization
-server (EA-2) and the MCP edge (EA-3) call these functions.
+row of ``agent_connection``. The authorization server (EA-2a, the edge's
+``token`` and ``revoke`` and the gateway's ``/agent-access``) and the MCP edge
+(EA-3) call these functions. EA-2a added three: :func:`revoke_replayed_code`
+(a spent code seen again revokes its connection) and the ``agent_client``
+cache, :func:`get_client` and :func:`cache_cimd_client`.
 
 **Why it is in ``acb_auth``.** A token is an identity artifact, and this
 package owns authentication. It follows ``acb_auth.email_otp``, the other
@@ -362,6 +365,40 @@ UPDATE agent_token
    AND revoked_at IS NULL
 """
 
+#: A code that was ALREADY spent, by its hash (EA-2a). A replay of it revokes
+#: the connection the code belongs to. Read unbound: ``agent_token`` is exempt.
+_PEEK_SPENT_CODE_SQL = """
+SELECT connection_id, organization_id
+  FROM agent_token
+ WHERE token_hash = CAST(:hash AS TEXT)
+   AND kind = 'code'
+   AND used_at IS NOT NULL
+"""
+
+#: One cached client, in any state. ``agent_client`` is global and exempt.
+_CLIENT_SQL = """
+SELECT client_id, registered_via, metadata, expires_at,
+       (expires_at IS NULL OR expires_at > now()) AS live
+  FROM agent_client
+ WHERE client_id = CAST(:client_id AS TEXT)
+"""
+
+#: Cache a Client ID Metadata Document. A row that a dynamic registration
+#: wrote is never replaced: the WHERE of the update refuses it, and the caller
+#: then gets no row back.
+_CACHE_CIMD_SQL = """
+INSERT INTO agent_client (client_id, registered_via, metadata, fetched_at,
+                          expires_at)
+VALUES (CAST(:client_id AS TEXT), 'cimd', CAST(:metadata AS JSONB), now(),
+        now() + make_interval(secs => CAST(:ttl_s AS DOUBLE PRECISION)))
+ON CONFLICT (client_id) DO UPDATE
+   SET metadata   = EXCLUDED.metadata,
+       fetched_at = EXCLUDED.fetched_at,
+       expires_at = EXCLUDED.expires_at
+ WHERE agent_client.registered_via = 'cimd'
+RETURNING client_id
+"""
+
 
 async def _session() -> Any:
     """A session from the ONE shared engine, deliberately UNBOUND.
@@ -573,6 +610,123 @@ async def consume_code(raw_code: str) -> CodeGrant | None:
         resource=row.resource,
         scope=row.scope,
     )
+
+
+async def revoke_replayed_code(raw_code: str) -> str | None:
+    """Revoke the connection of a code that was ALREADY spent (EA-2a).
+
+    OAuth 2.1 §4.1.2: a server that sees an authorization code twice SHOULD
+    revoke the tokens issued from it. Each approval makes one connection and
+    mints one code for it, so "the tokens of this code" are the tokens of its
+    connection. The token endpoint calls this function after
+    :func:`consume_code` returned ``None``.
+
+    Returns the id of the connection when the code was a spent one, else
+    ``None``. An unknown code, an expired code and a revoked unspent code
+    change nothing. Only a holder of the raw code can do this, and a code
+    carries 256 random bits, so a guesser cannot kill another member's
+    connection.
+
+    The organization comes from the code row, never from the caller.
+    """
+    from sqlalchemy import text
+
+    if not (raw_code or "").strip():
+        return None
+
+    async def _work(session: Any) -> str | None:
+        peek = (
+            await session.execute(
+                text(_PEEK_SPENT_CODE_SQL), {"hash": hash_token(raw_code)}
+            )
+        ).one_or_none()
+        if peek is None:
+            return None
+        organization_id = str(peek.organization_id)
+        connection_id = str(peek.connection_id)
+        await _bind(session, organization_id)
+        await _revoke_in(session, organization_id, connection_id)
+        return connection_id
+
+    connection_id = await _run(_work)
+    if connection_id is not None:
+        # Ids only. A code or its hash never goes into a log line.
+        _log.warning(
+            "agent_tokens.connection_revoked",
+            connection_id=connection_id,
+            reason="code_replayed",
+        )
+    return connection_id
+
+
+# ── Client metadata (``agent_client``, EA-2a) ───────────────────────────────
+
+
+@dataclass(frozen=True)
+class ClientRecord:
+    """One row of ``agent_client``. ``live`` is false past ``expires_at``."""
+
+    client_id: str
+    registered_via: str
+    metadata: dict[str, Any]
+    live: bool
+
+
+async def get_client(client_id: str) -> ClientRecord | None:
+    """The cached client *client_id*, in any state, or ``None``.
+
+    ``agent_client`` holds no tenant data, so the read runs unbound.
+    """
+    from sqlalchemy import text
+
+    if not (client_id or "").strip():
+        return None
+
+    async def _work(session: Any) -> Any:
+        return (
+            await session.execute(text(_CLIENT_SQL), {"client_id": client_id})
+        ).one_or_none()
+
+    row = await _run(_work)
+    if row is None:
+        return None
+    metadata = row.metadata if isinstance(row.metadata, dict) else {}
+    return ClientRecord(
+        client_id=row.client_id,
+        registered_via=row.registered_via,
+        metadata=dict(metadata),
+        live=bool(row.live),
+    )
+
+
+async def cache_cimd_client(client_id: str, metadata: dict[str, Any]) -> bool:
+    """Cache a verified Client ID Metadata Document for ``agent_cimd_cache_ttl_s``.
+
+    The caller has already fetched the document and checked it. Returns False
+    when a dynamic registration holds the same id, which this call never
+    replaces.
+    """
+    import json
+
+    from acb_common.pg_text import storable
+    from sqlalchemy import text
+
+    if not (client_id or "").strip():
+        raise ValueError("a client needs an id")
+
+    async def _work(session: Any) -> Any:
+        return (
+            await session.execute(
+                text(_CACHE_CIMD_SQL),
+                {
+                    "client_id": client_id,
+                    "metadata": json.dumps(storable(metadata)),
+                    "ttl_s": float(get_settings().agent_cimd_cache_ttl_s),
+                },
+            )
+        ).one_or_none()
+
+    return await _run(_work) is not None
 
 
 # ── Access and refresh tokens ───────────────────────────────────────────────

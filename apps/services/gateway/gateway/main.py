@@ -1714,6 +1714,19 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-55 EA-2a — the authenticated half of the outside-agent authorization
+    # server (external_agent_access.md §15). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; the
+    # consent page reaches it through a BFF. The public half (metadata, token,
+    # revoke) is the separate edge unit `apps/services/agent_edge`. Ships dark
+    # — `agent_access_enabled` off ⇒ every route 404.
+    from gateway.routes.agent_access import router as _agent_access_router
+
+    app.include_router(_agent_access_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):
