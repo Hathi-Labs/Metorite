@@ -35,6 +35,9 @@ touches the live Zoho tenant not at all. Its ``export/`` segment comes FIRST for
 the shadowing reason above: ``/crm/leads/export.csv`` would sit under
 ``/crm/leads/{record_id}``.
 
+``fields.py`` is WS-53 CRM-Q4 — ``GET /crm/fields/{entity}``, the field
+definitions that the sync writes. Read only.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
@@ -64,6 +67,7 @@ from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
+from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401
