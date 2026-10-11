@@ -804,3 +804,18 @@ test("every category's apps can be hidden: Personal Center, AI Studio and Admin 
   await page.keyboard.press("Escape");
   await expect.poll(() => shape(page)).toEqual([["across", ["Projects", "People"]]]);
 });
+
+test("Undo puts back the layout from before the hide, exactly", async ({ page }) => {
+  // `known` names an app MEMBER does not hold. A second toggle would write
+  // `known` as the held apps only, and so lose it. A restore keeps it.
+  const BEFORE = { ...EMPTY, preset: "engineer", answered: "answered", pins: ENGINEER_STARS, known: [...KNOWN, "/crm"] };
+  const store = await stub(page, BEFORE);
+  await page.goto("/settings/appearance");
+  await expect.poll(() => shape(page)).toContainEqual(["across", ["Projects"]]);
+  await sidebar(page).getByRole("link", { name: "Projects", exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
+  await expect.poll(() => store.puts.length).toBe(1);
+  await page.getByLabel("Notifications").getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => store.puts.length).toBe(2);
+  expect(store.puts[1]).toEqual(BEFORE);
+});
