@@ -159,8 +159,13 @@ def is_cimd_client_id(client_id: str | None) -> bool:
     The rules of the CIMD draft: an ``https`` URL with a host and a path, with
     no user name, no password, no fragment and no dot segment. This server
     also refuses a query and a backslash, so one URL has one spelling.
+
+    ⚠️ ASCII only (fix round 1). A Unicode host such as a Cyrillic look-alike
+    would show on the consent screen as the verified origin of a trusted
+    name. An international domain name is fine in its punycode form
+    (``xn--...``), which shows as itself.
     """
-    if not client_id or len(client_id) > MAX_URL_CHARS:
+    if not client_id or len(client_id) > MAX_URL_CHARS or not client_id.isascii():
         return False
     if "\\" in client_id or any(ord(c) < 0x21 or ord(c) == 0x7F for c in client_id):
         return False
@@ -186,12 +191,27 @@ def client_origin(client_id: str) -> str:
 
     The server fetched the document from this origin, so this origin is what
     the consent screen may show as verified (spec §7). A name inside the
-    document is only a claim.
+    document is only a claim. The host is always shown in ASCII (punycode),
+    so a look-alike letter of another script cannot pass for a trusted name.
     """
     parts = urlsplit(client_id)
-    host = parts.hostname or ""
+    host = ascii_host(parts.hostname or "")
     port = f":{parts.port}" if parts.port else ""
     return f"{parts.scheme}://{host}{port}"
+
+
+def ascii_host(host: str) -> str:
+    """*host* in ASCII. A Unicode host becomes its punycode form (IDNA).
+
+    The validators refuse a non-ASCII URL before this runs. This is the second
+    line: a host that cannot be encoded shows as ``"(invalid host)"``.
+    """
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return "(invalid host)"
 
 
 # ── Redirect URIs ───────────────────────────────────────────────────────────
@@ -214,9 +234,10 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
     ``https`` always. ``http`` only to a loopback host (RFC 8252 §7.3). A
     private-use scheme of a native app (RFC 8252 §7.1), except the schemes in
     :data:`_FORBIDDEN_SCHEMES`. Never a fragment, a user name or a password.
-    The exact match against the client's own list is a separate check.
+    The exact match against the client's own list is a separate check. ASCII
+    only, for the reason :func:`is_cimd_client_id` gives.
     """
-    if not uri or len(uri) > MAX_URL_CHARS:
+    if not uri or len(uri) > MAX_URL_CHARS or not uri.isascii():
         return False
     if any(ord(c) < 0x21 or ord(c) == 0x7F for c in uri) or "\\" in uri:
         return False
@@ -241,7 +262,7 @@ def is_allowed_redirect_uri(uri: str | None) -> bool:
 def redirect_host(uri: str) -> str:
     """The host a member sees on the consent screen, or the scheme for an app."""
     parts = urlsplit(uri)
-    return parts.hostname or f"{parts.scheme}:"
+    return ascii_host(parts.hostname) if parts.hostname else f"{parts.scheme}:"
 
 
 def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) -> str:
@@ -267,6 +288,7 @@ __all__ = [
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
+    "ascii_host",
     "authorization_redirect",
     "authorize_url",
     "client_origin",

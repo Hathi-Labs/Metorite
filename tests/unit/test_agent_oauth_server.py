@@ -114,6 +114,11 @@ MEMBER = "dev@agentoauth.test"
 #: of this machine, so the guard's local check passes it.
 _PUBLIC_IP = "93.184.216.34"
 
+#: Look-alike letters of another script, built from code points so the
+#: source holds no ambiguous character (A2).
+_CYR_A = chr(0x0430)
+_CYR_IE = chr(0x0435)
+
 
 @pytest.fixture(autouse=True)
 def _flag_on(monkeypatch):
@@ -297,7 +302,17 @@ class TestTheFlag:
          ("GET", "/.well-known/oauth-protected-resource"),
          ("GET", "/.well-known/oauth-protected-resource/mcp"),
          ("POST", "/oauth/token"),
-         ("POST", "/oauth/revoke")],
+         ("POST", "/oauth/revoke"),
+         # Fix round 1: a wrong method, OPTIONS and HEAD must not leak a 405
+         # with an Allow header, and an unknown path is 404 too.
+         ("GET", "/oauth/token"),
+         ("PUT", "/oauth/revoke"),
+         ("DELETE", "/oauth/token"),
+         ("OPTIONS", "/oauth/token"),
+         ("HEAD", "/oauth/token"),
+         ("POST", "/.well-known/oauth-authorization-server"),
+         ("GET", "/mcp"),
+         ("GET", "/oauth/token?access_token=x")],
     )
     async def test_every_edge_route_is_404(self, monkeypatch, method, path):
         monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
@@ -312,10 +327,27 @@ class TestTheFlag:
             r = await edge.request(
                 method, path, data={"grant_type": "authorization_code",
                                     "client_id": CLIENT, "token": "x"}
-                if method == "POST" else None)
+                if method in ("POST", "PUT") else None)
         assert r.status_code == 404
-        assert r.json() == {"detail": "Not Found"}
+        assert "allow" not in r.headers, "a 405 Allow header leaked the routes"
+        if method != "HEAD":
+            assert r.json() == {"detail": "Not Found"}
         assert not touched, "a route did work with the flag OFF"
+
+    async def test_the_gateway_router_answers_405_for_a_wrong_method(self, monkeypatch):
+        """Recorded, not a fence of EA-2a: the gateway router keeps its 405,
+        because it sits behind default-deny and the gateway serves many apps."""
+        monkeypatch.setattr(get_settings(), "agent_access_enabled", False)
+
+        async def _go() -> httpx.Response:
+            app = _gateway_app(str(uuid.uuid4()))
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://gateway"
+            ) as client:
+                return await client.get("/agent-access/authorize/check")
+
+        r = await asyncio.create_task(_go())
+        assert r.status_code == 405
 
     @pytest.mark.parametrize("path", ["/agent-access/authorize/check",
                                       "/agent-access/authorize/approve"])
@@ -410,6 +442,50 @@ class TestTheEdgeRefusesMalformedInput:
         assert r.status_code == 401
         assert r.json()["error"] == "invalid_client"
 
+    @pytest.mark.parametrize("path", ["/oauth/token", "/oauth/revoke"])
+    @pytest.mark.parametrize("field", ["client_id", "code", "token", "x\x00y"])
+    @pytest.mark.parametrize("char", ["\x00", "\x01", "\x1f", "\x7f", "\n"])
+    async def test_a_control_character_is_invalid_request_never_a_500(
+        self, path, field, char
+    ):
+        """Fix round 1: Postgres refuses a NUL in text. One byte was a 500."""
+        form = {"grant_type": "authorization_code", "client_id": CLIENT,
+                "code": "c", "token": "t"}
+        form[field] = f"a{char}b"
+        async with _edge_client() as edge:
+            r = await edge.post(path, data=form)
+        assert r.status_code == 400, r.text
+        assert r.json()["error"] == "invalid_request"
+
+
+class TestTheGatewayRefusesControlCharacters:
+    """A6: a control character in any field is a 422, before the store."""
+
+    @pytest.mark.parametrize("over", [
+        {"client_id": "https://client.example/m\x00.json"},
+        {"redirect_uri": "http://127.0.0.1:33418/cb\x00"},
+        {"state": "s\x01t"},
+        {"scope": "projects:read\x7f"},
+        {"scopes": ["projects:read\x00"]},
+    ], ids=["client_id", "redirect_uri", "state", "scope", "scopes"])
+    async def test_a_control_character_is_422(self, monkeypatch, over):
+        touched = []
+
+        async def _spy(*a, **k):
+            touched.append(a)
+
+        for name in ("get_client", "create_connection", "mint_code", "cache_cimd_client"):
+            monkeypatch.setattr(agent_tokens, name, _spy)
+        for path in ("/agent-access/authorize/check", "/agent-access/authorize/approve"):
+            body = _authorize(**over)
+            if path.endswith("check"):
+                body.pop("scopes", None)
+                if "scopes" in over:
+                    body["state"] = "s\x00"
+            r = await _gw(_gateway_app(str(uuid.uuid4())), path, body)
+            assert r.status_code == 422, (path, r.text)
+        assert not touched, "the store was reached"
+
 
 class TestTheSharedRules:
     def test_pkce_is_s256(self):
@@ -458,10 +534,120 @@ class TestTheSharedRules:
         with pytest.raises(ValueError):
             agent_oauth.parse_scope('projects:read "x"')
 
+    # Fix round 1, A2: a Cyrillic letter (U+0430) looks like the Latin "a".
+    _HOMOGRAPH = f"https://cl{_CYR_A}ude.ai/oauth/metadata.json"
+
+    def test_a_homograph_client_id_is_refused(self):
+        assert not agent_oauth.is_cimd_client_id(self._HOMOGRAPH)
+
+    @pytest.mark.parametrize("uri", [
+        f"https://cl{_CYR_A}ude.ai/api/mcp/auth_callback",
+        f"http://127.0.0.1:9/c{_CYR_A}llback",
+        f"cursor://anysphere.cursor-retri{_CYR_IE}val/oauth/callback",
+    ])
+    def test_a_non_ascii_redirect_is_refused(self, uri):
+        assert not agent_oauth.is_allowed_redirect_uri(uri)
+
+    def test_a_punycode_client_shows_as_punycode(self):
+        client = "https://xn--claude-2of.ai/oauth/metadata.json"
+        assert agent_oauth.is_cimd_client_id(client)
+        assert agent_oauth.client_origin(client) == "https://xn--claude-2of.ai"
+        assert agent_oauth.redirect_host("https://xn--claude-2of.ai/cb") == "xn--claude-2of.ai"
+        assert agent_oauth.is_allowed_redirect_uri("https://xn--claude-2of.ai/cb")
+
+    def test_the_shown_host_is_always_ascii(self):
+        """The second line, should a Unicode URL ever reach the display."""
+        origin = agent_oauth.client_origin(self._HOMOGRAPH)
+        host = agent_oauth.redirect_host(f"https://cl{_CYR_A}ude.ai/cb")
+        assert origin.isascii() and "xn--" in origin
+        assert host.isascii() and host.startswith("xn--")
+
     def test_the_redirect_keeps_the_client_query(self):
         url = agent_oauth.authorization_redirect(
             "https://c.example/cb?a=1", {"code": "C", "state": None, "iss": ISSUER})
         assert _query(url) == {"a": "1", "code": "C", "iss": ISSUER}
+
+
+class _DocServer:
+    """A local HTTP server for the REAL ``outbound_guard.send`` (fix round 1, A1).
+
+    It compresses when the request accepts gzip, as most web servers do, or
+    always, when ``encoding`` says so. It records the Accept-Encoding it saw.
+    """
+
+    def __init__(self, document: dict, encoding: str | None = None) -> None:
+        import gzip
+        import threading
+        import zlib
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        body = json.dumps(document).encode()
+        seen: dict[str, str | None] = {}
+        self.seen = seen
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                accepted = self.headers.get("Accept-Encoding")
+                seen["accept_encoding"] = accepted
+                payload, sent_encoding = body, None
+                if encoding == "deflate":
+                    payload, sent_encoding = zlib.compress(body), "deflate"
+                elif encoding == "gzip" or "gzip" in (accepted or ""):
+                    payload, sent_encoding = gzip.compress(body), "gzip"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                if sent_encoding:
+                    self.send_header("Content-Encoding", sent_encoding)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", 0), _Handler)
+        self.port = self._server.server_address[1]
+        self.url = f"http://c.example:{self.port}/client.json"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+class TestTheFetchReadsPlainBytes:
+    """A1: the guard reads RAW bytes, so the fetch must ask for ``identity``.
+
+    The REAL ``outbound_guard.send`` runs against a local server. Only
+    ``check_url`` is replaced, to pin the URL to 127.0.0.1, because the real
+    check refuses a local address (as it must).
+    """
+
+    @pytest.fixture
+    def pin_local(self, monkeypatch):
+        async def _pinned(url: str) -> outbound_guard.Target:
+            return outbound_guard.Target(url=httpx.URL(url), host="c.example", ip="127.0.0.1")
+
+        monkeypatch.setattr(outbound_guard, "check_url", _pinned)
+
+    async def test_a_server_that_gzips_when_asked_sends_plain_json(self, pin_local):
+        server = _DocServer(_document())
+        try:
+            doc = await agent_access._fetch_document(server.url)
+        finally:
+            server.close()
+        assert server.seen["accept_encoding"] == "identity"
+        assert doc["client_id"] == CLIENT
+
+    @pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+    async def test_a_compressed_answer_is_refused_cleanly(self, pin_local, encoding):
+        server = _DocServer(_document(), encoding=encoding)
+        try:
+            with pytest.raises(agent_access.ClientRefused) as caught:
+                await agent_access._fetch_document(server.url)
+        finally:
+            server.close()
+        assert caught.value.reason == "compressed"
 
 
 class TestTheCimdFetchGoesThroughTheGuard:
@@ -970,9 +1156,11 @@ class TestTheTokenEndpoint:
         {"redirect_uri": REDIRECT + "/"},
         {"client_id": OTHER_CLIENT},
     ], ids=["wrong-verifier", "wrong-resource", "wrong-redirect", "wrong-client"])
-    async def test_a_mismatch_is_invalid_grant_and_ends_the_connection(
+    async def test_a_mismatch_is_invalid_grant_and_spends_nothing(
         self, promoted, web, over
     ):
+        """Fix round 1, A5: the checks are part of the spend. A thief with the
+        code but not the verifier cannot burn it, and the real client wins."""
         async with tenant_engine_scope(promoted.app_dsn):
             # Make OTHER_CLIENT a known client, so the refusal is about the
             # grant and not about an unknown client.
@@ -980,12 +1168,30 @@ class TestTheTokenEndpoint:
                       _authorize(client_id=OTHER_CLIENT))
             code = await _code(promoted)
             bad = await _token(_exchange(code, **over))
-            # The code is spent: the right request now fails too.
+            again = await _token(_exchange(code, **over))
             good = await _token(_exchange(code))
         assert bad.status_code == 400
         assert bad.json() == _INVALID_GRANT
-        assert good.json() == _INVALID_GRANT
-        assert _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+        assert again.json() == _INVALID_GRANT
+        assert good.status_code == 200, "a wrong presentation spent the code"
+        assert not _connection(promoted, _connection_id_of_code(promoted, code)).revoked
+
+    @pytest.mark.parametrize("over", [
+        {"code_verifier": "w1-" + "b" * 50},
+        {"redirect_uri": REDIRECT + "/"},
+        {"client_id": OTHER_CLIENT},
+    ], ids=["wrong-verifier", "wrong-redirect", "wrong-client"])
+    async def test_a_replay_without_the_proof_revokes_nothing(self, promoted, web, over):
+        async with tenant_engine_scope(promoted.app_dsn):
+            await _gw(_gateway_app(promoted.org_a), "/agent-access/authorize/check",
+                      _authorize(client_id=OTHER_CLIENT))
+            code = await _code(promoted)
+            first = await _token(_exchange(code))
+            assert first.status_code == 200, first.text
+            replay = await _token(_exchange(code, **over))
+            access_after = await agent_tokens.lookup_token(first.json()["access_token"])
+        assert replay.json() == _INVALID_GRANT
+        assert access_after is not None, "a replay without the verifier ended the connection"
 
     async def test_a_code_used_twice_is_refused_and_revokes_its_tokens(self, promoted, web):
         async with tenant_engine_scope(promoted.app_dsn):

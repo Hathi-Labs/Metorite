@@ -10,22 +10,27 @@ Routes, all under the issuer ``https://mcp.metorite.com``:
   (``/.well-known/oauth-protected-resource/mcp``), which RFC 9728 §3.1 names.
 * ``POST /oauth/token`` and ``POST /oauth/revoke`` — :mod:`agent_edge.token_endpoint`.
 
-⚠️ **The flag.** While ``agent_access_enabled`` is false, every route answers
-404, the same answer as a route that does not exist, and does nothing else.
-An app-level dependency enforces it, so a route that EA-3 adds is covered too.
+⚠️ **The flag.** While ``agent_access_enabled`` is false, EVERY request
+answers 404 and does nothing else: every path, every method, ``OPTIONS`` and
+``HEAD`` included. :class:`EdgeGate` is an ASGI middleware that runs BEFORE
+routing (fix round 1). A route dependency ran after routing, so a wrong method
+answered 405 with an ``Allow`` header, and that told a stranger the feature
+exists.
 
 ⚠️ **No token in a URL.** A request that carries ``access_token`` in its query
-is refused on every route (MCP authorization, "token in a query string").
+is refused on every path (MCP authorization, "token in a query string").
+:class:`EdgeGate` checks that too.
 
 This unit is not deployed in EA-2a. EA-10 writes its unit file and its Caddy
 block. Run it locally with ``uvicorn agent_edge.app:app``.
 """
 from __future__ import annotations
 
-from urllib.parse import urlsplit
+from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from acb_auth import agent_oauth
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from agent_edge import metadata, token_endpoint
@@ -34,13 +39,36 @@ from agent_edge import metadata, token_endpoint
 _METADATA_HEADERS = {"Cache-Control": "public, max-age=300"}
 
 
-async def _require_enabled(request: Request) -> None:
-    """404 while the flag is off, and refuse a token in the URL."""
-    if not agent_oauth.enabled():
-        raise HTTPException(status_code=404, detail="Not Found")
-    if "access_token" in request.query_params:
-        raise token_endpoint.OAuthError(
-            "invalid_request", "a token in the URL is refused")
+class EdgeGate:
+    """An ASGI middleware that answers before routing.
+
+    Flag off: 404 ``{"detail": "Not Found"}`` for any HTTP request, and a
+    close for any websocket. Flag on: 400 ``invalid_request`` for a query that
+    names ``access_token``. Every other request goes on to the app.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        kind = scope.get("type")
+        if kind not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        if not agent_oauth.enabled():
+            if kind == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            await JSONResponse({"detail": "Not Found"}, status_code=404)(
+                scope, receive, send)
+            return
+        query = scope.get("query_string", b"").decode("latin-1")
+        if any(k == "access_token" for k, _ in parse_qsl(query, keep_blank_values=True)):
+            refusal = token_endpoint.OAuthError(
+                "invalid_request", "a token in the URL is refused")
+            await token_endpoint.error_response(refusal)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 def _resource_metadata_paths() -> list[str]:
@@ -56,8 +84,8 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
-        dependencies=[Depends(_require_enabled)],
     )
+    app.add_middleware(EdgeGate)
 
     @app.exception_handler(token_endpoint.OAuthError)
     async def _oauth_error(_request: Request, exc: token_endpoint.OAuthError) -> JSONResponse:

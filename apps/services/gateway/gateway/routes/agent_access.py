@@ -45,8 +45,14 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
    one SSRF seam, with a size cap and a time cap of its own. Only this half
    fetches. The edge never imports the guard. The document must name its own
    URL as ``client_id``, and the redirect URI must match one of its
-   ``redirect_uris`` exactly, as a string.
+   ``redirect_uris`` exactly, as a string. The fetch asks for
+   ``Accept-Encoding: identity`` and refuses a compressed body, because the
+   guard reads raw bytes and never decompresses.
 8. **No code, token or hash goes into a log line.**
+9. **ASCII and no control characters** (fix round 1). A client id or a
+   redirect URI with a non-ASCII character is refused, so a look-alike host
+   cannot show as a verified origin. A C0 control character or DEL in any
+   field is a 422.
 
 What is not here: dynamic client registration (EA-2b), pre-registered
 clients, the organization switch and the client allow list (EA-4), the audit
@@ -67,7 +73,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from gateway import outbound_guard
 from gateway.db import current_tenant
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _log = get_logger("gateway.agent_access")
 
@@ -119,6 +125,19 @@ class AuthorizeRequest(BaseModel):
     resource: str | None = Field(default=None, max_length=agent_oauth.MAX_URL_CHARS)
     scope: str | None = Field(default=None, max_length=agent_oauth.MAX_SCOPE_CHARS)
     state: str | None = Field(default=None, max_length=_MAX_STATE)
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _no_control_characters(cls, value: Any) -> Any:
+        """A C0 control character or DEL in any text is a 422 (fix round 1).
+
+        Postgres refuses a NUL in ``text``, so one byte was a 500 before.
+        """
+        texts = value if isinstance(value, list) else [value]
+        for text in texts:
+            if isinstance(text, str) and any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+                raise ValueError("a field holds a control character")
+        return value
 
 
 class ApproveRequest(AuthorizeRequest):
@@ -191,6 +210,19 @@ class ClientRefused(Exception):
         self.reason = reason
 
 
+#: ⚠️ ``identity`` (fix round 1). The guard reads RAW bytes off the wire
+#: (``aiter_raw``), so it never decompresses. httpx asks for gzip by default,
+#: and a server that obliged sent bytes that ``json.loads`` cannot read.
+_FETCH_HEADERS = {"Accept": "application/json", "Accept-Encoding": "identity"}
+
+#: The first bytes of a gzip body and of a zlib (``deflate``) body. A server
+#: that compresses although we asked for ``identity`` is refused by name.
+#: ``outbound_guard.Answer`` carries no headers, and WS-55 may not edit the
+#: guard, so the check reads the body instead of ``Content-Encoding``. A
+#: Brotli body has no magic, and it fails as "not json".
+_COMPRESSED_MAGIC = (b"\x1f\x8b", b"\x78\x01", b"\x78\x5e", b"\x78\x9c", b"\x78\xda")
+
+
 def _cap() -> int:
     """The body cap. Always under the guard's own cap, so a cut body is refused."""
     configured = int(get_settings().agent_cimd_max_bytes)
@@ -202,8 +234,7 @@ async def _fetch_document(client_id: str) -> dict[str, Any]:
     timeout_s = float(get_settings().agent_cimd_timeout_s)
     try:
         async with asyncio.timeout(timeout_s):
-            answer = await outbound_guard.request(
-                "GET", client_id, headers={"Accept": "application/json"})
+            answer = await outbound_guard.request("GET", client_id, headers=_FETCH_HEADERS)
     except TimeoutError:
         raise ClientRefused("timeout") from None
     except outbound_guard.OutboundRefused as exc:
@@ -214,6 +245,8 @@ async def _fetch_document(client_id: str) -> dict[str, Any]:
         raise ClientRefused(f"status {answer.status_code}")
     if len(answer.body) > _cap():
         raise ClientRefused("too large")
+    if answer.body.startswith(_COMPRESSED_MAGIC):
+        raise ClientRefused("compressed")
     try:
         document = json.loads(answer.body)
     except (UnicodeDecodeError, ValueError):

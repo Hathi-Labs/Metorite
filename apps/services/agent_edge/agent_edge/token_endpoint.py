@@ -16,19 +16,24 @@ EA-2a. The store is ``acb_auth.agent_tokens``. The shared rules are
    reason goes to the log only. ``invalid_client`` is for a missing or unknown
    client, ``invalid_request`` for malformed input, ``unsupported_grant_type``
    for any other grant.
-3. **The code is spent before the checks.** :func:`consume_code` is one
-   ``UPDATE ... WHERE used_at IS NULL``, so two callers cannot both win. A
-   check that fails after the spend revokes the connection: it holds no token
-   yet, and no other code can reach it.
+3. **The checks are part of the spend** (fix round 1). :func:`consume_code`
+   is one ``UPDATE ... WHERE used_at IS NULL`` that also matches the client,
+   the redirect URI, the S256 of the verifier and the resource. So two
+   callers cannot both win, and a presentation that fails any check spends
+   nothing. A thief who intercepted a code cannot burn it without the
+   verifier, and the real client can still use it.
 4. **A replayed code revokes its connection** (OAuth 2.1 §4.1.2). When
    :func:`consume_code` finds nothing, :func:`revoke_replayed_code` revokes the
-   connection of a code that was already spent. A guesser cannot do this,
-   because a code carries 256 random bits.
-5. **``issue_tokens`` runs once for each spent code**, and only after every
-   check passed.
+   connection of a code that was already spent, when this presentation
+   proves the same four values. It acts only inside
+   ``agent_code_replay_window_s`` after the code expired.
+5. **``issue_tokens`` runs once for each spent code.**
 6. **No token, code or hash goes into a log line.** Ids and reasons only.
 7. **No rate limit here.** EA-7 owns the limits of ``token`` and ``revoke``.
    The body size is capped (``agent_oauth_max_body_bytes``, a 413).
+8. **No control character in a form field** (fix round 1). A NUL, any other
+   C0 character or DEL in a key or a value is ``invalid_request``. Postgres
+   refuses a NUL in ``text``, so without this check one byte was a 500.
 
 Fence: ``tests/unit/test_agent_oauth_server.py``.
 """
@@ -141,10 +146,17 @@ async def read_form(request: Request) -> dict[str, str]:
         raise _invalid_request("the body is not a valid form") from None
     form: dict[str, str] = {}
     for key, value in pairs:
+        if has_control_character(key) or has_control_character(value):
+            raise _invalid_request("a field holds a control character")
         if key in form:
             raise _invalid_request(f"{key[:40]} is sent more than once")
         form[key] = value
     return form
+
+
+def has_control_character(value: str) -> bool:
+    """True when *value* holds a C0 control character or DEL (rule 8)."""
+    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
 
 
 def _field(form: dict[str, str], name: str, *, limit: int) -> str:
@@ -205,39 +217,31 @@ def _refuse(reason: str, client_id: str, connection_id: str | None = None) -> OA
     return _invalid_grant()
 
 
-def _mismatch(grant: agent_tokens.CodeGrant, form: dict[str, str], client_id: str) -> str | None:
-    """Why a spent code does not match its token request, or None."""
-    if grant.client_id != client_id:
-        return "wrong_client"
-    if grant.redirect_uri != form["redirect_uri"]:
-        return "wrong_redirect_uri"
-    if grant.resource != form["resource"] or grant.resource != agent_oauth.resource():
-        return "wrong_resource"
-    if not agent_oauth.pkce_matches(form["code_verifier"], grant.code_challenge):
-        return "pkce_failed"
-    return None
-
-
 async def _exchange_code(form: dict[str, str], client_id: str) -> IssuedTokens:
-    """Spend a code, check it, then issue the first tokens (rules 3, 4 and 5)."""
+    """Spend a code that this request proves, then issue the first tokens.
+
+    Rules 3, 4 and 5. The proof is the client, the redirect URI, the S256 of
+    the verifier and the resource. The store matches all four inside the
+    spend, so a request that fails any of them spends nothing.
+    """
     code = _field(form, "code", limit=_MAX_TOKEN_CHARS)
-    _field(form, "redirect_uri", limit=agent_oauth.MAX_URL_CHARS)
-    _field(form, "resource", limit=agent_oauth.MAX_URL_CHARS)
+    redirect_uri = _field(form, "redirect_uri", limit=agent_oauth.MAX_URL_CHARS)
+    resource = _field(form, "resource", limit=agent_oauth.MAX_URL_CHARS)
     verifier = _field(form, "code_verifier", limit=128)
     if not agent_oauth.is_valid_verifier(verifier):
         raise _invalid_request("code_verifier is malformed")
+    proof = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code_challenge": agent_oauth.s256(verifier),
+        "resource": resource,
+    }
 
-    grant = await agent_tokens.consume_code(code)
+    grant = await agent_tokens.consume_code(code, **proof)
     if grant is None:
-        replayed = await agent_tokens.revoke_replayed_code(code)
+        replayed = await agent_tokens.revoke_replayed_code(code, **proof)
         raise _refuse(
             "code_replayed" if replayed else "code_invalid", client_id, replayed)
-
-    reason = _mismatch(grant, form, client_id)
-    if reason is not None:
-        # The code is spent, so the connection can never hold a token. End it.
-        await agent_tokens.revoke_connection(grant.organization_id, grant.connection_id)
-        raise _refuse(reason, client_id, grant.connection_id)
 
     scopes = agent_oauth.parse_scope(grant.scope)
     issued = await agent_tokens.issue_tokens(

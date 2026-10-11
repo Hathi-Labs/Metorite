@@ -234,11 +234,33 @@ async def _connect(org: str, *, member: str = "dev@agenttok.test"):
     finally:
         release_tenant(token)
     assert current_tenant() is None
-    grant = await consume_code(code)
+    grant = await _spend(code)
     assert grant is not None
     issued = await issue_tokens(grant, with_refresh=True)
     assert isinstance(issued, IssuedTokens), issued
     return connection_id, code, issued
+
+
+_CHALLENGE = "c" * 43
+
+
+async def _spend(code: str, **over):
+    """Spend *code* with the proof every code of this file was minted with.
+
+    Since EA-2a fix round 1 the spend matches the client, the redirect URI,
+    the PKCE challenge and the resource inside its WHERE clause.
+    """
+    proof = {"client_id": _CLIENT, "redirect_uri": _REDIRECT,
+             "code_challenge": _CHALLENGE, "resource": _RESOURCE}
+    proof.update(over)
+    return await consume_code(code, **proof)
+
+
+async def _replay(code: str, **over):
+    proof = {"client_id": _CLIENT, "redirect_uri": _REDIRECT,
+             "code_challenge": _CHALLENGE, "resource": _RESOURCE}
+    proof.update(over)
+    return await agent_tokens.revoke_replayed_code(code, **proof)
 
 
 async def _fresh_code(org: str, connection_id: str) -> str:
@@ -433,7 +455,7 @@ class TestACode:
     async def test_the_second_spend_of_a_code_returns_nothing(self, promoted):
         async with tenant_engine_scope(promoted.app_dsn):
             _cid, code, _issued = await _connect(promoted.org_a)
-            again = await consume_code(code)
+            again = await _spend(code)
         assert again is None, "a spent code was accepted a second time"
 
     async def test_an_expired_code_returns_nothing(self, promoted):
@@ -444,7 +466,7 @@ class TestACode:
                 promoted,
                 "UPDATE agent_token SET expires_at = now() - interval '1 second' "
                 " WHERE token_hash = :h", h=hash_token(code))
-            assert await consume_code(code) is None
+            assert await _spend(code) is None
 
     async def test_a_revoked_code_returns_nothing(self, promoted):
         async with tenant_engine_scope(promoted.app_dsn):
@@ -454,7 +476,7 @@ class TestACode:
                 promoted,
                 "UPDATE agent_token SET revoked_at = now() WHERE token_hash = :h",
                 h=hash_token(code))
-            assert await consume_code(code) is None
+            assert await _spend(code) is None
 
     async def test_a_code_of_a_revoked_connection_issues_nothing(self, promoted):
         """The code survives a racing revoke, so the issue must check."""
@@ -465,9 +487,82 @@ class TestACode:
                 promoted,
                 "UPDATE agent_connection SET revoked_at = now() WHERE id = :i",
                 i=cid)
-            grant = await consume_code(code)
+            grant = await _spend(code)
             assert grant is not None
             assert _reason(await issue_tokens(grant, with_refresh=True)) == CONNECTION_DEAD
+
+
+class TestTheSpendProvesTheCode:
+    """EA-2a fix round 1: a presentation that does not prove the code spends
+    nothing. One test for each clause, so deleting one turns one test red."""
+
+    @pytest.mark.parametrize("over", [
+        {"client_id": "https://evil.example/m.json"},
+        {"redirect_uri": _REDIRECT + "/"},
+        {"code_challenge": "d" * 43},
+        {"resource": "https://other.example/mcp"},
+    ], ids=["client", "redirect", "challenge", "resource"])
+    async def test_a_wrong_value_spends_nothing(self, promoted, over):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, _issued = await _connect(promoted.org_a)
+            code = await _fresh_code(promoted.org_a, cid)
+            assert await _spend(code, **over) is None
+            assert await _replay(code, **over) is None
+            grant = await _spend(code)
+        assert grant is not None, "a wrong presentation spent the code"
+        assert not _connection_revoked(promoted, cid)
+
+
+class TestAReplay:
+    """A spent code that comes again revokes its connection, when the
+    presentation proves the code and the code expired a short time ago."""
+
+    async def test_a_proven_replay_revokes(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, code, issued = await _connect(promoted.org_a)
+            assert await _replay(code) == cid
+            assert await lookup_token(issued.access_token) is None
+        assert _connection_revoked(promoted, cid)
+
+    @pytest.mark.parametrize("over", [
+        {"client_id": "https://evil.example/m.json"},
+        {"redirect_uri": _REDIRECT + "/"},
+        {"code_challenge": "d" * 43},
+        {"resource": "https://other.example/mcp"},
+    ], ids=["client", "redirect", "challenge", "resource"])
+    async def test_a_replay_without_the_proof_changes_nothing(self, promoted, over):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, code, issued = await _connect(promoted.org_a)
+            assert await _replay(code, **over) is None
+            assert await lookup_token(issued.access_token) is not None
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_an_unspent_code_is_not_a_replay(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, _issued = await _connect(promoted.org_a)
+            code = await _fresh_code(promoted.org_a, cid)
+            assert await _replay(code) is None
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_a_code_past_the_window_cannot_end_a_live_connection(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, code, issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET expires_at = now() - interval '601 seconds' "
+                " WHERE token_hash = :h", h=hash_token(code))
+            assert await _replay(code) is None
+            assert await lookup_token(issued.access_token) is not None
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_a_code_inside_the_window_still_counts(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, code, _issued = await _connect(promoted.org_a)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET expires_at = now() - interval '599 seconds' "
+                " WHERE token_hash = :h", h=hash_token(code))
+            assert await _replay(code) == cid
 
 
 class TestRefreshRotation:
@@ -763,7 +858,7 @@ class TestTheTenantBindIsLocal:
                 release_tenant(token)
             code = await _fresh_code(promoted.org_a, cid)
 
-            grant = await consume_code(code)
+            grant = await _spend(code)
             assert grant is not None
             after = {"consume_code": await _residue()}
             issued = await issue_tokens(grant, with_refresh=True)
@@ -899,6 +994,7 @@ class TestTheLifetimesAndTheFlag:
         assert fields["agent_code_ttl_s"].default == 60
         assert fields["agent_connection_idle_ttl_s"].default == 90 * 24 * 3600
         assert fields["agent_client_unused_ttl_s"].default == 24 * 3600
+        assert fields["agent_code_replay_window_s"].default == 600
 
 
 class TestTheMigrationRefusesAForeignTable:

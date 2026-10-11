@@ -136,8 +136,9 @@ class TokenLookup:
 class CodeGrant:
     """A spent authorization code, with what the client asked for.
 
-    EA-2 checks the PKCE verifier, the client, the redirect and the resource
-    against these fields before it calls :func:`issue_tokens`.
+    :func:`consume_code` already matched the PKCE challenge, the client, the
+    redirect and the resource in its WHERE clause, so these fields equal what
+    the token request sent.
     """
 
     connection_id: str
@@ -247,6 +248,13 @@ RETURNING id
 """
 
 #: Spend a code. Single use, expiry and revocation are all in the WHERE.
+#:
+#: ⚠️ So are the client, the redirect URI, the PKCE challenge and the
+#: resource (EA-2a fix round 1). A presentation that names the wrong client
+#: or redirect, or that cannot prove the verifier, matches no row: it spends
+#: nothing and revokes nothing. Without these four clauses a thief who
+#: intercepted a code could burn it without the verifier. The caller passes
+#: ``code_challenge`` as the S256 of the verifier it received.
 _SPEND_CODE_SQL = """
 UPDATE agent_token
    SET used_at = now()
@@ -255,6 +263,10 @@ UPDATE agent_token
    AND used_at IS NULL
    AND revoked_at IS NULL
    AND expires_at > now()
+   AND client_id = CAST(:client_id AS TEXT)
+   AND redirect_uri = CAST(:redirect_uri AS TEXT)
+   AND code_challenge = CAST(:challenge AS TEXT)
+   AND resource = CAST(:resource AS TEXT)
 RETURNING connection_id, organization_id, client_id, code_challenge,
           redirect_uri, resource, scope
 """
@@ -367,12 +379,23 @@ UPDATE agent_token
 
 #: A code that was ALREADY spent, by its hash (EA-2a). A replay of it revokes
 #: the connection the code belongs to. Read unbound: ``agent_token`` is exempt.
+#:
+#: The replay must prove what the spend proved: the same client, redirect
+#: URI, PKCE challenge and resource. And it acts only inside a short window
+#: after the code expired (``agent_code_replay_window_s``), so a code that
+#: leaked long ago cannot end a live connection (fix round 1).
 _PEEK_SPENT_CODE_SQL = """
 SELECT connection_id, organization_id
   FROM agent_token
  WHERE token_hash = CAST(:hash AS TEXT)
    AND kind = 'code'
    AND used_at IS NOT NULL
+   AND client_id = CAST(:client_id AS TEXT)
+   AND redirect_uri = CAST(:redirect_uri AS TEXT)
+   AND code_challenge = CAST(:challenge AS TEXT)
+   AND resource = CAST(:resource AS TEXT)
+   AND expires_at > now() - make_interval(
+           secs => CAST(:window_s AS DOUBLE PRECISION))
 """
 
 #: One cached client, in any state. ``agent_client`` is global and exempt.
@@ -574,24 +597,56 @@ async def mint_code(
     return raw
 
 
-async def consume_code(raw_code: str) -> CodeGrant | None:
-    """Spend a code and return what it carries, or ``None``.
+def _code_params(
+    raw_code: str,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    resource: str,
+) -> dict[str, Any] | None:
+    """The bound parameters of a code act, or None when one is empty."""
+    values = (raw_code, client_id, redirect_uri, code_challenge, resource)
+    if not all((v or "").strip() for v in values):
+        return None
+    return {
+        "hash": hash_token(raw_code),
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "challenge": code_challenge,
+        "resource": resource,
+    }
 
-    ``None`` covers an unknown, a spent, an expired and a revoked code alike.
-    A code works once: a second call with the same code returns ``None``.
-    Runs UNBOUND, because the token endpoint knows no tenant yet.
+
+async def consume_code(
+    raw_code: str,
+    *,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    resource: str,
+) -> CodeGrant | None:
+    """Spend a code that this presentation proves, and return what it carries.
+
+    *code_challenge* is the S256 of the verifier that the token request sent.
+    The code is spent only when the client, the redirect URI, that challenge
+    and the resource all equal the stored values (:data:`_SPEND_CODE_SQL`).
+
+    ``None`` covers an unknown, a spent, an expired and a revoked code, and a
+    presentation that does not match. A mismatch spends nothing, so the real
+    client can still use the code. A code works once: a second call with the
+    same code returns ``None``. Runs UNBOUND, because the token endpoint knows
+    no tenant yet.
     """
     from sqlalchemy import text
 
-    if not (raw_code or "").strip():
+    params = _code_params(raw_code, client_id, redirect_uri, code_challenge, resource)
+    if params is None:
         return None
     session = await _session()
     try:
         await session.begin()
         row = (
-            await session.execute(
-                text(_SPEND_CODE_SQL), {"hash": hash_token(raw_code)}
-            )
+            await session.execute(text(_SPEND_CODE_SQL), params)
         ).one_or_none()
         await session.commit()
     except Exception:
@@ -612,7 +667,14 @@ async def consume_code(raw_code: str) -> CodeGrant | None:
     )
 
 
-async def revoke_replayed_code(raw_code: str) -> str | None:
+async def revoke_replayed_code(
+    raw_code: str,
+    *,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    resource: str,
+) -> str | None:
     """Revoke the connection of a code that was ALREADY spent (EA-2a).
 
     OAuth 2.1 §4.1.2: a server that sees an authorization code twice SHOULD
@@ -621,24 +683,29 @@ async def revoke_replayed_code(raw_code: str) -> str | None:
     connection. The token endpoint calls this function after
     :func:`consume_code` returned ``None``.
 
-    Returns the id of the connection when the code was a spent one, else
-    ``None``. An unknown code, an expired code and a revoked unspent code
-    change nothing. Only a holder of the raw code can do this, and a code
-    carries 256 random bits, so a guesser cannot kill another member's
-    connection.
+    The replay must prove the same four values that the spend proved: the
+    client, the redirect URI, the S256 of the verifier and the resource. So
+    only a holder of the code AND its verifier can end the connection. It
+    acts only while the code is less than ``agent_code_replay_window_s``
+    seconds past its expiry (default 600), so a code that leaked long ago
+    cannot end a live connection.
+
+    Returns the id of the connection it revoked, else ``None``. Nothing
+    changes for an unknown code, an unspent code, a presentation that does
+    not match, or a spent code past the window.
 
     The organization comes from the code row, never from the caller.
     """
     from sqlalchemy import text
 
-    if not (raw_code or "").strip():
+    params = _code_params(raw_code, client_id, redirect_uri, code_challenge, resource)
+    if params is None:
         return None
+    params["window_s"] = float(get_settings().agent_code_replay_window_s)
 
     async def _work(session: Any) -> str | None:
         peek = (
-            await session.execute(
-                text(_PEEK_SPENT_CODE_SQL), {"hash": hash_token(raw_code)}
-            )
+            await session.execute(text(_PEEK_SPENT_CODE_SQL), params)
         ).one_or_none()
         if peek is None:
             return None

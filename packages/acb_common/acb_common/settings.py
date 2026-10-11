@@ -1163,6 +1163,10 @@ class Settings(BaseSettings):
     agent_cimd_timeout_s: float = 5.0
     agent_cimd_cache_ttl_s: int = 3600
     agent_oauth_max_body_bytes: int = 8 * 1024
+    # A spent code that comes again revokes its connection, but only within
+    # this many seconds after the code expired. A code that leaked long ago
+    # then cannot end a live connection. Reader: `acb_auth.agent_tokens`.
+    agent_code_replay_window_s: int = 600
 
     # ── Token accessors ────────────────────────────────────────────────────
 
