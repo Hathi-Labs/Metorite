@@ -125,6 +125,53 @@ _INNER_JOIN = re.compile(
 #: ``org.name AS organization_name`` — one projected column.
 _ALIASED_COL = re.compile(r"\b(\w+)\.(\w+)\s+AS\s+(\w+)", re.I)
 
+# ── WS-53 CRM-T5: the settings upsert, the native seed, the caller's groups ─
+
+#: ``ON CONFLICT (organization_id, name) DO NOTHING`` and
+#: ``ON CONFLICT (organization_id) DO UPDATE SET mode = EXCLUDED.mode, ...``.
+#: Read so that a second seed adds no row and a second settings write updates
+#: the one row. A fake that ignored the arm would answer "17 more stages" for
+#: a write that Postgres turns into nothing, and the idempotency test would
+#: then prove the opposite of what it says.
+_ON_CONFLICT = re.compile(
+    r"\bON\s+CONFLICT\s*\(([^)]*)\)\s*DO\s+(NOTHING|UPDATE\s+SET\s+(.*?))"
+    r"(?:\s+RETURNING\b.*)?$",
+    re.I | re.S,
+)
+#: ``VALUES (`` — where the value expressions start. :func:`_value_exprs`
+#: reads them in column order, with brackets balanced. They are read only to
+#: see ``now()``. Each bound value still comes from the parameter that has
+#: the column's name.
+_VALUES_RE = re.compile(r"\bVALUES\s*\(", re.I)
+
+
+def _value_exprs(statement: str) -> list[str]:
+    """The expressions of the first ``VALUES ( ... )`` group, split at depth 0."""
+    start = _VALUES_RE.search(statement)
+    if start is None:
+        return []
+    parts: list[str] = []
+    depth, current = 0, ""
+    for char in statement[start.end():]:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                parts.append(current.strip())
+                return parts
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(current.strip())
+            current = ""
+            continue
+        current += char
+    return []
+#: The caller's groups, ``routes/projects/core._MY_GROUPS_SQL``: org_group
+#: joined through org_group_member to app_user. Answered from three seeded
+#: tables rather than from a list of subjects, so the join keys and the
+#: ``status = 'active'`` filter are the fake's too.
+_MY_GROUPS_RE = re.compile(r"FROM\s+org_group\s+g\s+JOIN\s+org_group_member", re.I)
+
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
 #
 # Four readers, added together because the email join is unreadable without
@@ -537,6 +584,8 @@ class FakeCrmDB:
                 SimpleNamespace(**r) for r in self.rows("app_user")
                 if str(r.get("email") or "").lower() == wanted
             ])
+        if _MY_GROUPS_RE.search(statement):
+            return self._my_groups(args)
         head = statement.split(None, 1)[0].upper()
         table = _table(statement)
         if head == "INSERT":
@@ -560,6 +609,28 @@ class FakeCrmDB:
             **_DEFAULTS.get(table, {}),
             **{c: args.get(c) for c in columns},
         }
+        expressions = _value_exprs(statement)
+        if len(expressions) == len(columns):
+            for column, expression in zip(columns, expressions, strict=True):
+                if expression.lower() == "now()":
+                    row[column] = _now()
+        conflict = _ON_CONFLICT.search(statement)
+        if conflict:
+            keys = [k.strip() for k in conflict.group(1).split(",")]
+            existing = [
+                r for r in self.tables.get(table, [])
+                if all(str(r.get(k)) == str(row.get(k)) for k in keys)
+            ]
+            if existing and conflict.group(2).upper() == "NOTHING":
+                return _Result([])
+            if existing:
+                target = existing[0]
+                for part in conflict.group(3).split(","):
+                    column, _, value = part.partition("=")
+                    value = value.strip()
+                    if value.lower().startswith("excluded."):
+                        target[column.strip()] = row.get(value.split(".", 1)[1])
+                return _Result([SimpleNamespace(**target)])
         if table in _TIMESTAMPED:
             row.setdefault("created_at", _now())
             row.setdefault("updated_at", _now())
@@ -756,6 +827,27 @@ class FakeCrmDB:
                 merged[name] = (source or {}).get(column)
             out.append(merged)
         return out
+
+    def _my_groups(self, args: dict) -> _Result:
+        """``_MY_GROUPS_SQL``: the ``group:<slug>`` subjects of ``:email``.
+
+        The SQL compares the parameter with ``lower(au.email)``. The fake does
+        not fold the parameter, so a caller that forgets to fold it matches
+        nothing here too.
+        """
+        wanted = args.get("email")
+        users = {
+            str(u.get("id")) for u in self.rows("app_user")
+            if str(u.get("email") or "").lower() == wanted
+            and u.get("status") == "active"
+        }
+        groups = {str(g.get("id")): g for g in self.rows("org_group")}
+        subjects = sorted({
+            f"group:{groups[str(m.get('group_id'))].get('slug')}"
+            for m in self.rows("org_group_member")
+            if str(m.get("user_id")) in users and str(m.get("group_id")) in groups
+        })
+        return _Result([SimpleNamespace(subject=s) for s in subjects])
 
     def _by_id(self, table: str, value: Any) -> dict[str, Any] | None:
         if value is None:

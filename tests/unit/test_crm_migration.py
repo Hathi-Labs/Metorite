@@ -368,6 +368,54 @@ def test_each_pipeline_seeds_a_lost_type_status(bare: str) -> None:
         assert "'lost'" in seed and "'won'" in seed
 
 
+def _seeded_values(bare: str, table: str) -> list[tuple[object, ...]]:
+    """The ``VALUES`` rows of the seed INSERT into *table*, as Python values.
+
+    Each row is one ``( ... )`` group between ``VALUES`` and ``ON CONFLICT``.
+    A quoted value is a string, ``true``/``false`` a bool, and a bare number
+    an int. No seed value holds a comma or a bracket, so a plain split reads
+    them all.
+    """
+    statement = bare.split(f"INSERT INTO {table}", 1)[1].split(";", 1)[0]
+    values = statement.split("VALUES", 1)[1].split("ON CONFLICT", 1)[0]
+    rows: list[tuple[object, ...]] = []
+    for group in re.findall(r"\(([^()]*)\)", values):
+        row: list[object] = []
+        for part in (p.strip() for p in group.split(",")):
+            if part.startswith("'") and part.endswith("'"):
+                row.append(part[1:-1])
+            elif part in ("true", "false"):
+                row.append(part == "true")
+            else:
+                row.append(int(part))
+        rows.append(tuple(row))
+    return rows
+
+
+def test_the_native_seed_equals_the_migration_seed(bare: str) -> None:
+    """WS-53 CRM-T5 done-when 7. ``routes/crm/seed.py`` gives an organization
+    that picks Native mode the same 6 deal stages, 5 lead stages and 6 lost
+    reasons that this migration gives a fresh install. Two lists that must
+    agree are one list that drifts, so this reads both and compares them."""
+    from gateway.routes.crm import seed
+
+    assert _seeded_values(bare, "crm_lead_statuses") == list(seed.LEAD_STATUSES)
+    assert _seeded_values(bare, "crm_deal_statuses") == list(seed.DEAL_STATUSES)
+    assert _seeded_values(bare, "crm_lost_reasons") == list(seed.LOST_REASONS)
+    assert (len(seed.DEAL_STATUSES), len(seed.LEAD_STATUSES),
+            len(seed.LOST_REASONS)) == (6, 5, 6)
+
+
+def test_the_seed_parity_reader_sees_a_changed_value(bare: str) -> None:
+    """The reader above must notice one changed value, or the parity test
+    passes for any list."""
+    changed = bare.replace("('Proposal',       'violet', 30", "('Proposal', 'violet', 35")
+    assert changed != bare
+    from gateway.routes.crm import seed
+
+    assert _seeded_values(changed, "crm_deal_statuses") != list(seed.DEAL_STATUSES)
+
+
 # ── Feature registration (WS-26a done-when 2) ───────────────────────────────
 
 def test_the_feature_catalog_row_uses_all_seven_columns(bare: str) -> None:
