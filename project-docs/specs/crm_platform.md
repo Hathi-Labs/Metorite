@@ -24,7 +24,8 @@
 > CRM-Z7, narrowed (2026-10-11): the Zoho connect flow, the sync progress, the
 > title bar mode and the mirror marks. CRM-L2, the promotion of `/crm` to live,
 > with the per-org list `CRM_MIRROR_ORGS` (2026-10-11, owner decision in chat).
-> The other slices are not built yet.
+> CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
+> (2026-10-12, migration 247). The other slices are not built yet.
 >
 > **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12).
 
@@ -1156,8 +1157,8 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 
 | Id | What | Priority |
 |---|---|---|
-| **CRM-Q1** | Discovery and the source profile. The edition-aware budget. `domain_name` and the deep link ("Open in Zoho") | P0 |
-| **CRM-Q2** | Deal pipelines: `crm_pipelines`, the stages of each pipeline, `crm_deals.pipeline_id`, and the forecast category | P0 |
+| **CRM-Q1** ✅ built 2026-10-12. Built as: migration 247 adds `crm_source_profiles`. A discovery step runs at the first import and once in 24 hours. It reads `GET org`, the modules, the layouts and fields of four modules, and the Deals pipelines. That costs about 11 credits and reads no record. A new profile version is kept only when the hash changes. The org domain, the edition and the tab of each module go into `provider_meta`. The default budget is 10 % of the edition credits, and 500 credits for an unknown edition. `deep_link` is built, and every mirrored record carries `ext_url`. `GET /crm/source-profile` returns no record and no token | Discovery and the source profile. The edition-aware budget. `domain_name` and the deep link ("Open in Zoho") | P0 |
+| **CRM-Q2** ✅ built 2026-10-12. Built as: migration 247 adds `crm_pipelines`, `crm_pipeline_stages`, `crm_deals.pipeline_id` and `crm_deal_statuses.forecast_category`. Discovery writes the Zoho pipelines through the mirror bypass. A deal finds its pipeline by id, by name, or the default. A Native org gets one "Sales pipeline" from the seed, and the migration backfills the same for existing orgs. The U5b reset deletes the pipelines. `GET /crm/pipelines` and `?pipeline_id=` serve the UI. An admin renames a pipeline and adds or removes its stages in Native mode only | Deal pipelines: `crm_pipelines`, the stages of each pipeline, `crm_deals.pipeline_id`, and the forecast category | P0 |
 | **CRM-Q3** | ✅ built 2026-10-12. The new layout of §18.4: no "Pipeline" row, the list or board switch, the pipeline picker, the Leads board, "CRM settings", and related lists | P0 |
 | **CRM-Q4** | ✅ built 2026-10-12. Field definitions in the UI: `GET /crm/fields/{entity}`, custom fields with label, type and order on the record page | P0 |
 | **CRM-Q5** | Data that the mirror loses: converted leads (`converted=both`), Zoho Tasks, and deal contact roles | P0 |
@@ -1188,7 +1189,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 - The record page shows related lists. The list routes take `?company_id=` for contacts and deals, and `?contact_id=` for deals. A filter on another entity gives 422. Fence: `tests/unit/test_crm_related_r8.py`.
 - CRM settings is one page of cards in this order: Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health. Fields and Sync health say "Coming soon" until CRM-Q4 and CRM-Q9.
 - §18.6: an error boundary wraps the CRM views. It shows "Something went wrong on this page. Reload to get the newest version." The Access card reads the group list only for the rule "groups".
-- Not built: stage rename, add and remove for a second pipeline. The CRM-Q2 routes for them are not in this build, so several pipelines show read-only.
+- The UI does not yet call the CRM-Q2 routes that rename a pipeline or add and remove its stages. So a second pipeline shows its stages read-only.
 
 The earlier native gaps of §6 (CRM-S1 to CRM-S12) and the insights of §9 keep
 their own rows. CRM-Q8 builds the saved views of CRM-S2.

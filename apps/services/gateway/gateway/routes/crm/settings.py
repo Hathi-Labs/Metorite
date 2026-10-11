@@ -77,8 +77,10 @@ _RECORD_TABLES: tuple[str, ...] = (
 #: Child first. Nothing references them with 0 records, but a status that a
 #: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
 _RESET_DELETES: tuple[str, ...] = (
-    "crm_status_changes", "crm_deal_statuses", "crm_lead_statuses",
-    "crm_lost_reasons",
+    "crm_status_changes", "crm_pipeline_stages", "crm_pipelines",
+    "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
+    # The shape of the old Zoho account (CRM-Q1). A new setup reads its own.
+    "crm_source_profiles",
     # Zoho sync state. A cursor with ``initial_done_at`` set would make a later
     # reconnect skip the first import (engine.py reads it), so it goes too.
     "crm_sync_cursors", "crm_sync_runs",

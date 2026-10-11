@@ -37,7 +37,7 @@ from acb_common.db import get_db, tenant_session
 from sqlalchemy import text
 
 from gateway.connections import store
-from gateway.crm_sync import engine, runs
+from gateway.crm_sync import engine, profiles, runs
 from gateway.crm_sync.engine import NotConnected
 from gateway.crm_sync.runs import SyncRunning
 from gateway.routes.crm import access as crm_access
@@ -80,11 +80,12 @@ async def is_due(org: str) -> bool:
         if connection is None or connection.status != store.STATUS_CONNECTED:
             return False
         info = await runs.due_info(db, org)
+        budget = await profiles.budget_for(db, org)
     if info.running:
         return False
     if info.last_finished is None:
         return True
-    wait = engine.next_interval(info.last_credits)
+    wait = engine.next_interval(info.last_credits, budget)
     return (info.db_now - info.last_finished).total_seconds() >= wait
 
 

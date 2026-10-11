@@ -34,6 +34,7 @@ from gateway.routes.crm.core import (
     LostReasonModel,
     StatusModel,
     _tenant_session,
+    add_stage_to_default_pipeline,
     assert_writable,
     current_tenant,
     insert_row,
@@ -316,6 +317,8 @@ async def create_status(
         if values.get("position") is None:
             values["position"] = await _next_position(db, table)
         row = await insert_row(db, table, values)
+        if kind == "deal":
+            await add_stage_to_default_pipeline(db, str(row.id))
         return status_wire(row)
 
 
