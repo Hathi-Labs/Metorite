@@ -13,8 +13,10 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useState } from "react";
-import { customRows, isMirrored, LOCK_TIP } from "../lib/connect";
+import { isMirrored, LOCK_TIP } from "../lib/connect";
+import { fieldRows, type FieldDef } from "../lib/fields";
 import { money, shortDate } from "../lib/format";
+import FieldValue from "./FieldValue";
 import RelatedLists from "./RelatedLists";
 import StatusPill from "./StatusPill";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
@@ -117,6 +119,7 @@ export default function FieldsPanel({
   related = NO_RELATED,
   onOpenRelated,
   onRetryRelated,
+  fieldDefs = null,
 }: {
   entity: EntitySlug;
   record: Row;
@@ -133,6 +136,8 @@ export default function FieldsPanel({
   related?: Related;
   onOpenRelated?: (entity: EntitySlug, id: string) => void;
   onRetryRelated?: () => void;
+  /** What each custom field means (CRM-Q4). `null` falls back to the humanised keys. */
+  fieldDefs?: FieldDef[] | null;
 }) {
   const status =
     statuses.find((s) => s.id === record.status_id) ?? null;
@@ -140,7 +145,7 @@ export default function FieldsPanel({
   // A record that Zoho owns (CRM-Z7, spec §3.3): its fields, its stage and its
   // people are read-only here. Notes and calls stay open, in the timeline.
   const mirrored = isMirrored(record);
-  const custom = customRows(record);
+  const custom = fieldRows(record, fieldDefs);
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -260,7 +265,9 @@ export default function FieldsPanel({
                 <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                   {row.label}
                 </dt>
-                <dd className="min-w-0 flex-1 break-words text-xs text-foreground">{row.value}</dd>
+                <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
+                  <FieldValue value={row.value} />
+                </dd>
               </div>
             ))}
           </dl>

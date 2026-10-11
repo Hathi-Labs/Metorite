@@ -48,6 +48,7 @@ import {
   validateStatusDraft,
   type PositionPatch,
 } from "../lib/settings";
+import FieldsCard from "./FieldsCard";
 import { Card, ComingSoonCard, NameList, PipelineSections } from "./SettingsCards";
 import type {
   DealPipeline,
@@ -184,10 +185,7 @@ export default function PipelineSettings({
       )}
       {showAdminCards && (
         <>
-          <ComingSoonCard
-            title="Fields"
-            note="The fields of each record, with their label, type and order."
-          />
+          <FieldsCard readOnly={readOnly} />
           <ComingSoonCard
             title="Sync health"
             note="The Zoho count against ours, skipped records and the last error."
