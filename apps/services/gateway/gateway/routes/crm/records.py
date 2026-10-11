@@ -24,7 +24,6 @@ functions below, so there is exactly one implementation of each rule.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query
@@ -55,6 +54,7 @@ from gateway.routes.crm.core import (
     load_default_status,
     now,
     record_zoho_tombstone,
+    related_filters,
     require_row,
     router,
     row_to_dict,
@@ -122,54 +122,6 @@ class DeleteResponse(BaseModel):
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
-#: CRM-Q3 — the related lists of a record page. A company shows its contacts
-#: and deals, and a contact shows its deals. Only these entities carry the link.
-_COMPANY_FILTERABLE = frozenset({"contacts", "deals"})
-
-
-def _uuid_param(name: str, value: str) -> str:
-    """A UUID from the query string, or a 422 — never a database cast error."""
-    try:
-        return str(UUID(value))
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"'{name}' must be a UUID.") from None
-
-
-def _related_filters(
-    entity: Entity, params: ListParams,
-) -> tuple[tuple[str, ...], dict[str, Any]]:
-    """The ``?company_id=`` and ``?contact_id=`` filters, as SQL and parameters.
-
-    Refused with a 422 on an entity that has no such link. Ignoring the filter
-    would answer 200 with the whole table, as ``?status_id`` is refused on
-    contacts. The SQL is a literal here, and the id is a bound parameter.
-    """
-    clauses: list[str] = []
-    bound: dict[str, Any] = {}
-    if params.company_id:
-        if entity.slug not in _COMPANY_FILTERABLE:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{entity.slug} have no company link, so '?company_id' "
-                       "cannot filter them. Drop the parameter.",
-            )
-        clauses.append("company_id = CAST(:company_id AS uuid)")
-        bound["company_id"] = _uuid_param("company_id", params.company_id)
-    if params.contact_id:
-        if entity.slug != "deals":
-            raise HTTPException(
-                status_code=422,
-                detail=f"'?contact_id' filters deals only, not {entity.slug}. "
-                       "Drop the parameter.",
-            )
-        clauses.append(
-            "id IN (SELECT deal_id FROM crm_deal_contacts "
-            "WHERE contact_id = CAST(:contact_id AS uuid))"
-        )
-        bound["contact_id"] = _uuid_param("contact_id", params.contact_id)
-    return tuple(clauses), bound
-
-
 async def _list(entity: Entity, params: ListParams) -> ListResponse:
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
@@ -179,7 +131,9 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
         # link; the timestamp survives as history).
         extra = ("converted_deal_id IS NULL",)
     extra_params: dict[str, Any] = {}
-    related_where, related_params = _related_filters(entity, params)
+    related_where, related_params = related_filters(
+        entity, company_id=params.company_id, contact_id=params.contact_id,
+    )
     extra = (*extra, *related_where)
     extra_params.update(related_params)
     query = list_contract(

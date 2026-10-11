@@ -131,3 +131,9 @@ async def test_related_lists_filter_through_the_real_catalog(ns, app_engine) -> 
 
     refused = await _call(ns, a, "GET", f"/crm/leads?company_id={acme}")
     assert refused.status_code == 422
+
+    # The export carries the filter, so the file is the list on screen.
+    export = await _call(ns, a, "GET", f"/crm/export/deals.csv?contact_id={anitha}")
+    assert export.status_code == 200, export.text
+    assert "Bosch" in export.text
+    assert "Elsewhere" not in export.text

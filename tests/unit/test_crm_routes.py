@@ -1820,8 +1820,8 @@ async def test_a_related_id_that_is_not_a_uuid_is_a_422_not_a_cast_error(
 
 
 def test_contact_id_reads_the_deal_contact_link_with_a_bound_id() -> None:
-    where, bound = crm_records._related_filters(
-        DEALS, _params(contact_id=_CONTACT),
+    where, bound = crm_core.related_filters(
+        DEALS, company_id=None, contact_id=_CONTACT,
     )
     assert any("crm_deal_contacts" in clause for clause in where)
     assert bound == {"contact_id": _CONTACT}
