@@ -45,7 +45,6 @@ from uuid import UUID
 
 from acb_auth import require_feature_router
 from acb_common import get_logger
-from fastapi import APIRouter, Depends, HTTPException
 
 # The shared seam (BO-10 / D-CRM-4 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -61,6 +60,8 @@ from fastapi import APIRouter, Depends, HTTPException
 # CRM-T3 moved the other two leaves to `tenant_session(org)`: `auto_lead`
 # takes the tenant the email hook bound, and `broker_handlers` takes the
 # tenant the `approve` call bound. Each passes that tenant by value.
+from acb_common.db import current_tenant
+from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from gateway.routes.crm.access import require_crm_access
@@ -166,7 +167,20 @@ MAX_PAGE_SIZE = 100
 # Entity (`required`) and checked in `records.py`. Two near-identical models per
 # entity is the shape that drifts.
 
-class OrganizationModel(BaseModel):
+class MirrorFields(BaseModel):
+    """What a provider mirror adds to a record on the wire (WS-53 CRM-Z6).
+
+    The UI reads ``ext_source`` to lock a mirrored record's fields. ``custom``
+    holds the provider fields that have no native column.
+    """
+
+    ext_source: str | None = None
+    ext_id: str | None = None
+    ext_modified_at: str | None = None
+    custom: dict = {}
+
+
+class OrganizationModel(MirrorFields):
     id: str
     name: str
     website: str | None = None
@@ -201,7 +215,7 @@ class OrganizationIn(BaseModel):
     source: str | None = None
 
 
-class ContactModel(BaseModel):
+class ContactModel(MirrorFields):
     id: str
     first_name: str
     last_name: str | None = None
@@ -234,7 +248,7 @@ class ContactIn(BaseModel):
     source: str | None = None
 
 
-class LeadModel(BaseModel):
+class LeadModel(MirrorFields):
     id: str
     first_name: str | None = None
     last_name: str | None = None
@@ -285,7 +299,7 @@ class LeadIn(BaseModel):
     source: str | None = None
 
 
-class DealModel(BaseModel):
+class DealModel(MirrorFields):
     id: str
     name: str
     company_id: str | None = None
@@ -332,7 +346,7 @@ class DealIn(BaseModel):
     source: str | None = None
 
 
-class ActivityModel(BaseModel):
+class ActivityModel(MirrorFields):
     id: str
     type: str
     subject: str | None = None
@@ -588,6 +602,8 @@ def row_to_model(row: Any, model: type[BaseModel]) -> Any:
         )
         for name in model.model_fields
     }
+    if "custom" in data and data["custom"] is None:
+        data["custom"] = {}  # NOT NULL in the table; a fake or a stale row may omit it
     return model(**data)
 
 
@@ -1038,7 +1054,108 @@ def mark_dirty_on_update(
     return {**values, "zoho_dirty": True}
 
 
+# ── The mirror write guard (WS-53 CRM-Z6) ──────────────────────────────────
+
+#: The four record tables. In Mirror mode a provider owns their rows.
+MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
+})
+
+#: Pipeline settings. In Mirror mode the provider owns the stage picklist.
+MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
+    "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
+})
+
+#: ``ext_source`` value → the name a person reads.
+SOURCE_LABELS: dict[str, str] = {"zoho": "Zoho"}
+
+
+def source_label(source: str | None) -> str:
+    return SOURCE_LABELS.get(str(source or "").lower(), str(source or "the source"))
+
+
+async def is_mirror_mode(db: Any, organization_id: str | None) -> bool:
+    """True when ``crm_settings.mode`` is ``'mirror'`` for the organization.
+
+    Read on each guarded write and cached nowhere, so a mode change takes
+    effect on the next request. The organization comes from the bound tenant
+    (never from the request). Row level security filters the read as well.
+    """
+    if organization_id:
+        row = (await db.execute(
+            text(
+                "SELECT mode FROM crm_settings "
+                "WHERE organization_id = CAST(:organization_id AS uuid)"
+            ),
+            {"organization_id": str(organization_id)},
+        )).first()
+    else:
+        row = (await db.execute(text("SELECT mode FROM crm_settings"))).first()
+    return row is not None and getattr(row, "mode", None) == "mirror"
+
+
+def _conflict(code: str, message: str, **extra: Any) -> HTTPException:
+    return HTTPException(
+        status_code=409, detail={"code": code, "message": message, **extra},
+    )
+
+
+async def assert_writable(
+    db: Any, organization_id: str | None, entity: Any,
+    fields: dict[str, Any] | None = None, *,
+    row: Any = None, record_id: str | None = None, creating: bool = False,
+) -> None:
+    """Refuse a native write to data that a provider owns (CRM-Z6, Mirror mode).
+
+    ``entity`` is an :class:`Entity` or a table name. This guard is the ONE
+    write guard (``crm_platform.md`` §3.5 rule 2). :func:`insert_row` and
+    :func:`update_row` call it, and each route that writes with raw SQL (a
+    delete) or acts before it writes (a status move) calls it first with the
+    loaded ``row``. In Native mode, or with no mode, it does nothing.
+
+    * a write to a row with ``ext_source`` set: 409 ``mirrored_record``;
+    * a new lead, deal, contact or company: 409 ``mirror_mode_create``;
+    * a write to pipeline settings: 409 ``mirror_mode_settings``;
+    * an activity with ``ext_source`` NULL passes (§3.3).
+
+    The sync's ``upsert_from_source`` is the only bypass. It never calls this.
+    """
+    table = getattr(entity, "table", entity)
+    guarded = (
+        table in MIRROR_RECORD_TABLES or table in MIRROR_SETTINGS_TABLES
+        or table == "crm_activities"
+    )
+    if not guarded or not await is_mirror_mode(db, organization_id):
+        return
+    if table in MIRROR_SETTINGS_TABLES:
+        raise _conflict(
+            "mirror_mode_settings",
+            "The stages and lost reasons come from Zoho. Change them in Zoho.",
+        )
+    if creating:
+        if table == "crm_activities":
+            return
+        raise _conflict(
+            "mirror_mode_create",
+            "In Mirror mode, new records are created in Zoho. "
+            "Create it there; the next sync brings it here.",
+            source="zoho",
+        )
+    if row is None and record_id is not None:
+        row = await load_row(db, table, record_id)
+    source = getattr(row, "ext_source", None) if row is not None else None
+    if source:
+        raise _conflict(
+            "mirrored_record",
+            f"This record comes from {source_label(source)}. "
+            f"Change it in {source_label(source)}; "
+            "the next sync brings the change here.",
+            source=source,
+        )
+
+
 async def insert_row(db: Any, table: str, values: dict[str, Any]) -> Any:
+    await assert_writable(db, current_tenant(), table, values, creating=True)
     reject_null_on_defaulted(table, values)
     values = mark_dirty_on_insert(table, values)
     columns = list(values)
@@ -1056,6 +1173,7 @@ async def update_row(
     db: Any, table: str, record_id: str, values: dict[str, Any],
     *, touch: bool = True,
 ) -> Any:
+    await assert_writable(db, current_tenant(), table, values, record_id=record_id)
     reject_null_on_defaulted(table, values)
     values = mark_dirty_on_update(table, values, touch=touch)
     assignments = [f"{c} = {_placeholder(c)}" for c in values]

@@ -35,6 +35,8 @@ from gateway.routes.crm.core import (
     StatusModel,
     _tenant_session,
     actor,
+    assert_writable,
+    current_tenant,
     has_column,
     insert_row,
     link_deal_contact,
@@ -467,6 +469,7 @@ async def convert_lead(
     who = actor(user)
     async with _tenant_session() as db:
         lead = await require_row(db, LEADS.table, lead_id, "Lead")
+        await assert_writable(db, current_tenant(), LEADS, None, row=lead)
         if getattr(lead, "converted_deal_id", None):
             raise HTTPException(
                 status_code=409,
