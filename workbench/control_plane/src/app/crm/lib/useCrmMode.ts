@@ -13,6 +13,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
 import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
+import type { DealPipeline } from "./types";
 import {
   POLL_MS,
   WATCH_LIMIT_POLLS,
@@ -140,4 +141,26 @@ export function useSyncStatus(enabled: boolean, watchToken: number): SyncStatus 
   }, [live, watchToken, refresh]);
 
   return status;
+}
+
+const KEY_PIPELINES = "crm:pipelines";
+
+export type PipelinesState = {
+  /** `null` while unread, and when the gateway has no pipelines route (404). */
+  pipelines: DealPipeline[] | null;
+  /** True until the first answer. A board waits for it, so it loads once. */
+  loading: boolean;
+};
+
+/**
+ * The deal pipelines (CRM-Q3). Every failure reads as "no pipelines": the CRM
+ * then has one implicit pipeline, no picker, and no `pipeline_id` on a request.
+ * A board that fails to open because the picker's list failed is worse.
+ */
+export function usePipelines(enabled: boolean): PipelinesState {
+  const res = useCachedResource<DealPipeline[] | null>(
+    enabled ? KEY_PIPELINES : null,
+    () => api.listPipelines().catch(() => null),
+  );
+  return { pipelines: res.data ?? null, loading: enabled && res.loading };
 }

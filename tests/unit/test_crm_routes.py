@@ -49,6 +49,7 @@ def _params(**over) -> crm_records.ListParams:
         "q": None, "sort": None, "direction": "desc", "page": 1,
         "page_size": 50, "status_id": None, "owner": None, "source": None,
         "include_converted": False,
+        "company_id": None, "contact_id": None,
     }
     return crm_records.ListParams(**{**base, **over})
 
@@ -1755,3 +1756,74 @@ def test_the_one_excepted_writer_still_cannot_demote_a_primary() -> None:
         statement = source.split("INSERT INTO crm_deal_contacts", 1)[1][:600]
         assert "NOT EXISTS" in statement, name
         assert "ON CONFLICT DO NOTHING" in statement, name
+
+
+# ── CRM-Q3 · the related lists of a record page ─────────────────────────────
+#
+# `?company_id=` filters contacts and deals, and `?contact_id=` filters deals
+# through `crm_deal_contacts`. The fake cannot read a sub-select, so the SQL of
+# the contact filter is read from the rendered query here, and the rows it
+# returns are proved against a real Postgres in `test_crm_related_r8.py`.
+
+_COMPANY = "11111111-1111-4111-8111-111111111111"
+_CONTACT = "22222222-2222-4222-8222-222222222222"
+
+
+async def test_company_id_keeps_only_that_companys_deals(db: FakeCrmDB) -> None:
+    _, deal_status = _seed_pipeline(db)
+    db.seed(DEALS.table, name="Ours", status_id=deal_status.id, company_id=_COMPANY)
+    db.seed(DEALS.table, name="Theirs", status_id=deal_status.id, company_id=_CONTACT)
+
+    result = await crm_records._list(DEALS, _params(company_id=_COMPANY))
+
+    assert [row["name"] for row in result.rows] == ["Ours"]
+    assert result.total == 1
+
+
+async def test_company_id_keeps_only_that_companys_contacts(db: FakeCrmDB) -> None:
+    db.seed(CONTACTS.table, first_name="Anitha", company_id=_COMPANY)
+    db.seed(CONTACTS.table, first_name="Priya", company_id=_CONTACT)
+
+    result = await crm_records._list(CONTACTS, _params(company_id=_COMPANY))
+
+    assert [row["first_name"] for row in result.rows] == ["Anitha"]
+
+
+@pytest.mark.parametrize("slug", ["leads", "organizations"])
+async def test_company_id_is_refused_where_there_is_no_company_link(
+    db: FakeCrmDB, slug: str,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        await crm_records._list(ENTITIES[slug], _params(company_id=_COMPANY))
+    assert refused.value.status_code == 422
+    assert not db.statements
+
+
+@pytest.mark.parametrize("slug", ["leads", "contacts", "organizations"])
+async def test_contact_id_is_refused_off_the_deals_list(
+    db: FakeCrmDB, slug: str,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        await crm_records._list(ENTITIES[slug], _params(contact_id=_CONTACT))
+    assert refused.value.status_code == 422
+    assert not db.statements
+
+
+@pytest.mark.parametrize("name", ["company_id", "contact_id"])
+async def test_a_related_id_that_is_not_a_uuid_is_a_422_not_a_cast_error(
+    db: FakeCrmDB, name: str,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        await crm_records._list(DEALS, _params(**{name: "not-a-uuid"}))
+    assert refused.value.status_code == 422
+    assert not db.statements
+
+
+def test_contact_id_reads_the_deal_contact_link_with_a_bound_id() -> None:
+    where, bound = crm_core.related_filters(
+        DEALS, company_id=None, contact_id=_CONTACT,
+    )
+    assert any("crm_deal_contacts" in clause for clause in where)
+    assert bound == {"contact_id": _CONTACT}
+    # The id is a bound parameter. The statement carries no caller text.
+    assert all(_CONTACT not in clause for clause in where)

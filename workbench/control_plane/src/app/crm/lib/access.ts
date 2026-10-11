@@ -75,6 +75,18 @@ export function adminsOnly(access: string | undefined | null): boolean {
   return !access || access === "admins";
 }
 
+/**
+ * Does the page need the organization's group list?
+ *
+ * Only when the rule is "groups". An admin who chose "admins" or "everyone"
+ * sees no group checkboxes, so the read is wasted. In CRM-Q3 (spec section
+ * 18.6) the read moved out of the first effect, so the settings page opens with
+ * no extra request that could fail.
+ */
+export function wantsGroups(access: string | undefined | null): boolean {
+  return access === "groups";
+}
+
 /** The `group:<slug>` subject of a group (D12). */
 export function groupSubject(slug: string): string {
   return `group:${slug}`;
