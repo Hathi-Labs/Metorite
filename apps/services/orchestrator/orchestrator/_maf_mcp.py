@@ -171,9 +171,26 @@ async def _stop_owner(tool: Any) -> None:
     if task is None or task.done():
         return
     task.cancel()
-    with contextlib.suppress(Exception, asyncio.CancelledError):
+    # Wait a moment for the task to end. Only two outcomes are quiet: the
+    # wait runs out, or the task ends with the cancel this function sent. A
+    # cancel of the CALLER (a Stop) arrives as a CancelledError while the
+    # task is not cancelled itself, and it must reach the run (review of
+    # #869, P2).
+    current = asyncio.current_task()
+    # A caller already in a cancel (the attach's own Stop path) counts once.
+    # Only a cancel that arrives DURING this wait is a new one.
+    before = current.cancelling() if current is not None else 0
+    try:
         async with asyncio.timeout(0.5):
             await asyncio.shield(task)
+    except TimeoutError:
+        return
+    except asyncio.CancelledError:
+        if current is not None and current.cancelling() > before:
+            raise
+        return
+    except Exception:  # the task failed as it stopped: it is stopped
+        return
 
 
 async def _close_tool(tool: Any) -> bool:

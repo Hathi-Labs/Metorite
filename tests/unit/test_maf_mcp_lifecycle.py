@@ -20,6 +20,7 @@ in-process ``httpx.MockTransport`` under the REAL pinned client and the REAL
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from typing import Any
@@ -281,3 +282,73 @@ def test_a_40s_delete_never_keeps_the_run_live_end_to_end(monkeypatch):
     assert stamps["close_end"] - stamps["close_start"] < _maf_mcp.CLOSE_TOTAL_S + 1.5
     assert took < 30, f"the run took {took:.1f}s: the 40 s DELETE held it"
     assert srv.deletes == 1
+
+
+# ── Review of #869, the two P2s: a second cancel ────────────────────────────
+
+
+async def test_stop_owner_lets_an_external_cancel_through() -> None:
+    """``_stop_owner`` waits a moment for the MAF task to end. A Stop that
+    arrives in that wait must reach the run, not be swallowed."""
+
+    async def _stubborn() -> None:
+        for _ in range(40):  # ignores its cancel for a while
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                continue
+
+    class _Tool:
+        def __init__(self) -> None:
+            self._lifecycle_owner_task = asyncio.create_task(_stubborn())
+
+    tool = _Tool()
+    waiter = asyncio.create_task(_maf_mcp._stop_owner(tool))
+    await asyncio.sleep(0.1)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    tool._lifecycle_owner_task.cancel()
+    with contextlib.suppress(BaseException):
+        await tool._lifecycle_owner_task
+
+
+async def test_stop_owner_is_quiet_when_only_its_own_cancel_ends_the_task() -> None:
+    class _Tool:
+        def __init__(self) -> None:
+            self._lifecycle_owner_task = asyncio.create_task(asyncio.sleep(30))
+
+    tool = _Tool()
+    await _maf_mcp._stop_owner(tool)  # must not raise
+    assert tool._lifecycle_owner_task.cancelled()
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_second_cancel_in_the_finally_still_closes_the_mcp_tools(monkeypatch):
+    """A cancel during an earlier await of the run's ``finally`` (here,
+    ``mark_inactive``) must not skip the MCP close, or the sockets and the
+    MAF task stay until the gateway restarts."""
+    from orchestrator import stream_relay
+
+    closed: list[int] = []
+    real_close = _maf_mcp.close_mcp_tools
+
+    async def _cancelled_mark(*_a: Any, **_k: Any) -> None:
+        raise asyncio.CancelledError
+
+    async def _close(opened: Any) -> None:
+        closed.append(len(opened))
+        await real_close(opened)
+
+    monkeypatch.setattr(stream_relay, "mark_inactive", _cancelled_mark)
+    monkeypatch.setattr(_maf_mcp, "close_mcp_tools", _close)
+    _Server().install(monkeypatch)
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("probe-srv", org="org-native-maf-probe", url=URL)]).install(monkeypatch)
+    built: list[Any] = []
+    with pytest.raises(asyncio.CancelledError):
+        _events, built = drive_native(
+            "apis-config", "apps/agents/agent-apis-config", monkeypatch,
+            ScriptedModel([text_turn("done")]), thread_id="thread-ws8c-second-cancel",
+        )
+    assert closed == [1], "the second cancel skipped the MCP close"
