@@ -167,6 +167,28 @@ async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> 
             values["pipeline_id"] = found
 
 
+async def _check_stage_in_pipeline(
+    db: Any, pipeline_id: Any, status_id: Any,
+) -> None:
+    """422 ``stage_not_in_pipeline`` when a pipeline lists stages and the deal's
+    stage is not one of them. A pipeline with no listed stage allows any."""
+    if not pipeline_id or not status_id:
+        return
+    row = (await db.execute(
+        text(
+            "SELECT count(*) AS total, "
+            "count(*) FILTER (WHERE status_id = CAST(:s AS uuid)) AS hit "
+            "FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid)"
+        ),
+        {"p": str(pipeline_id), "s": str(status_id)},
+    )).first()
+    if row is not None and int(row.total or 0) and not int(row.hit or 0):
+        raise HTTPException(status_code=422, detail={
+            "code": "stage_not_in_pipeline",
+            "message": "This stage is not in the deal's pipeline.",
+        })
+
+
 async def _resolve_status(
     db: Any, entity: Entity, values: dict[str, Any],
 ) -> Any | None:
@@ -257,7 +279,10 @@ async def create_record(
         await assert_writable(
             db, current_tenant(), entity, values, creating=True,
         )
+        chosen_stage = values.get("status_id")
         await _resolve_pipeline(db, entity, values)
+        if entity is DEALS and chosen_stage:
+            await _check_stage_in_pipeline(db, values.get("pipeline_id"), chosen_stage)
         await _resolve_status(db, entity, values)
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
@@ -282,6 +307,12 @@ async def patch_record(
         )
         if values.get("pipeline_id"):
             await _resolve_pipeline(db, entity, values)
+        if entity is DEALS and ("pipeline_id" in values or "status_id" in values):
+            await _check_stage_in_pipeline(
+                db,
+                values.get("pipeline_id", getattr(record, "pipeline_id", None)),
+                values.get("status_id", getattr(record, "status_id", None)),
+            )
         wanted = values.get("status_id")
         if wanted and str(getattr(record, "status_id", "") or "") != str(wanted):
             values.update(await apply_status_transition(

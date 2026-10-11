@@ -154,6 +154,19 @@ async def read_pipelines(db: Any, only: str | None = None) -> list[PipelineModel
     return out
 
 
+async def _native_pipeline(db: Any, pipeline_id: str) -> None:
+    """404 for an unknown pipeline, 409 ``mirrored_pipeline`` for one that a
+    provider owns. An org that went from Mirror back to Native keeps such rows,
+    and the next sync would overwrite an edit."""
+    row = await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
+    await assert_writable(db, current_tenant(), "crm_pipelines")
+    if getattr(row, "ext_source", None):
+        raise HTTPException(status_code=409, detail={
+            "code": "mirrored_pipeline",
+            "message": "This pipeline comes from the provider. Change it there.",
+        })
+
+
 async def _one(db: Any, pipeline_id: str) -> PipelineModel:
     found = await read_pipelines(db, only=pipeline_id)
     if not found:
@@ -186,7 +199,7 @@ async def rename_pipeline(
             detail=f"A pipeline needs a name of 1 to {MAX_NAME} characters.",
         )
     async with _tenant_session() as db:
-        await require_row(db, "crm_pipelines", wanted, "Pipeline")
+        await _native_pipeline(db, wanted)
         await update_row(db, "crm_pipelines", wanted, {"name": name}, touch=False)
         return await _one(db, wanted)
 
@@ -207,7 +220,7 @@ async def add_pipeline_stage(
     wanted = checked_uuid(pipeline_id, "pipeline_id")
     status_id = checked_uuid(payload.status_id, "status_id")
     async with _tenant_session() as db:
-        await require_row(db, "crm_pipelines", wanted, "Pipeline")
+        await _native_pipeline(db, wanted)
         await require_row(db, "crm_deal_statuses", status_id, "Status")
         await assert_writable(db, current_tenant(), "crm_pipeline_stages")
         position = payload.position
@@ -246,7 +259,7 @@ async def remove_pipeline_stage(
     wanted = checked_uuid(pipeline_id, "pipeline_id")
     stage = checked_uuid(status_id, "status_id")
     async with _tenant_session() as db:
-        await require_row(db, "crm_pipelines", wanted, "Pipeline")
+        await _native_pipeline(db, wanted)
         await assert_writable(db, current_tenant(), "crm_pipeline_stages")
         in_use = int((await db.execute(
             text(

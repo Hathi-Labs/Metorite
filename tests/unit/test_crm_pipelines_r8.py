@@ -310,9 +310,10 @@ async def test_domain_and_edition_reach_provider_meta_and_survive_a_refresh(q) -
     async with tenant_session(q.org_a) as db:
         await store.save_credential(
             db, q.org_a, "zoho", "crm", fresh, connected_by="admin@crm-sync.test")
+    # A new consent may be another org: it drops what the sync learned.
     reconnect = _q(q.p, "SELECT provider_meta FROM integration_connections WHERE "
                         "organization_id = CAST(:o AS uuid)", o=q.org_a)[0][0]
-    assert reconnect["domain_name"] == "orgA"
+    assert "domain_name" not in reconnect and "tabs" not in reconnect
 
 
 async def test_an_unreadable_org_keeps_the_floor_budget_and_still_syncs(q) -> None:
@@ -407,12 +408,12 @@ async def test_each_deal_finds_its_pipeline_by_name_by_object_and_by_default(q) 
     assert got == {
         "by-name": "Renewals", "by-object": "Standard",
         "by-object-name-only": "Renewals", "unknown-id": "Renewals",
-        "none": "Standard", "unknown-name": "Standard",  # the default pipeline
+        "none": "Standard",  # a deal that names none joins the default
+        "unknown-name": None,  # a deal that names an unknown pipeline stays unlinked
     }
-    # The Pipeline key is read, so it does not repeat in custom.
     custom = _q(q.p, "SELECT custom FROM crm_deals WHERE ext_id = 'by-name' AND "
                      "organization_id = CAST(:o AS uuid)", o=q.org_a)[0][0]
-    assert "Pipeline" not in custom
+    assert custom["Pipeline"] == "Renewals"
 
 
 async def test_a_pipeline_that_zoho_drops_is_deleted_and_its_deals_keep_a_null(q) -> None:
@@ -856,3 +857,101 @@ def test_the_source_profile_migration_is_found_by_content() -> None:
              if p.name != "schema.generated.sql"
              and sql.search(p.read_text(encoding="utf-8"))]
     assert len(found) == 1
+
+
+# ── Review fixes ─────────────────────────────────────────────────────────────
+
+
+async def test_a_reconnect_to_another_zoho_org_drops_the_old_profile(q) -> None:
+    from acb_common.db import tenant_session
+    from gateway.connections import store
+    from gateway.crm_sources.base import SourceCredential
+    from gateway.crm_sync import engine
+
+    await _sync(q, q.org_a, q.a)
+    assert _count(q.p, "crm_source_profiles", q.org_a) == 1
+    async with tenant_session(q.org_a) as db:
+        row = await store.get(db, q.org_a, "zoho", "crm")
+        await store.disconnect(db, q.org_a, row.id)
+    meta = _q(q.p, "SELECT provider_meta FROM integration_connections WHERE "
+                   "organization_id = CAST(:o AS uuid)", o=q.org_a)[0][0]
+    assert not {"domain_name", "edition", "tabs"} & set(meta)
+    assert _count(q.p, "crm_source_profiles", q.org_a) == 0
+
+    # Connect again, to the other Zoho org on another data centre.
+    other = SourceCredential(
+        access_token="ACCESS-B", refresh_token="REFRESH-B", scopes=(),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        provider_meta={"api_domain": "https://www.zohoapis.eu",
+                       "accounts_server": "https://accounts.zoho.eu", "location": "eu"},
+    )
+    async with tenant_session(q.org_a) as db:
+        await store.save_credential(
+            db, q.org_a, "zoho", "crm", other, connected_by="admin@crm-sync.test")
+    before = len(q.found)
+    assert (await engine.run_org(q.org_a)).status == "ok"
+    assert q.found[before].cost == 11  # discovery was due at once
+    meta = _q(q.p, "SELECT provider_meta FROM integration_connections WHERE "
+                   "organization_id = CAST(:o AS uuid)", o=q.org_a)[0][0]
+    assert meta["domain_name"] == "orgB"
+
+
+async def test_deals_imported_before_discovery_are_linked_afterwards(q) -> None:
+    from gateway.crm_sync import engine
+
+    _deal(q.a, "r1", 1, Pipeline="Renewals")
+    _deal(q.a, "o1", 2, Pipeline={"id": "p1", "name": "Standard"})
+    _deal(q.a, "none", 3)
+    _deal(q.a, "ghost", 4, Pipeline="Does not exist")
+    await _sync(q, q.org_a, q.a)
+    with q.p.admin_engine.begin() as c:  # the state of a deal read before 247
+        c.execute(text("UPDATE crm_deals SET pipeline_id = NULL WHERE "
+                       "organization_id = CAST(:o AS uuid)"), {"o": q.org_a})
+    _age_profile(q.p, q.org_a)
+    assert (await engine.run_org(q.org_a)).status == "ok"
+    got = {r[0]: r[1] for r in _q(
+        q.p, "SELECT d.ext_id, p.name FROM crm_deals d LEFT JOIN crm_pipelines p "
+             "ON p.id = d.pipeline_id WHERE d.organization_id = CAST(:o AS uuid)",
+        o=q.org_a)}
+    assert got == {"r1": "Renewals", "o1": "Standard", "none": "Standard", "ghost": None}
+
+
+async def test_a_deal_cannot_sit_in_a_stage_its_pipeline_lacks(q) -> None:
+    admin = _admin(q.org_a)
+    assert (await _req(admin, "PATCH", "/crm/settings", {"mode": "native"})).status_code == 200
+    pipe = (await _req(admin, "GET", "/crm/pipelines")).json()[0]
+    lost = next(s for s in pipe["stages"] if s["name"] == "Closed Lost")
+    gone = await _req(admin, "DELETE", f"/crm/pipelines/{pipe['id']}/stages/{lost['id']}")
+    assert gone.status_code == 200, gone.text
+    deal = await _req(admin, "POST", "/crm/deals", {"name": "D"})
+    assert deal.status_code == 201, deal.text
+    bad = await _req(admin, "PATCH", f"/crm/deals/{deal.json()['id']}",
+                     {"status_id": lost["id"], "lost_reason_id": None})
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["detail"]["code"] == "stage_not_in_pipeline"
+    created = await _req(admin, "POST", "/crm/deals",
+                         {"name": "E", "status_id": lost["id"]})
+    assert created.status_code == 422
+    assert created.json()["detail"]["code"] == "stage_not_in_pipeline"
+    ok = await _req(admin, "PATCH", f"/crm/deals/{deal.json()['id']}",
+                    {"status_id": pipe["stages"][1]["id"]})
+    assert ok.status_code == 200, ok.text
+
+
+async def test_native_writes_refuse_a_pipeline_that_a_provider_owns(q) -> None:
+    admin = _admin(q.org_a)
+    assert (await _req(admin, "PATCH", "/crm/settings", {"mode": "native"})).status_code == 200
+    with q.p.admin_engine.begin() as c:  # left over from an org that was in Mirror mode
+        pid = str(c.execute(text(
+            "INSERT INTO crm_pipelines (organization_id, name, ext_source, ext_id) "
+            "VALUES (CAST(:o AS uuid), 'Zoho one', 'zoho', 'zz') RETURNING id"),
+            {"o": q.org_a}).scalar())
+    status = (await _req(admin, "GET", "/crm/pipelines")).json()[0]["stages"][0]["id"]
+    for method, path, body in (
+        ("PATCH", f"/crm/pipelines/{pid}", {"name": "Mine"}),
+        ("POST", f"/crm/pipelines/{pid}/stages", {"status_id": status}),
+        ("DELETE", f"/crm/pipelines/{pid}/stages/{status}", None),
+    ):
+        r = await _req(admin, method, path, body)
+        assert r.status_code == 409, (method, r.text)
+        assert r.json()["detail"]["code"] == "mirrored_pipeline"

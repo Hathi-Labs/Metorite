@@ -229,7 +229,8 @@ def test_the_mapped_deal_carries_the_pipeline_and_other_entities_do_not() -> Non
         modified_at=None, owners={},
     )
     assert deal.pipeline == (None, "Standard")
-    assert "Pipeline" not in deal.values["custom"]
+    # The value stays in ``custom`` so a later discovery can re-link the deal.
+    assert deal.values["custom"]["Pipeline"] == "Standard"
     lead = zm.map_record("lead", {"id": "2", "Last_Name": "L"}, modified_at=None, owners={})
     assert lead.pipeline is None
 

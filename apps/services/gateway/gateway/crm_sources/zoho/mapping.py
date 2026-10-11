@@ -201,7 +201,7 @@ _CONSUMED: Mapping[str, frozenset[str]] = {
     "deal": frozenset({
         "id", "Deal_Name", "Amount", "Probability", "Closing_Date", "Next_Step",
         "Description", "Stage", "Account_Name", "Contact_Name", "Currency",
-        "Exchange_Rate", "Owner", "Modified_Time", "Pipeline",
+        "Exchange_Rate", "Owner", "Modified_Time",
     }),
     "note": frozenset({
         "id", "Note_Title", "Note_Content", "Parent_Id", "Owner", "Modified_Time",

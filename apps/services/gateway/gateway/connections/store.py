@@ -100,7 +100,7 @@ _UPSERT_SQL = (
     ":blob, :scopes, :connected_by, NULL, now(), now()) "
     "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
     "(COALESCE(member_email, ''))) DO UPDATE SET status = 'connected', "
-    "provider_meta = integration_connections.provider_meta || EXCLUDED.provider_meta, "
+    "provider_meta = EXCLUDED.provider_meta, "
     "credentials_encrypted = EXCLUDED.credentials_encrypted, "
     "scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, "
     "last_error = NULL, updated_at = now() "
@@ -135,8 +135,18 @@ _MARK_SYNCED_SQL = (
     "AND status <> 'disconnected'"
 )
 
+#: What the sync learned about the account. A new consent or a disconnect drops
+#: it, because the next connection may be another Zoho org (CRM-Q1 review).
+_DISCOVERED_KEYS = ("domain_name", "edition", "tabs")
+
+_DROP_PROFILES_SQL = (
+    "DELETE FROM crm_source_profiles WHERE connection_id = CAST(:id AS uuid) "
+    "AND organization_id = CAST(:org AS uuid)"
+)
+
 _DISCONNECT_SQL = (
     "UPDATE integration_connections SET status = 'disconnected', "
+    "provider_meta = provider_meta - 'domain_name' - 'edition' - 'tabs', "
     "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     f"RETURNING {_PUBLIC_COLUMNS}"
@@ -364,6 +374,9 @@ async def save_credential(
         connected_by=(connected_by or "").strip().lower() or None,
     )
     row = (await db.execute(text(_UPSERT_SQL), params)).first()
+    # A new consent may be another org or data centre: the profile and the
+    # discovered keys are the old account's. Discovery runs again at the next run.
+    await db.execute(text(_DROP_PROFILES_SQL), {"id": str(row.id), "org": str(row.organization_id)})
     return _connection(row)
 
 
@@ -421,6 +434,8 @@ async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None
     row = (await db.execute(
         text(_DISCONNECT_SQL), {"id": str(connection_id), "org": str(org)},
     )).first()
+    if row is not None:
+        await db.execute(text(_DROP_PROFILES_SQL), {"id": str(connection_id), "org": str(org)})
     return _connection(row) if row is not None else None
 
 

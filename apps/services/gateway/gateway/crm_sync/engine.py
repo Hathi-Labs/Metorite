@@ -728,7 +728,9 @@ async def _deal_pipeline_id(
         return index.by_ext[ext_id]
     if name and name.strip().lower() in index.by_name:
         return index.by_name[name.strip().lower()]
-    return index.default
+    # A deal that names a pipeline we do not know stays unlinked. Only a deal
+    # that names none joins the default pipeline.
+    return None if (ext_id or name) else index.default
 
 
 @dataclass
@@ -1244,6 +1246,40 @@ def _discovery_due(ctx: _Ctx) -> bool:
     return ctx.started - current.fetched_at >= DISCOVERY_EVERY
 
 
+_NAMED = (
+    "lower(btrim(CASE jsonb_typeof(custom->'Pipeline') "
+    "WHEN 'string' THEN custom->>'Pipeline' "
+    "WHEN 'object' THEN custom->'Pipeline'->>'name' END))"
+)
+_UNLINKED = (
+    "UPDATE crm_deals SET pipeline_id = CAST(:p AS uuid) "
+    "WHERE ext_source = :src AND pipeline_id IS NULL AND "
+)
+_RELINK_BY_EXT = _UNLINKED + "custom->'Pipeline'->>'id' = :ext"
+_RELINK_BY_NAME = _UNLINKED + _NAMED + " = :name"
+_RELINK_DEFAULT = _UNLINKED + (
+    "(custom->'Pipeline' IS NULL OR jsonb_typeof(custom->'Pipeline') = 'null' "
+    "OR (jsonb_typeof(custom->'Pipeline') = 'string' AND btrim(custom->>'Pipeline') = ''))"
+)
+
+
+async def _relink_deals(db: Any) -> None:
+    """Give a mirrored deal with no pipeline the pipeline its stored Zoho
+    ``Pipeline`` value names (CRM-Q2 review). A deal read before the pipelines
+    existed keeps that value in ``custom``. By id first, then by name in
+    pipeline order. A deal that names no pipeline joins the default one, and a
+    deal that names an unknown one stays unlinked."""
+    rows = (await db.execute(text(_PIPELINE_INDEX_SQL), {"src": EXT_SOURCE})).fetchall()
+    for row in rows:
+        await db.execute(text(_RELINK_BY_EXT), {"p": str(row.id), "src": EXT_SOURCE, "ext": str(row.ext_id)})
+    for row in rows:
+        await db.execute(text(_RELINK_BY_NAME), {
+            "p": str(row.id), "src": EXT_SOURCE, "name": str(row.name).strip().lower()})
+    default = next((r for r in rows if r.is_default), rows[0] if rows else None)
+    if default is not None:
+        await db.execute(text(_RELINK_DEFAULT), {"p": str(default.id), "src": EXT_SOURCE})
+
+
 async def _mirror_pipelines(
     ctx: _Ctx, db: Any, rows: list[dict[str, Any]],
 ) -> None:
@@ -1285,6 +1321,7 @@ async def _mirror_pipelines(
     gone = [ext_id for ext_id in known if ext_id not in set(seen)]
     if gone:
         await delete_from_source(db, "crm_pipelines", EXT_SOURCE, gone)
+    await _relink_deals(db)
     ctx.pipelines = None
 
 

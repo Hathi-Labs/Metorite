@@ -15,7 +15,7 @@ pipeline, :data:`DEFAULT_PIPELINE_NAME`, that holds every deal stage in stage
 order. It is made only when the org has no pipeline yet, so a pipeline that an
 admin renamed or emptied does not come back.
 
-The three lists are the ``VALUES` of ``infra/postgres/144_crm.sql``.
+The three lists are the ``VALUES`` of ``infra/postgres/144_crm.sql``.
 ``tests/unit/test_crm_migration.py`` reads that file and fails if the two
 disagree, so a stage renamed in one place is renamed in both or the build is
 red.
