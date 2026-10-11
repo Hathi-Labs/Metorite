@@ -6,6 +6,10 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     # MAF core (includes OpenAI + Azure OpenAI support by default)
     "agent-framework-core>=1.19.0",
+    # WS-8c: the MCP client of a native MAF agent. agent_framework/_mcp.py
+    # imports `mcp` lazily, and agent-framework-core lists it only under the
+    # "all" extra (mcp>=1.24.0,<2), so the range here is the same.
+    "mcp>=1.24.0,<2",
     # Separate OpenAI sub-package (explicit — avoids agent-framework[openai] meta-extra
     # which drags in agent-framework-core[all] → broken azure-search-documents on Windows)
     "agent-framework-openai>=1.14.4",
