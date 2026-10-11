@@ -511,7 +511,17 @@ async def test_a_deal_contact_unlink_on_a_mirrored_deal_is_refused(
 
 
 @_DB_GATE
-async def test_the_legacy_zoho_routes_refuse_mirror_mode(ns, app_engine) -> None:  # noqa: F811
+async def test_the_legacy_zoho_routes_refuse_mirror_mode(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    from gateway.routes.crm import stage_metadata
+
+    async def _meta(_client):
+        return stage_metadata.Metadata(layout={"id": "1", "name": "L"}, pipelines=[{}])
+
+    monkeypatch.setattr(stage_metadata, "fetch_metadata", _meta)
+    monkeypatch.setattr(stage_metadata.import_zoho, "_client", lambda: object())
+    monkeypatch.setattr(stage_metadata, "pipeline_name", lambda _p: "Standard")
     _set_mode(ns, "mirror")
     _seed(ns, mirrored=True)
     admin = _admin(ns.org_a)

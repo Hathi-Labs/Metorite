@@ -180,7 +180,8 @@ async def test_dry_run_writes_nothing_at_all(
     report = await _run(dry_run=True)
 
     assert report.dry_run is True
-    assert db.statements == []
+    # The Mirror-mode check reads crm_settings (CRM-Z6). It is the only statement.
+    assert [x for x in db.statements if "crm_settings" not in x] == []
     assert report.modules["Accounts"].fetched == 1
     assert report.modules["Accounts"].created == 0
 

@@ -591,11 +591,6 @@ async def import_zoho_stages(
     act for the same reason.
     """
     who = actor(user)
-    async with _tenant_session() as db:
-        await refuse_in_mirror_mode(
-            db, "mirror_mode_settings",
-            "The stages come from Zoho. Change them in Zoho.",
-        )
     meta = await fetch_metadata(import_zoho._client())
 
     if meta.layout is None or not meta.pipelines:
@@ -641,6 +636,12 @@ async def import_zoho_stages(
         )
 
     async with _tenant_session() as db:
+        # Mirror mode: Zoho owns the stages. This is before any read or write
+        # of the tenant's data, and it covers the closed_at backfill below.
+        await refuse_in_mirror_mode(
+            db, "mirror_mode_settings",
+            "The stages come from Zoho. Change them in Zoho.",
+        )
         rows = (await db.execute(
             text(f"SELECT * FROM {STATUS_TABLE} ORDER BY position, name"), {},
         )).fetchall()
