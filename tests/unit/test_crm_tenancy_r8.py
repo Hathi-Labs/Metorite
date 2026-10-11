@@ -257,6 +257,9 @@ class TestAnUnboundSessionReadsNothing:
 class TestTheForeignKeyGap:
     @pytest.mark.xfail(
         strict=True,
+        # Only "DID NOT RAISE" counts as the expected failure. A broken setup
+        # (no company row, an import error) must ERROR, not hide as an xfail.
+        raises=pytest.fail.Exception,
         reason=(
             "Recorded FK gap (crm_platform.md §13.3, CRM-T4): a foreign key "
             "check runs below row level security, so a contact in org A can "
