@@ -137,6 +137,25 @@ export const JOBS: readonly ShellJob[] = [
     icon: "UserPlus",
   },
   {
+    // IN-2. Opens the "MCP server" form of the Integrations console. It saves
+    // nothing. An admin holds the pane, so only an admin sees the job.
+    id: "add-mcp",
+    label: "Add an MCP server",
+    words: ["mcp", "server", "tool", "tools", "connect", "integration", "integrations"],
+    app: "/integrations",
+    href: "/integrations?do=add-mcp",
+    icon: "Server",
+  },
+  {
+    // IN-2. A link job: the list of connections is where the work waits.
+    id: "review-integrations",
+    label: "Review connections",
+    words: ["connections", "review", "integrations", "reconnect", "health", "status"],
+    app: "/integrations",
+    href: "/integrations",
+    icon: "Plug",
+  },
+  {
     id: "find-person",
     label: "Find a colleague",
     words: ["people", "person", "colleague", "directory", "who", "team", "contact"],
