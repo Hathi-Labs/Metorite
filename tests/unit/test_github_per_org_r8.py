@@ -263,10 +263,9 @@ async def test_two_orgs_hold_two_tokens_and_a_reader_gets_its_own(ns, app_engine
     # A reader of org A gets A's token. It never gets B's, even when it asks.
     assert await _read_token(ns, ns.org_a) == TOKEN_A
     assert await _read_token(ns, ns.org_b) == TOKEN_B
-    async with tenant_engine_scope(_app_dsn(ns)):
-        async with tenant_session(ns.org_a) as db:
-            foreign = await store.load_credential(db, ns.org_b, github.PROVIDER, github.OWNING_APP)
-            foreign_row = await store.get(db, ns.org_b, github.PROVIDER, github.OWNING_APP)
+    async with tenant_engine_scope(_app_dsn(ns)), tenant_session(ns.org_a) as db:
+        foreign = await store.load_credential(db, ns.org_b, github.PROVIDER, github.OWNING_APP)
+        foreign_row = await store.get(db, ns.org_b, github.PROVIDER, github.OWNING_APP)
     assert foreign is None and foreign_row is None
 
 
