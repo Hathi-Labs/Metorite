@@ -311,6 +311,23 @@ async def test_a_link_is_refused(runs) -> None:
     assert _entries(ws, everything["path"]) == {"mine.md": b"MINE"}
 
 
+def test_each_layer_refuses_a_link_alone(tmp_path: Path) -> None:
+    """Two layers refuse a link: the kind check never reports one, and the
+    zip reads through the safe opener. Each holds without the other."""
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "secret.txt").write_text("OUTSIDE", encoding="utf-8")
+    (tmp_path / "outputs" / "real.md").write_text("REAL", encoding="utf-8")
+    _link(tmp_path / "secret.txt", tmp_path / "outputs" / "planted.md")
+    _link(tmp_path, tmp_path / "outputs" / "planted-dir", is_dir=True)
+    assert pa._kind_of(tmp_path, "outputs/real.md") == "file"
+    assert pa._kind_of(tmp_path, "outputs/planted.md") is None
+    assert pa._kind_of(tmp_path, "outputs/planted-dir") is None
+    with pytest.raises(ValueError, match="link"):
+        pa._build_zip(tmp_path, ["outputs/planted.md"])
+    with pytest.raises(ValueError, match="link"):
+        pa._build_zip(tmp_path, ["outputs/planted-dir/secret.txt"])
+
+
 async def test_named_files_and_folders_go_in_with_unique_names(runs) -> None:
     from acb_skills.agent_paths import thread_slug
 
