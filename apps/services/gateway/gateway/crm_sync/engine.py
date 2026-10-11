@@ -87,7 +87,7 @@ from gateway.routes.crm.core import (
     savepoint,
     upsert_from_source,
 )
-from gateway.routes.crm.import_zoho import ensure_status
+from gateway.routes.crm.import_zoho import guess_status_type
 
 _log = get_logger("crm.sync")
 
@@ -506,17 +506,85 @@ async def _local_id(
     return cache[key]
 
 
+# The stage tables are written with raw SQL here and never through
+# ``core.insert_row``, which refuses a write in Mirror mode (CRM-Z6). The key
+# is ``(organization_id, name)``: one stage name is one stage (§5.2 row 11).
+# ``table`` is one of two constants of this module, never caller input.
+_STATUS_INSERT_SQL = (
+    "INSERT INTO {table} (name, position, type{prob_col}) VALUES (:name, "
+    "COALESCE((SELECT max(position) + 1 FROM {table}), 0), :type{prob_val}) "
+    "ON CONFLICT (organization_id, name) DO NOTHING"
+)
+_STATUS_ID_SQL = "SELECT id FROM {table} WHERE name = :name"
+
+
+async def _ensure_status(
+    db: Any, table: str, name: str, *, type_: str | None = None,
+    position: int | None = None, probability: int | None = None,
+) -> str:
+    """The id of the status called ``name``. A new one is appended."""
+    deal = table == DEAL_STATUSES
+    sql = _STATUS_INSERT_SQL.format(
+        table=table, prob_col=", probability" if deal else "",
+        prob_val=", :probability" if deal else "",
+    )
+    params: dict[str, Any] = {"name": name, "type": type_ or guess_status_type(name)}
+    if deal:
+        params["probability"] = probability or 0
+    if position is not None:
+        sql = sql.replace(
+            "COALESCE((SELECT max(position) + 1 FROM " + table + "), 0)", ":position",
+        )
+        params["position"] = position
+    await db.execute(text(sql), params)
+    row = (await db.execute(text(_STATUS_ID_SQL.format(table=table)), {"name": name})).first()
+    return str(row.id)
+
+
 async def _status_id(
     db: Any, table: str, name: str | None, cache: dict[tuple[str, str], str],
 ) -> str:
     wanted = name if name and name != "-None-" else UNKNOWN_STATUS
     key = (table, wanted)
     if key not in cache:
-        status_id, _created = await ensure_status(
-            db, table, wanted, with_probability=table == DEAL_STATUSES,
-        )
-        cache[key] = status_id
+        cache[key] = await _ensure_status(db, table, wanted)
     return cache[key]
+
+
+_STATUS_FIELDS = {"lead": ("Lead_Status", LEAD_STATUSES), "deal": ("Stage", DEAL_STATUSES)}
+
+
+def _picklist_type(item: dict[str, Any], name: str) -> str:
+    forecast = item.get("forecast_category")
+    label = str(forecast.get("name") if isinstance(forecast, dict) else forecast or "").lower()
+    if "won" in label:
+        return "won"
+    if "lost" in label:
+        return "lost"
+    return guess_status_type(name)
+
+
+async def _mirror_statuses(
+    ctx: _Ctx, db: Any, entity: str, definitions: list[dict[str, Any]],
+) -> None:
+    """Mirror the Stage / Lead_Status picklist into the org's status table."""
+    api_name, table = _STATUS_FIELDS[entity]
+    for definition in definitions:
+        if definition.get("api_name") != api_name:
+            continue
+        items = [i for i in definition.get("pick_list_values") or [] if isinstance(i, dict)]
+        items.sort(key=lambda i: int(i.get("sequence_number") or 0))
+        for position, item in enumerate(items):
+            name = str(item.get("actual_value") or item.get("display_value") or "").strip()
+            if not name or name == "-None-":
+                continue
+            raw_prob = item.get("probability")
+            prob = raw_prob if isinstance(raw_prob, int) and 0 <= raw_prob <= 100 else None
+            async with savepoint(db):
+                await _ensure_status(
+                    db, table, name, type_=_picklist_type(item, name),
+                    position=position, probability=prob,
+                )
 
 
 @dataclass
@@ -835,6 +903,8 @@ async def _field_defs(ctx: _Ctx) -> None:
                          entity, error_code(exc))
             continue
         async with ctx.page() as db:
+            if entity in _STATUS_FIELDS:
+                await _mirror_statuses(ctx, db, entity, definitions)
             for position, definition in enumerate(definitions):
                 mapped = ctx.mapping.map_field_def(entity, definition, position)
                 if mapped is None:

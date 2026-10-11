@@ -130,7 +130,7 @@ async def start_crm_mirror_sync() -> bool:
     With either switch off it starts no task and logs once, then returns False.
     """
     global _task
-    if not (flags.crm_enabled() and flags.crm_mirror_enabled()):
+    if not flags.mirror_sync_enabled():
         _log.info("crm.mirror_sync.disabled")
         return False
     if _task is not None and not _task.done():
