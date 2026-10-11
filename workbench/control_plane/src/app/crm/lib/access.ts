@@ -26,9 +26,48 @@ export const ADMINS_ONLY_LINK = "Choose who else can use it.";
 /** The id of the access control, so the hint can link to it. */
 export const ACCESS_ANCHOR = "crm-access";
 
-/** Is this error the access refusal (403) of the gateway? */
-export function isAccessDenied(err: unknown): boolean {
-  return err instanceof CrmError && err.status === 403;
+/** A member who lacks the `feature:crm` grant. */
+export const NO_FEATURE_TITLE = "You do not have access to the CRM";
+export const NO_FEATURE_BODY = "Ask an admin for the CRM permission.";
+
+/** An org where the CRM is switched off (`CRM_ENABLED` or `CRM_ORGS`). */
+export const CRM_OFF_TITLE = "The CRM is not turned on for your organization yet.";
+
+/** The toast of the `new-lead` job when the form cannot open. */
+export const NEW_LEAD_MIRROR = "New leads come from Zoho in this organization.";
+
+/**
+ * The words of the CRM access rule 403 (`routes/crm/access.py::_forbidden`).
+ * The feature gate answers 403 too, with a "missing permission" message.
+ */
+const ACCESS_RULE_WORDS = "has not given you access to the CRM";
+
+/** Which 403 is it: the access rule (T5), or a missing `feature:crm`? */
+export type Denial = "access" | "feature";
+
+/** The kind of a gateway 403, or `null` when the error is not a 403. */
+export function denialOf(err: unknown): Denial | null {
+  if (!(err instanceof CrmError) || err.status !== 403) return null;
+  return err.message.includes(ACCESS_RULE_WORDS) ? "access" : "feature";
+}
+
+/** The words for a job that cannot run, by first-open phase. `null` when none applies. */
+export function refusalOf(phase: string): string | null {
+  switch (phase) {
+    case "no-access":
+      return NO_ACCESS_TITLE;
+    case "no-feature":
+      return NO_FEATURE_TITLE;
+    case "off":
+      return CRM_OFF_TITLE;
+    default:
+      return null;
+  }
+}
+
+/** Is this error a 404 from a CRM route? With the CRM off, each one answers it. */
+export function isNotFound(err: unknown): boolean {
+  return err instanceof CrmError && err.status === 404;
 }
 
 /** Does the rule admit admins only? No row, or no access value, reads as yes. */

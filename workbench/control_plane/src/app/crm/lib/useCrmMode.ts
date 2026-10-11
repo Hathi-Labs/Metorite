@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { invalidate } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
-import { isAccessDenied } from "./access";
+import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
 import {
   POLL_MS,
@@ -43,38 +43,58 @@ export type CrmModeState = {
   refresh: () => void;
 };
 
-/** What the connection read holds when the gateway answered 403. */
-const DENIED = "denied" as const;
+/** What the settings read holds when every CRM route answers 404. */
+export const CRM_OFF = "off" as const;
+
+/** The settings read. A 404 means the CRM is off. Any other refusal reads as unknown. */
+export function readSettings(): Promise<CrmSettings | null | typeof CRM_OFF> {
+  return api.getCrmSettings().catch((err: unknown) => (isNotFound(err) ? CRM_OFF : null));
+}
+
+const DENIED_ACCESS = "denied-access" as const;
+const DENIED_FEATURE = "denied-feature" as const;
 
 export function useCrmMode(isAdmin: boolean, accessLoading: boolean): CrmModeState {
   // The first read of the page. A 403 here is the access rule (CRM-T5): the
   // member is not admitted yet, so it is a state to draw, not an error.
-  const conn = useCachedResource<ConnectionInfo | null | typeof DENIED>(KEY_CONNECTION, () =>
+  const conn = useCachedResource<
+    ConnectionInfo | null | typeof DENIED_ACCESS | typeof DENIED_FEATURE
+  >(KEY_CONNECTION, () =>
     api.getConnection().catch((err: unknown) => {
-      if (isAccessDenied(err)) return DENIED;
+      const why = denialOf(err);
+      if (why === "access") return DENIED_ACCESS;
+      if (why === "feature") return DENIED_FEATURE;
       throw err;
     }),
   );
-  const denied = conn.data === DENIED;
+  const denied: Denial | null =
+    conn.data === DENIED_ACCESS ? "access" : conn.data === DENIED_FEATURE ? "feature" : null;
   // With the mirror off the connection read is a 404 and holds no mode. An
   // admin can still read the mode from the settings.
-  const wantsSettings = !conn.loading && conn.data === null && isAdmin && !accessLoading;
-  const settings = useCachedResource<CrmSettings | null>(
+  // The 404 of the connection is ambiguous: the mirror is off, or the whole
+  // CRM is. The settings read tells them apart, for a member too: a member
+  // gets 403 there when the CRM is on (the admin floor), and 404 when it is off.
+  const wantsSettings = !conn.loading && conn.data === null && !accessLoading;
+  const settings = useCachedResource<CrmSettings | null | typeof CRM_OFF>(
     wantsSettings ? KEY_SETTINGS : null,
-    () => api.getCrmSettings().catch(() => null),
+    readSettings,
   );
+  const off = settings.data === CRM_OFF;
 
-  const connection = conn.data === DENIED ? null : (conn.data ?? null);
+  const connection =
+    conn.data === DENIED_ACCESS || conn.data === DENIED_FEATURE ? null : (conn.data ?? null);
   const readFailed = conn.data === undefined && conn.error !== null;
   const settingsMode: CrmMode | undefined =
-    settings.data === undefined || settings.data === null ? undefined : settings.data.mode;
+    settings.data === undefined || settings.data === null || settings.data === CRM_OFF
+      ? undefined
+      : settings.data.mode;
 
   const loading =
     accessLoading || (conn.loading && !readFailed) || (wantsSettings && settings.loading);
   // A failed read must not lock the CRM. Show the pipeline, as before.
   const phase: FirstOpen = readFailed
     ? "ready"
-    : firstOpen({ loading, connection, settingsMode, isAdmin, denied });
+    : firstOpen({ loading, connection, settingsMode, isAdmin, denied, off });
 
   return {
     phase,

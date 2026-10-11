@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { BoardLane } from "../lib/board";
-import type { ConnectionInfo, SyncStatus } from "../lib/connect";
+import { modeLine, type ConnectionInfo, type SyncStatus } from "../lib/connect";
 import AccessPanel from "./AccessPanel";
 import PipelineSettings from "./PipelineSettings";
 import ConnectionPanel from "./ConnectionPanel";
@@ -196,13 +196,18 @@ describe("the pipeline settings in Mirror mode", () => {
   it("says where the stages come from, and shuts every control", () => {
     const html = draw(true);
     expect(html).toContain("Stages come from Zoho.");
-    expect(html).toMatch(/<fieldset[^>]*disabled/);
-    expect(html).toMatch(/<fieldset[^>]*inert/);
+    // Plain text rows: no input, no drag handle, no delete button.
+    expect(html).toContain("Qualified");
+    expect(html).not.toContain("<input");
+    expect(html).not.toContain("draggable");
+    expect(html).not.toMatch(/aria-label="(Delete|Remove)/);
+    expect(html).not.toContain("Repair from Zoho");
   });
   it("stays editable in Native mode", () => {
     const html = draw(false);
     expect(html).not.toContain("Stages come from Zoho.");
-    expect(html).not.toMatch(/<fieldset[^>]*disabled/);
+    expect(html).toContain("Qualified");
+    expect(html).not.toContain("Repair from Zoho");
   });
 });
 
@@ -308,5 +313,35 @@ describe("who may open the CRM (CRM-L2)", () => {
     expect(groups).toContain("Sales");
     expect(groups).toContain("ops");
     expect(groups).toContain("checked");
+  });
+});
+
+describe("the other refusals and the reconnect marks (CRM-L2)", () => {
+  const draw = (phase: Parameters<typeof FirstOpen>[0]["phase"]) =>
+    renderToStaticMarkup(
+      createElement(FirstOpen, { phase, busy: null, onNative: noop, onConnectZoho: noop }),
+    );
+  it("tells a member without the grant to ask for it", () => {
+    const html = draw("no-feature");
+    expect(html).toContain("You do not have access to the CRM");
+    expect(html).toContain("Ask an admin for the CRM permission.");
+    expect(html).not.toContain("not open to you yet");
+  });
+  it("tells an org with the CRM off", () => {
+    expect(draw("off")).toContain("The CRM is not turned on for your organization yet.");
+  });
+  it("draws Connect Zoho again as a primary button", () => {
+    const html = renderToStaticMarkup(
+      createElement(ReconnectBanner, { isAdmin: true, busy: false, onReconnect: noop }),
+    );
+    expect(html).toContain("Connect Zoho again");
+    expect(html).toContain("bg-primary");
+  });
+  it("names the disconnected state in the title bar line", () => {
+    const sync = { state: "idle", last_success_at: "2026-10-11T11:53:00Z" } as unknown as SyncStatus;
+    const now = Date.parse("2026-10-11T12:00:00Z");
+    const line = modeLine({ mode: "mirror", connection: { ...conn, status: "needs_reconnect" }, sync, nowMs: now });
+    expect(line).toBe("Zoho disconnected · last synced 7m ago");
+    expect(modeLine({ mode: "mirror", connection: conn, sync, nowMs: now })).toContain("Synced from Zoho");
   });
 });

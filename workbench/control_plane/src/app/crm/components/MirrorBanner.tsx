@@ -39,7 +39,7 @@ export function ReconnectBanner({
           : "Zoho stopped sharing data with Metorite. Records are not updating."}
       </p>
       {isAdmin ? (
-        <Button variant="secondary" size="sm" icon="RefreshCw" loading={busy} onClick={onReconnect}>
+        <Button variant="primary" size="sm" icon="RefreshCw" loading={busy} onClick={onReconnect}>
           Connect Zoho again
         </Button>
       ) : (

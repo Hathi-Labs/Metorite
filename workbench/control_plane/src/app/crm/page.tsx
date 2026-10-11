@@ -29,6 +29,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
+import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
@@ -108,6 +109,7 @@ type MirrorContext = {
 
 function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const router = useRouter();
+  const toast = useToast();
   const searchParams = useSearchParams();
   const view = useMemo(
     () => parseView(searchParams.toString()),
@@ -432,9 +434,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}
               saving={store.saving}
-              // Hiding the pull is the courtesy half; the route is floored on the
-              // same capability server-side and refuses regardless.
-              canPullStages={ctx.isAdmin}
               readOnly={ctx.mode === "mirror"}
               onSaveStatus={store.saveStatus}
               onRemoveStatus={store.removeStatus}
@@ -442,7 +441,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onSaveLostReason={store.saveLostReason}
               onRemoveLostReason={store.removeLostReason}
               onReorderLostReasons={store.reorderLostReasons}
-              onPullStages={store.pullZohoStages}
             />
           ) : (
             // `listEntity` is non-null here by construction — the three branches
@@ -531,8 +529,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
       <ShellJob
         id="new-lead"
-        ready={mayCreate}
-        onOpen={() => setCreating("leads")}
+        onOpen={() => {
+          // Mirror mode: Zoho owns the leads, so the form cannot open.
+          if (mayCreate) setCreating("leads");
+          else toast.show({ key: "crm-new-lead", variant: "error", title: NEW_LEAD_MIRROR });
+        }}
       />
 
       {creating && (
@@ -705,13 +706,25 @@ function CrmGate(): ReactNode {
   }
 
   if (phase !== "ready") {
+    // The "New lead" job lands here too, and it must say why nothing opens.
+    const refusal = refusalOf(phase);
     return (
-      <FirstOpen
-        phase={phase}
-        busy={busy}
-        onNative={chooseNative}
-        onConnectZoho={connectZoho}
-      />
+      <>
+        {refusal && (
+          <ShellJob
+            id="new-lead"
+            onOpen={() =>
+              toast.show({ key: "crm-new-lead", variant: "error", title: refusal })
+            }
+          />
+        )}
+        <FirstOpen
+          phase={phase}
+          busy={busy}
+          onNative={chooseNative}
+          onConnectZoho={connectZoho}
+        />
+      </>
     );
   }
 

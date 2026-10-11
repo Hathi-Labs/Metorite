@@ -75,7 +75,11 @@ export type FirstOpen =
   /** A member, mirror on, no mode. Tell them to ask an admin. */
   | "wait-admin"
   /** The gateway refused the first read (403): the access rule has not admitted this member. */
-  | "no-access";
+  | "no-access"
+  /** The 403 was the missing `feature:crm` grant. */
+  | "no-feature"
+  /** Each CRM route answers 404: the CRM is off for this organization. */
+  | "off";
 
 /**
  * What the CRM shows before the pipeline.
@@ -93,11 +97,15 @@ export function firstOpen(input: {
   connection: ConnectionInfo | null;
   settingsMode: CrmMode | undefined;
   isAdmin: boolean;
-  /** The first read answered 403 (CRM-T5, CRM-L2). */
-  denied?: boolean;
+  /** The first read answered 403: the access rule, or the missing feature (CRM-L2). */
+  denied?: "access" | "feature" | null;
+  /** The CRM answers 404 on every route (CRM-L2). */
+  off?: boolean;
 }): FirstOpen {
   if (input.loading) return "loading";
-  if (input.denied) return "no-access";
+  if (input.off) return "off";
+  if (input.denied === "access") return "no-access";
+  if (input.denied === "feature") return "no-feature";
   const mirrorOn = input.connection !== null;
   const mode = mirrorOn ? input.connection!.mode : input.settingsMode;
   if (mode === "native" || mode === "mirror") return "ready";
@@ -137,9 +145,13 @@ export function modeLine(input: {
 }): string | null {
   if (input.mode === "native") return "Native";
   if (input.mode !== "mirror") return null;
-  if (input.sync?.state === "running") return "Importing from Zoho…";
   const last = input.sync?.last_success_at ?? input.connection?.last_sync_at ?? null;
   const when = last ? relativeTime(last, input.nowMs) : "";
+  const status = input.connection?.status;
+  if (status === "needs_reconnect" || status === "disconnected") {
+    return when ? `Zoho disconnected · last synced ${when}` : "Zoho disconnected";
+  }
+  if (input.sync?.state === "running") return "Importing from Zoho…";
   return when ? `Synced from Zoho · ${when}` : "Synced from Zoho";
 }
 

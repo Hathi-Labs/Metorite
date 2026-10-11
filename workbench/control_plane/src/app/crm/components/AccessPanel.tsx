@@ -31,7 +31,7 @@ import {
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
 import type { CrmSettings } from "../lib/connect";
-import { invalidateCrmMode } from "../lib/useCrmMode";
+import { CRM_OFF, invalidateCrmMode, readSettings } from "../lib/useCrmMode";
 
 export type GroupRow = { slug: string; display_name?: string };
 
@@ -72,9 +72,11 @@ export default function AccessPanel({
         )}
       </header>
       <div className="flex flex-col gap-3 px-4 py-3">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Who can open the CRM
+        </span>
         <SelectButton
           label="Who can open the CRM"
-          prefix="Who can open"
           value={value}
           options={ACCESS_OPTIONS.map((o) => ({
             value: o.value,
@@ -120,9 +122,7 @@ export default function AccessPanel({
 export function AccessSection() {
   const toast = useToast();
   // The same cache entry as the mode read (`useCrmMode`), the same fetcher.
-  const settings = useCachedResource<CrmSettings | null>("crm:settings", () =>
-    api.getCrmSettings().catch(() => null),
-  );
+  const settings = useCachedResource<CrmSettings | null | typeof CRM_OFF>("crm:settings", readSettings);
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -156,8 +156,8 @@ export function AccessSection() {
 
   return (
     <AccessPanel
-      access={settings.data?.access}
-      groups={settings.data?.access_groups ?? []}
+      access={typeof settings.data === "object" ? settings.data?.access : undefined}
+      groups={(typeof settings.data === "object" && settings.data?.access_groups) || []}
       allGroups={groups}
       saving={saving}
       onChange={change}
