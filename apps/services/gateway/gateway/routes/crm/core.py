@@ -1,7 +1,8 @@
 """CRM routes — the shared kernel.
 
 The leaf module: it imports nothing from its siblings except ``flags``, the
-kill switch, which is a leaf too (WS-53 CRM-0). It owns the shared
+kill switch (WS-53 CRM-0), and ``access``, the access rule (WS-53 CRM-T5).
+Both are leaves too. It owns the shared
 ``router``, the entity registry, the Pydantic models, the row→model mapper, the
 list contract, and the small set of SQL helpers every feature module builds on.
 Spec: ``project-docs/specs/crm_app.md`` sections 3 and 4 (WS-26a).
@@ -25,7 +26,9 @@ usually grows an injection.
 ``user_management_contract.md`` §7). So there is deliberately no owner
 predicate here and no 404-not-403 scoping — unlike ``routes/notes``, where the
 opposite decision is equally deliberate. Do not "fix" one to look like the
-other without changing the decision first.
+other without changing the decision first. Since WS-53 CRM-T5, ``access.py``
+decides which ``feature:crm`` holders may open the CRM at all. It does not
+filter rows.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ from fastapi import APIRouter, Depends, HTTPException
 # H4 forbids; they stay unbound until H4 threads an explicit tenant through.
 from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
+from gateway.routes.crm.access import require_crm_access
 from gateway.routes.crm.flags import require_crm_enabled
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -68,9 +72,17 @@ _log = get_logger("gateway.crm")
 #: The kill switch goes FIRST (WS-53 CRM-0). FastAPI runs router dependencies
 #: in list order, so an organization outside ``CRM_ORGS`` gets 404 before the
 #: feature gate can answer 403. Fence: ``tests/unit/test_crm_kill_switch.py``.
+#:
+#: The access rule goes THIRD (WS-53 CRM-T5): ``crm_settings.access`` picks
+#: who of the ``feature:crm`` holders may open the CRM, and an admin always
+#: passes. Fence: ``tests/unit/test_crm_access.py``.
 router = APIRouter(
     prefix="/crm", tags=["crm"],
-    dependencies=[Depends(require_crm_enabled), require_feature_router("crm")],
+    dependencies=[
+        Depends(require_crm_enabled),
+        require_feature_router("crm"),
+        Depends(require_crm_access),
+    ],
 )
 
 #: The `source` vocabulary, mirrored from the CHECK constraint in migration 144.

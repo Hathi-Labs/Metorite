@@ -7,10 +7,13 @@ Spec: ``project-docs/specs/crm_app.md`` §3.6, §3.10, §4 (``admin.py`` row).
     GET/POST          /crm/lost-reasons
     PATCH/DELETE      /crm/lost-reasons/{reason_id}
 
-**Gated on ``feature:crm`` only** — the router's gate, no extra capability.
-That is decision D-CRM-3: the sales team manages its own pipeline, and a
-separate admin permission would mean the owner is the only person who can
-rename a stage. Revisit when WS-24 admits colleague #1.
+**The reads pass the router's gates. The six writes also need
+``admin:access:manage``** (WS-53 CRM-T5, finding CR-10 in
+``project-docs/specs/crm_platform.md``). D-CRM-3 let each ``feature:crm``
+holder rename or delete a stage. With a second organization and members who
+are not the owner, one member could then empty the funnel of all the others.
+The floor is the one the Zoho import and ``PATCH /crm/settings`` use. The
+reads stay open, because each board and each record sheet needs them.
 
 ``DELETE`` on a status still holding records is a **409**. The FK is
 ``ON DELETE RESTRICT``, so Postgres would refuse it anyway — but it would
@@ -22,8 +25,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
+from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     STAGE_REQUIREABLE_FIELDS,
     STATUS_TYPES,
@@ -38,6 +42,10 @@ from gateway.routes.crm.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+
+#: The floor of the six writes below (CR-10). One object, so the wiring test in
+#: ``tests/unit/test_crm_access.py`` can find it on each route.
+ADMIN_ONLY = [require_permission(ADMIN_PERMISSION)]
 
 #: URL segment → (statuses table, the table whose rows reference it). Two
 #: entries, written out: the segment is matched against this dict and never
@@ -288,7 +296,10 @@ async def list_statuses(
         return [status_wire(r) for r in rows]
 
 
-@router.post("/statuses/{kind}", response_model=StatusModel, status_code=201)
+@router.post(
+    "/statuses/{kind}", response_model=StatusModel, status_code=201,
+    dependencies=ADMIN_ONLY,
+)
 async def create_status(
     kind: str, payload: StatusIn,
     user: UserContext = Depends(get_current_user),
@@ -306,7 +317,10 @@ async def create_status(
         return status_wire(row)
 
 
-@router.patch("/statuses/{kind}/{status_id}", response_model=StatusModel)
+@router.patch(
+    "/statuses/{kind}/{status_id}", response_model=StatusModel,
+    dependencies=ADMIN_ONLY,
+)
 async def patch_status(
     kind: str, status_id: str, payload: StatusIn,
     user: UserContext = Depends(get_current_user),
@@ -329,7 +343,7 @@ async def patch_status(
         return status_wire(row)
 
 
-@router.delete("/statuses/{kind}/{status_id}")
+@router.delete("/statuses/{kind}/{status_id}", dependencies=ADMIN_ONLY)
 async def delete_status(
     kind: str, status_id: str,
     user: UserContext = Depends(get_current_user),
@@ -387,7 +401,10 @@ async def list_lost_reasons(
         ]
 
 
-@router.post("/lost-reasons", response_model=LostReasonModel, status_code=201)
+@router.post(
+    "/lost-reasons", response_model=LostReasonModel, status_code=201,
+    dependencies=ADMIN_ONLY,
+)
 async def create_lost_reason(
     payload: LostReasonIn, user: UserContext = Depends(get_current_user),
 ) -> LostReasonModel:
@@ -404,7 +421,10 @@ async def create_lost_reason(
         )
 
 
-@router.patch("/lost-reasons/{reason_id}", response_model=LostReasonModel)
+@router.patch(
+    "/lost-reasons/{reason_id}", response_model=LostReasonModel,
+    dependencies=ADMIN_ONLY,
+)
 async def patch_lost_reason(
     reason_id: str, payload: LostReasonIn,
     user: UserContext = Depends(get_current_user),
@@ -422,7 +442,7 @@ async def patch_lost_reason(
         )
 
 
-@router.delete("/lost-reasons/{reason_id}")
+@router.delete("/lost-reasons/{reason_id}", dependencies=ADMIN_ONLY)
 async def delete_lost_reason(
     reason_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
