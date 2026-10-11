@@ -33,6 +33,12 @@ async function stub(page: Page, accounts: unknown, calls: string[] = [], session
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/health", (r) => json(r, { gateway: "up" }));
   await page.route("**/api/auth/session", (r) => json(r, session));
+  // The member's layout, answered at once: skipped, so every app shows and
+  // the first sign-in question stays shut. Unstubbed, the read waits on a
+  // gateway that does not run here, and the sidebar holds its skeleton.
+  await page.route("**/api/auth/me/shell", (r) =>
+    json(r, { preset: null, answered: "skipped", pins: null, known: null, cardOrder: null, newOrder: null }),
+  );
   await page.route(/\/api\/accounts(\?.*)?$/, (r) => json(r, accounts));
   await page.route(/\/api\/accounts\/[a-z-]+$/, async (r) => {
     calls.push(`${new URL(r.request().url()).pathname} ${r.request().postData() ?? ""}`);

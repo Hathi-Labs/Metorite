@@ -5,7 +5,17 @@ D-CRM-6 · D-CRM-7 · D-CRM-8 · ticket WS-26b done-when 3, 4 and 5.
 
     POST /crm/sync/zoho    run ONE cycle now (admin:access:manage), with or
                            without the flag — a hand-run cycle is an explicit
-                           admin act, not a scheduled one.
+                           admin act, not a scheduled one. ⚠️ Answers 409
+                           until CRM-Z5 (below).
+
+⚠️ **OFF UNTIL CRM-Z5** (WS-53 CRM-T3, ``crm_platform.md`` §4.3). Migration
+241 put FORCE RLS on every ``crm_*`` table, and one cycle here opens one
+UNBOUND session, commits per phase and calls Zoho with it open. So
+:func:`start_crm_zoho_sync` starts no loop even with ``CRM_ZOHO_SYNC`` on, and
+``POST /crm/sync/zoho`` answers 409 with no session and no Zoho call. The
+engine below stays as it is: CRM-Z5 reuses it with one ``tenant_session(org)``
+per step. ``test_db_engine_seam.py`` keeps this file in ``H2_EXEMPT_FILES``
+for that reason alone.
 
 **One cycle = pull, then apply Zoho's deletes, then push.** In that order, on
 purpose: pulling first means a native row that lost a conflict is already
@@ -1154,6 +1164,9 @@ async def _run_cycle_locked(actor_email: str) -> SyncCycleReport:
         owners = {}
         report.errors.append(f"owner mapping unavailable: {str(exc)[:200]}")
 
+    # ⚠️ UNREACHABLE UNTIL CRM-Z5 (WS-53 CRM-T3): no loop starts and the
+    # route answers 409, so nothing in production reaches this session.
+    #
     # H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): one cycle is
     # a BACKGROUND engine run — the scheduled loop below fires it with no
     # request in flight, and the `POST /crm/sync/zoho` hand-run shares this
@@ -1236,17 +1249,45 @@ async def _sync_loop() -> None:
             await asyncio.wait_for(_stopping.wait(), timeout=interval)
 
 
+#: Why the loop and the hand-run cycle refuse until CRM-Z5 (WS-53 CRM-T3,
+#: ``crm_platform.md`` §4.3). One cycle opens ONE unbound session, commits per
+#: phase and per record, and calls Zoho while that session is open. Under
+#: FORCE RLS on every ``crm_*`` table (migration 241) it reads no row and
+#: every write fails. A correct binding is one ``tenant_session(org)`` per
+#: step, with no session open across a provider call. That is the CRM-Z5
+#: engine, so CRM-T3 does not build it twice.
+SYNC_OFF_UNTIL_CRM_Z5 = (
+    "The Zoho sync is off until CRM-Z5. The current engine opens no tenant "
+    "session, so under FORCE RLS it reads no row and writes nothing. CRM-Z5 "
+    "rebuilds it per connection, with one tenant session per step."
+)
+
+
 async def start_crm_zoho_sync() -> bool:
-    """Start the loop **only when ``CRM_ZOHO_SYNC`` is on**. Returns started?
+    """Start NO loop until CRM-Z5, whatever ``CRM_ZOHO_SYNC`` says.
 
     Called from the gateway lifespan. With the flag off — the default and the
     state of every environment — this registers nothing at all, which is the
-    OFF-state property WS-26b done-when 4 asserts.
+    OFF-state property WS-26b done-when 4 asserts. With the flag ON it also
+    registers nothing, and it logs ``crm.sync.off_until_crm_z5`` at WARNING
+    so the operator who flipped the flag can see why (WS-53 CRM-T3). See
+    :data:`SYNC_OFF_UNTIL_CRM_Z5`. :func:`_start_sync_task` keeps the start
+    for CRM-Z5 to call.
     """
-    global _sync_task
     if not sync_enabled():
         _log.info("crm.sync.disabled")
         return False
+    _log.warning("crm.sync.off_until_crm_z5", reason=SYNC_OFF_UNTIL_CRM_Z5)
+    return False
+
+
+async def _start_sync_task() -> bool:
+    """Start the supervised loop task. Idempotent. **No caller until CRM-Z5.**
+
+    The body :func:`start_crm_zoho_sync` ran before WS-53 CRM-T3, kept as-is
+    so CRM-Z5 reuses it and the stop path keeps its tests.
+    """
+    global _sync_task
     if _sync_task is not None and not _sync_task.done():
         return True
     _stopping.clear()
@@ -1310,25 +1351,26 @@ def sync_status() -> dict[str, Any]:
 async def run_sync_cycle_now(
     user: UserContext = Depends(get_current_user),
 ) -> SyncCycleReport:
-    """Run ONE sync cycle now — **with or without ``CRM_ZOHO_SYNC``**.
+    """Run ONE sync cycle now. **Answers 409 until CRM-Z5** (WS-53 CRM-T3).
 
-    §7.1: a hand-run cycle is an explicit admin act, so it does not need the
-    scheduling flag; the flag only decides whether the platform does this
-    unattended. Same ``admin:access:manage`` floor as the backfill, and the
-    same warning: against the production tenant this WRITES live Zoho and is
-    an OWNER-GATE act (``work_plan.md`` §6).
+    The cycle cannot bind a tenant (:data:`SYNC_OFF_UNTIL_CRM_Z5`), so this
+    route opens no session, calls no Zoho client and answers 409 with a
+    detail that names CRM-Z5. The ``admin:access:manage`` floor stays, so a
+    member without it still gets 403 first.
 
-    **409 while a cycle is already running.** Two overlapping cycles see the
-    same dirty rows and both create them upstream, and Zoho's API offers no
-    idempotency token to undo that. Refusing is the honest answer — the
-    scheduled loop, or a later click, will do the work.
+    §7.1 still holds for CRM-Z5: a hand-run cycle is an explicit admin act,
+    so it does not need the scheduling flag. Against the production tenant it
+    WRITES live Zoho and is an OWNER-GATE act (``work_plan.md`` §6). It also
+    answered 409 while a cycle was already running, because two overlapping
+    cycles both create the same dirty rows upstream.
     """
     from gateway.routes.crm.core import actor
 
-    try:
-        return await run_cycle(actor_email=actor(user))
-    except CycleAlreadyRunning as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _log.warning(
+        "crm.sync.off_until_crm_z5", actor=actor(user),
+        reason=SYNC_OFF_UNTIL_CRM_Z5,
+    )
+    raise HTTPException(status_code=409, detail=SYNC_OFF_UNTIL_CRM_Z5)
 
 
 __all__ = [
@@ -1336,6 +1378,7 @@ __all__ = [
     "PUSHABLE_ACTIVITY_TYPES",
     "PUSH_BATCH_LIMIT",
     "SYNC_INTERVAL_SECS",
+    "SYNC_OFF_UNTIL_CRM_Z5",
     "CycleAlreadyRunning",
     "PushReport",
     "SyncCycleReport",

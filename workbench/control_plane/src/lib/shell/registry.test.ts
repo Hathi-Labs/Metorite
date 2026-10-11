@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PANES, visibleSections, type NavPane } from "@/lib/nav";
-import { pinnedPanes } from "./presets";
+import { STARRABLE, starredHrefs } from "./presets";
 import {
   JOBS,
   buildItems,
@@ -269,8 +269,10 @@ describe("every app the member holds, with nothing pinned", () => {
 
   it("an admin who pinned nothing finds all eleven live panes, Admin and AI Studio too", () => {
     const sections = visibleSections([...LIVE_FEATURES, ...PREVIEW_FEATURES], true, false);
-    // The sidebar's own input, with no pins: it holds nothing to draw.
-    expect(pinnedPanes([], sections)).toEqual([]);
+    // The sidebar's own input, with nothing starred and every app known: it
+    // holds nothing to draw. The bar still lists the FULL held set below.
+    const known = sections.flatMap((s) => s.items.map((p) => p.href)).filter((h) => STARRABLE.has(h));
+    expect([...starredHrefs({ pins: [], known }, sections)!]).toEqual([]);
     expect(goHrefs([...LIVE_FEATURES, ...PREVIEW_FEATURES], true)).toEqual([
       "/tasks",
       "/calendar",
@@ -333,6 +335,6 @@ describe("every app the member holds, with nothing pinned", () => {
   it("the shell bar hands the bar every held pane, never the pins", () => {
     const src = readFileSync(fileURLToPath(new URL("./ShellBar.tsx", import.meta.url)), "utf8");
     expect(src).toMatch(/heldPanes\(visibleSections\(loading \? null : access\.features, access\.is_admin\)\)/);
-    expect(src).not.toMatch(/pinnedPanes|shellSidebar|layout\.pins/);
+    expect(src).not.toMatch(/pinnedPanes|starredHrefs|shellSidebar|layout\.pins/);
   });
 });

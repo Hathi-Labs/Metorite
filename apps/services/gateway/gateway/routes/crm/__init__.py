@@ -40,6 +40,12 @@ the shadowing reason above: ``/crm/leads/export.csv`` would sit under
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
 migration; the weighted-₹ expression it shares with ``pipeline`` lives in
 ``core.WEIGHTED_SQL`` so there is exactly one copy of the formula.
+
+``settings.py`` is WS-53 CRM-T5 — ``GET`` and ``PATCH /crm/settings``, the
+organization's CRM mode and its access rule, admin only. Its two helpers
+register no routes: ``access.py`` holds the router dependency that ``core``
+runs third, and ``seed.py`` holds the starting pipeline that the change to
+Native mode writes.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -50,6 +56,7 @@ from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
+from gateway.routes.crm import settings as _settings  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
 from gateway.routes.crm.core import router

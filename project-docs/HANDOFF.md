@@ -4619,15 +4619,20 @@ line — never reclaim a number by deleting the other entry.
 - **Still open from the broker work.** Two kinds of caller bind no tenant,
   so the broker refuses their queue write. The RLS policy refused it before
   too. A third note follows them.
-  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). With
-    `ACTION_BROKER_ENFORCE` off it never reaches the queue.
+  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). Since WS-53 CRM-T3
+    the loop starts no task, so it reaches no queue. CRM-Z5 rebuilds the
+    cycle with one `tenant_session(org)` for each step. Do this work there.
   - A CRON or webhook workflow run (`workflows/service.py` and
     `workflows/tools.py`). A manual run has the request's tenant. A trigger
     run would inherit the tenant of the request that emits its event, but
     `triggers.py` reads `workflow_triggers` unbound, so no trigger run starts.
-  - A manual `POST /crm/sync/zoho` runs the cycle in the request. So its
-    queue row goes to the admin's tenant. The sync configuration has no
-    tenant yet. When it gets one, bind that tenant.
+  - `POST /crm/sync/zoho`. Since WS-53 CRM-T3 it answers 409 and runs no
+    cycle. CRM-Z5 makes it run the cycle of one connection, with the tenant
+    of that connection. Do this work there.
+- **Done, the CRM auto-lead step and the CRM push handler (WS-53 CRM-T3,
+  2026-10-11).** Each binds the tenant that its caller bound, and with no
+  tenant it opens no session. The fence is
+  `tests/unit/test_crm_sync_tenancy.py`. Do not do it again.
 - **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
   artifact context is a ContextVar, and `artifact_context()` is its one
   reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
@@ -5122,23 +5127,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10 ·
   `work_plan.md` §6.1
 - **Added:** 2026-10-04 · PR #622
-
-### H-296 · Three more project pickers still draw the whole tree as one list · [AGENT]
-- **Check:** `grep -rln "ProjectPicker" workbench/control_plane/src/app/projects/components/AssistantRail.tsx workbench/control_plane/src/app/projects/components/ReportsView.tsx workbench/control_plane/src/app/projects/components/StatusSetControl.tsx`
-  → fewer than three files means this is open.
-- **Why:** on 2026-10-10 the owner found the Move pickers hard to read. They
-  drew every node of every space as one open list. `ProjectPicker` (search,
-  spaces closed, a path on each result) now serves the task doors (Move,
-  Clarify, the capture chip) and the project "Move to…" dialog. Three
-  pickers still draw the old list: the chat focus (`AssistantRail.tsx`),
-  the report scope (`ReportsView.tsx`) and "Copy statuses from"
-  (`StatusSetControl.tsx`).
-- **Do:** pass a `rule` to `ProjectPicker`. The chat and the report may pick
-  a space or a folder, so their rule refuses nothing. The three sites are
-  `SelectButton`s, so add a popover host around the picker (a trigger and
-  `AnchoredPanel`). Do not add a second tree model.
-- **Authority:** owner ask, 2026-10-10 · `app/projects/lib/pickerTree.ts`
-- **Added:** 2026-10-10 · the project picker session
 
 ### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
 - **Check:** `grep -cE '^CRM_ZOHO_CLIENT_(ID|SECRET)=.+' "$HOME/.metorite/secrets/app.env"`

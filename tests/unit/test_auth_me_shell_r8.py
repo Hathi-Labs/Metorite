@@ -138,8 +138,24 @@ async def test_another_organization_never_reads_the_layout(db) -> None:
         await _put(db.org_a, user, {"preset": "engineer", "answered": "answered"})
         b = await _get(db.org_b, user)
     # Org B never asked this member, so the shell asks there too.
-    assert b == {"preset": None, "answered": None, "pins": None,
+    assert b == {"preset": None, "answered": None, "pins": None, "known": None,
                  "cardOrder": None, "newOrder": None}
+
+
+async def test_the_stars_and_known_round_trip_in_jsonb(db) -> None:
+    """The star model (owner, 2026-10-11) stores ``known`` beside ``pins``."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, {"preset": "engineer", "answered": "answered",
+                                    "pins": ["/projects"],
+                                    "known": ["/tasks", "/projects", "/chat"]})
+        a = await _get(db.org_a, user)
+    assert a["pins"] == ["/projects"]
+    assert a["known"] == ["/tasks", "/projects", "/chat"]
+    [(_, stored)] = _stored(db, email)
+    assert stored["known"] == ["/tasks", "/projects", "/chat"]
 
 
 # ── The guest, the skip and the reset ──────────────────────────────────────

@@ -600,6 +600,11 @@ class ProjectModel(BaseModel):
     #: 'project' or 'folder' (migration 193). NULL rows read as 'project' —
     #: resolve through `node_kind`, never `row.kind` directly.
     kind: str | None = None
+    #: Migration 196 — this node keeps its own status set, rather than reading
+    #: the nearest owner's above it. Sent so a "Copy statuses from" picker can
+    #: refuse a node that only borrows lanes (owner ask, 2026-10-10). Already in
+    #: every row: the reads are `SELECT *`. None from a row that predates it.
+    owns_statuses: bool | None = None
     #: Migration 194 — a themed icon NAME and a categorical ramp SLOT (1..8),
     #: never a colour. Meaningful on a space; NULL = the level's default.
     icon: str | None = None

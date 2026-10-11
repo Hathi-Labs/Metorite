@@ -2,7 +2,7 @@
  * GET and PUT /api/auth/me/shell — the member's shell layout (NS-7).
  *
  * Proxies the gateway's `/auth/me/shell` (`navigation_shell.md` §8.2). The
- * sidebar's "My apps", the star in All apps, My Day's card order, the command
+ * sidebar's starred apps, the star in All apps, My Day's card order, the command
  * bar's job order and the first sign-in question all read it.
  *
  * ⚠️ A failure is an error, never an empty layout. An all-null answer means

@@ -83,6 +83,14 @@ real damage rather than merely be wrong:
    until a human looks. That trades silent loss for a visible stall on a poison
    head message, deliberately: fail closed toward the CRM.
 
+**The tenant is the one the email hook bound** (WS-53 CRM-T3,
+``crm_platform.md`` §4.3). :func:`create_leads_from_new_mail` reads
+``current_tenant()`` once and opens every session as ``tenant_session(org)``.
+With no tenant bound it opens no session at all. No step calls ``.commit()``:
+a commit inside a ``tenant_session`` ends ``SET LOCAL``, and each statement
+after it would run with no tenant. ``tests/unit/test_crm_sync_tenancy.py``
+fences both.
+
 **One race is accepted and recorded** (spec §9): two concurrent
 ``process_new_mail`` invocations for one account can read the same watermark
 and double-mint. The cost is one visible, hand-deletable duplicate lead. The
@@ -100,12 +108,12 @@ from typing import Any
 
 from acb_auth import UserContext, UserRole
 from acb_common import get_settings
-from acb_common.db import bind_tenant, release_tenant
+from acb_common.db import bind_tenant, current_tenant, release_tenant
 from gateway.routes.crm.core import (
     LEADS,
     LeadIn,
-    _get_db,
     _log,
+    _tenant_session,
     bump_last_activity,
     insert_row,
     now,
@@ -270,42 +278,57 @@ async def create_leads_from_new_mail(account_id: str) -> dict[str, int]:
     "considered 0" are different facts and one of them is a bug report.
     """
     stats = _new_stats()
-    # H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this is a
-    # BACKGROUND path, not a request handler — it is invoked from the email
-    # scheduler's shared new-mail hook (`routes/email/scheduler_hooks.py::
-    # process_new_mail`), which the background sync loop, the Graph webhook and
-    # the manual-sync route all fan into, and it runs under no member's request
-    # context. The runbook's rule for that category is "do not let a job
-    # inherit an ambient tenant", so it stays on the unbound `get_db()` until
-    # H4 threads an explicit tenant through — the natural source is the
-    # mailbox's own row (`email_accounts.user_id` → `app_user.organization_id`,
-    # i.e. `tenant_session(org_id)`). Named in `test_db_engine_seam.py`'s
-    # H2_EXEMPT_FILES.
-    db = await _get_db()
-    try:
-        account = await _load_account(db, account_id)
-        if account is None:
-            return stats
-        cursor = await _load_or_activate_cursor(db, account_id)
-        if cursor is None:  # pragma: no cover — the row was just written
-            return stats
-        cursor, reanchored = await _reanchor_if_dormant(db, account_id, cursor)
-        stats["reanchored"] = int(reanchored)
-        # ⚠️ NO early return here, and that is the whole correction. This step
-        # is only ever invoked because a sync PERSISTED mail, so the batch that
-        # tripped the dormancy test is the batch containing the message that
-        # woke it up. Returning early discarded exactly that message, forever.
-        await _run_batch(db, account, cursor, stats)
-        _emit(account_id, stats)
+    # WS-53 CRM-T3 (`crm_platform.md` §4.3). The tenant is the one the email
+    # hook ALREADY bound: the sync loop, the Graph webhook and the request
+    # jobs each bind the mailbox's organization before `process_new_mail`
+    # runs (`routes/email/scheduler_hooks.py`). It is read once, here, and
+    # passed to every session by value. With no tenant bound, the step opens
+    # NO session — every `crm_*` table has FORCE RLS, so an unbound session
+    # reads nothing and refuses every write.
+    #
+    # Each step is its own `tenant_session(org)`, and none calls `.commit()`:
+    # a commit ends `SET LOCAL`, so each statement after it would run with no
+    # tenant. The fence is `tests/unit/test_crm_sync_tenancy.py`.
+    org = current_tenant()
+    if not org:
+        _log.warning("crm.auto_lead_unbound", account_id=account_id)
         return stats
-    finally:
-        await db.close()
+    async with _tenant_session(org) as db:
+        account = await _load_account(db, account_id, org)
+    if account is None:
+        # The row is gone, has no owner, or belongs to ANOTHER tenant — under
+        # FORCE RLS the three read the same. Write nothing in each case.
+        _log.warning("crm.auto_lead_account_unavailable", account_id=account_id)
+        return stats
+    async with _tenant_session(org) as db:
+        cursor = await _load_or_activate_cursor(db, account_id)
+    if cursor is None:
+        # The insert was `ON CONFLICT DO NOTHING`, so None means a cursor row
+        # for this account exists that this tenant cannot see. Say so: a
+        # silent return here stops auto-lead for the mailbox with no trace.
+        _log.warning("crm.auto_lead_cursor_unavailable", account_id=account_id)
+        return stats
+    async with _tenant_session(org) as db:
+        cursor, reanchored = await _reanchor_if_dormant(db, account_id, cursor)
+    stats["reanchored"] = int(reanchored)
+    # ⚠️ NO early return here, and that is the whole correction. This step
+    # is only ever invoked because a sync PERSISTED mail, so the batch that
+    # tripped the dormancy test is the batch containing the message that
+    # woke it up. Returning early discarded exactly that message, forever.
+    async with _tenant_session(org) as db:
+        await _run_batch(db, org, account, cursor, stats)
+    _emit(account_id, stats)
+    return stats
 
 
 async def _run_batch(
-    db: Any, account: Any, cursor: Any, stats: dict[str, int],
+    db: Any, org: str, account: Any, cursor: Any, stats: dict[str, int],
 ) -> None:
-    """One cycle's candidates, considered in order, cursor stamped once."""
+    """One cycle's candidates, considered in order, cursor stamped once.
+
+    Runs inside the caller's ``tenant_session(org)``, which commits the
+    activities and the cursor stamp together when the block exits.
+    """
     account_id = str(account.id)
     candidates, next_stamp = await _load_candidates(db, account_id, cursor)
     capped = next_stamp is not None
@@ -323,7 +346,6 @@ async def _run_batch(
                          reason="boundary_group_fills_the_cap",
                          boundary_deferred=stats["boundary_deferred"])
         await _stamp_cursor(db, account_id, run_at=now())
-        await db.commit()
         return
     if capped:
         stats["overflow"] = await _count_overflow(
@@ -341,14 +363,15 @@ async def _run_batch(
     advance_to: Any = None
     blocked = False
     for message in candidates:
-        failed = await _consider(db, account, message, domains, seen, stats)
+        failed = await _consider(
+            db, org, account, message, domains, seen, stats,
+        )
         if failed:
             blocked = True
         elif not blocked:
             advance_to = message.rules_processed_at
 
     await _stamp_cursor(db, account_id, watermark=advance_to, run_at=now())
-    await db.commit()
     if advance_to is None and stats["errors"]:
         # WARNING, and it repeats every cycle: an INFO line saying "created 0"
         # is what a stuck head message looked like before, which is to say it
@@ -360,7 +383,7 @@ async def _run_batch(
 
 # ── The account, and the cursor that decides what is history ────────────────
 
-async def _load_account(db: Any, account_id: str) -> Any | None:
+async def _load_account(db: Any, account_id: str, org: str) -> Any | None:
     """The mailbox's own address and its owner.
 
     ``email_accounts.user_id`` holds the owner's EMAIL (the column is TEXT and
@@ -368,10 +391,18 @@ async def _load_account(db: Any, account_id: str) -> Any | None:
     which is what makes a created lead somebody's follow-up rather than
     'anonymous'. An account with no owner recorded is skipped: attributing a
     lead to nobody is worse than not creating it.
+
+    ⚠️ The ``organization_id`` predicate is not redundant with RLS. FORCE RLS
+    on ``email_accounts`` lives only in the generated phase 4, which production
+    has not applied, so without the predicate a call bound to tenant Y would
+    read tenant X's mailbox and write X's senders into Y's CRM. Every later
+    read of the batch keys on this account, so this one check gates them all.
+    The email scheduler filters each per-org statement the same way.
     """
     row = (await db.execute(text(
-        "SELECT id, user_id, email_address FROM email_accounts WHERE id = :id"
-    ), {"id": account_id})).fetchone()
+        "SELECT id, user_id, email_address FROM email_accounts "
+        "WHERE id = :id AND organization_id = CAST(:org AS uuid)"
+    ), {"id": account_id, "org": org})).fetchone()
     if row is None or not str(getattr(row, "user_id", "") or "").strip():
         return None
     return row
@@ -393,6 +424,10 @@ async def _load_or_activate_cursor(db: Any, account_id: str) -> Any | None:
     deep-resync case. ``ON CONFLICT DO NOTHING`` + a re-read means a concurrent
     activation is one row and one activation instant, not a primary-key error
     on the mail path.
+
+    Runs inside the caller's ``tenant_session(org)``, which commits the row
+    when its block exits. The row's ``organization_id`` comes from the column
+    DEFAULT, which reads the bound tenant (migration 241).
     """
     row = await _read_cursor(db, account_id)
     if row is not None:
@@ -405,7 +440,6 @@ async def _load_or_activate_cursor(db: Any, account_id: str) -> Any | None:
         "ON CONFLICT (account_id) DO NOTHING"
     ), {"account_id": account_id, "activated_at": at,
         "processed_watermark": at, "last_run_at": at})
-    await db.commit()
     _log.info("crm.auto_lead_activated", account_id=account_id)
     return await _read_cursor(db, account_id)
 
@@ -488,7 +522,6 @@ async def _reanchor_if_dormant(
         "SET activated_at = :activated_at, updated_at = now() "
         "WHERE account_id = :account_id"
     ), {"account_id": account_id, "activated_at": anchor})
-    await db.commit()
     # The watermark is deliberately NOT touched: OFF-window mail is excluded by
     # the anchor predicate whatever its `rules_processed_at` says, and moving
     # the watermark forward here would skip the triggering batch a second way.
@@ -760,8 +793,8 @@ def _principal(owner_email: str) -> UserContext:
 
 
 async def _consider(
-    db: Any, account: Any, message: Any, internal_domains: frozenset[str],
-    seen: set[str], stats: dict[str, int],
+    db: Any, org: str, account: Any, message: Any,
+    internal_domains: frozenset[str], seen: set[str], stats: dict[str, int],
 ) -> bool:
     """Decide about ONE candidate message, and count the decision.
 
@@ -790,7 +823,7 @@ async def _consider(
         stats["skipped_known"] += 1
         return False
     try:
-        lead = await _create_lead(db, account, address, display_name)
+        lead = await _create_lead(org, account, address, display_name)
     except Exception as exc:
         stats["errors"] += 1
         _log.warning("crm.auto_lead_message_failed",
@@ -819,7 +852,7 @@ async def _consider(
 
 
 async def _create_lead(
-    db: Any, account: Any, address: str, display_name: str,
+    org: str, account: Any, address: str, display_name: str,
 ) -> dict[str, Any]:
     """Create the lead through the CRM's own service write path.
 
@@ -834,16 +867,9 @@ async def _create_lead(
     lead before it writes the activity: by the time this returns, the row is
     committed and queued for Zoho.
 
-    ⚠️ H4, done early because it was a today-failure: ``create_record`` is H2-
-    converted (``_tenant_session``), and THIS caller runs on the background
-    mail path with no request and no ambient tenant. Left alone it raised
-    ``TenantUnbound`` on every message, ``_consider`` counted it failed, and
-    the watermark never advanced — auto-lead dead, wearing a WARNING. The
-    tenant is therefore bound EXPLICITLY here from the mailbox owner's
-    ``app_user`` row (the source this file's H4 marker names), scoped to
-    exactly this call — never inherited (the runbook's rule for jobs). An
-    owner with no organization fails this one message the same way any other
-    ``_consider`` error does, with the org named in the log.
+    ``create_record`` opens ``_tenant_session()`` with the tenant of the
+    context. This function binds *org* around the call, so the lead lands in
+    the tenant the email hook bound and in no other (WS-53 CRM-T3).
     """
     first_name, last_name = _split_display_name(display_name)
     # Absent, never explicitly null: ``clean_payload`` is ``exclude_unset``, so
@@ -857,36 +883,13 @@ async def _create_lead(
     if last_name:
         fields["last_name"] = last_name
     owner = str(account.user_id)
-    token = bind_tenant(await _owner_organization(db, owner))
+    token = bind_tenant(org)
     try:
         return await create_record(
             LEADS, LeadIn(**fields), _principal(owner),
         )
     finally:
         release_tenant(token)
-
-
-async def _owner_organization(db: Any, owner_email: str) -> str:
-    """The mailbox owner's organization id, from their ``app_user`` row.
-
-    Reads on the CALLER's (unbound, background) session: this runs before any
-    tenant is bound — it is what DECIDES the tenant, exactly like identity
-    resolution on the request path. Raises rather than returning None — a
-    mailbox whose owner has no organization must fail its message loudly, not
-    write a lead nowhere.
-    """
-    row = (await db.execute(
-        text("SELECT organization_id FROM app_user "
-             "WHERE lower(email) = lower(:e)"),
-        {"e": owner_email},
-    )).fetchone()
-    org = getattr(row, "organization_id", None) if row is not None else None
-    if not org:
-        raise RuntimeError(
-            f"auto-lead: mailbox owner {owner_email!r} has no app_user "
-            f"organization — cannot choose a tenant for the lead"
-        )
-    return str(org)
 
 
 async def _log_origin_activity(

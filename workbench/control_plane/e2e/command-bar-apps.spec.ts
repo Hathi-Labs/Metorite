@@ -5,8 +5,9 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * 2026-10-11). The sidebar shows only the pinned apps, so the bar is the one
  * door to an app the member did not pin.
  *
- * Here the member pinned NOTHING (`pins: []`), and each case is written so
- * the obvious wrong build fails it:
+ * Here the member starred only My Tasks, and saw every app when they saved
+ * (`known`). So People is NOT in the sidebar (the star model of 2026-10-11),
+ * and each case is written so the obvious wrong build fails it:
  *   1. ⌘K, "peo", Enter: the member lands on People.
  *   2. An admin finds an Admin app: "orga", Enter, Organisation.
  *   3. A member without the grant finds no People, no Approvals and no
@@ -34,8 +35,15 @@ const person = (admin: boolean, features: string[]) => ({
   organization: { id: "org1", slug: "acme", display_name: "Acme" },
 });
 
-/** Answered, with no pins: the sidebar's "My apps" has nothing in it. */
-const NO_PINS = { preset: "new-hire", answered: "answered", pins: [], cardOrder: null, newOrder: null };
+/** Answered: My Tasks starred, and every app known, so People is hidden. */
+const NO_PINS = {
+  preset: "new-hire",
+  answered: "answered",
+  pins: ["/tasks"],
+  known: ["/tasks", "/calendar", "/people", "/chat", "/approvals"],
+  cardOrder: null,
+  newOrder: null,
+};
 
 async function stub(page: Page, me: unknown) {
   await page.addInitScript(() => {
@@ -67,7 +75,10 @@ async function openBar(page: Page) {
   await page.goto("/settings/appearance");
   // The shell has the member's access once the account menu can name them.
   await expect(page.locator("[data-shell-bar]")).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator('aside [data-nav-section="my-apps"] a')).toHaveCount(0);
+  // The sidebar shows only the starred app. People is not starred, so the
+  // bar is its one door here.
+  await expect(page.locator('aside [data-nav-section] a[href="/tasks"]')).toBeVisible();
+  await expect(page.locator('aside a[href="/people"]')).toHaveCount(0);
   await page.keyboard.press(`${mod}+k`);
   await expect(commandBar(page)).toBeVisible();
 }
