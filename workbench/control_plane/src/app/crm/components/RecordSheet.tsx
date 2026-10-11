@@ -13,13 +13,21 @@
  * entirely in the field list.
  */
 
-import Icon from "@/components/Icon";
+import Modal from "@/components/ui/Modal";
 import { useViewMode } from "@/components/ViewModeProvider";
 import FieldsPanel from "./FieldsPanel";
 import Timeline from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
 
 type Row = Record<string, unknown>;
+
+/** What the sheet holds, said under its title. */
+const ENTITY_NOUN: Record<EntitySlug, string> = {
+  deals: "Deal",
+  leads: "Lead",
+  contacts: "Contact",
+  organizations: "Company",
+};
 
 const TITLE_KEY: Record<EntitySlug, string[]> = {
   deals: ["name"],
@@ -76,71 +84,54 @@ export default function RecordSheet({
     : "Loading…";
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      {/* The scrim closes the sheet, matching Back — two ways out of a
-          surface that sits on top of the list somebody was reading. */}
-      <button
-        aria-label="Close"
-        onClick={onClose}
-        className="absolute inset-0 bg-background/70 backdrop-blur-sm"
-      />
-      <aside
-        className={`relative flex h-full flex-col border-l border-border bg-card shadow-xl ${
-          isMobile ? "w-full" : "w-full max-w-4xl"
-        }`}
-      >
-        <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-bold text-foreground">
-              {title}
-            </h1>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              {entity.slice(0, -1)}
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary tech-transition"
-            aria-label="Close record"
-          >
-            <Icon name="X" className="w-4 h-4" />
-          </button>
-        </header>
-
-        {record === null ? (
-          <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
-        ) : (
+    // On `Modal` (CRM-U2), as a drawer at the right edge on a desktop and as
+    // a sheet from the bottom on a phone. The URL still owns whether it is
+    // open: the page mounts it from `?deal=` and the rest, and every way out
+    // (Escape, the scrim, the close button) runs `onClose`, which is
+    // `closeRecord`. Back closes it too, because Back drops the parameter.
+    <Modal
+      open
+      onClose={onClose}
+      title={title}
+      description={ENTITY_NOUN[entity]}
+      size="4xl"
+      placement={isMobile ? "sheet" : "end"}
+      closeLabel="Close record"
+      className="h-full"
+    >
+      {record === null ? (
+        <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
+      ) : (
+        <div
+          className={`flex min-h-0 flex-1 ${isMobile ? "flex-col overflow-y-auto" : "flex-row"}`}
+        >
           <div
-            className={`flex min-h-0 flex-1 ${isMobile ? "flex-col overflow-y-auto" : "flex-row"}`}
+            className={`min-h-0 ${isMobile ? "" : "flex-1 border-r border-border"}`}
           >
-            <div
-              className={`min-h-0 ${isMobile ? "" : "flex-1 border-r border-border"}`}
-            >
-              <Timeline
-                entries={timeline}
-                onLog={onLog}
-                onToggleTask={onToggleTask}
-                saving={saving}
-              />
-            </div>
-            <div className={isMobile ? "" : "w-[340px] shrink-0"}>
-              <FieldsPanel
-                entity={entity}
-                record={record}
-                statuses={statuses}
-                dealContacts={dealContacts}
-                saving={saving}
-                onPatch={onPatch}
-                onMoveStatus={onMoveStatus}
-                onConvert={onConvert}
-                onSetPrimary={onSetPrimary}
-                onDetach={onDetach}
-                onOpenContact={onOpenContact}
-              />
-            </div>
+            <Timeline
+              entries={timeline}
+              onLog={onLog}
+              onToggleTask={onToggleTask}
+              saving={saving}
+            />
           </div>
-        )}
-      </aside>
-    </div>
+          <div className={isMobile ? "" : "w-[340px] shrink-0"}>
+            <FieldsPanel
+              entity={entity}
+              record={record}
+              statuses={statuses}
+              dealContacts={dealContacts}
+              saving={saving}
+              onPatch={onPatch}
+              onMoveStatus={onMoveStatus}
+              onConvert={onConvert}
+              onSetPrimary={onSetPrimary}
+              onDetach={onDetach}
+              onOpenContact={onOpenContact}
+            />
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }

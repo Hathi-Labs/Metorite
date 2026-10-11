@@ -12,8 +12,11 @@
  * unassigned. Offering a picker here would make the common case a decision.
  */
 
-import Icon from "@/components/Icon";
-import { useState } from "react";
+import Button from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import Modal from "@/components/ui/Modal";
+import { firstField } from "../lib/focus";
+import { useRef, useState } from "react";
 import type { EntitySlug } from "../lib/types";
 
 type FieldDef = {
@@ -82,6 +85,7 @@ export default function QuickCreateModal({
 }) {
   const form = FORMS[entity];
   const [values, setValues] = useState<Record<string, string>>({});
+  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   const missing = form.fields
     .filter((f) => f.required && !(values[f.key] ?? "").trim())
@@ -103,74 +107,69 @@ export default function QuickCreateModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        aria-label="Close"
-        onClick={onClose}
-        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
-      />
-      <div className="relative flex max-h-[85vh] w-full max-w-md flex-col rounded-xl border border-border bg-card shadow-xl">
-        <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-base font-bold text-foreground">{form.title}</h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary tech-transition"
-          >
-            <Icon name="X" className="w-4 h-4" />
-          </button>
-        </header>
-
-        <div className="flex-1 space-y-3 overflow-y-auto p-4">
-          {form.fields.map((field) => (
-            <label key={field.key} className="block">
-              <span className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground">
-                {field.label}
-                {field.required && <span className="text-destructive"> *</span>}
-              </span>
-              <input
-                type={
-                  field.kind === "date"
-                    ? "date"
-                    : field.kind === "number"
-                      ? "number"
-                      : "text"
-                }
-                value={values[field.key] ?? ""}
-                placeholder={field.placeholder}
-                onChange={(e) =>
-                  setValues((v) => ({ ...v, [field.key]: e.target.value }))
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submit();
-                }}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/40 focus:outline-none"
-              />
-            </label>
-          ))}
-          {entity === "leads" && (
-            <p className="text-[10px] text-muted-foreground">
-              A lead needs nothing at all — its display name is derived from
-              whatever you give it, falling back through company and email.
-            </p>
-          )}
-        </div>
-
-        <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-primary/30 tech-transition"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            disabled={saving || missing.length > 0}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40 tech-transition"
-          >
-            Create
-          </button>
-        </footer>
+    // On `Modal` (CRM-U2): the scrim, the focus trap, Escape and the return
+    // of focus to the "New" button come from the primitive. The page mounts
+    // this only while it is open, so `open` is always true here.
+    <Modal
+      open
+      onClose={onClose}
+      title={form.title}
+      icon="Plus"
+      size="md"
+      initialFocus={() => firstField(bodyRef.current)}
+      className="max-h-[85vh]"
+    >
+      <div ref={bodyRef} className="contents">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+        {form.fields.map((field) => (
+          <label key={field.key} className="block">
+            <span className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground">
+              {field.label}
+              {field.required && <span className="text-destructive"> *</span>}
+            </span>
+            <Input
+              inputSize="sm"
+              type={
+                field.kind === "date"
+                  ? "date"
+                  : field.kind === "number"
+                    ? "number"
+                    : "text"
+              }
+              value={values[field.key] ?? ""}
+              placeholder={field.placeholder}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, [field.key]: e.target.value }))
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+              className="w-full"
+            />
+          </label>
+        ))}
+        {entity === "leads" && (
+          <p className="text-[10px] text-muted-foreground">
+            A lead needs nothing at all — its display name is derived from
+            whatever you give it, falling back through company and email.
+          </p>
+        )}
       </div>
-    </div>
+
+      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
+        <Button variant="secondary" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          loading={saving}
+          disabled={saving || missing.length > 0}
+          onClick={submit}
+        >
+          Create
+        </Button>
+      </footer>
+      </div>
+    </Modal>
   );
 }
