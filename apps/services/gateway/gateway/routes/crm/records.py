@@ -43,10 +43,12 @@ from gateway.routes.crm.core import (
     _tenant_session,
     actor,
     assert_writable,
+    attach_ext_urls,
     clean_payload,
     compute_lead_name,
     count_where,
     current_tenant,
+    default_pipeline_id,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -91,6 +93,7 @@ class ListParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
     ) -> None:
         self.q = q
         self.sort = sort
@@ -101,6 +104,8 @@ class ListParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        #: Deals only (WS-53 CRM-Q2). With none, a list behaves as it always did.
+        self.pipeline_id = pipeline_id
 
 
 class DeleteResponse(BaseModel):
@@ -130,7 +135,7 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
         q=params.q, sort=params.sort, direction=params.direction,
         page=params.page, page_size=params.page_size,
         status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
+        pipeline_id=params.pipeline_id, extra_where=extra,
     )
     async with _tenant_session() as db:
         return await run_list(db, entity, query)
@@ -139,7 +144,27 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
 async def _get(entity: Entity, record_id: str) -> dict:
     async with _tenant_session() as db:
         row = await require_row(db, entity.table, record_id, entity.label)
-        return row_to_dict(row, entity.model)
+        wired = row_to_dict(row, entity.model)
+        await attach_ext_urls(db, entity.table, [wired])
+        return wired
+
+
+async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> None:
+    """A deal names an existing pipeline, or joins the default one (CRM-Q2).
+
+    A stated ``pipeline_id`` must be a pipeline of this organization, else 404.
+    With none stated on a create, the deal joins the default pipeline when the
+    organization has one. An organization with no pipeline leaves it ``None``.
+    """
+    if entity is not DEALS:
+        return
+    stated = values.get("pipeline_id")
+    if stated:
+        await require_row(db, "crm_pipelines", str(stated), "Pipeline")
+    elif "pipeline_id" not in values:
+        found = await default_pipeline_id(db)
+        if found:
+            values["pipeline_id"] = found
 
 
 async def _resolve_status(
@@ -232,6 +257,7 @@ async def create_record(
         await assert_writable(
             db, current_tenant(), entity, values, creating=True,
         )
+        await _resolve_pipeline(db, entity, values)
         await _resolve_status(db, entity, values)
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
@@ -254,6 +280,8 @@ async def patch_record(
         await assert_writable(
             db, current_tenant(), entity, values, row=record,
         )
+        if values.get("pipeline_id"):
+            await _resolve_pipeline(db, entity, values)
         wanted = values.get("status_id")
         if wanted and str(getattr(record, "status_id", "") or "") != str(wanted):
             values.update(await apply_status_transition(

@@ -40,12 +40,23 @@ under a row lock and marks ``needs_reconnect`` itself. A dead token stops the
 run with the code ``needs_reconnect``. The engine never retries a dead token.
 
 **The budget.** A run spends at most the credits left of 10 % of the daily
-credits (:data:`DAILY_CREDIT_BUDGET`), counted over 24 hours. It stops with
-the code ``budget`` before a call that would pass it. It also stops when the
-provider reports fewer than :data:`CREDITS_FLOOR` credits left.
+credits of the edition, counted over 24 hours (CRM-Q1). The edition comes from
+the source profile (:func:`daily_budget`). With no profile, or an edition that
+the provider does not name, the budget is the 500-credit floor of CRM-Z5
+(:data:`DAILY_CREDIT_BUDGET`). A run stops with the code ``budget`` before a
+call that would pass it. It also stops when the provider reports fewer than
+:data:`CREDITS_FLOOR` credits left.
+
+**Discovery** (CRM-Q1, :func:`_discover`). At the first import, and once in 24
+hours after that, the run reads the shape of the customer's account. That is
+the org, the modules, the layouts, the fields and the deal pipelines. It reads
+metadata only and never a record. The result is the versioned source profile
+(``profiles.py``). The same step writes the deal pipelines and their stages
+through the mirror bypass (CRM-Q2) and the org domain into ``provider_meta``.
 
 **Writes.** Every record write goes through ``core.upsert_from_source`` and
-every delete through ``core.delete_from_source``. Those two are the ONLY
+every delete through ``core.delete_from_source``. The stages of a pipeline go
+through ``core.set_pipeline_stages_from_source``. Those three are the ONLY
 bypass of the write guard, and ``tests/unit/test_crm_upsert_from_source_fence.py``
 keeps them out of routes, agents and skills.
 """
@@ -79,7 +90,7 @@ from gateway.crm_sources.base import (
     UntrustedHost,
 )
 from gateway.crm_sources.registry import mapping_for, source_class
-from gateway.crm_sync import runs
+from gateway.crm_sync import profiles, runs
 from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
@@ -87,6 +98,7 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     delete_from_source,
     savepoint,
+    set_pipeline_stages_from_source,
     upsert_from_source,
 )
 from gateway.routes.crm.import_zoho import guess_status_type
@@ -146,6 +158,8 @@ DAILY_CREDIT_BUDGET = int(ASSUMED_DAILY_CREDITS * BUDGET_FRACTION)
 CREDITS_FLOOR = 1_000
 
 RECONCILE_EVERY = timedelta(hours=24)
+#: The source profile is read again after this long (CRM-Q1).
+DISCOVERY_EVERY = timedelta(hours=24)
 #: The deleted lists cost 2 credits each, so an idle run reads them hourly.
 DELETED_EVERY = timedelta(hours=1)
 #: The longest wait that the spend of a run can add between two runs.
@@ -159,11 +173,22 @@ REFUSE_FRACTION = 0.2
 REFUSE_MIN_ROWS = 10
 
 
-def next_interval(credits_used: int | None) -> int:
+def daily_budget(profile: dict[str, Any] | None) -> int:
+    """The credits a sync may spend in 24 hours (CRM-Q1).
+
+    It is 10 % of the daily credits of the edition in the source profile. With
+    no profile, or an edition that is not known, it is
+    :data:`DAILY_CREDIT_BUDGET`, the 500-credit floor of CRM-Z5.
+    """
+    return profiles.sync_budget(profile) or DAILY_CREDIT_BUDGET
+
+
+def next_interval(credits_used: int | None, budget: int | None = None) -> int:
     """Seconds between two runs. A run that spent credits spaces the next one,
-    so the average spend stays inside :data:`DAILY_CREDIT_BUDGET` a day."""
+    so the average spend stays inside the daily budget. ``budget`` is
+    :func:`daily_budget`. With none given it is :data:`DAILY_CREDIT_BUDGET`."""
     spent = int(credits_used or 0)
-    spaced = -(-spent * 86_400 // DAILY_CREDIT_BUDGET)
+    spaced = -(-spent * 86_400 // max(int(budget or DAILY_CREDIT_BUDGET), 1))
     return min(max(INTERVAL_SECONDS, spaced), MAX_INTERVAL_SECONDS)
 #: The provider keeps a delete for 60 days. Past 50 days without a good run,
 #: only a full id compare finds the deletes.
@@ -435,6 +460,13 @@ class _Ctx:
         self.owners: dict[str, str] | None = None
         #: The start of a full id walk. A written row is stamped with it.
         self.stamp: datetime | None = None
+        #: The newest source profile, and the credits of the last 24 hours that
+        #: other runs spent. The budget is the edition's share minus that.
+        self.profile: profiles.ProfileRow | None = None
+        self.used_24h = 0
+        self.budget_is_default = credit_budget is None
+        #: The local pipelines of the org, loaded once for the deal writes.
+        self.pipelines: _PipelineIndex | None = None
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -576,11 +608,21 @@ _STATUS_INSERT_SQL = (
 _STATUS_ID_SQL = "SELECT id FROM {table} WHERE name = :name"
 
 
+_FORECAST_SQL = (
+    "UPDATE crm_deal_statuses SET forecast_category = :category "
+    "WHERE id = CAST(:id AS uuid) AND forecast_category IS DISTINCT FROM :category"
+)
+
+
 async def _ensure_status(
     db: Any, table: str, name: str, *, type_: str | None = None,
     position: int | None = None, probability: int | None = None,
+    forecast_category: str | None = None,
 ) -> str:
-    """The id of the status called ``name``. A new one is appended."""
+    """The id of the status called ``name``. A new one is appended.
+
+    ``forecast_category`` (deal stages only) is kept when the provider names one.
+    """
     deal = table == DEAL_STATUSES
     sql = _STATUS_INSERT_SQL.format(
         table=table, prob_col=", probability" if deal else "",
@@ -596,6 +638,8 @@ async def _ensure_status(
         params["position"] = position
     await db.execute(text(sql), params)
     row = (await db.execute(text(_STATUS_ID_SQL.format(table=table)), {"name": name})).first()
+    if deal and forecast_category:
+        await db.execute(text(_FORECAST_SQL), {"id": str(row.id), "category": forecast_category})
     return str(row.id)
 
 
@@ -642,7 +686,49 @@ async def _mirror_statuses(
                 await _ensure_status(
                     db, table, name, type_=_picklist_type(item, name),
                     position=position, probability=prob,
+                    forecast_category=ctx.mapping.forecast_category_of(item),
                 )
+
+
+@dataclass
+class _PipelineIndex:
+    """The local pipelines, so a deal finds its own by id, by name, or the default."""
+
+    by_ext: dict[str, str] = field(default_factory=dict)
+    by_name: dict[str, str] = field(default_factory=dict)
+    default: str | None = None
+
+
+_PIPELINE_INDEX_SQL = (
+    "SELECT id, name, ext_id, is_default FROM crm_pipelines "
+    "WHERE ext_source = :src ORDER BY position, created_at, id"
+)
+
+
+async def _pipeline_index(ctx: _Ctx, db: Any) -> _PipelineIndex:
+    if ctx.pipelines is None:
+        index = _PipelineIndex()
+        for row in (await db.execute(text(_PIPELINE_INDEX_SQL), {"src": EXT_SOURCE})).fetchall():
+            index.by_ext[str(row.ext_id)] = str(row.id)
+            index.by_name.setdefault(str(row.name).strip().lower(), str(row.id))
+            if row.is_default or index.default is None:
+                index.default = str(row.id)
+        ctx.pipelines = index
+    return ctx.pipelines
+
+
+async def _deal_pipeline_id(
+    ctx: _Ctx, db: Any, ref: tuple[str | None, str | None] | None,
+) -> str | None:
+    """The local pipeline of a deal: by the id Zoho sent, else by its name, else
+    the default pipeline. ``None`` when the org has no pipeline yet."""
+    index = await _pipeline_index(ctx, db)
+    ext_id, name = ref or (None, None)
+    if ext_id and ext_id in index.by_ext:
+        return index.by_ext[ext_id]
+    if name and name.strip().lower() in index.by_name:
+        return index.by_name[name.strip().lower()]
+    return index.default
 
 
 @dataclass
@@ -699,6 +785,8 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
             db, LEAD_STATUSES if entity == "lead" else DEAL_STATUSES,
             mapped.status_name, caches.statuses,
         )
+    if entity == "deal":
+        values["pipeline_id"] = await _deal_pipeline_id(ctx, db, mapped.pipeline)
     if "lead_name" in mapped.derived:
         values["lead_name"] = compute_lead_name(values)
 
@@ -1146,6 +1234,97 @@ async def _field_defs(ctx: _Ctx) -> None:
                     })
 
 
+def _discovery_due(ctx: _Ctx) -> bool:
+    """First import, a new connection, or a profile older than 24 hours."""
+    current = ctx.profile
+    if current is None or current.fetched_at is None:
+        return True
+    if current.connection_id != ctx.handle.connection_id:
+        return True
+    return ctx.started - current.fetched_at >= DISCOVERY_EVERY
+
+
+async def _mirror_pipelines(
+    ctx: _Ctx, db: Any, rows: list[dict[str, Any]],
+) -> None:
+    """Write the discovered deal pipelines and their stages (CRM-Q2).
+
+    A stage is one global row (``crm_deal_statuses``), so a stage that two
+    pipelines share is one row with two memberships. A stage the picklist did
+    not list is appended. A pipeline that Zoho no longer lists is deleted here,
+    and its deals keep their row with a NULL pipeline.
+    """
+    seen: list[str] = []
+    for position, row in enumerate(rows):
+        async with savepoint(db):
+            pipeline = await upsert_from_source(db, "crm_pipelines", {
+                "name": row["name"],
+                "position": position,
+                "is_default": bool(row["default"]),
+                "layout_ext_id": row.get("layout_ext_id"),
+                "ext_source": EXT_SOURCE,
+                "ext_id": row["ext_id"],
+            })
+            members: list[tuple[str, int]] = []
+            for stage in row.get("stages") or []:
+                status_id = await _ensure_status(
+                    db, DEAL_STATUSES, stage["name"], type_=stage.get("type"),
+                    forecast_category=stage.get("forecast_category"),
+                )
+                if all(status_id != existing for existing, _ in members):
+                    members.append((status_id, len(members)))
+            await set_pipeline_stages_from_source(db, str(pipeline.id), members)
+        seen.append(row["ext_id"])
+    if not seen:
+        return
+    known = [
+        str(r.ext_id) for r in (await db.execute(
+            text(_PIPELINE_INDEX_SQL), {"src": EXT_SOURCE},
+        )).fetchall()
+    ]
+    gone = [ext_id for ext_id in known if ext_id not in set(seen)]
+    if gone:
+        await delete_from_source(db, "crm_pipelines", EXT_SOURCE, gone)
+    ctx.pipelines = None
+
+
+async def _discover(ctx: _Ctx) -> None:
+    """Read the shape of the customer's account, once in 24 hours (CRM-Q1).
+
+    It reads metadata only, through ``CrmSource.discover``, and counts each
+    call. A section that cannot be read keeps the value of the previous profile.
+    A fatal failure (a dead token, a spent budget, a throttle) ends the run, and
+    any other failure only costs the section.
+    """
+    if not _discovery_due(ctx):
+        return
+    try:
+        raw = await ctx.call(lambda s: s.discover())
+    except (NotConnected, Stopped, ModeChanged):
+        raise
+    except SourceError as exc:
+        if _fatal(exc):
+            raise
+        _log.warning("crm.sync.discovery_failed: %s", error_code(exc))
+        return
+    previous = ctx.profile.profile if ctx.profile is not None else None
+    profile = ctx.mapping.build_profile(raw, previous)
+    org = profile.get("org") or {}
+    meta = {
+        "domain_name": org.get("domain_name"),
+        "edition": org.get("edition"),
+        "tabs": ctx.mapping.profile_tabs(profile) or None,
+    }
+    async with ctx.page() as db:
+        await profiles.store(db, ctx.org, ctx.handle.connection_id, profile)
+        await store.merge_provider_meta(db, ctx.org, ctx.handle.connection_id, meta)
+        if "pipelines" not in (profile.get("unreadable") or []):
+            await _mirror_pipelines(ctx, db, profile.get("pipelines") or [])
+        ctx.profile = await profiles.latest(db, ctx.org)
+    if ctx.budget_is_default:
+        ctx.budget_total = max(daily_budget(profile) - ctx.used_24h, 0)
+
+
 async def _estimate(ctx: _Ctx) -> None:
     """The record count of each entity, for the progress bar. Best effort."""
     totals: dict[str, int] = {}
@@ -1172,14 +1351,22 @@ async def _execute(ctx: _Ctx) -> None:
     async with tenant_session(ctx.org) as db:
         ctx.members = await runs.member_emails(db, ctx.org)
         used = await runs.credits_used_24h(db, ctx.org)
+        ctx.profile = await profiles.latest(db, ctx.org)
+    ctx.used_24h = int(used or 0)
     if ctx.budget_total is None:
-        ctx.budget_total = max(DAILY_CREDIT_BUDGET - used, 0)
+        ctx.budget_total = max(
+            daily_budget(ctx.profile.profile if ctx.profile else None) - ctx.used_24h, 0,
+        )
     if ctx.kind == runs.KIND_IMPORT:
         await _start_deleted_windows(ctx)
         if ctx.estimate is None:
             await _estimate(ctx)
     if ctx.kind in (runs.KIND_IMPORT, runs.KIND_RECONCILE):
         await _field_defs(ctx)
+    # After the stages are mirrored, so a pipeline stage that the picklist did
+    # not list is appended and a listed one keeps its place. Before the records,
+    # so a deal finds its pipeline.
+    await _discover(ctx)
     for entity in ENTITY_ORDER:
         await _changed_pass(ctx, entity)
     if ctx.kind != runs.KIND_IMPORT:
@@ -1266,6 +1453,7 @@ __all__ = [
     "Stopped",
     "SyncRunning",
     "acquire",
+    "daily_budget",
     "error_code",
     "execute",
     "next_interval",

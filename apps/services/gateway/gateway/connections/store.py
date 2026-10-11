@@ -100,7 +100,7 @@ _UPSERT_SQL = (
     ":blob, :scopes, :connected_by, NULL, now(), now()) "
     "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
     "(COALESCE(member_email, ''))) DO UPDATE SET status = 'connected', "
-    "provider_meta = EXCLUDED.provider_meta, "
+    "provider_meta = integration_connections.provider_meta || EXCLUDED.provider_meta, "
     "credentials_encrypted = EXCLUDED.credentials_encrypted, "
     "scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, "
     "last_error = NULL, updated_at = now() "
@@ -109,7 +109,15 @@ _UPSERT_SQL = (
 
 _UPDATE_TOKENS_SQL = (
     "UPDATE integration_connections SET credentials_encrypted = :blob, "
-    "provider_meta = CAST(:provider_meta AS jsonb), updated_at = now() "
+    "provider_meta = provider_meta || CAST(:provider_meta AS jsonb), "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+_MERGE_META_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     "AND status <> 'disconnected'"
 )
@@ -368,6 +376,24 @@ async def update_tokens(
         "org": str(org),
         "blob": _seal(credential),
         "provider_meta": json.dumps(dict(credential.provider_meta)),
+    })
+
+
+async def merge_provider_meta(
+    db: Any, org: str, connection_id: str, extra: dict[str, Any],
+) -> None:
+    """Add keys to ``provider_meta`` of one connection and keep the others.
+
+    The sync writes what it learned about the account here (``domain_name``,
+    ``edition``, ``tabs``). The row holds no token, so the keys are plain
+    metadata. A refresh and a reconnect keep them, because both merge into the
+    column and never replace it. A key with a ``None`` value is dropped.
+    """
+    kept = {str(k): v for k, v in extra.items() if v is not None}
+    if not kept:
+        return
+    await db.execute(text(_MERGE_META_SQL), {
+        "id": str(connection_id), "org": str(org), "extra": json.dumps(kept),
     })
 
 
