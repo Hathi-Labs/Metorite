@@ -952,7 +952,9 @@ export function NavLink({
           data-pinned={menuOpen ? "" : undefined}
         >
           {link}
-          <span className="reveal-on-hover rail-row-actions flex shrink-0 items-center pr-1.5">
+          <span className="reveal-on-hover rail-row-actions flex shrink-0 items-center">
+            {/* The gap lives INSIDE the zone, so it folds away with it at rest. */}
+            <span className="flex items-center pr-1.5">
             <Button
               variant="ghost"
               size="icon-xs"
@@ -966,6 +968,7 @@ export function NavLink({
                 onRowMenu(pane, { x: r.left, y: r.bottom + 4, keyboard: e.detail === 0, trigger: e.currentTarget });
               }}
             />
+          </span>
           </span>
         </div>
       ) : (

@@ -330,6 +330,9 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
    an approver's only door to the queue from each app,
    and Chat is the assistant itself. Both stay in their team's group: AI
    Studio and Admin.
+   ✅ **Applied to the star model (2026-10-11).** Every answer stars
+   Approvals for a member who holds it, because the bell and My Day are
+   flags that are not reliably on. The member can still hide it.
 3. **One line per item.** The old sidebar printed a second line under each
    item. In slice 1 that line was the manifest's purpose, and the sidebar grew
    taller than a 900px screen. A member who opens the sidebar every day reads
@@ -383,20 +386,26 @@ gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
 **Four rules for what shows** (`starredHrefs` in `presets.ts`):
 
 1. **No stored list shows every held app.** `pins` is null when the member
-   never answered or skipped. So the sidebar on the day of the merge is the
-   sidebar of the day before, for every member who did not answer.
-2. **A starred app shows.**
-3. **A new app shows until a save covers it.** An app that is not in
+   never answered or skipped. `known` is null in every row that NS-7 saved,
+   and such a row shows every held app too. So the sidebar on the day of
+   the merge is the sidebar of the day before, for every member.
+   ⚠️ NS-7's pins were a "My apps" list on top of the whole sidebar, never
+   a filter. A member who pinned and then unpinned stored `pins: []`. To
+   read those pins as stars would hide apps that the member never chose to
+   hide. Fix round, 2026-10-11.
+2. **The first save of the star model writes `known`.** A star, a hide or
+   the dialog each write it. From then on the stars filter.
+3. **A starred app shows.**
+4. **A new app shows until a save covers it.** An app that is not in
    `known` is new to the member, because an admin granted it, or it went
-   live, after their last save. Without this rule, a new app would hide from every
-   member who ever saved. Each save writes `known` as every app that the
-   member can see now.
-4. **A row that NS-7 saved has no `known`.** The shell reads every app that
-   is not in `pins` as known. So the member keeps exactly the apps that they
-   pinned, and no app appears by surprise.
+   live, after their last save. Without this rule, a new app would hide
+   from every member who ever saved. Each save writes `known` as every app
+   that the member can see now.
 
 **The defaults** (owner, "Personal + preset"). An answer stars every
 Personal Center app that the member holds, and the preset's apps (§8.1).
+Every answer also stars Approvals for a member who holds it
+(`ALWAYS_STARRED`, orchestrator decision of 2026-10-11, §3.2a item 2).
 A skip stores no stars, so every app shows. The role's preset still orders
 My Day's cards and the jobs of the empty command bar.
 
@@ -407,12 +416,23 @@ My Day's cards and the jobs of the empty command bar.
   "Shown in sidebar". The names are "Show <App> in sidebar" and "Hide <App>
   from sidebar". The change shows at once, and it goes back when the server
   refuses it.
+- **A run on a hidden app** shows its badge on "Add apps", the door to the
+  hidden apps (`strayCount`). Before this, a run on a hidden app folded to
+  Chat, and with Chat hidden the badge had no row.
+- **The first frame.** With no browser copy, the skeleton holds the place
+  until the layout read answers. A failed read, or a wait longer than the
+  proxy's timeout of 6 seconds, draws every held app.
 - **"Add apps",** the last item of the sidebar list. It opens All apps with
   the line "Star the apps you want in your sidebar." It always shows, so a
   member who starred nothing still sees where to start. Its row has the
   geometry of the sidebar's own rows, so its icon lines up with theirs.
 - **The row menu.** Hover or keyboard focus on a row shows a "···" at its
-  end, and a right-click opens the same menu. The menu holds "Hide from
+  end, and a right-click opens the same menu. At rest the "···" takes no
+  width, and the run badge holds its place. On hover or focus, the "···"
+  takes the place of the badge, as a `RailRow` count does. The "···" stays
+  while its menu is open. The menu has the `menu` and `menuitem` roles, and
+  the arrow keys move through it. Undo puts back the layout from before the
+  hide. After a hide, the focus goes to the next row. The menu holds "Hide from
   sidebar" and "Open in new tab". A hide shows a toast with Undo. The folded
   rail has no "···", and a right-click there opens the menu. Home has no
   menu. The phone drawer has no "···", so a phone member uses All apps.
@@ -421,7 +441,9 @@ My Day's cards and the jobs of the empty command bar.
 **Categories fold.** A category heading toggles its list, and a folded
 heading shows its count, such as "Across teams (2)". The browser keeps the
 folds for each account under `cc-sidebar-folds:<email>|<organizationId>`,
-and a sign-out clears them (`lib/shell/sidebarFolds.ts`). The sidebar never
+and a sign-out clears them (`lib/shell/sidebarFolds.ts`). While the member
+is on one of a category's apps, its fold is off, and the heading says so.
+A press would otherwise seem to do nothing, because the current row stays. The sidebar never
 keeps the category of the current route folded. The folded rail does not fold
 categories. It draws a thin line between them.
 
@@ -1369,7 +1391,12 @@ skip it. The question changes the starting layout and nothing else.
 - **"Done" sends ONE `PUT`** with the answer, the preset, `pins` and
   `known`. "Back" goes to step 1 and writes nothing.
 - **The X and Escape on step 2 keep the answer,** with the ticks it started
-  with. So an answer is never lost.
+  with, on a first visit. So an answer is never lost. When "Change my
+  layout" asks again, they close and write nothing, as "Keep my layout"
+  does.
+- **The dialog waits for access.** Before access resolves, step 2 would
+  list no app, and "Done" would save no star (`welcomeSteps.ts`).
+- **"Back" puts the focus on the chosen answer.**
 - **A skip at step 1 closes the dialog,** with no step 2. It stores no
   stars, so every app shows.
 - **Round 2 still holds.** Each way out closes first, a failed write shows
