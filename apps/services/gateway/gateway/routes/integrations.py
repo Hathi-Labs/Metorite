@@ -2371,13 +2371,12 @@ async def github_device_poll(
         {status: "denied"}                  — user denied access
 
     🔒 WS-54 IN-7. The token becomes the ORG connection of the caller's
-    organization in ``integration_connections``, through
+    organization in the connection registry, through
     ``gateway/connections/github.py``. It goes nowhere else: not to
     ``provider_keys``, not to ``os.environ``, not to the env file. The BYOK
     gate still runs first. A failed store write answers 503.
     """
     _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
-    org = _github_org()
     _store, client_id = await _github_org_store()
     if not client_id:
         raise HTTPException(
@@ -2402,6 +2401,7 @@ async def github_device_poll(
         token: str = data["access_token"]
         # Layer A before any write: the token comes from GitHub, not from us.
         _refuse_unsafe_env_writes([("GITHUB_TOKEN", str(token))], actor=user.email)
+        org = _github_org()
 
         # Fetch the GitHub login name and the scopes for the connection card.
         login = "unknown"

@@ -373,7 +373,7 @@ def _fake_gh_cli(monkeypatch: pytest.MonkeyPatch, token: str) -> None:
         return _Proc("Logged in to github.com account octocat (keyring)\n"
                      "Token scopes: 'repo', 'copilot'\n")
 
-    monkeypatch.setattr(integrations.subprocess, "run", _run)
+    monkeypatch.setattr("subprocess.run", _run)
 
 
 def _key_store(monkeypatch: pytest.MonkeyPatch, stored: dict[str, Any]):
@@ -1235,16 +1235,42 @@ class TestEveryCallerStillWorks:
         assert store.deletes == ["apollo:api_key"]
 
     async def test_github_device_poll_saves_a_token(self, env_file, store, monkeypatch, byok_on):
+        from acb_common.db import bind_tenant, release_tenant, clear_tenant
+
         monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.8a61f9b3a7aba766")
         get_settings.cache_clear()
         _fake_httpx(monkeypatch, integrations, {"access_token": "gho_AbCdEf0123456789"})
+        saved: list[tuple[str, str]] = []
+
+        class _NoDb:
+            def __init__(self, org: str) -> None:
+                self.org = org
+
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_: Any) -> bool:
+                return False
+
+        async def _save(db: Any, org: str, **kw: Any) -> None:
+            saved.append((org, kw["access_token"]))
+
+        monkeypatch.setattr(integrations, "tenant_session", _NoDb)
+        monkeypatch.setattr(integrations.github_connection, "save_device_token", _save)
         before = _snapshot(env_file)
-        out = await integrations.github_device_poll(
-            integrations.DevicePollRequest(device_code="d"), user=USER,
-        )
+        scope = clear_tenant()
+        bind_tenant("11111111-2222-3333-4444-555555555555")
+        try:
+            out = await integrations.github_device_poll(
+                integrations.DevicePollRequest(device_code="d"), user=USER,
+            )
+        finally:
+            release_tenant(scope)
         assert out == {"status": "authorized", "login": "octocat"}
         _assert_untouched(env_file, before)  # IN-0: the store only
-        assert store.puts == [("github:token", "gho_AbCdEf0123456789")]
+        # IN-7: an org connection, and no provider_keys row.
+        assert store.puts == []
+        assert saved == [("11111111-2222-3333-4444-555555555555", "gho_AbCdEf0123456789")]
 
     async def test_github_connect_cli_saves_a_token(self, env_file, monkeypatch, byok_on):
         # src/components/GitHubAccountBadge.tsx (about :103). IN-0 retires the

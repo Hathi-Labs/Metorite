@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/integrations_console.md`` §2.2 (IN-D10, IN-D18),
 §3.2, §3.3 and §7.2 (IN-7).
 
 * **One row per org.** The device flow saves an org connection in
-  ``integration_connections`` through :mod:`gateway.connections.store`. The
+  the connection registry through :mod:`gateway.connections.store`. The
   provider is ``github`` and the owning app is ``integrations``. The login and
   the token scopes are non-secret, so they sit in ``provider_meta`` and
   ``scopes``. The access token sits in the encrypted blob.
