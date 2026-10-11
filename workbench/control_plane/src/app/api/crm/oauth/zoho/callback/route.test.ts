@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const identity = vi.hoisted(() => ({ signedIn: true }));
+const seam = vi.hoisted(() => ({ opts: [] as unknown[] }));
 
 vi.mock("@/lib/gateway", () => ({
   GATEWAY_URL: "http://gw.test",
@@ -15,7 +16,10 @@ vi.mock("@/lib/gateway", () => ({
     identity.signedIn
       ? { email: "dana@example.com" }
       : NextResponse.json({ error: "Sign in to continue" }, { status: 401 }),
-  gatewayFetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init),
+  gatewayFetch: (input: RequestInfo | URL, init?: RequestInit, opts?: unknown) => {
+    seam.opts.push(opts);
+    return fetch(input, init);
+  },
 }));
 
 const BIND = "http://localhost:3001";
@@ -151,6 +155,8 @@ describe("the BFF Zoho OAuth callback", () => {
     const res = await callback("code=c&state=s");
     expect(calls).toHaveLength(1);
     expect(res.headers.get("location")).toBe("/crm?connect_error=failed");
+    // The seam is kept (H-194), and the retry is off: the code is single-use.
+    expect(seam.opts.at(-1)).toEqual({ retry: false });
   });
 
   it("never logs the query", () => {

@@ -26,7 +26,7 @@
  * Fence: `route.test.ts`.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayFetch, gatewayHeaders, requireIdentity } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -101,16 +101,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   let res: Response;
   try {
-    // ⚠️ A plain `fetch`, ONE attempt. `gatewayFetch` retries on a stale
-    // socket (H-194), and the consent code is single-use: a retry after the
-    // first attempt reached the gateway would turn a good connect into a
-    // failure. A throw here becomes `/crm?connect_error=failed`.
-    res = await fetch(upstream, {
-      headers,
-      redirect: "manual",
-      cache: "no-store",
-      signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
-    });
+    // ⚠️ ONE attempt: `{ retry: false }`. By default a GET through
+    // `gatewayFetch` retries on a stale socket (H-194), and the consent code
+    // is single-use: a retry after the first attempt reached the gateway
+    // would turn a good connect into a failure. The seam stays, so the H-194
+    // fence holds. A throw here becomes `/crm?connect_error=failed`.
+    res = await gatewayFetch(
+      upstream,
+      {
+        headers,
+        redirect: "manual",
+        cache: "no-store",
+        signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
+      },
+      { retry: false },
+    );
   } catch {
     return failed("failed");
   }
