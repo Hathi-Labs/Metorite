@@ -261,6 +261,17 @@ class Settings(BaseSettings):
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 
+    # `agent_registry_orgs` (2026-10-11, found in the WS-54 IN-7 review) lists
+    # the organization ids that may change the agent registry: register, pull,
+    # delete and patch on `/agent`. Grammar of `crm_orgs`: ids with a comma
+    # between them, or `*`. Default empty means NO organization (fail closed).
+    # The registry is deployment-wide, a register clones a repo with the
+    # operator's GITHUB_TOKEN, and its code runs inside the shared gateway. So
+    # only the platform operator's organization belongs here. The one reader
+    # is `gateway.routes.agent._require_registry_operator`. Fence:
+    # tests/unit/test_agent_registry_operator_only.py.
+    agent_registry_orgs: str = ""
+
     # ── Customer Console sign-in resolve (WS-31 CP-2b, spec customer_console.md
     # §6(f)) ────────────────────────────────────────────────────────────────
     #
