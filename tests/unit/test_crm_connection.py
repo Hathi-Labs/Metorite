@@ -302,7 +302,7 @@ def test_a_state_for_another_org_is_refused_for_the_session_of_this_org(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:
     """Org B's admin signs a valid state. It does not work in org A's session."""
-    registry, zoho = world
+    _registry, zoho = world
     stolen = _state(org=ORG_B, member=ADMIN)
     assert _callback(_client(_user(org=ORG_A)), stolen).status_code == 400
     assert zoho.requests == []
@@ -327,7 +327,7 @@ def test_a_good_state_connects_and_moves_the_org_to_mirror(
 def test_the_callback_refuses_an_accounts_server_off_the_allowlist(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:
-    registry, zoho = world
+    _registry, zoho = world
     response = _callback(_client(_user()), _state(),
                          **{"accounts-server": "https://accounts.evil.example"})
     assert response.status_code == 400
@@ -338,7 +338,7 @@ def test_the_callback_refuses_an_accounts_server_off_the_allowlist(
 def test_a_location_that_does_not_own_the_server_is_refused(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:
-    registry, zoho = world
+    _registry, zoho = world
     response = _callback(_client(_user()), _state(), location="eu")
     assert response.status_code == 400
     assert zoho.requests == []
@@ -372,7 +372,7 @@ def test_a_native_org_is_refused_and_nothing_is_sent(
 def test_a_member_without_the_admin_right_gets_403_on_each_write(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:
-    registry, zoho = world
+    _registry, zoho = world
     client = _client(_user(ADMIN, ORG_A, "feature:crm"))
     assert client.post("/crm/connection/zoho/start").status_code == 403
     assert client.post("/crm/connection/disconnect").status_code == 403
@@ -388,7 +388,7 @@ def test_a_member_without_the_admin_right_gets_403_on_each_write(
 def test_start_returns_the_consent_url_with_read_scopes_and_a_state_that_verifies(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:
-    registry, zoho = world
+    _registry, zoho = world
     response = _client(_user()).post("/crm/connection/zoho/start")
     assert response.status_code == 200
     url = urlsplit(response.json()["url"])
@@ -550,7 +550,7 @@ async def test_a_due_token_is_refreshed_and_written_back_for_every_worker(
 async def test_no_connection_gives_none_and_no_request(
     world: tuple[FakeRegistry, FakeZoho],
 ) -> None:
-    registry, zoho = world
+    _registry, zoho = world
     assert await conn.fresh_zoho_credential(ORG_B, transport=zoho.transport) is None
     assert zoho.requests == []
 
@@ -679,7 +679,7 @@ _NEW_ROUTES = [
 def test_with_the_mirror_switch_off_each_new_route_is_404(
     world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry, zoho = world
+    _registry, zoho = world
     monkeypatch.setattr(get_settings(), "crm_mirror", False, raising=False)
     client = _client(_user())
     for method, path in _NEW_ROUTES:
@@ -706,6 +706,7 @@ def test_every_new_route_of_the_gateway_carries_both_switches() -> None:
     import gateway.main as main
     from fastapi.dependencies.utils import get_dependant
     from gateway.routes.crm import flags
+
     from tests.unit._routes import served_routes
 
     found = {}

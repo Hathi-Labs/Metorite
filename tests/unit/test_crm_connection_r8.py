@@ -353,12 +353,11 @@ async def _age_the_token(p: Any, org: str) -> None:
     from acb_common.db import tenant_session
     from gateway.connections import store
 
-    async with tenant_engine_scope(_app_dsn(p)):
-        async with tenant_session(org) as db:
-            cred = await store.load_credential(db, org, "zoho", "crm")
-            row = await store.get(db, org, "zoho", "crm")
-            old = replace(cred, expires_at=datetime.now(UTC) - timedelta(hours=1))
-            await store.update_tokens(db, org, row.id, old)
+    async with tenant_engine_scope(_app_dsn(p)), tenant_session(org) as db:
+        cred = await store.load_credential(db, org, "zoho", "crm")
+        row = await store.get(db, org, "zoho", "crm")
+        old = replace(cred, expires_at=datetime.now(UTC) - timedelta(hours=1))
+        await store.update_tokens(db, org, row.id, old)
 
 
 async def test_a_due_token_is_refreshed_and_stored_for_every_worker(ns, app_engine) -> None:  # noqa: F811
