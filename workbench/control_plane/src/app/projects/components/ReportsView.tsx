@@ -43,6 +43,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { personDisplayName } from "@/lib/personName";
 import { LayoutBoundary } from "@/components/LayoutBoundary";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -961,7 +962,11 @@ export function RenderedBody({
                         <span className="font-medium text-foreground">{t.title}</span>
                         <span className="text-muted-foreground">
                           {" "}
-                          · held by {t.holder?.name || t.holder?.email} ·{" "}
+                          · held by{" "}
+                          {t.holder?.email
+                            ? personDisplayName(t.holder.name, t.holder.email)
+                            : t.holder?.name}{" "}
+                          ·{" "}
                           {t.due_on ? `due ${shortDate(t.due_on)}` : "no due date"} ·
                           helpers {helpersLine(t) ?? "none"}
                         </span>
@@ -2492,7 +2497,8 @@ export default function ReportsView({
 
   function authorName(row: ReportRow): string {
     const who = (row.created_by ?? "").trim().toLowerCase();
-    return subjects.data?.people.find((p) => p.email === who)?.name || row.created_by;
+    if (!row.created_by) return "";
+    return personDisplayName(subjects.data?.people.find((p) => p.email === who)?.name, row.created_by);
   }
 
   function cardLine(row: ReportRow): string {

@@ -107,7 +107,18 @@ function hasVisibleFocus(element: Element): boolean {
  * truncated element, and `onFocus` and `onBlur` on the control that takes
  * focus. Render `tip` anywhere.
  */
-export function useOverflowTip(text: string) {
+export interface OverflowTipOptions {
+  /**
+   * Show the tip whether or not the label is cut. For a tip that says MORE
+   * than the label, such as a person's email under their name (`PersonName`).
+   */
+  always?: boolean;
+  /** What the tip draws, when it is more than `text`. */
+  content?: React.ReactNode;
+}
+
+export function useOverflowTip(text: string, options: OverflowTipOptions = {}) {
+  const { always = false, content } = options;
   const [state, dispatch] = useReducer(overflowTipReducer, TIP_IDLE);
   // The label element, held in state rather than in a ref. The hook hands
   // its callbacks to the caller's render, and the React compiler refuses a
@@ -126,10 +137,10 @@ export function useOverflowTip(text: string) {
       // Measured when the delay ends, not when the pointer arrived: the row's
       // actions take their room on hover, and that can cut a name that fit.
       if (node) setWidth(overflowTipWidth(node.getBoundingClientRect().left, window.innerWidth));
-      dispatch({ type: "elapsed", truncated: isTruncated(node) });
+      dispatch({ type: "elapsed", truncated: always || isTruncated(node) });
     }, OVERFLOW_TIP_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [state.phase, anchor]);
+  }, [state.phase, anchor, always]);
 
   useEffect(() => {
     if (state.phase !== "open") return;
@@ -173,7 +184,7 @@ export function useOverflowTip(text: string) {
       className="text-xs"
     >
       <div style={{ maxWidth: width }} className="whitespace-normal break-words px-2 py-1">
-        {text}
+        {content ?? text}
       </div>
     </AnchoredPanel>
   );

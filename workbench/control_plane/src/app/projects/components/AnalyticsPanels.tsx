@@ -34,6 +34,7 @@
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { PersonName } from "@/components/PersonName";
 import Button from "@/components/ui/Button";
 
 import {
@@ -101,6 +102,7 @@ import {
 import { FINISHED_HINT_LEAD, PANEL_HINTS } from "../lib/panelHints";
 import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT } from "../lib/hrHints";
 import { sectionName } from "../lib/reportBuilder";
+import { usePersonNames } from "../lib/usePersonNames";
 import { SECTION_CLEAR_LINES } from "../lib/sectionEmpty";
 import {
   focusMore,
@@ -595,6 +597,9 @@ export function LoadPanel({ data }: { data: LoadReport }) {
   // the interface is a claim about the server and not a check on it. Measured
   // 2026-09-17: `{people: null}` from this endpoint crashed the whole PAGE.
   const people = asList<LoadReport["people"][number]>(data?.people);
+  // The payload carries addresses. The directory names them (owner,
+  // 2026-10-10: names, not email IDs), and the address goes in the hover.
+  const names = usePersonNames(people.map((row) => row.assignee));
   const overdue = accentForHue("red");
   const soon = accentForHue("amber");
   const later = accentForHue("gray");
@@ -614,21 +619,26 @@ export function LoadPanel({ data }: { data: LoadReport }) {
             {people.map((row) => (
               <li key={row.assignee ?? "__unassigned"}>
                 <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
-                  <span
-                    // ⚠️ `pr-px` is not a nicety. Photographed 2026-09-16,
-                    // "Unassigned" rendered as "Unassignea": an italic glyph
-                    // leans past its own advance width, and `truncate`'s
-                    // overflow clip cut the final letter at EVERY width.
-                    className={`min-w-0 truncate pr-px ${row.assignee ? "" : "italic text-muted-foreground"}`}
-                    title={
-                      row.assignee ??
-                      "Open work with nobody assigned. On a real board this is usually the largest bar."
-                    }
-                  >
-                    {/* §6.5 item 17: the name when the payload has
-                        one, and the address only when it has none. */}
-                    {row.name || row.assignee || "Unassigned"}
-                  </span>
+                  {row.assignee ? (
+                    // The name, never the address (owner, 2026-10-10). The
+                    // address is in the hover, with the full name.
+                    <PersonName
+                      email={row.assignee}
+                      name={row.name || names.get(row.assignee.toLowerCase())}
+                      className="min-w-0 pr-px"
+                    />
+                  ) : (
+                    <span
+                      // ⚠️ `pr-px` is not a nicety. Photographed 2026-09-16,
+                      // "Unassigned" rendered as "Unassignea": an italic glyph
+                      // leans past its own advance width, and `truncate`'s
+                      // overflow clip cut the final letter at EVERY width.
+                      className="min-w-0 truncate pr-px italic text-muted-foreground"
+                      title="Open work with nobody assigned. On a real board this is usually the largest bar."
+                    >
+                      Unassigned
+                    </span>
+                  )}
                   {/* ⚠️ Hours ONLY when this plate is sized. `personEffort`
                       answers null otherwise — nine unsized tasks is not zero
                       hours of work, and "0h" beside real figures says it is. */}
@@ -756,17 +766,19 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
             return (
               <li key={row.assignee ?? "__unassigned"}>
                 <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
-                  <span
-                    // `pr-px`: an italic glyph leans past its advance width,
-                    // and `truncate` clips it. The Load panel learned this.
-                    className={`min-w-0 truncate pr-px ${row.assignee ? "" : "italic text-muted-foreground"}`}
-                    title={
-                      row.assignee ??
-                      "Open work with nobody assigned. Nobody's hours cover it."
-                    }
-                  >
-                    {rowLabel(row)}
-                  </span>
+                  {row.assignee && row.kind !== "unassigned" ? (
+                    // The name, never the address (owner, 2026-10-10).
+                    <PersonName email={row.assignee} name={row.name} className="min-w-0 pr-px" />
+                  ) : (
+                    <span
+                      // `pr-px`: an italic glyph leans past its advance width,
+                      // and `truncate` clips it. The Load panel learned this.
+                      className="min-w-0 truncate pr-px italic text-muted-foreground"
+                      title="Open work with nobody assigned. Nobody's hours cover it."
+                    >
+                      {rowLabel(row)}
+                    </span>
+                  )}
                   {pill && accent && (
                     <span
                       className="flex shrink-0 items-center gap-1 text-muted-foreground"
