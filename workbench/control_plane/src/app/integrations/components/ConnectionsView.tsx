@@ -100,10 +100,11 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   }
 
   async function test() {
-    if (!open) return;
+    const name = open ? mcpName(open) : null;
+    if (!open || !name) return;
     setTesting(true);
     try {
-      const r = await api.testMcp(mcpName(open));
+      const r = await api.testMcp(name);
       if (r.ok) {
         toast.show({
           key: "integrations-test",

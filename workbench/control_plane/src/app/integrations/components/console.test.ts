@@ -92,13 +92,13 @@ describe("the panel actions per kind", () => {
   });
 
   it("offers Test on an MCP row, and not elsewhere", () => {
-    const mcp = row({ kind: "mcp", owning_app: "integrations", setup_href: null });
+    const mcp = row({ kind: "mcp", id: "mcp:brave", owning_app: "integrations", setup_href: null });
     expect(sheet(mcp)).toMatch(/>Test</);
     expect(sheet(row())).not.toMatch(/>Test</);
   });
 
   it("hides Disconnect and Test without integrations:manage", () => {
-    const mcp = row({ kind: "mcp", owning_app: "integrations" });
+    const mcp = row({ kind: "mcp", id: "mcp:brave", owning_app: "integrations" });
     const html = sheet(mcp, { canManage: false });
     expect(html).not.toContain("Disconnect");
     expect(html).not.toMatch(/>Test</);
@@ -175,9 +175,14 @@ describe("the page uses the shared shell", () => {
     expect(page).toContain("IntegrationsRail");
     expect(page).not.toContain("@/components/Tabs");
   });
-  it("gates the read and the writes on the access", () => {
+  it("gates the read on Connections only, and the writes on the access", () => {
     expect(page).toContain("consoleAccess");
-    expect(page).toContain("READ_DENIED");
+    expect(page).toMatch(/view === "connections" \? \(\s*canRead \?/);
+    expect(page).not.toMatch(/!canRead \? \(\s*<EmptyState/);
+  });
+  it("hides the MCP entry points when the list route is not built", () => {
+    expect(page).toContain("list.data !== null");
+    expect(page).toMatch(/mcpOpen && \(\s*<ShellJob/);
   });
   it("uses ConfirmDialog for Disconnect, and no window.confirm", () => {
     const view = read(join(DIR, "components/ConnectionsView.tsx"));

@@ -97,7 +97,7 @@ describe("the panel", () => {
   });
 
   it("offers Test on an MCP row for a manager", () => {
-    const mcp = row({ kind: "mcp", owning_app: "integrations" });
+    const mcp = row({ kind: "mcp", id: "mcp:brave", owning_app: "integrations" });
     expect(panelPlan(mcp, true).test).toBe(true);
     expect(panelPlan(mcp, false).test).toBe(false);
     expect(panelPlan(row(), true).test).toBe(false);
@@ -108,9 +108,15 @@ describe("the panel", () => {
     expect(panelPlan(row(), true).memberNote).toBeNull();
   });
 
-  it("tests an MCP server by its name", () => {
+  it("tests an MCP server by detail.name, then by the id, and never by the label", () => {
     expect(mcpName(ROWS[3])).toBe("brave-search");
-    expect(mcpName(row({ label: "Zed" }))).toBe("Zed");
+    expect(mcpName(row({ id: "mcp:zed", label: "Zed Pro" }))).toBe("zed");
+    expect(mcpName(row({ id: "x9", label: "Zed" }))).toBeNull();
+  });
+
+  it("hides Test when the row names no server", () => {
+    expect(panelPlan(row({ kind: "mcp", id: "x9" }), true).test).toBe(false);
+    expect(panelPlan(row({ kind: "mcp", id: "mcp:zed" }), true).test).toBe(true);
   });
 });
 
@@ -166,6 +172,10 @@ describe("the MCP form", () => {
       agent_scope: ["a", "b"],
       enabled: true,
     });
+  });
+
+  it("sends the optional description", () => {
+    expect(mcpBody({ ...EMPTY_MCP_FORM, name: "n", url: "https://x", description: " Search " }).description).toBe("Search");
   });
 
   it("sends no header when one half is empty", () => {

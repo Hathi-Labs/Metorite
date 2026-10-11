@@ -48,6 +48,9 @@ export function McpFormFields({
           <Input value={form.label} onChange={set("label")} placeholder="Brave Search" />
         </Field>
       </div>
+      <Field label="Description (optional)">
+        <Input value={form.description} onChange={set("description")} placeholder="What the server offers" />
+      </Field>
       <Field label="URL" hint="Use an https address. Private and local addresses are refused.">
         <Input
           value={form.url}

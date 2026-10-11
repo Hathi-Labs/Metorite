@@ -188,7 +188,7 @@ export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
     href: row.setup_href,
     reconnect: Boolean(row.setup_href) && row.status === "needs_reconnect",
     disconnect: canManage && row.can_disconnect,
-    test: canManage && row.kind === "mcp",
+    test: canManage && row.kind === "mcp" && mcpName(row) !== null,
     memberNote:
       row.scope === "member" ? `${row.owner || "The owner"} manages this connection in ${app}.` : null,
   };
@@ -235,9 +235,15 @@ export function disconnectCopy(row: Connection): ConfirmCopy {
   };
 }
 
-/** The MCP server name that the test route takes. */
-export function mcpName(row: Connection): string {
-  return row.detail?.name || row.label;
+/**
+ * The MCP server name that the test route takes: `detail.name`, else the part
+ * of an id `mcp:<name>`. Never the label, which can differ from the name.
+ * `null` when the row names no server, and then Test is hidden.
+ */
+export function mcpName(row: Connection): string | null {
+  if (row.detail?.name) return row.detail.name;
+  if (row.id.startsWith("mcp:") && row.id.length > 4) return row.id.slice(4);
+  return null;
 }
 
 // ── The MCP add form (spec §3.4) ──────────────────────────────────────────
@@ -245,6 +251,7 @@ export function mcpName(row: Connection): string {
 export interface McpForm {
   name: string;
   label: string;
+  description: string;
   url: string;
   headerName: string;
   /** Write-only. It goes out in the POST and is never drawn again. */
@@ -255,6 +262,7 @@ export interface McpForm {
 export const EMPTY_MCP_FORM: McpForm = {
   name: "",
   label: "",
+  description: "",
   url: "",
   headerName: "",
   headerValue: "",
@@ -275,6 +283,7 @@ export function mcpBody(f: McpForm): Record<string, unknown> {
   return {
     name: f.name.trim(),
     label: f.label.trim() || f.name.trim(),
+    description: f.description.trim(),
     transport: "http-sse",
     url: f.url.trim(),
     headers,

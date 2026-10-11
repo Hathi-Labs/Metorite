@@ -17,6 +17,8 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useRef, useState } from "react";
 
+import { useCachedResource } from "@/lib/useCachedResource";
+
 import { useAccess } from "@/components/AccessProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { AppTopBar } from "@/components/AppTopBar";
@@ -30,7 +32,8 @@ import { ShellJob } from "@/lib/shell/doJob";
 
 import AddMcpModal from "./components/AddMcpModal";
 import ApiKeysView from "./components/ApiKeysView";
-import ConnectionsView, { invalidateConnections } from "./components/ConnectionsView";
+import * as api from "./lib/api";
+import ConnectionsView, { CONNECTIONS_KEY, invalidateConnections } from "./components/ConnectionsView";
 import IntegrationsRail from "./components/IntegrationsRail";
 import PluginsView from "./components/PluginsView";
 import SkillsView from "./components/SkillsView";
@@ -46,6 +49,11 @@ function IntegrationsPageInner() {
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   const rail = useRailFold();
+  // The same cached read the Connections view makes: one request. A 404 gives
+  // `null`, and then a new MCP server would have no list to land in, so the
+  // MCP entry points hide (defence only: the backend ships the list first).
+  const list = useCachedResource(canRead ? CONNECTIONS_KEY : null, api.getConnections);
+  const mcpOpen = canRead && canManage && list.data !== null;
   const [addingMcp, setAddingMcp] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const addRef = useRef<HTMLDivElement | null>(null);
@@ -61,7 +69,7 @@ function IntegrationsPageInner() {
   }
 
   const actions =
-    canRead && canManage ? (
+    canManage ? (
       <div ref={addRef}>
         <Button variant="secondary" size="sm" icon="Plus" onClick={openMenu} aria-haspopup="menu">
           Add
@@ -110,10 +118,15 @@ function IntegrationsPageInner() {
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {accessLoading ? null : !canRead ? (
-            <EmptyState icon="Lock" message={READ_DENIED} />
-          ) : view === "connections" ? (
-            <ConnectionsView canManage={canManage} />
+          {/* The read floor (`admin:members:read`) gates Connections only.
+              API keys, Plugins and Skills keep the access they had: the
+              `integrations` feature, which the shell already checks. */}
+          {accessLoading ? null : view === "connections" ? (
+            canRead ? (
+              <ConnectionsView canManage={canManage} />
+            ) : (
+              <EmptyState icon="Lock" message={READ_DENIED} />
+            )
           ) : view === "keys" ? (
             <ApiKeysView />
           ) : view === "plugins" ? (
@@ -131,13 +144,15 @@ function IntegrationsPageInner() {
           autoFocus
           onClose={() => setMenu(null)}
           items={[
-            { kind: "item", label: "MCP server", onSelect: () => setAddingMcp(true) },
-            { kind: "item", label: "API key", onSelect: () => router.push(viewHref("keys")) },
+            ...(mcpOpen
+              ? [{ kind: "item" as const, label: "MCP server", onSelect: () => setAddingMcp(true) }]
+              : []),
+            { kind: "item" as const, label: "API key", onSelect: () => router.push(viewHref("keys")) },
           ]}
         />
       )}
 
-      {canRead && canManage && (
+      {mcpOpen && (
         <ShellJob
           id="add-mcp"
           onOpen={() => setAddingMcp(true)}

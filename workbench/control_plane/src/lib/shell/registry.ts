@@ -138,7 +138,11 @@ export const JOBS: readonly ShellJob[] = [
   },
   {
     // IN-2. Opens the "MCP server" form of the Integrations console. It saves
-    // nothing. An admin holds the pane, so only an admin sees the job.
+    // nothing. ⚠️ The registry gates a job by PANE only, not by capability. A
+    // member with the pane and no `integrations:manage` can still follow the
+    // link. The page then opens no form (it mounts the job only for a manager
+    // and only when the list exists), so the link is dead and harmless. The
+    // gateway refuses the write anyway.
     id: "add-mcp",
     label: "Add an MCP server",
     words: ["mcp", "server", "tool", "tools", "connect", "integration", "integrations"],
