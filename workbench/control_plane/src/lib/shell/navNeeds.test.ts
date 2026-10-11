@@ -23,7 +23,8 @@
  *   - let the needs count win over the run badge in `rowMeta`: "a run badge wins" fails;
  *   - count from `items` and not `totals`: "counts the rows before the cut" fails;
  *   - start a second interval in `joinNeedsPoll`: "two readers share one poll" fails;
- *   - fetch the feed in `useNavNeeds`: "no second fetch" fails.
+ *   - fetch the feed in `useNavNeeds`: "no second fetch" fails;
+ *   - print the number with no cap: "caps the number as the bell does" fails.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";

@@ -17,8 +17,12 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   7. The page reads the feed once: no second fetch for the sidebar.
  *   8. The phone drawer shows the same counts.
  *
- * Mutation, seen to fail first: drop `needs={appNeeds[p.href]}` from the
- * open rail's `NavLink` and cases 1, 3 and 4 fail.
+ * Mutations, run by hand (2026-10-11), each seen to fail:
+ *   - drop `needs={appNeeds[p.href]}` from the open rail's `NavLink`: seven
+ *     of the nine cases fail;
+ *   - keep the last count of a source in `useNavNeeds`: the poll case fails;
+ *   - multiply the stray count by 0: the hide case fails;
+ *   - take `rail-row-meta` off the count's slot: the hover case fails.
  */
 
 const SESSION = {
