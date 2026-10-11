@@ -49,7 +49,9 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
-import { useEffect, useMemo, useState } from "react";
+import { type ProjectNode, nodeKind } from "../lib/tree";
+import { ProjectSelect } from "./ProjectSelect";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { findMerges, mergeWarning, overrideNote } from "../lib/statusSwitch";
 import {
@@ -93,9 +95,10 @@ export function StatusSetControl({
         ]);
         if (!live) return;
         setInfo(set);
-        // Anything but this node — copying a set from yourself is a no-op the
-        // picker should not offer as though it were a choice.
-        setSources(tree.rows.filter((r) => r.id !== projectId));
+        // The whole TREE (owner, 2026-10-10: the picker every other project
+        // list uses). This node and the folders are offered but refused, with
+        // the reason, by `copyRule` below.
+        setSources(tree.rows);
       } catch (err) {
         if (live) onError(String((err as Error).message));
       }
@@ -107,6 +110,21 @@ export function StatusSetControl({
   }, [projectId]);
 
   /** Rows the human actually has to answer: they carry tasks and they move. */
+  /**
+   * Which nodes may lend their lanes. This one cannot (a copy from yourself is
+   * a no-op), and a folder holds no status set (`hasStatusSet`). Both stay in
+   * the tree, refused with the reason, so the tree keeps its shape.
+   */
+  const copyRule = useCallback(
+    (node: ProjectNode) =>
+      node.id === projectId
+        ? "This is the project you are changing."
+        : nodeKind(node) === "folder"
+          ? "A folder has no statuses of its own."
+          : null,
+    [projectId],
+  );
+
   const questions = useMemo(
     () => (preview?.moves ?? []).filter((m) => m.tasks > 0 && !m.unchanged),
     [preview]
@@ -273,10 +291,13 @@ export function StatusSetControl({
             Start from another project&apos;s lanes:
           </span>
           <div className="w-48">
-            <SelectButton
+            <ProjectSelect
               label="Copy statuses from another project"
+              prompt="Choose a project…"
               widthClass="w-full"
               disabled={disabled}
+              roots={sources}
+              rule={copyRule}
               // Stays on the placeholder: this control ACTS rather than
               // holds a value, so binding it to a selection would leave the
               // last project it copied sitting in the box as if it were a
@@ -286,10 +307,6 @@ export function StatusSetControl({
                 if (!next) return;
                 void ask({ mode: "own", copy_from: next });
               }}
-              options={[
-                { value: "", label: "Choose a project…" },
-                ...sources.map((row) => ({ value: row.id, label: row.name })),
-              ]}
             />
           </div>
         </div>
