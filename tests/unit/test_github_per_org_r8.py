@@ -479,3 +479,37 @@ async def test_no_github_token_appears_in_any_response_or_log_line(ns, app_engin
     haystack = "\n".join(outputs) + captured.out + captured.err + caplog.text
     for secret in (TOKEN_A, TOKEN_B, LEGACY_A, OPERATOR_SENTINEL):
         assert secret not in haystack, f"a GitHub token leaked: {secret[:8]}..."
+
+
+# ── The move of an old row never overwrites a fresh device-flow token ────────
+
+async def test_the_move_of_an_old_row_never_overwrites_a_fresh_device_token(ns, app_engine) -> None:  # noqa: F811
+    """A device flow commits between the first look and the move. The fresh token wins.
+
+    The holder takes the advisory lock, so the reader blocks at the move. The
+    holder saves the fresh token and commits. The reader then looks again under
+    the lock and must keep the fresh token.
+    """
+    import asyncio
+
+    from acb_common.db import tenant_session
+    from gateway.connections import github
+
+    fresh = "gho_FRESH_DEVICE_TOKEN_0123456789"
+    async with tenant_engine_scope(_app_dsn(ns)):
+        await _seed_legacy(ns, ns.org_a, LEGACY_A)
+        async with tenant_session(ns.org_a) as holder:
+            await github.lock(holder, ns.org_a)
+            reader = asyncio.create_task(github.token_or_none(ns.org_a))
+            await asyncio.sleep(1.5)
+            assert not reader.done(), "the reader must wait for the lock"
+            await github.save_device_token(
+                holder, ns.org_a, access_token=fresh, login="octo-a",
+                scopes=("repo",), connected_by=ADMIN_A,
+            )
+        token = await asyncio.wait_for(reader, 20)
+    assert token == fresh
+    assert await _read_token(ns, ns.org_a) == fresh
+    assert _legacy_rows(ns, ns.org_a) == 0, "the stale old row must go"
+    (row,) = _rows(ns, ns.org_a)
+    assert row.login == "octo-a"

@@ -27,6 +27,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acb_common import get_logger
+from sqlalchemy import text
 
 from gateway.connections import store
 from gateway.crm_sources.base import SourceCredential
@@ -45,6 +46,16 @@ NOT_CONNECTED = "GitHub is not connected for your organization."
 
 #: A device-flow token does not expire, so the blob holds a far date.
 _NO_EXPIRY = datetime(9999, 12, 31, tzinfo=UTC)
+
+
+#: One writer at a time for each org, until the commit. The device flow and the
+#: move of an old row both take it (the pattern of ``routes/crm/connection.py``).
+_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
+
+async def lock(db: Any, org: str) -> None:
+    """Take the advisory lock of the GitHub connection of *org* for this transaction."""
+    await db.execute(text(_LOCK_SQL), {"key": f"integrations:github:{org}"})
 
 
 class GitHubNotConnected(Exception):
@@ -91,6 +102,7 @@ async def save_device_token(
     expires_in: int | None = None,
 ) -> store.Connection:
     """Save the org connection that the device flow produced (or update it)."""
+    await lock(db, org)
     return await store.save_credential(
         db, org, PROVIDER, OWNING_APP,
         _credential(access_token, login, scopes, refresh_token, expires_in),
@@ -108,6 +120,12 @@ async def migrate_legacy_token(db: Any, org: str, *, connected_by: str = "") -> 
     already exists and the caller does not reach this function.
     """
     keys = store.legacy_keys()
+    # Under the lock, look again. A device flow that finished a moment ago has
+    # a newer token than the old row, and the old row must never replace it.
+    await lock(db, org)
+    if await store.get(db, org, PROVIDER, OWNING_APP) is not None:
+        await _drop_legacy(keys, org)
+        return False
     legacy = await keys.get(LEGACY_PROVIDER_KEY, organization_id=org)
     if not legacy:
         return False
@@ -115,12 +133,17 @@ async def migrate_legacy_token(db: Any, org: str, *, connected_by: str = "") -> 
         db, org, access_token=legacy, login="", scopes=(),
         connected_by=connected_by or "migrated-from-provider-keys",
     )
-    try:
-        await keys.delete(LEGACY_PROVIDER_KEY, organization_id=org)
-    except Exception as exc:  # the connection is saved already
-        _log.warning("github.legacy_delete_failed (%s)", type(exc).__name__)
+    await _drop_legacy(keys, org)
     _log.info("github.legacy_token_migrated")
     return True
+
+
+async def _drop_legacy(keys: Any, org: str) -> None:
+    """Delete the old row. A failure is logged and the next read tries again."""
+    try:
+        await keys.delete(LEGACY_PROVIDER_KEY, organization_id=org)
+    except Exception as exc:
+        _log.warning("github.legacy_delete_failed (%s)", type(exc).__name__)
 
 
 async def _live_credential(db: Any, org: str) -> SourceCredential | None:
@@ -132,9 +155,10 @@ async def _live_credential(db: Any, org: str) -> SourceCredential | None:
     # the registry holds no row at all.
     if await store.get(db, org, PROVIDER, OWNING_APP) is not None:
         return None
-    if await migrate_legacy_token(db, org):
-        return await store.load_credential(db, org, PROVIDER, OWNING_APP)
-    return None
+    # The move may find a connection that a device flow saved a moment ago.
+    # Read again either way, so that connection wins over the old row.
+    await migrate_legacy_token(db, org)
+    return await store.load_credential(db, org, PROVIDER, OWNING_APP)
 
 
 async def token_or_none(org: str) -> str | None:
