@@ -371,8 +371,8 @@ def _merge_counts(saved: dict[str, Any]) -> dict[str, dict[str, int]]:
 
 
 def _enabled(org: str) -> bool:
-    """The kill switch, ``CRM_MIRROR`` and the org list, read in one place."""
-    return flags.mirror_sync_enabled() and flags.crm_org_allowed(org)
+    """The kill switch, ``CRM_MIRROR`` and the org lists, read in one place."""
+    return flags.mirror_sync_enabled() and flags.crm_mirror_allowed(org)
 
 
 async def acquire(org: str) -> RunHandle:

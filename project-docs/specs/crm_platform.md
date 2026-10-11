@@ -22,7 +22,9 @@
 > migration 246, `crm_sync_runs`, the import, the loop every 10 minutes, Sync
 > now and the status route (2026-10-11). CRM-U5, the first-open choice, and
 > CRM-Z7, narrowed (2026-10-11): the Zoho connect flow, the sync progress, the
-> title bar mode and the mirror marks. The other slices are not built yet.
+> title bar mode and the mirror marks. CRM-L2, the promotion of `/crm` to live,
+> with the per-org list `CRM_MIRROR_ORGS` (2026-10-11, owner decision in chat).
+> The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -791,7 +793,7 @@ must go through the meter before it ships, or it is free forever.
 | `href` | `/crm` |
 | `label` | CRM |
 | `feature` | `crm` |
-| `launch` | `preview` until CRM-L2 |
+| `launch` | `live` since 2026-10-11 (CRM-L2) |
 | `team` | `across` |
 | `blurb` | "Track leads and deals, or mirror your CRM" |
 | `keywords` | crm, sales, deal, lead, pipeline, contact, company, zoho |
@@ -893,7 +895,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | Id | What | Gate | Done when |
 |---|---|---|---|
 | **CRM-L1** | The shell manifest (§11): jobs in both lists, the search provider, the needs provider | 🟢 AGENT-SAFE | `test_shell_intent.py::TestOneJobList` passes. `nav.test.ts` passes with `team` and `blurb` set |
-| **CRM-L2** | Promote `/crm` to `live` | 🔴 OWNER-GATE (H-21) | `launch_surface.md` §2, `LIVE_SET`, `APP_BAR_HOME` and the e2e `PAGES` agree. `CRM_ENABLED` turns on for every org |
+| **CRM-L2** ✅ built 2026-10-11 (owner decision in chat: "Promote CRM to live now"). Built as: `/crm` is `live` in `nav.ts`, `launch_surface.md` §2, `LIVE_SET`, `APP_BAR_HOME` and the e2e `PAGES`. `CRM_ENABLED` turns on for each org, and the mirror stays Fracktal-only through the new list `CRM_MIRROR_ORGS`. It has the grammar of `CRM_ORGS`, and an empty list allows no org. `require_crm_mirror`, the sync loop and `engine.acquire` use `crm_mirror_allowed(org)`, so an org outside the list gets 404 on `/crm/connection*`, the callback and `/crm/sync/*`. A member without access sees "The CRM is not open to you yet". An admin sees the new Access panel in CRM settings. CRM-L1 is built in part: only the job `new-lead` (both lists) exists. The jobs `new-deal`, `log-call` and `find-record`, the search provider and the needs provider are not built | 🔴 OWNER-GATE (H-21) | `launch_surface.md` §2, `LIVE_SET`, `APP_BAR_HOME` and the e2e `PAGES` agree. `CRM_ENABLED` turns on for every org |
 
 ### 13.7 After launch, in any order
 

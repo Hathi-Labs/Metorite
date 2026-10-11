@@ -352,6 +352,26 @@ export function getCrmSettings(): Promise<CrmSettings> {
   return call<CrmSettings>("/settings");
 }
 
+/** Admin only. Choose who may open the CRM (CRM-T5). Each group is `group:<slug>`. */
+export function saveAccess(body: {
+  access: "admins" | "everyone" | "groups";
+  access_groups: string[];
+}): Promise<CrmSettings> {
+  return call<CrmSettings>("/settings", { method: "PATCH", body: JSON.stringify(body) });
+}
+
+/** The organization's groups, for the access control. An empty list when unreadable. */
+export async function listGroups(): Promise<Array<{ slug: string; display_name?: string }>> {
+  try {
+    const res = await fetch("/api/admin/groups", { cache: "no-store" });
+    if (!res.ok) return [];
+    const rows: unknown = await res.json();
+    return Array.isArray(rows) ? (rows as Array<{ slug: string; display_name?: string }>) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function chooseNativeMode(): Promise<CrmSettings> {
   return call<CrmSettings>("/settings", {
     method: "PATCH",

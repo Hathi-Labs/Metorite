@@ -28,8 +28,10 @@ import Button from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
+import { ShellJob } from "@/lib/shell/doJob";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
+import { AccessSection } from "./components/AccessPanel";
 import ConnectionPanel from "./components/ConnectionPanel";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail from "./components/CrmRail";
@@ -408,17 +410,22 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           ) : view.tab === "settings" ? (
             <PipelineSettings
               top={
-                ctx.isAdmin && ctx.connection ? (
-                  <ConnectionPanel
-                    mode={ctx.mode}
-                    connection={ctx.connection}
-                    sync={ctx.sync}
-                    syncing={ctx.syncing}
-                    connecting={ctx.connecting}
-                    onSyncNow={ctx.onSyncNow}
-                    onConnect={ctx.onConnect}
-                    onDisconnect={ctx.onDisconnect}
-                  />
+                ctx.isAdmin ? (
+                  <div className="flex flex-col gap-4">
+                    <AccessSection />
+                    {ctx.connection && (
+                      <ConnectionPanel
+                        mode={ctx.mode}
+                        connection={ctx.connection}
+                        sync={ctx.sync}
+                        syncing={ctx.syncing}
+                        connecting={ctx.connecting}
+                        onSyncNow={ctx.onSyncNow}
+                        onConnect={ctx.onConnect}
+                        onDisconnect={ctx.onDisconnect}
+                      />
+                    )}
+                  </div>
                 ) : undefined
               }
               dealStatuses={store.dealStatuses}
@@ -521,6 +528,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onOpenContact={(contactId) => go(openRecord(view, "contact", contactId))}
         />
       )}
+
+      <ShellJob
+        id="new-lead"
+        ready={mayCreate}
+        onOpen={() => setCreating("leads")}
+      />
 
       {creating && (
         <QuickCreateModal

@@ -239,6 +239,7 @@ async def ns(promoted, monkeypatch):  # noqa: F811 — a fixture
     settings = get_settings()
     for name, value in {
         "crm_mirror": True,
+        "crm_mirror_orgs": "*",
         "crm_zoho_client_id": "1000.R8CLIENT",
         "crm_zoho_client_secret": "r8-client-secret",
         "gateway_session_secret": "r8-session-secret-not-a-default-0123456789",
@@ -689,6 +690,21 @@ async def test_with_crm_mirror_off_both_routes_404_and_the_loop_starts_no_task(
     finally:
         await scheduler.stop_crm_mirror_sync()
     assert not scheduler.loop_running()
+
+
+async def test_an_org_outside_the_mirror_list_gets_404_on_the_sync_routes(
+    ns, monkeypatch,
+) -> None:
+    from acb_common import get_settings
+
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", ns.org_b, raising=False)
+    assert (await _call(admin, "GET", "/crm/sync/status")).status_code == 404
+    assert (await _call(admin, "POST", "/crm/sync/zoho")).status_code == 404
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", "", raising=False)
+    assert (await _call(admin, "GET", "/crm/sync/status")).status_code == 404
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", ns.org_a, raising=False)
+    assert (await _call(admin, "GET", "/crm/sync/status")).status_code == 200
 
 
 async def test_the_loop_skips_an_org_that_is_not_in_mirror_mode(ns) -> None:

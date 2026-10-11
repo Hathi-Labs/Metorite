@@ -21,6 +21,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 
+import { NO_ACCESS_BODY, NO_ACCESS_TITLE } from "../lib/access";
 import type { FirstOpen as FirstOpenPhase } from "../lib/connect";
 
 /** The CRMs on the Connect card. Only Zoho is live. */
@@ -59,6 +60,14 @@ export default function FirstOpen({
           <Skeleton className="h-6 w-1/2" />
           <Skeleton className="h-40 w-full" />
         </div>
+      </CrmFrame>
+    );
+  }
+
+  if (phase === "no-access") {
+    return (
+      <CrmFrame>
+        <EmptyState icon="Lock" message={NO_ACCESS_TITLE} hint={NO_ACCESS_BODY} />
       </CrmFrame>
     );
   }

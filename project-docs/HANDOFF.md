@@ -2466,6 +2466,11 @@ line — never reclaim a number by deleting the other entry.
 - **2026-10-02:** the owner promoted Email on 2026-10-01, and WS-17 EM-T3b
   ships it. The live set is now **11**. `nav.test.ts` and §2 moved in the same
   change. The `rg` count of the Check reads 11 on that tree.
+- **2026-10-11:** the owner answered for the CRM in chat: "Promote CRM to
+  live now." CRM-L2 ships it, so the live set is **12**. The `rg` count of the
+  Check reads 12 on that tree. The owner also chose to build the Integrations
+  console (WS-54 IN-1 to IN-7) only after the CRM is in use. The CRM half of
+  this entry is decided, and the entry stays for the other `preview` apps.
 - **Authority:** `specs/launch_surface.md` §2 · §3 · §11 item 4
 - **Added:** 2026-08-24 · WS-34 build session
 

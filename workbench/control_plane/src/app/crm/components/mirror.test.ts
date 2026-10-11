@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import type { BoardLane } from "../lib/board";
 import type { ConnectionInfo, SyncStatus } from "../lib/connect";
+import AccessPanel from "./AccessPanel";
 import PipelineSettings from "./PipelineSettings";
 import ConnectionPanel from "./ConnectionPanel";
 import FieldsPanel from "./FieldsPanel";
@@ -267,5 +268,45 @@ describe("the page", () => {
   });
   it("keeps every app element out of the shell bar", () => {
     expect(page).toContain("<AppTopBar");
+  });
+});
+
+describe("who may open the CRM (CRM-L2)", () => {
+  it("tells a member with no access, in an empty state", () => {
+    const html = renderToStaticMarkup(
+      createElement(FirstOpen, { phase: "no-access", busy: null, onNative: noop, onConnectZoho: noop }),
+    );
+    expect(html).toContain("The CRM is not open to you yet");
+    expect(html).toContain("An admin chooses who can use the CRM in CRM settings.");
+    expect(html).not.toContain("Use Metorite");
+  });
+
+  it("tells an admin that only admins can open it, and links to the control", () => {
+    const html = renderToStaticMarkup(
+      createElement(AccessPanel, { access: undefined, groups: [], allGroups: [], saving: false, onChange: noop }),
+    );
+    expect(html).toContain("Only admins can open the CRM now.");
+    expect(html).toContain("Choose who else can use it.");
+    expect(html).toContain('href="#crm-access"');
+    expect(html).toContain('id="crm-access"');
+  });
+
+  it("drops the hint once an admin chose everyone, and lists groups for the group choice", () => {
+    const everyone = renderToStaticMarkup(
+      createElement(AccessPanel, { access: "everyone", groups: [], allGroups: [], saving: false, onChange: noop }),
+    );
+    expect(everyone).not.toContain("Only admins can open the CRM now.");
+    const groups = renderToStaticMarkup(
+      createElement(AccessPanel, {
+        access: "groups",
+        groups: ["group:sales"],
+        allGroups: [{ slug: "sales", display_name: "Sales" }, { slug: "ops" }],
+        saving: false,
+        onChange: noop,
+      }),
+    );
+    expect(groups).toContain("Sales");
+    expect(groups).toContain("ops");
+    expect(groups).toContain("checked");
   });
 });

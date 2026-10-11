@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { invalidate } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
+import { isAccessDenied } from "./access";
 import { startPoller } from "./poller";
 import {
   POLL_MS,
@@ -42,8 +43,19 @@ export type CrmModeState = {
   refresh: () => void;
 };
 
+/** What the connection read holds when the gateway answered 403. */
+const DENIED = "denied" as const;
+
 export function useCrmMode(isAdmin: boolean, accessLoading: boolean): CrmModeState {
-  const conn = useCachedResource<ConnectionInfo | null>(KEY_CONNECTION, api.getConnection);
+  // The first read of the page. A 403 here is the access rule (CRM-T5): the
+  // member is not admitted yet, so it is a state to draw, not an error.
+  const conn = useCachedResource<ConnectionInfo | null | typeof DENIED>(KEY_CONNECTION, () =>
+    api.getConnection().catch((err: unknown) => {
+      if (isAccessDenied(err)) return DENIED;
+      throw err;
+    }),
+  );
+  const denied = conn.data === DENIED;
   // With the mirror off the connection read is a 404 and holds no mode. An
   // admin can still read the mode from the settings.
   const wantsSettings = !conn.loading && conn.data === null && isAdmin && !accessLoading;
@@ -52,7 +64,7 @@ export function useCrmMode(isAdmin: boolean, accessLoading: boolean): CrmModeSta
     () => api.getCrmSettings().catch(() => null),
   );
 
-  const connection = conn.data ?? null;
+  const connection = conn.data === DENIED ? null : (conn.data ?? null);
   const readFailed = conn.data === undefined && conn.error !== null;
   const settingsMode: CrmMode | undefined =
     settings.data === undefined || settings.data === null ? undefined : settings.data.mode;
@@ -62,7 +74,7 @@ export function useCrmMode(isAdmin: boolean, accessLoading: boolean): CrmModeSta
   // A failed read must not lock the CRM. Show the pipeline, as before.
   const phase: FirstOpen = readFailed
     ? "ready"
-    : firstOpen({ loading, connection, settingsMode, isAdmin });
+    : firstOpen({ loading, connection, settingsMode, isAdmin, denied });
 
   return {
     phase,

@@ -115,6 +115,8 @@ JOBS: tuple[Job, ...] = (
         "chat", "/chat?do=new-chat"),
     Job("invite", "Invite a member", "invite a new person to join the organization",
         None, "/settings/organization?do=invite", admin=True),
+    Job("new-lead", "New lead", "add a new sales lead or prospect to the CRM",
+        "crm", "/crm?do=new-lead"),
     Job("find-person", "Find a colleague", "find a colleague, or who knows or does something",
         "people", "/people"),
     Job("edit-profile", "Update my profile", "change their own profile, skills, CV or working hours",

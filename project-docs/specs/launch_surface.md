@@ -104,17 +104,19 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Personal Center** | My Email | `/email` | `feature:email` | Named "My Email" since 2026-10-08 (owner), apart from a later shared team inbox. 🆕 **Live on 2026-10-02**, by owner decision of 2026-10-01 (H-21). WS-17 EM-T3b gave the app a connect flow with no setup step. A member connects Microsoft 365 from inside Email. Gmail shows as "Coming soon" (`email_app_master_plan.md` §10.4.3) |
 | **Personal Center** | My WhatsApp | `/whatsapp` | `feature:whatsapp` | 🆕 **Live on 2026-10-08**, by owner decision (WS-20 WA-C6). A member connects a WhatsApp Business account through Meta's Embedded Signup, the one official way in. The unofficial personal-number QR route left the connect screen the same day |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
+| **Apps** | CRM | `/crm` | `feature:crm` | 🆕 **Live on 2026-10-11**, by owner decision in chat ("Promote CRM to live now"). `CRM_ENABLED` is on for each org. The Zoho mirror stays on for Fracktal only (`CRM_MIRROR_ORGS`). ⚠️ A member sees the CRM only when an admin opens it in CRM settings. Until then the member sees "The CRM is not open to you yet" |
 | **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
-**Eleven** entries, four sections, in that order. The set held eight until 2026-08-24,
-nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05 and ten until
-2026-10-08. D54 added Calendar. The owner then promoted People, then Email, and then
-WhatsApp. `nav.test.ts`'s count fence moved 8 → 9 → 10 → 11 → 10 → 11 in the same
-pull request as each pane. That is what the fence is for.
+**Twelve** entries, four sections, in that order. The set held eight until 2026-08-24,
+nine until 2026-09-20, ten until 2026-10-02, eleven until 2026-10-05, ten until
+2026-10-08 and eleven until 2026-10-11. D54 added Calendar. The owner then promoted
+People, Email, WhatsApp and the CRM. `nav.test.ts`'s count fence moved
+8 → 9 → 10 → 11 → 10 → 11 → 12 in the same pull request as each pane. That is what
+the fence is for.
 
 **My Access left the sidebar on 2026-10-05** (owner directive: "remove my access from
 the sidebar and fold it into the People's app"). It is the "My access" tab of the
@@ -144,7 +146,6 @@ answer rather than a diff:
 | Personal Center | Notes | `/notes` | WS-19 incomplete |
 | Personal Center | Memories | `/memory` | WS-9 — operator-grade surface, not customer-grade |
 | Personal Center | Artifacts | `/artifacts` | Reads as a debugging surface |
-| Apps | CRM | `/crm` | WS-26 incomplete |
 | Apps | Centers (six panes) | `/centers/<slug>` | **Withdrawn by D49**, not merely incomplete (§5) |
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |

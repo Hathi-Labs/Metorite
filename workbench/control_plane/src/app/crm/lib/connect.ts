@@ -73,7 +73,9 @@ export type FirstOpen =
   /** An admin, mirror off, no mode. The Native card only. */
   | "native-only"
   /** A member, mirror on, no mode. Tell them to ask an admin. */
-  | "wait-admin";
+  | "wait-admin"
+  /** The gateway refused the first read (403): the access rule has not admitted this member. */
+  | "no-access";
 
 /**
  * What the CRM shows before the pipeline.
@@ -91,8 +93,11 @@ export function firstOpen(input: {
   connection: ConnectionInfo | null;
   settingsMode: CrmMode | undefined;
   isAdmin: boolean;
+  /** The first read answered 403 (CRM-T5, CRM-L2). */
+  denied?: boolean;
 }): FirstOpen {
   if (input.loading) return "loading";
+  if (input.denied) return "no-access";
   const mirrorOn = input.connection !== null;
   const mode = mirrorOn ? input.connection!.mode : input.settingsMode;
   if (mode === "native" || mode === "mirror") return "ready";
