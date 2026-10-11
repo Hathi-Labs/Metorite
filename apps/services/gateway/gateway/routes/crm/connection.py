@@ -390,15 +390,27 @@ async def disconnect_crm_connection(
 
     The mirrored rows stay. A second call changes nothing.
     """
-    org = _organization(user)
+    return _wire(await disconnect_zoho(_organization(user)))
+
+
+async def disconnect_zoho(org: str) -> store.Connection | None:
+    """Revoke at Zoho, delete the blob and set ``disconnected`` for *org*.
+
+    The ONE disconnect logic. ``POST /crm/connection/disconnect`` and the
+    Integrations console (``POST /integrations/connections/{id}/disconnect``,
+    WS-54 IN-1) both call it, so neither repeats it. It does not read the
+    ``CRM_MIRROR`` flag: the caller owns the gate. Returns the row after the
+    change, or ``None`` when the org has no Zoho connection. A second call
+    changes nothing.
+    """
     async with _tenant_session() as db:
         row = await store.get(db, org, PROVIDER, OWNING_APP)
         if row is None or row.status == store.STATUS_DISCONNECTED:
-            return _wire(row)
+            return row
         credential = await store.load_credential(db, org, PROVIDER, OWNING_APP)
     await _best_effort_revoke(credential, "disconnect")
     async with _tenant_session() as db:
-        return _wire(await store.disconnect(db, org, row.id))
+        return await store.disconnect(db, org, row.id)
 
 
 # ── The shared token (§5.2 item 11) ─────────────────────────────────────────
