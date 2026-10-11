@@ -127,6 +127,16 @@ export const JOBS: readonly ShellJob[] = [
     icon: "UserPlus",
   },
   {
+    // CRM-L2 builds one of the four jobs of crm_platform.md section 11. It
+    // opens the quick-create form and never saves.
+    id: "new-lead",
+    label: "New lead",
+    words: ["lead", "prospect", "crm", "sales", "enquiry", "inquiry"],
+    app: "/crm",
+    href: "/crm?do=new-lead",
+    icon: "UserPlus",
+  },
+  {
     id: "find-person",
     label: "Find a colleague",
     words: ["people", "person", "colleague", "directory", "who", "team", "contact"],

@@ -251,6 +251,13 @@ class Settings(BaseSettings):
     # 🔴 A flip of `CRM_MIRROR` on a box is gate `enforcement-flip`. Fences:
     # tests/unit/test_crm_kill_switch.py, tests/unit/test_crm_connection.py.
     crm_mirror: bool = False
+    # `crm_mirror_orgs` (WS-53 CRM-L2, 2026-10-11) lists the organization ids
+    # that may use the mirror, in the grammar of `crm_orgs`: ids with a comma
+    # between them, or `*`. Default empty means NO organization (fail closed).
+    # The CRM is live for each organization, and the Zoho mirror is not. An
+    # organization outside the list gets 404 on the mirror routes, and the
+    # sync loop skips it. The one reader is `gateway.routes.crm.flags`.
+    crm_mirror_orgs: str = ""
     crm_zoho_client_id: str = ""
     crm_zoho_client_secret: str = ""
 

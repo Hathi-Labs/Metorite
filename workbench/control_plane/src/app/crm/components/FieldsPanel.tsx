@@ -13,6 +13,7 @@
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useState } from "react";
+import { customRows, isMirrored, LOCK_TIP } from "../lib/connect";
 import { money, shortDate } from "../lib/format";
 import StatusPill from "./StatusPill";
 import type { DealContact, EntitySlug, Status } from "../lib/types";
@@ -127,6 +128,10 @@ export default function FieldsPanel({
   const status =
     statuses.find((s) => s.id === record.status_id) ?? null;
   const converted = Boolean(record.converted_deal_id);
+  // A record that Zoho owns (CRM-Z7, spec §3.3): its fields, its stage and its
+  // people are read-only here. Notes and calls stay open, in the timeline.
+  const mirrored = isMirrored(record);
+  const custom = customRows(record);
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -136,9 +141,10 @@ export default function FieldsPanel({
             status={status}
             statuses={statuses}
             onChange={onMoveStatus}
-            disabled={saving}
+            disabled={saving || mirrored}
           />
           {entity === "leads" &&
+            !mirrored &&
             (converted ? (
               <span className="ml-auto rounded-full bg-success/10 px-2 py-0.5 text-[10px] text-success">
                 converted
@@ -175,6 +181,8 @@ export default function FieldsPanel({
                       {role || contact.title || contact.email || "—"}
                     </span>
                   </button>
+                  {!mirrored && (
+                  <>
                   <button
                     onClick={() => onSetPrimary(contact.id)}
                     title={
@@ -200,6 +208,8 @@ export default function FieldsPanel({
                   >
                     <Icon name="UserMinus" className="w-3.5 h-3.5" />
                   </button>
+                  </>
+                  )}
                 </li>
               ))}
             </ul>
@@ -215,10 +225,29 @@ export default function FieldsPanel({
             row={record}
             status={status}
             saving={saving}
+            locked={mirrored}
             onPatch={onPatch}
           />
         ))}
       </dl>
+
+      {custom.length > 0 && (
+        <section className="border-t border-border">
+          <h3 className="px-4 pt-3 text-[10px] uppercase tracking-wide text-muted-foreground">
+            From Zoho
+          </h3>
+          <dl className="divide-y divide-border/60">
+            {custom.map((row) => (
+              <div key={row.key} className="flex items-start gap-3 px-4 py-2">
+                <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {row.label}
+                </dt>
+                <dd className="min-w-0 flex-1 break-words text-xs text-foreground">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
     </div>
   );
 }
@@ -228,12 +257,15 @@ function EditableField({
   row,
   status,
   saving,
+  locked,
   onPatch,
 }: {
   field: Field;
   row: Row;
   status: Status | null;
   saving: boolean;
+  /** A mirrored record: show the value, with a lock and no edit. */
+  locked: boolean;
   onPatch: (body: Record<string, unknown>) => void;
 }) {
   const raw = row[field.key];
@@ -269,7 +301,22 @@ function EditableField({
         {field.label}
       </dt>
       <dd className="min-w-0 flex-1">
-        {editing ? (
+        {locked ? (
+          <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
+            <span className="min-w-0 flex-1 break-words">
+              {field.show
+                ? field.show(row, status)
+                : raw === null || raw === undefined || raw === ""
+                  ? "—"
+                  : String(raw)}
+            </span>
+            <Icon
+              name="Lock"
+              className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
+              aria-label={LOCK_TIP}
+            />
+          </span>
+        ) : editing ? (
           <div className="flex items-center gap-1">
             <input
               autoFocus

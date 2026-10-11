@@ -255,9 +255,9 @@ describe("the purpose line is behind the shell nav flag (NS-2)", () => {
  * filter. Each one fails a case below.
  */
 describe("every app the member holds, with nothing pinned", () => {
-  const LIVE_FEATURES = ["tasks", "email", "whatsapp", "projects", "people", "chat", "approvals"];
+  const LIVE_FEATURES = ["tasks", "email", "whatsapp", "projects", "crm", "people", "chat", "approvals"];
   // Preview panes the member also holds the grant for. They stay out.
-  const PREVIEW_FEATURES = ["crm", "notes", "dashboard", "workflows", "agents", "integrations"];
+  const PREVIEW_FEATURES = ["notes", "dashboard", "workflows", "agents", "integrations"];
   const goHrefs = (features: string[], admin: boolean, preview = false) =>
     buildItems(heldPanes(visibleSections(features, admin, preview)))
       .filter((i) => i.group === "go")
@@ -267,7 +267,7 @@ describe("every app the member holds, with nothing pinned", () => {
       .filter((i) => i.group === "go")
       .map((i) => i.href);
 
-  it("an admin who pinned nothing finds all eleven live panes, Admin and AI Studio too", () => {
+  it("an admin who pinned nothing finds all twelve live panes, Admin and AI Studio too", () => {
     const sections = visibleSections([...LIVE_FEATURES, ...PREVIEW_FEATURES], true, false);
     // The sidebar's own input, with nothing starred and every app known: it
     // holds nothing to draw. The bar still lists the FULL held set below.
@@ -280,6 +280,7 @@ describe("every app the member holds, with nothing pinned", () => {
       "/email",
       "/whatsapp",
       "/projects",
+      "/crm",
       "/people",
       "/chat",
       "/approvals",
@@ -329,7 +330,7 @@ describe("every app the member holds, with nothing pinned", () => {
     const go = goHrefs([...LIVE_FEATURES, ...centerFeatures], true, true);
     expect(go.filter((h) => h.startsWith("/centers/"))).toEqual([]);
     // The flag still restores the other preview panes, as in the sidebar.
-    expect(goHrefs(["crm"], false, true)).toContain("/crm");
+    expect(goHrefs(["notes"], false, true)).toContain("/notes");
   });
 
   it("the shell bar hands the bar every held pane, never the pins", () => {

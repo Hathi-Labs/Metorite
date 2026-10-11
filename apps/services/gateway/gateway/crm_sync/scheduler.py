@@ -70,7 +70,7 @@ async def _organization_ids() -> list[str]:
 
 async def is_due(org: str) -> bool:
     """Is a run due for ``org``? One tenant session, no provider call."""
-    if not flags.crm_org_allowed(org):
+    if not flags.crm_mirror_allowed(org):
         return False
     async with tenant_session(org) as db:
         settings = await crm_access.read_settings(db, org)

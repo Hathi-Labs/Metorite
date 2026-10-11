@@ -199,6 +199,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> tuple[FakeRegistry, FakeZoho]:
     settings = get_settings()
     for name, value in {
         "crm_mirror": True,
+        "crm_mirror_orgs": "*",
         "crm_zoho_client_id": "1000.CLIENTID",
         "crm_zoho_client_secret": S_SECRET,
         "gateway_session_secret": "z2-test-secret-not-a-default-0123456789",
@@ -387,6 +388,20 @@ def test_a_member_without_the_admin_right_gets_403_on_each_write(
     assert zoho.requests == []
     # A member may read the state of the connection (no secret in it).
     assert client.get("/crm/connection").status_code == 200
+
+
+def test_the_connection_read_carries_the_mode_for_a_plain_member(
+    world: tuple[FakeRegistry, FakeZoho],
+) -> None:
+    """CRM-Z7: each member needs the mode, and ``/crm/settings`` is admin-only."""
+    registry, _zoho = world
+    member = _client(_user(ADMIN, ORG_A, "feature:crm"))
+    # Not chosen: no row, and the mode is null.
+    assert member.get("/crm/connection").json()["mode"] is None
+    registry.modes[ORG_A] = "native"
+    assert member.get("/crm/connection").json()["mode"] == "native"
+    registry.modes[ORG_A] = "mirror"
+    assert member.get("/crm/connection").json()["mode"] == "mirror"
 
 
 # ── Start ────────────────────────────────────────────────────────────────────
@@ -699,7 +714,7 @@ def test_the_response_model_has_no_secret_field() -> None:
     names = set(conn.ConnectionModel.model_fields)
     assert names == {
         "connected", "provider", "owning_app", "status", "location", "scopes",
-        "connected_by", "last_sync_at", "last_error", "updated_at",
+        "connected_by", "last_sync_at", "last_error", "updated_at", "mode",
     }
     assert set(conn.StartModel.model_fields) == {"url"}
 
@@ -731,6 +746,71 @@ def test_with_the_mirror_switch_off_each_new_route_is_404(
         response = client.request(method, path, params={"state": _state(), "code": "x"})
         assert response.status_code == 404, (method, path)
     assert zoho.requests == []
+
+
+# ── 4b. CRM_MIRROR_ORGS: the per-org mirror list (CRM-L2) ────────────────────
+
+ORG_OUT = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de00ff"
+
+
+def test_an_org_outside_the_mirror_list_gets_404_on_each_connect_route(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _registry, zoho = world
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", ORG_A, raising=False)
+    inside = _client(_user(org=ORG_A))
+    assert inside.get("/crm/connection").status_code == 200
+    outside = _client(_user(org=ORG_OUT))
+    for method, path in _NEW_ROUTES:
+        response = outside.request(method, path, params={"state": _state(ORG_OUT), "code": "x"})
+        assert response.status_code == 404, (method, path)
+    assert zoho.requests == []
+
+
+def test_an_empty_mirror_list_allows_no_org(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.routes.crm import flags
+
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", "", raising=False)
+    assert flags.crm_mirror_allowed(ORG_A) is False
+    assert _client(_user(org=ORG_A)).get("/crm/connection").status_code == 404
+
+
+def test_a_star_in_the_mirror_list_allows_each_org_and_a_missing_org_none(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.routes.crm import flags
+
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", "*", raising=False)
+    assert flags.crm_mirror_allowed(ORG_A) is True
+    assert flags.crm_mirror_allowed(ORG_OUT) is True
+    assert flags.crm_mirror_allowed(None) is False
+    # The mirror list never opens an org that the CRM list or the switch shuts.
+    monkeypatch.setattr(get_settings(), "crm_orgs", ORG_A, raising=False)
+    assert flags.crm_mirror_allowed(ORG_OUT) is False
+    monkeypatch.setattr(get_settings(), "crm_mirror", False, raising=False)
+    assert flags.crm_mirror_allowed(ORG_A) is False
+
+
+def test_the_mirror_list_defaults_to_empty() -> None:
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["crm_mirror_orgs"].default == ""
+
+
+async def test_the_scheduler_skips_an_org_outside_the_mirror_list(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.crm_sync import scheduler
+
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", ORG_A, raising=False)
+    # The org check runs before any database call, so a skipped org opens no session.
+    def _no_session(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("is_due opened a tenant session for a skipped org")
+
+    monkeypatch.setattr(scheduler, "tenant_session", _no_session)
+    assert await scheduler.is_due(ORG_OUT) is False
 
 
 def test_the_mirror_switch_defaults_to_off() -> None:

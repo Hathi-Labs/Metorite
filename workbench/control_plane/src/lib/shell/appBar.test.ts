@@ -118,6 +118,8 @@ const APP_BAR_HOME: Record<string, string> = {
   "/email": "app/email/page.tsx",
   "/whatsapp": "app/whatsapp/layout.tsx",
   "/projects": "app/projects/page.tsx",
+  // Live since 2026-10-11 (WS-53 CRM-L2). It was in `PREVIEW_BAR_HOME` before.
+  "/crm": "app/crm/page.tsx",
   "/people": "app/people/layout.tsx",
   "/chat": "app/chat/page.tsx",
   "/approvals": "app/approvals/page.tsx",
@@ -128,11 +130,9 @@ const APP_BAR_HOME: Record<string, string> = {
 /**
  * A `preview` pane that already opens with the bar. It is not in the live set,
  * so it is apart from `APP_BAR_HOME`, and the browser census visits it too.
- * When the pane goes live (CRM-L2), its row moves to `APP_BAR_HOME`.
+ * When a pane goes live, its row moves to `APP_BAR_HOME`. The table is empty now.
  */
-const PREVIEW_BAR_HOME: Record<string, string> = {
-  "/crm": "app/crm/page.tsx",
-};
+const PREVIEW_BAR_HOME: Record<string, string> = {};
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */
 const MY_DAY_HOME = "lib/shell/MyDayPage.tsx";

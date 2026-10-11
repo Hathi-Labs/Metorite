@@ -23,6 +23,7 @@ import {
   type DealMove,
   type RotLevel,
 } from "../lib/board";
+import { isMirrored } from "../lib/connect";
 import { compactMoney, money, shortEmail, stageAgeLabel } from "../lib/format";
 import type { Deal, Status } from "../lib/types";
 
@@ -39,7 +40,8 @@ export default function KanbanBoard({
    *  gateway refuses a lost move without one BEFORE writing anything. */
   onMove: (move: DealMove, target: Status) => void;
   onOpen: (dealId: string) => void;
-  onCreate: () => void;
+  /** Omitted in Mirror mode, where a record is made in Zoho (CRM-Z7). */
+  onCreate?: () => void;
 }) {
   const [dragging, setDragging] = useState<Deal | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -151,13 +153,15 @@ export default function KanbanBoard({
             </section>
           );
         })}
-        <button
-          onClick={onCreate}
-          className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
-        >
-          <Icon name="Plus" className="w-3.5 h-3.5" />
-          New deal
-        </button>
+        {onCreate && (
+          <button
+            onClick={onCreate}
+            className="flex h-9 w-[180px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground tech-transition"
+          >
+            <Icon name="Plus" className="w-3.5 h-3.5" />
+            New deal
+          </button>
+        )}
       </div>
     </div>
   );
@@ -182,7 +186,9 @@ function DealCard({
 }) {
   return (
     <article
-      draggable
+      // A deal that Zoho owns does not move here (CRM-Z7): the write would
+      // be refused, and a card that snaps back reads as a bug.
+      draggable={!isMirrored(deal as unknown as Record<string, unknown>)}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onOpen}

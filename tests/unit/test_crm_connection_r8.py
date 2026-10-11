@@ -125,6 +125,7 @@ def ns(promoted, monkeypatch):  # noqa: F811 — a fixture
     settings = get_settings()
     for name, value in {
         "crm_mirror": True,
+        "crm_mirror_orgs": "*",
         "crm_zoho_client_id": "1000.R8CLIENT",
         "crm_zoho_client_secret": "r8-client-secret",
         "gateway_session_secret": "r8-session-secret-not-a-default-0123456789",

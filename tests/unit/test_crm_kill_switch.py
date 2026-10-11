@@ -351,7 +351,7 @@ async def test_search_crm_relays_a_404_as_a_refusal(
 
 # ── 9. A tenant cannot set either name ───────────────────────────────────────
 
-@pytest.mark.parametrize("name", ["CRM_ENABLED", "CRM_ORGS", "crm_orgs", "CRM_MIRROR"])
+@pytest.mark.parametrize("name", ["CRM_ENABLED", "CRM_ORGS", "crm_orgs", "CRM_MIRROR", "CRM_MIRROR_ORGS"])
 def test_both_names_are_platform_env(name: str) -> None:
     assert is_platform_env(name) is True
 
@@ -363,7 +363,7 @@ _READER = _REPO / "apps/services/gateway/gateway/routes/crm/flags.py"
 
 
 def _setting_readers(roots: list[Path]) -> list[str]:
-    """Each file that reads `.crm_enabled`, `.crm_orgs` or `.crm_mirror` as an attribute."""
+    """Each file that reads `.crm_enabled`, `.crm_orgs`, `.crm_mirror` or `.crm_mirror_orgs` as an attribute."""
     hits: list[str] = []
     for root in roots:
         for path in root.rglob("*.py"):
@@ -374,7 +374,7 @@ def _setting_readers(roots: list[Path]) -> list[str]:
             except (SyntaxError, UnicodeDecodeError):
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and node.attr in {"crm_enabled", "crm_orgs", "crm_mirror"}:
+                if isinstance(node, ast.Attribute) and node.attr in {"crm_enabled", "crm_orgs", "crm_mirror", "crm_mirror_orgs"}:
                     hits.append(path.resolve().as_posix())
                     break
     return hits
@@ -384,7 +384,7 @@ def test_flags_is_the_one_reader_of_the_switch() -> None:
     readers = _setting_readers([_REPO / "apps", _REPO / "packages"])
     assert readers == [_READER.as_posix()], (
         "Only routes/crm/flags.py may read settings.crm_enabled, "
-        f"settings.crm_orgs or settings.crm_mirror. Readers found: {readers}"
+        f"settings.crm_orgs, settings.crm_mirror or settings.crm_mirror_orgs. Readers found: {readers}"
     )
 
 

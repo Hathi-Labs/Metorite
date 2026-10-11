@@ -20,7 +20,11 @@
 > connect routes behind `CRM_MIRROR`, and the shared token (2026-10-11). CRM-Z6,
 > the mirror write guard (2026-10-11). CRM-Z4 and CRM-Z5, the Zoho sync engine:
 > migration 246, `crm_sync_runs`, the import, the loop every 10 minutes, Sync
-> now and the status route (2026-10-11). The other slices are not built yet.
+> now and the status route (2026-10-11). CRM-U5, the first-open choice, and
+> CRM-Z7, narrowed (2026-10-11): the Zoho connect flow, the sync progress, the
+> title bar mode and the mirror marks. CRM-L2, the promotion of `/crm` to live,
+> with the per-org list `CRM_MIRROR_ORGS` (2026-10-11, owner decision in chat).
+> The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -789,7 +793,7 @@ must go through the meter before it ships, or it is free forever.
 | `href` | `/crm` |
 | `label` | CRM |
 | `feature` | `crm` |
-| `launch` | `preview` until CRM-L2 |
+| `launch` | `live` since 2026-10-11 (CRM-L2) |
 | `team` | `across` |
 | `blurb` | "Track leads and deals, or mirror your CRM" |
 | `keywords` | crm, sales, deal, lead, pipeline, contact, company, zoho |
@@ -870,7 +874,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-U2** ✅ built 2026-10-11 | `Modal`, `ConfirmDialog` and the `ui/` controls replace the hand-rolled ones | 🟢 AGENT-SAFE | The 5 dialog files join `CONVERTED` in `conformance.test.ts`. The `PipelineSettings` rows in `SELECT_DEBT` and `CHECKBOX_DEBT` are deleted, not set to 0. `grep "fixed inset-0" src/app/crm` finds nothing |
 | **CRM-U3** | Stage colour through `statusAccent`, categories through `categoricalAccent`, drops through `boardDrop.ts` | 🟢 AGENT-SAFE | `TONES` is gone. The `SCOPE` regex in `sharedTaskUi.test.ts:479` includes `app/crm/`, the comment at lines 467-477 is deleted, and the suite passes |
 | **CRM-U4** | Reads through `useCachedResource`. Skeletons and `EmptyState` | 🟢 AGENT-SAFE | `dataCache.test.ts` patterns hold. No "Loading…" text remains |
-| **CRM-U5** | The first-open choice (§8.3) | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |
+| **CRM-U5** ✅ built 2026-10-11 | The first-open choice (§8.3). Built as: an admin sees two cards, and a member sees "An admin must set up the CRM first." With `CRM_MIRROR` off, only the Native card shows. `GET /crm/connection` now carries `mode`, because `GET /crm/settings` is for admins only | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |
 | **CRM-U6** | Settings → CRM. `PipelineSettings` moves there | 🟢 AGENT-SAFE | Only an admin sees the page. Stages, lost reasons and the mode work from it |
 
 ### 13.5 Phase 3 — the Zoho mirror (§5)
@@ -884,14 +888,14 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-Z4** ✅ built 2026-10-11. Built as: the first import skips the deleted list, because nothing is mirrored yet. It opens the deleted window at the start of the import instead. The estimate uses `actions/count` (v8), which is not measured on a live tenant. Bulk Read (§5.2 item 15) is not built. The import mirrors the Stage and Lead_Status picklists into the status tables first | The first import, with progress, estimate and resume. The owner map | 🟢 AGENT-SAFE | A paused import resumes with no duplicate. Counts per entity match the source |
 | **CRM-Z5** ✅ built 2026-10-11. Built as: the interval (10 minutes) and the credit budget are constants, because `crm_settings` has no column for them. The budget assumes the Free edition (5,000 credits a day), so a sync may spend 500 in 24 hours. A run that spends credits spaces the next run, up to 6 hours. A module that hides `Modified_Time` is not listed by an incremental run. Only the reconcile reads it, once in 24 hours, and it resumes across runs. A reconcile deletes only a row that two complete walks in a row did not read (two strikes). It refuses to delete, with a `refused` count, when the Zoho count is unknown (`count_unknown`), when its walk read fewer records than that count, when it read nothing, or when it would delete more than 20 % of more than 10 local rows. A record that fails to write is read again for 5 runs, one page for each run, and then it expires. The status route counts it in `failed`. The old two-way engine in `sync_zoho.py` stays as unreachable code until CRM-Z11. A reconcile also runs after 50 days without a good run | The incremental loop per org, Sync now, the credit budget, `crm_sync_runs`. From CRM-T3: one `tenant_session(org)` per step, the advisory lock in place of `_cycle_lock`, and a working `POST /crm/sync/zoho` | 🟢 AGENT-SAFE to build. 🔴 first real customer connect is the owner's | Two orgs sync on one loop with no crossover. A run stops at its budget |
 | **CRM-Z6** ✅ built 2026-10-11. Built as: deep links move to CRM-Z7 after the sync stores the org domain | Read-only enforcement in Mirror mode, "Only in Metorite" items, deep links | 🟢 AGENT-SAFE | `test_crm_mirror_readonly.py`: each write route returns 409 on a mirrored field, for each of the 4 entities. A Metorite-only note saves |
-| **CRM-Z7** | The mirror UI: connect flow, mirror marks, custom fields in the panel and the filters, sync health | 🟢 AGENT-SAFE | Visual review passes. A custom field filters a list |
+| **CRM-Z7** ✅ built 2026-10-11 (narrowed) | The mirror UI: connect flow, mirror marks, custom fields in the panel and the filters, sync health. Built as: the BFF route `api/crm/oauth/zoho/callback` passes the 302 on with a relative Location. The title bar names the mode. A banner asks for a new consent, and a bar shows the import. The Settings view holds the connection panel, with Sync now and Disconnect. A mirrored record shows locked fields, and its deal cannot be dragged. Notes and calls stay open and carry an "Only in Metorite" badge. A 409 from the write guard shows as a toast. Left: the "Open in Zoho" link, the custom-field filters and the field map | 🟢 AGENT-SAFE | Visual review passes. A custom field filters a list |
 
 ### 13.6 Phase 4 — launch
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
 | **CRM-L1** | The shell manifest (§11): jobs in both lists, the search provider, the needs provider | 🟢 AGENT-SAFE | `test_shell_intent.py::TestOneJobList` passes. `nav.test.ts` passes with `team` and `blurb` set |
-| **CRM-L2** | Promote `/crm` to `live` | 🔴 OWNER-GATE (H-21) | `launch_surface.md` §2, `LIVE_SET`, `APP_BAR_HOME` and the e2e `PAGES` agree. `CRM_ENABLED` turns on for every org |
+| **CRM-L2** ✅ built 2026-10-11 (owner decision in chat: "Promote CRM to live now"). Built as: `/crm` is `live` in `nav.ts`, `launch_surface.md` §2, `LIVE_SET`, `APP_BAR_HOME` and the e2e `PAGES`. `CRM_ENABLED` turns on for each org, and the mirror stays Fracktal-only through the new list `CRM_MIRROR_ORGS`. It has the grammar of `CRM_ORGS`, and an empty list allows no org. `require_crm_mirror`, the sync loop and `engine.acquire` use `crm_mirror_allowed(org)`, so an org outside the list gets 404 on `/crm/connection*`, the callback and `/crm/sync/*`. A member without access sees "The CRM is not open to you yet". An admin sees the new Access panel in CRM settings. CRM-L1 is built in part: only the job `new-lead` (both lists) exists. The jobs `new-deal`, `log-call` and `find-record`, the search provider and the needs provider are not built | 🔴 OWNER-GATE (H-21) | `launch_surface.md` §2, `LIVE_SET`, `APP_BAR_HOME` and the e2e `PAGES` agree. `CRM_ENABLED` turns on for every org |
 
 ### 13.7 After launch, in any order
 

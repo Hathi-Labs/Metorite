@@ -19,18 +19,25 @@
  */
 
 import Icon from "@/components/Icon";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useMobileDrawer } from "@/components/AppShell";
 import FilterPills from "@/components/FilterPills";
 import Button from "@/components/ui/Button";
+import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
+import { ShellJob } from "@/lib/shell/doJob";
+import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
+import { AccessSection } from "./components/AccessPanel";
+import ConnectionPanel from "./components/ConnectionPanel";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail from "./components/CrmRail";
+import FirstOpen from "./components/FirstOpen";
+import { ImportProgress, ReconnectBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
 import PipelineSettings from "./components/PipelineSettings";
@@ -38,6 +45,21 @@ import QuickCreateModal from "./components/QuickCreateModal";
 import RecordList from "./components/RecordList";
 import Reports from "./components/Reports";
 import RecordSheet from "./components/RecordSheet";
+import * as api from "./lib/api";
+import { CrmError } from "./lib/api";
+import {
+  ADMIN_CAPABILITY,
+  canCreate,
+  clearReturnParams,
+  modeLine,
+  needsReconnect,
+  returnNotice,
+  startFailureMessage,
+  syncFailureMessage,
+  type ConnectionInfo,
+  type CrmMode,
+  type SyncStatus,
+} from "./lib/connect";
 import {
   boardTotals,
   missingRequiredFields,
@@ -47,7 +69,7 @@ import {
 } from "./lib/board";
 import { activeChip, applyChip, chipsFor } from "./lib/filters";
 import { compactMoney } from "./lib/format";
-import { useCrmStore } from "./lib/store";
+import { setRefusalSink, useCrmStore } from "./lib/store";
 import type { EntitySlug, Lead, Status } from "./lib/types";
 import {
   applySort,
@@ -60,6 +82,7 @@ import {
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
+import { invalidateCrmMode, useCrmMode, useSyncStatus } from "./lib/useCrmMode";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -70,8 +93,23 @@ const PARAM_FOR: Record<EntitySlug, SheetParam> = {
   organizations: "organization",
 };
 
-function CrmPageInner() {
+/** What the page needs to know about the mode and the mirror (CRM-Z7). */
+type MirrorContext = {
+  mode: CrmMode;
+  /** `null` when the mirror is off. */
+  connection: ConnectionInfo | null;
+  sync: SyncStatus | null;
+  isAdmin: boolean;
+  connecting: boolean;
+  syncing: boolean;
+  onConnect: () => void;
+  onSyncNow: () => void;
+  onDisconnect: () => Promise<void>;
+};
+
+function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const router = useRouter();
+  const toast = useToast();
   const searchParams = useSearchParams();
   const view = useMemo(
     () => parseView(searchParams.toString()),
@@ -79,7 +117,6 @@ function CrmPageInner() {
   );
 
   const store = useCrmStore();
-  const { access } = useAccess();
   const { isMobile } = useViewMode();
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   /** The rail of views: open from `lg` up, folded below, the member's call
@@ -160,6 +197,7 @@ function CrmPageInner() {
     : [];
 
   const totals = boardTotals(store.lanes);
+  const mayCreate = canCreate(ctx.mode);
 
   /** A board drop, or the status pill in the sheet. Same request either way. */
   async function moveDeal(move: DealMove, target: Status) {
@@ -200,7 +238,7 @@ function CrmPageInner() {
   // The scope line beside the name. CRM-Z7 puts the mode here ("Native", or
   // "Synced from Zoho · 4 min ago"). Until a mode exists, it says what the
   // view on screen holds.
-  const subtitle =
+  const viewLine =
     view.tab === "board"
       ? // Weighted sits next to the raw total rather than replacing it:
         // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
@@ -215,6 +253,8 @@ function CrmPageInner() {
             // lists share one layout, and this line is all that tells
             // Deals from Contacts.
             viewLabel(view.tab);
+  const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
+  const subtitle = mode ? `${mode} · ${viewLine}` : viewLine;
 
   /** A rail row, from the desktop column or the phone's drawer. */
   function chooseView(tab: CrmView["tab"]): void {
@@ -224,8 +264,9 @@ function CrmPageInner() {
 
   // The app's verb sits next to its name, as Capture does in My Tasks. It is
   // the quick-create entry the old header held, at the bar's size.
+  // In Mirror mode a record is made in Zoho, so the verb is gone (spec §3.3).
   const actions =
-    view.tab !== "settings" && view.tab !== "reports" ? (
+    mayCreate && view.tab !== "settings" && view.tab !== "reports" ? (
       <Button
         variant="secondary"
         size="sm"
@@ -325,6 +366,16 @@ function CrmPageInner() {
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {ctx.mode === "mirror" && needsReconnect(ctx.connection) && (
+            <ReconnectBanner
+              isAdmin={ctx.isAdmin}
+              busy={ctx.connecting}
+              onReconnect={ctx.onConnect}
+            />
+          )}
+          {ctx.mode === "mirror" && ctx.sync?.state === "running" && (
+            <ImportProgress status={ctx.sync} />
+          )}
           {chips.length > 0 && (
             <FilterPills
               items={chips}
@@ -354,26 +405,42 @@ function CrmPageInner() {
               loading={store.loading}
               onMove={moveDeal}
               onOpen={(id) => go(openRecord(view, "deal", id))}
-              onCreate={() => setCreating("deals")}
+              onCreate={mayCreate ? () => setCreating("deals") : undefined}
             />
           ) : view.tab === "reports" ? (
             <Reports reports={store.reports} loading={store.loading} />
           ) : view.tab === "settings" ? (
             <PipelineSettings
+              top={
+                ctx.isAdmin ? (
+                  <div className="flex flex-col gap-4">
+                    <AccessSection />
+                    {ctx.connection && (
+                      <ConnectionPanel
+                        mode={ctx.mode}
+                        connection={ctx.connection}
+                        sync={ctx.sync}
+                        syncing={ctx.syncing}
+                        connecting={ctx.connecting}
+                        onSyncNow={ctx.onSyncNow}
+                        onConnect={ctx.onConnect}
+                        onDisconnect={ctx.onDisconnect}
+                      />
+                    )}
+                  </div>
+                ) : undefined
+              }
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}
               saving={store.saving}
-              // Hiding the pull is the courtesy half; the route is floored on the
-              // same capability server-side and refuses regardless.
-              canPullStages={hasCapability(access, "admin:access:manage")}
+              readOnly={ctx.mode === "mirror"}
               onSaveStatus={store.saveStatus}
               onRemoveStatus={store.removeStatus}
               onReorderStatuses={store.reorderStatuses}
               onSaveLostReason={store.saveLostReason}
               onRemoveLostReason={store.removeLostReason}
               onReorderLostReasons={store.reorderLostReasons}
-              onPullStages={store.pullZohoStages}
             />
           ) : (
             // `listEntity` is non-null here by construction — the three branches
@@ -460,6 +527,15 @@ function CrmPageInner() {
         />
       )}
 
+      <ShellJob
+        id="new-lead"
+        onOpen={() => {
+          // Mirror mode: Zoho owns the leads, so the form cannot open.
+          if (mayCreate) setCreating("leads");
+          else toast.show({ key: "crm-new-lead", variant: "error", title: NEW_LEAD_MIRROR });
+        }}
+      />
+
       {creating && (
         <QuickCreateModal
           entity={creating}
@@ -510,10 +586,169 @@ function CrmPageInner() {
   );
 }
 
+/**
+ * The gate (WS-53 CRM-U5, CRM-Z7). It reads the mode and the connection,
+ * shows the first-open cards when no mode exists, handles the return from
+ * Zoho, and hands the pipeline its context. The pipeline loads nothing until
+ * the gate says "ready".
+ */
+function CrmGate(): ReactNode {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const toast = useToast();
+  const { access, loading: accessLoading } = useAccess();
+  const isAdmin = hasCapability(access, ADMIN_CAPABILITY);
+
+  const { phase, mode, connection } = useCrmMode(isAdmin, accessLoading);
+  const [watchToken, setWatchToken] = useState(0);
+  const sync = useSyncStatus(connection !== null && mode === "mirror", watchToken);
+  const [busy, setBusy] = useState<"native" | "zoho" | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // A mirror-guard refusal (409 mirrored_record) is a toast, not a banner.
+  useEffect(() => {
+    setRefusalSink((text) =>
+      toast.show({ key: "crm-mirror-refusal", variant: "error", title: text }),
+    );
+    return () => setRefusalSink(null);
+  }, [toast]);
+
+  // The return from Zoho: say how it went, clear the parameter, re-read.
+  const search = searchParams.toString();
+  const handled = useRef("");
+  useEffect(() => {
+    const notice = returnNotice(search);
+    if (!notice) {
+      handled.current = "";
+      return;
+    }
+    if (handled.current === search) return;
+    handled.current = search;
+    if (notice.kind === "connected") {
+      toast.show({ key: "crm-connect-return", variant: "success", title: "Zoho CRM connected" });
+      // The effect follows the URL, an external system, and starts a watch.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setWatchToken((n) => n + 1);
+    } else {
+      toast.show({ key: "crm-connect-return", variant: "error", title: notice.message });
+    }
+    invalidateCrmMode();
+    const rest = clearReturnParams(search);
+    router.replace(rest ? `${pathname}?${rest}` : pathname, { scroll: false });
+  }, [search, pathname, router, toast]);
+
+  async function connectZoho() {
+    setBusy("zoho");
+    try {
+      const { url } = await api.startZohoConnect();
+      window.location.assign(url);
+    } catch (err) {
+      const e = err instanceof CrmError ? err : null;
+      toast.show({
+        key: "crm-connect-return",
+        variant: "error",
+        title: startFailureMessage(e?.status ?? 0, e?.code),
+      });
+      setBusy(null);
+    }
+  }
+
+  async function chooseNative() {
+    setBusy("native");
+    try {
+      await api.chooseNativeMode();
+    } catch (err) {
+      // A 409 means the mode changed meanwhile. The re-read shows the truth.
+      toast.show({
+        key: "crm-mode",
+        variant: "error",
+        title: err instanceof CrmError ? err.message : "The CRM did not start. Try again.",
+      });
+    } finally {
+      setBusy(null);
+      invalidateCrmMode();
+    }
+  }
+
+  async function syncNow() {
+    setSyncing(true);
+    try {
+      await api.syncZohoNow();
+      toast.show({ key: "crm-sync", variant: "success", title: "Sync started" });
+      setWatchToken((n) => n + 1);
+    } catch (err) {
+      const e = err instanceof CrmError ? err : null;
+      toast.show({
+        key: "crm-sync",
+        variant: "error",
+        title: syncFailureMessage(e?.status ?? 0, e?.code),
+      });
+    } finally {
+      setSyncing(false);
+      invalidateCrmMode();
+    }
+  }
+
+  async function disconnect() {
+    try {
+      await api.disconnectCrm();
+      toast.show({ key: "crm-sync", variant: "success", title: "Zoho disconnected" });
+    } catch (err) {
+      toast.show({
+        key: "crm-sync",
+        variant: "error",
+        title: err instanceof CrmError ? err.message : "Zoho did not disconnect. Try again.",
+      });
+    } finally {
+      invalidateCrmMode();
+    }
+  }
+
+  if (phase !== "ready") {
+    // The "New lead" job lands here too, and it must say why nothing opens.
+    const refusal = refusalOf(phase);
+    return (
+      <>
+        {refusal && (
+          <ShellJob
+            id="new-lead"
+            onOpen={() =>
+              toast.show({ key: "crm-new-lead", variant: "error", title: refusal })
+            }
+          />
+        )}
+        <FirstOpen
+          phase={phase}
+          busy={busy}
+          onNative={chooseNative}
+          onConnectZoho={connectZoho}
+        />
+      </>
+    );
+  }
+
+  return (
+    <CrmPageInner
+      ctx={{
+        mode,
+        connection,
+        sync,
+        isAdmin,
+        connecting: busy === "zoho",
+        syncing,
+        onConnect: connectZoho,
+        onSyncNow: syncNow,
+        onDisconnect: disconnect,
+      }}
+    />
+  );
+}
+
 export default function CrmPage() {
   return (
     <Suspense fallback={null}>
-      <CrmPageInner />
+      <CrmGate />
     </Suspense>
   );
 }
