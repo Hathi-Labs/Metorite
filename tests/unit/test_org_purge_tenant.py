@@ -365,7 +365,7 @@ class TestTheExclusionCannotGoStale:
         assert cascading == {
             "crm_activities", "crm_auto_lead_cursors", "crm_companies",
             "crm_contacts", "crm_deal_contacts", "crm_deal_statuses",
-            "crm_deals", "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
-            "crm_settings", "crm_status_changes", "crm_sync_cursors",
-            "crm_zoho_tombstones",
+            "crm_deals", "crm_field_defs", "crm_lead_statuses", "crm_leads",
+            "crm_lost_reasons", "crm_settings", "crm_status_changes",
+            "crm_sync_cursors", "crm_zoho_tombstones",
         }
