@@ -260,9 +260,12 @@ clone cache.
    no live chat. It never decides an action (WS-17 EM-T13a).
    `refuse_cards()` is the scope of a run with no card channel (WS-47
    WAC-3, the WhatsApp bot). Inside it `request_confirmation` denies at
-   once, `ask_questions` returns a fixed line, and nothing is pushed or
-   parked. The default is off, so a web run is unchanged. Fence:
-   `tests/unit/test_wac_bot_run.py`.
+   once, `ask_questions` returns a fixed line, and nothing is pushed. WAC-4 is the one exception. In a WhatsApp run with writes on,
+`request_confirmation` first asks `whatsapp_acts.answer_card`. That call can
+PARK one `create_task` for the member's Confirm. At that Confirm, it can
+answer "yes" once. Every fault there denies. The default is off, so a web run
+   is unchanged. Fences: `tests/unit/test_wac_bot_run.py`,
+   `tests/unit/test_wac_writes.py`.
 5k. agent_site.py -- the ONE builder of an agent install (WS-49 BH-7, spec
    `box_hardening.md` §5 BH-7). `loader._install_agent_deps` and
    `dep_tools.install_dependency` install into

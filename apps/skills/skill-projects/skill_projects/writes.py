@@ -165,6 +165,34 @@ async def _confirm(
 CANCELLED = "Cancelled — nothing was changed."
 
 
+def _not_confirmed() -> str:
+    """:data:`CANCELLED`, or the WhatsApp line for an act that waits (WS-47 WAC-4).
+
+    On WhatsApp, ``create_task``'s card is parked for the member's Confirm
+    (``acb_skills.whatsapp_acts``). Nothing was written, as with a decline,
+    but the model must not tell the member that it was cancelled.
+    """
+    try:
+        from acb_skills.whatsapp_acts import parked_line
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return CANCELLED
+    return parked_line() or CANCELLED
+
+
+def _bind_card_facts(**facts: Any) -> None:
+    """Bind ids that the next card does not show (WS-47 WAC-4).
+
+    ``acb_skills.whatsapp_acts.card_facts``: a stored WhatsApp act matches at
+    Confirm only when these ids match too. Outside a WhatsApp act it does
+    nothing, and the card the member sees never changes.
+    """
+    try:
+        from acb_skills.whatsapp_acts import card_facts
+    except Exception:  # pragma: no cover — platform package absent in isolation
+        return
+    card_facts(**facts)
+
+
 # ── Naming the row, and resolving names ──────────────────────────────────────
 
 
@@ -918,6 +946,9 @@ async def create_task(
         # P1). The id line alone would not tell the member where it goes.
         card = {"project": data(by_name), **{k: v for k, v in card.items() if k != "project_id"}}
         where = f" · in {data(by_name)}"
+    # WS-47 WAC-4: a card that names the project by NAME must still bind the
+    # project it resolved, and the people, for a Confirm on WhatsApp.
+    _bind_card_facts(project_id=pid, assignees=sorted(new.who))
     if not await _confirm(
         title=repeating.card_title,
         detail=f"{data(name)}{where} · status {new.status_label}"
@@ -925,7 +956,7 @@ async def create_task(
         + repeating.detail(),
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     task, saved, failed = await _create_new_task(new, repeating)
     status_label = new.status_label
     if "status_id" not in new.payload:
