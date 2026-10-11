@@ -455,6 +455,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - The company context is thin today (D-EA-6).
 - A connection has no absolute maximum life. A thief who rotates a stolen refresh token at least once in 30 days keeps the connection alive until somebody revokes it. Proposal: an absolute cap, for example 365 days from `created_at`, as a `Settings` default. EA-4 decides it. EA-1 and EA-2a do not build it.
 - The consent routes of EA-2a trust the session alone. A cross-site request could drive `approve` while a member is signed in. EA-4 closes this with an `Origin` check, a `SameSite` session, no 3xx from approve and a one-time consent ticket from `check` (§15 EA-4).
+- For a private-use scheme, `redirect_host` shows the URI authority as if it were a web host. A client can list `x-evil://claude.ai/cb`, and the consent screen then shows `claude.ai`, although the browser gives the code to the native app that claims `x-evil`. EA-4 must show the scheme with the authority for every scheme other than http and https.
 - The redirect URI rules of EA-2a are a deny list of dangerous schemes. A deny list is never complete. EA-4 or EA-2b moves them to the RFC 8252 forms.
 - D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the internal bearer. Without the sandbox, a bug in the edge reaches as far as a bug in the gateway.
 
