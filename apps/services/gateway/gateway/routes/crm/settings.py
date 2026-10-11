@@ -11,10 +11,16 @@ org admin changes the mode). The router's access rule passes an admin too, so
 an admin who sets ``access = 'groups'`` with no group of their own still
 reaches this page.
 
-**The mode.** CRM-T5 allows ONE change of mode: from NULL (not chosen) to
-``native``. The same transaction seeds the organization's stages and lost
-reasons (``seed.seed_native_pipeline``). Each other change of mode is a 422.
-Only the Zoho callback of ``connection.py`` (CRM-Z2) sets ``mirror``. A
+**The mode.** Two changes of mode are open. From NULL (not chosen) to
+``native`` (CRM-T5): the same transaction seeds the organization's stages and
+lost reasons (``seed.seed_native_pipeline``). From ``native`` or ``mirror``
+back to NULL (CRM-U5b, "Change CRM setup"): allowed only with 0 rows in the
+five record tables and no Zoho connection that is ``connected``, else a 409
+(``crm_has_records``, ``crm_connected``). The reset clears ``mode`` and
+``connection_id`` and deletes the stages and lost reasons, in the same
+transaction, and keeps ``access`` and ``access_groups``. Each other change of
+mode is a 422. Only the Zoho callback of ``connection.py`` (CRM-Z2) sets
+``mirror``. A
 ``mode`` equal to the stored one is not a change, so it is a 200 that writes no
 seed. The upsert writes only if the mode is still the one this request read,
 else it answers 409.
@@ -36,6 +42,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
+from gateway.connections import store
 from gateway.routes.crm.access import (
     ACCESS_MODES,
     ADMIN_PERMISSION,
@@ -55,7 +62,22 @@ MODES: tuple[str, ...] = ("native", "mirror")
 #: The one change of mode that CRM-T5 allows: (stored, requested).
 ALLOWED_MODE_CHANGES: frozenset[tuple[str | None, str | None]] = frozenset({
     (None, "native"),
+    # CRM-U5b: Change CRM setup. Each needs 0 records and no live connection.
+    ("native", None),
+    ("mirror", None),
 })
+
+#: The five record tables. Every row counts, native or mirrored.
+_RECORD_TABLES: tuple[str, ...] = (
+    "crm_leads", "crm_deals", "crm_contacts", "crm_companies", "crm_activities",
+)
+
+#: Child first. Nothing references them with 0 records, but a status that a
+#: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
+_RESET_DELETES: tuple[str, ...] = (
+    "crm_status_changes", "crm_deal_statuses", "crm_lead_statuses",
+    "crm_lost_reasons",
+)
 
 _UPSERT_SQL = (
     "INSERT INTO crm_settings "
@@ -124,11 +146,45 @@ def _check_mode(stored: str | None, requested: str | None) -> bool:
             status_code=422,
             detail=(
                 f"The CRM mode cannot change from {stored or 'not chosen'} to "
-                f"{requested or 'not chosen'} yet. Only the first choice of "
-                "'native' is open. Mirror mode starts from Connect Zoho."
+                f"{requested or 'not chosen'} yet. Choose 'native' first, or "
+                "change the setup back to not chosen. Mirror mode starts "
+                "from Connect Zoho."
             ),
         )
     return True
+
+
+async def _check_reset_allowed(db: Any, org: str) -> None:
+    """409 unless the org has 0 records and no connected Zoho (CRM-U5b)."""
+    for table in _RECORD_TABLES:
+        found = (await db.execute(
+            text(f"SELECT 1 FROM {table} LIMIT 1"),
+        )).first()
+        if found is not None:
+            raise HTTPException(status_code=409, detail={
+                "code": "crm_has_records",
+                "message": (
+                    "This CRM has records, so its setup cannot change. "
+                    "Remove the records first."
+                ),
+            })
+    connection = await store.get(db, org, "zoho", "crm")
+    if connection is not None and connection.status == store.STATUS_CONNECTED:
+        raise HTTPException(status_code=409, detail={
+            "code": "crm_connected",
+            "message": "Disconnect Zoho first, then change the setup.",
+        })
+
+
+async def _reset_setup(db: Any, org: str) -> None:
+    """Clear the mode, the connection pointer and the seeded pipeline."""
+    await db.execute(text(
+        "UPDATE crm_settings SET connection_id = NULL "
+        "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+    for table in _RESET_DELETES:
+        await db.execute(text(
+            f"DELETE FROM {table} "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
 
 
 def _check_access(access: str | None) -> None:
@@ -194,6 +250,9 @@ async def patch_crm_settings(
         mode_changes = (
             "mode" in values and _check_mode(current.mode, values["mode"])
         )
+        resetting = mode_changes and values["mode"] is None
+        if resetting:
+            await _check_reset_allowed(db, org)
         merged = {
             "organization_id": org,
             "mode": values.get("mode", current.mode),
@@ -213,4 +272,6 @@ async def patch_crm_settings(
             )
         if mode_changes and merged["mode"] == "native":
             await seed_native_pipeline(db, org)
+        if resetting:
+            await _reset_setup(db, org)
         return _wire(row)

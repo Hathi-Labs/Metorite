@@ -203,6 +203,7 @@ boundary, and the UI is a courtesy.
 | no mode | Native or Mirror | Yes | The setup choice |
 | Mirror | Native | Yes | "Make Metorite your CRM": a final sync, then the mode flips and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10) |
 | Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
+| Native or Mirror | no mode | Yes, with 0 records and no live connection | Change CRM setup (CRM-U5b) |
 
 ### 3.5 The architecture: one store, two writers
 
@@ -875,6 +876,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-U3** | Stage colour through `statusAccent`, categories through `categoricalAccent`, drops through `boardDrop.ts` | 🟢 AGENT-SAFE | `TONES` is gone. The `SCOPE` regex in `sharedTaskUi.test.ts:479` includes `app/crm/`, the comment at lines 467-477 is deleted, and the suite passes |
 | **CRM-U4** | Reads through `useCachedResource`. Skeletons and `EmptyState` | 🟢 AGENT-SAFE | `dataCache.test.ts` patterns hold. No "Loading…" text remains |
 | **CRM-U5** ✅ built 2026-10-11 | The first-open choice (§8.3). Built as: an admin sees two cards, and a member sees "An admin must set up the CRM first." With `CRM_MIRROR` off, only the Native card shows. `GET /crm/connection` now carries `mode`, because `GET /crm/settings` is for admins only | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |
+| **CRM-U5b** ✅ built 2026-10-11 | Change CRM setup (§3.4). `PATCH /crm/settings {"mode": null}` returns the org to no mode. It needs 0 rows in the five record tables and no Zoho connection that is `connected`, else 409 `crm_has_records` or `crm_connected`. The same transaction clears `mode` and `connection_id` and deletes the stages and lost reasons. `access` stays. An admin sees a "CRM setup" card in Settings with a "Change CRM setup" button and a confirm | 🟢 AGENT-SAFE | `test_crm_u5b_r8.py` on a real database. Reset removes the 17 rows, and Native again seeds them. A lead or a connected Zoho gives 409 |
 | **CRM-U6** | Settings → CRM. `PipelineSettings` moves there | 🟢 AGENT-SAFE | Only an admin sees the page. Stages, lost reasons and the mode work from it |
 
 ### 13.5 Phase 3 — the Zoho mirror (§5)

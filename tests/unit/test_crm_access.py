@@ -372,11 +372,11 @@ def test_a_mode_other_than_native_from_none_is_422(db: FakeCrmDB, mode: str) -> 
     assert not db.rows("crm_settings")
 
 
-@pytest.mark.parametrize("mode", ["mirror", None])
-def test_native_cannot_change_again_in_t5(db: FakeCrmDB, mode: str | None) -> None:
+def test_native_cannot_change_to_mirror(db: FakeCrmDB) -> None:
+    # Native back to NULL is CRM-U5b, proved on a real DB in test_crm_u5b_r8.py.
     c = client(admin())
     assert c.patch("/crm/settings", json={"mode": "native"}).status_code == 200
-    assert c.patch("/crm/settings", json={"mode": mode}).status_code == 422
+    assert c.patch("/crm/settings", json={"mode": "mirror"}).status_code == 422
     assert c.get("/crm/settings").json()["mode"] == "native"
 
 
