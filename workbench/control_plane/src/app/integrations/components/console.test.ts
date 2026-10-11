@@ -102,7 +102,8 @@ describe("the panel actions per kind", () => {
     const html = sheet(mcp, { canManage: false });
     expect(html).not.toContain("Disconnect");
     expect(html).not.toMatch(/>Test</);
-    expect(html).toContain("Open in Integrations");
+    // The console owns an Integrations row, so it offers no link to itself.
+    expect(html).not.toContain("Open in Integrations");
   });
 
   it("hides Disconnect when the row cannot disconnect", () => {
@@ -192,5 +193,27 @@ describe("the page uses the shared shell", () => {
   it("keeps the READ_DENIED words", async () => {
     const { READ_DENIED } = await import("../lib/connections");
     expect(READ_DENIED).toBe("Only admins can see your company's connections.");
+  });
+});
+
+describe("the API keys view", () => {
+  const keys = readFileSync(join(DIR, "components/ApiKeysView.tsx"), { encoding: "utf-8" });
+  it("gives Zoho a line and an Open CRM button, not a key form", () => {
+    expect(keys).toContain("Zoho connects in the CRM app.");
+    expect(keys).toContain("Open CRM");
+    expect(keys).toMatch(/api\.service === ZOHO_SERVICE \? \(/);
+  });
+  it("has no toolbar Add API button, and lets a card name wrap", () => {
+    expect(keys).not.toMatch(/>\s*Add API\s*<\/Button>/);
+    expect(keys).not.toMatch(/line-clamp-1">\{api\.label\}/);
+  });
+  it("uses the muted-foreground token for section labels", () => {
+    for (const f of ["ApiKeysView", "PluginsView", "SkillsView"]) {
+      const src = readFileSync(join(DIR, `components/${f}.tsx`), { encoding: "utf-8" });
+      expect(src, f).not.toMatch(/text-muted(?![-\w])/);
+    }
+  });
+  it("adds Mailbox to the Add menu", () => {
+    expect(readFileSync(join(DIR, "page.tsx"), { encoding: "utf-8" })).toContain('label: "Mailbox"');
   });
 });

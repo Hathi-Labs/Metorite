@@ -4,12 +4,14 @@
 
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon } from "@/components/Icon";
+import { useRouter } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import GitHubAccountBadge from "@/components/GitHubAccountBadge";
 import FilterPills from "@/components/FilterPills";
 import { Input } from "@/components/ui/Input";
+import { orgKeyConfigured, type Connection } from "../lib/connections";
 import OperatorEnvVars from "../OperatorEnvVars";
 
 // ===========================================================================
@@ -162,12 +164,27 @@ function ApiTile({ api, selected, onClick }: { api: ApiEntry; selected: boolean;
         <ServiceLogo service={api.service} label={api.label} domain={api.domain} category={api.category} />
         <span className={`w-2 h-2 mt-1 rounded-full shrink-0 ${api.configured ? "bg-success" : "bg-muted"}`} />
       </div>
-      <div className="font-medium text-sm text-foreground leading-tight line-clamp-1">{api.label}</div>
+      <div className="font-medium text-sm text-foreground leading-tight break-words">{api.label}</div>
       <div className="text-[10px] text-muted-foreground mt-0.5 capitalize">{api.category}</div>
       <div className={`mt-2 text-[10px] font-medium ${api.configured ? "text-success" : "text-muted-foreground"}`}>
         {api.configured ? "● Connected" : "○ Not set up"}
       </div>
     </button>
+  );
+}
+
+const ZOHO_SERVICE = "zoho-crm";
+
+/** Zoho has no key form here. The CRM app owns the one-click connect. */
+function ZohoInCrm() {
+  const router = useRouter();
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">Zoho connects in the CRM app.</p>
+      <Button variant="primary" size="sm" icon="ExternalLink" onClick={() => router.push("/crm")}>
+        Open CRM
+      </Button>
+    </div>
   );
 }
 
@@ -221,7 +238,7 @@ function CredentialForm({ api, onSaved }: {
             placeholder={`Enter ${v.label}…`}
             className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
           />
-          <div className="text-[9px] text-muted mt-0.5 font-mono">{v.key}</div>
+          <div className="text-[9px] text-muted-foreground mt-0.5 font-mono">{v.key}</div>
         </div>
       ))}
       <OperatorEnvVars api={api} />
@@ -426,7 +443,7 @@ function ApiSidePanel({ api, agents, onClose, onRefresh }: {
 
         {usedBy.length > 0 && (
           <div>
-            <div className="text-[10px] text-muted uppercase tracking-wider mb-1.5">Used by agents</div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Used by agents</div>
             <div className="flex flex-wrap gap-1">
               {usedBy.map((a) => (
                 <span key={a.name} className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-foreground border border-border">{a.name}</span>
@@ -435,7 +452,7 @@ function ApiSidePanel({ api, agents, onClose, onRefresh }: {
           </div>
         )}
 
-        {(api.setup_url || api.docs_url) && (
+        {(api.setup_url || api.docs_url) && api.service !== ZOHO_SERVICE && (
           <div className="flex gap-2 flex-wrap">
             {api.setup_url && (
               <a href={api.setup_url} target="_blank" rel="noopener noreferrer"
@@ -454,6 +471,9 @@ function ApiSidePanel({ api, agents, onClose, onRefresh }: {
 
         {api.service === "github" ? (
           <GitHubAccountBadge integration={api} onRefresh={onRefresh} />
+        ) : api.service === ZOHO_SERVICE ? (
+          // Zoho connects inside the CRM app (D96). No customer OAuth app.
+          <ZohoInCrm />
         ) : api.service === "whatsapp" ? (
           // WhatsApp is multi-account too (wa_accounts); connecting is a guided
           // wizard in the app, so the panel just lists + disconnects numbers.
@@ -632,7 +652,7 @@ function DiscoverModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
                 </Button>
               </div>
               <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Try these</div>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">Try these</div>
                 <div className="flex flex-wrap gap-1.5">
                   {DISCOVER_SUGGESTIONS.map((s) => (
                     <button key={s} onClick={() => setQ(s)}
@@ -667,9 +687,9 @@ function DiscoverModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
                           <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{r.description}</p>
                           <div className="flex flex-wrap gap-1 mt-1.5">
                             {r.env_vars.slice(0, 3).map((v) => (
-                              <span key={v.key} className="text-[9px] font-mono px-1 py-0.5 rounded bg-secondary border border-border text-muted">{v.key}</span>
+                              <span key={v.key} className="text-[9px] font-mono px-1 py-0.5 rounded bg-secondary border border-border text-muted-foreground">{v.key}</span>
                             ))}
-                            {r.env_vars.length > 3 && <span className="text-[9px] text-muted">+{r.env_vars.length - 3}</span>}
+                            {r.env_vars.length > 3 && <span className="text-[9px] text-muted-foreground">+{r.env_vars.length - 3}</span>}
                           </div>
                         </div>
                       </div>
@@ -788,10 +808,11 @@ export default function ApiKeysView() {
     try {
       // WhatsApp is multi-account (its "connected" state comes from
       // wa_accounts, NOT provider_keys) — override it from the real count.
-      const [sRes, aRes, waRes] = await Promise.all([
+      const [sRes, aRes, waRes, cRes] = await Promise.all([
         fetch("/api/integrations/status"),
         fetch("/api/agent/list"),
         fetch("/api/whatsapp/accounts").catch(() => null),
+        fetch("/api/integrations/connections").catch(() => null),
       ]);
       const [sData, aData] = await Promise.all([sRes.json(), aRes.json()]);
       let whatsappCount = 0;
@@ -799,12 +820,19 @@ export default function ApiKeysView() {
         const accts = await waRes.json().catch(() => []);
         whatsappCount = Array.isArray(accts) ? accts.length : 0;
       }
+      // The card reads the org's own key rows. Only a 404 (the read model is
+      // not built yet) falls back to the deployment-wide status.
+      let orgRows: Connection[] | null = null;
+      if (cRes && cRes.ok) {
+        const body = await cRes.json().catch(() => ({}));
+        orgRows = Array.isArray(body?.connections) ? body.connections : [];
+      }
       setApis(
         (Array.isArray(sData) ? sData : []).map((a: ApiEntry) => {
           const base = { ...a, category: a.category ?? "custom" };
           if (a.service === "whatsapp")
             return { ...base, configured: whatsappCount > 0 };
-          return base;
+          return { ...base, configured: orgKeyConfigured(orgRows, a.service, a.configured) };
         }),
       );
       setAgents(Array.isArray(aData) ? aData : []);
@@ -842,9 +870,6 @@ export default function ApiKeysView() {
         </p>
         <div className="flex items-center gap-2 ml-auto">
           <Button variant="ghost" size="icon-sm" icon="RefreshCw" aria-label="Refresh" title="Refresh" onClick={() => void fetchAll()} />
-          <Button variant="primary" size="sm" icon="Plus" onClick={() => setShowDiscover(true)}>
-            Add API
-          </Button>
         </div>
       </div>
 

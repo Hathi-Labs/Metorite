@@ -74,7 +74,7 @@ export default function PluginsView() {
       {/* Installed plugins */}
       {plugins.length > 0 ? (
         <div>
-          <div className="text-[10px] text-muted uppercase tracking-wider mb-3">Installed plugins</div>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-3">Installed plugins</div>
           <div className="space-y-2">
             {plugins.map((p) => (
               <div key={p.id} className="p-4 rounded-xl border border-border bg-card hover:bg-secondary/10 transition-colors">
@@ -82,8 +82,8 @@ export default function PluginsView() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold text-sm text-foreground">{p.label || p.name}</span>
-                      <span className="text-[10px] font-mono text-muted">{p.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">v{p.version}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{p.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">v{p.version}</span>
                       {p.auth_type !== "none" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-cat-12/10 text-cat-12 border border-cat-12/20">
                           {p.auth_type}
@@ -96,7 +96,7 @@ export default function PluginsView() {
                       )}
                     </div>
                     {p.description && <p className="text-xs text-muted-foreground mt-1">{p.description}</p>}
-                    <div className="text-[10px] font-mono text-muted mt-1 truncate">{p.manifest_url}</div>
+                    <div className="text-[10px] font-mono text-muted-foreground mt-1 truncate">{p.manifest_url}</div>
                   </div>
                   <button onClick={() => handleDelete(p.id)}
                     className="px-2 py-1 rounded text-[10px] border border-border text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors shrink-0">
@@ -124,7 +124,7 @@ export default function PluginsView() {
 
       {/* Plugin capabilities grid */}
       <div>
-        <div className="text-[10px] text-muted uppercase tracking-wider mb-3">Capabilities plugins unlock</div>
+        <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-3">Capabilities plugins unlock</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {PLUGIN_EXAMPLES.map((p) => (
             <div key={p.name} className="p-4 rounded-xl border border-border bg-card hover:bg-secondary/30 transition-colors">

@@ -19,6 +19,7 @@ import {
   errorMessage,
   lastSyncLabel,
   panelPlan,
+  rowLabel,
   scopeLabel,
   type Connection,
 } from "../lib/connections";
@@ -76,8 +77,8 @@ export function SheetBody({
         <p className="rounded-lg bg-secondary px-3 py-2 text-xs text-muted-foreground">{plan.memberNote}</p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        {plan.reconnect && plan.href ? (
-          <Button variant="primary" size="sm" icon="RefreshCw" onClick={() => onNavigate(plan.href!)}>
+        {plan.reconnect && plan.reconnectHref ? (
+          <Button variant="primary" size="sm" icon="RefreshCw" onClick={() => onNavigate(plan.reconnectHref!)}>
             Connect again
           </Button>
         ) : null}
@@ -108,7 +109,7 @@ export default function ConnectionSheet(props: SheetBodyProps & { onClose: () =>
     <Modal
       open
       onClose={onClose}
-      title={body.row.label}
+      title={rowLabel(body.row)}
       description={APP_LABEL[body.row.owning_app]}
       size="md"
       placement={isMobile ? "sheet" : "end"}

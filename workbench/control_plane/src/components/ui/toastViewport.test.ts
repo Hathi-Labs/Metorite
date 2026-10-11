@@ -44,3 +44,15 @@ describe("the toast viewport on a phone", () => {
     expect(rule(".toast-viewport-bottom", media)).toMatch(/bottom: 1rem;/);
   });
 });
+
+describe("the toast stacks above every modal layer", () => {
+  it("the viewport z-index is above Modal's highest layer, so a side panel never hides a toast", () => {
+    const toast = read("Toast.tsx");
+    const z = toast.match(/<BaseToast\.Viewport className="[^"]*\bz-\[(\d+)\]/);
+    expect(z, "the toast viewport lost its z layer").not.toBeNull();
+    const layers = [...read("Modal.tsx").matchAll(/^\s+(?:dialog|alert):\s*"z-(?:\[(\d+)\]|(\d+))"/gm)]
+      .map((m) => Number(m[1] ?? m[2]));
+    expect(layers.length).toBe(2);
+    expect(Number(z![1])).toBeGreaterThan(Math.max(...layers));
+  });
+});

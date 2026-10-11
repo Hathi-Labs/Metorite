@@ -17,6 +17,7 @@ import {
   STATUS_LABEL,
   errorMessage,
   lastSyncLabel,
+  rowLabel,
   scopeLabel,
   type Connection,
   type ConnectionKind,
@@ -99,7 +100,7 @@ export default function ConnectionList({
             >
               <Icon name={KIND_ICON[row.kind]} className="h-4 w-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">{row.label}</span>
+                <span className="block truncate text-sm font-medium text-foreground">{rowLabel(row)}</span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {row.provider} · {APP_LABEL[row.owning_app]} · {scopeLabel(row)}
                 </span>

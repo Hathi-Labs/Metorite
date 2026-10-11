@@ -29,7 +29,9 @@ import {
   disconnectFailure,
   filterConnections,
   mcpName,
+  rowLabel,
   statusPills,
+  testMessage,
   type AppFilter,
   type StatusFilter,
 } from "../lib/connections";
@@ -76,7 +78,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     setBusy(true);
     try {
       await api.disconnect(open.id);
-      toast.show({ key: "integrations-disconnect", variant: "success", title: `${open.label} is disconnected.` });
+      toast.show({ key: "integrations-disconnect", variant: "success", title: `${rowLabel(open)} is disconnected.` });
       setConfirming(false);
       setOpenId(null);
       invalidateConnections();
@@ -104,19 +106,11 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     setTesting(true);
     try {
       const r = await api.testMcp(name);
-      if (r.ok) {
-        toast.show({
-          key: "integrations-test",
-          variant: "success",
-          title: r.tools === null ? "The server answered." : `The server answered. It offers ${r.tools} tools.`,
-        });
-      } else {
-        toast.show({
-          key: "integrations-test",
-          variant: "error",
-          title: r.error || "The server did not answer.",
-        });
-      }
+      toast.show({
+        key: "integrations-test",
+        variant: r.ok ? "success" : "error",
+        title: testMessage(r),
+      });
     } catch (err) {
       toast.show({
         key: "integrations-test",

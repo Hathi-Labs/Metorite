@@ -57,7 +57,7 @@ function SkillFamilyCard({ family }: { family: SkillFamily }) {
                 ? "per-grant"
                 : `${family.tool_count} tool${family.tool_count !== 1 ? "s" : ""} · ${fmtTokens(family.token_cost)}`}
             </span>
-            <Icon name={chevron} className="w-3.5 h-3.5 text-muted" />
+            <Icon name={chevron} className="w-3.5 h-3.5 text-muted-foreground" />
           </div>
         </div>
       </button>
@@ -152,7 +152,7 @@ export default function SkillsView() {
       {/* Family cards */}
       {families.length > 0 && (
         <div>
-          <div className="text-[10px] text-muted uppercase tracking-wider mb-3">Skill families</div>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-3">Skill families</div>
           <div className="space-y-2">
             {families.map((f) => <SkillFamilyCard key={f.slug} family={f} />)}
           </div>
@@ -162,7 +162,7 @@ export default function SkillsView() {
       {/* Per-agent matrix */}
       {agents.length > 0 && (
         <div>
-          <div className="text-[10px] text-muted uppercase tracking-wider mb-3">Which agent has what</div>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-3">Which agent has what</div>
           <div className="rounded-xl border border-border bg-card overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -181,7 +181,7 @@ export default function SkillsView() {
                     <td className="px-4 py-2.5">
                       <span className="font-mono font-semibold text-foreground">{a.name}</span>
                       {a.all_families && (
-                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted" title="No tool_scope declared — injection is fail-open, the agent receives every family.">
+                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground" title="No tool_scope declared — injection is fail-open, the agent receives every family.">
                           all (no scope)
                         </span>
                       )}
@@ -192,7 +192,7 @@ export default function SkillsView() {
                           ? <Icon name="Check" className="w-3.5 h-3.5 text-success inline" />
                           : (a.disabled_families ?? []).includes(f.slug)
                           ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/10 text-warning" title="Explicitly disabled by an admin (skill toggle)">off</span>
-                          : <span className="text-muted">—</span>}
+                          : <span className="text-muted-foreground">—</span>}
                       </td>
                     ))}
                   </tr>

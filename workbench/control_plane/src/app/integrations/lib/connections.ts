@@ -170,23 +170,37 @@ export function consoleAccess(access: Access): ConsoleAccess {
 // ── The side panel ────────────────────────────────────────────────────────
 
 export interface PanelPlan {
-  /** "Open in CRM". Null when the row has no `setup_href`. */
+  /** "Open in CRM". Null when the row has no `setup_href`, or the console owns it. */
   openLabel: string | null;
   href: string | null;
   /** "Connect again" for a row that needs it. The app owns the flow. */
   reconnect: boolean;
+  /** Where "Connect again" goes. A mailbox names its address (`login_hint`). */
+  reconnectHref: string | null;
   disconnect: boolean;
   test: boolean;
   /** For a member row: who manages it, and where. */
   memberNote: string | null;
 }
 
+/**
+ * "Connect again" opens the owning app. For a mailbox the app gets the
+ * address as `login_hint`, so the member sees no account picker (MB-1).
+ */
+export function reconnectHref(row: Connection): string | null {
+  if (row.kind === "mailbox" && row.status === "needs_reconnect") {
+    return `/email?connect=1&login_hint=${encodeURIComponent(row.label)}`;
+  }
+  return row.setup_href;
+}
+
 export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
   const app = APP_LABEL[row.owning_app];
   return {
-    openLabel: row.setup_href ? `Open in ${app}` : null,
+    openLabel: row.setup_href && row.owning_app !== "integrations" ? `Open in ${app}` : null,
     href: row.setup_href,
     reconnect: Boolean(row.setup_href) && row.status === "needs_reconnect",
+    reconnectHref: reconnectHref(row),
     disconnect: canManage && row.can_disconnect,
     test: canManage && row.kind === "mcp" && mcpName(row) !== null,
     memberNote:
@@ -331,4 +345,48 @@ export function disconnectFailure(
   }
   // `key_locked` and every other refusal: the server's own message.
   return { title: err?.message || "The request failed.", href: null };
+}
+
+// ── Labels, test words and the key cards ──────────────────────────────────
+
+/** The row's name. The old Zoho key row says so, so it is not a second Zoho. */
+export function rowLabel(row: Pick<Connection, "id" | "kind" | "provider" | "label">): string {
+  if (row.kind === "api_key" && (row.provider === "zoho-crm" || row.id === "key:zoho-crm")) {
+    return "Zoho CRM (old settings)";
+  }
+  return row.label;
+}
+
+const TEST_TEXT: Record<string, string> = {
+  url_refused: "Metorite cannot reach this address. Use a public https URL.",
+  timeout: "The server did not answer in time.",
+  connect_failed: "Metorite cannot connect to the server.",
+  unauthorized: "The server refused the stored header.",
+  server_error: "The server returned an error.",
+  no_url: "This server has no URL.",
+  stdio_unsupported: "Metorite cannot test a stdio server.",
+};
+
+/** The toast line of an MCP test. A code never reaches the screen. */
+export function testMessage(r: { ok: boolean; error: string | null }): string {
+  if (r.ok) return "The server answered.";
+  return TEST_TEXT[r.error ?? ""] ?? "The test failed.";
+}
+
+/**
+ * Whether the org holds a key for `service`. `rows` is `null` when the read
+ * model answered 404, and then the deployment-wide status stands.
+ */
+export function orgKeyConfigured(
+  rows: readonly Connection[] | null,
+  service: string,
+  fallback: boolean,
+): boolean {
+  if (rows === null) return fallback;
+  return rows.some(
+    (r) =>
+      r.kind === "api_key" &&
+      r.provider === service &&
+      (r.status === "configured" || r.status === "connected"),
+  );
 }

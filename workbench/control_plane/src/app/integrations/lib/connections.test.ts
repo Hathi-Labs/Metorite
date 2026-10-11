@@ -6,6 +6,10 @@ import {
   appPills,
   consoleAccess,
   detailRows,
+  orgKeyConfigured,
+  reconnectHref,
+  rowLabel,
+  testMessage,
   disconnectFailure,
   disconnectCopy,
   errorMessage,
@@ -216,5 +220,46 @@ describe("the views", () => {
   it("builds the link of a view", () => {
     expect(viewHref("connections")).toBe("/integrations");
     expect(viewHref("keys")).toBe("/integrations?view=keys");
+  });
+});
+
+describe("IN-2 visual fixes", () => {
+  it("sends a mailbox to Email with its address as login_hint", () => {
+    const m = row({ kind: "mailbox", owning_app: "email", label: "dana+x@x.test", status: "needs_reconnect" });
+    expect(reconnectHref(m)).toBe("/email?connect=1&login_hint=dana%2Bx%40x.test");
+    expect(panelPlan(m, true).reconnectHref).toBe(reconnectHref(m));
+    expect(reconnectHref(row({ status: "needs_reconnect" }))).toBe("/crm?tab=settings");
+  });
+
+  it("hides Open in Integrations on a row the console owns", () => {
+    expect(panelPlan(row({ owning_app: "integrations", setup_href: "/integrations?view=keys" }), true).openLabel).toBeNull();
+  });
+
+  it("maps every MCP test code to a sentence", () => {
+    expect(testMessage({ ok: true, error: null })).toBe("The server answered.");
+    expect(testMessage({ ok: false, error: "url_refused" })).toBe("Metorite cannot reach this address. Use a public https URL.");
+    expect(testMessage({ ok: false, error: "timeout" })).toBe("The server did not answer in time.");
+    expect(testMessage({ ok: false, error: "connect_failed" })).toBe("Metorite cannot connect to the server.");
+    expect(testMessage({ ok: false, error: "unauthorized" })).toBe("The server refused the stored header.");
+    expect(testMessage({ ok: false, error: "server_error" })).toBe("The server returned an error.");
+    expect(testMessage({ ok: false, error: "no_url" })).toBe("This server has no URL.");
+    expect(testMessage({ ok: false, error: "stdio_unsupported" })).toBe("Metorite cannot test a stdio server.");
+    expect(testMessage({ ok: false, error: "request_failed" })).toBe("The test failed.");
+    expect(testMessage({ ok: false, error: "weird" })).toBe("The test failed.");
+    expect(testMessage({ ok: false, error: null })).toBe("The test failed.");
+  });
+
+  it("labels the old Zoho key row so it is not a second Zoho CRM", () => {
+    const k = row({ id: "key:zoho-crm", kind: "api_key", provider: "zoho-crm", label: "Zoho CRM" });
+    expect(rowLabel(k)).toBe("Zoho CRM (old settings)");
+    expect(rowLabel(row())).toBe("Zoho CRM");
+  });
+
+  it("reads a card status from the org key rows, and falls back only on null", () => {
+    const rows = [row({ id: "key:apollo", kind: "api_key", provider: "apollo", status: "configured" })];
+    expect(orgKeyConfigured(rows, "apollo", false)).toBe(true);
+    expect(orgKeyConfigured(rows, "serpapi", true)).toBe(false);
+    expect(orgKeyConfigured(null, "serpapi", true)).toBe(true);
+    expect(orgKeyConfigured([], "apollo", true)).toBe(false);
   });
 });

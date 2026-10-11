@@ -144,6 +144,12 @@ function IntegrationsPageInner() {
           autoFocus
           onClose={() => setMenu(null)}
           items={[
+            {
+              kind: "item" as const,
+              label: "Mailbox",
+              // Email owns the connect flow (D-EM-1).
+              onSelect: () => window.location.assign("/email?connect=1"),
+            },
             ...(mcpOpen
               ? [{ kind: "item" as const, label: "MCP server", onSelect: () => setAddingMcp(true) }]
               : []),
