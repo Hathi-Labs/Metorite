@@ -31,6 +31,7 @@ other without changing the decision first.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -1114,8 +1115,17 @@ MIRROR_TABLES: frozenset[str] = frozenset({
 #: Columns the mirror upsert never rewrites on the conflict arm. The first
 #: two are the key. ``source`` is provenance, as in :data:`INSERT_ONLY_COLUMNS`.
 MIRROR_INSERT_ONLY: frozenset[str] = frozenset({
-    "ext_source", "ext_id", "source",
+    "ext_source", "ext_id", "source", "zoho_id",
 })
+
+#: Column names the mirror upsert refuses. ``id`` and ``created_at`` belong to
+#: the row, ``organization_id`` to the bound session, and ``zoho_dirty`` to the
+#: native write path.
+MIRROR_REFUSED: frozenset[str] = frozenset({
+    "id", "organization_id", "zoho_dirty", "created_at",
+})
+
+_COLUMN_NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any:
@@ -1134,6 +1144,16 @@ async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any
 
     Like :func:`upsert_by_zoho_id`, it leaves ``updated_at`` alone on the
     conflict arm, so last-writer-wins keeps comparing against ``ext_modified_at``.
+    The conflict arm overwrites every passed column: deciding WHETHER the source
+    is newer than a native edit is the caller's job, before it calls.
+
+    ⚠️ A Zoho row also gets ``zoho_id = ext_id`` (CRM-Z3 review, P1). The old
+    sync pushes an activity whose ``zoho_id`` is NULL as a NEW Zoho record, and
+    the old importer keys on ``zoho_id``. Without it, a mirrored activity went
+    back to Zoho as a duplicate, and the importer made a second native row.
+
+    Column names come from the caller's dict, so each one must be a plain
+    identifier and none may be in :data:`MIRROR_REFUSED`.
     """
     if table not in MIRROR_TABLES:
         raise ValueError(
@@ -1143,9 +1163,15 @@ async def upsert_from_source(db: Any, table: str, values: dict[str, Any]) -> Any
     for required in ("ext_source", "ext_id"):
         if not values.get(required):
             raise ValueError(f"upsert_from_source: {required!r} is required")
-    for banned in ("zoho_dirty", "organization_id"):
-        if banned in values:
-            raise ValueError(f"upsert_from_source: {banned!r} must not be passed")
+    for column in values:
+        if column in MIRROR_REFUSED:
+            raise ValueError(f"upsert_from_source: {column!r} must not be passed")
+        if not _COLUMN_NAME.match(column):
+            raise ValueError(f"upsert_from_source: {column!r} is not a column name")
+    if values["ext_source"] == "zoho":
+        if values.get("zoho_id") not in (None, values["ext_id"]):
+            raise ValueError("upsert_from_source: zoho_id must equal ext_id for Zoho")
+        values = {**values, "zoho_id": values["ext_id"]}
     columns = list(values)
     placeholders = ", ".join(_placeholder(c) for c in columns)
     assignments = ", ".join(

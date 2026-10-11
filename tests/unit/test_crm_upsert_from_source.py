@@ -165,10 +165,43 @@ def test_a_table_outside_the_five_is_refused(eng, two_orgs):
         _upsert(eng, a, "crm_lost_reasons", {"ext_source": "zoho", "ext_id": "1"})
 
 
+def test_a_zoho_row_carries_zoho_id_equal_to_ext_id(eng, two_orgs):
+    """CRM-Z3 review P1: the old sync pushes a row with a NULL ``zoho_id`` as a
+    NEW Zoho record, and the old importer keys on ``zoho_id``."""
+    a, _ = two_orgs
+    row = _upsert(eng, a, "crm_contacts", {
+        "ext_source": "zoho", "ext_id": "77", "first_name": "Z", "last_name": "Id"})
+    assert row["zoho_id"] == "77"
+
+
+def test_the_zoho_id_is_written_for_an_activity() -> None:
+    seen: list[tuple[str, dict]] = []
+
+    class _Capture:
+        async def execute(self, statement, params):
+            seen.append((str(statement), dict(params)))
+
+            class _R:
+                def fetchone(self):
+                    return None
+            return _R()
+
+    run(crm_core.upsert_from_source(_Capture(), "crm_activities", {
+        "ext_source": "zoho", "ext_id": "N-1", "type": "note"}))
+    sql, params = seen[0]
+    assert "zoho_id" in sql.split("VALUES")[0]
+    assert params["zoho_id"] == "N-1"
+
+
 @pytest.mark.parametrize("bad", [
     {"ext_id": "1"}, {"ext_source": "zoho"},
     {"ext_source": "zoho", "ext_id": "1", "zoho_dirty": True},
     {"ext_source": "zoho", "ext_id": "1", "organization_id": "x"},
+    {"ext_source": "zoho", "ext_id": "1", "id": "x"},
+    {"ext_source": "zoho", "ext_id": "1", "created_at": "x"},
+    {"ext_source": "zoho", "ext_id": "1", "name) VALUES (1); --": "x"},
+    {"ext_source": "zoho", "ext_id": "1", "Name": "x"},
+    {"ext_source": "zoho", "ext_id": "1", "zoho_id": "2"},
 ])
 def test_bad_values_are_refused_before_any_sql(bad) -> None:
     class _Boom:
