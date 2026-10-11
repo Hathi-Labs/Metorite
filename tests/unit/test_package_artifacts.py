@@ -135,12 +135,22 @@ def test_the_caps_fit_the_download_route() -> None:
     assert pa.MAX_TOTAL_BYTES <= workspace._MAX_FILE_BYTES
 
 
-def test_the_gateway_serves_a_zip_as_application_zip() -> None:
-    import mimetypes
+@pytest.mark.parametrize("module", ["gateway.routes.workspace", "acb_skills.package_artifacts"])
+def test_each_side_names_a_zip_application_zip_by_itself(module: str) -> None:
+    """The route's download type and the card's type, each in a fresh process.
 
-    from gateway.routes import workspace  # noqa: F401 — its import fixes the type
+    A Windows registry maps .zip to application/x-zip-compressed, so each
+    module fixes the type on import, and neither leans on the other.
+    """
+    import subprocess
+    import sys
 
-    assert mimetypes.guess_type("files.zip")[0] == "application/zip"
+    code = f"import mimetypes, {module}; print(mimetypes.guess_type('files.zip')[0])"
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        encoding="utf-8", timeout=120, check=True,
+    )
+    assert out.stdout.strip().splitlines()[-1] == "application/zip", out.stderr[-500:]
 
 
 def test_publish_never_replaces_a_file_and_leaves_no_temp(tmp_path: Path) -> None:
