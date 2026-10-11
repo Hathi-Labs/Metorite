@@ -1034,9 +1034,11 @@ row does not exist.
 
 **Why.** On 2026-10-12 the owner reported three things. Pipeline settings did
 not open. "Pipeline" read as a third object beside Leads and Deals. The CRM
-did not have the views and settings that a Zoho mirror needs. The owner then
-asked for comprehensive research. They also asked for a mirror that adapts to
-each customer's Zoho tier, with AI help where the mapping is not clear.
+did not have the views and settings that a Zoho mirror needs.
+
+The owner then asked for comprehensive research. They also asked for a mirror
+that adapts to each customer's Zoho tier, with AI help where the mapping is not
+clear.
 
 ### 18.1 What the research found
 
