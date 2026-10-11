@@ -463,9 +463,10 @@ export function DrawerAccountHeader({ onClose }: { onClose: () => void }) {
         >
           <span className="min-w-0 flex-1">
             <BrandMark branding={branding} fallbackCaption="Home" orgName={orgName} maxWidth={180} />
-            {/* Under the organization's name. Our square mark puts the name
+            {/* Under the organization's name. Our square comet puts the name
                 beside it, so the address takes the same indent. A customer's
-                wordmark stacks, so the address stays at its left edge. */}
+                logo stands alone with no name beside it, so the address
+                stays at its left edge. */}
             {email && (
               <span className={`mt-1 block truncate text-xs text-muted-foreground ${branding?.logo ? "" : "pl-[38px]"}`}>
                 {email}

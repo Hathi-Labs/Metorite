@@ -21,7 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { BrandMark } from "@/components/OrgBrandLockup";
+import { BAR_LOCKUP, BrandMark } from "@/components/OrgBrandLockup";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Modal from "@/components/ui/Modal";
@@ -377,17 +377,18 @@ export default function LogoEditor({
           {ownError ? <p className="text-xs text-destructive">{ownError}</p> : null}
         </section>
 
-        {/* The sidebar's top-left, in both modes, from the shell's own mark. */}
+        {/* The shell bar's top-left, in both modes, from the shell's own mark
+            and its own size (`BAR_LOCKUP`). */}
         <section aria-label="Preview" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {(["light", "dark"] as const).map((mode) => (
             <div key={mode} className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">{mode === "light" ? "Light mode" : "Dark mode"}</span>
               <div
                 data-testid={`logo-preview-${mode}`}
-                className="flex h-16 w-[184px] items-center rounded-lg border px-4"
+                className="flex h-16 w-[204px] items-center rounded-lg border px-3"
                 style={modeVars(mode)}
               >
-                {preview ? <BrandMark branding={preview} fallbackCaption="" mode={mode} maxWidth={152} /> : null}
+                {preview ? <BrandMark branding={preview} fallbackCaption="" mode={mode} {...BAR_LOCKUP} /> : null}
               </div>
             </div>
           ))}

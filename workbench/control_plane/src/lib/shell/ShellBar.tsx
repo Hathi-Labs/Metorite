@@ -4,7 +4,7 @@
  * The shell bar: one row across the top of every desktop page
  * (`navigation_shell.md` §3.1, NS-1, flag `NEXT_PUBLIC_SHELL_BAR`).
  *
- *   [ fold · logo ]          [ ✦ Search or ask anything  in <App>  ⌘K ]          [ bell · activity ]
+ *   [ fold · logo ]          [ ✦ Search or ask anything  in <App>  ⌘K ]          [ bell · activity | ☄ ]
  *
  * With the shell nav on too, the bar spans the whole window and opens with a
  * `lead` zone that AppShell fills: the sidebar's fold control and the
@@ -42,6 +42,12 @@
  * `NEXT_PUBLIC_SHELL_DOCK` is on. The owner placed both here on 2026-10-10:
  * "They belong to the whole product, not to an app." An app's own bell or
  * tools never move into this bar.
+ *
+ * **Our comet signs the bar's right end** (owner, 2026-10-11), after a thin
+ * divider, as the last item (`BarSignature`). It is not a control. It shows
+ * only while the left end holds the customer's logo: a workspace with no logo
+ * already shows our comet there (`ourMarkLeads` in `lib/orgBranding.ts`).
+ * Fences: `shellSignature.test.ts` and `e2e/shell-signature.spec.ts`.
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -49,6 +55,9 @@ import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
+import { MetoriteMark } from "@/components/MetoriteMark";
+import { useOrgBranding } from "@/components/OrgBrandLockup";
+import { ourMarkLeads } from "@/lib/orgBranding";
 import { visibleSections } from "@/lib/nav";
 import { ActivityControl } from "./ActivityControl";
 import { CommandBar } from "./CommandBar";
@@ -133,6 +142,9 @@ export function ShellFrame({
   // NS-6: the one bell, with its flag on. Read once, as the sidebar reads
   // the bar's flag, because the dev override lives in `localStorage`.
   const [dockOn] = useState(() => shellDockOn());
+  // Our comet at the right end, unless the left end already draws it.
+  const branding = useOrgBranding();
+  const signed = !ourMarkLeads(branding);
 
   return (
     <>
@@ -144,6 +156,7 @@ export function ShellFrame({
           lead={lead}
           bell={dockOn ? <ShellBell /> : null}
           activity={<ActivityControl />}
+          signature={signed ? <BarSignature /> : null}
         />
       ) : null}
       {children}
@@ -183,6 +196,7 @@ export function ShellBarRow({
   lead,
   bell,
   activity,
+  signature,
 }: {
   /** The command bar's scope chip, "in <App>". Its only use of the app. */
   here: { label: string; icon: string } | null;
@@ -192,6 +206,8 @@ export function ShellBarRow({
   bell?: ReactNode;
   /** The shell's own control at the right end. */
   activity?: ReactNode;
+  /** Our comet, the last item of the row (`BarSignature`). */
+  signature?: ReactNode;
 }) {
   const shortcut = useShortcutLabel();
   return (
@@ -231,7 +247,34 @@ export function ShellBarRow({
       <div className="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1">
         {bell}
         {activity}
+        {signature}
       </div>
     </header>
+  );
+}
+
+/**
+ * Our comet at the bar's right end (owner, 2026-10-11). A signature, not a
+ * control: no button, no link, no focus stop and no hover fill. A thin
+ * divider in the bar's own border token parts it from the controls before it.
+ * The name is the image's, plus a native `title` for a pointer.
+ *
+ * ⚠️ **From `xl` (1280px) up only.** The comet and its divider take about
+ * 41px. With the bell on, they pushed the bell over the command bar below
+ * 1060px at default density and below 1180px at comfortable density
+ * (measured 2026-10-11). A media query reads the browser's 16px rem and not
+ * the member's `--ui-scale`, so the step must clear the widest density. At
+ * 1280px the gap is 113px at default and 54px at comfortable. Fence:
+ * `e2e/shell-signature.spec.ts` "the comet never crowds the bell".
+ */
+export function BarSignature() {
+  return (
+    <span
+      data-shell-signature=""
+      title="Metorite"
+      className="ml-2 hidden h-6 shrink-0 select-none items-center border-l border-border pl-3 xl:flex"
+    >
+      <MetoriteMark size={20} label="Metorite" />
+    </span>
   );
 }

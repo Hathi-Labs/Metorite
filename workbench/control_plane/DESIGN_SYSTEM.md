@@ -146,7 +146,7 @@ Three rules:
   label it colours; §7's rule is not waived here, it is the reason the ramp is
   allowed to have eight slots at all.
 
-### The three exceptions, and why they are exceptions
+### The four exceptions, and why they are exceptions
 
 A literal is right only when the value is **not a theme decision**:
 
@@ -158,6 +158,10 @@ A literal is right only when the value is **not a theme decision**:
    Facebook" button is Meta's, not ours.
 3. **Identity** — a per-person avatar hue derived from their email must be
    *stable*; deriving it from the theme defeats the thing it is for.
+4. **Our brand mark.** The Metorite comet keeps its own gradient in every mode
+   and under every accent (owner, 2026-10-11). A comet that an accent turns
+   pink is no longer the mark. `components/MetoriteMark.tsx` holds the stops,
+   copied from `brand/`, and `app/icon.svg` is the tab icon.
 
 "It would be a lot of work to migrate" is not on this list — that is debt, and
 it belongs in the conformance test's baseline where it stays visible.
@@ -440,14 +444,18 @@ Naming both, because a third appears whenever the set is left implicit.
 > tools.**
 
 - The shell bar holds only shell things: the fold control, the logo, the
-  command bar and the activity control. It draws the same pixels on every
-  page. The command bar's "in <App>" chip is the command bar's own scope, so
+  command bar, the activity control and our signature. It draws the same
+  pixels on every page. The command bar's "in <App>" chip is the command bar's own scope, so
   it stays.
 - **The shell's one bell sits before the activity control** (owner,
   2026-10-10: "They belong to the whole product, not to an app"). It shows
   only while `NEXT_PUBLIC_SHELL_DOCK` is on (NS-6 slice 6a). From slice 6b,
   the one assistant toggle joins it, behind the same flag. An app's own bell
   or tool never goes in the shell bar.
+- **Our comet signs the right end, last, after a thin divider** (owner,
+  2026-10-11, `BarSignature`). It is not a control. It shows from `xl` up,
+  and it hides when the org has no logo, because the logo slot then shows the
+  comet. Do not remove it.
 - The app bar sits under the shell bar, at the top of the app's content. It
   spans the whole app, over the app's own rail too.
 - An app's rail toggle lives in its bar, never in the rail. The Email app's
