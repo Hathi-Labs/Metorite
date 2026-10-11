@@ -8,8 +8,8 @@
  * parent already refuses a non-admin before this renders.
  *
  * Today that is one thing: the logo that replaces our mark in the top-left of
- * every member's shell, alone since 2026-10-11 (our name moved to the foot of
- * the sidebar, owner decision). The page is
+ * every member's shell, alone since 2026-10-11 (our comet signs the right end
+ * of the shell bar instead, owner decision). The page is
  * scoped to the org, so it is admin-gated — one member changing what the whole
  * company sees is exactly the kind of write that has an admin gate on it.
  *

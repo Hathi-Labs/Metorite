@@ -258,13 +258,21 @@ export function ShellBarRow({
  * control: no button, no link, no focus stop and no hover fill. A thin
  * divider in the bar's own border token parts it from the controls before it.
  * The name is the image's, plus a native `title` for a pointer.
+ *
+ * ⚠️ **From `xl` (1280px) up only.** The comet and its divider take about
+ * 41px. With the bell on, they pushed the bell over the command bar below
+ * 1060px at default density and below 1180px at comfortable density
+ * (measured 2026-10-11). A media query reads the browser's 16px rem and not
+ * the member's `--ui-scale`, so the step must clear the widest density. At
+ * 1280px the gap is 113px at default and 54px at comfortable. Fence:
+ * `e2e/shell-signature.spec.ts` "the comet never crowds the bell".
  */
 export function BarSignature() {
   return (
     <span
       data-shell-signature=""
       title="Metorite"
-      className="ml-2 flex h-6 shrink-0 select-none items-center border-l border-border pl-3"
+      className="ml-2 hidden h-6 shrink-0 select-none items-center border-l border-border pl-3 xl:flex"
     >
       <MetoriteMark size={20} label="Metorite" />
     </span>

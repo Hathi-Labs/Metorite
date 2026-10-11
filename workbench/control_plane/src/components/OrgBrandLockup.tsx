@@ -79,13 +79,16 @@ export function useOrgBranding(): OrgBranding | null {
     // carries the fallback, so seeding initial state from storage would be a
     // hydration mismatch — React would discard the client tree and warn. One
     // frame after hydration is the correct place for a client-only value.
-    if (cached === null) {
-      const stored = readCachedBranding(storage());
-      if (stored) {
-        cached = stored;
-        setBranding(stored);
-      }
-    }
+    //
+    // ⚠️ EVERY instance seeds itself here, not only the first. Effects run
+    // child first, so the first instance to run fills `cached` and an
+    // ancestor's instance then found it full and skipped. `ShellFrame`'s is
+    // an ancestor, so the bar's right-end comet waited on the network, 2.9 s
+    // late for a member with a cached logo (review, 2026-10-11). Storage is
+    // read again only while it holds nothing. The fetch below stays one.
+    // Fence: `e2e/shell-signature.spec.ts` "a cached logo signs the bar".
+    if (cached === null) cached = readCachedBranding(storage());
+    if (cached) setBranding(cached);
 
     // Revalidate regardless of a cache hit — stale-while-revalidate. A logo
     // changed on another device, or removed by another admin, has to land here

@@ -221,10 +221,14 @@ sees whose workspace this is at all times (D51).
   item, after the activity control and a thin divider, at 20px.
 - The comet is not a control. It has no link, no button and no focus stop.
   `BarSignature` in `src/lib/shell/ShellBar.tsx` draws it.
+- It shows from the `xl` width (1280px) up. Below that, with the bell on,
+  it pushed the bell over the command bar (measured 2026-10-11).
 - With no logo, the left end already shows our comet. Then the right end
   shows none, so the bar shows one comet only (`ourMarkLeads`).
 - The phone has no shell row, so it shows no signature. The sidebar and the
-  phone drawer show no comet.
+  phone drawer show no signature either.
+- A phone drawer with no logo shows our comet as its workspace badge, in the
+  drawer's head. That is the owner's no-logo badge decision of 2026-10-11.
 - Fences: `shellSignature.test.ts`, `metoriteMark.test.ts`,
   `orgBrandLockup.mode.test.ts` and `e2e/shell-signature.spec.ts`.
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not

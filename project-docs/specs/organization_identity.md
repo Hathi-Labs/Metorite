@@ -39,9 +39,10 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
   our four. They do not get a custom palette, a custom font, or CSS. The
   theming engine is one product themed centrally (owner directive 2026-08-10);
   a per-tenant palette is the exact thing that directive forbids.
-- **Not white-labelling.** "Powered by Metorite" is not removable. If a
-  reseller SKU is ever sold, that is a commercial decision (a D-number), not a
-  settings toggle.
+- **Not white-labelling.** Our comet at the right end of the shell bar is not
+  removable (owner, 2026-10-11). It replaced the "Powered by Metorite" caption.
+  If a reseller SKU is ever sold, that is a commercial decision (a D-number),
+  not a settings toggle.
 - **Not vector art.** SVG is refused — see §3.
 - **Not per-Center or per-user branding.** One mark per organization.
 

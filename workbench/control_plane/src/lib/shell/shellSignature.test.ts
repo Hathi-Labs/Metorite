@@ -70,6 +70,12 @@ describe("the comet is a signature, not a control", () => {
   it("is parted from the controls by a divider in the bar's border token", () => {
     expect(sig).toMatch(/class="[^"]*\bborder-l border-border\b[^"]*"/);
   });
+
+  it("shows from xl up only, where it cannot push the bell over the command bar", () => {
+    const cls = (/data-shell-signature="" title="Metorite" class="([^"]*)"/.exec(sig)?.[1] ?? "").split(" ");
+    expect(cls).toEqual(expect.arrayContaining(["hidden", "xl:flex"]));
+    expect(cls).not.toContain("flex");
+  });
 });
 
 describe("one comet in one place", () => {

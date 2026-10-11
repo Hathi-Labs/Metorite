@@ -13,7 +13,12 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *      none. The bar shows one comet, not two.
  *   3. The sidebar, open or folded, and the phone drawer draw no comet.
  *   4. The phone has no shell row (`ShellFrame bar={false}`), so it shows no
- *      signature at 390px or at 360px.
+ *      signature at 390px or at 360px. With no logo, the drawer's head shows
+ *      our comet as the workspace badge, and still no signature.
+ *   5. With the bell on, the comet never pushes the bell over the command
+ *      bar. It hides below `xl` (1280px) and shows from there up.
+ *   6. A member with a cached logo sees the right-end comet before the
+ *      branding call answers, not after it.
  * The markup rules are `src/lib/shell/shellSignature.test.ts`.
  */
 
@@ -137,6 +142,48 @@ test.describe("desktop", () => {
   }
 });
 
+test.describe("desktop, with the bell on", () => {
+  for (const [width, shown] of [[1024, false], [1100, false], [1280, true]] as const) {
+    test(`the comet never crowds the bell at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await flags(page, true, { "cc-shell-dock": "1" });
+      await stub(page, WITH_LOGO);
+      await page.goto("/settings/appearance");
+      await expect(bar(page).locator("[data-shell-brand] img").first()).toBeAttached();
+      const group = bar(page).locator(":scope > div").last();
+      const bell = group.locator(":scope > *").first();
+      await expect(bell).toBeVisible();
+      // The bell, not the activity control, is the first of the group.
+      await expect(group.locator(":scope > *")).toHaveCount(3);
+      if (shown) await expect(signature(page)).toBeVisible();
+      else await expect(signature(page)).toBeHidden();
+      const cmd = await box(bar(page).getByRole("button", { name: /^Search or ask anything/ }));
+      const b = await box(bell);
+      expect(b.x, `the bell at ${b.x} vs the command bar's end at ${cmd.x + cmd.width}`).toBeGreaterThan(cmd.x + cmd.width);
+    });
+  }
+});
+
+test.describe("first paint", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("a cached logo signs the bar before the branding call answers", async ({ page }) => {
+    await flags(page);
+    await page.addInitScript((b) => localStorage.setItem("cc-org-branding-v1", JSON.stringify(b)), WITH_LOGO);
+    await stub(page, WITH_LOGO);
+    let answered = false;
+    // Registered last, so it wins over the stub's branding route.
+    await page.route("**/api/settings/branding", async (r) => {
+      await new Promise((res) => setTimeout(res, 3_000));
+      answered = true;
+      await r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(WITH_LOGO) });
+    });
+    await page.goto("/settings/appearance");
+    await expect(signature(page)).toBeVisible({ timeout: 2_000 });
+    expect(answered, "the comet waited on the network").toBe(false);
+  });
+});
+
 for (const width of [390, 360]) {
   test.describe(`phone at ${width}px`, () => {
     test.use({ viewport: { width, height: 800 }, hasTouch: true, isMobile: true });
@@ -149,6 +196,18 @@ for (const width of [390, 360]) {
       await page.getByRole("button", { name: "Menu" }).click();
       await expect(page.getByRole("region", { name: "Account and settings" })).toBeAttached();
       await expect(page.locator("[data-metorite-mark], [data-metorite-signature], [data-shell-signature]")).toHaveCount(0);
+    });
+
+    test("with no logo, the drawer's head shows our comet as the badge, and no signature", async ({ page }) => {
+      await flags(page);
+      await stub(page, NO_LOGO);
+      await page.goto("/settings/appearance");
+      await page.getByRole("button", { name: "Menu" }).click();
+      const head = page.getByTestId("drawer-org");
+      await expect(head.locator("[data-our-mark] svg[data-metorite-mark]")).toBeVisible();
+      await expect(head).toContainText("Acme");
+      await expect(page.locator("[data-metorite-mark]")).toHaveCount(1);
+      await expect(page.locator("[data-shell-signature], [data-metorite-signature]")).toHaveCount(0);
     });
   });
 }
