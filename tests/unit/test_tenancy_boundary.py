@@ -1,6 +1,6 @@
 """The tenant boundary, as a ratchet (WS-29).
 
-⚠️ **113 of Metorite's 147 tables still carry no tenant key.** That is not
+⚠️ **113 of Metorite's 148 tables still carry no tenant key.** That is not
 a bug list — it is the honest state of a system built for one organisation. The
 bug would be adding the 147th.
 
@@ -124,6 +124,7 @@ EXPECTED_SCOPED = {
     # tenant key, FORCE row level security and per-tenant unique keys.
     "crm_activities", "crm_auto_lead_cursors", "crm_companies",
     "crm_contacts", "crm_deal_contacts", "crm_deal_statuses", "crm_deals",
+    "crm_field_defs",
     "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
     "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
     # WS-53 CRM-T5 (2026-10-11): migration 243, one settings row for each
