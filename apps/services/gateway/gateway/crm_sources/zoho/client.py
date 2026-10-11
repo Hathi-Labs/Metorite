@@ -40,8 +40,9 @@ from gateway.crm_sources.base import (
     SourceError,
     SourcePage,
     SourceRecord,
+    UntrustedHost,
 )
-from gateway.crm_sources.zoho import auth
+from gateway.crm_sources.zoho import auth, links
 
 _log = structlog.get_logger("gateway.crm_sources.zoho")
 
@@ -125,6 +126,19 @@ PIPELINE_SCOPE = "ZohoCRM.settings.pipeline.READ"
 #: The scope of the field definitions read.
 FIELDS_SCOPE = "ZohoCRM.settings.fields.READ"
 
+#: The scopes of the discovery reads (CRM-Q1). ``GET org`` and ``GET
+#: settings/modules`` need one each.
+ORG_SCOPE = "ZohoCRM.org.READ"
+MODULES_SCOPE = "ZohoCRM.settings.modules.READ"
+
+#: The ``provider_meta`` key that holds the org domain name (``GET org``).
+META_DOMAIN_NAME = "domain_name"
+
+#: The modules whose layouts and fields discovery reads. These are the modules
+#: the mirror models, so the profile says what the customer has changed in
+#: them. Notes, Calls and Events keep a fixed shape.
+DISCOVERED_MODULES: tuple[str, ...] = ("Leads", "Contacts", "Accounts", "Deals")
+
 #: Zoho's own error codes. A scope refusal and a version refusal arrive as the
 #: same 401/404 shape as any other failure, and telling them apart is the whole
 #: of done-when 3 — "the token cannot see this" and "this tenant has no such
@@ -150,6 +164,16 @@ class ZohoApiVersionError(SourceError):
         self.version = version
         self.path = path
         self.detail = detail
+
+
+#: A failure that must stop a discovery. Any other :class:`SourceError` costs
+#: one section of the profile, and the rest goes on.
+_DISCOVERY_FATAL = (NeedsReconnect, BudgetExhausted, RateLimited, UntrustedHost)
+
+
+def _dict_rows(value: object) -> list[dict[str, Any]]:
+    """The dict items of a JSON list, or an empty list for anything else."""
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
 def _error_body(response: httpx.Response) -> dict[str, Any]:
@@ -833,12 +857,109 @@ class ZohoSource:
         count = _error_body(r).get("count")
         return count if isinstance(count, int) and count >= 0 else None
 
-    # ── 7 and 8. The deep link waits for CRM-Z6 ─────────────────────────────
+    # ── 3b. Discovery (CRM-Q1) ──────────────────────────────────────────────
+
+    async def discover(self) -> dict[str, Any]:  # noqa: C901 - one linear read of five sections
+        """Read the shape of the customer's Zoho. METADATA ONLY, never a record.
+
+        Each read goes through :meth:`_get`, so each one is counted. They are
+        ``GET org`` (1), ``GET settings/modules`` (1), ``GET settings/layouts``
+        and ``GET settings/fields`` for each of :data:`DISCOVERED_MODULES` (8),
+        and ``GET settings/pipeline`` for each Deals layout. About 11 credits.
+
+        The answer is raw: ``org`` (a dict or ``None``), ``modules``,
+        ``layouts`` and ``fields`` (each keyed by module), ``pipelines`` (each
+        row gains ``layout_id``), and ``failed``, the sections that could not be
+        read. A section that fails for a reason that is not fatal is listed in
+        ``failed`` and the rest goes on. A dead token, a spent budget, a
+        throttle or an untrusted host stops the whole read, because the next
+        call would fail the same way.
+        """
+        out: dict[str, Any] = {
+            "org": None, "modules": [], "layouts": {}, "fields": {},
+            "pipelines": [], "failed": [],
+        }
+        deal_layouts: list[dict[str, Any]] = []
+
+        async def section(name: str, read: Callable[[], Awaitable[None]]) -> None:
+            try:
+                await read()
+            except _DISCOVERY_FATAL:
+                raise
+            except SourceError as exc:
+                _log.warning(
+                    "crm_sources.zoho.discovery_section_failed",
+                    section=name, error=type(exc).__name__,
+                )
+                if name not in out["failed"]:
+                    out["failed"].append(name)
+
+        async def read_org() -> None:
+            body = await self._settings_json("org", {}, scope=ORG_SCOPE)
+            rows = body.get("org")
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                out["org"] = rows[0]
+
+        async def read_modules() -> None:
+            body = await self._settings_json("settings/modules", {}, scope=MODULES_SCOPE)
+            out["modules"] = _dict_rows(body.get("modules"))
+
+        def reader(kind: str, module: str) -> Callable[[], Awaitable[None]]:
+            scope = LAYOUTS_SCOPE if kind == "layouts" else FIELDS_SCOPE
+
+            async def read() -> None:
+                body = await self._settings_json(
+                    f"settings/{kind}", {"module": module}, scope=scope,
+                )
+                found = _dict_rows(body.get(kind))
+                out[kind][module] = found
+                if kind == "layouts" and module == "Deals":
+                    deal_layouts.extend(found)
+
+            return read
+
+        async def read_pipelines() -> None:
+            for layout in deal_layouts:
+                layout_id = str(layout.get("id") or "")
+                if not layout_id:
+                    continue
+                for pipeline in await self.list_deal_pipelines(layout_id):
+                    if isinstance(pipeline, dict):
+                        out["pipelines"].append({**pipeline, "layout_id": layout_id})
+
+        await section("org", read_org)
+        await section("modules", read_modules)
+        for module in DISCOVERED_MODULES:
+            await section("layouts", reader("layouts", module))
+            await section("fields", reader("fields", module))
+        if "Deals" in out["layouts"]:
+            await section("pipelines", read_pipelines)
+        else:
+            # No Deals layout was read, so "no pipelines" would be a guess.
+            out["failed"].append("pipelines")
+        return out
+
+    # ── 7 and 8. The deep link and the credits ──────────────────────────────
 
     def deep_link(self, entity: str, ext_id: str) -> str:
-        raise NotImplementedError(
-            "The Zoho deep link waits for CRM-Z0, which confirms its shape for each data centre"
+        """The link to one record, from the credential's ``domain_name``.
+
+        The sync stores ``domain_name`` in ``provider_meta`` after it reads
+        ``GET org``. With none stored, or an entity with no tab, this raises
+        :class:`SourceError`. The record wire builds its link with
+        :func:`gateway.crm_sources.zoho.links.deep_link`, which returns ``None``
+        in that case.
+        """
+        meta = self._connected().provider_meta
+        url = links.deep_link(
+            meta.get(auth.META_ACCOUNTS_SERVER),
+            meta.get(META_DOMAIN_NAME),
+            entity,
+            ext_id,
         )
+        if url is None:
+            raise SourceError("No deep link for this record: the org domain is not known yet")
+        return url
 
     async def credits_remaining(self) -> int | None:
         """The credits Zoho has left, from the last ``X-API-CREDITS-REMAINING``.
@@ -852,9 +973,13 @@ class ZohoSource:
 
 __all__ = [
     "DELETED_CALL_COST",
+    "DISCOVERED_MODULES",
     "FIELDS_SCOPE",
     "LAYOUTS_SCOPE",
     "MAX_TRIES",
+    "META_DOMAIN_NAME",
+    "MODULES_SCOPE",
+    "ORG_SCOPE",
     "PER_PAGE",
     "PIPELINE_SCOPE",
     "RECORDS_API_VERSION",

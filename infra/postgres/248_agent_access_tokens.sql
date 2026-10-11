@@ -1,4 +1,4 @@
--- 247_agent_access_tokens.sql — the token store for outside agents (WS-55 EA-1).
+-- 248_agent_access_tokens.sql — the token store for outside agents (WS-55 EA-1).
 --
 -- What: three tables.
 --   agent_connection  one row for each outside agent client that one member

@@ -43,10 +43,12 @@ from gateway.routes.crm.core import (
     _tenant_session,
     actor,
     assert_writable,
+    attach_ext_urls,
     clean_payload,
     compute_lead_name,
     count_where,
     current_tenant,
+    default_pipeline_id,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -54,6 +56,7 @@ from gateway.routes.crm.core import (
     load_default_status,
     now,
     record_zoho_tombstone,
+    related_filters,
     require_row,
     router,
     row_to_dict,
@@ -91,6 +94,9 @@ class ListParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
+        company_id: str | None = None,
+        contact_id: str | None = None,
     ) -> None:
         self.q = q
         self.sort = sort
@@ -101,6 +107,10 @@ class ListParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        #: Deals only (WS-53 CRM-Q2). With none, a list behaves as it always did.
+        self.pipeline_id = pipeline_id
+        self.company_id = company_id
+        self.contact_id = contact_id
 
 
 class DeleteResponse(BaseModel):
@@ -125,12 +135,18 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
         # invisibly forever if that deal were deleted (the FK SET-NULLs the
         # link; the timestamp survives as history).
         extra = ("converted_deal_id IS NULL",)
+    extra_params: dict[str, Any] = {}
+    related_where, related_params = related_filters(
+        entity, company_id=params.company_id, contact_id=params.contact_id,
+    )
+    extra = (*extra, *related_where)
+    extra_params.update(related_params)
     query = list_contract(
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
         page=params.page, page_size=params.page_size,
         status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
+        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=extra_params,
     )
     async with _tenant_session() as db:
         return await run_list(db, entity, query)
@@ -139,7 +155,49 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
 async def _get(entity: Entity, record_id: str) -> dict:
     async with _tenant_session() as db:
         row = await require_row(db, entity.table, record_id, entity.label)
-        return row_to_dict(row, entity.model)
+        wired = row_to_dict(row, entity.model)
+        await attach_ext_urls(db, entity.table, [wired])
+        return wired
+
+
+async def _resolve_pipeline(db: Any, entity: Entity, values: dict[str, Any]) -> None:
+    """A deal names an existing pipeline, or joins the default one (CRM-Q2).
+
+    A stated ``pipeline_id`` must be a pipeline of this organization, else 404.
+    With none stated on a create, the deal joins the default pipeline when the
+    organization has one. An organization with no pipeline leaves it ``None``.
+    """
+    if entity is not DEALS:
+        return
+    stated = values.get("pipeline_id")
+    if stated:
+        await require_row(db, "crm_pipelines", str(stated), "Pipeline")
+    elif "pipeline_id" not in values:
+        found = await default_pipeline_id(db)
+        if found:
+            values["pipeline_id"] = found
+
+
+async def _check_stage_in_pipeline(
+    db: Any, pipeline_id: Any, status_id: Any,
+) -> None:
+    """422 ``stage_not_in_pipeline`` when a pipeline lists stages and the deal's
+    stage is not one of them. A pipeline with no listed stage allows any."""
+    if not pipeline_id or not status_id:
+        return
+    row = (await db.execute(
+        text(
+            "SELECT count(*) AS total, "
+            "count(*) FILTER (WHERE status_id = CAST(:s AS uuid)) AS hit "
+            "FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid)"
+        ),
+        {"p": str(pipeline_id), "s": str(status_id)},
+    )).first()
+    if row is not None and int(row.total or 0) and not int(row.hit or 0):
+        raise HTTPException(status_code=422, detail={
+            "code": "stage_not_in_pipeline",
+            "message": "This stage is not in the deal's pipeline.",
+        })
 
 
 async def _resolve_status(
@@ -232,6 +290,10 @@ async def create_record(
         await assert_writable(
             db, current_tenant(), entity, values, creating=True,
         )
+        chosen_stage = values.get("status_id")
+        await _resolve_pipeline(db, entity, values)
+        if entity is DEALS and chosen_stage:
+            await _check_stage_in_pipeline(db, values.get("pipeline_id"), chosen_stage)
         await _resolve_status(db, entity, values)
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
@@ -254,6 +316,20 @@ async def patch_record(
         await assert_writable(
             db, current_tenant(), entity, values, row=record,
         )
+        if values.get("pipeline_id"):
+            await _resolve_pipeline(db, entity, values)
+        # Only a CHANGE is checked: a new stage, or a new pipeline. A deal that
+        # keeps its stage is never refused for it.
+        stage_changes = (
+            values.get("status_id") is not None
+            and str(values["status_id"]) != str(getattr(record, "status_id", "") or "")
+        )
+        if entity is DEALS and ("pipeline_id" in values or stage_changes):
+            await _check_stage_in_pipeline(
+                db,
+                values.get("pipeline_id", getattr(record, "pipeline_id", None)),
+                values.get("status_id", getattr(record, "status_id", None)),
+            )
         wanted = values.get("status_id")
         if wanted and str(getattr(record, "status_id", "") or "") != str(wanted):
             values.update(await apply_status_transition(

@@ -220,6 +220,8 @@ type Provenance = {
   ext_source?: string | null;
   ext_id?: string | null;
   ext_modified_at?: string | null;
+  /** The "Open in Zoho" link of a mirrored record (CRM-Q1). Null or absent: none. */
+  ext_url?: string | null;
   custom?: Record<string, unknown> | null;
 };
 
@@ -277,6 +279,8 @@ export type Deal = Provenance & {
   id: string;
   name: string;
   company_id?: string | null;
+  /** The deal pipeline (CRM-Q2). Absent while the gateway has one implicit pipeline. */
+  pipeline_id?: string | null;
   /** Projected by the gateway's LEFT JOIN — never client-side joined. */
   organization_name?: string | null;
   status_id?: string | null;
@@ -317,6 +321,30 @@ export type PipelineLane = {
 };
 
 export type Pipeline = { lanes: PipelineLane[] };
+
+/** One stage of a deal pipeline, as `GET /crm/pipelines` sends it (CRM-Q2). */
+export type PipelineStage = {
+  id: string;
+  name: string;
+  position: number;
+  type: StatusType;
+  probability?: number | null;
+  forecast_category?: string | null;
+};
+
+/**
+ * A deal pipeline. Not an object in Zoho: a property of a Deal, with its own
+ * ordered stages (spec section 18.1). Named `DealPipeline` because `Pipeline`
+ * above is the board payload.
+ */
+export type DealPipeline = {
+  id: string;
+  name: string;
+  is_default: boolean;
+  position: number;
+  ext_url?: string | null;
+  stages: PipelineStage[];
+};
 
 export type Activity = {
   id: string;

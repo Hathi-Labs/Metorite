@@ -3,8 +3,11 @@
 /**
  * /crm — the native CRM (spec: project-docs/specs/crm_app.md §5).
  *
- * Views over one dataset: the deals kanban (the landing view) and a list
- * per entity on the shared list contract. Since WS-53 CRM-U1 the app opens
+ * Views over one dataset: Deals (the landing view, as a board or a list), Leads
+ * (a list or a board of Lead Status columns), and a list for Contacts and
+ * Companies on the shared list contract. CRM-Q3 removed the "Pipeline" row: the
+ * board is a layout of Deals, and a picker chooses the pipeline when the org
+ * has two or more. `?tab=pipeline` and `?tab=board` still open Deals as a board. Since WS-53 CRM-U1 the app opens
  * with `AppTopBar`, and a rail of `RailRow`s (`components/CrmRail.tsx`)
  * replaced the tab strip. The rail writes the same `?tab=` the tabs did, so
  * every old link still opens its view. The record sheet opens OVER
@@ -24,7 +27,9 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type React
 import { AppTopBar } from "@/components/AppTopBar";
 import { useMobileDrawer } from "@/components/AppShell";
 import FilterPills from "@/components/FilterPills";
+import { ModeSwitch } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
@@ -35,6 +40,7 @@ import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
 import { SetupSection } from "./components/SetupPanel";
 import ConnectionPanel from "./components/ConnectionPanel";
+import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
 import CrmRail from "./components/CrmRail";
 import FirstOpen from "./components/FirstOpen";
@@ -69,21 +75,34 @@ import {
   type RequireableField,
 } from "./lib/board";
 import { activeChip, applyChip, chipsFor } from "./lib/filters";
+import {
+  orderedPipelines,
+  readRemembered,
+  remember,
+  resolvePipeline,
+  showPicker,
+} from "./lib/pipelines";
 import { compactMoney } from "./lib/format";
 import { setRefusalSink, useCrmStore } from "./lib/store";
 import type { EntitySlug, Lead, Status } from "./lib/types";
 import {
   applySort,
   closeRecord,
+  hasBoard,
+  isBoardView,
   isEntity,
   openRecord,
   parseView,
+  selectLayout,
+  selectPipeline,
   selectTab,
   viewHref,
+  type CrmLayout,
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-import { invalidateCrmMode, useCrmMode, useSyncStatus } from "./lib/useCrmMode";
+import { invalidateCrmMode, useCrmMode, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import { boundaryKey } from "./lib/boundary";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -119,6 +138,15 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   const store = useCrmStore();
   const { isMobile } = useViewMode();
+  // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
+  // has no pipelines route: then there is one implicit pipeline and no picker.
+  const { pipelines, loading: pipelinesLoading } = usePipelines(true);
+  const [remembered, setRemembered] = useState<string | null>(() => readRemembered());
+  /** The pipeline a request filters by, or null for "no filter". */
+  const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
+  /** The view the loaders read: the URL's view plus the pipeline in effect. */
+  const loadView = useMemo(() => ({ ...view, pipelineId }), [view, pipelineId]);
+  const boardOn = isBoardView(view);
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   /** The rail of views: open from `lg` up, folded below, the member's call
    *  inside a band. The one rule My Tasks uses (`lib/railFold.ts`). */
@@ -130,6 +158,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   const [converting, setConverting] = useState<Lead | null>(null);
   /** A move the gateway would refuse as sent — held until the modal answers. */
   const [pendingMove, setPendingMove] = useState<{
+    entity: "deals" | "leads";
     move: DealMove;
     status: Status;
     needsReason: boolean;
@@ -149,19 +178,27 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   }, []);
 
   useEffect(() => {
-    if (view.tab === "board") store.loadBoard(view);
+    // Deals waits for the pipeline list, so the board loads once and not twice.
+    if (view.tab === "deals" && pipelinesLoading) return;
+    if (boardOn) {
+      if (view.tab === "leads") store.loadLeadBoard(loadView);
+      else store.loadBoard(loadView);
+    }
     // ⚠️ `settings` and `reports` are tabs and NOT collections:
     // `loadList("settings", …)` would request `/crm/settings` and empty the
     // screen with a 404. The vocabulary settings edits is loaded once, above;
     // reports has four reads of its own.
-    else if (view.tab === "reports") store.loadReports(view);
-    else if (isEntity(view.tab)) store.loadList(view.tab, view);
+    else if (view.tab === "reports") store.loadReports(loadView);
+    else if (isEntity(view.tab)) store.loadList(view.tab, loadView);
     // ⚠️ Every field `listQuery` reads has to be in this list, `sort`/`dir`
     // included: a filter the effect does not watch is a control that changes
     // its own appearance and issues no request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     view.tab,
+    view.layout,
+    pipelineId,
+    pipelinesLoading,
     view.q,
     view.statusId,
     view.includeConverted,
@@ -175,16 +212,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.record?.entity, view.record?.id]);
 
-  const listEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
+  /** The collection a LIST is showing. A board is not a list, so it is null there. */
+  const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
 
   /** What the Refresh button re-reads — one branch per kind of tab. */
   function reload(): void {
-    if (view.tab === "board") void store.loadBoard(view);
+    if (boardOn) {
+      if (view.tab === "leads") void store.loadLeadBoard(loadView);
+      else void store.loadBoard(loadView);
+    }
     // The settings tab's collection IS the vocabulary the whole app renders
     // from, so its re-read is the same call the page makes on mount.
     else if (view.tab === "settings") void store.loadVocabulary();
-    else if (view.tab === "reports") void store.loadReports(view);
-    else if (listEntity) void store.loadList(listEntity, view);
+    else if (view.tab === "reports") void store.loadReports(loadView);
+    else if (listEntity) void store.loadList(listEntity, loadView);
   }
   const statusesFor = (entity: EntitySlug | null): Status[] =>
     entity === "deals"
@@ -198,19 +239,30 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     : [];
 
   const totals = boardTotals(store.lanes);
+  const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
   const mayCreate = canCreate(ctx.mode);
 
   /** A board drop, or the status pill in the sheet. Same request either way. */
   async function moveDeal(move: DealMove, target: Status) {
+    await moveCard("deals", move, target);
+  }
+
+  /** The same move for a lead on the Leads board. `move.dealId` holds the lead id. */
+  async function moveCard(entity: "deals" | "leads", move: DealMove, target: Status) {
+    const onBoard: Array<Record<string, unknown>> =
+      entity === "deals"
+        ? store.lanes.flatMap((l) => l.rows)
+        : store.leadLanes.flatMap((l) => l.rows);
     const deal =
-      store.lanes.flatMap((l) => l.rows).find((d) => d.id === move.dealId) ??
+      onBoard.find((d) => d.id === move.dealId) ??
       (store.record as Record<string, unknown> | null);
     // Both gates read forward, in the gateway's own order. It refuses either
     // one BEFORE writing any of the transition's three effects, so a board
     // that discovered them from an error toast would have already animated the
     // card into the lane it is not allowed to be in.
     const needsReason = Boolean(deal && needsLostReason(deal, target));
-    const missing = deal ? missingRequiredFields(deal, target) : [];
+    // Entry requirements belong to deal stages. A lead status requires nothing.
+    const missing = deal && entity === "deals" ? missingRequiredFields(deal, target) : [];
     if (needsReason || missing.length > 0) {
       // The picker the organization requirement needs. Requested here rather
       // than on mount because the directory is a picker, not a mirror — and
@@ -218,10 +270,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       // is idempotent and a branch on which field is missing is a branch that
       // gets it wrong once.
       store.loadDirectories();
-      setPendingMove({ move, status: target, needsReason, missing });
+      setPendingMove({ entity, move, status: target, needsReason, missing });
       return;
     }
-    await store.moveDeal(move);
+    if (entity === "leads") await store.moveLead(move);
+    else await store.moveDeal(move);
     if (view.record) store.loadRecord(view.record.entity, view.record.id);
   }
 
@@ -240,20 +293,22 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // "Synced from Zoho · 4 min ago"). Until a mode exists, it says what the
   // view on screen holds.
   const viewLine =
-    view.tab === "board"
+    boardOn && view.tab === "deals"
       ? // Weighted sits next to the raw total rather than replacing it:
         // "₹4.2Cr in the pipeline" is what is on the table and "₹1.6Cr
         // weighted" is what the forecast believes, and a line that showed
         // only one of them would be answering a different question.
         `${totals.count} open deals · ${compactMoney(totals.amount)} in the pipeline · ${compactMoney(totals.weighted)} weighted`
-      : view.tab === "settings"
-        ? "Stages, statuses and lost reasons — the pipeline is data, not a deploy"
-        : view.tab === "reports"
-          ? "Forecast, funnel, win rate and who is carrying what"
-          : // A list view names itself. With the rail folded, the four
-            // lists share one layout, and this line is all that tells
-            // Deals from Contacts.
-            viewLabel(view.tab);
+      : boardOn
+        ? `${leadCount} leads by status`
+        : view.tab === "settings"
+          ? "Setup, access, pipelines and statuses"
+          : view.tab === "reports"
+            ? "Forecast, funnel, win rate and who is carrying what"
+            : // A list view names itself. With the rail folded, the four
+              // lists share one layout, and this line is all that tells
+              // Deals from Contacts.
+              viewLabel(view.tab);
   const mode = modeLine({ mode: ctx.mode, connection: ctx.connection, sync: ctx.sync });
   const subtitle = mode ? `${mode} · ${viewLine}` : viewLine;
 
@@ -272,14 +327,44 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         variant="secondary"
         size="sm"
         icon="Plus"
-        onClick={() => setCreating(listEntity ?? "deals")}
+        onClick={() => setCreating(isEntity(view.tab) ? view.tab : "deals")}
       >
         New
       </Button>
     ) : null;
 
+  const picker =
+    view.tab === "deals" && showPicker(pipelines) && pipelines ? (
+      <SelectButton
+        label="Pipeline"
+        value={pipelineId ?? ""}
+        options={orderedPipelines(pipelines).map((p) => ({ value: p.id, label: p.name }))}
+        defaultValue=""
+        onChange={(id) => {
+          remember(id);
+          setRemembered(id);
+          go(selectPipeline(view, id));
+        }}
+        widthClass="w-40"
+      />
+    ) : null;
+
   const tools = (
     <>
+      {picker}
+      {hasBoard(view.tab) && (
+        // The list or board switch (CRM-Q3). The shared control that Projects
+        // and My Tasks draw, so the CRM adds no second look for one choice.
+        <ModeSwitch<CrmLayout>
+          modes={[
+            { id: "list", icon: "List" },
+            { id: "board", icon: "Kanban" },
+          ]}
+          mode={view.layout}
+          onPick={(next) => go(selectLayout(view, next))}
+          label={`${viewLabel(view.tab)} layout`}
+        />
+      )}
       {listEntity && (
         // WS-26i-export — the filter that is on screen, as a CSV.
         //
@@ -400,38 +485,50 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             </div>
           )}
 
-          {view.tab === "board" ? (
+          {/* One boundary around the view. A throw ends on a sentence and a
+              Reload button, and the rail stays. The key clears it when the
+              member picks another view (CRM-Q3, spec section 18.6). */}
+          <CrmBoundary key={boundaryKey(view, pipelineId)}>
+          {boardOn ? (
             <KanbanBoard
-              lanes={store.lanes}
+              entity={view.tab === "leads" ? "leads" : "deals"}
+              lanes={view.tab === "leads" ? store.leadLanes : store.lanes}
               loading={store.loading}
-              onMove={moveDeal}
-              onOpen={(id) => go(openRecord(view, "deal", id))}
-              onCreate={mayCreate ? () => setCreating("deals") : undefined}
+              readOnly={ctx.mode === "mirror"}
+              onMove={
+                view.tab === "leads"
+                  ? (move, target) => void moveCard("leads", move, target)
+                  : moveDeal
+              }
+              onOpen={(id) =>
+                go(openRecord(view, view.tab === "leads" ? "lead" : "deal", id))
+              }
+              onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
             />
           ) : view.tab === "reports" ? (
             <Reports reports={store.reports} loading={store.loading} />
           ) : view.tab === "settings" ? (
             <PipelineSettings
-              top={
-                ctx.isAdmin ? (
-                  <div className="flex flex-col gap-4">
-                    <AccessSection />
-                    <SetupSection mode={ctx.mode} connection={ctx.connection} />
-                    {ctx.connection && (
-                      <ConnectionPanel
-                        mode={ctx.mode}
-                        connection={ctx.connection}
-                        sync={ctx.sync}
-                        syncing={ctx.syncing}
-                        connecting={ctx.connecting}
-                        onSyncNow={ctx.onSyncNow}
-                        onConnect={ctx.onConnect}
-                        onDisconnect={ctx.onDisconnect}
-                      />
-                    )}
-                  </div>
+              setup={
+                ctx.isAdmin ? <SetupSection mode={ctx.mode} connection={ctx.connection} /> : undefined
+              }
+              access={ctx.isAdmin ? <AccessSection /> : undefined}
+              connection={
+                ctx.isAdmin && ctx.connection ? (
+                  <ConnectionPanel
+                    mode={ctx.mode}
+                    connection={ctx.connection}
+                    sync={ctx.sync}
+                    syncing={ctx.syncing}
+                    connecting={ctx.connecting}
+                    onSyncNow={ctx.onSyncNow}
+                    onConnect={ctx.onConnect}
+                    onDisconnect={ctx.onDisconnect}
+                  />
                 ) : undefined
               }
+              pipelines={pipelines}
+              showAdminCards={ctx.isAdmin}
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}
@@ -445,8 +542,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onReorderLostReasons={store.reorderLostReasons}
             />
           ) : (
-            // `listEntity` is non-null here by construction — the three branches
-            // above are the only tabs that are not a collection — but it is read
+            // `listEntity` is non-null here by construction — the branches
+            // above are the only views that are not a list — but it is read
             // through the guard rather than cast, because the cast is what made
             // `?tab=settings` render a list of nothing on the way in.
             listEntity && (
@@ -462,6 +559,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               />
             )
           )}
+          </CrmBoundary>
         </main>
       </div>
 
@@ -526,6 +624,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             store.detachContact(view.record!.id, contactId)
           }
           onOpenContact={(contactId) => go(openRecord(view, "contact", contactId))}
+          related={store.related}
+          onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
+          onOpenRelated={(entity, id) => go(openRecord(view, PARAM_FOR[entity], id))}
         />
       )}
 
@@ -579,7 +680,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             // PATCH that either lands or does not, rather than two that can
             // half-apply, where the half that lands is the one that moved the
             // deal.
-            await store.moveDeal(move, payload);
+            if (pendingMove.entity === "leads") await store.moveLead(move, payload);
+            else await store.moveDeal(move, payload);
             if (view.record) store.loadRecord(view.record.entity, view.record.id);
           }}
         />

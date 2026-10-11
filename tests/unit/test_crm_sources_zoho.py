@@ -1018,9 +1018,11 @@ def test_the_registry_has_one_line_for_zoho() -> None:
         source_class("salesforce")
 
 
-async def test_the_deep_link_waits_for_crm_z0() -> None:
+async def test_the_deep_link_needs_the_org_domain() -> None:
+    """CRM-Q1 built it. Without ``domain_name`` there is no link to build, and
+    ``test_crm_discovery.py`` holds the rest."""
     source = ZohoSource(CONFIG, credential())
-    with pytest.raises(NotImplementedError, match="CRM-Z0"):
+    with pytest.raises(SourceError, match="domain"):
         source.deep_link("deal", "1")
 
 

@@ -297,6 +297,17 @@ export function isMirrored(record: Row | null | undefined): boolean {
   return extSource(record) !== null;
 }
 
+/**
+ * The "Open in Zoho" link of a mirrored record (CRM-Q1), or null.
+ *
+ * Only an http or https address passes. The value comes from the customer's
+ * Zoho through the sync, and a `javascript:` address must never reach an `href`.
+ */
+export function zohoLink(record: Row | null | undefined): string | null {
+  const url = record?.ext_url;
+  return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
+}
+
 /** An activity that exists only in Metorite, under a record that Zoho owns. */
 export function onlyInMetorite(
   activity: { ext_source?: string | null } | null | undefined,

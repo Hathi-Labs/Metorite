@@ -1,9 +1,14 @@
 "use client";
 
 /**
- * `?tab=settings` — the pipeline's management surface (WS-26f f2, §5.1).
+ * `?tab=settings` — CRM settings (WS-26f f2, WS-53 CRM-Q3).
  *
- * Three grids over the EXISTING admin API: deal stages, lead statuses, lost
+ * One column of cards, in this order: Setup, Access, Connection, Pipelines and
+ * stages, Lead Status, Lost reasons, Fields, Sync health. The first three are
+ * nodes the page passes in for an admin. Fields and Sync health wait for
+ * CRM-Q4 and CRM-Q9, and say so.
+ *
+ * The grids drive the EXISTING admin API: deal stages, lead statuses, lost
  * reasons. Before this existed the API was headless — every stage rename,
  * reorder or probability was a curl, which is the second half of why the live
  * board was wrong (§5.1's delivery gap 2).
@@ -12,6 +17,10 @@
  * manages its own pipeline). The one control that needs more is the Zoho pull,
  * which is floored on `admin:access:manage` server-side; hiding it here is the
  * courtesy half.
+ *
+ * Several pipelines (CRM-Q2) show one read-only section each. The stage routes
+ * for a second pipeline are not in this build, so the grid edits the stages of
+ * the one implicit pipeline only.
  *
  * Everything server-shaped is pure and lives in ../lib/settings.ts: what a
  * drop renumbers, which rows that actually PATCHes, and the client half of
@@ -31,6 +40,7 @@ import {
   statusTone,
   TONE_COLORS,
 } from "../lib/board";
+import { showPicker } from "../lib/pipelines";
 import {
   changedFields,
   reorder,
@@ -38,7 +48,9 @@ import {
   validateStatusDraft,
   type PositionPatch,
 } from "../lib/settings";
+import { Card, ComingSoonCard, NameList, PipelineSections } from "./SettingsCards";
 import type {
+  DealPipeline,
   LostReason,
   Status,
   StatusKind,
@@ -68,13 +80,23 @@ export default function PipelineSettings({
   onSaveLostReason,
   onRemoveLostReason,
   onReorderLostReasons,
-  top,
+  setup,
+  access,
+  connection,
+  pipelines = null,
+  showAdminCards = false,
   readOnly = false,
 }: {
   /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
   readOnly?: boolean;
-  /** The connection panel of an admin in a mirrored org (CRM-Z7). */
-  top?: React.ReactNode;
+  /** The Setup, Access and Connection cards of an admin, in this order. */
+  setup?: React.ReactNode;
+  access?: React.ReactNode;
+  connection?: React.ReactNode;
+  /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
+  pipelines?: DealPipeline[] | null;
+  /** The Fields and Sync health cards are for an admin. */
+  showAdminCards?: boolean;
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
@@ -99,94 +121,80 @@ export default function PipelineSettings({
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
   onPullStages?: unknown;
 }) {
+  const several = showPicker(pipelines);
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
-      {top}
+      {setup}
+      {access}
+      {connection}
       {readOnly ? (
-        <ReadOnlyStages
-          dealStatuses={dealStatuses}
-          leadStatuses={leadStatuses}
-          lostReasons={lostReasons}
-        />
+        <>
+          <PipelineSections
+            pipelines={pipelines}
+            fallback={dealStatuses}
+            note="Stages come from Zoho."
+          />
+          <Card title="Lead Status" note="Lead Status values come from Zoho.">
+            <NameList names={leadStatuses.map((x) => x.name)} />
+          </Card>
+          <Card title="Lost reasons" note="Lost reasons come from Zoho.">
+            <NameList names={lostReasons.map((x) => x.label)} />
+          </Card>
+        </>
       ) : (
         <>
-      <StatusGrid
-        kind="deal"
-        title="Deal stages"
-        blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0% — the type is what closes a deal, the probability is what the pipeline number believes."
-        statuses={dealStatuses}
-        saving={saving}
-        onSave={onSaveStatus}
-        onRemove={onRemoveStatus}
-        onReorder={onReorderStatuses}
-      />
+          {several ? (
+            <PipelineSections
+              pipelines={pipelines}
+              fallback={dealStatuses}
+              note="Stage editing for several pipelines is not available yet."
+            />
+          ) : (
+            <StatusGrid
+              kind="deal"
+              title="Pipelines and stages"
+              blurb="Lane order, colour and the win probability the forecast reads. A won stage always forecasts 100%, a lost stage 0%. The type is what closes a deal, and the probability is what the pipeline number believes."
+              statuses={dealStatuses}
+              saving={saving}
+              onSave={onSaveStatus}
+              onRemove={onRemoveStatus}
+              onReorder={onReorderStatuses}
+            />
+          )}
 
-      <StatusGrid
-        kind="lead"
-        title="Lead statuses"
-        blurb="The funnel before a deal exists. No probability — a lead forecasts nothing until it converts."
-        statuses={leadStatuses}
-        saving={saving}
-        onSave={onSaveStatus}
-        onRemove={onRemoveStatus}
-        onReorder={onReorderStatuses}
-      />
+          <StatusGrid
+            kind="lead"
+            title="Lead Status"
+            blurb="The funnel before a deal exists. No probability: a lead forecasts nothing until it converts."
+            statuses={leadStatuses}
+            saving={saving}
+            onSave={onSaveStatus}
+            onRemove={onRemoveStatus}
+            onReorder={onReorderStatuses}
+          />
 
-      <ReasonGrid
-        reasons={lostReasons}
-        saving={saving}
-        onSave={onSaveLostReason}
-        onRemove={onRemoveLostReason}
-        onReorder={onReorderLostReasons}
-      />
+          <ReasonGrid
+            reasons={lostReasons}
+            saving={saving}
+            onSave={onSaveLostReason}
+            onRemove={onRemoveLostReason}
+            onReorder={onReorderLostReasons}
+          />
+        </>
+      )}
+      {showAdminCards && (
+        <>
+          <ComingSoonCard
+            title="Fields"
+            note="The fields of each record, with their label, type and order."
+          />
+          <ComingSoonCard
+            title="Sync health"
+            note="The Zoho count against ours, skipped records and the last error."
+          />
         </>
       )}
     </div>
-  );
-}
-
-// ── Mirror mode: the stages as plain text (CRM-L2) ─────────────────────────
-
-/** Zoho owns the stages, so this is a list to read: no input, handle or delete. */
-function ReadOnlyStages({
-  dealStatuses,
-  leadStatuses,
-  lostReasons,
-}: {
-  dealStatuses: Status[];
-  leadStatuses: Status[];
-  lostReasons: LostReason[];
-}) {
-  const groups: Array<{ title: string; rows: string[] }> = [
-    { title: "Deal stages", rows: dealStatuses.map((x) => x.name) },
-    { title: "Lead statuses", rows: leadStatuses.map((x) => x.name) },
-    { title: "Lost reasons", rows: lostReasons.map((x) => x.label) },
-  ];
-  return (
-    <section className="rounded-xl border border-border bg-card/40" aria-label="Stages">
-      <header className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">Stages</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">Stages come from Zoho.</p>
-      </header>
-      <div className="divide-y divide-border/60">
-        {groups.map((g) => (
-          <div key={g.title} className="px-4 py-3">
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">{g.title}</h3>
-            {g.rows.length === 0 ? (
-              <p className="mt-1 text-xs text-muted-foreground">None yet.</p>
-            ) : (
-              <ul className="mt-1 space-y-0.5">
-                {g.rows.map((name, i) => (
-                  <li key={`${name}-${i}`} className="text-xs text-foreground">
-                    {name}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 
