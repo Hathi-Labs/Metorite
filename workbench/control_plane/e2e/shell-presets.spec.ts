@@ -690,7 +690,10 @@ test.describe("a category folds, per account", () => {
   });
 
   test("the category of the current route opens, whatever was stored", async ({ page }) => {
+    // Once per test, not on every load: the page must keep what it writes.
     await page.addInitScript(() => {
+      if (sessionStorage.getItem("folds-seeded")) return;
+      sessionStorage.setItem("folds-seeded", "1");
       localStorage.setItem("cc-sidebar-folds:priya@example.com|org1", JSON.stringify({ across: true, studio: true }));
     });
     await stub(page, { ...STARRED, pins: [...ENGINEER_STARS, "/people"] });

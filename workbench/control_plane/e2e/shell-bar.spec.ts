@@ -463,6 +463,9 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       await stub(page);
       await page.goto("/settings/appearance");
       await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
+      // The rail draws its skeleton until the layout read answers (the star
+      // model, 2026-10-11), so wait for the real rows.
+      await expect(aside(page).locator("nav a").first()).toBeVisible();
       const brand = bar(page).locator("[data-shell-brand]");
       const fold = await box(brand.getByRole("button", { name: "Expand sidebar" }));
       const foldCentre = fold.x + fold.width / 2;
