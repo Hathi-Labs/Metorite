@@ -268,15 +268,28 @@ async def _key_names(org: str) -> list[dict[str, Any]]:
     return await integrations._db_query(_KEY_NAMES_SQL, org_id=org)
 
 
+def _key_groups(names: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The stored providers of each service, by the prefix of the provider.
+
+    The ONE grouping, for the list and for the delete, so a listed key row is
+    removable exactly when the delete can reach it. A legacy row with no colon
+    forms a group of its own and is never removable here.
+    """
+    groups: dict[str, list[str]] = {}
+    for item in names:
+        provider = str(item["provider"])
+        groups.setdefault(provider.split(":", 1)[0], []).append(provider)
+    return groups
+
+
+def _key_removable(service: str, providers: list[str]) -> bool:
+    return service in integrations._SETUP_GUIDES and all(":" in p for p in providers)
+
+
 async def _key_rows(org: str, user: UserContext) -> list[Row]:
     """One row for each service that holds a stored key. Never a value."""
-    names = await _key_names(org)
-    by_service: dict[str, int] = {}
-    for item in names:
-        service = str(item.get("service") or str(item["provider"]).split(":", 1)[0])
-        by_service[service] = by_service.get(service, 0) + 1
     out: list[Row] = []
-    for service, count in by_service.items():
+    for service, providers in _key_groups(await _key_names(org)).items():
         guide = integrations._SETUP_GUIDES.get(service, {})
         out.append(Row(
             id=f"key:{service}",
@@ -287,8 +300,8 @@ async def _key_rows(org: str, user: UserContext) -> list[Row]:
             scope="org",
             status="configured",
             setup_href=_SETUP_HREF["integrations"],
-            can_disconnect=_can_manage(user),
-            detail={"keys": str(count)},
+            can_disconnect=_can_manage(user) and _key_removable(service, providers),
+            detail={"keys": str(len(providers)), "key_names": ", ".join(sorted(providers))},
         ))
     return out
 
@@ -418,19 +431,24 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
 
 
 async def _disconnect_keys(org: str, service: str, user: UserContext) -> dict[str, Any]:
-    names = await _key_names(org)
-    suffixes = [
-        str(n["provider"]).split(":", 1)[1] for n in names
-        if str(n["provider"]).split(":", 1)[0] == service and ":" in str(n["provider"])
-    ]
-    if not suffixes or service not in integrations._SETUP_GUIDES:
+    providers = _key_groups(await _key_names(org)).get(service, [])
+    if not providers or not _key_removable(service, providers):
         raise _not_found()
+    suffixes = [p.split(":", 1)[1] for p in providers]
     # Check the whole request before the first delete, as the key route does.
-    for suffix in suffixes:
-        env_var = integrations._guide_env_var(service, suffix)
-        if env_var is not None:
-            integrations._refuse_unsafe_env_writes([(env_var, "")], actor=user.email)
-            integrations._refuse_provider_key_without_byok([env_var])
+    try:
+        for suffix in suffixes:
+            env_var = integrations._guide_env_var(service, suffix)
+            if env_var is not None:
+                integrations._refuse_unsafe_env_writes([(env_var, "")], actor=user.email)
+                integrations._refuse_provider_key_without_byok([env_var])
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        raise HTTPException(status_code=409, detail={
+            "code": "key_locked",
+            "message": "Metorite locks this key, so an admin cannot remove it here.",
+        }) from None
     for suffix in suffixes:
         await integrations.delete_integration_key(
             integrations.IntegrationKeyDelete(service=service, key_name=suffix), user=user,

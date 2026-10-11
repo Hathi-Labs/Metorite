@@ -532,3 +532,48 @@ async def test_the_mcp_test_refuses_a_guard_refused_url_and_sends_nothing(
     assert res.json()["error"] == "url_refused" and res.json()["tools"] is None
     assert net.requests == []
     assert S_HEADER not in res.text
+
+
+# -- Key rows: one grouping, a reason for a lock, and the names -------------------
+
+
+def _seed_key(p: Any, org: str, provider: str, service: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO provider_keys (organization_id, provider, encrypted, "
+            "credential_type, service) VALUES (CAST(:o AS uuid), :p, :enc, "
+            "'integration', :s)"),
+            {"o": org, "p": provider, "enc": f"{S_KEY}-x", "s": service})
+
+
+async def test_a_listed_removable_key_row_is_always_removable(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    await _seed(ns, ns.org_a, "a")
+    _seed_key(ns, ns.org_a, "apollo:extra", "somethingelse")  # service differs from prefix
+    _seed_key(ns, ns.org_a, "legacyplain", "legacyplain")  # no colon
+    user = _user(ADMIN_A, ns.org_a)
+    rows = (await _call(ns, user, "GET", "/integrations/connections")).json()["connections"]
+    keys = {r["id"]: r for r in rows if r["kind"] == "api_key"}
+    assert keys["key:apollo"]["detail"]["keys"] == "2"
+    assert keys["key:apollo"]["detail"]["key_names"] == "apollo:api_key, apollo:extra"
+    assert S_KEY not in json.dumps(keys)
+    assert keys["key:legacyplain"]["can_disconnect"] is False
+    assert "key:somethingelse" not in keys
+    for row_id, row in keys.items():
+        if row["can_disconnect"]:
+            res = await _call(ns, user, "POST", f"/integrations/connections/{row_id}/disconnect")
+            assert res.status_code == 200, (row_id, res.text)
+
+
+async def test_a_locked_key_is_409_with_a_reason_and_stays(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    from gateway.routes import settings as settings_routes
+
+    _assert_non_priv(app_engine)
+    _seed_key(ns, ns.org_a, "github:token", "github")
+    monkeypatch.setattr(settings_routes, "byok_writes_allowed", lambda: False)
+    res = await _call(ns, _user(ADMIN_A, ns.org_a), "POST",
+                      "/integrations/connections/key:github/disconnect")
+    assert res.status_code == 409, res.text
+    detail = res.json()["detail"]
+    assert detail["code"] == "key_locked" and detail["message"].endswith(".")
+    assert _count(ns, "SELECT count(*) FROM provider_keys WHERE provider = 'github:token'") == 1
