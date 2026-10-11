@@ -305,8 +305,8 @@ describe("CRM settings", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it("fills Fields and Sync health with a Coming soon card", () => {
-    expect(draw().match(/Coming soon/g)).toHaveLength(2);
+  it("fills Sync health with a Coming soon card, and Fields with the list (CRM-Q4)", () => {
+    expect(draw().match(/Coming soon/g)).toHaveLength(1);
   });
 
   it("keeps the admin cards from a member", () => {

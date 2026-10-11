@@ -78,11 +78,11 @@ async def _get(p: Any, user: Any, path: str) -> Any:
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:
-        async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://crm.test",
-            ) as client:
-                return await client.get(path)
+        dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(dsn), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://crm.test",
+        ) as client:
+            return await client.get(path)
     finally:
         release_tenant(scope)
 
