@@ -112,8 +112,12 @@ import Button from "@/components/ui/Button";
 /**
  * Reading width. The names are the Tailwind max-widths the six converted
  * dialogs already used, so adoption changed no dialog's size.
+ *
+ * `4xl` is the CRM record sheet's width (CRM-U2). The sheet holds a timeline
+ * and a 340 px fields column side by side, and it was `max-w-4xl` before it
+ * moved onto this primitive.
  */
-export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
+export type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
 
 const SIZES: Record<ModalSize, string> = {
   sm: "max-w-sm",
@@ -122,6 +126,7 @@ const SIZES: Record<ModalSize, string> = {
   xl: "max-w-xl",
   "2xl": "max-w-2xl",
   "3xl": "max-w-3xl",
+  "4xl": "max-w-4xl",
 };
 
 /**

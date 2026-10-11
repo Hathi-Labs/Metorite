@@ -6,10 +6,21 @@
  * One control, because a read-only badge next to a separate "change stage"
  * menu is two places to look for the same fact. Moving from here issues the
  * same PATCH the kanban drag does (lib/board.ts::moveRequest).
+ *
+ * The menu is an `AnchoredPanel` (CRM-U2), the shared popover of
+ * `SelectButton` and `StatusMenu`. It is portalled, so the record sheet's
+ * scroll does not clip it, and it paints above the sheet's `Modal`. A click
+ * outside closes it through `lib/outsideClick.ts`, never a full-screen scrim.
+ * Escape closes the menu only, and focus goes back to the pill.
+ *
+ * Not `StatusMenu`: that menu groups a task's statuses under the task stages.
+ * A CRM status has a type (open, won, lost) and a probability instead.
  */
 
 import Icon from "@/components/Icon";
-import { useState } from "react";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { useEffect, useId, useRef, useState } from "react";
 import { statusTone } from "../lib/board";
 import type { Status } from "../lib/types";
 
@@ -25,6 +36,36 @@ export default function StatusPill({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement | null>(null);
+  // State, not a ref, so the panel measures again when the trigger mounts.
+  const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (shouldDismiss(event.target as Element | null, domClickWalk(root.current))) {
+        setOpen(false);
+      }
+    };
+    // In the CAPTURE phase on `window`, and stopped there. The pill sits in
+    // the record sheet, and the sheet's `Modal` hears Escape on `document`.
+    // Without the stop, one Escape closed the menu AND the record.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.preventDefault();
+      setOpen(false);
+      root.current?.querySelector("button")?.focus();
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
+
   const readOnly = disabled || !onChange || statuses.length === 0;
 
   const label = status?.name ?? "No status";
@@ -40,8 +81,13 @@ export default function StatusPill({
   }
 
   return (
-    <div className="relative">
+    <div ref={root} className="relative">
       <button
+        ref={setTrigger}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-2.5 py-1 text-xs text-foreground hover:border-primary/40 tech-transition"
       >
@@ -49,48 +95,52 @@ export default function StatusPill({
         {label}
         <Icon name="ChevronDown" className="w-3 h-3 opacity-60" />
       </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 z-50 mt-1 w-52 rounded-xl border border-border bg-card p-1 shadow-lg">
-            {[...statuses]
-              .sort((a, b) => a.position - b.position)
-              .map((option) => (
-                <button
-                  key={option.id}
-                  onClick={() => {
-                    setOpen(false);
-                    if (option.id !== status?.id) onChange(option.id);
-                  }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs tech-transition ${
-                    option.id === status?.id
-                      ? "bg-primary/10 text-foreground"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                  }`}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${statusTone(option)}`}
-                  />
-                  <span className="flex-1 truncate">{option.name}</span>
-                  {/* The stage's default probability beside its name: moving a
-                      deal here is what makes it inherit that number, and the
-                      forecast changes the moment it does (§5.1). */}
-                  {option.probability !== null &&
-                  option.probability !== undefined ? (
-                    <span className="text-[10px] tabular-nums opacity-60">
-                      {option.probability}%
-                    </span>
-                  ) : null}
-                  {option.type === "won" || option.type === "lost" ? (
-                    <span className="text-[10px] uppercase opacity-60">
-                      {option.type}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-          </div>
-        </>
-      )}
+      <AnchoredPanel
+        anchor={trigger}
+        open={open}
+        className="w-52 p-1"
+        panelProps={{ id: menuId, role: "listbox", "aria-label": "Status" }}
+      >
+        {[...statuses]
+          .sort((a, b) => a.position - b.position)
+          .map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              aria-selected={option.id === status?.id}
+              onClick={() => {
+                setOpen(false);
+                root.current?.querySelector("button")?.focus();
+                if (option.id !== status?.id) onChange(option.id);
+              }}
+              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs tech-transition ${
+                option.id === status?.id
+                  ? "bg-primary/10 text-foreground"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${statusTone(option)}`}
+              />
+              <span className="flex-1 truncate">{option.name}</span>
+              {/* The stage's default probability beside its name: moving a
+                  deal here is what makes it inherit that number, and the
+                  forecast changes the moment it does (§5.1). */}
+              {option.probability !== null &&
+              option.probability !== undefined ? (
+                <span className="text-[10px] tabular-nums opacity-60">
+                  {option.probability}%
+                </span>
+              ) : null}
+              {option.type === "won" || option.type === "lost" ? (
+                <span className="text-[10px] uppercase opacity-60">
+                  {option.type}
+                </span>
+              ) : null}
+            </button>
+          ))}
+      </AnchoredPanel>
     </div>
   );
 }

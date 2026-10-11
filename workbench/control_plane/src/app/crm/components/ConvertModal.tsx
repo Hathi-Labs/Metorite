@@ -13,7 +13,9 @@
  * modal reads as a confirmation rather than as a second opinion.
  */
 
-import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import Modal from "@/components/ui/Modal";
 import { useState } from "react";
 import {
   canConvert,
@@ -64,184 +66,175 @@ export default function ConvertModal({
   const similar = similarOrganizations(lead, organizations);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        aria-label="Close"
-        onClick={onClose}
-        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
-      />
-      <div className="relative flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-border bg-card shadow-xl">
-        <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-          <div>
-            <h2 className="text-base font-bold text-foreground">Convert lead</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {lead.lead_name} becomes a deal, with a contact and an
-              company behind it.
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary tech-transition"
-          >
-            <Icon name="X" className="w-4 h-4" />
-          </button>
-        </header>
-
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
-          <section>
-            <h3 className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-              Contact
-            </h3>
-            {matchedContact ? (
-              <Option
-                selected={choice.contact.kind === "existing"}
-                onSelect={() =>
-                  setChoice((c) => ({
-                    ...c,
-                    contact: { kind: "existing", id: matchedContact.id },
-                  }))
-                }
-                title={`${matchedContact.first_name} ${matchedContact.last_name ?? ""}`.trim()}
-                note={`Already in the CRM — matched on ${matchedContact.email}`}
-              />
-            ) : null}
+    // On `Modal` (CRM-U2). The page mounts this only while a lead is being
+    // converted, so `open` is always true. Focus returns to the record
+    // sheet's Convert button on close.
+    <Modal
+      open
+      onClose={onClose}
+      title="Convert lead"
+      description={`${lead.lead_name} becomes a deal, with a contact and a company behind it.`}
+      icon="ArrowRightLeft"
+      size="lg"
+      className="max-h-[85vh]"
+    >
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        <section>
+          <h3 className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            Contact
+          </h3>
+          {matchedContact ? (
             <Option
-              selected={choice.contact.kind === "new"}
+              selected={choice.contact.kind === "existing"}
               onSelect={() =>
-                setChoice((c) => ({ ...c, contact: { kind: "new" } }))
+                setChoice((c) => ({
+                  ...c,
+                  contact: { kind: "existing", id: matchedContact.id },
+                }))
               }
-              title="Create a new contact"
-              note={
-                lead.email
-                  ? `From this lead's own details (${lead.email})`
-                  : "From this lead's own details"
-              }
+              title={`${matchedContact.first_name} ${matchedContact.last_name ?? ""}`.trim()}
+              note={`Already in the CRM — matched on ${matchedContact.email}`}
             />
-          </section>
+          ) : null}
+          <Option
+            selected={choice.contact.kind === "new"}
+            onSelect={() =>
+              setChoice((c) => ({ ...c, contact: { kind: "new" } }))
+            }
+            title="Create a new contact"
+            note={
+              lead.email
+                ? `From this lead's own details (${lead.email})`
+                : "From this lead's own details"
+            }
+          />
+        </section>
 
-          <section>
-            <h3 className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-              Company
-            </h3>
-            {!lead.organization_name?.trim() ? (
-              <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                This lead names no company, so no company is created —
-                minting one named after a person is how a CRM fills with noise.
-              </p>
-            ) : (
-              <>
-                {matchedOrg && (
-                  <Option
-                    selected={
-                      choice.organization.kind === "existing" &&
-                      choice.organization.id === matchedOrg.id
-                    }
-                    onSelect={() =>
-                      setChoice((c) => ({
-                        ...c,
-                        organization: { kind: "existing", id: matchedOrg.id },
-                      }))
-                    }
-                    title={matchedOrg.name}
-                    note="Exact name match"
-                  />
-                )}
-                {/* Near-misses are shown but never auto-taken: a fuzzy match
-                    that silently attaches a deal to the wrong account is
-                    worse than a duplicate somebody can merge. */}
-                {similar.map((org) => (
-                  <Option
-                    key={org.id}
-                    selected={
-                      choice.organization.kind === "existing" &&
-                      choice.organization.id === org.id
-                    }
-                    onSelect={() =>
-                      setChoice((c) => ({
-                        ...c,
-                        organization: { kind: "existing", id: org.id },
-                      }))
-                    }
-                    title={org.name}
-                    note="Similar name — pick it only if it is the same company"
-                  />
-                ))}
+        <section>
+          <h3 className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            Company
+          </h3>
+          {!lead.organization_name?.trim() ? (
+            <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+              This lead names no company, so no company is created —
+              minting one named after a person is how a CRM fills with noise.
+            </p>
+          ) : (
+            <>
+              {matchedOrg && (
                 <Option
-                  selected={choice.organization.kind === "new"}
-                  onSelect={() =>
-                    setChoice((c) => ({ ...c, organization: { kind: "new" } }))
+                  selected={
+                    choice.organization.kind === "existing" &&
+                    choice.organization.id === matchedOrg.id
                   }
-                  title={`Create “${lead.organization_name}”`}
-                  note="A new company from this lead's company fields"
+                  onSelect={() =>
+                    setChoice((c) => ({
+                      ...c,
+                      organization: { kind: "existing", id: matchedOrg.id },
+                    }))
+                  }
+                  title={matchedOrg.name}
+                  note="Exact name match"
                 />
-              </>
-            )}
-          </section>
+              )}
+              {/* Near-misses are shown but never auto-taken: a fuzzy match
+                  that silently attaches a deal to the wrong account is
+                  worse than a duplicate somebody can merge. */}
+              {similar.map((org) => (
+                <Option
+                  key={org.id}
+                  selected={
+                    choice.organization.kind === "existing" &&
+                    choice.organization.id === org.id
+                  }
+                  onSelect={() =>
+                    setChoice((c) => ({
+                      ...c,
+                      organization: { kind: "existing", id: org.id },
+                    }))
+                  }
+                  title={org.name}
+                  note="Similar name — pick it only if it is the same company"
+                />
+              ))}
+              <Option
+                selected={choice.organization.kind === "new"}
+                onSelect={() =>
+                  setChoice((c) => ({ ...c, organization: { kind: "new" } }))
+                }
+                title={`Create “${lead.organization_name}”`}
+                note="A new company from this lead's company fields"
+              />
+            </>
+          )}
+        </section>
 
-          <section className="space-y-2">
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              Deal
-            </h3>
-            <input
-              value={choice.deal.name}
+        <section className="space-y-2">
+          <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Deal
+          </h3>
+          <Input
+            inputSize="sm"
+            value={choice.deal.name}
+            onChange={(e) =>
+              setChoice((c) => ({
+                ...c,
+                deal: { ...c.deal, name: e.target.value },
+              }))
+            }
+            placeholder="Deal name"
+            aria-label="Deal name"
+            className="w-full"
+          />
+          <div className="flex gap-2">
+            <Input
+              inputSize="sm"
+              value={choice.deal.amount}
               onChange={(e) =>
                 setChoice((c) => ({
                   ...c,
-                  deal: { ...c.deal, name: e.target.value },
+                  deal: { ...c.deal, amount: e.target.value },
                 }))
               }
-              placeholder="Deal name"
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:border-primary/40 focus:outline-none"
+              inputMode="decimal"
+              placeholder="Amount (₹)"
+              aria-label="Amount"
+              className="min-w-0 flex-1"
             />
-            <div className="flex gap-2">
-              <input
-                value={choice.deal.amount}
-                onChange={(e) =>
-                  setChoice((c) => ({
-                    ...c,
-                    deal: { ...c.deal, amount: e.target.value },
-                  }))
-                }
-                inputMode="decimal"
-                placeholder="Amount (₹)"
-                className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:border-primary/40 focus:outline-none"
-              />
-              <input
-                type="date"
-                value={choice.deal.expected_close_date}
-                onChange={(e) =>
-                  setChoice((c) => ({
-                    ...c,
-                    deal: { ...c.deal, expected_close_date: e.target.value },
-                  }))
-                }
-                className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground focus:border-primary/40 focus:outline-none"
-              />
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              The deal lands in the default stage and carries this lead as its
-              provenance, so its timeline keeps everything said before now.
-            </p>
-          </section>
-        </div>
-
-        <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-primary/30 tech-transition"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onConvert(convertBody(choice) as Record<string, unknown>)}
-            disabled={saving || !canConvert(choice)}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40 tech-transition"
-          >
-            Convert
-          </button>
-        </footer>
+            <Input
+              inputSize="sm"
+              type="date"
+              value={choice.deal.expected_close_date}
+              onChange={(e) =>
+                setChoice((c) => ({
+                  ...c,
+                  deal: { ...c.deal, expected_close_date: e.target.value },
+                }))
+              }
+              aria-label="Expected close"
+            />
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            The deal lands in the default stage and carries this lead as its
+            provenance, so its timeline keeps everything said before now.
+          </p>
+        </section>
       </div>
-    </div>
+
+      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
+        <Button variant="secondary" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          loading={saving}
+          onClick={() => onConvert(convertBody(choice) as Record<string, unknown>)}
+          disabled={saving || !canConvert(choice)}
+        >
+          Convert
+        </Button>
+      </footer>
+    </Modal>
   );
 }
 

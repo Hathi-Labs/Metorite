@@ -338,13 +338,13 @@ function CrmPageInner() {
             // broken, and a stale row after a 409 reads as success.
             <div className="flex shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2">
               <p className="flex-1 text-xs text-destructive">{store.error}</p>
-              <button
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                icon="X"
                 onClick={() => store.setError(null)}
-                className="text-destructive/70 hover:text-destructive"
                 aria-label="Dismiss"
-              >
-                <Icon name="X" className="w-3.5 h-3.5" />
-              </button>
+              />
             </div>
           )}
 
@@ -404,7 +404,14 @@ function CrmPageInner() {
           timeline={store.timeline}
           dealContacts={store.dealContacts}
           saving={store.saving}
-          onClose={() => go(closeRecord(view))}
+          onClose={() => {
+            // The convert and move dialogs open OVER the sheet, and each one
+            // is its own `Modal`. Both hear one Escape, so the sheet keeps
+            // still while a dialog above it is up: that key, or a click on
+            // that dialog, closes the dialog and not the record.
+            if (converting || pendingMove) return;
+            go(closeRecord(view));
+          }}
           onPatch={(body) =>
             store.patchRecord(view.record!.entity, view.record!.id, body)
           }
