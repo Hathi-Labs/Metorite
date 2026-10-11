@@ -19,6 +19,7 @@ checked with two organizations that use the SAME Zoho ids.
 the three behaviours to it and nothing else.
 """
 
+# ruff: noqa: F811 - the fixtures come in by import and are used as arguments
 from __future__ import annotations
 
 import re
@@ -90,7 +91,7 @@ class Q5Zoho(ZohoTenant):
 
 
 @pytest.fixture
-def zoho(ns, monkeypatch):  # noqa: F811 - a fixture
+def zoho(ns, monkeypatch):
     """Two fresh fake tenants, wired under every provider call."""
     from gateway.crm_sync import engine
 
