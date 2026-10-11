@@ -8,12 +8,23 @@
 
 import { fieldText, type FieldValue as Value } from "../lib/fields";
 
-export default function FieldValue({ value }: { value: Value }) {
+/** The most chips a record page shows, and the most a list cell shows. */
+export const CHIP_CAP_RECORD = 20;
+export const CHIP_CAP_CELL = 3;
+
+export default function FieldValue({
+  value,
+  compact = false,
+}: {
+  value: Value;
+  /** A list cell. It shows fewer chips. */
+  compact?: boolean;
+}) {
   switch (value.kind) {
     case "chips":
       return (
         <span className="flex flex-wrap gap-1">
-          {value.items.map((item, i) => (
+          {value.items.slice(0, compact ? CHIP_CAP_CELL : CHIP_CAP_RECORD).map((item, i) => (
             <span
               key={`${item}-${i}`}
               className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-foreground"
@@ -21,6 +32,11 @@ export default function FieldValue({ value }: { value: Value }) {
               {item}
             </span>
           ))}
+          {value.items.length > (compact ? CHIP_CAP_CELL : CHIP_CAP_RECORD) && (
+            <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+              +{value.items.length - (compact ? CHIP_CAP_CELL : CHIP_CAP_RECORD)}
+            </span>
+          )}
         </span>
       );
     case "link":

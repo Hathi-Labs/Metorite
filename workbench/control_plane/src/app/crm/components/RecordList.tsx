@@ -185,7 +185,7 @@ export default function RecordList({
                 ))}
                 {extra.map((def) => (
                   <td key={`custom:${def.key}`} className="px-4 py-2 text-muted-foreground">
-                    <FieldValue value={listCell(row, def)} />
+                    <FieldValue value={listCell(row, def)} compact />
                   </td>
                 ))}
               </tr>

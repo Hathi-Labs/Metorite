@@ -73,6 +73,24 @@ describe("formatting a custom field by its type", () => {
     expect(html).toContain('href="mailto:a@b.in"');
   });
 
+  it("never builds a mailto from a value that carries a query", () => {
+    for (const bad of ["a@b.com?bcc=x&subject=y", "a@b.com#x", "a@b.com%0Abcc:x", "a@b.com&x=1", "a@b.com y"]) {
+      expect(formatField(def("e", "email"), bad).kind).toBe("text");
+      expect(draw(def("e", "email"), bad)).not.toContain("mailto:");
+    }
+  });
+
+  it("caps the chips: 20 on the record page, 3 in a list cell, then a +N chip", () => {
+    const items = Array.from({ length: 10000 }, (_, i) => `v${i}`);
+    const value = formatField(def("m", "multiselect"), items);
+    const record = renderToStaticMarkup(createElement(FieldValue, { value }));
+    expect(record.match(/rounded-full/g)).toHaveLength(21);
+    expect(record).toContain("+9980");
+    const cell = renderToStaticMarkup(createElement(FieldValue, { value, compact: true }));
+    expect(cell.match(/rounded-full/g)).toHaveLength(4);
+    expect(cell).toContain("+9997");
+  });
+
   it("reads the display name of a lookup", () => {
     expect(formatField(def("l", "lookup"), { name: "Bosch", id: "9" })).toEqual({ kind: "text", text: "Bosch" });
   });

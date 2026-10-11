@@ -46,7 +46,8 @@ export function safeHref(value: unknown): string | null {
 }
 
 function isEmail(value: string): boolean {
-  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value);
+  // `?`, `&`, `#` and `%` would let a value add a bcc or a subject to the draft.
+  return /^[^\s@<>?&#%]+@[^\s@<>?&#%]+\.[^\s@<>?&#%]+$/.test(value);
 }
 
 /** The name of a lookup value `{name, id}`, or null when it is not one. */
