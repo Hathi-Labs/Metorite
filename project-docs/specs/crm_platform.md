@@ -1016,3 +1016,163 @@ Zoho and Gmail. D95.3 stays inside that.
   must do that first.
 - **It read one key in the box `.env`.** `CRM_ZOHO_SYNC=false`, and no Zoho
   refresh token is set. It printed no secret.
+
+---
+
+## 18. Zoho parity and the adaptive mirror (2026-10-12)
+
+**Bottom line.** The mirror must work for every Zoho edition, from Free to
+Enterprise and Ultimate, and for every customer's own modules and fields. So
+the mirror reads the shape of the customer's Zoho first, then maps what it
+knows by fixed rules. A generic store holds the rest. An AI assistant proposes
+a mapping where the rules do not know, and an admin approves it. The sync
+applies saved rules only. The CRM layout changes to the words that Zoho users
+know: one **Deals** view with a board or list switch and a pipeline picker. A
+separate "Pipeline" row does not exist.
+
+**Why.** On 2026-10-12 the owner reported three things. Pipeline settings did
+not open. "Pipeline" read as a third object beside Leads and Deals. The CRM
+did not have the views and settings that a Zoho mirror needs. The owner then
+asked for comprehensive research, and for a mirror that adapts to each
+customer's Zoho tier, with AI help where the mapping is not clear.
+
+### 18.1 What the research found
+
+The research was done on 2026-10-12. It read the documentation of Zoho CRM, the
+Zoho API v8, HubSpot, Salesforce, Pipedrive, Attio, Close and Freshsales, and
+buyer guides. The full note stays outside the repository, because it is a
+working note.
+
+1. **A pipeline is not an object in Zoho.** It is a property of a Deal. A Deal
+   has a `Pipeline` field and a `Stage` field. A pipeline is an ordered subset
+   of the one Stage picklist, attached to a layout. Leads have no pipeline.
+   They have one flat `Lead_Status` picklist.
+2. **The layout of our CRM shows one entity twice.** The rail row "Pipeline"
+   is the deal board, and the rail row "Deals" is the deal list.
+3. **The mirror flattens the customer's Zoho.** We keep one list of deal
+   stages, with no pipeline. `crm_field_defs` (migration 244) is written and
+   never read. Tasks, converted leads, deal contact roles, Products, Quotes,
+   attachments and custom modules are not mirrored. A record shows no related
+   lists, and the list views have no saved views and no filter on a custom
+   field.
+4. **Zoho differs by edition.** The modules, the number of pipelines, the
+   custom modules, the API credits and the concurrency all change with the
+   edition. A mirror that assumes one edition breaks on another.
+
+### 18.2 Owner answers (2026-10-12, in chat)
+
+| Question | Answer | Effect |
+|---|---|---|
+| Fracktal's Zoho edition | Professional | Products and Quotes exist to mirror. Pipelines stay P0, because the mirror must not assume one edition |
+| Does Fracktal rely on Zoho sharing rules? | No. Everyone sees all | Per-owner visibility in the mirror stays P1 |
+| Deal currencies | INR only | Currency conversion in totals moves to P1 |
+| "Accounts" or "Companies" in Mirror mode | "Companies" everywhere | No label alias. D95.2 holds |
+
+### 18.3 The adaptive mirror
+
+**Step 1: discovery.** At connect, and once a day after that, the sync reads
+the shape of the customer's Zoho. It reads metadata only, never a record:
+
+| Read | Zoho API | What it gives |
+|---|---|---|
+| Org | `GET /org` | Edition, home currency, multi-currency, time zone, `domain_name` (for the deep link) |
+| Modules | `GET /settings/modules` | Each module, standard or custom, with its labels, `api_supported` and visibility |
+| Layouts | `GET /settings/layouts?module=` | Sections and the fields in each section |
+| Fields | `GET /settings/fields?module=` | Type, picklist values, lookup target, custom or standard |
+| Pipelines | `GET /settings/pipeline?layout_id=` | Each deal pipeline and its stages |
+| Users | `GET /users` | The owner map |
+
+The result is one **source profile** for each connection. It is versioned, so
+a change in the customer's Zoho shows as a new version.
+
+**Step 2: three mapping layers, in this order.**
+
+1. **Known modules go to our tables, by fixed rules.** Leads, Contacts,
+   Accounts, Deals, Notes, Calls, Events and Tasks.
+2. **The other modules go to one generic record store.** That covers the
+   standard modules we do not model yet: Products, Quotes, Sales Orders,
+   Invoices, Vendors, Price Books, Campaigns and Cases. It also covers each
+   custom module. A generic record keeps its fields in JSON, described by
+   `crm_field_defs`. Its lookups become links. The UI shows a generic list and
+   a generic record page for each module. A module can move to its own table
+   in a later slice, and the generic store then hands its rows over.
+3. **Fields.** A field that maps to one of our columns goes there, by a fixed
+   rule. Every other field goes to `custom`, described by `crm_field_defs`.
+
+**Step 3: the AI mapping assistant, for unclear cases only.** It proposes a
+mapping where the fixed rules do not decide. Two examples: a custom deal field
+that is a product reference, or a custom module that is an install base linked
+to Accounts.
+
+- It reads metadata only: module and field names, types, labels and picklist
+  values. It never reads a customer record.
+- It goes through the Router, so the AI spend is metered.
+- Each proposal has a target, a confidence and one sentence of reason.
+- A proposal becomes a **mapping rule** only when an admin approves it in
+  **CRM settings → Field map**. The sync applies rules and never calls the
+  model for a record. So each record maps the same way, and a re-sync gives
+  the same result.
+- With no approved rule, the data stays in the generic store or in `custom`.
+  Nothing is lost while the admin decides.
+
+**Step 4: the app follows the profile.**
+
+- The rail shows the modules that the customer has. A module that the edition
+  does not have does not show.
+- A deal pipeline picker shows only when the org has more than one pipeline.
+- The default sync budget follows the edition's daily API credits, read from
+  the profile. The 500-credit default of CRM-Z5 stays as the floor for an
+  unknown edition.
+- The CRM settings page shows what the mirror leaves out. Examples: a module
+  that the API does not support, records skipped, and the Notes that a
+  non-admin Zoho user cannot read.
+
+### 18.4 The layout of the CRM
+
+| Rail row | Opens |
+|---|---|
+| Leads | List, with a list or board switch. The board columns are the Lead Status values |
+| Contacts | List |
+| Companies | List |
+| Deals | List, with a list or board switch. A pipeline picker shows when there are two or more pipelines |
+| Activities | Tasks, calls and meetings |
+| *A row for each mirrored generic module* | Generic list and record page, for example Products and Quotes |
+| Reports | Forecast, funnel, win and loss, owners |
+| CRM settings | Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Field map, Sync health |
+
+The row "Pipeline" goes. The record page gets **related lists**: a company
+shows its contacts and deals, a contact shows its deals, and a deal shows its
+contacts with their roles.
+
+### 18.5 Tickets
+
+Each migration takes the next free number at build time (R1). Each new table
+has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
+
+| Id | What | Priority |
+|---|---|---|
+| **CRM-Q1** | Discovery and the source profile. The edition-aware budget. `domain_name` and the deep link ("Open in Zoho") | P0 |
+| **CRM-Q2** | Deal pipelines: `crm_pipelines`, the stages of each pipeline, `crm_deals.pipeline_id`, and the forecast category | P0 |
+| **CRM-Q3** | The new layout of §18.4: no "Pipeline" row, the list or board switch, the pipeline picker, the Leads board, "CRM settings", and related lists | P0 |
+| **CRM-Q4** | Field definitions in the UI: `GET /crm/fields/{entity}`, custom fields with label, type and order on the record page | P0 |
+| **CRM-Q5** | Data that the mirror loses: converted leads (`converted=both`), Zoho Tasks, and deal contact roles | P0 |
+| **CRM-Q6** | The generic record store and its views. Products and Quotes first, then each custom module | P0 |
+| **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
+| **CRM-Q8** | Filters on pipeline, stage, owner, source, dates and custom picklists. Saved views (`crm_views`) | P0 |
+| **CRM-Q9** | Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
+| **CRM-Q10** | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
+| **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
+| **CRM-Q12** | Per-owner visibility in the mirror | P1 |
+| **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
+
+The earlier native gaps of §6 (CRM-S1 to CRM-S12) and the insights of §9 keep
+their own rows. CRM-Q8 builds the saved views of CRM-S2.
+
+### 18.6 The settings page that did not open
+
+The owner saw the CRM stop when they opened Pipeline settings on 2026-10-11. A
+local run of the same code, in a production build, did not reproduce it. The
+gateway logged no error and no request for the groups list. The most likely
+cause is a browser tab that stayed open across several deploys and held old
+script files. CRM-Q3 replaces that view. If it happens again, capture the
+browser console and the network tab.
