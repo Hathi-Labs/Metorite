@@ -708,9 +708,9 @@ test.describe("a category folds, per account", () => {
     // While the member is on one of its apps, its fold is off, so a press
     // never seems to do nothing.
     await expect(heading(page, "across")).toHaveAttribute("aria-disabled", "true");
+    // ONE press: two would cancel out, and prove nothing.
     await heading(page, "across").focus();
     await page.keyboard.press("Enter");
-    await heading(page, "across").click({ force: true });
     await expect(heading(page, "across")).toHaveAttribute("aria-expanded", "true");
     await expect(heading(page, "studio")).not.toHaveAttribute("aria-disabled", "true");
     // The presses stored nothing: away from People, Apps is still open.
