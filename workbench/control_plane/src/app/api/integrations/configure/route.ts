@@ -4,8 +4,9 @@
  * Proxies to POST /integrations/configure on the FastAPI gateway.
  * Body: { vars: [{ key: string; value: string }] }
  *
- * The gateway validates against an allowlist and writes to .env,
- * then hot-reloads Settings.
+ * The gateway validates against an allowlist and stores each value in the
+ * credential store of the caller's organization. It writes nothing to .env
+ * or to the process env (WS-54 IN-0).
  */
 
 import { NextRequest, NextResponse } from "next/server";

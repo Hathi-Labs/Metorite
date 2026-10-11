@@ -7,8 +7,10 @@ GET  /integrations/status?agent={name}
     Also returns setup guides (links, required env vars) for unconfigured ones.
 
 POST /integrations/configure
-    Writes one or more credentials to the .env file and hot-reloads Settings.
-    Restricted to admin/executive role.
+    Writes one or more credentials to the credential store of the caller's
+    organization. It writes nothing to ``os.environ`` or to the env file
+    (WS-54 IN-0, D96.3). It needs the executive or agent role and
+    ``integrations:manage``.
 
 GET  /integrations/test?service={name}
     Performs a lightweight connectivity check for a configured integration.
@@ -25,11 +27,19 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from acb_auth import UserContext, UserRole, get_current_user, require_feature_router, require_role
+from acb_auth import (
+    UserContext,
+    UserRole,
+    get_current_user,
+    require_feature_router,
+    require_permission,
+    require_role,
+)
 from acb_common import env_guard, get_logger, get_settings
 from acb_common.child_env import child_env, env_values
 from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
+from gateway import outbound_guard
 from gateway.db import current_tenant
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -40,6 +50,12 @@ router = APIRouter(
     prefix="/integrations", tags=["integrations"],
     dependencies=[require_feature_router("integrations")],
 )
+
+#: The gate of every route here that writes (WS-54 IN-0). A read stays on
+#: the router gate `feature:integrations`. `routes/oauth.py` uses the same
+#: permission. Fence: the route walk in `tests/unit/test_integrations_in0.py`.
+MANAGE_PERMISSION = "integrations:manage"
+_REQUIRE_MANAGE = require_permission(MANAGE_PERMISSION)
 
 # ── MT-1j slice 5 · the tenant on this surface ─────────────────────────
 #
@@ -61,22 +77,34 @@ router = APIRouter(
 # sole-org resolution and its fail-closed arm at org #2 are unchanged. What
 # changes is that an authenticated caller now resolves to THEIR organization.
 #
-# 🚫 **The `os.environ[...] = value` / `_upsert_env_var(env_path, ...)` halves of
-# `configure_integrations`, `put_integration_key` and `delete_integration_key`
-# are NOT tenantable and are a known cross-tenant write** — the same class as
-# `settings.py::_inject_env_into_litellm`. A process-global env var and a single
-# `.env` file have one value for the whole deployment, so org #2 saving
-# `ZOHO_CLIENT_ID` overwrites org #1's for every caller and every agent reading
-# it through `get_settings()`. Recorded here, deliberately NOT repaired: the fix
-# is per-request provider credentials, which is the same owner-gated
-# credential-scope change the H4 sites wait on (`work_plan.md` §6 gate (f)).
-# `_is_configured` and `missing_keys` below read those env vars, so
-# `/integrations/status`'s `configured` / `env-file` columns stay deployment-wide
-# too — only the `db_keys` / `encrypted-db` half is per organization.
+# 🔒 **No route in this module writes `os.environ` or the env file** (WS-54
+# IN-0, D96.3, 2026-10-11). A process env var and one `.env` file have one
+# value for the whole deployment. So when org #2 saved `ZOHO_CLIENT_ID`, it
+# replaced the value of org #1 for every caller. Configure, `PUT` and `DELETE
+# /integrations/keys` and the GitHub device poll now write the store of the
+# caller's organization only. `connect-cli` answers 410, and the OAuth routes
+# of `routes/oauth.py` are retired. The fence is
+# `tests/unit/test_integrations_in0.py`, an AST scan of both files. Do not
+# restore an env write here, because it is a cross-tenant write.
 #
-# 🔒 **Three layers narrow that write (security fix, 2026-10-05, round 1).**
-# They only remove ability. The rule for A and B lives in ONE module,
-# `acb_common.env_guard`.
+# ⚠️ **The cost, and why it is small.** A key that a member saves here stops
+# reaching an agent until IN-3 gives the resolvers per-run credentials. The
+# startup copy (`ProviderKeyStore.configure_integrations`) stays until IN-5
+# (gate f). It reads untenanted, so with two or more organizations
+# `_resolve_org(None)` fails closed, and the copy reads nothing. Production
+# has more than one organization. On a box with one organization, that
+# organization is the only tenant, so the copy crosses no tenant line.
+# `_is_configured` and `missing_keys` below still read the env, so the
+# `configured` and `env-file` columns of `/integrations/status` stay
+# deployment-wide until IN-1.
+#
+# 🔒 **Every writer needs `integrations:manage`** (`_REQUIRE_MANAGE`, IN-0).
+# The router gate `feature:integrations` still covers each read. The fence is
+# the route walk in `tests/unit/test_integrations_in0.py`.
+#
+# 🔒 **Three layers check each key and value before the store write**
+# (security fix, 2026-10-05, round 1). They only remove ability. The rule for
+# A and B lives in ONE module, `acb_common.env_guard`.
 #   A. A key or a value with a control character or a line separator is 400.
 #      So is a value over 4096 bytes, and a value that the shell reads as
 #      code under `source`.
@@ -87,15 +115,13 @@ router = APIRouter(
 #      The keys of the mail apps are platform names, so no tenant can aim
 #      the mail connect at a client of their own (WS-17 EM-G7, O-GM-5).
 #   C. THE GATE. Only a key in `BUILTIN_ENV_KEYS`, which a built-in guide
-#      declares, reaches `os.environ` and the env file. A key that a custom
-#      integration declares goes to the store of the organization only. Any
-#      other key is 422. The deny list of B can never be complete, so C does
-#      not depend on it.
+#      declares, is stored as an `integration` row. A key that a custom
+#      integration declares is stored as a `custom` row. Any other key is
+#      422. The deny list of B can never be complete, so C does not depend
+#      on it.
 # The BYOK gate covers GITHUB_TOKEN on put, delete and the GitHub writers.
-# Each route checks the WHOLE request before its first write, and
-# `_upsert_env_var` checks again. The fence is
-# `tests/unit/test_integrations_env_hardening.py`. Per-request credentials,
-# which would end the env write, stay owner gate §6 (f).
+# Each route checks the WHOLE request before its first write. The fence is
+# `tests/unit/test_integrations_env_hardening.py`.
 
 # ---------------------------------------------------------------------------
 # Static setup guides — one entry per registered integration.
@@ -444,9 +470,9 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 #   `os.environ` win, so a tenant value would read another member's mail.
 # * `BUILTIN_ENV_KEYS`: the allowlist. The guide keys minus the operator-only
 #   keys minus the platform names (the mail-app keys). Configure and
-#   `PUT /integrations/keys` write `os.environ` and the env file for these
-#   keys only. A key that a CUSTOM integration declares goes to the
-#   per-organization store and never to the env.
+#   `PUT /integrations/keys` store these keys as `integration` rows of the
+#   organization. A key that a CUSTOM integration declares is stored as a
+#   `custom` row. No route here writes the env (IN-0).
 #   SMTP_USERNAME stays here on purpose. It is half of a credential pair with
 #   SMTP_PASSWORD, and it names an account on the host that the operator
 #   chose. It routes no request to a new host, and it selects no mailbox.
@@ -470,6 +496,20 @@ BUILTIN_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS
     if k not in OPERATOR_ONLY_ENV_KEYS and not env_guard.is_platform_env(k)
 )
+#: Each built-in env var, and the ``(service, suffix)`` of its store row. It is
+#: read from ``acb_llm.key_store.INTEGRATION_ENV_MAP``, which the startup copy
+#: also reads, so a key that configure or ``PUT /keys`` stores lands under the
+#: one name that a reader uses (WS-54 IN-0 fix round 1). The old rule took the
+#: suffix from the guide key and stripped ``<service>_``. That never matched a
+#: service id with a hyphen, so ``ZOHO_CLIENT_ID`` went to
+#: ``zoho-crm:zoho_client_id`` and no reader found it. Fence:
+#: ``test_integrations_in0.py::test_configure_stores_the_name_the_startup_copy_reads``.
+BUILTIN_PROVIDER: dict[str, tuple[str, str]] = {
+    env: (svc, suffix)
+    for svc, key_map in INTEGRATION_ENV_MAP.items()
+    for suffix, env in key_map.items()
+    if env in BUILTIN_ENV_KEYS
+}
 #: The ids of the mail apps (WS-17 EM-G7, O-GM-5). No tile offers a key of
 #: either one, and the key store loads neither at startup. They stay
 #: reserved, so a custom integration cannot take the name of a mail app.
@@ -609,9 +649,15 @@ def _refuse_provider_key_without_byok(names: Iterable[str]) -> None:
 def _guide_env_var(service: str, key_name: str) -> str | None:
     """The env var that a setup guide maps ``key_name`` to, or None.
 
-    The same suffix rule as the loops in ``put_integration_key`` and
-    ``delete_integration_key``.
+    ``key_name`` is first read as a suffix of ``INTEGRATION_ENV_MAP``, the
+    name of the store row (``client_id`` for ``ZOHO_CLIENT_ID``). The old
+    guide suffix rule (``zoho_client_id``) still resolves, so a row that an
+    older write named that way can still be found and deleted.
     """
+    mapped = INTEGRATION_ENV_MAP.get(service, {}).get(key_name)
+    guide_keys = {v["key"] for v in _SETUP_GUIDES.get(service, {}).get("env_vars", [])}
+    if mapped and mapped in guide_keys:
+        return str(mapped)
     for var in _SETUP_GUIDES.get(service, {}).get("env_vars", []):
         suffix = var["key"].lower().removeprefix(
             f"{service}_".upper().lower()
@@ -884,26 +930,27 @@ def _custom_status_row(
 
 @router.post(
     "/configure",
-    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT)],
+    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT), _REQUIRE_MANAGE],
 )
 async def configure_integrations(
     req: ConfigureRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Write integration credentials to the encrypted DB credential store.
+    """Write integration credentials to the store of the caller's organization.
 
     Credentials are encrypted at rest with the same ACB_MASTER_KEY used
-    for LLM provider keys.  They are also set in os.environ for immediate
-    effect and written to .env as a bootstrap fallback.
+    for LLM provider keys. 🔒 Nothing goes to ``os.environ`` or to the env
+    file (WS-54 IN-0, D96.3). A failed store write answers 503, because the
+    store is the only place a value goes.
 
     🔒 Layers A (400), B (403) and C (422) refuse the WHOLE request before
-    any write (2026-10-05). A value is written with its surrounding space
-    removed, which is the value systemd reads from the file anyway.
+    any write (2026-10-05). A value is stored with its surrounding space
+    removed.
 
-    🔒 Layer C, round 1: only a key in ``BUILTIN_ENV_KEYS`` reaches
-    ``os.environ`` and the env file. A key that a registered CUSTOM
-    integration declares goes to the store of the organization ONLY, and the
-    answer lists it under ``store_only``. Any other key is 422.
+    🔒 Layer C, round 1: a key in ``BUILTIN_ENV_KEYS`` is stored as an
+    ``integration`` row, and the answer lists it under ``written``. A key that
+    a registered CUSTOM integration declares is stored as a ``custom`` row,
+    and the answer lists it under ``store_only``. Any other key is 422.
     """
     # Layers A and B, over every key and value of the request.
     _refuse_unsafe_env_writes(
@@ -965,15 +1012,6 @@ async def configure_integrations(
     _refuse_provider_key_without_byok(v.key for v in req.vars)
 
 
-    # Build reverse mapping: env_var → (service, suffix)
-    _env_to_service_suffix: dict[str, tuple[str, str]] = {}
-    for svc, guide in _SETUP_GUIDES.items():
-        for var in guide["env_vars"]:
-            suffix = var["key"].lower().removeprefix(f"{svc}_".upper().lower()) \
-                .replace("-", "_")
-            _env_to_service_suffix[var["key"]] = (svc, suffix)
-
-    env_path = _find_env_file()
     written: list[str] = []
     db_written: list[str] = []
     store_only: list[str] = []
@@ -985,11 +1023,11 @@ async def configure_integrations(
         if not value:
             continue  # skip empties
 
-        # 0. A custom key: the store of this organization, and nothing else.
-        #    No `os.environ`, no env file. A failed put is an error, because
-        #    the store is the only place the value goes. The `custom:` name and
-        #    the 'custom' type keep it out of every built-in slot, and the
-        #    startup load reads only 'integration' rows (round 2).
+        # 0. A custom key: the store of this organization, as a `custom` row.
+        #    A failed put is an error, because the store is the only place
+        #    the value goes. The `custom:` name and the 'custom' type keep it
+        #    out of every built-in slot, and the startup load reads only
+        #    'integration' rows (round 2).
         if var.key not in BUILTIN_ENV_KEYS:
             custom_svc = custom_services[var.key]
             provider = f"custom:{custom_svc}:{var.key.lower()}"
@@ -1014,39 +1052,36 @@ async def configure_integrations(
             _log.info("integrations.configure_custom", key=var.key, actor=user.email)
             continue
 
-        # 1. Write to encrypted DB store (primary persistence)
-        svc_suffix = _env_to_service_suffix.get(var.key)
-        if svc_suffix:
-            svc, suffix = svc_suffix
-            provider = f"{svc}:{suffix}"
-            try:
-                await store.put(
-                    provider,
-                    value,
-                    credential_type="integration",
-                    service=svc,
-                    organization_id=current_tenant(),
-                )
-                db_written.append(provider)
-            except Exception as exc:
-                _log.warning(
-                    "integrations.db_write_failed",
-                    key=var.key,
-                    provider=provider,
-                    error=str(exc),
-                )
-
-        # 2. Set in current process env (immediate effect)
-        # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired —
-        # see the MT-1j slice 5 block at the top of this module. Steps 2
-        # and 3 have one value for the whole deployment; only step 1 above
-        # is per organization.
-        os.environ[var.key] = value
-
-        # 3. Write to .env as bootstrap fallback (still useful for
-        #    bare-metal dev and first-boot before DB is available)
-        _upsert_env_var(env_path, var.key, value)
-
+        # 1. A built-in key: the store of this organization, as an
+        #    `integration` row. 🔒 IN-0: nothing goes to `os.environ` or the
+        #    env file, because each has one value for the whole deployment.
+        #    So a failed put answers 503. Before IN-0 it was swallowed, and
+        #    the env write carried the value. Now a swallowed failure would
+        #    answer 200 with nothing written. Layer C makes every key here a
+        #    built-in key, so `BUILTIN_PROVIDER` always holds it, under the
+        #    name that the startup copy reads.
+        svc, suffix = BUILTIN_PROVIDER[var.key]
+        provider = f"{svc}:{suffix}"
+        try:
+            await store.put(
+                provider,
+                value,
+                credential_type="integration",
+                service=svc,
+                organization_id=current_tenant(),
+            )
+        except Exception as exc:
+            _log.warning(
+                "integrations.db_write_failed",
+                key=var.key,
+                provider=provider,
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Could not store {var.key} for this organization.",
+            ) from None
+        db_written.append(provider)
         written.append(var.key)
         _log.info(
             "integrations.configure",
@@ -1054,20 +1089,11 @@ async def configure_integrations(
             actor=user.email,
         )
 
-    # Bust the settings LRU cache so the live process reads new values
-    from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-    _gs.cache_clear()
-
     return {
         "written": written,
         "db_stored": db_written,
         "store_only": store_only,
-        "env_file": str(env_path),
-        "reload": "Settings cache cleared — new values active immediately.",
-        "storage": (
-            "Credentials stored in encrypted Postgres (primary) + "
-            ".env (bootstrap fallback)."
-        ),
+        "storage": "Credentials stored in encrypted Postgres for this organization.",
     }
 
 
@@ -1115,15 +1141,15 @@ async def list_integration_keys(
     }
 
 
-@router.put("/keys")
+@router.put("/keys", dependencies=[_REQUIRE_MANAGE])
 async def put_integration_key(
     req: IntegrationKeyRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Store or update a single integration credential in the encrypted DB.
 
-    Also sets the corresponding os.environ variable for immediate effect
-    and writes to .env as a bootstrap fallback.
+    🔒 It writes the store of the caller's organization only, and never
+    ``os.environ`` or the env file (WS-54 IN-0, D96.3).
 
     🔒 Layers A (400) and B (403) run before the store write (2026-10-05).
     The value is written with its surrounding space removed.
@@ -1147,21 +1173,12 @@ async def put_integration_key(
 
     # Find the env var for this key
     guide = _SETUP_GUIDES[req.service]
-    env_var = None
-    for var in guide["env_vars"]:
-        suffix = var["key"].lower().removeprefix(
-            f"{req.service}_".upper().lower()
-        ).replace("-", "_")
-        if suffix == req.key_name:
-            env_var = var["key"]
-            break
+    env_var = _guide_env_var(req.service, req.key_name)
 
     if env_var is None:
         known_keys = [
-            v["key"].lower().removeprefix(
-                f"{req.service}_".upper().lower()
-            ).replace("-", "_")
-            for v in guide["env_vars"]
+            BUILTIN_PROVIDER[v["key"]][1]
+            for v in guide["env_vars"] if v["key"] in BUILTIN_PROVIDER
         ]
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1171,51 +1188,32 @@ async def put_integration_key(
             ),
         )
 
-    # Layers A and B, before the store write, the env var and the file. Then
-    # the BYOK gate: GITHUB_TOKEN is a provider key (round 1, decision 4).
+    # Layers A and B, before the store write. Then the BYOK gate:
+    # GITHUB_TOKEN is a provider key (round 1, decision 4).
     _refuse_unsafe_env_writes([(env_var, value)], actor=user.email)
     _refuse_provider_key_without_byok([env_var])
 
-    # Store in encrypted DB
-    provider = f"{req.service}:{req.key_name}"
+    # Store in encrypted DB, for this organization only. 🔒 IN-0: the env var
+    # and the env file are NOT written. Each has one value for the whole
+    # deployment, so that write replaced the key of every other organization.
+    # The row takes the name that the startup copy reads (`BUILTIN_PROVIDER`).
+    # Layer B passed, so `env_var` is a built-in key.
+    if env_var not in BUILTIN_PROVIDER:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{env_var} is not a key that an integration can store.",
+        )
+    svc, suffix = BUILTIN_PROVIDER[env_var]
+    provider = f"{svc}:{suffix}"
     from acb_llm.key_store import get_key_store
     store = get_key_store()
     await store.put(
         provider,
         value,
         credential_type="integration",
-        service=req.service,
+        service=svc,
         organization_id=current_tenant(),
     )
-
-    # Set in current process env (immediate effect)
-    # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
-    # MT-1j slice 5 block at the top of this module. The store write above is
-    # per organization; these two are deployment-wide.
-    #
-    # ⚠️ And on THIS route they are newly REACHABLE, which is not true of the
-    # store half. Before the tenant was threaded, the untenanted `store.put`
-    # above raised (`_resolve_org` → "" → RuntimeError) the moment a second
-    # organization existed, so the handler 500'd BEFORE reaching these lines —
-    # an accidental fail-closed arm, not a design. Now the put succeeds for a
-    # tenant-bound caller and the process-global writes below RUN: env var,
-    # `.env` file, settings cache_clear. That is new in COUNT, not in kind —
-    # the same deployment-wide write is already reachable today via
-    # `POST /integrations/configure` (whose put failure is swallowed into
-    # `integrations.db_write_failed` and continues) and via
-    # `DELETE /integrations/keys` (whose `os.environ.pop` is unconditional).
-    # Fixing the reachability by re-breaking the write would be repairing the
-    # fail-closed contract in the wrong direction (D33 finding 3); the fix is
-    # per-request provider credentials — `work_plan.md` §6 gate (f).
-    os.environ[env_var] = value
-
-    # Write to .env as bootstrap fallback
-    env_path = _find_env_file()
-    _upsert_env_var(env_path, env_var, value)
-
-    # Bust settings cache
-    from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-    _gs.cache_clear()
 
     _log.info(
         "integrations.key_put",
@@ -1235,16 +1233,19 @@ async def put_integration_key(
     }
 
 
-@router.delete("/keys")
+@router.delete("/keys", dependencies=[_REQUIRE_MANAGE])
 async def delete_integration_key(
     req: IntegrationKeyDelete,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Remove a single integration credential from the encrypted DB.
 
-    🔒 Layer B (403) runs before the store delete (2026-10-05). The pop below
-    unsets the variable for every organization, so a platform name such as a
-    mail-app key is refused, and nothing is deleted.
+    🔒 It deletes the row of the caller's organization only. It does not
+    unset the env var (WS-54 IN-0), because that unset the value for every
+    organization on the box.
+
+    🔒 Layer B (403) runs before the store delete (2026-10-05). A platform
+    name such as a mail-app key is refused, and nothing is deleted.
     """
     if req.service not in _SETUP_GUIDES:
         raise HTTPException(
@@ -1261,20 +1262,6 @@ async def delete_integration_key(
     from acb_llm.key_store import get_key_store
     store = get_key_store()
     await store.delete(provider, organization_id=current_tenant())
-
-    # Find and clear the env var
-    # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
-    # MT-1j slice 5 block at the top of this module. The delete above removes
-    # only this organization's row; the pop below unsets the variable for the
-    # whole process, i.e. for every other organization too.
-    guide = _SETUP_GUIDES[req.service]
-    for var in guide["env_vars"]:
-        suffix = var["key"].lower().removeprefix(
-            f"{req.service}_".upper().lower()
-        ).replace("-", "_")
-        if suffix == req.key_name:
-            os.environ.pop(var["key"], None)
-            break
 
     _log.info(
         "integrations.key_deleted",
@@ -1299,7 +1286,7 @@ class DiscoverRequest(BaseModel):
     query: str  # e.g. "Notion", "Slack", "HubSpot"
 
 
-@router.post("/discover")
+@router.post("/discover", dependencies=[_REQUIRE_MANAGE])
 async def discover_api(
     req: DiscoverRequest,
     user: UserContext = Depends(get_current_user),
@@ -1488,7 +1475,7 @@ async def list_custom_apis(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.post("/custom")
+@router.post("/custom", dependencies=[_REQUIRE_MANAGE])
 async def create_custom_api(
     req: CustomApiDef,
     user: UserContext = Depends(get_current_user),
@@ -1562,7 +1549,7 @@ async def create_custom_api(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.delete("/custom/{service_id}")
+@router.delete("/custom/{service_id}", dependencies=[_REQUIRE_MANAGE])
 async def delete_custom_api(
     service_id: str,
     user: UserContext = Depends(get_current_user),
@@ -1759,25 +1746,50 @@ class McpServerRequest(BaseModel):
     enabled: bool = True
 
 
+#: The MCP list of one organization. It selects the KEYS of ``env_vars`` and
+#: ``headers`` and never a value (IN-0). A row whose JSON is not an object
+#: gives no names, and does not fail the whole list.
+_MCP_LIST_SQL = (
+    "SELECT name, label, description, transport, command, url, "
+    "CASE WHEN jsonb_typeof(env_vars) = 'object' "
+    "THEN ARRAY(SELECT jsonb_object_keys(env_vars) ORDER BY 1) "
+    "ELSE ARRAY[]::text[] END AS env_var_names, "
+    "CASE WHEN jsonb_typeof(headers) = 'object' "
+    "THEN ARRAY(SELECT jsonb_object_keys(headers) ORDER BY 1) "
+    "ELSE ARRAY[]::text[] END AS header_names, "
+    "agent_scope, enabled, created_at, updated_at "
+    "FROM mcp_servers WHERE organization_id = :org ORDER BY created_at"
+)
+
+
 @router.get("/mcp", summary="List registered MCP servers")
 async def list_mcp_servers(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """Return all MCP servers (enabled + disabled)."""
+    """Return the MCP servers of the caller's organization (enabled + disabled).
+
+    🔒 WS-54 IN-0. ``mcp_servers`` is exempt from RLS
+    (``scripts/gen_tenant_migration.py``), so a ``tenant_session`` would
+    filter nothing. The ``organization_id`` predicate here IS the boundary.
+    With no tenant bound, the answer is empty, and no row of any organization
+    is read. It returns the NAMES of the headers and env vars, never a value,
+    because a value is a credential.
+    """
+    org = current_tenant()
+    if not org:
+        return []
     try:
         from acb_graph import get_session  # noqa: PLC0415
         with get_session() as s:
             rows = s.execute(
-                text("SELECT name, label, description, transport, command, url, "
-                "env_vars, headers, agent_scope, enabled, created_at, updated_at "
-                "FROM mcp_servers ORDER BY created_at")
+                text(_MCP_LIST_SQL), {"org": org},
             ).fetchall()
         result: list[dict[str, Any]] = []
         for r in rows:
             result.append({
                 "name": r[0], "label": r[1], "description": r[2],
                 "transport": r[3], "command": r[4], "url": r[5],
-                "env_vars": r[6] or {}, "headers": r[7] or {},
+                "env_var_names": list(r[6] or []), "header_names": list(r[7] or []),
                 "agent_scope": r[8] or ["*"], "enabled": r[9],
                 "created_at": str(r[10]) if r[10] else None,
                 "updated_at": str(r[11]) if r[11] else None,
@@ -1788,7 +1800,10 @@ async def list_mcp_servers(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.post("/mcp", status_code=status.HTTP_201_CREATED, summary="Register or update an MCP server")
+@router.post(
+    "/mcp", status_code=status.HTTP_201_CREATED,
+    summary="Register or update an MCP server", dependencies=[_REQUIRE_MANAGE],
+)
 async def register_mcp_server(
     req: McpServerRequest,
     user: UserContext = Depends(get_current_user),
@@ -1831,17 +1846,32 @@ async def register_mcp_server(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.delete("/mcp/{name}", summary="Remove an MCP server")
+@router.delete(
+    "/mcp/{name}", summary="Remove an MCP server", dependencies=[_REQUIRE_MANAGE],
+)
 async def remove_mcp_server(
     name: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Delete an MCP server from the registry."""
+    """Delete an MCP server of the caller's organization from the registry.
+
+    🔒 WS-54 IN-0. The ``organization_id`` predicate is the boundary, because
+    ``mcp_servers`` is exempt from RLS. A name that another organization
+    holds is 404 here, and its row stays. With no tenant bound, it is 404
+    and nothing is deleted.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
     try:
         from acb_graph import get_session  # noqa: PLC0415
         with get_session() as s:
             result = s.execute(
-                text("DELETE FROM mcp_servers WHERE name = :name"), {"name": name},
+                text(
+                    "DELETE FROM mcp_servers "
+                    "WHERE organization_id = :org AND name = :name"
+                ),
+                {"org": org, "name": name},
             )
             s.commit()
             if result.rowcount == 0:
@@ -1854,7 +1884,10 @@ async def remove_mcp_server(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.post("/mcp/test", summary="Test connectivity to an MCP server")
+@router.post(
+    "/mcp/test", summary="Test connectivity to an MCP server",
+    dependencies=[_REQUIRE_MANAGE],
+)
 async def test_mcp_server(
     req: McpServerRequest,
     user: UserContext = Depends(get_current_user),
@@ -1864,20 +1897,35 @@ async def test_mcp_server(
     For http-sse: makes a GET to the URL to verify reachability.
     For stdio: checks that the command is executable.
     Returns {ok, detail}.
+
+    🔒 WS-54 IN-0. The URL is customer input, so the GET goes through the
+    gateway's one URL guard, ``gateway/outbound_guard.py``. A private,
+    loopback, link-local or metadata address is 422, and no request goes
+    out. A 3xx answer is a refusal too, because its target never passed the
+    check.
     """
     if req.transport == "http-sse" and req.url:
+        headers = dict(req.headers)
+        headers.setdefault("Accept", "application/json")
+        # The guard keeps raw bytes and decodes no content encoding.
+        headers["Accept-Encoding"] = "identity"
         try:
-            headers = dict(req.headers)
-            headers.setdefault("Accept", "application/json")
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.get(req.url, headers=headers)
-                if resp.status_code < 500:
-                    return {"ok": True, "detail": f"Server reachable (HTTP {resp.status_code})."}
-                return {"ok": False, "detail": f"Server returned HTTP {resp.status_code}."}
+            answer = await outbound_guard.request("GET", req.url, headers=headers)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "mcp.test_refused", host=exc.host, reason=exc.reason, actor=user.email,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Metorite does not connect to this URL: {exc.reason}.",
+            ) from None
         except httpx.ConnectError:
             return {"ok": False, "detail": f"Could not connect to {req.url}."}
         except Exception as exc:
             return {"ok": False, "detail": str(exc)}
+        if answer.status_code < 500:
+            return {"ok": True, "detail": f"Server reachable (HTTP {answer.status_code})."}
+        return {"ok": False, "detail": f"Server returned HTTP {answer.status_code}."}
     if req.transport == "stdio" and req.command:
         import shutil  # noqa: PLC0415
         exe = (req.command or "").split()[0]
@@ -1929,7 +1977,8 @@ async def list_plugins(
 
 
 @router.post("/plugins/install", status_code=status.HTTP_201_CREATED,
-             summary="Install a plugin from a manifest URL")
+             summary="Install a plugin from a manifest URL",
+             dependencies=[_REQUIRE_MANAGE])
 async def install_plugin(
     req: PluginInstallRequest,
     user: UserContext = Depends(get_current_user),
@@ -1938,6 +1987,13 @@ async def install_plugin(
 
     The manifest URL should point to an ai-plugin.json file.
     The OpenAPI spec URL is read from the manifest's ``api.url`` field.
+
+    🔒 WS-54 IN-0. Both URLs are customer input, so both fetches go through
+    the gateway's one URL guard, ``gateway/outbound_guard.py``. A refused
+    manifest URL is 422, and no request goes out. A refused ``api.url`` is
+    logged and skipped. The guard keeps at most
+    ``outbound_guard.MAX_ANSWER_BYTES`` of an answer, so a longer spec does
+    not parse and is skipped too.
     """
     manifest_url = req.manifest_url.strip()
     if not manifest_url.startswith(("https://", "http://")):
@@ -1945,15 +2001,28 @@ async def install_plugin(
 
     # 1. Fetch the manifest
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            manifest_resp = await client.get(manifest_url, headers={"Accept": "application/json"})
-            if manifest_resp.status_code != 200:
-                raise HTTPException(422, f"Failed to fetch manifest: HTTP {manifest_resp.status_code}")
-            manifest: dict[str, Any] = manifest_resp.json()
-    except HTTPException:
-        raise
+        manifest_resp = await outbound_guard.request(
+            "GET", manifest_url,
+            # The guard keeps raw bytes and decodes no gzip, so ask for none.
+            headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+        )
+    except outbound_guard.OutboundRefused as exc:
+        _log.warning(
+            "plugins.manifest_refused", host=exc.host, reason=exc.reason, actor=user.email,
+        )
+        raise HTTPException(
+            422, f"Metorite does not fetch from this URL: {exc.reason}.",
+        ) from None
     except Exception as exc:
         raise HTTPException(422, f"Failed to fetch manifest: {exc}") from exc
+    if manifest_resp.status_code != 200:
+        raise HTTPException(422, f"Failed to fetch manifest: HTTP {manifest_resp.status_code}")
+    try:
+        manifest: dict[str, Any] = json.loads(manifest_resp.body)
+    except ValueError as exc:
+        raise HTTPException(422, f"Failed to fetch manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise HTTPException(422, "The manifest is not a JSON object.")
 
     # 2. Validate required fields
     plugin_name = (manifest.get("name_for_model") or manifest.get("name") or "").strip()
@@ -1972,17 +2041,26 @@ async def install_plugin(
     tools_generated: list[dict[str, Any]] = []
     if api_url:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                spec_resp = await client.get(api_url, headers={"Accept": "application/json, application/yaml"})
-                if spec_resp.status_code == 200:
-                    content_type = spec_resp.headers.get("content-type", "")
-                    if "yaml" in content_type:
-                        import yaml  # noqa: PLC0415
-                        openapi_spec = yaml.safe_load(spec_resp.text) or {}
-                    else:
-                        openapi_spec = spec_resp.json()
-                    # Generate tool definitions from OpenAPI paths
-                    tools_generated = _openapi_to_tool_defs(plugin_name, openapi_spec)
+            spec_resp = await outbound_guard.request(
+                "GET", str(api_url),
+                headers={
+                    "Accept": "application/json, application/yaml",
+                    "Accept-Encoding": "identity",
+                },
+            )
+            if spec_resp.status_code == 200:
+                # The guard gives no headers, so JSON first, then YAML.
+                try:
+                    openapi_spec = json.loads(spec_resp.body)
+                except ValueError:
+                    import yaml  # noqa: PLC0415
+                    openapi_spec = yaml.safe_load(spec_resp.body.decode("utf-8")) or {}
+                # Generate tool definitions from OpenAPI paths
+                tools_generated = _openapi_to_tool_defs(plugin_name, openapi_spec)
+        except outbound_guard.OutboundRefused as exc:
+            _log.warning(
+                "plugins.openapi_refused", name=plugin_name, host=exc.host, reason=exc.reason,
+            )
         except Exception as exc:
             _log.warning("plugins.openapi_fetch_failed", name=plugin_name, error=str(exc))
 
@@ -2023,7 +2101,10 @@ async def install_plugin(
         raise HTTPException(500, f"DB error: {exc}") from exc
 
 
-@router.delete("/plugins/{plugin_id}", summary="Remove an installed plugin")
+@router.delete(
+    "/plugins/{plugin_id}", summary="Remove an installed plugin",
+    dependencies=[_REQUIRE_MANAGE],
+)
 async def remove_plugin(
     plugin_id: str,
     user: UserContext = Depends(get_current_user),
@@ -2105,7 +2186,31 @@ def _openapi_to_tool_defs(plugin_name: str, spec: dict[str, Any]) -> list[dict[s
 # GitHub OAuth Device Flow
 # ---------------------------------------------------------------------------
 
-@router.post("/github/device/start")
+async def _github_org_store() -> tuple[Any, str]:
+    """The key store, and the GitHub OAuth client id for the bound organization.
+
+    WS-54 IN-0 fix round 1. Configure stores ``GITHUB_CLIENT_ID`` as the
+    ``github:client_id`` row of the organization and no longer writes the env.
+    So the device flow reads that row first. The env value, which only the
+    operator sets, is the fallback. A failed read also falls back, because a
+    client id is public, and the poll still stores the token for this
+    organization only. One helper holds the store for start and poll, so the
+    flow adds no new store accessor line to the ceiling of
+    ``test_credential_tenant_threading.py`` (38).
+    """
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
+    client_id = ""
+    try:
+        client_id = await store.get("github:client_id", organization_id=current_tenant()) or ""
+    except Exception as exc:
+        _log.warning("github.client_id_unreadable", error=str(exc))
+    if not client_id.strip():
+        client_id = getattr(get_settings(), "github_client_id", "") or ""
+    return store, client_id.strip()
+
+
+@router.post("/github/device/start", dependencies=[_REQUIRE_MANAGE])
 async def github_device_start(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -2114,11 +2219,11 @@ async def github_device_start(
     Returns the user_code and verification_uri to show in the UI.
     The frontend polls /github/device/poll until the user approves.
 
-    Requires GITHUB_CLIENT_ID to be configured (via /configure first).
+    Requires GITHUB_CLIENT_ID: the row of the organization (via /configure)
+    first, then the value that the operator set on the box.
     """
-    settings = get_settings()
-    client_id: str = getattr(settings, "github_client_id", "")
-    if not client_id.strip():
+    _store, client_id = await _github_org_store()
+    if not client_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="GITHUB_CLIENT_ID is not configured. Save it via /integrations/configure first.",
@@ -2148,7 +2253,7 @@ async def github_device_start(
     }
 
 
-@router.post("/github/device/poll")
+@router.post("/github/device/poll", dependencies=[_REQUIRE_MANAGE])
 async def github_device_poll(
     req: DevicePollRequest,
     user: UserContext = Depends(get_current_user),
@@ -2156,18 +2261,20 @@ async def github_device_poll(
     """Poll GitHub to check if the user has approved the device flow.
 
     Returns:
-        {status: "authorized", login: str}  — token saved to .env, Settings reloaded
+        {status: "authorized", login: str}  — token stored for this organization
         {status: "pending"}                 — user hasn't approved yet, keep polling
         {status: "slow_down", interval: int} — increase polling interval
         {status: "expired"}                 — code expired, restart flow
         {status: "denied"}                  — user denied access
 
-    🔒 It writes GITHUB_TOKEN, a provider key, so the BYOK gate runs first.
+    🔒 It stores ``github:token``, a provider key, so the BYOK gate runs
+    first. The token goes to the store of the caller's organization only, and
+    never to ``os.environ`` or the env file (WS-54 IN-0). A failed store write
+    answers 503. IN-7 makes this a member or org connection.
     """
     _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
-    settings = get_settings()
-    client_id: str = getattr(settings, "github_client_id", "")
-    if not client_id.strip():
+    store, client_id = await _github_org_store()
+    if not client_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="GITHUB_CLIENT_ID is not configured.",
@@ -2190,12 +2297,20 @@ async def github_device_poll(
         token: str = data["access_token"]
         # Layer A before any write: the token comes from GitHub, not from us.
         _refuse_unsafe_env_writes([("GITHUB_TOKEN", str(token))], actor=user.email)
-        # Persist to .env and hot-reload
-        env_path = _find_env_file()
-        _upsert_env_var(env_path, "GITHUB_TOKEN", token)
-        os.environ["GITHUB_TOKEN"] = token
-        from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-        _gs.cache_clear()
+        # 🔒 IN-0: the store of this organization, never the env. The env and
+        # the env file have one GITHUB_TOKEN for the whole deployment, so that
+        # write gave this member's token to every organization on the box.
+        try:
+            await store.put(
+                "github:token", token, credential_type="integration",
+                service="github", organization_id=current_tenant(),
+            )
+        except Exception as exc:
+            _log.warning("github.device.store_failed", error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not store the GitHub token for this organization.",
+            ) from None
 
         # Fetch the GitHub login name for a friendly confirmation message
         login = "unknown"
@@ -2326,86 +2441,27 @@ async def github_account(
 
 @router.post(
     "/github/connect-cli",
-    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT)],
+    dependencies=[require_role(UserRole.EXECUTIVE, UserRole.AGENT), _REQUIRE_MANAGE],
 )
 async def github_connect_cli(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Import the active GitHub CLI token into GITHUB_TOKEN in .env.
+    """Retired (WS-54 IN-0). It answers 410 and runs no ``gh`` subprocess.
 
-    Reads the token via `gh auth token`, checks its scopes, writes to .env,
-    and returns the connected account details.
+    It read the token of the ``gh`` CLI on the box, which is the operator's
+    own GitHub identity, and wrote it to ``GITHUB_TOKEN`` for the whole
+    deployment. To store that token in a tenant row would give the
+    operator's identity to that tenant, so it writes nothing at all. A member
+    connects GitHub with the device flow. IN-7 removes this route.
 
-    If the token lacks the `copilot` scope, the import still succeeds (repo
-    cloning will work) but `has_copilot` is False and `refresh_command` is
-    returned so the user knows what to run to gain model access.
-
-    🔒 It writes GITHUB_TOKEN, a provider key, so the BYOK gate runs first.
+    🔒 The BYOK gate still runs first, so the answer with BYOK off stays 403.
     """
     _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
-    # 1. Read token from gh CLI
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            env=child_env(),
-        )
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail="GitHub CLI (gh) is not installed or not in PATH.",
-        )
-
-    if proc.returncode != 0 or not proc.stdout.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="gh CLI is not authenticated. Run: gh auth login",
-        )
-
-    token = proc.stdout.strip()
-
-    # 2. Parse scopes + login from gh auth status
-    login = "unknown"
-    scopes: list[str] = []
-    try:
-        status_proc = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            env=child_env(),
-        )
-        parsed = _parse_gh_status(status_proc.stdout + status_proc.stderr)
-        login = parsed["login"] or "unknown"
-        scopes = parsed["scopes"]
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 3. Save to .env and hot-reload settings. Layer A runs before any write.
-    _refuse_unsafe_env_writes([("GITHUB_TOKEN", token)], actor=user.email)
-    env_path = _find_env_file()
-    _upsert_env_var(env_path, "GITHUB_TOKEN", token)
-    os.environ["GITHUB_TOKEN"] = token
-    from acb_common.settings import get_settings as _gs  # noqa: PLC0415
-    _gs.cache_clear()
-
-    has_copilot = "copilot" in scopes
-    _log.info("github.connect_cli", login=login, has_copilot=has_copilot, actor=user.email)
-
-    return {
-        "ok": True,
-        "login": login,
-        "scopes": scopes,
-        "has_copilot": has_copilot,
-        "refresh_command": "gh auth refresh --scopes copilot,repo" if not has_copilot else None,
-        "message": (
-            f"Connected as @{login}."
-            + (
-                ""
-                if has_copilot
-                else " Token lacks 'copilot' scope — Copilot models unavailable until you refresh."
-            )
+    _log.info("github.connect_cli_retired", actor=user.email)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Import from the GitHub CLI is retired. Connect GitHub with the "
+            "device flow instead."
         ),
-    }
+    )
