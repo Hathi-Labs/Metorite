@@ -42,9 +42,11 @@ from gateway.routes.crm.core import (
     OrganizationIn,
     _tenant_session,
     actor,
+    assert_writable,
     clean_payload,
     compute_lead_name,
     count_where,
+    current_tenant,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -227,6 +229,9 @@ async def create_record(
     values.setdefault("owner_email", actor(user))
 
     async with _tenant_session() as db:
+        await assert_writable(
+            db, current_tenant(), entity, values, creating=True,
+        )
         await _resolve_status(db, entity, values)
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
@@ -246,6 +251,9 @@ async def patch_record(
     validate_source(values)
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
+        await assert_writable(
+            db, current_tenant(), entity, values, row=record,
+        )
         wanted = values.get("status_id")
         if wanted and str(getattr(record, "status_id", "") or "") != str(wanted):
             values.update(await apply_status_transition(
@@ -311,6 +319,7 @@ async def delete_record(
     """
     async with _tenant_session() as db:
         record = await require_row(db, entity.table, record_id, entity.label)
+        await assert_writable(db, current_tenant(), entity, None, row=record)
         cascaded: dict[str, int] = {}
         for table, column in entity.cascades:
             cascaded[table] = await count_where(db, table, column, record_id)

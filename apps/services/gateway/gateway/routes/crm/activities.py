@@ -42,7 +42,9 @@ from gateway.routes.crm.core import (
     Entity,
     _tenant_session,
     actor,
+    assert_writable,
     bump_last_activity,
+    current_tenant,
     insert_row,
     require_row,
     router,
@@ -543,6 +545,9 @@ async def delete_activity(
                     "with editable history is not a record of anything."
                 ),
             )
+        await assert_writable(
+            db, current_tenant(), "crm_activities", None, row=row,
+        )
         await db.execute(
             text("DELETE FROM crm_activities WHERE id = CAST(:id AS uuid)"),
             {"id": activity_id},
