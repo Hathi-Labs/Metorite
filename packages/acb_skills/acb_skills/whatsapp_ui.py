@@ -61,6 +61,10 @@ from acb_skills import whatsapp_render as render
 #: because a WhatsApp member may need it. The channel changes delivery, never
 #: what the assistant can do. ``whatsapp_ui`` is the WhatsApp delivery tool.
 #: The D85 shell block and the other gates of the seam still apply on top.
+#: One file-card tool stays on purpose: ``package_artifacts``. A member may
+#: ask for a zip on WhatsApp, and the tool then says plainly that it cannot
+#: send one there. Without it, the model could claim a download it cannot
+#: give (2026-10-11).
 WITHHELD_TOOLS: frozenset[str] = frozenset({
     # web cards, and the web's own card for a question
     "emit_generative_ui", "ask_questions",

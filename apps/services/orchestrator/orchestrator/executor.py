@@ -5797,92 +5797,96 @@ async def run_agent_stream(
         yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
-        # ── Live activity feed (E2): agent activation END ────────────────────
-        # Clears this run from the "running now" panel and stamps duration +
-        # status. sys.exc_info() is set here iff we're unwinding an exception.
         try:
-            import sys as _sys
-            import time as _time
-            from acb_common import publish_activity
-            _status = "error" if _sys.exc_info()[0] is not None else "completed"
-            _dur_ms = int((_time.monotonic() - _activity_started) * 1000)
-            publish_activity(
-                kind="agent", phase="end",
-                agent=agent_name, run_id=run_id, thread_id=thread_id,
-                status=_status, duration_ms=_dur_ms, source=_corr_source,
-            )
-        except Exception:
-            pass
-
-        # Deactivate stream relay so the reconnect endpoint knows the run
-        # has finished and can drain remaining events from the Redis stream.
-        # Wait for any in-flight ordered pushes first so RUN_FINISHED lands
-        # in Redis BEFORE the active flag is cleared.
-        _pending_push = _push_chains.get(thread_id)
-        if _pending_push is not None:
+            # ── Live activity feed (E2): agent activation END ────────────────────
+            # Clears this run from the "running now" panel and stamps duration +
+            # status. sys.exc_info() is set here iff we're unwinding an exception.
             try:
-                await _pending_push
-            except Exception:
-                pass
-        # WS-43d (§16.3): the run data of a sandboxed run ends with the run,
-        # whatever way it ends. Read from the run's own context, so before
-        # that context is reset. A no-op when no sandbox ran.
-        await _end_sandbox_run()
-        _stream_relay_thread_id.reset(_relay_token)
-        _active_run_model.reset(_model_token)
-        # H-201: the run's workspace, tenant key and session end with it.
-        reset_artifact_context(_artifact_token)
-        # Same reason, for the thing that says WHO this run was: an acting user
-        # left bound is inherited by whatever runs next on this task (S1-4).
-        _unbind_run_identity(_identity_binding)
-        # Same rule for the tenant (WS-29 MT-1d / H4): drop this run's
-        # worker-thread org record and release the async tenant binding, so a
-        # tenant left bound is never inherited by whatever runs next on this task.
-        # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
-        # this run's org — see :func:`_guarded_pop_run_org`. H-201 part 3: and
-        # only an entry this run SET (_owned_org).
-        _guarded_pop_run_org(thread_id, _owned_org)
-        if _tenant_token is not None:
-            try:
-                from acb_common.db import release_tenant
-                release_tenant(_tenant_token)
-            except Exception:
-                pass
-        # B6 Phase-5 Tier 0: tear down this run's scoped integration creds so
-        # they don't linger in the shared process env for the next agent.
-        _release_run_credentials(_integration_env_token)
-        try:
-            from acb_common import clear_run_context
-            clear_run_context()
-        except Exception:
-            pass
-        _thread_emit_seq.pop(thread_id, None)  # P1-5 counter cleanup
-        # Drop the cross-worker HITL applier for this run (P1-2).  run_detached's
-        # finally also clears ALL handlers for the thread, but this generator can
-        # outlive/precede that path (batch tiers), so unregister defensively.
-        try:
-            from orchestrator.stream_relay import (
-                unregister_control_command as _unreg_ctl,
-            )
-            _unreg_ctl(thread_id, "respond_input")
-        except Exception:
-            pass
-        if _relay_mark_inactive is not None:
-            try:
-                await _relay_mark_inactive(thread_id)
-            except Exception:
-                pass
-        if _relay_unregister_live is not None and thread_id:
-            with contextlib.suppress(Exception):
-                await _relay_unregister_live(
-                    thread_id, organization_id=organization_id, token=run_id,
+                import sys as _sys
+                import time as _time
+                from acb_common import publish_activity
+                _status = "error" if _sys.exc_info()[0] is not None else "completed"
+                _dur_ms = int((_time.monotonic() - _activity_started) * 1000)
+                publish_activity(
+                    kind="agent", phase="end",
+                    agent=agent_name, run_id=run_id, thread_id=thread_id,
+                    status=_status, duration_ms=_dur_ms, source=_corr_source,
                 )
-        # WS-8c: close each MCP session this run opened. It runs LAST, after
-        # the run is marked inactive and its org record is gone, so a slow
-        # session DELETE can never keep the run live (review round 2 of
-        # #869). The close is capped at _maf_mcp.CLOSE_TOTAL_S, and the
-        # servers close at the same time.
-        await _close_mcp_tools(_mcp_opened)
+            except Exception:
+                pass
+
+            # Deactivate stream relay so the reconnect endpoint knows the run
+            # has finished and can drain remaining events from the Redis stream.
+            # Wait for any in-flight ordered pushes first so RUN_FINISHED lands
+            # in Redis BEFORE the active flag is cleared.
+            _pending_push = _push_chains.get(thread_id)
+            if _pending_push is not None:
+                try:
+                    await _pending_push
+                except Exception:
+                    pass
+            # WS-43d (§16.3): the run data of a sandboxed run ends with the run,
+            # whatever way it ends. Read from the run's own context, so before
+            # that context is reset. A no-op when no sandbox ran.
+            await _end_sandbox_run()
+            _stream_relay_thread_id.reset(_relay_token)
+            _active_run_model.reset(_model_token)
+            # H-201: the run's workspace, tenant key and session end with it.
+            reset_artifact_context(_artifact_token)
+            # Same reason, for the thing that says WHO this run was: an acting user
+            # left bound is inherited by whatever runs next on this task (S1-4).
+            _unbind_run_identity(_identity_binding)
+            # Same rule for the tenant (WS-29 MT-1d / H4): drop this run's
+            # worker-thread org record and release the async tenant binding, so a
+            # tenant left bound is never inherited by whatever runs next on this task.
+            # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
+            # this run's org — see :func:`_guarded_pop_run_org`. H-201 part 3: and
+            # only an entry this run SET (_owned_org).
+            _guarded_pop_run_org(thread_id, _owned_org)
+            if _tenant_token is not None:
+                try:
+                    from acb_common.db import release_tenant
+                    release_tenant(_tenant_token)
+                except Exception:
+                    pass
+            # B6 Phase-5 Tier 0: tear down this run's scoped integration creds so
+            # they don't linger in the shared process env for the next agent.
+            _release_run_credentials(_integration_env_token)
+            try:
+                from acb_common import clear_run_context
+                clear_run_context()
+            except Exception:
+                pass
+            _thread_emit_seq.pop(thread_id, None)  # P1-5 counter cleanup
+            # Drop the cross-worker HITL applier for this run (P1-2).  run_detached's
+            # finally also clears ALL handlers for the thread, but this generator can
+            # outlive/precede that path (batch tiers), so unregister defensively.
+            try:
+                from orchestrator.stream_relay import (
+                    unregister_control_command as _unreg_ctl,
+                )
+                _unreg_ctl(thread_id, "respond_input")
+            except Exception:
+                pass
+            if _relay_mark_inactive is not None:
+                try:
+                    await _relay_mark_inactive(thread_id)
+                except Exception:
+                    pass
+            if _relay_unregister_live is not None and thread_id:
+                with contextlib.suppress(Exception):
+                    await _relay_unregister_live(
+                        thread_id, organization_id=organization_id, token=run_id,
+                    )
+        finally:
+            # WS-8c: close each MCP session this run opened. It runs LAST, after
+            # the run is marked inactive and its org record is gone, so a slow
+            # session DELETE can never keep the run live (review round 2 of
+            # #869). The close is capped at _maf_mcp.CLOSE_TOTAL_S, and the
+            # servers close at the same time. It sits in its own finally, so
+            # a second cancel during an earlier await of this block still
+            # closes the sockets (review of #869, P2).
+            await _close_mcp_tools(_mcp_opened)
 
 
 # ---------------------------------------------------------------------------

@@ -333,6 +333,33 @@ def thread_scoped_rel(rel: str, thread_id: object) -> str:
     return "/".join([parts[0], thread_slug(thread_id), *parts[1:]])
 
 
+def thread_package_rel(thread_id: object, name: str) -> str:
+    """``outputs/<thread slug>/<name>``: where ``package_artifacts`` puts a zip.
+
+    THE one rule for a chat's packages, in EVERY kind of working dir, also a
+    personal or a team one. A zip is never in the blob store, so the chat
+    delete finds it by this place (``workspace._purge_thread_files``), and
+    the file route tells an expired package by it (:func:`is_thread_package_rel`).
+    Raises ``ValueError`` for a thread id that names no folder.
+    """
+    if not name or "/" in name or "\\" in name or not name.lower().endswith(".zip"):
+        raise ValueError(f"not a package name: {name[:80]!r}")
+    return f"{thread_outputs_rel(thread_id)}/{name}"
+
+
+def is_thread_package_rel(rel: str, thread_id: object) -> bool:
+    """True when *rel* is a package of *thread_id*: a ``.zip`` right in its folder."""
+    parts = _rel_parts(rel)
+    try:
+        own = thread_slug(thread_id)
+    except ValueError:
+        return False
+    return (
+        len(parts) == 3 and parts[0] == "outputs" and parts[1] == own
+        and parts[2].lower().endswith(".zip")
+    )
+
+
 def run_data_rel(organization_id: object, thread_id: object) -> str:
     """``.run-data/<org slug>/<thread slug>``, relative to :func:`state_root`."""
     org = str(organization_id or "").strip()
@@ -365,6 +392,60 @@ def is_loose_rel(rel: str) -> bool:
     """
     parts = _rel_parts(rel)
     return len(parts) >= 2 and parts[0] in THREAD_HEADS and not is_thread_slug(parts[1])
+
+
+# ── Names that no reader serves (the gateway's file routes, package_artifacts) ──
+#
+# ONE rule for the secret and junk names of a working dir. It lived in
+# ``gateway.routes.workspace`` until 2026-10-11. ``package_artifacts`` must
+# leave out the same files that the file routes refuse, and a package sits
+# below the gateway in the import graph, so the rule moved here. The gateway
+# keeps its old names as aliases. Fence: ``tests/unit/test_package_artifacts.py``.
+
+#: Dirs left out wherever they appear: VCS, dependency, build and cache noise.
+EXCLUDED_DIRS = frozenset({
+    "__pycache__", "node_modules", ".git", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".venv", "venv", ".next", ".turbo", ".cache", "dist",
+    "build", ".idea", ".vscode", "coverage", ".nyc_output", "test-results",
+    "playwright-report", ".pnpm-store", ".gradle", ".terraform",
+    "site-packages", ".egg-info",
+})
+
+#: File suffixes that no reader serves: compiled junk, and key or cert material.
+EXCLUDED_FILE_SUFFIXES = (".pid", ".pem", ".key", ".crt", ".pyc", ".pyo")
+
+#: Substrings that mark a file name as secret or credential material.
+SECRET_FILE_MARKERS = ("token_cache", "credential", "secret", "id_rsa", "id_ed25519")
+
+
+def is_hidden_or_secret_name(name: str) -> bool:
+    """True if *name* is a dotfile, a secret or credential, or a compiled-junk file.
+
+    Every dotfile (``.env``, ``.zoho_token_cache.json``, ``.git-credentials``)
+    is hidden. That is the first guard against a secret in the root of a
+    working dir.
+    """
+    if name.startswith("."):
+        return True
+    if name.endswith(EXCLUDED_FILE_SUFFIXES):
+        return True
+    low = name.lower()
+    return any(m in low for m in SECRET_FILE_MARKERS)
+
+
+def is_blocked_rel(rel_path: str) -> bool:
+    """True if *rel_path* points into excluded or secret territory.
+
+    A dot dir or an excluded dir at any depth, or a secret, dot or junk name.
+    An empty path is blocked too.
+    """
+    parts = [p for p in rel_path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts:
+        return True
+    for seg in parts[:-1]:
+        if seg.startswith(".") or seg in EXCLUDED_DIRS:
+            return True
+    return is_hidden_or_secret_name(parts[-1])
 
 
 # ── The author of a skill (review P1, fix round 1; the member id, WS-43v) ────
