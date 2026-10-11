@@ -124,7 +124,10 @@ test.describe("the top-right account widget", () => {
     await trigger(page).focus();
     await page.keyboard.press("Shift+Tab");
     await page.keyboard.press("Tab");
-    expect(await trigger(page).evaluate((el) => getComputedStyle(el).outlineStyle !== "none" || getComputedStyle(el).boxShadow !== "none")).toBe(true);
+    await expect(trigger(page)).toBeFocused();
+    const ring = await trigger(page).evaluate((el) => [getComputedStyle(el).outlineStyle, parseFloat(getComputedStyle(el).outlineWidth)]);
+    expect(ring[0]).toBe("solid");
+    expect(ring[1]).toBeGreaterThan(0);
   });
 
   for (const width of [1280, 1024]) {
@@ -215,6 +218,10 @@ test.describe("the top-right account widget", () => {
     await page.goto("/settings/appearance");
     await trigger(page).click();
     await expect(trigger(page)).toHaveAttribute("aria-expanded", "true");
+    // Into the menu first, or the focus never left the trigger, and the
+    // test could not tell a focus return from no move at all.
+    await page.keyboard.press("Tab");
+    expect(await menu(page).evaluate((el) => el.contains(document.activeElement))).toBe(true);
     await page.keyboard.press("Escape");
     await expect(menu(page)).toHaveCount(0);
     await expect(trigger(page)).toBeFocused();
@@ -301,7 +308,8 @@ test.describe("the sidebar foot is the Metorite menu", () => {
     await settings.getByRole("button", { name: /^(Light|Dark) mode$/ }).click();
     await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains("light"))).toBe(!before);
     await expect(m).toBeVisible();
-    // Escape closes it and gives the focus back.
+    // Escape closes it and gives the focus back, from inside the menu.
+    await settings.getByRole("link", { name: "Appearance" }).focus();
     await page.keyboard.press("Escape");
     await expect(m).toHaveCount(0);
     await expect(metorite(page)).toBeFocused();

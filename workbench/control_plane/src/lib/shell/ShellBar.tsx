@@ -240,7 +240,7 @@ export function ShellBarRow({
       {/* The shell's own controls, the same on every page: the bell, the
           activity control, then the account. An app's tools sit at the
           right end of its own title bar, never here.
-          ⚠️ No `min-w-0` (owner, 2026-10-12). The group keeps the width of
+          ⚠️ No `min-w-0` (measured 2026-10-12). The group keeps the width of
           its content, so it never spills over the command bar. Where the
           room is short, the command bar gives way and sits a little off
           centre. With `min-w-0`, the avatar put the bell over the command

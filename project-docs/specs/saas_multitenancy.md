@@ -2495,6 +2495,9 @@ vocabulary: the chooser lists organizations, never roles (D12).
   folded rail has an avatar at its foot. Both open one menu: the active account
   and its organization, the other accounts, "Add another account", and "Sign
   out of all accounts". Phone: the same list unfolds in the drawer footer.
+  ⚠️ Since 2026-10-12, with the shell bar on, the desktop menu is the shell
+  bar's top-right widget (owner direction, `navigation_shell.md` §3.3). The
+  sidebar footer is then the Metorite menu. The classic frame keeps the footer.
 
   **Flag.** `ACCOUNT_SWITCHER_ENABLED=true` on the workbench, read at request
   time. Off, `/api/accounts` answers `enabled: false`, and the footer is
