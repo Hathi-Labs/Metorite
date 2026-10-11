@@ -96,7 +96,9 @@ describe("the viewer modal of a zip", () => {
     expect(guard).toBeGreaterThan(-1);
     expect(fetchAt).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(fetchAt);
-    expect(src).toMatch(/setState\(\{ status: "archive" \}\);\s*return;/);
+    expect(src).toMatch(
+      /if \(isArchive\(entry\.name, entry\.mime_type\)\) \{\s*setState\(\{ status: "archive" \}\);\s*return;/,
+    );
   });
 
   it("shows a download for a zip, not a hex dump", () => {
