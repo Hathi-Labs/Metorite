@@ -899,7 +899,7 @@ And four mirror slices:
 |---|---|---|
 | **CRM-Z8** | Near-real-time: Zoho's Notification API starts a targeted pull | 🟢 AGENT-SAFE. A signed URL per org (§10.7) |
 | **CRM-Z9** | Agent actions in Zoho through Zoho's MCP (§7.2), behind Metorite's confirmation step. Our `writer.py` stays as the fallback if Zoho's MCP fails the CRM-Z0 check | 🔴 OWNER-GATE to turn on for any org |
-| **CRM-Z10** | "Make Metorite your CRM": Mirror to Native (§3.4) | 🟢 AGENT-SAFE to build. 🔴 Fracktal's run is the owner's |
+| **CRM-Z10** | "Make Metorite your CRM": Mirror to Native (§3.4). Z10 must rewind `processed_watermark`, because Mirror mode skips auto-lead mail | 🟢 AGENT-SAFE to build. 🔴 Fracktal's run is the owner's |
 | **CRM-Z11** | Retire the global Zoho path (§5.5) | 🟢 AGENT-SAFE, after CRM-Z5 is live |
 
 The second provider (Q5) gets its own slice list, on the seam of §5.1.

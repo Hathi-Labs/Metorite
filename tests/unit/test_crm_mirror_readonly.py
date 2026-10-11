@@ -447,7 +447,7 @@ _RAW_ALLOW = {
     # The seed runs when the mode becomes Native only.
     "seed.py",
 }
-_REFUSES = {"assert_writable", "refuse_in_mirror_mode", "is_mirror_mode"}
+_REFUSES = {"assert_writable", "refuse_in_mirror_mode"}
 
 
 def _unguarded_raw_writes(source: str, name: str) -> list[str]:
@@ -484,6 +484,12 @@ def test_the_raw_write_fence_catches_a_planted_update() -> None:
         + "    await db.execute(text('UPDATE crm_deals SET name = 1'))" + nl
     )
     assert _unguarded_raw_writes(planted, "planted.py") == ["planted.py::sneaky"]
+    ignored = (
+        "async def sneaky(db):" + nl
+        + "    await is_mirror_mode(db, None)" + nl
+        + "    await db.execute(text('UPDATE crm_deals SET name = 1'))" + nl
+    )
+    assert _unguarded_raw_writes(ignored, "planted.py") == ["planted.py::sneaky"]
     guarded = planted.replace(
         "await db.execute", "await assert_writable(db)" + nl + "    await db.execute",
     )

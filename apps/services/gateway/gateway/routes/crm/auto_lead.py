@@ -337,8 +337,9 @@ async def _run_batch(
         candidates, _next = await _load_candidates(db, account_id, cursor)
         stats["candidates"] = len(candidates)
         stamp = candidates[-1].rules_processed_at if candidates else None
-        _log.info("crm.auto_lead.skipped_mirror", account_id=account_id,
-                  candidates=len(candidates))
+        if candidates:
+            _log.info("crm.auto_lead.skipped_mirror", account_id=account_id,
+                      candidates=len(candidates))
         await _stamp_cursor(db, account_id, watermark=stamp, run_at=now())
         return
     candidates, next_stamp = await _load_candidates(db, account_id, cursor)
