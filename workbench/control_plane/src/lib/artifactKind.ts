@@ -89,6 +89,19 @@ export function classifyArtifact(
   return "binary";
 }
 
+/**
+ * The archive extensions and types (2026-10-11, `package_artifacts`). An
+ * archive classifies as "binary", and it has NO preview: a viewer shows a
+ * download, never a hex dump of the bytes. The gateway serves `.zip` as
+ * `application/zip`, and a Windows box may name it `x-zip-compressed`.
+ */
+const ARCHIVE_EXTS = new Set(["zip"]);
+const ARCHIVE_MIMES = new Set(["application/zip", "application/x-zip-compressed"]);
+
+export function isArchive(name: string, mimeType = ""): boolean {
+  return ARCHIVE_EXTS.has(extOf(name)) || ARCHIVE_MIMES.has(mimeType);
+}
+
 /** Kinds with a rendered view distinct from their source. */
 export function isRenderable(kind: ArtifactKind): boolean {
   return kind === "html" || kind === "react";
