@@ -44,6 +44,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { personDisplayName } from "@/lib/personName";
+import { usePersonNames } from "../lib/usePersonNames";
 import { LayoutBoundary } from "@/components/LayoutBoundary";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -432,6 +433,8 @@ export function RenderedBody({
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
   const { sections } = body;
+  // The Load table names people as the Load panel does (owner, 2026-10-10).
+  const loadNames = usePersonNames(sections.load?.people.map((p) => p.assignee) ?? []);
   const grid = layout === "grid";
   // R5g rule 1. Which panels take the full row. `gridSpans` leaves no row
   // with one panel alone.
@@ -707,11 +710,15 @@ export function RenderedBody({
                   {sections.load.people.slice(0, 8).map((p) => (
                     <Row
                       key={p.assignee ?? "__unassigned"}
-                      name={p.assignee ?? "Unassigned"}
+                      name={
+                        p.assignee
+                          ? personDisplayName(loadNames.get(p.assignee.toLowerCase()), p.assignee)
+                          : "Unassigned"
+                      }
                       value={p.open_tasks}
                       aside={p.overdue ? `${p.overdue} late` : undefined}
                       title={
-                        `${p.open_tasks} open for ${p.assignee ?? "nobody"}` +
+                        `${p.open_tasks} open for ${p.assignee ? personDisplayName(loadNames.get(p.assignee.toLowerCase()), p.assignee) : "nobody"}` +
                         (p.overdue ? `, ${p.overdue} overdue` : "")
                       }
                     />
@@ -973,8 +980,10 @@ export function RenderedBody({
                       </li>
                     ))}
                     {rebalancePickups(sections.rebalance).map((p) => (
-                      <li key={p.email} className="text-xs" title={p.name}>
-                        <span className="font-medium text-foreground">{p.name}</span>
+                      <li key={p.email} className="text-xs" title={p.email}>
+                        <span className="font-medium text-foreground">
+                          {personDisplayName(p.name, p.email)}
+                        </span>
                         <span className="text-muted-foreground">
                           {" "}
                           could take: {pickupLine(p)}

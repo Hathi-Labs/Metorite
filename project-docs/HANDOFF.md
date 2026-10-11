@@ -5163,9 +5163,10 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `SELECT count(*) FROM people WHERE name LIKE '%@%'` on production
   → above 0 means this is open. 9 of 38 on 2026-10-10.
 - **Why:** the owner saw their own address where a name belongs (Projects,
-  "Who has the hours"). The client now never prints an address as a name
-  (`src/lib/personName.ts`, `PersonName`), but the rows are still wrong. Every
-  other reader of `people.name` still prints them: the server's conflict text
+  "Who has the hours"). The Projects app and its report email no longer
+  print an address as a name (`src/lib/personName.ts`, `PersonName`, fenced
+  by a sweep of `src/app/projects`), but the rows are still wrong. Readers
+  outside that sweep still print them: the server's conflict text
   (`analytics_conflicts._label`), the chat tools and the People app.
   Three causes, all in the code:
   - The founder bootstrap (`acb_auth/access.py`, `_BOOTSTRAP_OWNER_SQL`)

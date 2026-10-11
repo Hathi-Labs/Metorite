@@ -101,12 +101,6 @@ function hasVisibleFocus(element: Element): boolean {
   }
 }
 
-/**
- * The tip's state and wiring, for a caller that owns the label's markup
- * (`RailRow`). Put `attachLabel`, `onPointerEnter` and `onPointerLeave` on the
- * truncated element, and `onFocus` and `onBlur` on the control that takes
- * focus. Render `tip` anywhere.
- */
 export interface OverflowTipOptions {
   /**
    * Show the tip whether or not the label is cut. For a tip that says MORE
@@ -117,6 +111,12 @@ export interface OverflowTipOptions {
   content?: React.ReactNode;
 }
 
+/**
+ * The tip's state and wiring, for a caller that owns the label's markup
+ * (`RailRow`). Put `attachLabel`, `onPointerEnter` and `onPointerLeave` on the
+ * truncated element, and `onFocus` and `onBlur` on the control that takes
+ * focus. Render `tip` anywhere.
+ */
 export function useOverflowTip(text: string, options: OverflowTipOptions = {}) {
   const { always = false, content } = options;
   const [state, dispatch] = useReducer(overflowTipReducer, TIP_IDLE);

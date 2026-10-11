@@ -766,7 +766,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
             return (
               <li key={row.assignee ?? "__unassigned"}>
                 <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
-                  {row.assignee && row.kind !== "unassigned" ? (
+                  {row.assignee && row.kind === "person" ? (
                     // The name, never the address (owner, 2026-10-10).
                     <PersonName email={row.assignee} name={row.name} className="min-w-0 pr-px" />
                   ) : (
@@ -1075,12 +1075,11 @@ export function RebalancePanel({ data }: { data: RebalanceReport }) {
                       className={`size-1.5 shrink-0 rounded-full ${idle.dot}`}
                       aria-hidden
                     />
-                    <span
-                      className="min-w-0 truncate pr-px font-medium text-foreground"
-                      title={person.name}
-                    >
-                      {person.name}
-                    </span>
+                    <PersonName
+                      email={person.email}
+                      name={person.name}
+                      className="min-w-0 pr-px font-medium text-foreground"
+                    />
                     <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
                       {PILL_LABEL.idle}
                     </span>

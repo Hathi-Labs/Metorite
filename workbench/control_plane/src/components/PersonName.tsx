@@ -54,8 +54,11 @@ export function PersonName({ email, name, className = "" }: PersonNameProps) {
         onPointerLeave={onPointerLeave}
         onFocus={onFocus}
         onBlur={onBlur}
-        // Reachable by keyboard, so the tip is not a pointer-only answer.
+        // Reachable by keyboard, so the tip is not a pointer-only answer. The
+        // tip is not described-by (as in `OverflowTip`), so the label says
+        // everything the tip says, for a screen reader.
         tabIndex={0}
+        aria-label={agent ? `An agent, ${label}` : `${real ?? label}, ${email}`}
         className={`truncate rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-primary/50 ${className}`}
       >
         {label}

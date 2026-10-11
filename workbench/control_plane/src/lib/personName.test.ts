@@ -2,7 +2,8 @@
  * One rule for how a person reads (`personName.ts`). Owner, 2026-10-10:
  * names, never email IDs, with the address in the hover.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -56,16 +57,18 @@ describe("the surfaces read it", () => {
   it("no person surface grows a `name || email` fallback back (sweep)", () => {
     // The pattern that printed the address while looking like a name. Each
     // file below printed a person through it until 2026-10-10.
-    const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf-8");
-    const files = [
-      "../app/projects/components/AnalyticsPanels.tsx",
-      "../app/projects/components/ReportsView.tsx",
-      "../app/projects/lib/capacity.ts",
-      "./reportEmail.ts",
-    ];
+    // Every source file of the Projects app, not a list somebody keeps: the
+    // review of #863 found five more sites that a fixed list of four missed.
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((entry) => {
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) return walk(path);
+        return /\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry) ? [path] : [];
+      });
+    const projects = fileURLToPath(new URL("../app/projects", import.meta.url));
+    const files = [...walk(projects), fileURLToPath(new URL("./reportEmail.ts", import.meta.url))];
     const fallback = /\.name\s*\|\|\s*[\w?.]*(?:assignee|email|created_by)\b/;
-    for (const file of files) {
-      expect(read(file), `${file} prints an address as a name`).not.toMatch(fallback);
-    }
+    const offenders = files.filter((file) => fallback.test(readFileSync(file, "utf-8")));
+    expect(offenders, "these print an address as a name").toEqual([]);
   });
 });
