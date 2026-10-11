@@ -53,6 +53,7 @@ import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Input from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
+import { ProjectSelect } from "./ProjectSelect";
 import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { periodLabel } from "@/lib/reportEmail";
 import { accentForHue, statusAccent } from "@/lib/statusAccent";
@@ -1475,14 +1476,35 @@ export function ReportBuilder({
   const workControl = (
     <>
       <ChipSlot error={scopeError}>
-        <SelectButton
+        {/* ⚠️ `ProjectSelect`, not a `SelectButton` over every node (owner,
+            2026-10-10): a search box over a tree whose spaces start closed.
+            `scopeChoices` still decides whether "Whole organization" is
+            offered, so a project-only template keeps its rule. */}
+        <ProjectSelect
           label="Which work?"
           prompt={onlyProjects ? "Choose a project" : undefined}
           widthClass={CHIP_WIDTH}
-          value={state.projectId ?? WHOLE_ORGANIZATION}
+          roots={roots}
+          value={state.projectId ?? (onlyProjects ? "" : WHOLE_ORGANIZATION)}
           defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
-          options={scopeChoices(scopes, template, isEdit)}
-          filterAbove={8}
+          lead={
+            scopeChoices(scopes, template, isEdit).some((s) => s.value === WHOLE_ORGANIZATION)
+              ? [
+                  {
+                    key: "org",
+                    rows: [
+                      {
+                        value: WHOLE_ORGANIZATION,
+                        label: "Whole organization",
+                        icon: (
+                          <Icon name="Building2" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ),
+                      },
+                    ],
+                  },
+                ]
+              : []
+          }
           disabled={isEdit}
           onChange={(value) =>
             setState((s) => ({

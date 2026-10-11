@@ -5123,23 +5123,6 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.1
 - **Added:** 2026-10-04 · PR #622
 
-### H-296 · Three more project pickers still draw the whole tree as one list · [AGENT]
-- **Check:** `grep -rln "ProjectPicker" workbench/control_plane/src/app/projects/components/AssistantRail.tsx workbench/control_plane/src/app/projects/components/ReportsView.tsx workbench/control_plane/src/app/projects/components/StatusSetControl.tsx`
-  → fewer than three files means this is open.
-- **Why:** on 2026-10-10 the owner found the Move pickers hard to read. They
-  drew every node of every space as one open list. `ProjectPicker` (search,
-  spaces closed, a path on each result) now serves the task doors (Move,
-  Clarify, the capture chip) and the project "Move to…" dialog. Three
-  pickers still draw the old list: the chat focus (`AssistantRail.tsx`),
-  the report scope (`ReportsView.tsx`) and "Copy statuses from"
-  (`StatusSetControl.tsx`).
-- **Do:** pass a `rule` to `ProjectPicker`. The chat and the report may pick
-  a space or a folder, so their rule refuses nothing. The three sites are
-  `SelectButton`s, so add a popover host around the picker (a trigger and
-  `AnchoredPanel`). Do not add a second tree model.
-- **Authority:** owner ask, 2026-10-10 · `app/projects/lib/pickerTree.ts`
-- **Added:** 2026-10-10 · the project picker session
-
 ### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
 - **Check:** `grep -cE '^CRM_ZOHO_CLIENT_(ID|SECRET)=.+' "$HOME/.metorite/secrets/app.env"`
   on the owner's PC. A count below 2, or no file, means this is open. When it
