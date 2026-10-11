@@ -346,14 +346,19 @@ describe("Open in inbox switches to the mailbox of the mail (MB-3)", () => {
 });
 
 describe("Reconnect on Integrations names the mailbox (MB-1)", () => {
+  // The console draws a mailbox as a row. "Connect again" opens the Email app
+  // with the mailbox address (the row label) as `login_hint`.
   const integrations = codeOnly(
-    readFileSync(join(ROOT, "..", "integrations", "page.tsx"), "utf-8").replace(/\r\n/g, "\n"),
+    readFileSync(join(ROOT, "..", "integrations", "lib", "connections.ts"), "utf-8").replace(/\r\n/g, "\n"),
+  );
+  const sheet = codeOnly(
+    readFileSync(join(ROOT, "..", "integrations", "components", "ConnectionSheet.tsx"), "utf-8").replace(/\r\n/g, "\n"),
   );
 
   it("sends the mailbox address as login_hint", () => {
-    expect(integrations).toContain('if (loginHint) params.set("login_hint", loginHint);');
-    expect(integrations).toContain("handleConnect(provider, account.emailAddress);");
-    expect(integrations).not.toContain("handleReconnect(account.provider)");
+    expect(integrations).toContain("/email?connect=1&login_hint=${encodeURIComponent(row.label)}");
+    expect(sheet).toContain("onNavigate(plan.reconnectHref!)");
+    expect(sheet).not.toContain("handleReconnect(account.provider)");
   });
 });
 

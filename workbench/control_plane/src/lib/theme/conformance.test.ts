@@ -451,7 +451,8 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
     // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
     // review round 1: the banner gives no setup link).
-    "app/integrations/page.tsx": 73,
+    "app/integrations/components/ApiKeysView.tsx": 43,
+    "app/integrations/components/SkillsView.tsx": 6,
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
     "app/observability/page.tsx": 26,

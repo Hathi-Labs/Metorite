@@ -47,9 +47,12 @@ BFF_CALLBACK_ROUTE = (
 #: The path the browser is navigated to, with the provider interpolated.
 BFF_NAVIGATION = "/api/email/oauth/${provider}/authorize"
 
+#: Since WS-54 IN-2 (2026-10-11) the Integrations console starts no email
+#: connect of its own. Its "Add > Mailbox" opens `/email?connect=1` (MB-16,
+#: pinned in `app/email/lib/fromRow.test.ts`), so the Email page is the one
+#: call site of the authorize navigation.
 CALL_SITES = (
     CONTROL_PLANE / "app" / "email" / "page.tsx",
-    CONTROL_PLANE / "app" / "integrations" / "page.tsx",
 )
 
 AUTHORIZE_TEMPLATE = "/email/oauth/{provider}/authorize"
