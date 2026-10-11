@@ -645,6 +645,10 @@ def test_with_no_clear_owner_the_table_stays_nullable_and_hidden(eng):
         assert seen == 0, "a tenant session can see a row with no tenant"
     finally:
         trans.rollback()
+        # After the bound transaction ends, `app.tenant_id` reads '' on this
+        # session, and the column DEFAULT then fails to cast it. So the
+        # pooled connection must not serve the next arm.
+        conn.invalidate()
         conn.close()
 
 

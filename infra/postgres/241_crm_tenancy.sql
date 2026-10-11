@@ -43,7 +43,7 @@
 --             163_crm_auto_lead_cursor.sql (crm_auto_lead_cursors),
 --             169_crm_stage_discipline.sql (required_fields).
 -- Idempotent: ADD COLUMN IF NOT EXISTS, a fill whose WHERE empties, SET NOT
---             NULL, an RLS block guarded on relforcerowsecurity, old keys found
+--             NULL per table, an RLS block guarded on relforcerowsecurity, old keys found
 --             through pg_constraint, CREATE ... IF NOT EXISTS for the new ones.
 -- Pinned by tests/unit/test_crm_rename_upgrade.py (R8: fresh install, upgrade,
 -- replay and the production shape).
@@ -122,16 +122,24 @@ ALTER TABLE crm_auto_lead_cursors
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 
--- ── 2. Who owns each existing row ───────────────────────────────────────────
+-- ── 2. Who owns each existing row, and NOT NULL ─────────────────────────────
 --
--- Only a table with rows that have no tenant needs an owner. The owner is
--- `fracktalworks` if it exists. Else it is `default`, which migration 130
--- seeds. Else it is the only organization, if exactly one exists. Else the
--- file stops and names the table, because a guess could put rows in the wrong
--- customer. The `default` step keeps a shared dev database working: it holds
--- many test organizations and no `fracktalworks`. On production every row
--- already has its tenant (the seed rows belong to `default`), so this changes
--- nothing there.
+-- A table with no row that lacks a tenant gets NOT NULL at once. A table with
+-- such rows needs an owner: `fracktalworks` if it exists, else the only
+-- organization if exactly one exists. Then it gets NOT NULL too.
+--
+-- With no owner the file does NOT stop. That table keeps a NULLABLE column,
+-- FORCE row level security (step 4) hides its orphan rows from every tenant,
+-- and a NOTICE names the table and the count. New rows take their tenant from
+-- the column DEFAULT, so no new orphan can appear. Which shapes reach this:
+--   * Production: never. The three newly scoped tables are empty, and the ten
+--     others are NOT NULL from the generated phases.
+--   * A fresh install: never. It has exactly one organization, the one that
+--     migration 130 seeds.
+--   * A shared dev database with many organizations and no `fracktalworks`:
+--     yes. A stop there would break `scripts/dev_db.sh` for every session.
+-- No lookup by any other slug: the D43-A ratchet in
+-- tests/unit/test_org_provisioning.py refuses one.
 
 DO $fill$
 DECLARE
@@ -144,14 +152,9 @@ DECLARE
     t        text;
     owner_id uuid;
     orphans  bigint;
-    orgs     bigint;
 BEGIN
     SELECT id INTO owner_id FROM organization WHERE slug = 'fracktalworks';
-    IF owner_id IS NULL THEN
-        SELECT id INTO owner_id FROM organization WHERE slug = 'default';
-    END IF;
-    SELECT count(*) INTO orgs FROM organization;
-    IF owner_id IS NULL AND orgs = 1 THEN
+    IF owner_id IS NULL AND (SELECT count(*) FROM organization) = 1 THEN
         SELECT id INTO owner_id FROM organization;
     END IF;
 
@@ -159,44 +162,35 @@ BEGIN
         EXECUTE format(
             'SELECT count(*) FROM %I WHERE organization_id IS NULL', t
         ) INTO orphans;
-        CONTINUE WHEN orphans = 0;
-        IF owner_id IS NULL THEN
-            RAISE EXCEPTION
-                '241: % has % row(s) with no organization_id. No organization '
-                'is named fracktalworks or default and % organizations exist, so the '
-                'owner is not clear. Set organization_id on those rows by '
-                'hand, then apply this file again.', t, orphans, orgs;
+        IF orphans > 0 AND owner_id IS NOT NULL THEN
+            EXECUTE format(
+                'UPDATE %I SET organization_id = $1 WHERE organization_id IS NULL', t
+            ) USING owner_id;
+            RAISE NOTICE '241: % row(s) of % now belong to organization %',
+                orphans, t, owner_id;
+            orphans := 0;
         END IF;
-        EXECUTE format(
-            'UPDATE %I SET organization_id = $1 WHERE organization_id IS NULL', t
-        ) USING owner_id;
-        RAISE NOTICE '241: % row(s) of % now belong to organization %',
-            orphans, t, owner_id;
+        IF orphans = 0 THEN
+            EXECUTE format(
+                'ALTER TABLE %I ALTER COLUMN organization_id SET NOT NULL', t);
+        ELSE
+            RAISE NOTICE
+                '241: % keeps a nullable organization_id. % row(s) have no '
+                'tenant, and no tenant can see them under row level security. '
+                'No organization is named fracktalworks and more than one '
+                'exists, so the owner is not clear.', t, orphans;
+        END IF;
     END LOOP;
 END
 $fill$;
 
 
--- ── 3. NOT NULL, and an index for the policy ────────────────────────────────
+-- ── 3. An index for the policy ──────────────────────────────────────────────
 --
 -- The index name is the one generated phase 3 uses, with IF NOT EXISTS, so
 -- the two cannot collide. crm_companies keeps the name that production gave
 -- it before the rename (`crm_organizations_org_idx`), as the gtd renames keep
 -- theirs, so production does not get a second index on the same column.
-
-ALTER TABLE crm_companies         ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_contacts          ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_leads             ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_deals             ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_activities        ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_lead_statuses     ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_deal_statuses     ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_lost_reasons      ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_deal_contacts     ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_status_changes    ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_zoho_tombstones   ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_sync_cursors      ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE crm_auto_lead_cursors ALTER COLUMN organization_id SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS crm_organizations_org_idx ON crm_companies (organization_id);
 CREATE INDEX IF NOT EXISTS crm_contacts_org_idx ON crm_contacts (organization_id);
