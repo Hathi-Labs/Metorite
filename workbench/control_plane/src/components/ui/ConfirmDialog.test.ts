@@ -32,6 +32,10 @@ const fixedLayers = (): { file: string; z: number }[] => {
   const out: { file: string; z: number }[] = [];
   for (const file of tsxFiles()) {
     if (file === "components/ui/Modal.tsx") continue;
+    // The toast viewport is not a dialog: it takes no focus and no pointer
+    // events outside its toasts, and it sits above every modal on purpose.
+    // `toastViewport.test.ts` pins that order.
+    if (file === "components/ui/Toast.tsx") continue;
     // Double quotes and template literals, one line at most. Single quotes
     // are skipped: an apostrophe in a comment would pair with the wrong one.
     for (const m of read(file).matchAll(/"([^"\n]*)"|`([^`]*)`/g)) {

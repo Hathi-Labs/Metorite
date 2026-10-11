@@ -499,9 +499,10 @@ export const NAV_SECTIONS: NavSection[] = [
       {
         href: "/integrations",
         team: "admin",
+        blurb: "Every tool your company has connected",
         label: "Integrations",
         icon: "Plug",
-        note: "APIs · MCP servers · plugins",
+        note: "Connections · API keys · MCP servers",
         feature: "integrations",
         launch: "preview",
       },
