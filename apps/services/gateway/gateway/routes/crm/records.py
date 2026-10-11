@@ -307,7 +307,13 @@ async def patch_record(
         )
         if values.get("pipeline_id"):
             await _resolve_pipeline(db, entity, values)
-        if entity is DEALS and ("pipeline_id" in values or "status_id" in values):
+        # Only a CHANGE is checked: a new stage, or a new pipeline. A deal that
+        # keeps its stage is never refused for it.
+        stage_changes = (
+            values.get("status_id") is not None
+            and str(values["status_id"]) != str(getattr(record, "status_id", "") or "")
+        )
+        if entity is DEALS and ("pipeline_id" in values or stage_changes):
             await _check_stage_in_pipeline(
                 db,
                 values.get("pipeline_id", getattr(record, "pipeline_id", None)),

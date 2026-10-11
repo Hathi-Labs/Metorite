@@ -950,6 +950,29 @@ async def attach_ext_urls(db: Any, table: str, rows: list[dict[str, Any]]) -> No
         )
 
 
+async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
+    """Append a new deal stage to the default pipeline, last (WS-53 CRM-Q2).
+
+    The stage route calls it in the same transaction as the insert, so a stage
+    an admin creates in Native mode is usable on the board at once. It goes
+    through the one write guard: Mirror mode refuses (409), and the stage route
+    has refused already. With no pipeline it does nothing.
+    """
+    await assert_writable(db, current_tenant(), "crm_pipeline_stages")
+    pipeline = await default_pipeline_id(db)
+    if pipeline is None:
+        return
+    await db.execute(
+        text(
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
+            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), COALESCE((SELECT "
+            "max(position) + 1 FROM crm_pipeline_stages WHERE pipeline_id = "
+            "CAST(:p AS uuid)), 0)) ON CONFLICT (pipeline_id, status_id) DO NOTHING"
+        ),
+        {"p": pipeline, "s": str(status_id)},
+    )
+
+
 async def default_pipeline_id(db: Any) -> str | None:
     """The id of the organization's default deal pipeline, or ``None``.
 

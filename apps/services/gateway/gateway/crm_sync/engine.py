@@ -1269,6 +1269,12 @@ async def _relink_deals(db: Any) -> None:
     existed keeps that value in ``custom``. By id first, then by name in
     pipeline order. A deal that names no pipeline joins the default one, and a
     deal that names an unknown one stays unlinked."""
+    # These raw UPDATEs on ``crm_deals`` are the sync's own write, like
+    # ``upsert_from_source``. ``crm_sync/`` is the only place they may live, and
+    # the fence holds that by directory: no route, agent or skill scans in. They
+    # leave ``zoho_dirty`` and ``updated_at`` alone on purpose, because a re-link
+    # is not a native edit and must not push the deal back to Zoho. The partial
+    # index of migration 247 (``crm_deals_unlinked_idx``) serves them.
     rows = (await db.execute(text(_PIPELINE_INDEX_SQL), {"src": EXT_SOURCE})).fetchall()
     for row in rows:
         await db.execute(text(_RELINK_BY_EXT), {"p": str(row.id), "src": EXT_SOURCE, "ext": str(row.ext_id)})

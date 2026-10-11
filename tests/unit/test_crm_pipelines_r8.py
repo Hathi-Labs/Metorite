@@ -833,19 +833,41 @@ async def test_native_admin_renames_adds_and_removes_stages(q) -> None:
     assert unknown.status_code == 404
 
 
-async def test_a_new_native_stage_is_not_forced_into_a_pipeline(q) -> None:
-    """Only the pipeline routes change membership. A stage made by the stage
-    route joins no pipeline until an admin adds it."""
+async def test_a_new_native_stage_joins_the_default_pipeline_last(q) -> None:
     admin = _admin(q.org_a)
     assert (await _req(admin, "PATCH", "/crm/settings", {"mode": "native"})).status_code == 200
     made = await _req(admin, "POST", "/crm/statuses/deal", {"name": "Extra", "type": "open"})
     assert made.status_code == 201, made.text
     pipeline = (await _req(admin, "GET", "/crm/pipelines")).json()[0]
-    assert "Extra" not in [s["name"] for s in pipeline["stages"]]
-    added = await _req(admin, "POST", f"/crm/pipelines/{pipeline['id']}/stages",
+    assert [s["name"] for s in pipeline["stages"]][-1] == "Extra"
+    assert len(pipeline["stages"]) == 7
+    # The stage is usable at once: a deal moves to it, and one is created in it.
+    deal = await _req(admin, "POST", "/crm/deals", {"name": "D"})
+    assert deal.status_code == 201, deal.text
+    moved = await _req(admin, "PATCH", f"/crm/deals/{deal.json()['id']}",
                        {"status_id": made.json()["id"]})
-    assert added.status_code == 201
-    assert "Extra" in [s["name"] for s in added.json()["stages"]]
+    assert moved.status_code == 200, moved.text
+    created = await _req(admin, "POST", "/crm/deals",
+                         {"name": "E", "status_id": made.json()["id"]})
+    assert created.status_code == 201, created.text
+    # A lead status joins no pipeline.
+    lead_status = await _req(admin, "POST", "/crm/statuses/lead", {"name": "L2", "type": "open"})
+    assert lead_status.status_code == 201
+    assert len((await _req(admin, "GET", "/crm/pipelines")).json()[0]["stages"]) == 7
+
+
+async def test_a_no_op_patch_of_a_stage_the_pipeline_lacks_is_not_refused(q) -> None:
+    admin = _admin(q.org_a)
+    assert (await _req(admin, "PATCH", "/crm/settings", {"mode": "native"})).status_code == 200
+    deal = (await _req(admin, "POST", "/crm/deals", {"name": "D"})).json()
+    pipe = (await _req(admin, "GET", "/crm/pipelines")).json()[0]
+    with q.p.admin_engine.begin() as c:  # the stage leaves the pipeline behind the deal
+        c.execute(text("DELETE FROM crm_pipeline_stages WHERE status_id = "
+                       "CAST(:s AS uuid)"), {"s": deal["status_id"]})
+    same = await _req(admin, "PATCH", f"/crm/deals/{deal['id']}",
+                      {"status_id": deal["status_id"], "name": "D2"})
+    assert same.status_code == 200, same.text
+    assert pipe["stages"]
 
 
 # ── 8. The raw API names ─────────────────────────────────────────────────────

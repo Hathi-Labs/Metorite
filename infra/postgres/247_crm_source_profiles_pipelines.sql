@@ -110,6 +110,11 @@ ALTER TABLE crm_deals
 
 CREATE INDEX IF NOT EXISTS crm_deals_pipeline_idx ON crm_deals (pipeline_id);
 
+-- Serves the re-link of the sync (crm_sync/engine.py::_relink_deals).
+CREATE INDEX IF NOT EXISTS crm_deals_unlinked_idx
+    ON crm_deals (organization_id)
+    WHERE ext_source = 'zoho' AND pipeline_id IS NULL;
+
 ALTER TABLE crm_deal_statuses
     ADD COLUMN IF NOT EXISTS forecast_category TEXT NULL;
 
