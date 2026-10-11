@@ -8,7 +8,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * Each test is written so the obvious wrong build fails it:
  *   1. Email 3 and Tasks 2: the rows say 3 and 2, in a quiet number, and the
  *      link names say ", 3 need you" and ", 2 need you".
- *   2. A failed email source: no number on Email, never a 0.
+ *   2. A failed email source: no number on Email, never a 0. A source that
+ *      fails on a later poll drops its number, and never keeps the old one.
  *   3. Hiding Tasks moves its 2 onto "Add apps".
  *   4. Hover on a row still shows its "···", and the count gives way.
  *   5. The folded rail shows a dot, and the name keeps the number.
@@ -103,13 +104,15 @@ const LENS_ROW = {
 
 interface Store {
   needsGets: number;
+  /** The email source the next answer reports. A test may flip it. */
+  email: "ok" | "failed";
 }
 
 async function stub(
   page: Page,
   opts: { email?: "ok" | "failed"; folded?: boolean; myDay?: boolean; nav?: boolean } = {},
 ): Promise<Store> {
-  const store: Store = { needsGets: 0 };
+  const store: Store = { needsGets: 0, email: opts.email ?? "ok" };
   let layout: Record<string, unknown> = { ...LAYOUT };
   await page.addInitScript(
     ({ folded, myDay, nav }) => {
@@ -140,7 +143,7 @@ async function stub(
     if (path === "/api/settings/branding") return json({ logo: null, updatedBy: "", updatedAt: "" });
     if (path === "/api/shell/needs") {
       store.needsGets += 1;
-      return json(feed(opts.email ?? "ok"));
+      return json(feed(store.email));
     }
     if (path === "/api/projects/my/inbox") return json({ rows: [LENS_ROW], total: 1 });
     if (path.startsWith("/api/projects/notifications")) return json({ rows: [], total: 0, unread: { total: 0, mentions: 0 } });
@@ -180,6 +183,21 @@ test.describe("desktop", () => {
     await expect(row(page, "/email")).toBeVisible();
     await expect(row(page, "/email").locator("[data-nav-needs]")).toHaveCount(0);
     await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
+  });
+
+  test("the poll reads the feed again, and a source that fails then drops its number, never keeps it", async ({ page }) => {
+    await page.clock.install();
+    const store = await stub(page);
+    await page.goto("/settings/appearance");
+    await expect(count(page, "/email")).toHaveText("3");
+    // The next answer says the email source failed. The one poll reads it.
+    store.email = "failed";
+    const before = store.needsGets;
+    await page.clock.fastForward(61_000);
+    await expect.poll(() => store.needsGets).toBeGreaterThan(before);
+    await expect(row(page, "/email").locator("[data-nav-needs]")).toHaveCount(0);
+    await expect(sidebar(page).getByRole("link", { name: "My Email", exact: true })).toBeVisible();
+    await expect(count(page, "/tasks")).toHaveText("2");
   });
 
   test("hiding Tasks moves its 2 onto Add apps", async ({ page }) => {
