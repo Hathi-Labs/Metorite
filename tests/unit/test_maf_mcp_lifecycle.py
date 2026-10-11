@@ -31,11 +31,11 @@ import structlog
 pytest.importorskip("agent_framework", reason="agent_framework not installed")
 pytest.importorskip("mcp", reason="mcp not installed")
 
-from gateway import outbound_guard  # noqa: E402
-from orchestrator import _maf_mcp  # noqa: E402
+from gateway import outbound_guard
+from orchestrator import _maf_mcp
 
-from tests.unit._maf_mcp_fakes import RegistrySpy, native_agent, row, set_flag  # noqa: E402
-from tests.unit._native_maf_harness import (  # noqa: E402
+from tests.unit._maf_mcp_fakes import RegistrySpy, native_agent, row, set_flag
+from tests.unit._native_maf_harness import (
     ScriptedModel,
     _a_tenant,  # noqa: F401 — a fixture, used by name
     drive_native,

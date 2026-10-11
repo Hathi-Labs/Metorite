@@ -297,7 +297,7 @@ def _run_scoped_tool_class() -> type:
     from agent_framework import MCPStreamableHTTPTool
 
     class RunScopedMCPTool(MCPStreamableHTTPTool):
-        @property  # type: ignore[override]
+        @property
         def session(self) -> Any:
             return self.__dict__.get("_ws8c_session")
 
