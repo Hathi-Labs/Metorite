@@ -46,10 +46,17 @@ organization's CRM mode and its access rule, admin only. Its two helpers
 register no routes: ``access.py`` holds the router dependency that ``core``
 runs third, and ``seed.py`` holds the starting pipeline that the change to
 Native mode writes.
+
+``connection.py`` is WS-53 CRM-Z2 — ``GET /crm/connection``, the Zoho
+connect (``POST /crm/connection/zoho/start`` and the callback
+``GET /crm/oauth/zoho/callback``) and ``POST /crm/connection/disconnect``. Each
+route is behind ``CRM_MIRROR``, default OFF. The credential lives in
+``gateway/connections/store.py``, the only reader of the blob.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
 from gateway.routes.crm import admin as _admin  # noqa: F401
+from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401

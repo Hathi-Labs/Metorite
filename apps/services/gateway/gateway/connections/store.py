@@ -1,0 +1,319 @@
+"""The store of ``integration_connections`` — the only reader of the blob.
+
+Spec: ``project-docs/specs/crm_platform.md`` §5.3 and §7.1. Migration 245.
+
+⚠️ **This is the ONLY module that names the blob column** (``credentials`` plus
+``_encrypted``). The column holds the Fernet blob of the tokens. Every other
+module reads a :class:`Connection` (no blob) or a :class:`SourceCredential`
+that this module decrypts. The fence is ``tests/unit/test_crm_connection.py``:
+an AST scan that fails when another file under ``apps/`` or ``packages/`` names
+the column.
+
+* **The key.** The blob uses the Fernet key of ``acb_llm.key_store``
+  (``ACB_MASTER_KEY``). This module makes no second key.
+* **The session.** Each function takes the ``db`` that ``tenant_session`` gave
+  the caller. Row level security binds the tenant. Each query also names the
+  organization, so a session with RLS off still reads one organization. The
+  organization comes from the server, never from request input (R5).
+* **No secret out.** The blob, the access token and the refresh token never
+  appear in a return value (except :func:`load_credential`, which exists to
+  return them to server code), a log line or an error message.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from acb_llm.key_store import get_key_store
+from sqlalchemy import text
+
+from gateway.crm_sources.base import SourceCredential
+
+#: The ``status`` vocabulary, mirrored from the CHECK in migration 245.
+STATUS_CONNECTED = "connected"
+STATUS_NEEDS_RECONNECT = "needs_reconnect"
+STATUS_DISCONNECTED = "disconnected"
+
+SCOPE_ORG = "org"
+SCOPE_MEMBER = "member"
+
+#: Each column except the blob. A SELECT list is built from this string only.
+_PUBLIC_COLUMNS = (
+    "id, organization_id, provider, owning_app, scope_kind, member_email, "
+    "status, provider_meta, scopes, connected_by, last_sync_at, last_error, "
+    "created_at, updated_at"
+)
+
+#: The where clause of one connection. ``COALESCE`` matches the unique index.
+_KEY_WHERE = (
+    "organization_id = CAST(:org AS uuid) AND provider = :provider "
+    "AND owning_app = :owning_app AND scope_kind = :scope_kind "
+    "AND COALESCE(member_email, '') = :member"
+)
+
+_GET_SQL = f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections WHERE {_KEY_WHERE}"
+
+_BLOB_SQL = (
+    "SELECT credentials_encrypted FROM integration_connections "
+    f"WHERE {_KEY_WHERE} AND status <> 'disconnected'"
+)
+
+_BLOB_BY_ID_SQL = (
+    "SELECT credentials_encrypted FROM integration_connections "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected' FOR UPDATE"
+)
+
+_UPSERT_SQL = (
+    "INSERT INTO integration_connections (organization_id, provider, "
+    "owning_app, scope_kind, member_email, status, provider_meta, "
+    "credentials_encrypted, scopes, connected_by, last_error, created_at, "
+    "updated_at) VALUES (CAST(:org AS uuid), :provider, :owning_app, "
+    ":scope_kind, :member_email, 'connected', CAST(:provider_meta AS jsonb), "
+    ":blob, :scopes, :connected_by, NULL, now(), now()) "
+    "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
+    "(COALESCE(member_email, ''))) DO UPDATE SET status = 'connected', "
+    "provider_meta = EXCLUDED.provider_meta, "
+    "credentials_encrypted = EXCLUDED.credentials_encrypted, "
+    "scopes = EXCLUDED.scopes, connected_by = EXCLUDED.connected_by, "
+    "last_error = NULL, updated_at = now() "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+_UPDATE_TOKENS_SQL = (
+    "UPDATE integration_connections SET credentials_encrypted = :blob, "
+    "provider_meta = CAST(:provider_meta AS jsonb), updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+_NEEDS_RECONNECT_SQL = (
+    "UPDATE integration_connections SET status = 'needs_reconnect', "
+    "last_error = :code, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+_DISCONNECT_SQL = (
+    "UPDATE integration_connections SET status = 'disconnected', "
+    "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+
+@dataclass(frozen=True)
+class Connection:
+    """One registry row, with no blob."""
+
+    id: str
+    organization_id: str
+    provider: str
+    owning_app: str
+    scope_kind: str
+    member_email: str | None
+    status: str
+    provider_meta: dict[str, Any]
+    scopes: tuple[str, ...]
+    connected_by: str | None
+    last_sync_at: datetime | None
+    last_error: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+def _connection(row: Any) -> Connection:
+    meta = row.provider_meta
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    return Connection(
+        id=str(row.id),
+        organization_id=str(row.organization_id),
+        provider=row.provider,
+        owning_app=row.owning_app,
+        scope_kind=row.scope_kind,
+        member_email=row.member_email,
+        status=row.status,
+        provider_meta=dict(meta or {}),
+        scopes=tuple(row.scopes or ()),
+        connected_by=row.connected_by,
+        last_sync_at=row.last_sync_at,
+        last_error=row.last_error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _key(
+    org: str, provider: str, owning_app: str, scope_kind: str, member_email: str | None,
+) -> dict[str, Any]:
+    if scope_kind not in (SCOPE_ORG, SCOPE_MEMBER):
+        raise ValueError("scope_kind is 'org' or 'member'")
+    member = (member_email or "").strip().lower()
+    if (scope_kind == SCOPE_MEMBER) != bool(member):
+        raise ValueError("a member connection names a member, an org connection does not")
+    return {
+        "org": str(uuid.UUID(str(org))),
+        "provider": provider,
+        "owning_app": owning_app,
+        "scope_kind": scope_kind,
+        "member": member,
+    }
+
+
+# ── The blob ────────────────────────────────────────────────────────────────
+
+
+def _seal(credential: SourceCredential) -> str:
+    plain = json.dumps(
+        {
+            "access_token": credential.access_token,
+            "refresh_token": credential.refresh_token,
+            "expires_at": credential.expires_at.isoformat(),
+            "scopes": list(credential.scopes),
+            "provider_meta": dict(credential.provider_meta),
+        },
+        separators=(",", ":"),
+    )
+    return get_key_store().encrypt(plain)
+
+
+def _unseal(blob: str) -> SourceCredential:
+    data = json.loads(get_key_store().decrypt(blob))
+    return SourceCredential(
+        access_token=str(data["access_token"]),
+        refresh_token=str(data["refresh_token"]),
+        expires_at=datetime.fromisoformat(data["expires_at"]),
+        scopes=tuple(data.get("scopes") or ()),
+        provider_meta={str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()},
+    )
+
+
+# ── Reads ───────────────────────────────────────────────────────────────────
+
+
+async def get(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """The connection row, or ``None``. It carries no blob."""
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    row = (await db.execute(text(_GET_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def load_credential(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> SourceCredential | None:
+    """The decrypted credential, or ``None`` with no blob or after a disconnect.
+
+    A connection in ``needs_reconnect`` still returns its credential, because
+    the callback needs the old refresh token to revoke it.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    row = (await db.execute(text(_BLOB_SQL), params)).first()
+    if row is None or not row.credentials_encrypted:
+        return None
+    return _unseal(row.credentials_encrypted)
+
+
+async def load_credential_locked(
+    db: Any, org: str, connection_id: str,
+) -> SourceCredential | None:
+    """Like :func:`load_credential`, by id, with ``FOR UPDATE`` on the row.
+
+    The shared token helper uses it: a second worker waits on the row lock,
+    then reads the token that the first worker wrote.
+    """
+    row = (await db.execute(
+        text(_BLOB_BY_ID_SQL), {"id": str(connection_id), "org": str(org)},
+    )).first()
+    if row is None or not row.credentials_encrypted:
+        return None
+    return _unseal(row.credentials_encrypted)
+
+
+# ── Writes ──────────────────────────────────────────────────────────────────
+
+
+async def save_credential(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    credential: SourceCredential,
+    *,
+    connected_by: str,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+    scopes: Sequence[str] | None = None,
+) -> Connection:
+    """Insert the connection, or update the one row that already exists.
+
+    A reconnect updates the row: status ``connected``, a new blob, no error.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["member_email"] = params.pop("member") or None
+    params.update(
+        provider_meta=json.dumps(dict(credential.provider_meta)),
+        blob=_seal(credential),
+        scopes=list(scopes if scopes is not None else credential.scopes),
+        connected_by=(connected_by or "").strip().lower() or None,
+    )
+    row = (await db.execute(text(_UPSERT_SQL), params)).first()
+    return _connection(row)
+
+
+async def update_tokens(
+    db: Any, org: str, connection_id: str, credential: SourceCredential,
+) -> None:
+    """Write a refreshed credential back, so every worker shares it."""
+    await db.execute(text(_UPDATE_TOKENS_SQL), {
+        "id": str(connection_id),
+        "org": str(org),
+        "blob": _seal(credential),
+        "provider_meta": json.dumps(dict(credential.provider_meta)),
+    })
+
+
+def safe_error_code(code: str | None) -> str:
+    """A provider error code when it looks like one, else ``refresh_failed``."""
+    value = (code or "").strip()
+    if value and len(value) <= 40 and value.replace("_", "").isalnum():
+        return value
+    return "refresh_failed"
+
+
+async def mark_needs_reconnect(db: Any, org: str, connection_id: str, code: str) -> None:
+    """Set ``needs_reconnect`` and ``last_error`` to the safe *code*.
+
+    The caller passes a provider error code. This function keeps only a short
+    word, so a free text can never reach the column.
+    """
+    await db.execute(text(_NEEDS_RECONNECT_SQL), {
+        "id": str(connection_id), "org": str(org), "code": safe_error_code(code),
+    })
+
+
+async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None:
+    """Delete the blob and set ``disconnected``. The row stays as a record."""
+    row = (await db.execute(
+        text(_DISCONNECT_SQL), {"id": str(connection_id), "org": str(org)},
+    )).first()
+    return _connection(row) if row is not None else None
