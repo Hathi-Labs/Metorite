@@ -115,7 +115,7 @@ SETTINGS_API_VERSION = "v8"
 LAYOUTS_SCOPE = "ZohoCRM.settings.layouts.READ"
 PIPELINE_SCOPE = "ZohoCRM.settings.pipeline.READ"
 
-#: The scope of the field definitions read. CRM-Z0 confirms the exact name.
+#: The scope of the field definitions read.
 FIELDS_SCOPE = "ZohoCRM.settings.fields.READ"
 
 #: Zoho's own error codes. A scope refusal and a version refusal arrive as the
