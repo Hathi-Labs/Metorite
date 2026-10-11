@@ -328,7 +328,7 @@ describe("(13) the rendered header names the subject and the scope", () => {
     expect(subjectLabel(MEERA, ADMIN)).toBe("Meera Iyer");
     expect(subjectLabel(HARDWARE, ADMIN)).toBe("Hardware team");
     expect(subjectLabel({ kind: "person", email: "x@example.test" }, ADMIN)).toBe(
-      "x@example.test"
+      "x"
     );
     expect(subjectLabel(null, ADMIN)).toBeNull();
   });
@@ -342,7 +342,8 @@ describe("(6) the subject menu", () => {
       "Hardware team",
       "Me",
       "Ana Shah",
-      "mia@example.test",
+      // A name, never the address. The address is the row's hint.
+      "mia",
     ]);
     expect(options.map((o) => o.group)).toEqual([
       undefined,

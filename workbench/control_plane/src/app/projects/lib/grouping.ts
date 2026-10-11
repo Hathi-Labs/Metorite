@@ -12,6 +12,7 @@
  */
 
 import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
+import { personDisplayName } from "@/lib/personName";
 
 import type { StatusRow, TaskRow } from "./api";
 import { MATRIX_LEVELS, cellLabel, taskCell } from "./matrix";
@@ -491,8 +492,9 @@ export type PersonNames = ReadonlyMap<string, string>;
  */
 export function personLabel(who: string, names?: PersonNames): string {
   if (who.startsWith("agent:")) return who.slice("agent:".length) || who;
-  const named = names?.get(who.toLowerCase());
-  return named && named.trim() ? named.trim() : localPart(who);
+  // `personDisplayName`, the one rule: a directory "name" that is an address
+  // reads as no name, so it falls back too (owner, 2026-10-10).
+  return personDisplayName(names?.get(who.toLowerCase()), who);
 }
 
 /**

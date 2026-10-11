@@ -80,7 +80,8 @@ describe("(17) the panels in a report", () => {
     const html = renderToStaticMarkup(createElement(LoadPanel, { data }));
     expect(html).toContain(">Meera Iyer<");
     expect(html).not.toContain(">meera@example.test<");
-    // No name in the payload: the address, as before.
-    expect(html).toContain(">noa@example.test<");
+    // No name in the payload: the left half of the address, never the whole
+    // address (owner, 2026-10-10). The address is in the hover.
+    expect(html).toContain(">noa<");
   });
 });
