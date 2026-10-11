@@ -1720,3 +1720,24 @@ def test_the_migration_adds_no_unique_index_on_a_lead_address(
     the shape migration 148 had to defuse."""
     assert not re.search(r"UNIQUE.*crm_leads", bare, re.I | re.S)
     assert "crm_leads" not in bare
+
+
+# ── Mirror mode (WS-53 CRM-Z6) ──────────────────────────────────────────────
+
+async def test_mirror_mode_makes_no_lead_and_advances_the_cursor(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """Zoho owns new leads in Mirror mode. The step must not count an error, and
+    the watermark must move, or every cycle re-reads the same batch."""
+    _ready(db)
+    db.seed("crm_settings", organization_id=MAILBOX_ORG, mode="mirror")
+    _message(db, processed_at=_at(5))
+
+    first = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+    second = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert _leads(db) == []
+    assert first["errors"] == 0 and first["created"] == 0
+    assert first["candidates"] == 1
+    assert second["candidates"] == 0
+    assert db.rows("crm_auto_lead_cursors")[0]["processed_watermark"] == _at(5)

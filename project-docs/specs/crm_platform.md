@@ -16,12 +16,11 @@
 > Native (migration 243, 2026-10-11). CRM-T4, the real-database tenancy suite and
 > the CRM purge (2026-10-11).
 > CRM-Z3, the mirror columns, `crm_field_defs` and `upsert_from_source`
-> (2026-10-11, migration 244).
-> CRM-Z2, the Zoho connection: migration 245, the connect routes behind
-> `CRM_MIRROR`, and the shared token (2026-10-11). CRM-Z4 and CRM-Z5, the
-> Zoho sync engine: migration 246, `crm_sync_runs`, the import, the loop every 10
-> minutes, Sync now and the status route (2026-10-11). The other slices are not
-> built yet.
+> (2026-10-11, migration 244). CRM-Z2, the Zoho connection: migration 245, the
+> connect routes behind `CRM_MIRROR`, and the shared token (2026-10-11). CRM-Z6,
+> the mirror write guard (2026-10-11). CRM-Z4 and CRM-Z5, the Zoho sync engine:
+> migration 246, `crm_sync_runs`, the import, the loop every 10 minutes, Sync
+> now and the status route (2026-10-11). The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -884,7 +883,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-Z3** ✅ built 2026-10-11. `crm_pipelines` did not land: a Zoho pipeline is a subset of the one Stage picklist, so CRM-S7 adds it. The write guard moved to CRM-Z6 | The mirror columns, `crm_field_defs`, and pipelines if Zoho needs them | 🟢 AGENT-SAFE | R8: an upsert on `(organization_id, ext_source, ext_id)` is idempotent. Two orgs import one Zoho id with no collision |
 | **CRM-Z4** ✅ built 2026-10-11. Built as: the first import skips the deleted list, because nothing is mirrored yet. It opens the deleted window at the start of the import instead. The estimate uses `actions/count` (v8), which is not measured on a live tenant. Bulk Read (§5.2 item 15) is not built. The import mirrors the Stage and Lead_Status picklists into the status tables first | The first import, with progress, estimate and resume. The owner map | 🟢 AGENT-SAFE | A paused import resumes with no duplicate. Counts per entity match the source |
 | **CRM-Z5** ✅ built 2026-10-11. Built as: the interval (10 minutes) and the credit budget are constants, because `crm_settings` has no column for them. The budget assumes the Free edition (5,000 credits a day), so a sync may spend 500 in 24 hours. A run that spends credits spaces the next run, up to 6 hours. A module that hides `Modified_Time` is not listed by an incremental run. Only the reconcile reads it, once in 24 hours, and it resumes across runs. A reconcile deletes only a row that two complete walks in a row did not read (two strikes). It refuses to delete, with a `refused` count, when the Zoho count is unknown (`count_unknown`), when its walk read fewer records than that count, when it read nothing, or when it would delete more than 20 % of more than 10 local rows. A record that fails to write is read again for 5 runs, one page for each run, and then it expires. The status route counts it in `failed`. The old two-way engine in `sync_zoho.py` stays as unreachable code until CRM-Z11. A reconcile also runs after 50 days without a good run | The incremental loop per org, Sync now, the credit budget, `crm_sync_runs`. From CRM-T3: one `tenant_session(org)` per step, the advisory lock in place of `_cycle_lock`, and a working `POST /crm/sync/zoho` | 🟢 AGENT-SAFE to build. 🔴 first real customer connect is the owner's | Two orgs sync on one loop with no crossover. A run stops at its budget |
-| **CRM-Z6** | Read-only enforcement in Mirror mode, "Only in Metorite" items, deep links | 🟢 AGENT-SAFE | `test_crm_mirror_readonly.py`: each write route returns 409 on a mirrored field, for each of the 4 entities. A Metorite-only note saves |
+| **CRM-Z6** ✅ built 2026-10-11. Built as: deep links move to CRM-Z7 after the sync stores the org domain | Read-only enforcement in Mirror mode, "Only in Metorite" items, deep links | 🟢 AGENT-SAFE | `test_crm_mirror_readonly.py`: each write route returns 409 on a mirrored field, for each of the 4 entities. A Metorite-only note saves |
 | **CRM-Z7** | The mirror UI: connect flow, mirror marks, custom fields in the panel and the filters, sync health | 🟢 AGENT-SAFE | Visual review passes. A custom field filters a list |
 
 ### 13.6 Phase 4 — launch
@@ -903,7 +902,7 @@ And four mirror slices:
 |---|---|---|
 | **CRM-Z8** | Near-real-time: Zoho's Notification API starts a targeted pull | 🟢 AGENT-SAFE. A signed URL per org (§10.7) |
 | **CRM-Z9** | Agent actions in Zoho through Zoho's MCP (§7.2), behind Metorite's confirmation step. Our `writer.py` stays as the fallback if Zoho's MCP fails the CRM-Z0 check | 🔴 OWNER-GATE to turn on for any org |
-| **CRM-Z10** | "Make Metorite your CRM": Mirror to Native (§3.4) | 🟢 AGENT-SAFE to build. 🔴 Fracktal's run is the owner's |
+| **CRM-Z10** | "Make Metorite your CRM": Mirror to Native (§3.4). Z10 must rewind `processed_watermark`, because Mirror mode skips auto-lead mail | 🟢 AGENT-SAFE to build. 🔴 Fracktal's run is the owner's |
 | **CRM-Z11** | Retire the global Zoho path (§5.5) | 🟢 AGENT-SAFE, after CRM-Z5 is live |
 
 The second provider (Q5) gets its own slice list, on the seam of §5.1.

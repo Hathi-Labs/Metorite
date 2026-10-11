@@ -28,6 +28,8 @@ from gateway.routes.crm.core import (
     DEALS,
     ContactModel,
     _tenant_session,
+    assert_writable,
+    current_tenant,
     link_deal_contact,
     require_row,
     router,
@@ -102,7 +104,8 @@ async def add_deal_contact(
     beyond the row it writes.
     """
     async with _tenant_session() as db:
-        await require_row(db, DEALS.table, deal_id, DEALS.label)
+        deal = await require_row(db, DEALS.table, deal_id, DEALS.label)
+        await assert_writable(db, current_tenant(), DEALS, None, row=deal)
         contact = await require_row(
             db, CONTACTS.table, payload.contact_id, CONTACTS.label,
         )
@@ -129,7 +132,8 @@ async def remove_deal_contact(
     makes the UI re-render her and look broken.
     """
     async with _tenant_session() as db:
-        await require_row(db, DEALS.table, deal_id, DEALS.label)
+        deal = await require_row(db, DEALS.table, deal_id, DEALS.label)
+        await assert_writable(db, current_tenant(), DEALS, None, row=deal)
         existing = (await db.execute(
             text(
                 "SELECT * FROM crm_deal_contacts "
