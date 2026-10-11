@@ -40,8 +40,8 @@ from gateway.connections import store
 from gateway.crm_sync import engine, runs
 from gateway.crm_sync.engine import NotConnected
 from gateway.crm_sync.runs import SyncRunning
+from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
-from gateway.routes.crm.access import read_settings
 
 _log = get_logger("crm.sync.scheduler")
 
@@ -73,7 +73,7 @@ async def is_due(org: str) -> bool:
     if not flags.crm_org_allowed(org):
         return False
     async with tenant_session(org) as db:
-        settings = await read_settings(db, org)
+        settings = await crm_access.read_settings(db, org)
         if settings is None or getattr(settings, "mode", None) != "mirror":
             return False
         connection = await store.get(db, org, engine.PROVIDER, engine.OWNING_APP)

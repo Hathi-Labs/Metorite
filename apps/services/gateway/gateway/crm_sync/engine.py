@@ -81,8 +81,8 @@ from gateway.crm_sources.base import (
 from gateway.crm_sources.registry import mapping_for, source_class
 from gateway.crm_sync import runs
 from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
+from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
-from gateway.routes.crm.access import read_settings
 from gateway.routes.crm.core import (
     compute_lead_name,
     delete_from_source,
@@ -388,7 +388,7 @@ async def acquire(org: str) -> RunHandle:
             raise NotConnected(connection.status if connection else "none")
         if not _enabled(org):
             raise NotConnected("disabled")
-        settings = await read_settings(db, org)
+        settings = await crm_access.read_settings(db, org)
         if getattr(settings, "mode", None) != "mirror":
             raise NotConnected("mode")
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
@@ -490,7 +490,7 @@ class _Ctx:
         snapshot = copy.deepcopy(self.counts)
         try:
             async with tenant_session(self.org) as db:
-                settings = await read_settings(db, self.org)
+                settings = await crm_access.read_settings(db, self.org)
                 if getattr(settings, "mode", None) != "mirror":
                     raise ModeChanged()
                 yield db

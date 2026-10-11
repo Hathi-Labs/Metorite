@@ -209,6 +209,22 @@ def _fresh_tenants() -> None:
         target.__dict__.update(fresh.__dict__)
 
 
+@pytest.fixture(autouse=True)
+def _the_loop_is_not_stopping():
+    """Clear the scheduler's stop flag before each test, and after it.
+
+    The flag is module state. Any earlier suite that boots the real gateway app
+    runs its shutdown, and that sets the flag. ``run_tick`` then skips every
+    org, and a tick test reads 0 runs for a reason that has nothing to do with
+    it. Production boots once, so this is a test-order fault only.
+    """
+    from gateway.crm_sync import scheduler
+
+    scheduler._stopping.clear()
+    yield
+    scheduler._stopping.clear()
+
+
 @pytest.fixture
 async def ns(promoted, monkeypatch):  # noqa: F811 — a fixture
     """The promoted catalog, the switches on, the fake Zoho wired, cleaned after."""
