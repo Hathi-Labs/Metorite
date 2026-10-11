@@ -16,6 +16,7 @@ import {
   isActive,
   launcherGroups,
   shellSidebar,
+  strayCount,
 } from "./shellNav";
 
 const ALL = PANES.map((p) => p.feature).filter((f): f is string => !!f);
@@ -170,26 +171,61 @@ describe("the desktop frame (owner, 2026-10-09: one bar across the top)", () => 
   });
 });
 
-describe("My apps: the member's pins, first in the sidebar (NS-7, §3.2)", () => {
-  it("draws the pins first, in pin order, and moves each one out of its team", () => {
-    const groups = shellSidebar(visibleSections(ALL, true), ["/chat", "/projects"]);
-    expect(groups[0]).toMatchObject({ id: "my-apps", label: "My apps" });
+describe("the star model: each category lists only its starred apps (owner, 2026-10-11)", () => {
+  const all = visibleSections(ALL, true);
+  // Every pane known, as after a star-model save, so the stars filter.
+  const KNOWN = PANES.map((p) => p.href);
+  const starred = (pins: string[]) => ({ pins, known: KNOWN });
+
+  it("draws only the starred apps, in nav.ts order and never in star order", () => {
+    const groups = shellSidebar(all, starred(["/chat", "/projects", "/email"]));
     expect(shape(groups)).toEqual([
-      ["my-apps", ["/chat", "/projects"]],
-      ["personal", ["/tasks", "/calendar", "/email", "/whatsapp"]],
-      ["across", ["/people"]],
-      ["admin", ["/approvals", "/settings/organization"]],
+      ["personal", ["/email"]],
+      ["across", ["/projects"]],
+      ["studio", ["/chat"]],
     ]);
   });
 
-  it("draws no pin the member does not hold, and no heading over nothing", () => {
-    const groups = shellSidebar(visibleSections(["tasks"], false), ["/projects", "/crm"]);
-    expect(groups.map((g) => g.id)).not.toContain("my-apps");
-    expect(shape(groups)).toEqual([["personal", ["/tasks", "/calendar"]]]);
+  it("puts Personal Center first, and has no separate group of pins", () => {
+    const groups = shellSidebar(all, starred(["/approvals", "/chat", "/tasks"]));
+    expect(groups.map((g) => g.id)).toEqual(["personal", "studio", "admin"]);
+    expect(groups.map((g) => g.label)).not.toContain("My apps");
   });
 
-  it("without pins, keeps the shape it had", () => {
-    expect(shellSidebar(visibleSections(ALL, true), undefined)).toEqual(shellSidebar(visibleSections(ALL, true)));
-    expect(shellSidebar(visibleSections(ALL, true), [])).toEqual(shellSidebar(visibleSections(ALL, true)));
+  it("hides a category with no starred app, and keeps every other one", () => {
+    const groups = shellSidebar(all, starred(["/tasks", "/approvals"]));
+    expect(groups.map((g) => g.id)).toEqual(["personal", "admin"]);
+  });
+
+  it("keeps My Email in Personal Center: nothing moves between categories", () => {
+    const groups = shellSidebar(all, starred(["/email", "/projects"]));
+    expect(groups.find((g) => g.id === "personal")!.items.map((p) => p.href)).toEqual(["/email"]);
+  });
+
+  it("draws no star the member does not hold", () => {
+    const groups = shellSidebar(visibleSections(["tasks"], false), starred(["/projects", "/crm", "/tasks"]));
+    expect(shape(groups)).toEqual([["personal", ["/tasks"]]]);
+  });
+
+  it("with nothing starred, draws no category at all (Home stays, apart from the groups)", () => {
+    const allKnown = { pins: [], known: [...new Set(all.flatMap((s) => s.items.map((p) => p.href)))] };
+    expect(shellSidebar(all, allKnown)).toEqual([]);
+    expect(homePane(false).href).toBe("/");
+  });
+
+  it("without stars, or with no stored list, keeps the shape it had", () => {
+    expect(shellSidebar(all, undefined)).toEqual(shellSidebar(all));
+    expect(shellSidebar(all, null)).toEqual(shellSidebar(all));
+    expect(shellSidebar(all, { pins: null, known: null })).toEqual(shellSidebar(all));
+  });
+});
+
+describe("a run on a hidden app still shows (strayCount)", () => {
+  it("counts only the runs on panes the sidebar does not show", () => {
+    const shown = new Set(["/tasks", "/projects"]);
+    // Chat is hidden too, so a run folded onto Chat counts here.
+    expect(strayCount({ "/tasks": 2, "/chat": 1, "/email": 3 }, shown)).toBe(4);
+    expect(strayCount({ "/tasks": 2 }, shown)).toBe(0);
+    expect(strayCount({}, shown)).toBe(0);
   });
 });

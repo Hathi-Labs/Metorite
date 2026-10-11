@@ -24,6 +24,8 @@
 
 import Button from "@/components/ui/Button";
 import { useState, useEffect, useCallback, useMemo } from "react";
+
+import Icon from "@/components/Icon";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
 import { useAgentSessions } from "@/hooks/useChatSessions";
@@ -37,6 +39,8 @@ import {
   type PersonaInput,
 } from "../lib/assistantPersona";
 import { SelectButton } from "@/components/ui/SelectButton";
+import type { ProjectNode } from "../lib/tree";
+import { ProjectSelect } from "./ProjectSelect";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { artifactHandler, syncPanelToSession } from "@/lib/autoOpenArtifact";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
@@ -81,6 +85,12 @@ export interface AssistantRailProps {
    * (`lib/chatScope.ts`). Absent, the header names `node` and offers no pick.
    */
   scopes?: readonly ScopeEntry[];
+  /**
+   * The same nodes as a TREE, for the picker (owner, 2026-10-10: a search
+   * over a tree whose spaces start closed). Absent, the header falls back to
+   * the flat list.
+   */
+  scopeRoots?: readonly ProjectNode[];
   onClose?: () => void;
   /**
    * False while the page keeps the rail mounted but hidden: the dock under a
@@ -89,6 +99,9 @@ export interface AssistantRailProps {
   visible?: boolean;
 }
 
+/** The "Everything you can see" row's value. A node id is a UUID, so it cannot collide. */
+const EVERYTHING_ROW = "__everything__";
+
 export function AssistantRail({
   node,
   view,
@@ -96,6 +109,7 @@ export function AssistantRail({
   openTask,
   selectedTaskIds,
   scopes,
+  scopeRoots,
   onClose,
   visible = true,
 }: AssistantRailProps) {
@@ -226,14 +240,43 @@ export function AssistantRail({
         {scopes ? (
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-xs text-muted-foreground">Chat about</span>
-            <SelectButton
-              label="What the chat is focused on"
-              value={focusNode ? focus.focusId : EVERYTHING}
-              defaultValue={EVERYTHING}
-              options={options}
-              widthClass="max-w-[14rem]"
-              onChange={(id) => setFocus((f) => nextFocus(f, { type: "pick", id }))}
-            />
+            {scopeRoots ? (
+              <ProjectSelect
+                label="What the chat is focused on"
+                roots={scopeRoots}
+                // `EVERYTHING` is "", which the picker reads as "nothing
+                // chosen". The lead row carries a value of its own.
+                value={focusNode ? focus.focusId : EVERYTHING_ROW}
+                defaultValue={EVERYTHING_ROW}
+                lead={[
+                  {
+                    key: "everything",
+                    rows: [
+                      {
+                        value: EVERYTHING_ROW,
+                        label: "Everything you can see",
+                        icon: <Icon name="Globe" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+                      },
+                    ],
+                  },
+                ]}
+                widthClass="w-[14rem] max-w-full"
+                onChange={(id) =>
+                  setFocus((f) =>
+                    nextFocus(f, { type: "pick", id: id === EVERYTHING_ROW ? EVERYTHING : id }),
+                  )
+                }
+              />
+            ) : (
+              <SelectButton
+                label="What the chat is focused on"
+                value={focusNode ? focus.focusId : EVERYTHING}
+                defaultValue={EVERYTHING}
+                options={options}
+                widthClass="max-w-[14rem]"
+                onChange={(id) => setFocus((f) => nextFocus(f, { type: "pick", id }))}
+              />
+            )}
           </div>
         ) : (
           <p className="min-w-0 truncate text-xs text-muted-foreground" title={node?.name ?? undefined}>

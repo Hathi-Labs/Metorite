@@ -344,7 +344,9 @@ class TestTheExclusionCannotGoStale:
     def test_every_crm_table_cascades_from_the_tenant(self, eng):
         """WS-53 CRM-T1: the positive half, so the empty set above is not
         vacuous for the CRM. Each of the 13 ``crm_*`` tables carries an
-        ``organization_id`` that cascades from ``organization``."""
+        ``organization_id`` that cascades from ``organization``. WS-53 CRM-T5
+        adds the 14th, ``crm_settings`` (migration 243), whose primary key is
+        that column."""
         with eng.begin() as conn:
             cascading = {
                 r[0]
@@ -364,5 +366,6 @@ class TestTheExclusionCannotGoStale:
             "crm_activities", "crm_auto_lead_cursors", "crm_companies",
             "crm_contacts", "crm_deal_contacts", "crm_deal_statuses",
             "crm_deals", "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
-            "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
+            "crm_settings", "crm_status_changes", "crm_sync_cursors",
+            "crm_zoho_tombstones",
         }

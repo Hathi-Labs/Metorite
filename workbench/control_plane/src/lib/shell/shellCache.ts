@@ -4,10 +4,11 @@
  * sign-out without importing the hook.
  *
  * Why it exists. The read cache (`dataCache`) lives in memory only, so every
- * full page load started with no layout. The pins then jumped from the team
- * groups into "My apps" when the read landed, and a click in that moment
- * opened the wrong app. This copy paints the last known layout on the first
- * frame, and the read confirms it or replaces it.
+ * full page load started with no layout. The sidebar then changed shape when
+ * the read landed, and a click in that moment opened the wrong app. This
+ * copy paints the last known layout on the first frame, and the read
+ * confirms it or replaces it. It holds the stars (`pins`) and `known`, and
+ * never a tenant row.
  *
  * The rules:
  *
@@ -84,12 +85,20 @@ export function shellAccountPrefix(email: string): string {
 
 /** Remove the layouts of these emails, in every organization. Never throws. */
 export function clearCachedLayouts(emails: readonly string[]): void {
+  clearAccountKeys(SHELL_CACHE_PREFIX, emails);
+}
+
+/**
+ * Remove every `<prefix><email>|<org>` key of these emails. Never throws.
+ * The shell layout and the sidebar folds (`sidebarFolds.ts`) share it.
+ */
+export function clearAccountKeys(prefix: string, emails: readonly string[]): void {
   const store = storage();
   if (!store) return;
   try {
     const prefixes = [...new Set(emails.flatMap((e) => [e, e.toLowerCase()]))]
       .filter(Boolean)
-      .map(shellAccountPrefix);
+      .map((e) => `${prefix}${e}|`);
     const doomed: string[] = [];
     for (let i = 0; i < store.length; i++) {
       const k = store.key(i);
