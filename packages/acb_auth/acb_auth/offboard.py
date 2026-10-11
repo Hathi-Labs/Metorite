@@ -22,11 +22,16 @@ of its tables used to carry an ``organization_id`` that referenced the CRM's
 ``organization_id`` with ``ON DELETE CASCADE``. So ``_NOT_TENANT_SCOPED`` is
 empty, and the R8 fence re-derives that from ``information_schema``.
 
-⚠️ **Known hazard, owned by CRM-T4, not fixed here.** ``crm_leads.status_id``
-and ``crm_deals.status_id`` are ``ON DELETE RESTRICT``. A purge of an
-organization that holds leads or deals cascades into both the records and
-their statuses, and the RESTRICT can refuse that DELETE. No organization holds
-CRM rows today. CRM-T4 owns the purge content and its two-org R8 suite.
+⚠️ **The purge deletes CRM activities, deals and leads first (WS-53 CRM-T4).**
+``crm_leads.status_id`` and ``crm_deals.status_id`` are ``ON DELETE RESTRICT``,
+and the one cascading DELETE reaches both the stage and the record that sits in
+it. Measured 2026-10-11 on Postgres 16: the bare cascade did NOT fail, because
+the RESTRICT check fires after the statement, when the cascade has already
+removed the leads and deals. The purge still deletes ``crm_activities``,
+``crm_deals`` and ``crm_leads`` for the org, in that order and before the
+``organization`` delete, so it does not rest on that trigger order. No
+migration is needed. ``test_org_purge_tenant.py`` seeds two orgs with CRM rows
+in stages and fences the result.
 
 What is deliberately KEPT:
 
@@ -77,6 +82,18 @@ _NOT_TENANT_SCOPED: frozenset[str] = frozenset()
 
 _DELETE_ORG_SQL = "DELETE FROM organization WHERE id = CAST(:org_id AS uuid)"
 
+#: Deleted first, in this order, inside the tenant session. Children before the
+#: records they point at, and records before the stages their ``status_id``
+#: RESTRICTs. Every name is a literal of ours, never caller text.
+_CRM_DELETES: tuple[tuple[str, str], ...] = (
+    ("crm_activities", "DELETE FROM crm_activities "
+     "WHERE organization_id = CAST(:org_id AS uuid)"),
+    ("crm_deals", "DELETE FROM crm_deals "
+     "WHERE organization_id = CAST(:org_id AS uuid)"),
+    ("crm_leads", "DELETE FROM crm_leads "
+     "WHERE organization_id = CAST(:org_id AS uuid)"),
+)
+
 
 async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
     """Destroy every tenant-plane row the organization owns. Idempotent.
@@ -111,6 +128,16 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
     # (the ONE GUC seam, R5) for uniformity — ``organization`` itself is
     # RLS-exempt, and referential cascades run below RLS either way.
     async with tenant_session(org_id) as session:
+        # Each DELETE names the org itself: a role that bypasses RLS (a superuser,
+        # or any pre-promotion database) would otherwise delete every org's rows.
+        # Only non-zero counts reach the
+        # receipt, so an org with no CRM rows keeps the one-key receipt.
+        for table, sql in _CRM_DELETES:
+            removed = (
+                await session.execute(text(sql), {"org_id": org_id})
+            ).rowcount or 0
+            if removed:
+                deleted[table] = removed
         result = await session.execute(text(_DELETE_ORG_SQL), {"org_id": org_id})
         deleted["organization"] = result.rowcount or 0
 
