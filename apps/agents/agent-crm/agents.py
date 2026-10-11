@@ -174,7 +174,10 @@ _ALLOWED_METHODS: frozenset[str] = frozenset({"GET", "POST", "PATCH"})
 
 #: The `detail.code` values the gateway answers with (409) when a write meets a
 #: record that a provider owns (WS-53 CRM-Z6, Mirror mode).
-_MIRROR_CODES: frozenset[str] = frozenset({"mirrored_record", "mirror_mode_create"})
+_MIRROR_CODES: frozenset[str] = frozenset({
+    "mirrored_record", "mirror_mode_create", "mirror_mode_settings",
+    "mirror_mode_legacy_import",
+})
 
 _MIRROR_ADVICE = (
     "In Mirror mode the CRM records are read-only here. "

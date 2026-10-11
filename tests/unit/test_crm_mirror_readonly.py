@@ -20,6 +20,7 @@ The static checks run with no database. The rest need ``_DB_GATE``.
 from __future__ import annotations
 
 import ast
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,8 @@ _TABLES = (
 _GUARD_NAMES = {"assert_writable", "insert_row", "update_row"}
 
 #: Write routes that may skip the guard, each with the reason.
+#: ⚠️ The legacy Zoho sync must be OFF in Mirror mode, and CRM-Z5 replaces it.
+#: The legacy import and the stage repair refuse Mirror mode up front.
 _EXEMPT = {
     # The legacy Zoho importer and sync trigger. The sync engine (CRM-Z5)
     # replaces them, and `upsert_from_source` is the mirror's own bypass.
@@ -421,3 +424,101 @@ async def test_the_wire_carries_the_mirror_fields(ns, app_engine) -> None:  # no
     deal = (await _call(ns, admin, "GET", f"/crm/deals/{ids['deals']}")).json()
     assert deal["custom"] == {"k": 1}
     assert deal["ext_modified_at"] and deal["ext_id"]
+
+
+# ── Raw SQL writes (review P2-a) ────────────────────────────────────────────
+
+_RAW_WRITE = re.compile(
+    r"(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(\{[a-z_.]+\}|crm_(leads|deals|contacts|"
+    r"companies|activities|deal_statuses|lead_statuses|lost_reasons))",
+    re.IGNORECASE,
+)
+#: Functions that write raw SQL to a guarded table and are not guarded. Each has
+#: a reason. A bookkeeping write on a row that a guarded function already loaded
+#: is fine. A new entry needs a reason a reviewer accepts.
+_RAW_ALLOW = {
+    # Bump `last_activity_at` after a guarded activity write.
+    "core.py::bump_last_activity",
+    # The mirror's own bypass and the legacy upsert helpers (not routes).
+    "core.py::upsert_by_zoho_id", "core.py::upsert_from_source",
+    "core.py::insert_row", "core.py::update_row",
+    # The legacy importer, the sync and the stage repair refuse Mirror mode.
+    "import_zoho.py", "sync_zoho.py",
+    # The seed runs when the mode becomes Native only.
+    "seed.py",
+}
+_REFUSES = {"assert_writable", "refuse_in_mirror_mode", "is_mirror_mode"}
+
+
+def _unguarded_raw_writes(source: str, name: str) -> list[str]:
+    tree = ast.parse(source)
+    bad = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        # Only a function's own strings: a nested def is checked on its own.
+        body = ast.Module(body=fn.body, type_ignores=[])
+        text_ = " ".join(
+            ast.unparse(c) for c in ast.walk(body)
+            if isinstance(c, ast.JoinedStr)
+            or (isinstance(c, ast.Constant) and isinstance(c.value, str))
+        )
+        if _RAW_WRITE.search(text_) and not (_calls(fn) & _REFUSES):
+            key = f"{name}::{fn.name}"
+            if key not in _RAW_ALLOW and name not in _RAW_ALLOW:
+                bad.append(key)
+    return bad
+
+
+def test_every_raw_write_to_a_guarded_table_is_guarded() -> None:
+    bad = []
+    for path in sorted(_CRM.glob("*.py")):
+        bad += _unguarded_raw_writes(path.read_text(encoding="utf-8"), path.name)
+    assert not bad, f"raw writes with no guard and no allowlist reason: {bad}"
+
+
+def test_the_raw_write_fence_catches_a_planted_update() -> None:
+    nl = chr(10)
+    planted = (
+        "async def sneaky(db):" + nl
+        + "    await db.execute(text('UPDATE crm_deals SET name = 1'))" + nl
+    )
+    assert _unguarded_raw_writes(planted, "planted.py") == ["planted.py::sneaky"]
+    guarded = planted.replace(
+        "await db.execute", "await assert_writable(db)" + nl + "    await db.execute",
+    )
+    assert _unguarded_raw_writes(guarded, "planted.py") == []
+
+
+@_DB_GATE
+async def test_a_deal_contact_unlink_on_a_mirrored_deal_is_refused(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    _set_mode(ns, "mirror")
+    ids = _seed(ns, mirrored=True)
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_deal_contacts (organization_id, deal_id, contact_id, "
+            "is_primary) VALUES (CAST(:o AS uuid), CAST(:d AS uuid), "
+            "CAST(:c AS uuid), true)"),
+            {"o": ns.org_a, "d": ids["deals"], "c": ids["contacts"]})
+    r = await _call(ns, _admin(ns.org_a), "DELETE",
+                    f"/crm/deals/{ids['deals']}/contacts/{ids['contacts']}")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "mirrored_record"
+    with ns.admin_engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM crm_deal_contacts")).scalar() == 1
+
+
+@_DB_GATE
+async def test_the_legacy_zoho_routes_refuse_mirror_mode(ns, app_engine) -> None:  # noqa: F811
+    _set_mode(ns, "mirror")
+    _seed(ns, mirrored=True)
+    admin = _admin(ns.org_a)
+    stages = await _call(ns, admin, "POST", "/crm/import/zoho/stages?apply=true")
+    assert stages.status_code == 409, stages.text
+    assert stages.json()["detail"]["code"] == "mirror_mode_settings"
+    for body in ({}, {"dry_run": True}):
+        r = await _call(ns, admin, "POST", "/crm/import/zoho", body)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["code"] == "mirror_mode_legacy_import"

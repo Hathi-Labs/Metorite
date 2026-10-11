@@ -116,6 +116,7 @@ from gateway.routes.crm.core import (
     _tenant_session,
     bump_last_activity,
     insert_row,
+    is_mirror_mode,
     now,
     savepoint,
 )
@@ -330,6 +331,16 @@ async def _run_batch(
     activities and the cursor stamp together when the block exits.
     """
     account_id = str(account.id)
+    if await is_mirror_mode(db, org):
+        # Mirror mode (CRM-Z6): Zoho owns new leads, so create none. Advance
+        # the watermark, or every cycle re-reads the same batch.
+        candidates, _next = await _load_candidates(db, account_id, cursor)
+        stats["candidates"] = len(candidates)
+        stamp = candidates[-1].rules_processed_at if candidates else None
+        _log.info("crm.auto_lead.skipped_mirror", account_id=account_id,
+                  candidates=len(candidates))
+        await _stamp_cursor(db, account_id, watermark=stamp, run_at=now())
+        return
     candidates, next_stamp = await _load_candidates(db, account_id, cursor)
     capped = next_stamp is not None
     if capped and candidates[-1].rules_processed_at == next_stamp:

@@ -51,6 +51,7 @@ from gateway.routes.crm.core import (
     _tenant_session,
     actor,
     insert_row,
+    refuse_in_mirror_mode,
     router,
     update_row,
 )
@@ -590,6 +591,11 @@ async def import_zoho_stages(
     act for the same reason.
     """
     who = actor(user)
+    async with _tenant_session() as db:
+        await refuse_in_mirror_mode(
+            db, "mirror_mode_settings",
+            "The stages come from Zoho. Change them in Zoho.",
+        )
     meta = await fetch_metadata(import_zoho._client())
 
     if meta.layout is None or not meta.pipelines:

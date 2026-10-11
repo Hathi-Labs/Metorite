@@ -850,3 +850,11 @@ async def test_a_mirror_mode_refusal_comes_back_as_a_message(monkeypatch, tool) 
     out = await _CALLS[tool]()  # must return text, not raise
     assert "Nothing was changed" in out
     assert "Zoho" in out and "read-only" in out
+
+
+async def test_log_activity_relays_a_mirror_mode_refusal(monkeypatch) -> None:
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER,
+                 client_class=_MirrorRefusingClient)
+    out = await _CALLS["log_activity"]()
+    assert "Nothing was changed" in out and "read-only" in out

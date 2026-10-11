@@ -1100,6 +1100,12 @@ def _conflict(code: str, message: str, **extra: Any) -> HTTPException:
     )
 
 
+async def refuse_in_mirror_mode(db: Any, code: str, message: str) -> None:
+    """409 ``code`` when the organization is in Mirror mode. For whole routes."""
+    if await is_mirror_mode(db, current_tenant()):
+        raise _conflict(code, message)
+
+
 async def assert_writable(
     db: Any, organization_id: str | None, entity: Any,
     fields: dict[str, Any] | None = None, *,
