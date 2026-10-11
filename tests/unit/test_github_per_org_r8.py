@@ -513,3 +513,17 @@ async def test_the_move_of_an_old_row_never_overwrites_a_fresh_device_token(ns, 
     assert _legacy_rows(ns, ns.org_a) == 0, "the stale old row must go"
     (row,) = _rows(ns, ns.org_a)
     assert row.login == "octo-a"
+
+
+async def test_the_github_test_button_needs_the_manage_right(ns, app_engine) -> None:  # noqa: F811
+    from acb_auth import UserContext, UserRole, build_access
+
+    await _connect(ns, ns.org_a, ADMIN_A, "DEV-A")
+    ns.github.requests.clear()
+    reader = UserContext(
+        email="reader@in7-r8.test", role=UserRole.EMPLOYEE,
+        access=build_access(["feature:integrations"]), organization_id=ns.org_a,
+    )
+    res = await _call(ns, reader, "GET", "/integrations/test", params={"service": "github"})
+    assert res.status_code == 403 and "integrations:manage" in res.text
+    assert ns.github.requests == [], "the org token was spent for a member without the right"

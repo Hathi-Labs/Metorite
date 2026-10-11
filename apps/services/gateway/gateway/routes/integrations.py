@@ -1637,6 +1637,14 @@ async def test_integration(
     settings = get_settings()
 
     if service == "github":
+        # The test spends the token of the organization on a GitHub request, so it
+        # needs the same right as the writers (IN-7 review). Other services test
+        # the env of the deployment, which is not a customer token.
+        if not user.has_permission(MANAGE_PERMISSION):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: missing permission(s) ['{MANAGE_PERMISSION}'].",
+            )
         result = await _test_github(user)
         return {"service": service, **result}
 
