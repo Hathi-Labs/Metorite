@@ -277,23 +277,26 @@ describe("(c) the shell bar holds no app", () => {
     expect(inner.endsWith('<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"></div>')).toBe(true);
   });
 
-  it("the end zone holds the shell's bell, then its activity control, and nothing else", () => {
+  it("the end zone holds the shell's bell, its activity control, our comet, and nothing else", () => {
     // Owner, 2026-10-10: the bell belongs to the whole product, so it joins
     // the activity control at the right end, behind `NEXT_PUBLIC_SHELL_DOCK`
     // (NS-6). `ShellFrame` passes it only with that flag on, which
-    // `shellBell.test.ts` holds. The row has no other prop an app could fill.
+    // `shellBell.test.ts` holds. Owner, 2026-10-11: our comet signs the row
+    // last (`BarSignature`, `shellSignature.test.ts`). The row has no other
+    // prop an app could fill.
     const html = renderToStaticMarkup(
       createElement(ShellBarRow, {
         here: null,
         onOpen: () => {},
         bell: createElement("i", { "data-zone": "bell" }),
         activity: createElement("i", { "data-zone": "activity" }),
+        signature: createElement("i", { "data-zone": "signature" }),
       }),
     );
     expect(html).toMatch(
-      /<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"><i data-zone="bell"><\/i><i data-zone="activity"><\/i><\/div><\/header>$/,
+      /<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"><i data-zone="bell"><\/i><i data-zone="activity"><\/i><i data-zone="signature"><\/i><\/div><\/header>$/,
     );
     const props = code(read("lib/shell/ShellBar.tsx")).match(/export function ShellBarRow\(\{([^}]*)\}/)?.[1] ?? "";
-    expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual(["activity", "bell", "here", "lead", "onOpen"]);
+    expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual(["activity", "bell", "here", "lead", "onOpen", "signature"]);
   });
 });

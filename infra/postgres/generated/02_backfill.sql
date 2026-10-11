@@ -441,6 +441,9 @@ UPDATE whatsapp_bot_messages SET organization_id = (SELECT id FROM organization 
 UPDATE whatsapp_member_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE whatsapp_pending_acts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE workflow_modules SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 

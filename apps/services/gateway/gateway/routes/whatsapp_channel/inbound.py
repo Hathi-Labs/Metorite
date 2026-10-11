@@ -489,7 +489,11 @@ async def _handle_message(msg: Any) -> Reply | bot_run.RunRequest | None:
         _log.info("whatsapp_channel.bot.linked_no_action",
                   phone_hint=wa_id[-4:], type=mtype[:20])
         return None
-    return await bot_run.record_inbound(links, wa_id, wamid, body)
+    # WAC-4: the message that a tap or a swipe reply answers. A Confirm
+    # counts only for the card that it names.
+    context = str(msg.quoted_wa_message_id or "").strip() or None
+    return await bot_run.record_inbound(links, wa_id, wamid, body,
+                                        context_wamid=context)
 
 
 async def handle_bot_group(

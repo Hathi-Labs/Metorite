@@ -1,7 +1,12 @@
 "use client";
 
 /**
- * The top-left of the app: the customer's logo, "powered by Metorite".
+ * The top-left of the app: the customer's logo, and nothing of ours beside it.
+ *
+ * ⚠️ Owner decision, 2026-10-11: our own mark moved to the right end of the
+ * shell bar (`BarSignature` in `lib/shell/ShellBar.tsx`). A customer's logo
+ * carries no "powered by" caption here, in the bar or anywhere else. Fence:
+ * `orgBrandLockup.mode.test.ts` "no caption beside a customer's logo".
  *
  * There are two shells — the desktop sidebar and the mobile menu — and this
  * component exists so there is one lockup rather than two. The last time a
@@ -19,7 +24,7 @@ import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
 import { useEffect, useState } from "react";
 
-import Icon from "@/components/Icon";
+import { MetoriteMark } from "@/components/MetoriteMark";
 import {
   type OrgBranding,
   lockup,
@@ -74,13 +79,16 @@ export function useOrgBranding(): OrgBranding | null {
     // carries the fallback, so seeding initial state from storage would be a
     // hydration mismatch — React would discard the client tree and warn. One
     // frame after hydration is the correct place for a client-only value.
-    if (cached === null) {
-      const stored = readCachedBranding(storage());
-      if (stored) {
-        cached = stored;
-        setBranding(stored);
-      }
-    }
+    //
+    // ⚠️ EVERY instance seeds itself here, not only the first. Effects run
+    // child first, so the first instance to run fills `cached` and an
+    // ancestor's instance then found it full and skipped. `ShellFrame`'s is
+    // an ancestor, so the bar's right-end comet waited on the network, 2.9 s
+    // late for a member with a cached logo (review, 2026-10-11). Storage is
+    // read again only while it holds nothing. The fetch below stays one.
+    // Fence: `e2e/shell-signature.spec.ts` "a cached logo signs the bar".
+    if (cached === null) cached = readCachedBranding(storage());
+    if (cached) setBranding(cached);
 
     // Revalidate regardless of a cache hit — stale-while-revalidate. A logo
     // changed on another device, or removed by another admin, has to land here
@@ -159,11 +167,12 @@ export default function OrgBrandLockup({
 }
 
 /**
- * The width the compact lockup keeps for "powered by Metorite" beside the
- * logo: the caption at `text-[10px]` (about 90px) and its gap. Kept even below
- * `lg`, where the caption hides, so the logo is one size at every width.
+ * The shell bar's lockup: 24px tall, one line, and 176px wide at most. That is
+ * the bar's `w-64` brand zone less the fold column, the gap and the padding.
+ * `BarBrand` in `AppShell.tsx` and the two Settings previews read this one
+ * value, so a preview cannot drift from what the bar draws.
  */
-export const COMPACT_CAPTION_RESERVE = 100;
+export const BAR_LOCKUP = { height: 24, maxWidth: 176, compact: true } as const;
 
 /**
  * The mark itself, without the link.
@@ -186,31 +195,24 @@ export function BrandMark({
   /** The organization's display name — the D51 workspace indicator. */
   orgName?: string;
   height?: number;
-  /** The widest the whole lockup may be. Compact keeps room for the caption. */
+  /** The widest the logo may be. The logo has the whole width (2026-10-11). */
   maxWidth?: number;
   /** Pin one colour mode, for a preview of it. Absent, the page's mode picks. */
   mode?: "light" | "dark";
   /**
    * One line, for the full-width shell bar (owner, 2026-10-09). A customer's
-   * logo with "powered by Metorite" after it, from `lg` up. Ours is the mark
-   * and the organization's name. Nothing stacks, so it fits a 44px bar.
+   * logo alone. Ours is the mark and the organization's name. Nothing stacks,
+   * so it fits a 44px bar.
    */
   compact?: boolean;
 }) {
   const mark = lockup(branding, fallbackCaption, orgName);
 
-  // ── Two arrangements, and the difference is not cosmetic ─────────────────
+  // ── A customer's logo stands alone (owner, 2026-10-11) ───────────────────
   //
-  // Ours is a 28px square badge, so the name sits BESIDE it and the pair fits
-  // the rail. A customer's mark is a wordmark — up to 152px of the ~184px the
-  // sidebar has between its padding and the collapse control — so putting the
-  // attribution beside it leaves ~69px for a ~118px string, and it renders as
-  // "powered by Co…". Measured in Chromium at 1280×900 across all four themes;
-  // the geometry check passed while the words were unreadable, which is why
-  // that check now asserts the caption is not clipped.
-  //
-  // Stacking is also simply the right lockup: the customer's mark, and our
-  // attribution underneath it.
+  // It used to carry "powered by Metorite", beside it in the bar and under it
+  // in the sidebar's head and the phone menu. Our comet now signs the bar's
+  // right end instead (`BarSignature`), so the logo has its whole slot.
   if (mark.kind === "org") {
     // ── One logo, two colour modes (owner request, 2026-10-09) ──────────────
     // The page root carries `light` or `dark` (next-themes, Providers.tsx),
@@ -222,13 +224,12 @@ export function BrandMark({
     const darkHeight = height - plateInset;
     const showLight = mode === "light" ? "block" : mode === "dark" ? "hidden" : "hidden [.light_&]:block";
     const showDark = mode === "dark" ? "inline-flex" : mode === "light" ? "hidden" : "inline-flex [.light_&]:hidden";
-    // Compact puts the caption BESIDE the logo, so the logo gets the rest.
-    const logoMax = compact ? Math.max(height, maxWidth - COMPACT_CAPTION_RESERVE) : maxWidth;
-    // ⚠️ Compact lets the LOGO give way, never the caption. The bar's brand
-    // zone is `w-64`, which follows the member's density, and these sizes are
-    // px, which do not. At compact density the zone is 224px, and the caption
-    // ran into the app's own rail toggle (measured 2026-10-09). Shrunk, the
-    // logo keeps its shape (`object-contain`), so it only draws smaller.
+    const logoMax = maxWidth;
+    // ⚠️ Compact lets the logo give way. The bar's brand zone is `w-64`, which
+    // follows the member's density, and these sizes are px, which do not. At
+    // compact density the zone is 224px, less than the 176px slot needs once
+    // the fold column takes its share (measured 2026-10-09). Shrunk, the logo
+    // keeps its shape (`object-contain`), so it only draws smaller.
     const fit = compact ? "min-w-0 shrink" : "shrink-0";
     const images = (
       <>
@@ -262,44 +263,21 @@ export function BrandMark({
         </span>
       </>
     );
-    if (compact) {
-      // ⚠️ The caption hides below `lg`, never truncates. A clipped
-      // "powered by Co…" is the defect this lockup shipped once
-      // (`e2e/org-branding.spec.ts`), and in a 44px bar a byline that does
-      // not fit is better gone than cut.
-      return (
-        <span className="flex min-w-0 items-center gap-2">
-          {images}
-          <span className="hidden shrink-0 whitespace-nowrap text-[10px] leading-none text-muted-foreground lg:inline">
-            {mark.caption}
-          </span>
-        </span>
-      );
-    }
-    return (
-      <span className="flex min-w-0 flex-col items-start gap-1">
-        {images}
-        {/* Ours sits under theirs, quietly. At `text-[10px]` on muted it reads
-            as a byline rather than as competing branding, which is the whole
-            point of the arrangement. */}
-        <span className="block truncate text-[10px] leading-tight text-muted-foreground">
-          {mark.caption}
-        </span>
-      </span>
-    );
+    return <span className="flex min-w-0 items-center">{images}</span>;
   }
 
+  // ── No logo: our comet, and the organization's name (owner, 2026-10-11) ──
+  //
+  // The badge was a ⌘ glyph on a `bg-primary` tile, which is not our brand
+  // and which an accent recoloured. It is the comet now, the same mark as the
+  // bar's right end signs with (`MetoriteMark`). It keeps the tile's square box, so the
+  // bar does not shift, and it has no fill: the comet carries its own colours.
   if (compact) {
     // D51: a logo-less organization still shows its OWN name, here on the
     // same line as our mark. With no organization yet, the product's name.
     return (
       <span className="flex min-w-0 items-center gap-2">
-        <span
-          className="flex shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
-          style={{ height, width: height }}
-        >
-          <Icon name="Command" size={Math.round(height * 0.54)} strokeWidth={2.5} />
-        </span>
+        <OurMark height={height} mode={mode} />
         <span className="min-w-0 truncate text-sm font-semibold tracking-tight text-foreground">
           {orgName.trim() || mark.title}
         </span>
@@ -309,12 +287,7 @@ export function BrandMark({
 
   return (
     <span className="flex min-w-0 items-center gap-2.5">
-      <span
-        className="flex shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
-        style={{ height, width: height }}
-      >
-        <Icon name="Command" size={Math.round(height * 0.54)} strokeWidth={2.5} />
-      </span>
+      <OurMark height={height} mode={mode} />
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold leading-tight tracking-tight text-sidebar-foreground">
           {mark.title}
@@ -323,6 +296,19 @@ export function BrandMark({
           {mark.caption}
         </span>
       </span>
+    </span>
+  );
+}
+
+/**
+ * Our comet in the square box the no-logo lockup has always had. No fill and
+ * no accent: the mark is the brand's, in every mode and under every accent.
+ * Fence: `orgBrandLockup.mode.test.ts` "with no logo, the comet".
+ */
+function OurMark({ height, mode }: { height: number; mode?: "light" | "dark" }) {
+  return (
+    <span data-our-mark="" className="flex shrink-0 items-center justify-center" style={{ height, width: height }}>
+      <MetoriteMark size={Math.round(height * 0.86)} mode={mode} />
     </span>
   );
 }

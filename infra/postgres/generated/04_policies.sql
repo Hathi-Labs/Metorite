@@ -1013,6 +1013,13 @@ CREATE POLICY whatsapp_member_links_tenant_isolation ON whatsapp_member_links
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE whatsapp_pending_acts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_pending_acts FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS whatsapp_pending_acts_tenant_isolation ON whatsapp_pending_acts;
+CREATE POLICY whatsapp_pending_acts_tenant_isolation ON whatsapp_pending_acts
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE workflow_modules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workflow_modules FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS workflow_modules_tenant_isolation ON workflow_modules;

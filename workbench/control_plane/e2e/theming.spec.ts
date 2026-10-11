@@ -136,15 +136,18 @@ test.describe("user preferences", () => {
       localStorage.setItem("cc-accent", "hsl(347 77% 50%)");
       localStorage.setItem("cc-accent-ink", "#ffffff");
     });
-    await page.goto("/");
+    await page.goto("/chat");
     expect(await readVar(page, "--primary")).toBe("hsl(347 77% 50%)");
     expect(await readVar(page, "--primary-foreground")).toBe("#ffffff");
-    // The glyph on the primary-filled logo badge, in a real browser.
-    const glyph = await page
-      .locator("svg.lucide-command")
+    // The ink on a primary-filled Button, in a real browser. Chat's "New
+    // session" is one with no stubs. The probe used the logo badge's ⌘ glyph
+    // until 2026-10-11, when the no-logo badge became our comet, which
+    // carries its own colours and no accent ink (owner decision).
+    const ink = await page
+      .locator(".cc-button-filled")
       .first()
       .evaluate((el) => getComputedStyle(el).color);
-    expect(glyph).toBe("rgb(255, 255, 255)");
+    expect(ink).toBe("rgb(255, 255, 255)");
   });
 
   test("clearing the accent restores the app's own pairing", async ({ page }) => {

@@ -1707,6 +1707,18 @@ ALTER TABLE whatsapp_member_links ADD CONSTRAINT whatsapp_member_links_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS whatsapp_member_links_org_idx ON whatsapp_member_links (organization_id);
 
+-- whatsapp_pending_acts
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM whatsapp_pending_acts WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: whatsapp_pending_acts still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE whatsapp_pending_acts ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE whatsapp_pending_acts ADD CONSTRAINT whatsapp_pending_acts_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS whatsapp_pending_acts_org_idx ON whatsapp_pending_acts (organization_id);
+
 -- workflow_modules
 DO $$
 BEGIN
