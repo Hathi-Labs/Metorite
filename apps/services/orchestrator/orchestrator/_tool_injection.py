@@ -826,6 +826,26 @@ def _ui_first_directive(*, compact: bool = False) -> str:
     return ui_first_directive(compact=compact)
 
 
+def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """``acb_skills.whatsapp_acts.tool_call`` for one tool call (WS-47 WAC-4).
+
+    The WhatsApp profile parks an allowed act only when it knows WHICH tool
+    asks for the card, and with which arguments. This wrapper is the one
+    boundary every injected tool and every native MAF agent's own tool
+    crosses, so the call is named here and nowhere else. Outside a WhatsApp
+    run with writes on, it does nothing. A fault gives no name, so the card
+    is denied: it fails closed. ``AGENT_PERMISSION_MODE=approve_all`` skips
+    the wrapper, and so no act can park.
+    """
+    import contextlib
+
+    try:
+        from acb_skills.whatsapp_acts import tool_call
+    except Exception:
+        return contextlib.nullcontext()
+    return tool_call(fn, args, kwargs)
+
+
 def _gate_injected_tool(fn: Any) -> Any:
     """Wrap an injected platform tool with the risk-aware permission gate (B6).
 
@@ -900,7 +920,10 @@ def _gate_injected_tool(fn: Any) -> Any:
             allowed, reason = _gate(kwargs)
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
-            return _with_steer(await fn(*args, **kwargs))
+            # WS-47 WAC-4: name the call for the WhatsApp card gate. A no-op
+            # outside a WhatsApp run with writes on.
+            with _whatsapp_tool_call(fn, args, kwargs):
+                return _with_steer(await fn(*args, **kwargs))
         return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)

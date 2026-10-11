@@ -1,11 +1,15 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
-**Status:** WAC-10f built (2026-10-11): one chart language for WhatsApp
-(§13.8). WAC-10e live (2026-10-11): quoted replies and reactions
+**Status:** WAC-4 built, dark (2026-10-11): a confirmed `create_task` from
+WhatsApp behind `WHATSAPP_ASSISTANT_WRITES`, default OFF (§14, §14.8). The
+switch-on for an org is the owner's (WAC-9).
+
+WAC-10f built (2026-10-11): one
+chart language for WhatsApp (§13.8). WAC-10e live (2026-10-11): quoted replies and reactions
 (§13.7). WAC-10c built (2026-10-10): cards, views and quick commands
 (§13), on top of WAC-10a, the run profile and its native UI (§12). WAC-3 (2026-10-10) is live on Meta's test number for
-two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. WAC-4 is next. The board
-row is **WS-47**.
+two beta orgs, after WAC-1 and WAC-2 on 2026-10-09. With the WAC-4 switch
+off, the bot is read-only (§14.1). The board row is **WS-47**.
 
 WAC-1 to WAC-5 are AGENT-SAFE, and they run on Meta's free test number. WAC-0
 (the number) is the owner's, and it gates production only. HANDOFF **H-251**
@@ -567,13 +571,13 @@ before the first part of its reply goes out, and nothing runs it again.
   code `credits` the reply is: "Your organization is out of AI credits. An admin
   can add credits in Settings, Billing." Every other code gets: "Metorite could
   not answer just now. Try again in a few minutes."
-- **A write asks first** (WAC-4). A tool that needs a card on the web asks here
-  with reply buttons ("Confirm", "Cancel"). The button payload carries a signed,
-  single-use, short-lived token for that one pending act. A tap from any other
-  phone, or after expiry, does nothing.
-- **A destructive act never runs from WhatsApp.** A delete, a move or any
-  guarded act (Projects S3 class) replies with a link to confirm it in the web
-  app. A stolen phone must not be able to destroy data. (D-WAC-4.)
+- **A write asks first** (WAC-4, §14). An allowed tool parks its act and ends
+  the run. The reply carries "Confirm" and "Cancel" buttons from code. The
+  binding is server-side, and no code reads the button id. A tap from any
+  other phone, or after 10 minutes, does nothing.
+- **A destructive act never runs from WhatsApp.** A class C or class X act of
+  the Projects manifest replies with a link to the web app (§14.4). A stolen
+  phone must not be able to destroy data. (D-WAC-4, a rule of this spec.)
 - Each reply can end with a deep link to the item in Metorite.
 
 ### 5.7 Voice notes
@@ -625,9 +629,10 @@ of the member's linked orgs. A tap sets that link as current. The reply names
 the new org. A member with one org never sees the switcher.
 
 **The tap is untrusted input.** A list row id or a button id from WhatsApp is
-data the phone sent. The webhook checks it against the sender's own links and
-pending acts before it acts. A row id never carries an org id that the sender
-has no link to.
+data the phone sent, and no code reads it (§12.4). A tap counts as its title.
+A Confirm counts only when the server holds a live act for that phone, member,
+org and thread (§14.3). A tap never carries an org id that the sender has no
+link to.
 
 **Flows need an endpoint key.** A Flow endpoint encrypts its payload with an RSA
 key pair. The private key is platform configuration on the box, like §5.1. The
@@ -704,7 +709,7 @@ Every ticket ships dark behind `WHATSAPP_ASSISTANT_ENABLED` (default OFF) and
 | **WAC-1** ✅ built 2026-10-09 | The link table (§5.3), its migration, the code-issue route, and "Chat on WhatsApp" in member settings | AGENT-SAFE | A signed-in member gets a `wa.me` link and a QR. The code is stored as a hash and expires. The migration applies on a real database (R8). `test_tenant_coverage.py` passes |
 | **WAC-2** ✅ built 2026-10-09, dark | The webhook branch for the bot number (§5.4): code redemption, the unknown-sender reply, status updates | AGENT-SAFE | A link message from the test phone writes an `active` row and gets the confirmation reply. A message from an unlinked phone gets the fixed reply, and the reply holds no org data. A wrong, used or expired code links nothing. The WS-20 path is unchanged for every other `phone_number_id`. *(Added 2026-10-09, WAC-1 review and WAC-2 audit.)* `POST /me/whatsapp-link/code` answers 429 after 10 codes for one member in one org in an hour. The sixth failed code from one `wa_id` in 15 minutes gets the failure reply with no lookup. A redelivered link message re-sends the success reply. With `WHATSAPP_APP_SECRET` unset, the bot path does nothing, in dev too. A second member email on a linked phone links nothing |
 | **WAC-3** ✅ built 2026-10-10, dark | A linked text runs the main Chat assistant and the reply comes back (§5.4 bot message record, §5.5, §5.6). Read tools only: a card is denied at once (capture moves to WAC-4) | AGENT-SAFE | *(Made testable 2026-10-10.)* A1: a linked sender's message writes one `received` row, the route answers 200 before the run, and `run_agent` gets agent `orchestrator`, the link row's org, the link's email as the session user, and the scope rule in `system_context`. A2: one payload delivered twice, or twice at once, starts one run. A3: `resolve_identity` returning another org or none starts no run and sends the fixed refusal. A4: a member not active in the link's org gets no run and no reply. A5 (R8): a `chat_session` with channel `whatsapp` and its user and assistant rows exist in the link's org, `GET /chat/sessions` lists them for that member, and another org sees none. A6: a card tool in a WhatsApp run returns at once and writes nothing. A7: a `credits` failure sends the credits text, any other failure sends the general text, and the row ends `failed`. A8: the sweep runs a stale `received` row once, a row older than 24 hours ends `expired` with no send, and the tries stop at 3. A9: flag off or org off the allowlist starts no run. A10: the migration applies on a real database and `test_tenant_coverage.py` passes. Fences: `tests/unit/test_wac_bot_run.py`, `tests/unit/test_wac_bot_run_r8.py`. The live phone check stays the manual step of §8 |
-| **WAC-4** | Confirmation by reply buttons for class B writes, and the web-app link for guarded acts (§5.6) | AGENT-SAFE | "Add a task: call the vendor tomorrow" asks with buttons, and Confirm writes exactly one task. A tap from another phone or after expiry writes nothing. A delete request answers with a web link and changes nothing |
+| **WAC-4** ✅ built 2026-10-11, dark | A confirmed write from WhatsApp (§14, §14.8): an allowed Projects act parks, and a Confirm runs it once with no model call. Class C and X acts get a web link. Behind `WHATSAPP_ASSISTANT_WRITES` | AGENT-SAFE to build, **OWNER-GATE** to switch on for an org (WAC-9) | §14.7, W1 to W9. Fences: `tests/unit/test_wac_writes.py`, `tests/unit/test_wac_writes_r8.py` |
 | **WAC-5** | Voice notes (§5.7) | AGENT-SAFE | A voice note runs as its transcript, the reply echoes the transcript, and no audio file remains after the run |
 | **WAC-6** | Flow B, the Metorite-initiated link (§5.2) | AGENT-SAFE to build, **OWNER-GATE** to send to a real person | With a test template, YES links the phone and no reply links nothing |
 | **WAC-7** | Proactive messages: the daily brief and the nudge, STOP and START (§5.8) | AGENT-SAFE to build, **OWNER-GATE** to switch on | A brief goes only to an opted-in, linked phone. STOP ends every Metorite-initiated message to that phone |
@@ -746,12 +751,12 @@ manual step, and its evidence is the reply on the phone plus the run log line.
 | Rule | Fence (written by the slice named) |
 |---|---|
 | The run's org comes from the link row, never from the email or the message, and a run whose email resolves to another org does not start | A test with `resolve_identity` patched to another org (WAC-3, A3) |
-| A card tool in a WhatsApp run never waits and never writes | A test that runs a class B tool in a WhatsApp run (WAC-3, A6) |
+| A card tool in a WhatsApp run never waits. With writes off, it never writes. With writes on, only an allowed act writes, once, after a Confirm | A test that runs a class B tool in a WhatsApp run (WAC-3, A6), and W1 to W7 (WAC-4, §14.7) |
 | An unknown sender gets no org data | A test that asserts the reply text is the fixed string (WAC-2) |
 | One `wamid` starts one run | A test that delivers one payload twice (WAC-3) |
 | A link code is single-use and expires | Tests for reuse and expiry (WAC-1, WAC-2) |
 | The bot path fails closed with no app secret | A test with `WHATSAPP_APP_SECRET` unset (WAC-2) |
-| A guarded act never runs from WhatsApp | A test that asks for a delete and asserts no write (WAC-4) |
+| No class C or class X act runs from WhatsApp | A structural test over every class C tool, with writes on (WAC-4, W5) |
 | The bot refuses open-domain questions | **Advisory.** The instruction text carries the rule, and an eval case checks it. No unit test can prove a model's refusal |
 
 ---
@@ -1206,3 +1211,189 @@ page as markup. Rich text draws it as text.
 | G3 | The browser registry holds every series and component that a kind uses | `LiveChart.test.ts` `wac10g-every-kind-loads` |
 | G4 | Every live tooltip is rich text | `charts.test.ts` "a live tooltip draws text, never HTML" |
 | G5 | The template catalog, the registry, the shapes and the docstring name `chart` | `tests/unit/test_genui_catalog_lockstep.py` |
+
+## 14. Amendment of 2026-10-11: WAC-4, a confirmed write from WhatsApp
+
+The audit of 2026-10-11 found WAC-4 not ready to build. §5.6 and §5.11 gave a
+signed token in the button id. §12.4 then made the id unread. The spec also
+said nothing about how a confirm resumes the write. This section is the design
+of record for WAC-4. Where §5.6, §5.11 or §9 disagree with it, this section
+wins.
+
+### 14.1 What is true today (as built)
+
+The bot is read-only. `bot_run._answer` opens `acb_skills.ask_tools.refuse_cards`
+around every run, so a tool that asks for a card gets a deny and writes
+nothing. The scope rules (`SCOPE_RULE`, `SCOPE_RULE_NATIVE`) tell the model to
+send the member to the web app for a change. A tap arrives as its title only
+(`inbound.tap_text`). Every button id is `b1`, `b2` or `b3`
+(`whatsapp_ui._buttons`), and no code reads it.
+
+### 14.2 Why the web card cannot be reused
+
+The web card blocks the run on a future until the member answers
+(`request_confirmation`, `wait_user_future`). A WhatsApp run sends its reply
+only after the run ends, and it holds its thread's lock while it runs. So the
+buttons would never go out, and the tap would wait behind the lock. WAC-4
+therefore parks the act and ends the run. It does not wait.
+
+### 14.3 The design: park, then run the stored act
+
+1. **Ask.** With writes on (§14.6), an allowed Projects tool (§14.4) calls
+   `_confirm`, as on the web. The WhatsApp profile
+   answers that call. It does not wait. It stores a pending act and returns
+   "not yet", so the tool writes nothing and says so to the model. The run
+   ends. Its reply carries the act's summary and two buttons from code:
+   "Confirm" and "Cancel".
+2. **The record.** One row in `whatsapp_pending_acts`, tenant-scoped (R5). It
+   holds the org, the member, the `wa_id` that got the buttons and the
+   thread. It also holds the tool name, the exact arguments, the card's text,
+   the state and the expiry. The migration number is taken at build
+   time (R1). The table is expand-only (R6), and an R8 suite fences it.
+3. **Confirm.** The next message from that `wa_id` in that thread is checked
+   BEFORE any run. If its text is exactly "Confirm" (any case, trimmed), and an
+   act is live, code runs the stored call once. No model runs.
+   It runs the same tool with the same arguments, in a context that answers
+   `_confirm` "yes" for that one act. So the write path stays the web's own
+   path. The run's `_confirm` answers "yes" only when the card it builds
+   (title, detail, context) equals the stored card text. A rename, a status
+   edit or a "tomorrow" that crossed midnight gives another card. Then nothing
+   is written, the act closes as `void`, and the reply asks the member to ask
+   again. So the member confirms exactly what the card showed. The row moves
+   from `pending` to `done` under a row lock. A second Confirm, or a
+   redelivered message, then writes nothing.
+4. **Cancel, or anything else.** "Cancel" closes the act as `cancelled`. Any
+   other message closes it as `void` and then runs as a normal message. A
+   tap on the AI's own buttons is any other message.
+5. **The reply.** Code sends the tool's own result text, which quotes the
+   member's message (§13.7). A failed write sends the tool's error text, and
+   the act closes as `failed`.
+6. **An act counts only once it is offered** (review, 2026-10-11). `_send`
+   marks the act offered after Meta took the part that carries the Confirm
+   and Cancel buttons. The mark is `offered_at`, and `offered_wamid` is the
+   message id that Meta gave that part. The 10 minutes start then. Some sends leave the act unoffered. These are a part that Meta surely refused,
+a send that stopped before the buttons, and an unclear send. A resend of a stored reply
+   never offers it. The member's next message voids an unoffered act, and
+   that message then runs as a normal message.
+7. **A Confirm answers one card** (review, 2026-10-11). A tap carries the
+   message that it answers (Meta's `context.id`), and the inbound row keeps
+   it as `whatsapp_bot_messages.context_wamid`. A tapped Confirm or Cancel
+   counts only when that id is the act's `offered_wamid`. A typed one counts
+   only when its row arrived after `offered_at`. Any other Confirm or Cancel writes nothing and leaves the act as it is. Its
+reply says that it does not match the latest request. So a tap on an older card never
+   confirms a newer card.
+8. **The card binds what it does not show.** Before its card, `create_task`
+   binds the project that it resolved and the people that it assigns
+   (`whatsapp_acts.card_facts`). The stored card text holds them. A card that
+   names the project by name then fails at Confirm when another project took
+   that name. The member's summary does not change.
+
+**The id stays unread.** The binding is server-side. It holds the org, the
+member, the `wa_id`, the thread and the expiry. It also holds the exact title
+and the button message that a tap answers. The button id is never read.
+
+A typed "Confirm" from the same phone counts when it arrives after the
+buttons, as on any chat. `whatsapp_ui` refuses the titles "Confirm" and
+"Cancel" on the model's own buttons, so only code can offer them. §5.11's
+"checks it against pending acts" means this server-side check.
+
+### 14.4 Which acts may go by button
+
+- **Allowed (the first slice):** the Projects tool `create_task` (class B,
+  one card, no rows). A later slice can add another class B tool that asks one
+  card with no rows, by name (`update_task`, `edit_task`).
+- **A web link, never a button:** every class C act (for example
+  `archive_task`, `move_project`) and every class X act. A class X act has no
+  chat tool at all (D-PM-35). The reply gives a deep link to the item.
+- **Still refused:** a card with rows, a form, `ask_questions`,
+  `move_task`, and every card tool outside Projects (email, CRM and any other
+  caller of `request_confirmation`). Each one stays under `refuse_cards`,
+  until a later slice names it.
+
+This is D-WAC-4 as a rule of this spec: no class C or class X act runs from
+WhatsApp. A stolen phone can create or edit a task, which the web app can
+undo. It cannot destroy data.
+
+### 14.5 Expiry, phones and orgs
+
+- **Expiry: 10 minutes** after the buttons go out. A later Confirm writes
+  nothing, and the reply says the request expired. The act also dies with the
+  24-hour reply window, which is longer.
+- **Only the phone that got the buttons can confirm.** The member's second
+  phone, linked to the same org, cannot confirm: it is a different `wa_id`.
+- **An org switch, or a lost link, voids the act** (D-WAC-2 amended,
+  D-WAC-3). At Confirm, the run checks the link again, as every run does. It
+  also calls `resolve_identity` again for the act's org.
+
+### 14.6 The switch
+
+`WHATSAPP_ASSISTANT_WRITES` turns WAC-4 on, for the orgs of
+`WHATSAPP_ASSISTANT_WRITES_ORGS` only. The switch is default OFF, and an empty
+list allows no org. With either one off, every card stays refused, as today. **Turning it on for an org is the owner's
+act** (WAC-9, OWNER-GATE). It writes a live org's data from a new surface. The
+`enforcement-flip` grant does not cover it.
+
+### 14.7 Acceptance (WAC-4)
+
+| # | Check | Fence |
+|---|---|---|
+| W1 | "Add a task: call the vendor tomorrow" gets a summary and Confirm and Cancel buttons. It writes nothing until Confirm | A run test with the writes switch on |
+| W2 | One Confirm makes exactly one create call. A second Confirm, or a redelivered message, writes nothing | A run test that counts the calls |
+| W3 | A Confirm after 10 minutes, from another `wa_id`, or after an org switch writes nothing | Three run tests |
+| W4 | Cancel, or any other message, voids the act, and the other message runs as normal | A run test |
+| W5 | Every class C and class X tool, every rows card and every form stays refused in a WhatsApp run | A structural test over `manifest.tools_by_class("C")`, with the writes switch on |
+| W6 | The model cannot offer "Confirm" or "Cancel" itself | A `whatsapp_ui` test |
+| W7 | With the switch off, the run is today's read-only run | A run test |
+| W8 | The pending-act table holds its tenancy under FORCE RLS | An R8 suite, and `test_tenant_coverage` |
+| W9 | A Confirm whose rebuilt card differs from the stored card writes nothing, and asks again | A run test that renames the project between the ask and the Confirm |
+
+### 14.8 WAC-4 as built (2026-10-11)
+
+WAC-4 is built and dark. `WHATSAPP_ASSISTANT_WRITES` is OFF by default. It
+works only for an org of `WHATSAPP_ASSISTANT_WRITES_ORGS`, and only with
+`WHATSAPP_ASSISTANT_NATIVE_UI` on (`flags.writes_enabled(org)`).
+
+| Part | Where |
+|---|---|
+| The table | Migration `242_whatsapp_pending_acts.sql`. It is tenant-scoped, with FORCE RLS, and expand-only. The generated phase files carry it too. The same file adds the nullable `whatsapp_bot_messages.context_wamid` |
+| The offer | `bot_run._send` calls `acts.offered` after Meta took the buttons part |
+| The name of the call | The injection seam wrapper (`_tool_injection._gate_injected_tool`) opens `whatsapp_acts.tool_call` around each tool call |
+| The park and the "yes" | `acb_skills/whatsapp_acts.py`. `ask_tools.request_confirmation` asks `answer_card` first |
+| The store and the Confirm | `gateway/routes/whatsapp_channel/acts.py`. `bot_run._answer` calls `acts.settle` before the quick path and the model |
+| The scope rule | `bot_run.SCOPE_RULE_WRITES` allows the one act and sends every other change to the web app |
+
+**Where the build differs from §14.3, and why.**
+
+1. The profile answers in `ask_tools.request_confirmation`, which `_confirm`
+   calls. `_confirm` itself is unchanged. Only the card gate sees the clipped
+   title, detail and context. So one code path builds the stored card text
+   and the rebuilt card text. The card text is the JSON of those values.
+2. `create_task` tells the model that the act waits for Confirm. Before this
+   change, it said "Cancelled". The model then told the member so.
+3. The act stores the link row that was current. At Confirm, that row must
+   still be the phone's current link. A revoked row never becomes current
+   again, and a new link is a new row. So a lost link, a relink and an org
+   switch each void the act. Known gap: WAC-10b may move `is_current` back
+   to an old row. That switch must void the live acts of the org it leaves.
+4. The state `running` is the claim. The UPDATE from `pending` to `running`
+   takes the row lock, so the stored call runs once. A crash during the call
+   leaves the row `running`, and nothing runs it again (at most once).
+5. With `AGENT_PERMISSION_MODE=approve_all`, the seam wrapper is not applied.
+   Then no call has a name, and every card stays refused. It fails closed.
+6. A retry that sends a stored reply sends its text only (§12.3). The member then
+gets no summary and no buttons. That act was never offered (§14.3
+   item 6), so no Confirm can run it. The next message voids it.
+7. At Confirm no agent runs. The tool's own name match can still ask the
+   `decide` engine (`choices.resolve_name`), as it does on the web.
+
+**Fences.** W1 to W7 and W9: `tests/unit/test_wac_writes.py`. W8:
+`tests/unit/test_wac_writes_r8.py`, which also runs an ask, a stale tap, a
+Confirm and a second Confirm end to end on the real tables. The review round
+of 2026-10-11 added these fences:
+
+| Found | Fence |
+|---|---|
+| A tap on an older card confirmed a newer card | `test_a_confirm_sent_before_the_new_card_was_shown_never_confirms_it`, `test_a_tap_on_another_message_leaves_the_act_and_writes_nothing` |
+| A card that never reached the phone could be confirmed | `test_a_card_whose_first_send_failed_is_never_confirmed_after_the_resend`, `test_buttons_that_did_not_surely_reach_the_phone_offer_nothing` |
+| The switch was not per org | `test_writes_are_switched_on_per_org` |
+| A card by name did not bind the project | `test_a_confirm_after_another_project_took_the_name_writes_nothing` |

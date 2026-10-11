@@ -276,7 +276,7 @@ def test_a_linked_phone_without_a_code_gets_no_fixed_reply_and_goes_to_the_run(
                           "is_current": True}]
     recorded: list[tuple[Any, ...]] = []
 
-    async def _record(links, wa_id, wamid, body):
+    async def _record(links, wa_id, wamid, body, **_kw):
         recorded.append((list(links), wa_id, body))
         return None
 

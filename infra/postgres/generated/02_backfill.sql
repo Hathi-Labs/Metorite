@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 146
+-- Tables in this phase: 147
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -436,6 +436,9 @@ UPDATE whatsapp_bot_messages SET organization_id = (SELECT id FROM organization 
  WHERE organization_id IS NULL;
 
 UPDATE whatsapp_member_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE whatsapp_pending_acts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE workflow_modules SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

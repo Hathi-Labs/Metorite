@@ -29,8 +29,10 @@ the phone ever selects an org or a record (§5.11 "The tap is untrusted input").
 for the member's own message. ``bot_run`` sends it first and best effort, so
 a refused reaction never costs the member the answer.
 
-**Reads only, as in WAC-3.** Buttons and rows ask or narrow a question. A
-write still goes to the web app until WAC-4.
+**The model's buttons change no data.** Buttons and rows ask or narrow a
+question. WAC-4 (``acb_skills.whatsapp_acts``) adds the one exception: code,
+never the model, offers "Confirm" and "Cancel" for a parked write. So
+:func:`whatsapp_ui` refuses those two titles (:data:`RESERVED_TITLES`).
 
 Fence: ``tests/unit/test_wac_native_ui.py``.
 """
@@ -103,6 +105,14 @@ RENDITION_MARK = "⁣"
 #: At the start of the thread record of a reply that code built (a view, no
 #: AI call): U+2064, invisible. ``bot_run`` reads it (WAC-10c).
 VIEW_MARK = "⁤"
+#: The button and row titles that only code may offer (WAC-4, spec §14.3).
+#: A tap arrives as its title, and "Confirm" runs a parked write. So the
+#: model can offer neither title, in any case.
+RESERVED_TITLES: frozenset[str] = frozenset({"confirm", "cancel"})
+
+
+def _reserved(title: str) -> bool:
+    return " ".join(title.split()).casefold() in RESERVED_TITLES
 
 
 @dataclass(frozen=True)
@@ -120,6 +130,9 @@ class OutMessage:
     caption: str | None = None
     #: The emoji of a "reaction". It goes ON the member's message (WAC-10e).
     emoji: str | None = None
+    #: The pending act that this part offers (WAC-4: the Confirm and Cancel
+    #: buttons). ``bot_run`` marks the act offered once Meta took the part.
+    act_id: str | None = None
 
     @property
     def counts(self) -> bool:
@@ -144,6 +157,11 @@ class WhatsAppRun:
     notify: Callable[[str], Awaitable[bool]] | None = None
     #: True once the member heard that the job takes a while.
     notified: bool = False
+    #: The run may park ONE write for the member's Confirm (WAC-4). Only
+    #: ``bot_run`` sets it, from ``WHATSAPP_ASSISTANT_WRITES``.
+    writes: bool = False
+    #: The act that this run parked (``whatsapp_acts.ParkedAct``), or None.
+    parked: Any = None
 
 
 _RUN: ContextVar[WhatsAppRun | None] = ContextVar("whatsapp_run", default=None)
@@ -154,14 +172,16 @@ def whatsapp_run(agent: str, *,
                  views: Callable[[str], Awaitable[Any]] | None = None,
                  org: str | None = None,
                  notify: Callable[[str], Awaitable[bool]] | None = None,
+                 writes: bool = False,
                  ) -> Iterator[WhatsAppRun]:
     """Open the WhatsApp profile for the run of *agent* in this context.
 
     Like ``refuse_cards``: a nested ``run_agent`` and each task the run starts
     copy the context, so they see the profile too. Closing it restores the
-    value it found.
+    value it found. *writes* lets the run park one write (WAC-4).
     """
-    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify)
+    run = WhatsAppRun(agent=agent, views=views, org=org, notify=notify,
+                      writes=writes)
     token = _RUN.set(run)
     try:
         yield run
@@ -210,6 +230,10 @@ def _short(value: Any, limit: int, what: str) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
 
+_RESERVED_REFUSAL = ('"Confirm" and "Cancel" are Metorite\'s own buttons for a '
+                     "change, and only Metorite sends them. Use other titles")
+
+
 def _footer(data: dict[str, Any], interactive: dict[str, Any]) -> None:
     footer = _text(data, "footer", limit=FOOTER_MAX, required=False)
     if footer:
@@ -222,6 +246,8 @@ def _buttons(data: dict[str, Any]) -> OutMessage:
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_BUTTONS:
         raise _Refused(f'"buttons" must be a list of 1 to {MAX_BUTTONS} titles')
     titles = [_short(t, BUTTON_TITLE_MAX, "button") for t in raw]
+    if any(_reserved(t) for t in titles):
+        raise _Refused(_RESERVED_REFUSAL)
     if len({t.casefold() for t in titles}) != len(titles):
         raise _Refused("two buttons have the same title")
     interactive: dict[str, Any] = {
@@ -280,6 +306,8 @@ def _list(data: dict[str, Any]) -> OutMessage:
                 raise _Refused('each row must be {"title", "description"}')
             count += 1
             title = _unique(_short(row.get("title"), ROW_TITLE_MAX, "row"), seen)
+            if _reserved(title):
+                raise _Refused(_RESERVED_REFUSAL)
             seen.add(title.casefold())
             item: dict[str, Any] = {"id": f"r{count}", "title": title}
             desc = row.get("description")
@@ -699,7 +727,8 @@ async def whatsapp_ui(kind: str, data: dict[str, Any]) -> dict[str, Any]:
     blue, violet, gray).
 
     A tap on a button or a row comes back as the member's next message. They
-    change no data. Do not repeat in your text what the element shows. At
+    change no data. "Confirm" and "Cancel" are Metorite's own titles, so
+    your buttons and rows never use them. Do not repeat in your text what the element shows. At
     most 3 elements in one reply. Returns {"ok": true}, or {"ok": false,
     "error"}: fix it and call again.
     """
