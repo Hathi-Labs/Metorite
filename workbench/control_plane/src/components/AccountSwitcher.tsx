@@ -410,13 +410,11 @@ export function SidebarAccountFooter({
  * email in muted text. No border and no fill at rest. It has the height of the
  * bar's other controls and the bar's focus ring (`Button`).
  *
- * ⚠️ **The email shows from 1400px up, and it gives way first.** The bar's
- * right group is a `basis-0` share of the free width, and the command bar
- * sits in the centre. Content wider than that share spills over the command
- * bar. So the trigger and the email are `min-w-0` and shrink, and the email
- * truncates to the room there is. Below 1400px the room is too small for an
- * email that reads, so the avatar shows alone (measured 2026-10-12). Fence:
- * `e2e/shell-account.spec.ts` "never crowds the bell".
+ * ⚠️ **The email shows from 1400px up.** The bar's right group keeps the
+ * width of its content (`ShellBarRow`), so a wide trigger moves the command
+ * bar off centre. Below 1400px the email took too much of it, so the avatar
+ * shows alone (measured 2026-10-12). A long email truncates at `max-w-56`.
+ * Fence: `e2e/shell-account.spec.ts` "never crowds the bell".
  *
  * The menu holds account acts only. The member's own pages and settings are
  * in the Metorite menu at the sidebar's foot (`MetoriteFoot.tsx`).
@@ -453,7 +451,7 @@ export function BarAccount() {
   };
 
   return (
-    <div ref={rootRef} data-shell-account="" className="relative flex min-w-0 shrink items-center">
+    <div ref={rootRef} data-shell-account="" className="relative flex shrink-0 items-center">
       <Button
         variant="ghost"
         size="none"
@@ -465,10 +463,10 @@ export function BarAccount() {
         aria-label={`Account: ${active.email}`}
         title={tip}
         onClick={toggle}
-        className="h-7 min-w-0 max-w-full gap-2 rounded-full p-0.5 min-[1400px]:pr-2.5"
+        className="h-7 gap-2 rounded-full p-0.5 min-[1400px]:pr-2.5"
       >
         <Avatar email={active.email} name={active.name} size="xs" />
-        <span data-account-email="" className="hidden min-w-0 max-w-56 truncate text-xs min-[1400px]:block">
+        <span data-account-email="" className="hidden max-w-56 truncate text-xs min-[1400px]:block">
           {active.email}
         </span>
       </Button>

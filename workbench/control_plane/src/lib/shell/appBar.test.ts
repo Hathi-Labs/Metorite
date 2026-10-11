@@ -274,7 +274,7 @@ describe("(c) the shell bar holds no app", () => {
     // The header's children: a spacer, the command bar, the end zone.
     const inner = html.replace(/^<header[^>]*>/, "").replace(/<\/header>$/, "");
     expect(inner.startsWith('<div aria-hidden="true" class="min-w-0 flex-1 basis-0"></div><button')).toBe(true);
-    expect(inner.endsWith('<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"></div>')).toBe(true);
+    expect(inner.endsWith('<div class="flex flex-1 basis-0 items-center justify-end gap-1"></div>')).toBe(true);
   });
 
   it("the end zone holds the shell's bell, its activity control, the account, and nothing else", () => {
@@ -294,7 +294,7 @@ describe("(c) the shell bar holds no app", () => {
       }),
     );
     expect(html).toMatch(
-      /<div class="flex min-w-0 flex-1 basis-0 items-center justify-end gap-1"><i data-zone="bell"><\/i><i data-zone="activity"><\/i><i data-zone="account"><\/i><\/div><\/header>$/,
+      /<div class="flex flex-1 basis-0 items-center justify-end gap-1"><i data-zone="bell"><\/i><i data-zone="activity"><\/i><i data-zone="account"><\/i><\/div><\/header>$/,
     );
     const props = code(read("lib/shell/ShellBar.tsx")).match(/export function ShellBarRow\(\{([^}]*)\}/)?.[1] ?? "";
     expect(props.split(",").map((p) => p.trim()).filter(Boolean).sort()).toEqual(["account", "activity", "bell", "here", "lead", "onOpen"]);

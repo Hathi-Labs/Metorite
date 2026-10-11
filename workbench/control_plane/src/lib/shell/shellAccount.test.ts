@@ -96,14 +96,19 @@ describe("the trigger is quiet, named and tipped", () => {
   it("draws the avatar, then the email that shows from 1400px up only", () => {
     expect(html).toMatch(/rounded-full[^"]*">A<\/span>/);
     const email = /<span data-account-email="" class="([^"]*)">asha@example.com<\/span>/.exec(html)?.[1] ?? "";
-    expect(email.split(" ")).toEqual(expect.arrayContaining(["hidden", "min-[1400px]:block", "truncate", "min-w-0"]));
+    expect(email.split(" ")).toEqual(expect.arrayContaining(["hidden", "min-[1400px]:block", "truncate", "max-w-56"]));
     expect(email.split(" ")).not.toContain("block");
   });
 
-  it("shrinks before it spills over the command bar", () => {
+  it("never spills over the command bar: the right group keeps its content's width", () => {
+    // With `min-w-0` the group is a `basis-0` share that its content can
+    // overflow, and the avatar put the bell over the command bar at 1024px.
+    const row = renderToStaticMarkup(createElement(ShellBarRow, { here: null, onOpen: () => {} }));
+    const group = /<div class="([^"]*justify-end[^"]*)">/.exec(row)?.[1] ?? "";
+    expect(group.split(" ")).toEqual(expect.arrayContaining(["flex-1", "basis-0", "justify-end"]));
+    expect(group.split(" ")).not.toContain("min-w-0");
     const root = /<div data-shell-account="" class="([^"]*)"/.exec(html)?.[1] ?? "";
-    expect(root.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "shrink"]));
-    expect(root.split(" ")).not.toContain("shrink-0");
+    expect(root.split(" ")).toContain("shrink-0");
   });
 });
 
