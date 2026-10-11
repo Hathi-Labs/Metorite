@@ -2884,10 +2884,11 @@ Copilot tests listed below. Shrink the WS43-F15 allowlist to
 5. `copilot_chat_model` becomes `default_chat_model`. The code reads
    `DEFAULT_CHAT_MODEL` first and `COPILOT_CHAT_MODEL` as a fallback for one
    release.
-6. `merge_mcp_servers` stays. It is the seam that WS-8c will read (D7).
-   ⚠️ **After this slice, registry MCP servers reach no agent** until WS-8c
-   wires MCP on MAF. Only the Copilot runtime reads `_mcp_servers` today. The
-   PR states this loss under D7.
+6. **WS-8c is merged, and its flag `MAF_MCP_ORGS` is ON for every org that
+   holds an enabled `mcp_servers` row** (`agent_architecture.md` §12.2).
+   Without both, this slice cuts every registry MCP server off from every
+   agent. `merge_mcp_servers` stays until then. Only the Copilot runtime reads
+   `_default_options["mcp_servers"]` today (D7).
 7. Root `AGENTS.md` and `apps/services/orchestrator/AGENTS.md` lose their
    Copilot runtime paragraphs.
 8. The Copilot tests go. Measured at `2e6c22fc`, 7 test files import the
@@ -4405,9 +4406,10 @@ Measured on 2026-10-03 at `main` `2e6c22fc`.
 
 Two items stay, on purpose:
 
-- `merge_mcp_servers` (`_tool_injection.py:1086`) writes a field that only
-  the Copilot runtime reads. After WS-43q, nothing reads it. It stays as the
-  seam that WS-8c will read (D7).
+- `merge_mcp_servers` (`_tool_injection.py:2042` at `c1850b5d9`) writes
+  `_default_options["mcp_servers"]`, a field that only the Copilot runtime
+  reads. WS-8c gives the MAF path its own MCP client, so this field has no
+  reader after WS-43q (D7).
 - `decide()` in `permission_policy.py` stays. The MAF tool gate calls it.
 
 ### 15.3 Self-mutation
