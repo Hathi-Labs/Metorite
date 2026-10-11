@@ -58,7 +58,7 @@ MEMBER = "member@crm-sync.test"
 OUTSIDER = "outsider@zoho.test"
 SENTINEL = "SENTINEL-CUSTOMER-DATA"
 
-MODULES = ("Leads", "Deals", "Contacts", "Accounts", "Notes", "Calls", "Events")
+MODULES = ("Leads", "Deals", "Contacts", "Accounts", "Notes", "Calls", "Events", "Tasks")
 
 
 def stamp(minutes: int) -> str:

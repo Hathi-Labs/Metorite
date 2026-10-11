@@ -46,7 +46,7 @@ _NUMERIC_CEILING = 10**12
 _INT_CEILING = 2**31
 _SMALLINT_CEILING = 2**15
 
-_ACTIVITY_TYPES = {"note": "note", "call": "call", "meeting": "meeting"}
+_ACTIVITY_TYPES = {"note": "note", "call": "call", "meeting": "meeting", "task": "task"}
 
 #: The Zoho module a ``$se_module`` value names, as a canonical entity.
 _MODULE_ENTITY = {
@@ -72,6 +72,7 @@ ENTITY_TABLES: Mapping[str, str] = {
     "note": "crm_activities",
     "call": "crm_activities",
     "meeting": "crm_activities",
+    "task": "crm_activities",
 }
 
 
@@ -99,6 +100,10 @@ class Mapped:
     status_name: str | None = None
     #: A deal's contact. The engine adds it to ``crm_deal_contacts``.
     deal_contact: Link | None = None
+    #: A converted lead: the Zoho ids it became (``contact``, ``company``,
+    #: ``deal``), a key only when Zoho names it. ``None`` for a lead that is
+    #: not converted and for any other entity (CRM-Q5).
+    conversion: dict[str, str] | None = None
     owner_email: str | None = None
     owner_name: str | None = None
     #: A deal's pipeline: ``(ext_id, name)``. The engine resolves it to a local
@@ -197,6 +202,8 @@ _CONSUMED: Mapping[str, frozenset[str]] = {
         "id", "First_Name", "Last_Name", "Company", "Email", "Phone", "Mobile",
         "Website", "Industry", "No_of_Employees", "Annual_Revenue", "Lead_Source",
         "Description", "Lead_Status", "Owner", "Modified_Time",
+        "Converted__s", "Converted_Date_Time", "Converted_Contact",
+        "Converted_Account", "Converted_Deal",
     }),
     "deal": frozenset({
         "id", "Deal_Name", "Amount", "Probability", "Closing_Date", "Next_Step",
@@ -213,6 +220,11 @@ _CONSUMED: Mapping[str, frozenset[str]] = {
     "meeting": frozenset({
         "id", "Event_Title", "Description", "Start_DateTime", "Who_Id", "What_Id",
         "Owner", "Modified_Time",
+    }),
+    # ``Status`` and ``Priority`` stay in ``custom`` on purpose (CRM-Q5).
+    "task": frozenset({
+        "id", "Subject", "Description", "Due_Date", "Closed_Time", "Who_Id",
+        "What_Id", "Owner", "Modified_Time",
     }),
 }
 
@@ -332,6 +344,31 @@ def _activity_links(entity: str, fields: Mapping[str, Any]) -> tuple[Link, ...]:
     return tuple(links)
 
 
+def lead_conversion(fields: Mapping[str, Any]) -> dict[str, str] | None:
+    """The Zoho ids a converted lead became, or ``None`` for an open lead.
+
+    v2 sends ``Converted__s`` with ``Converted_Contact``, ``Converted_Account``
+    and ``Converted_Deal`` lookups, and older tenants send ``$converted`` with
+    a ``$converted_detail`` object. Both are read, and a key is present only
+    when Zoho names that record.
+    """
+    detail = fields.get("$converted_detail")
+    detail = detail if isinstance(detail, dict) else {}
+    ids = {
+        "contact": lookup_id(fields.get("Converted_Contact"))
+        or lookup_id(detail.get("contact") or detail.get("Contacts")),
+        "company": lookup_id(fields.get("Converted_Account"))
+        or lookup_id(detail.get("account") or detail.get("Accounts")),
+        "deal": lookup_id(fields.get("Converted_Deal"))
+        or lookup_id(detail.get("deal") or detail.get("Deals")),
+    }
+    flagged = fields.get("Converted__s") is True or fields.get("$converted") is True
+    found = {key: value for key, value in ids.items() if value}
+    if not flagged and not found and not instant(fields.get("Converted_Date_Time")):
+        return None
+    return found
+
+
 def _activity(entity: str, fields: Mapping[str, Any]) -> dict[str, Any]:
     created = instant(fields.get("Created_Time"))
     if entity == "note":
@@ -347,6 +384,19 @@ def _activity(entity: str, fields: Mapping[str, Any]) -> dict[str, Any]:
             "subject": text_value(fields.get("Subject")),
             "body": text_value(fields.get("Description")),
             "occurred_at": instant(fields.get("Call_Start_Time")) or created,
+        }
+    if entity == "task":
+        due = day(fields.get("Due_Date"))
+        closed = instant(fields.get("Closed_Time"))
+        done = (text_value(fields.get("Status")) or "").lower() == "completed"
+        return {
+            "type": "task",
+            "subject": text_value(fields.get("Subject")),
+            "body": text_value(fields.get("Description")),
+            "occurred_at": created,
+            "due_at": datetime(due.year, due.month, due.day, tzinfo=UTC) if due else None,
+            "completed_at": (closed or instant(fields.get("Modified_Time")) or created)
+            if done else None,
         }
     return {
         "type": "meeting",
@@ -383,6 +433,7 @@ def map_record(
     links: tuple[Link, ...] = ()
     status_name: str | None = None
     deal_contact: Link | None = None
+    conversion: dict[str, str] | None = None
     derived: tuple[str, ...] = ()
     pipeline: tuple[str | None, str | None] | None = None
 
@@ -398,6 +449,11 @@ def map_record(
         elif entity == "lead":
             status_name = text_value(fields.get("Lead_Status"))
             derived = ("lead_name",)
+            conversion = lead_conversion(fields)
+            if conversion is not None:
+                values["converted_at"] = instant(fields.get("Converted_Date_Time")) or (
+                    instant(fields.get("Modified_Time")) or modified_at
+                )
         elif entity == "deal":
             status_name = text_value(fields.get("Stage"))
             pipeline = pipeline_ref(fields)
@@ -421,6 +477,7 @@ def map_record(
         links=links,
         status_name=status_name,
         deal_contact=deal_contact,
+        conversion=conversion,
         owner_email=owner_email,
         owner_name=owner_name,
         pipeline=pipeline,

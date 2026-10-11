@@ -36,6 +36,7 @@ CANONICAL_ENTITIES: tuple[str, ...] = (
     "note",
     "call",
     "meeting",
+    "task",
 )
 
 
@@ -150,6 +151,15 @@ class BudgetExhausted(SourceError):
         self.budget = budget
 
 
+class SourceScopeError(SourceError):
+    """The credential lacks the scope this read needs (CRM-Q5).
+
+    It is NOT a dead token. The caller must never mark the connection
+    ``needs_reconnect`` for it. A module the mirror treats as optional is
+    skipped and reported as unavailable, and the run goes on.
+    """
+
+
 class UntrustedHost(SourceError):
     """A URL is not on the provider's allowlist, or it is not https."""
 
@@ -230,6 +240,10 @@ class CrmSource(Protocol):
     # ``None`` when the provider gives no number.
     async def count_records(self, entity: str) -> int | None: ...
 
+    # 11. The contacts on one deal, as ``(contact id, role or None)`` pairs.
+    # One call for each deal (CRM-Q5).
+    async def list_deal_contact_roles(self, deal_ext_id: str) -> list[tuple[str, str | None]]: ...
+
 
 __all__ = [
     "CANONICAL_ENTITIES",
@@ -243,5 +257,6 @@ __all__ = [
     "SourceError",
     "SourcePage",
     "SourceRecord",
+    "SourceScopeError",
     "UntrustedHost",
 ]

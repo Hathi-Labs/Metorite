@@ -1588,6 +1588,44 @@ async def set_pipeline_stages_from_source(
         )
 
 
+async def set_deal_contacts_from_source(
+    db: Any, deal_id: str, contacts: Sequence[tuple[str, str | None]],
+) -> tuple[int, int]:
+    """Set the contacts, and their roles, of one MIRRORED deal (WS-53 CRM-Q5).
+
+    The fourth door of the mirror write path, beside :func:`upsert_from_source`,
+    :func:`delete_from_source` and :func:`set_pipeline_stages_from_source`, with
+    the same fence (``tests/unit/test_crm_upsert_from_source_fence.py``).
+    ``crm_deal_contacts`` has no ``ext_id``, so ``(deal_id, contact_id)`` is the
+    natural key. *contacts* is ``[(contact_id, role), ...]`` with LOCAL ids.
+
+    A row that the list leaves out is removed, except the primary contact. The
+    primary comes from the ``Contact_Name`` of the deal itself, and a deal can
+    list no role for it. ``is_primary`` is never changed here. The tenant
+    policy binds the organization, and the column default fills it on insert.
+
+    Returns ``(written, removed)``.
+    """
+    ids = [str(contact_id) for contact_id, _ in contacts]
+    removed = await db.execute(
+        text(
+            "DELETE FROM crm_deal_contacts WHERE deal_id = CAST(:d AS uuid) "
+            "AND NOT is_primary AND NOT (contact_id = ANY(CAST(:ids AS uuid[])))"
+        ),
+        {"d": deal_id, "ids": ids},
+    )
+    for contact_id, role in contacts:
+        await db.execute(
+            text(
+                "INSERT INTO crm_deal_contacts (deal_id, contact_id, role) "
+                "VALUES (CAST(:d AS uuid), CAST(:c AS uuid), :role) "
+                "ON CONFLICT (deal_id, contact_id) DO UPDATE SET role = EXCLUDED.role"
+            ),
+            {"d": deal_id, "c": str(contact_id), "role": role},
+        )
+    return len(contacts), int(removed.rowcount or 0)
+
+
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:
     """The native row a Zoho record already maps to, if there is one."""
     return (await db.execute(

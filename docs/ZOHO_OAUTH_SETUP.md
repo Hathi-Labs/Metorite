@@ -132,6 +132,7 @@ You do not do these steps. They are here so that you know what happens.
    | `ZohoCRM.modules.notes.READ` | Notes |
    | `ZohoCRM.modules.calls.READ` | Calls |
    | `ZohoCRM.modules.events.READ` | Meetings, which the API calls Events |
+   | `ZohoCRM.modules.tasks.READ` | Tasks. A connection made before 2026-10-12 must reconnect to grant it |
    | `ZohoCRM.settings.fields.READ` | The field definitions of each module |
    | `ZohoCRM.settings.layouts.READ` | The Deals layouts, which hold the pipelines |
    | `ZohoCRM.settings.pipeline.READ` | The pipelines and their stages |
