@@ -2,9 +2,14 @@
 
 > **Board row:** WS-54 · **Created:** 2026-10-11 · **Owner question:** 2026-10-11
 > **Status:** ✅ **IN-0 MERGED 2026-10-11** (#859). Its part (e) is held
-> behind H-244. ✅ **IN-7 built 2026-10-11** (branch `in-7`, not merged). IN-1 to IN-6 are a 📝 PLAN, verified against code and
+> behind H-244. 🔨 **IN-1 BUILT 2026-10-11**, not yet merged. ✅ **IN-7 built 2026-10-11** (branch `in-7`, not merged). IN-2 to IN-6 are a 📝 PLAN, verified against code and
 > production on 2026-10-11 at `origin/main` `ba6bbb7b6`. The MAF MCP client
 > and IN-D6 moved to WS-8c on 2026-10-11 (`agent_architecture.md` §12.2).
+
+> **Built:** IN-1 on 2026-10-11, in `routes/integrations_connections.py`. It adds
+> `GET /integrations/connections`, `POST /integrations/connections/{id}/disconnect`
+> and `POST /integrations/mcp/{name}/test`. The tests are
+> `test_integrations_connections.py` and `test_integrations_connections_r8.py`.
 
 > **Decision:** D96 (§10). The orchestrator took it on 2026-10-11 when the owner
 > asked, and the owner was told the same day. The owner may overrule it.
@@ -213,7 +218,7 @@ integration resolvers. IN-5 removes the old writes.
 
 | Act | Why it is the owner's | Slice |
 |---|---|---|
-| Confirm or overrule D96 | Product shape | Before IN-1 |
+| ✅ Confirm or overrule D96 | Product shape. The owner confirmed D96 on 2026-10-11. The owner chose "build the console after the CRM is in use". | Before IN-1 |
 | Decide the fate of custom APIs and plugins (Q2) | A feature leaves the product | IN-6 |
 | Promote `/integrations` to `live` | §6.0 C3, H-21 | After IN-2 |
 
@@ -239,7 +244,7 @@ IN-0 comes first and alone, because it closes live holes.
 | Id | What | Gate | Done when |
 |---|---|---|---|
 | **IN-0** ✅ merged 2026-10-11 (#859), (e) held behind H-244 | **Close the holes.** (a) Six routes stop writing `os.environ` and `.env`: configure, PUT and DELETE `/keys` keep the per-org store write. The GitHub device poll stores `github:token` for the org. connect-cli answers 410. The old OAuth authorize, callback and refresh are retired (410). A failed store write in configure answers 503. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete filter on the caller's tenant, and the list returns key names only, never a `headers` or `env_vars` value. (d) `/mcp/test` and plugin install fetch only through `gateway/outbound_guard.py`. (e) **Held behind H-244 [OWNER]:** the `<<<SETUP:...>>>` path stops writing configure. After (a) it can write no env value, so holding it leaves no cross-tenant hole | 🟢 AGENT-SAFE for (a) to (d). ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod the startup copy is already inert (9 orgs), so the cost is close to zero | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
-| **IN-1** | **The read model.** `GET /integrations/connections` over the three sources of §3.2. Status per org, not per deployment. `_is_configured` answers False for an unknown service | 🟢 AGENT-SAFE. Needs CRM-Z2 for the table | Two orgs see only their own rows. No response holds a credential (a sentinel fence). A mailbox row shows owner and health and no message |
+| **IN-1** ✅ built 2026-10-11 | **The read model.** `GET /integrations/connections` over the three sources of §3.2. Status per org, not per deployment. `_is_configured` answers False for an unknown service | 🟢 AGENT-SAFE. Needs CRM-Z2 for the table | Two orgs see only their own rows. No response holds a credential (a sentinel fence). A mailbox row shows owner and health and no message |
 | **IN-2** | **The console.** It replaces the five tabs with one list of connections, filters by app and status, and opens a side panel with reconnect, disconnect, and a link to the owning app. MCP gets an "Add" form. The stale text goes (IN-D16). ⚠️ The MCP "Test" button sends `s.headers || {}`, and since IN-0 the list returns no headers. So a server that needs an auth header tests without it. The console must test with the stored headers | 🟢 AGENT-SAFE | Visual review passes. Every action reaches the store through the routes of IN-0 and IN-1. `AppTopBar` and the shared controls only |
 | **IN-3** | **Per-run credentials for the integration resolvers.** `acb_skills` resolvers read the per-run context, filled from the per-org store, and the environment stops winning | 🔴 §6 gate (f) | A run in org A gets org A's key and a run in org B gets org B's, on one process at one time (R8) |
 | **IN-4** | **Move the MCP rows into `integration_connections`, and repoint the WS-8c reader.** The MAF MCP client and the IN-D6 fix of register and install moved to WS-8c on 2026-10-11 (`agent_architecture.md` §12.2). IN-4 changes the store that WS-8c reads, and nothing else. Registry MCP is MAF-only: since the second review of #869, a registry row never reaches a Copilot agent, and `POST /mcp` refuses a URL that the guard refuses | 🟢 AGENT-SAFE | The WS-8c fences pass against the new store. A registered server reaches a MAF agent in its org only. Its header never reaches a log |

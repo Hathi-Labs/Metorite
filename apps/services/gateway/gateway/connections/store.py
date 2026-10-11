@@ -70,6 +70,16 @@ _KEY_WHERE = (
 
 _GET_SQL = f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections WHERE {_KEY_WHERE}"
 
+_LIST_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections "
+    "WHERE organization_id = CAST(:org AS uuid) ORDER BY owning_app, provider, created_at"
+)
+
+_GET_BY_ID_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid)"
+)
+
 _BLOB_SQL = (
     "SELECT credentials_encrypted FROM integration_connections "
     f"WHERE {_KEY_WHERE} AND status <> 'disconnected'"
@@ -258,6 +268,26 @@ async def get(
     """The connection row, or ``None``. It carries no blob."""
     params = _key(org, provider, owning_app, scope_kind, member_email)
     row = (await db.execute(text(_GET_SQL), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def list_all(db: Any, org: str) -> list[Connection]:
+    """Every connection row of *org*, with no blob (the Integrations console)."""
+    org = str(uuid.UUID(str(org)))
+    rows = (await db.execute(text(_LIST_SQL), {"org": org})).fetchall()
+    return [_connection(r) for r in rows]
+
+
+async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
+    """One connection by id, in *org* only, or ``None``. It carries no blob.
+
+    A malformed id is ``None``, not an error, so a route can answer 404.
+    """
+    try:
+        params = {"id": str(uuid.UUID(str(connection_id))), "org": str(uuid.UUID(str(org)))}
+    except ValueError:
+        return None
+    row = (await db.execute(text(_GET_BY_ID_SQL), params)).first()
     return _connection(row) if row is not None else None
 
 

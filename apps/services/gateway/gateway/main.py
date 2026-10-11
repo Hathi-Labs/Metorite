@@ -1348,6 +1348,14 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-54 IN-1 — the Integrations console read model and its writes.
+    from gateway.routes.integrations_connections import router as _connections_router
+
+    app.include_router(_connections_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-23 S1 — read-only skills catalog (skill families + token costs).
     from gateway.routes.integrations_skills import router as _skills_router
 

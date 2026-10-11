@@ -1549,7 +1549,34 @@ async def list_agents(
     return merged
 
 
-@router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage")])
+def _registry_orgs() -> frozenset[str]:
+    raw = str(get_settings().agent_registry_orgs or "")
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+async def _require_registry_operator(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only the platform operator changes the agent registry.
+
+    ``agents:manage`` alone is not enough: every org's owner and admin hold
+    it. The registry is deployment-wide, a register clones a repo with the
+    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
+    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
+    that may do it. Empty means none (fail closed). The org comes from the
+    server-side ``UserContext``, never from the request.
+    """
+    org = str(user.organization_id or "").strip().lower()
+    allowed = _registry_orgs()
+    if org and ("*" in allowed or org in allowed):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the platform operator can change the agent registry.",
+    )
+
+
+@router.post("/{name}/pull", summary="Pull latest commits for an agent's local clone", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def pull_agent(
     name: str,
     user: UserContext = Depends(get_current_user),
@@ -1665,7 +1692,7 @@ async def pull_agent(
     }
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, summary="Register an agent from a GitHub repo", dependencies=[require_permission("agents:manage")])
+@router.post("", status_code=status.HTTP_201_CREATED, summary="Register an agent from a GitHub repo", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def register_agent(
     req: RegisterAgentRequest,
     background_tasks: BackgroundTasks,
@@ -1915,7 +1942,7 @@ def _cleanup_agent_workspace(agent_name: str) -> bool:
         return False
 
 
-@router.delete("/{name}", summary="Remove a user-registered agent", dependencies=[require_permission("agents:manage")])
+@router.delete("/{name}", summary="Remove a user-registered agent", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def remove_agent(
     name: str,
     user: UserContext = Depends(get_current_user),
@@ -1976,7 +2003,7 @@ class PatchAgentRequest(BaseModel):
     status: str | None = None
 
 
-@router.patch("/{name}", summary="Update metadata for a user-registered agent", dependencies=[require_permission("agents:manage")])
+@router.patch("/{name}", summary="Update metadata for a user-registered agent", dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)])
 async def patch_agent(
     name: str,
     req: PatchAgentRequest,
