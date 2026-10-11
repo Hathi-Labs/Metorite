@@ -859,7 +859,7 @@ class ZohoSource:
 
     # ── 3b. Discovery (CRM-Q1) ──────────────────────────────────────────────
 
-    async def discover(self) -> dict[str, Any]:
+    async def discover(self) -> dict[str, Any]:  # noqa: C901 - one linear read of five sections
         """Read the shape of the customer's Zoho. METADATA ONLY, never a record.
 
         Each read goes through :meth:`_get`, so each one is counted. They are
