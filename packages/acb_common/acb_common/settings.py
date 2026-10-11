@@ -235,6 +235,25 @@ class Settings(BaseSettings):
     crm_enabled: bool = False
     crm_orgs: str = ""
 
+    # ── The CRM mirror (WS-53 CRM-Z2, 2026-10-11) ───────────────────────────
+    #
+    # `crm_mirror` is the kill switch of the Zoho connection routes
+    # (`/crm/connection*` and `/crm/oauth/zoho/callback`), default OFF. With it
+    # off each of those routes answers 404, on top of the `CRM_ENABLED` check.
+    # The one reader is `gateway.routes.crm.flags`.
+    #
+    # `crm_zoho_client_id` and `crm_zoho_client_secret` are Metorite's OWN Zoho
+    # OAuth client (docs/ZOHO_OAUTH_SETUP.md). A customer never sets them. The
+    # one reader is `gateway.routes.crm.connection`. With either unset, the
+    # start route answers 503 `zoho_not_configured`. The secret never goes in a
+    # log line or a response.
+    #
+    # 🔴 A flip of `CRM_MIRROR` on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_crm_kill_switch.py, tests/unit/test_crm_connection.py.
+    crm_mirror: bool = False
+    crm_zoho_client_id: str = ""
+    crm_zoho_client_secret: str = ""
+
     # ── Customer Console sign-in resolve (WS-31 CP-2b, spec customer_console.md
     # §6(f)) ────────────────────────────────────────────────────────────────
     #
@@ -825,6 +844,21 @@ class Settings(BaseSettings):
     # turn uses the text history. The reader is
     # `orchestrator.native_session_store.finish_turn`.
     maf_session_max_bytes: int = 2 * 1024 * 1024
+
+    # ── MCP servers on native MAF agents (WS-8c, agent_architecture.md §12.2) ─
+    #
+    # `MAF_MCP_ORGS` lists the organization ids whose native MAF agents get
+    # the MCP servers of their org, with a comma between ids. `*` allows each
+    # organization. An empty list, the default, allows none, and then a native
+    # agent reads no `mcp_servers` row. The Copilot path does not read it. The
+    # one reader is `orchestrator._maf_mcp.maf_mcp_org_allowed`, and the org it
+    # checks is the run binding, never request input. `env_guard` refuses each
+    # `MAF_*` name on each Integrations write. Restart the gateway after a
+    # change.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. Name the org and the box.
+    # Fence: tests/unit/test_maf_mcp_injection.py.
+    maf_mcp_orgs: str = ""
 
     # ── A durable "needs input" (WS-51 S2, chat_run_continuity.md §4 S2) ────
     #

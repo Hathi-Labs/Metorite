@@ -1,9 +1,10 @@
 # Integrations — one registry, and an admin console over it
 
 > **Board row:** WS-54 · **Created:** 2026-10-11 · **Owner question:** 2026-10-11
-> **Status:** 🔨 **IN-0 BUILT 2026-10-11** (not merged). Its part (e) is held
+> **Status:** ✅ **IN-0 MERGED 2026-10-11** (#859). Its part (e) is held
 > behind H-244. IN-1 to IN-7 are a 📝 PLAN, verified against code and
-> production on 2026-10-11 at `origin/main` `ba6bbb7b6`.
+> production on 2026-10-11 at `origin/main` `ba6bbb7b6`. The MAF MCP client
+> and IN-D6 moved to WS-8c on 2026-10-11 (`agent_architecture.md` §12.2).
 
 > **Decision:** D96 (§10). The orchestrator took it on 2026-10-11 when the owner
 > asked, and the owner was told the same day. The owner may overrule it.
@@ -43,7 +44,7 @@ the answer: both, over one registry.
 - The registry read model over every connection kind (IN-1).
 - The admin console (IN-2), which replaces `/integrations`.
 - Customer credentials per request, never in the process environment (IN-3, IN-5).
-- MCP servers per org, and an MCP client for MAF agents (IN-4).
+- MCP servers in the registry (IN-4). The MCP client for MAF agents is WS-8c.
 - A decision on custom APIs and plugins, which store data that nothing reads (IN-6).
 - GitHub per org (IN-7).
 
@@ -85,13 +86,13 @@ Each one is real at `ba6bbb7b6`. The last column names the slice that fixes it.
 | **IN-D3** | 🔴 **The MCP list reads every org's rows and returns their secrets.** `mcp_servers` is exempt from RLS, and the list opens an unbound session. It returns `headers` and `env_vars`. | `integrations.py:1762-1787` | IN-0 |
 | **IN-D4** | 🔴 **The MCP delete removes a row of any org by name.** | `integrations.py:1844` | IN-0 |
 | **IN-D5** | 🔴 **Server-side request forgery.** `/mcp/test` makes the gateway GET any URL with the caller's headers. Plugin install fetches any URL. | `integrations.py:1857-1887`, `:1948-1983` | IN-0 |
-| **IN-D6** | **MCP register and plugin install cannot succeed.** They put `%s` inside `text()`, omit `organization_id`, and use `ON CONFLICT (name)` against a key that migration 158 changed. No test covers them. | `integrations.py:1811-1825`, `:1994-2011` | IN-4 |
+| **IN-D6** | **MCP register and plugin install cannot succeed.** They put `%s` inside `text()`, omit `organization_id`, and use `ON CONFLICT (name)` against a key that migration 158 changed. No test covers them. | `integrations.py:1827-1841`, `:2073-2092` (at `c1850b5d9`) | WS-8c |
 | **IN-D7** | **The agent resolvers read only the environment.** A per-org key never reaches a run, and `credential()` lets the environment win over the per-run value. | `acb_skills/integrations.py:63-196`, `:322-339` | IN-3 |
 | **IN-D8** | **Status is deployment-wide.** `configured` comes from the environment, and `_is_configured` answers True for an unknown service. `/test` tests the environment. | `integrations.py:388-424` (`:420`), `:744-778`, `:1595-1605` | IN-1 |
 | **IN-D9** | **The old OAuth route is dead and unscoped.** Its state binds no org and no member, it writes `.env`, `refresh_access_token` has no caller, and no UI uses it. | `routes/oauth.py:61-119`, `:231-264` | IN-5 (retire), CRM-Z2 replaces it for Zoho |
 | **IN-D10** | **GitHub is one token for the deployment**, and connect-cli imports the server's own `gh` token. | `integrations.py:2327-2390` | IN-7 |
 | **IN-D11** | **A model-output token writes configure with the internal token and no tenant** (`<<<SETUP:svc:KEY=val>>>`). | `orchestrator/executor.py:5737-5755`, `src/app/api/agent/chat/route.ts:927` (the pattern) and `:937` (the POST), HANDOFF H-244 | IN-0 (e), held behind H-244 |
-| **IN-D12** | **MCP on MAF does nothing.** Injection returns early for an agent that is not Copilot, and no MAF MCP client exists. The page says "every agent can discover" the servers. | `orchestrator/_tool_injection.py:2039-2041`, `integrations/page.tsx:1333,1407`, WS-8c, H-217 | IN-4 |
+| **IN-D12** | **MCP on MAF does nothing.** Injection returns early for an agent that is not Copilot, and no MAF MCP client exists. The page says "every agent can discover" the servers. | `orchestrator/_tool_injection.py:2063-2064` (at `c1850b5d9`), `integrations/page.tsx:1333,1407`, H-217 | WS-8c |
 | **IN-D13** | **Custom APIs and plugins store data that nothing reads.** `custom_api_definitions.service_id` is unique across every org. | `12_custom_api_definitions.sql:8`, `integrations.py:641,815,1467` | IN-6 |
 | **IN-D14** | **No single registry.** Connections live in `provider_keys`, `email_accounts`, `wa_accounts`, `mcp_servers`, `.env` and a disk token cache. The page fakes WhatsApp's `configured` from a second fetch. | `integrations/page.tsx:816-831`, `zoho/client.py:17` | IN-1 |
 | **IN-D15** | **The discover call to the model is not metered** (H-287). | `integrations.py:1315` | IN-6 |
@@ -154,8 +155,9 @@ integration resolvers. IN-5 removes the old writes.
 
 - **An MCP server is a connection** with `kind = 'mcp'` and an org scope. Its
   auth header is a credential, so rule 3.3 applies.
-- **MAF agents get an MCP client** (IN-4). This is WS-8c. Without it, an MCP
-  server reaches no agent, because D92 moves every agent to MAF.
+- **MAF agents get an MCP client** (WS-8c, `agent_architecture.md` §12.2).
+  Without it, an MCP server reaches no agent, because D92 moves every agent
+  to MAF. IN-4 moves the rows and repoints the WS-8c reader.
 - **MCP calls are egress.** They pass the egress guard and the per-run
   `integrations:use:<svc>` grant, as every tool does (H-236).
 - **Zoho's MCP** is the agent action plane for the CRM (`crm_platform.md` §7.2,
@@ -183,7 +185,8 @@ integration resolvers. IN-5 removes the old writes.
    guard, `gateway/outbound_guard.py`. The guard refuses a private, loopback,
    link-local or metadata address, and it does not follow a redirect. Do not
    use `acb_skills/egress.py` here, because it classifies tools, not URLs.
-   IN-4 adds a port allowlist.
+   WS-8c adds the MCP client of the guard, which allows `https` on port 443
+   only.
 4. A write to a connection writes one audit row: who, what, when, which org.
 5. The old routes that write the environment stop doing it in IN-0. They keep
    the per-org store write.
@@ -225,7 +228,7 @@ IN-0 ─► IN-1 ─► IN-2 ─► (owner) promote
   │       ▲
   │   CRM-Z2 (creates integration_connections)
   ├─► IN-3 ─► IN-5
-  ├─► IN-4 (needs IN-1 for the row; WS-8c for MAF)
+  ├─► IN-4 (needs IN-1 for the row, and WS-8c merged)
   └─► IN-6, IN-7 in any order
 ```
 
@@ -235,11 +238,11 @@ IN-0 comes first and alone, because it closes live holes.
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **IN-0** ✅ built 2026-10-11, (e) held behind H-244 | **Close the holes.** (a) Six routes stop writing `os.environ` and `.env`: configure, PUT and DELETE `/keys` keep the per-org store write. The GitHub device poll stores `github:token` for the org. connect-cli answers 410. The old OAuth authorize, callback and refresh are retired (410). A failed store write in configure answers 503. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete filter on the caller's tenant, and the list returns key names only, never a `headers` or `env_vars` value. (d) `/mcp/test` and plugin install fetch only through `gateway/outbound_guard.py`. (e) **Held behind H-244 [OWNER]:** the `<<<SETUP:...>>>` path stops writing configure. After (a) it can write no env value, so holding it leaves no cross-tenant hole | 🟢 AGENT-SAFE for (a) to (d). ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod the startup copy is already inert (9 orgs), so the cost is close to zero | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
+| **IN-0** ✅ merged 2026-10-11 (#859), (e) held behind H-244 | **Close the holes.** (a) Six routes stop writing `os.environ` and `.env`: configure, PUT and DELETE `/keys` keep the per-org store write. The GitHub device poll stores `github:token` for the org. connect-cli answers 410. The old OAuth authorize, callback and refresh are retired (410). A failed store write in configure answers 503. (b) Every writer requires `integrations:manage`. (c) The MCP list and delete filter on the caller's tenant, and the list returns key names only, never a `headers` or `env_vars` value. (d) `/mcp/test` and plugin install fetch only through `gateway/outbound_guard.py`. (e) **Held behind H-244 [OWNER]:** the `<<<SETUP:...>>>` path stops writing configure. After (a) it can write no env value, so holding it leaves no cross-tenant hole | 🟢 AGENT-SAFE for (a) to (d). ⚠️ It changes behaviour: a key set on the page stops reaching agents until IN-3. On prod the startup copy is already inert (9 orgs), so the cost is close to zero | A planted `os.environ` write in any of the six routes fails a fence. A member without `integrations:manage` gets 403 on each writer. Org B's MCP list shows none of org A's rows and no secret value. `/mcp/test` to `http://127.0.0.1` and to `http://169.254.169.254` is refused with no request sent. Each test red first |
 | **IN-1** | **The read model.** `GET /integrations/connections` over the three sources of §3.2. Status per org, not per deployment. `_is_configured` answers False for an unknown service | 🟢 AGENT-SAFE. Needs CRM-Z2 for the table | Two orgs see only their own rows. No response holds a credential (a sentinel fence). A mailbox row shows owner and health and no message |
 | **IN-2** | **The console.** It replaces the five tabs with one list of connections, filters by app and status, and opens a side panel with reconnect, disconnect, and a link to the owning app. MCP gets an "Add" form. The stale text goes (IN-D16). ⚠️ The MCP "Test" button sends `s.headers || {}`, and since IN-0 the list returns no headers. So a server that needs an auth header tests without it. The console must test with the stored headers | 🟢 AGENT-SAFE | Visual review passes. Every action reaches the store through the routes of IN-0 and IN-1. `AppTopBar` and the shared controls only |
 | **IN-3** | **Per-run credentials for the integration resolvers.** `acb_skills` resolvers read the per-run context, filled from the per-org store, and the environment stops winning | 🔴 §6 gate (f) | A run in org A gets org A's key and a run in org B gets org B's, on one process at one time (R8) |
-| **IN-4** | **MCP per org, and on MAF.** Fix register and install (IN-D6), move MCP rows into the registry, and give MAF agents an MCP client behind the egress guard (WS-8c). ⚠️ The INSERTs of `POST /mcp` and plugin install omit `organization_id` and use `ON CONFLICT (name)`. So both answer 500 on a migrated database. That is IN-D6 | 🟢 AGENT-SAFE | A registered server reaches a MAF agent in its org only. Its header never reaches a log |
+| **IN-4** | **Move the MCP rows into `integration_connections`, and repoint the WS-8c reader.** The MAF MCP client and the IN-D6 fix of register and install moved to WS-8c on 2026-10-11 (`agent_architecture.md` §12.2). IN-4 changes the store that WS-8c reads, and nothing else. Registry MCP is MAF-only: since the second review of #869, a registry row never reaches a Copilot agent, and `POST /mcp` refuses a URL that the guard refuses | 🟢 AGENT-SAFE | The WS-8c fences pass against the new store. A registered server reaches a MAF agent in its org only. Its header never reaches a log |
 | **IN-5** | **Retire the old writes.** Remove the env-write code, `_persist_tokens`, the dead OAuth route, and `configure_integrations`'s copy into the environment for customer keys. Move `COPILOT_CHAT_MODEL` out of the deployment `.env` (IN-D17) | 🔴 §6 gate (f) | `os.environ[` with a customer key appears nowhere outside the operator plane (fence) |
 | **IN-6** | **Custom APIs and plugins.** Keep them with a reader and per-org keys, or retire them | 🔴 owner (Q2) | Per the answer |
 | **IN-7** | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18) | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |

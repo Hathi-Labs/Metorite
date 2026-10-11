@@ -50,7 +50,9 @@ class DataCentre:
 
 #: The ONE allowlist of Zoho hosts. Keyed by the ``location`` that the
 #: consent redirect returns. Source: zoho.com/developer/oauth/
-#: multi-dc-support.html, read 2026-10-11, which lists nine data centres.
+#: multi-dc-support.html, read 2026-10-11. It lists eight data centres here.
+#: China (`cn`) is out: a CN org cannot consent through `accounts.zoho.com`,
+#: so a CN consent fails closed with `UntrustedHost`.
 ZOHO_DATA_CENTRES: Mapping[str, DataCentre] = MappingProxyType(
     {
         "us": DataCentre("accounts.zoho.com", "www.zohoapis.com"),
@@ -59,7 +61,6 @@ ZOHO_DATA_CENTRES: Mapping[str, DataCentre] = MappingProxyType(
         "au": DataCentre("accounts.zoho.com.au", "www.zohoapis.com.au"),
         "jp": DataCentre("accounts.zoho.jp", "www.zohoapis.jp"),
         "ca": DataCentre("accounts.zohocloud.ca", "www.zohoapis.ca"),
-        "cn": DataCentre("accounts.zoho.com.cn", "www.zohoapis.com.cn"),
         "sa": DataCentre("accounts.zoho.sa", "www.zohoapis.sa"),
         "uk": DataCentre("accounts.zoho.uk", "www.zohoapis.uk"),
     }
@@ -217,7 +218,8 @@ async def _token_call(
 
 def _is_token_throttle(error: str, body: Mapping[str, Any]) -> bool:
     """Zoho's accounts server throttles with ``Access Denied`` and a text that
-    says "too many requests", often with HTTP 400."""
+    says "too many requests". It answers with HTTP 200 (Kaizen #43), so this
+    reads the body and never the status."""
     description = str(body.get("error_description") or "").lower()
     return error.lower() == "access denied" and "too many requests" in description
 
@@ -302,11 +304,15 @@ async def refresh(
     raw_error = str(body.get("error") or "")
     error = safe_code(raw_error)
     if raw_error in _RECONNECT_ERRORS:
-        raise NeedsReconnect(f"Zoho refused the refresh ({error}). An admin must connect again")
+        dead = NeedsReconnect(f"Zoho refused the refresh ({error}). An admin must connect again")
+        dead.code = error
+        raise dead
     if _is_token_throttle(raw_error, body):
         raise RateLimited("The Zoho accounts server throttled the refresh", tries=1)
     if status >= 300 or raw_error or not body.get("access_token"):
-        raise SourceError(f"The Zoho token refresh failed ({error or status})")
+        failed = SourceError(f"The Zoho token refresh failed ({error or status})")
+        failed.code = error
+        raise failed
     provider_meta = dict(credential.provider_meta)
     if body.get("api_domain"):
         provider_meta[META_API_DOMAIN] = check_api_domain(str(body["api_domain"]))
@@ -316,6 +322,39 @@ async def refresh(
         expires_at=_expiry(body, clock()),
         provider_meta=provider_meta,
     )
+
+
+async def revoke(
+    config: OAuthClientConfig,
+    credential: SourceCredential,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> bool:
+    """Revoke the refresh token at Zoho. True when Zoho confirms.
+
+    The token goes in the FORM BODY, never in the URL, because httpx logs the
+    URL of each request (spec section 5.2 item 4). Zoho documents the token as
+    a query value, and this form is not yet measured against a live Zoho. A
+    False answer means Zoho did not confirm. The caller treats a revoke as
+    best effort: it logs the outcome by code only and goes on.
+
+    ``config`` is part of the adapter protocol. Zoho needs only the token.
+    """
+    _ = config
+    token = credential.refresh_token
+    if not token:
+        return False
+    server = check_accounts_server(meta(credential, META_ACCOUNTS_SERVER))
+    try:
+        async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT, transport=transport) as http:
+            r = await http.post(f"{server}/oauth/v2/token/revoke", data={"token": token})
+    except httpx.TransportError as exc:
+        raise SourceError(f"The Zoho revoke request failed ({type(exc).__name__})") from exc
+    try:
+        body = r.json()
+    except ValueError:
+        return False
+    return r.status_code < 300 and isinstance(body, dict) and body.get("status") == "success"
 
 
 def needs_refresh(credential: SourceCredential, now: datetime) -> bool:
@@ -340,6 +379,7 @@ __all__ = [
     "meta",
     "needs_refresh",
     "refresh",
+    "revoke",
     "safe_code",
     "utcnow",
 ]

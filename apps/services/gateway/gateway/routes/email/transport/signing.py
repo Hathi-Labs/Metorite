@@ -27,6 +27,10 @@ an empty value and every value in ``PUBLIC_DEFAULT_SECRETS``. The signer
 raises :class:`SigningUnavailable` and the verifier answers "no". This module
 reuses that predicate and does not copy it, so the list has one owner.
 
+WS-53 CRM-Z2 adds :func:`sign_state` and :func:`verify_state`: the same
+MAC with a caller purpose, for the CRM Zoho connect (``crm.zoho.connect``). The
+email purposes are reserved, and the email functions are unchanged.
+
 Do not reuse ``routes/oauth.py::_sign_state``. It has another format and it
 falls back to a default secret. Fences: ``tests/unit/test_email_oauth_state.py``.
 """
@@ -53,8 +57,10 @@ __all__ = [
     "WEBHOOK_PURPOSE",
     "SigningUnavailable",
     "sign_oauth_state",
+    "sign_state",
     "sign_webhook_org",
     "verify_oauth_state",
+    "verify_state",
     "verify_webhook_org",
 ]
 
@@ -105,6 +111,36 @@ def _mac(secret: str, purpose: str, body: str) -> str:
 def _canonical_org(org: str) -> str:
     """The one spelling of an organization id. Raises ValueError if not a UUID."""
     return str(uuid.UUID(str(org)))
+
+
+def _open_token(token: str | None, purpose: str, now: float | None) -> dict[str, Any] | None:
+    """The payload of a token whose MAC, version and expiry hold, else ``None``.
+
+    The shared front half of every verifier here. It checks the size, the
+    secret, the MAC for ``purpose``, the JSON shape, the version and ``exp``.
+    The caller checks its own claims.
+    """
+    if not token or len(token) > _MAX_STATE_CHARS or token.count(".") != 1:
+        return None
+    try:
+        secret = _secret()
+    except SigningUnavailable:
+        return None
+    body, tag = token.split(".")
+    if not hmac.compare_digest(_mac(secret, purpose, body).encode(), tag.encode()):
+        return None
+    try:
+        payload = json.loads(_unb64(body))
+    except (ValueError, binascii.Error):
+        return None
+    if not isinstance(payload, dict) or payload.get("v") != _STATE_VERSION:
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, int) or isinstance(exp, bool):
+        return None
+    if exp <= (time.time() if now is None else now):
+        return None
+    return payload
 
 
 # ── The OAuth state ─────────────────────────────────────────────────────────
@@ -163,27 +199,8 @@ def verify_oauth_state(token: str | None, *, now: float | None = None) -> dict[s
     payload then carries the default of 1. A claim that is not an integer
     from 0 to 6 is a bad shape.
     """
-    if not token or len(token) > _MAX_STATE_CHARS or token.count(".") != 1:
-        return None
-    try:
-        secret = _secret()
-    except SigningUnavailable:
-        return None
-    body, tag = token.split(".")
-    if not hmac.compare_digest(
-        _mac(secret, OAUTH_STATE_PURPOSE, body).encode(), tag.encode()
-    ):
-        return None
-    try:
-        payload = json.loads(_unb64(body))
-    except (ValueError, binascii.Error):
-        return None
-    if not isinstance(payload, dict) or payload.get("v") != _STATE_VERSION:
-        return None
-    exp = payload.get("exp")
-    if not isinstance(exp, int) or isinstance(exp, bool):
-        return None
-    if exp <= (time.time() if now is None else now):
+    payload = _open_token(token, OAUTH_STATE_PURPOSE, now)
+    if payload is None:
         return None
     for key in ("org", "member", "provider"):
         if not isinstance(payload.get(key), str) or not payload[key]:
@@ -193,6 +210,70 @@ def verify_oauth_state(token: str | None, *, now: float | None = None) -> dict[s
     months = payload.setdefault("import_months", DEFAULT_IMPORT_MONTHS)
     if not is_import_months(months):
         return None
+    try:
+        payload["org"] = _canonical_org(payload["org"])
+    except ValueError:
+        return None
+    return payload
+
+
+# ── A state for any other purpose (WS-53 CRM-Z2) ────────────────────────────
+
+#: The purposes above belong to the email flow. The generic functions refuse
+#: them, so a caller of ``sign_state`` cannot mint an email state.
+_RESERVED_PURPOSES = frozenset({OAUTH_STATE_PURPOSE, WEBHOOK_PURPOSE})
+
+
+def _check_purpose(purpose: str) -> str:
+    if not purpose or not isinstance(purpose, str) or purpose in _RESERVED_PURPOSES:
+        raise ValueError("a state needs its own purpose")
+    return purpose
+
+
+def sign_state(*, purpose: str, org: str, member: str, now: float | None = None) -> str:
+    """Sign a connect state for ``purpose``. The CRM uses ``crm.zoho.connect``.
+
+    The state carries the organization, the member, a nonce and an expiry of
+    ten minutes. The MAC input starts with ``purpose``, so a value signed for
+    one purpose never verifies for another.
+
+    Raises:
+        SigningUnavailable: the secret is empty or public.
+        ValueError: ``purpose`` is empty or reserved, ``org`` is not a UUID, or
+            ``member`` is empty.
+    """
+    _check_purpose(purpose)
+    who = (member or "").strip().lower()
+    if not who:
+        raise ValueError("a state needs a member")
+    issued = time.time() if now is None else now
+    payload = {
+        "v": _STATE_VERSION,
+        "nonce": secrets.token_urlsafe(16),
+        "org": _canonical_org(org),
+        "member": who,
+        "exp": int(issued) + OAUTH_STATE_TTL_SECONDS,
+    }
+    body = _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+    return f"{body}.{_mac(_secret(), purpose, body)}"
+
+
+def verify_state(
+    token: str | None, *, purpose: str, now: float | None = None,
+) -> dict[str, Any] | None:
+    """The payload of a valid state for ``purpose``, or ``None``.
+
+    ``None`` covers every failure: a bad MAC, another purpose, an expired
+    state, a bad shape, and an unusable secret. The caller answers each one
+    the same way.
+    """
+    _check_purpose(purpose)
+    payload = _open_token(token, purpose, now)
+    if payload is None:
+        return None
+    for key in ("org", "member", "nonce"):
+        if not isinstance(payload.get(key), str) or not payload[key]:
+            return None
     try:
         payload["org"] = _canonical_org(payload["org"])
     except ValueError:

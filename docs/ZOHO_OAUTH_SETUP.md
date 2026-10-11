@@ -107,10 +107,10 @@ drop folder is the only place for it.
 
 You do not do these steps. They are here so that you know what happens.
 
-1. The agent adds `CRM_ZOHO_CLIENT_ID` and `CRM_ZOHO_CLIENT_SECRET` to
-   `allowed_keys` of the `app-env` entry in `deploy/secrets/manifest.json`, in
-   a reviewed change. Until then `push` refuses the two keys. The manifest
-   lets only the keys that it names into the app env file.
+1. CRM-Z2 added `CRM_ZOHO_CLIENT_ID` and `CRM_ZOHO_CLIENT_SECRET` to
+   `allowed_keys` of the `app-env` entry in `deploy/secrets/manifest.json`
+   (2026-10-11). The manifest lets only the keys that it names into the app
+   env file, and `tests/unit/test_secrets_drop.py` pins that list.
 2. The agent runs `scripts/secrets.sh diff app-env`. It shows the two key
    names with a `+`, and never a value.
 3. The agent runs `scripts/secrets.sh push app-env`. The script merges the
