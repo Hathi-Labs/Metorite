@@ -111,6 +111,12 @@ _NEEDS_RECONNECT_SQL = (
     "AND status <> 'disconnected'"
 )
 
+_MARK_SYNCED_SQL = (
+    "UPDATE integration_connections SET last_sync_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
 _DISCONNECT_SQL = (
     "UPDATE integration_connections SET status = 'disconnected', "
     "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
@@ -360,3 +366,8 @@ async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None
         text(_DISCONNECT_SQL), {"id": str(connection_id), "org": str(org)},
     )).first()
     return _connection(row) if row is not None else None
+
+
+async def mark_synced(db: Any, org: str, connection_id: str) -> None:
+    """Set ``last_sync_at`` to now. The sync engine calls it after a good run."""
+    await db.execute(text(_MARK_SYNCED_SQL), {"id": str(connection_id), "org": str(org)})

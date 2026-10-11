@@ -52,6 +52,11 @@ connect (``POST /crm/connection/zoho/start`` and the callback
 ``GET /crm/oauth/zoho/callback``) and ``POST /crm/connection/disconnect``. Each
 route is behind ``CRM_MIRROR``, default OFF. The credential lives in
 ``gateway/connections/store.py``, the only reader of the blob.
+
+``sync.py`` is WS-53 CRM-Z5 — ``GET /crm/sync/status`` and ``POST /crm/sync/zoho``
+(Sync now). Both are behind ``CRM_MIRROR``. The engine they start lives in
+``gateway/crm_sync/``, which imports ``routes.crm.core``, so ``sync.py`` imports
+it inside its handlers.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -65,6 +70,7 @@ from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
 from gateway.routes.crm import settings as _settings  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
+from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
 from gateway.routes.crm.core import router
 

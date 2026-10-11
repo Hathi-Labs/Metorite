@@ -3,10 +3,13 @@
 Spec: ``project-docs/specs/crm_app.md`` §7.1 (all seven sync bullets) ·
 D-CRM-6 · D-CRM-7 · D-CRM-8 · ticket WS-26b done-when 3, 4 and 5.
 
-    POST /crm/sync/zoho    run ONE cycle now (admin:access:manage), with or
-                           without the flag — a hand-run cycle is an explicit
-                           admin act, not a scheduled one. ⚠️ Answers 409
-                           until CRM-Z5 (below).
+    ⚠️ **No route lives here any more** (WS-53 CRM-Z5). ``POST /crm/sync/zoho``
+    moved to ``routes/crm/sync.py``, and it starts the new read-only mirror
+    engine (``gateway/crm_sync/``). This file keeps the OLD two-way engine as
+    code that nothing reaches: no loop starts (``start_crm_zoho_sync``), and
+    no route calls ``run_cycle``. The broker handlers still use
+    ``execute_push`` and ``apply_push_result``, which write to Zoho only
+    after an approval, and which CRM-Z9 reopens. CRM-Z11 deletes the rest.
 
 ⚠️ **OFF UNTIL CRM-Z5** (WS-53 CRM-T3, ``crm_platform.md`` §4.3). Migration
 241 put FORCE RLS on every ``crm_*`` table, and one cycle here opens one
@@ -68,9 +71,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 
-from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
-from fastapi import Depends, HTTPException
 from gateway.routes.crm.broker_handlers import broker_gate
 from gateway.routes.crm.core import (
     CONTACTS,
@@ -83,7 +84,6 @@ from gateway.routes.crm.core import (
     load_by_zoho_id,
     load_row,
     now,
-    router,
     savepoint,
     update_row,
 )
@@ -1339,38 +1339,6 @@ def sync_status() -> dict[str, Any]:
         "cycle_in_progress": cycle_in_progress(),
         "interval_secs": SYNC_INTERVAL_SECS,
     }
-
-
-# ── The manual endpoint ─────────────────────────────────────────────────────
-
-@router.post(
-    "/sync/zoho",
-    response_model=SyncCycleReport,
-    dependencies=[require_permission("admin:access:manage")],
-)
-async def run_sync_cycle_now(
-    user: UserContext = Depends(get_current_user),
-) -> SyncCycleReport:
-    """Run ONE sync cycle now. **Answers 409 until CRM-Z5** (WS-53 CRM-T3).
-
-    The cycle cannot bind a tenant (:data:`SYNC_OFF_UNTIL_CRM_Z5`), so this
-    route opens no session, calls no Zoho client and answers 409 with a
-    detail that names CRM-Z5. The ``admin:access:manage`` floor stays, so a
-    member without it still gets 403 first.
-
-    §7.1 still holds for CRM-Z5: a hand-run cycle is an explicit admin act,
-    so it does not need the scheduling flag. Against the production tenant it
-    WRITES live Zoho and is an OWNER-GATE act (``work_plan.md`` §6). It also
-    answered 409 while a cycle was already running, because two overlapping
-    cycles both create the same dirty rows upstream.
-    """
-    from gateway.routes.crm.core import actor
-
-    _log.warning(
-        "crm.sync.off_until_crm_z5", actor=actor(user),
-        reason=SYNC_OFF_UNTIL_CRM_Z5,
-    )
-    raise HTTPException(status_code=409, detail=SYNC_OFF_UNTIL_CRM_Z5)
 
 
 __all__ = [

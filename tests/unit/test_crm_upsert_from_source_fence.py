@@ -27,6 +27,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = "upsert_from_source"
+#: The second door of the mirror write path (CRM-Z4). Same fence.
+NAMES = (NAME, "delete_from_source")
 
 #: The trees that must never name the function.
 SCAN_ROOTS = (
@@ -47,16 +49,16 @@ def _names_it(tree: ast.AST) -> list[int]:
     lines: list[int] = []
     for node in ast.walk(tree):
         if (
-            (isinstance(node, ast.Name) and node.id == NAME)
-            or (isinstance(node, ast.Attribute) and node.attr == NAME)
-            or (isinstance(node, ast.Constant) and node.value == NAME)
+            (isinstance(node, ast.Name) and node.id in NAMES)
+            or (isinstance(node, ast.Attribute) and node.attr in NAMES)
+            or (isinstance(node, ast.Constant) and node.value in NAMES)
             or (
                 isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-                and node.name == NAME
+                and node.name in NAMES
             )
         ):
             lines.append(node.lineno)
-        elif isinstance(node, ast.alias) and node.name.split(".")[-1] == NAME:
+        elif isinstance(node, ast.alias) and node.name.split(".")[-1] in NAMES:
             lines.append(getattr(node, "lineno", 0))
     return lines
 
@@ -76,14 +78,16 @@ def violations(roots: tuple[Path, ...], definer: Path | None = None) -> list[str
     return found
 
 
-def test_no_route_agent_or_skill_names_upsert_from_source() -> None:
+def test_no_route_agent_or_skill_names_a_mirror_write_function() -> None:
     assert violations(SCAN_ROOTS, DEFINER) == []
 
 
 def test_the_definer_and_the_scan_roots_exist() -> None:
     """A fence over a path that moved scans nothing and passes."""
     assert DEFINER.is_file()
-    assert "async def upsert_from_source" in DEFINER.read_text(encoding="utf-8")
+    definer_text = DEFINER.read_text(encoding="utf-8")
+    assert "async def upsert_from_source" in definer_text
+    assert "async def delete_from_source" in definer_text
     assert any(r.is_dir() for r in SCAN_ROOTS)
     assert (ROOT / "apps" / "services" / "gateway" / "gateway" / "routes").is_dir()
 
@@ -103,6 +107,10 @@ def test_the_definer_and_the_scan_roots_exist() -> None:
         "import gateway.routes.crm.core as c\n\nF = c.upsert_from_source\n",
         "from gateway.routes.crm.core import *\n\nupsert_from_source(None, 'x', {})\n",
         "import importlib\n\nF = getattr(importlib.import_module('x'), 'upsert_from_source')\n",
+        "from gateway.routes.crm.core import delete_from_source\n",
+        "from gateway.routes.crm import core\n\nasync def go(db):\n"
+        "    await core.delete_from_source(db, 'crm_leads', 'zoho', [])\n",
+        "import importlib\n\nF = getattr(importlib.import_module('x'), 'delete_from_source')\n",
     ],
 )
 def test_the_fence_catches_every_spelling(tmp_path: Path, source: str) -> None:
