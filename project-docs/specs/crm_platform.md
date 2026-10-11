@@ -1026,15 +1026,17 @@ Enterprise and Ultimate, and for every customer's own modules and fields. So
 the mirror reads the shape of the customer's Zoho first, then maps what it
 knows by fixed rules. A generic store holds the rest. An AI assistant proposes
 a mapping where the rules do not know, and an admin approves it. The sync
-applies saved rules only. The CRM layout changes to the words that Zoho users
-know: one **Deals** view with a board or list switch and a pipeline picker. A
-separate "Pipeline" row does not exist.
+applies saved rules only.
+
+**The layout.** The CRM uses the words that Zoho users know: one **Deals**
+view with a board or list switch and a pipeline picker. A separate "Pipeline"
+row does not exist.
 
 **Why.** On 2026-10-12 the owner reported three things. Pipeline settings did
 not open. "Pipeline" read as a third object beside Leads and Deals. The CRM
 did not have the views and settings that a Zoho mirror needs. The owner then
-asked for comprehensive research, and for a mirror that adapts to each
-customer's Zoho tier, with AI help where the mapping is not clear.
+asked for comprehensive research. They also asked for a mirror that adapts to
+each customer's Zoho tier, with AI help where the mapping is not clear.
 
 ### 18.1 What the research found
 
@@ -1053,8 +1055,7 @@ working note.
    stages, with no pipeline. `crm_field_defs` (migration 244) is written and
    never read. Tasks, converted leads, deal contact roles, Products, Quotes,
    attachments and custom modules are not mirrored. A record shows no related
-   lists, and the list views have no saved views and no filter on a custom
-   field.
+   lists. The list views have no saved views, and no filter on a custom field.
 4. **Zoho differs by edition.** The modules, the number of pipelines, the
    custom modules, the API credits and the concurrency all change with the
    edition. A mirror that assumes one edition breaks on another.
@@ -1089,13 +1090,13 @@ a change in the customer's Zoho shows as a new version.
 
 1. **Known modules go to our tables, by fixed rules.** Leads, Contacts,
    Accounts, Deals, Notes, Calls, Events and Tasks.
-2. **The other modules go to one generic record store.** That covers the
-   standard modules we do not model yet: Products, Quotes, Sales Orders,
-   Invoices, Vendors, Price Books, Campaigns and Cases. It also covers each
+2. **The other modules go to one generic record store.** It holds the
+   standard modules that we do not model yet. They are Products, Quotes, Sales
+   Orders, Invoices, Vendors, Price Books, Campaigns and Cases. It also covers each
    custom module. A generic record keeps its fields in JSON, described by
    `crm_field_defs`. Its lookups become links. The UI shows a generic list and
-   a generic record page for each module. A module can move to its own table
-   in a later slice, and the generic store then hands its rows over.
+   a generic record page for each module. A later slice can give a module its
+   own table. The generic store then hands its rows over.
 3. **Fields.** A field that maps to one of our columns goes there, by a fixed
    rule. Every other field goes to `custom`, described by `crm_field_defs`.
 
@@ -1140,8 +1141,8 @@ to Accounts.
 | Reports | Forecast, funnel, win and loss, owners |
 | CRM settings | Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Field map, Sync health |
 
-The row "Pipeline" goes. The record page gets **related lists**: a company
-shows its contacts and deals, a contact shows its deals, and a deal shows its
+The row "Pipeline" goes. The record page gets **related lists**. A company
+shows its contacts and deals. A contact shows its deals. A deal shows its
 contacts with their roles.
 
 ### 18.5 Tickets
