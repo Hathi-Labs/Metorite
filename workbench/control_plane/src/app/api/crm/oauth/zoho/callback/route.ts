@@ -26,7 +26,7 @@
  * Fence: `route.test.ts`.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
@@ -101,7 +101,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   let res: Response;
   try {
-    res = await gatewayFetch(upstream, {
+    // ⚠️ A plain `fetch`, ONE attempt. `gatewayFetch` retries on a stale
+    // socket (H-194), and the consent code is single-use: a retry after the
+    // first attempt reached the gateway would turn a good connect into a
+    // failure. A throw here becomes `/crm?connect_error=failed`.
+    res = await fetch(upstream, {
       headers,
       redirect: "manual",
       cache: "no-store",

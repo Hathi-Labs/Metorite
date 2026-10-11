@@ -89,6 +89,8 @@ describe("the BFF Zoho OAuth callback", () => {
     for (const location of [
       "https://evil.example/crm?connected=zoho",
       "//evil.example/crm?connected=zoho",
+      "/\evil.com",
+      "/crm@evil",
       "/other?connected=zoho",
       "/crm?connected=zoho&x=1",
       "/crm?connected=other",
@@ -134,6 +136,20 @@ describe("the BFF Zoho OAuth callback", () => {
       }),
     );
     const res = await callback("code=c&state=s");
+    expect(res.headers.get("location")).toBe("/crm?connect_error=failed");
+  });
+
+  it("makes exactly one upstream call when the first throws", async () => {
+    calls = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
+        throw new Error("stale socket");
+      }),
+    );
+    const res = await callback("code=c&state=s");
+    expect(calls).toHaveLength(1);
     expect(res.headers.get("location")).toBe("/crm?connect_error=failed");
   });
 

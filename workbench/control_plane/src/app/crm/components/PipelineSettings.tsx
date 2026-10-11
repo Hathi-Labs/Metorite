@@ -73,7 +73,10 @@ export default function PipelineSettings({
   onReorderLostReasons,
   onPullStages,
   top,
+  readOnly = false,
 }: {
+  /** Mirror mode: Zoho owns the stages, and the gateway refuses a write. */
+  readOnly?: boolean;
   /** The connection panel of an admin in a mirrored org (CRM-Z7). */
   top?: React.ReactNode;
   dealStatuses: Status[];
@@ -102,8 +105,19 @@ export default function PipelineSettings({
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
       {top}
-      <StagePull canPull={canPullStages} saving={saving} onPull={onPullStages} />
+      {readOnly ? (
+        <p className="text-xs text-muted-foreground">Stages come from Zoho.</p>
+      ) : (
+        <StagePull canPull={canPullStages} saving={saving} onPull={onPullStages} />
+      )}
 
+      {/* `inert` and a disabled fieldset: nothing inside takes a click, a key
+          or a drag. The gateway answers 409 mirror_mode_settings regardless. */}
+      <fieldset
+        disabled={readOnly}
+        inert={readOnly}
+        className={`m-0 min-w-0 space-y-6 border-0 p-0 ${readOnly ? "opacity-70" : ""}`}
+      >
       <StatusGrid
         kind="deal"
         title="Deal stages"
@@ -133,6 +147,7 @@ export default function PipelineSettings({
         onRemove={onRemoveLostReason}
         onReorder={onReorderLostReasons}
       />
+      </fieldset>
     </div>
   );
 }

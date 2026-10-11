@@ -428,6 +428,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               // Hiding the pull is the courtesy half; the route is floored on the
               // same capability server-side and refuses regardless.
               canPullStages={ctx.isAdmin}
+              readOnly={ctx.mode === "mirror"}
               onSaveStatus={store.saveStatus}
               onRemoveStatus={store.removeStatus}
               onReorderStatuses={store.reorderStatuses}
@@ -586,8 +587,8 @@ function CrmGate(): ReactNode {
   const isAdmin = hasCapability(access, ADMIN_CAPABILITY);
 
   const { phase, mode, connection } = useCrmMode(isAdmin, accessLoading);
-  const [watching, setWatching] = useState(false);
-  const sync = useSyncStatus(connection !== null && mode === "mirror", watching);
+  const [watchToken, setWatchToken] = useState(0);
+  const sync = useSyncStatus(connection !== null && mode === "mirror", watchToken);
   const [busy, setBusy] = useState<"native" | "zoho" | null>(null);
   const [syncing, setSyncing] = useState(false);
 
@@ -614,7 +615,7 @@ function CrmGate(): ReactNode {
       toast.show({ key: "crm-connect-return", variant: "success", title: "Zoho CRM connected" });
       // The effect follows the URL, an external system, and starts a watch.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setWatching(true);
+      setWatchToken((n) => n + 1);
     } else {
       toast.show({ key: "crm-connect-return", variant: "error", title: notice.message });
     }
@@ -661,7 +662,7 @@ function CrmGate(): ReactNode {
     try {
       await api.syncZohoNow();
       toast.show({ key: "crm-sync", variant: "success", title: "Sync started" });
-      setWatching(true);
+      setWatchToken((n) => n + 1);
     } catch (err) {
       const e = err instanceof CrmError ? err : null;
       toast.show({

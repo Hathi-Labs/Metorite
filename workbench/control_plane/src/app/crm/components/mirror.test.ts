@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import type { BoardLane } from "../lib/board";
 import type { ConnectionInfo, SyncStatus } from "../lib/connect";
+import PipelineSettings from "./PipelineSettings";
 import ConnectionPanel from "./ConnectionPanel";
 import FieldsPanel from "./FieldsPanel";
 import FirstOpen from "./FirstOpen";
@@ -167,6 +168,40 @@ describe("the locked fields", () => {
     const html = draw({ id: "1", name: "Acme", ext_source: "zoho", custom: { Lead_Source: "Web" } });
     expect(html).toContain("Lead Source");
     expect(html).toContain("Web");
+  });
+});
+
+describe("the pipeline settings in Mirror mode", () => {
+  const draw = (readOnly: boolean) =>
+    renderToStaticMarkup(
+      createElement(PipelineSettings, {
+        readOnly,
+        dealStatuses: [
+          { id: "s1", name: "Qualified", color: "blue", position: 0, type: "open", is_default: true },
+        ],
+        leadStatuses: [],
+        lostReasons: [],
+        saving: false,
+        canPullStages: true,
+        onSaveStatus: async () => true,
+        onRemoveStatus: async () => true,
+        onReorderStatuses: async () => undefined,
+        onSaveLostReason: async () => true,
+        onRemoveLostReason: async () => true,
+        onReorderLostReasons: async () => undefined,
+        onPullStages: async () => null,
+      }),
+    );
+  it("says where the stages come from, and shuts every control", () => {
+    const html = draw(true);
+    expect(html).toContain("Stages come from Zoho.");
+    expect(html).toMatch(/<fieldset[^>]*disabled/);
+    expect(html).toMatch(/<fieldset[^>]*inert/);
+  });
+  it("stays editable in Native mode", () => {
+    const html = draw(false);
+    expect(html).not.toContain("Stages come from Zoho.");
+    expect(html).not.toMatch(/<fieldset[^>]*disabled/);
   });
 });
 

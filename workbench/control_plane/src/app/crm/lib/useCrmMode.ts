@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { invalidate } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
+import { startPoller } from "./poller";
 import {
   POLL_MS,
   WATCH_LIMIT_POLLS,
@@ -72,16 +73,17 @@ export function useCrmMode(isAdmin: boolean, accessLoading: boolean): CrmModeSta
 }
 
 /**
- * The sync status, polled every 3 s while a sync runs. `watching` keeps the
- * poll alive for a short while after the return from Zoho, because the sync
- * may not have started yet. `enabled` is false when the mirror is off.
+ * The sync status, polled every 3 s while a sync runs. `watchToken` counts
+ * the starts of a watch (the return from Zoho, "Sync now"). Each new value
+ * re-arms the poll, also after an earlier watch ended. A hidden tab is not
+ * polled. `enabled` is false when the mirror is off.
  */
-export function useSyncStatus(enabled: boolean, watching: boolean): SyncStatus | null {
+export function useSyncStatus(enabled: boolean, watchToken: number): SyncStatus | null {
   const res = useCachedResource<SyncStatus | null>(enabled ? KEY_SYNC : null, api.getSyncStatus);
   const status = res.data ?? null;
   const refresh = res.refresh;
   const running = status?.state === "running";
-  const live = enabled && shouldPoll(status, watching);
+  const live = enabled && shouldPoll(status, watchToken > 0);
 
   // The tick reads the latest state through a ref, set in an effect.
   const runningRef = useRef(false);
@@ -91,18 +93,19 @@ export function useSyncStatus(enabled: boolean, watching: boolean): SyncStatus |
 
   useEffect(() => {
     if (!live) return;
-    let polls = 0;
-    const timer = setInterval(() => {
-      polls += 1;
-      // A watch ends when no sync appears. A running sync is polled to its end.
-      if (!runningRef.current && polls > WATCH_LIMIT_POLLS) {
-        clearInterval(timer);
-        return;
-      }
-      refresh();
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [live, refresh]);
+    const poller = startPoller({
+      refresh,
+      isRunning: () => runningRef.current,
+      isHidden: () => document.hidden,
+      ms: POLL_MS,
+      limit: WATCH_LIMIT_POLLS,
+    });
+    document.addEventListener("visibilitychange", poller.onVisible);
+    return () => {
+      poller.stop();
+      document.removeEventListener("visibilitychange", poller.onVisible);
+    };
+  }, [live, watchToken, refresh]);
 
   return status;
 }
