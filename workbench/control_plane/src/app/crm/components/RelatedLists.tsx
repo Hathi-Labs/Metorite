@@ -12,7 +12,7 @@
  * row the list shows.
  */
 
-import { relatedSections } from "../lib/related";
+import { relatedSections, showingLine } from "../lib/related";
 import type { RelatedLists as Related } from "../lib/related";
 import type { EntitySlug } from "../lib/types";
 
@@ -22,10 +22,12 @@ export default function RelatedLists({
   entity,
   related,
   onOpen,
+  onRetry,
 }: {
   entity: EntitySlug;
   related: Related;
   onOpen: (entity: EntitySlug, id: string) => void;
+  onRetry?: () => void;
 }) {
   const sections = relatedSections(entity, related);
   if (sections.length === 0) return null;
@@ -36,10 +38,23 @@ export default function RelatedLists({
           <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
             {section.title}
             <span className="ml-1.5 normal-case text-muted-foreground/80">
-              {section.rows.length}
+              {related.failed ? "" : section.total || section.rows.length}
             </span>
           </h3>
-          {section.rows.length === 0 ? (
+          {related.failed ? (
+            <p className="text-xs text-muted-foreground">
+              Could not load this list.{" "}
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="text-primary underline underline-offset-2"
+                >
+                  Retry
+                </button>
+              )}
+            </p>
+          ) : section.rows.length === 0 ? (
             <p className="text-xs text-muted-foreground">{section.empty}</p>
           ) : (
             <ul className="space-y-1">
@@ -60,6 +75,9 @@ export default function RelatedLists({
                 </li>
               ))}
             </ul>
+          )}
+          {!related.failed && showingLine(section) && (
+            <p className="mt-1.5 text-[10px] text-muted-foreground">{showingLine(section)}</p>
           )}
         </section>
       ))}

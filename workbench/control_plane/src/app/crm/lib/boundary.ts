@@ -18,6 +18,17 @@ export const BOUNDARY_COPY = {
   button: "Reload",
 } as const;
 
+/**
+ * What resets the boundary. A switch of view, of list or board, or of pipeline
+ * mounts a fresh subtree, so a failure on one does not stick to the next.
+ */
+export function boundaryKey(
+  view: { tab: string; layout: string },
+  pipelineId: string | null,
+): string {
+  return `${view.tab}:${view.layout}${pipelineId ? `:${pipelineId}` : ""}`;
+}
+
 /** The sentence for this error. A stale tab gets the "updated" words. */
 export function boundaryMessage(error: unknown): string {
   return isChunkLoadError(error) ? BOUNDARY_COPY.updated : BOUNDARY_COPY.failed;

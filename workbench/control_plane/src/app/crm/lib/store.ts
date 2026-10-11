@@ -25,7 +25,7 @@ import {
   type LeadLane,
 } from "./board";
 import { MIRROR_REFUSALS } from "./connect";
-import { NO_RELATED, type RelatedLists } from "./related";
+import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
 import { exportQuery, listQuery } from "./filters";
 import {
   applyPatches,
@@ -49,6 +49,9 @@ import type {
 } from "./types";
 
 type Rows = Record<string, unknown>[];
+
+/** The record whose related lists were asked for last. */
+let latestRelated = "";
 
 type CrmState = {
   lanes: BoardLane[];
@@ -365,23 +368,37 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   async loadRelated(entity, id) {
     // A company shows its contacts and deals. A contact shows its deals. Both
     // are the existing list routes with a filter, so a related row is the same
-    // row the list shows. A failed read leaves the section empty and says so
-    // nowhere else: the record itself loaded.
+    // row the list shows.
+    //
+    // The latest request wins. Open company A and then B fast, and A's slow
+    // answer must not overwrite B's lists.
+    const asked = `${entity}:${id}`;
+    latestRelated = asked;
     const page = (target: EntitySlug, query: Parameters<typeof api.listRecords>[1]) =>
-      api.listRecords(target, { page_size: 50, ...query }).then((r) => r.rows);
+      api.listRecords(target, { page_size: RELATED_PAGE, ...query });
     try {
+      let next: RelatedLists | null = null;
       if (entity === "organizations") {
         const [contacts, deals] = await Promise.all([
           page("contacts", { company_id: id }),
           page("deals", { company_id: id }),
         ]);
-        set({ related: { contacts, deals } });
+        next = {
+          ...NO_RELATED,
+          contacts: contacts.rows,
+          contactsTotal: contacts.total,
+          deals: deals.rows,
+          dealsTotal: deals.total,
+        };
       } else if (entity === "contacts") {
         const deals = await page("deals", { contact_id: id });
-        set({ related: { contacts: [], deals } });
+        next = { ...NO_RELATED, deals: deals.rows, dealsTotal: deals.total };
       }
+      if (next && latestRelated === asked) set({ related: next });
     } catch {
-      set({ related: NO_RELATED });
+      // A failed read says so, with a Retry. An empty section would read as
+      // "no contacts".
+      if (latestRelated === asked) set({ related: { ...NO_RELATED, failed: true } });
     }
   },
 

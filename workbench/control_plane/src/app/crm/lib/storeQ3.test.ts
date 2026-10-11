@@ -133,13 +133,37 @@ describe("the related lists", () => {
     expect(useCrmStore.getState().related.deals).toHaveLength(1);
     vi.mocked(api.listRecords).mockClear();
     await useCrmStore.getState().loadRecord("leads", "l1");
-    expect(useCrmStore.getState().related).toEqual({ contacts: [], deals: [] });
+    expect(useCrmStore.getState().related).toMatchObject({ contacts: [], deals: [], failed: false });
   });
 
-  it("leaves the lists empty and raises no banner when the read fails", async () => {
+  it("marks the lists failed and raises no banner when the read fails", async () => {
     vi.mocked(api.listRecords).mockRejectedValue(new Error("boom"));
     await useCrmStore.getState().loadRecord("organizations", "o1");
-    expect(useCrmStore.getState().related).toEqual({ contacts: [], deals: [] });
+    expect(useCrmStore.getState().related).toMatchObject({ contacts: [], deals: [], failed: true });
     expect(useCrmStore.getState().error).toBeNull();
+  });
+});
+
+describe("the related lists, hardened (review P2)", () => {
+  it("drops a slow answer for a record that is no longer the latest", async () => {
+    let release: (v: unknown) => void = () => {};
+    vi.mocked(api.listRecords).mockImplementationOnce(
+      (() => new Promise((r) => (release = r))) as never,
+    );
+    const first = useCrmStore.getState().loadRelated("contacts", "A");
+    vi.mocked(api.listRecords).mockResolvedValue({ rows: [{ id: "b1" }], total: 1 } as never);
+    await useCrmStore.getState().loadRelated("contacts", "B");
+    release({ rows: [{ id: "a1" }], total: 1 });
+    await first;
+    expect(useCrmStore.getState().related.deals.map((r) => r.id)).toEqual(["b1"]);
+  });
+
+  it("keeps the total, and marks a failed read", async () => {
+    vi.mocked(api.listRecords).mockResolvedValue({ rows: [{ id: "d1" }], total: 73 } as never);
+    await useCrmStore.getState().loadRelated("contacts", "c1");
+    expect(useCrmStore.getState().related).toMatchObject({ dealsTotal: 73, failed: false });
+    vi.mocked(api.listRecords).mockRejectedValue(new Error("boom"));
+    await useCrmStore.getState().loadRelated("contacts", "c1");
+    expect(useCrmStore.getState().related.failed).toBe(true);
   });
 });

@@ -18,15 +18,31 @@ export type RelatedLists = {
   contacts: Row[];
   /** Deals of an open company, or of an open contact. */
   deals: Row[];
+  /** The whole count behind each page. Zero until a read answers. */
+  contactsTotal: number;
+  dealsTotal: number;
+  /** The read failed. The section says so and offers a retry. */
+  failed: boolean;
 };
 
-export const NO_RELATED: RelatedLists = { contacts: [], deals: [] };
+/** Rows asked for in each related list. */
+export const RELATED_PAGE = 50;
+
+export const NO_RELATED: RelatedLists = {
+  contacts: [],
+  deals: [],
+  contactsTotal: 0,
+  dealsTotal: 0,
+  failed: false,
+};
 
 export type RelatedSection = {
   title: string;
   /** The collection a row opens in. */
   entity: EntitySlug;
   rows: Row[];
+  /** The whole count, which can pass the rows shown. */
+  total: number;
   empty: string;
   name: (row: Row) => string;
   detail: (row: Row) => string;
@@ -65,6 +81,7 @@ export function relatedSections(entity: EntitySlug, related: RelatedLists): Rela
         title: "Contacts",
         entity: "contacts",
         rows: related.contacts,
+        total: related.contactsTotal,
         empty: "No contacts at this company.",
         name: contactName,
         detail: contactDetail,
@@ -73,6 +90,7 @@ export function relatedSections(entity: EntitySlug, related: RelatedLists): Rela
         title: "Deals",
         entity: "deals",
         rows: related.deals,
+        total: related.dealsTotal,
         empty: "No deals with this company.",
         name: dealName,
         detail: dealDetail,
@@ -85,6 +103,7 @@ export function relatedSections(entity: EntitySlug, related: RelatedLists): Rela
         title: "Deals",
         entity: "deals",
         rows: related.deals,
+        total: related.dealsTotal,
         empty: "This contact is on no deal.",
         name: dealName,
         detail: dealDetail,
@@ -92,4 +111,11 @@ export function relatedSections(entity: EntitySlug, related: RelatedLists): Rela
     ];
   }
   return [];
+}
+
+/** "Showing 50 of 73" when the page is short of the whole, else null. */
+export function showingLine(section: Pick<RelatedSection, "rows" | "total">): string | null {
+  return section.total > section.rows.length
+    ? `Showing ${section.rows.length} of ${section.total}`
+    : null;
 }

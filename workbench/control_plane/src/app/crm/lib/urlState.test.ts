@@ -106,7 +106,7 @@ describe("serializeView", () => {
 
   it("trims the search box", () => {
     expect(serializeView({ ...DEFAULT_VIEW, q: "   " })).toBe("");
-    expect(serializeView({ ...DEFAULT_VIEW, q: " bosch " })).toBe("q=bosch");
+    expect(serializeView({ ...DEFAULT_VIEW, q: " bosch " })).toBe("layout=board&q=bosch");
   });
 });
 
@@ -222,11 +222,11 @@ describe("applySort", () => {
 
   it("puts the sort in the URL, so a sorted list is shareable", () => {
     const view = applySort({ ...DEFAULT_VIEW, tab: "deals" }, "amount");
-    expect(viewHref(view)).toBe("/crm?sort=amount");
+    expect(viewHref(view)).toBe("/crm?layout=board&sort=amount");
     expect(parseView(serializeView(view))).toEqual(view);
 
     const ascending = applySort(view, "amount");
-    expect(viewHref(ascending)).toBe("/crm?sort=amount&dir=asc");
+    expect(viewHref(ascending)).toBe("/crm?layout=board&sort=amount&dir=asc");
     expect(parseView(serializeView(ascending))).toEqual(ascending);
   });
 

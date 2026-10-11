@@ -102,6 +102,7 @@ import {
   type SheetParam,
 } from "./lib/urlState";
 import { invalidateCrmMode, useCrmMode, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import { boundaryKey } from "./lib/boundary";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -487,7 +488,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           {/* One boundary around the view. A throw ends on a sentence and a
               Reload button, and the rail stays. The key clears it when the
               member picks another view (CRM-Q3, spec section 18.6). */}
-          <CrmBoundary key={view.tab}>
+          <CrmBoundary key={boundaryKey(view, pipelineId)}>
           {boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
@@ -624,6 +625,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           }
           onOpenContact={(contactId) => go(openRecord(view, "contact", contactId))}
           related={store.related}
+          onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
           onOpenRelated={(entity, id) => go(openRecord(view, PARAM_FOR[entity], id))}
         />
       )}

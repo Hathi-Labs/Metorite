@@ -146,6 +146,7 @@ describe("the pipeline picker in the page", () => {
 
 describe("related lists", () => {
   const related = {
+    ...NO_RELATED,
     contacts: [{ id: "c1", first_name: "Anitha", last_name: "Kumar", title: "Buyer" }],
     deals: [{ id: "d1", name: "Bosch order", amount: 250000, currency: "INR", organization_name: "Bosch" }],
   };
@@ -372,7 +373,7 @@ describe("the error boundary", () => {
 
   it("wraps the CRM views in the page, keyed by view", () => {
     const page = read("../page.tsx");
-    expect(page).toMatch(/<CrmBoundary key=\{view\.tab\}>/);
+    expect(page).toMatch(/<CrmBoundary key=\{boundaryKey\(view, pipelineId\)\}>/);
     expect(page.indexOf("<CrmBoundary")).toBeLessThan(page.indexOf("<PipelineSettings"));
     expect(page.indexOf("<PipelineSettings")).toBeLessThan(page.indexOf("</CrmBoundary>"));
   });
@@ -401,5 +402,54 @@ describe("the shell jobs", () => {
     const page = read("../page.tsx");
     expect(page.match(/<ShellJob\s+id="new-lead"/g)).toHaveLength(2);
     expect(page).toContain("setCreating(\"leads\")");
+  });
+});
+
+describe("related lists, hardened (review P2)", () => {
+  it("says Showing 50 of N when the page is short of the whole", () => {
+    const related = {
+      ...NO_RELATED,
+      deals: Array.from({ length: 50 }, (_, i) => ({ id: `d${i}`, name: `D${i}` })),
+      dealsTotal: 73,
+    };
+    const html = renderToStaticMarkup(
+      createElement(RelatedLists, { entity: "contacts", related, onOpen: noop }),
+    );
+    expect(html).toContain("Showing 50 of 73");
+    const whole = { ...related, dealsTotal: 50 };
+    expect(
+      renderToStaticMarkup(createElement(RelatedLists, { entity: "contacts", related: whole, onOpen: noop })),
+    ).not.toContain("Showing");
+  });
+
+  it("offers a Retry on a failed read, not an empty section", () => {
+    const html = renderToStaticMarkup(
+      createElement(RelatedLists, {
+        entity: "organizations",
+        related: { ...NO_RELATED, failed: true },
+        onOpen: noop,
+        onRetry: noop,
+      }),
+    );
+    expect(html).toContain("Could not load this list.");
+    expect(html).toContain("Retry");
+    expect(html).not.toContain("No contacts at this company.");
+  });
+
+  it("keys the boundary on view, layout and pipeline", async () => {
+    const { boundaryKey } = await import("../lib/boundary");
+    expect(boundaryKey({ tab: "deals", layout: "board" }, null)).toBe("deals:board");
+    expect(boundaryKey({ tab: "deals", layout: "list" }, "p2")).toBe("deals:list:p2");
+    expect(read("../page.tsx")).toMatch(/<CrmBoundary key=\{boundaryKey\(view, pipelineId\)\}>/);
+  });
+
+  it("opens the list for an old link that carries a filter", async () => {
+    const { parseView } = await import("../lib/urlState");
+    for (const q of ["?tab=deals&status=s1", "?tab=deals&sort=amount", "?tab=deals&q=bosch"]) {
+      expect(parseView(q).layout).toBe("list");
+    }
+    expect(parseView("?tab=deals&status=s1&layout=board").layout).toBe("board");
+    expect(parseView("?tab=pipeline&q=x").layout).toBe("board");
+    expect(parseView("?tab=deals").layout).toBe("board");
   });
 });

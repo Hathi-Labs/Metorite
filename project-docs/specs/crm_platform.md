@@ -1175,6 +1175,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 - The rail reads Leads, Contacts, Companies, Deals, Reports and CRM settings. It has no Activities row, because no Activities view exists yet.
 - `?tab=pipeline` and `?tab=board` open Deals as a board. `?tab=settings` opens CRM settings. Deals opens as a board, and `?layout=list` shows the list.
 - Deals and Leads have a list or board switch in the title bar. The Leads board has one column for each Lead Status. A card does not drag in Mirror mode or with an `ext_source`.
+- In Mirror mode no card drags, including a native card (§18.4).
 - The pipeline picker shows for two pipelines or more. It needs `GET /crm/pipelines` from CRM-Q2. A 404 gives one implicit pipeline and no picker. The browser keeps the last choice.
 - The record page shows related lists. The list routes take `?company_id=` for contacts and deals, and `?contact_id=` for deals. A filter on another entity gives 422. Fence: `tests/unit/test_crm_related_r8.py`.
 - CRM settings is one page of cards in this order: Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health. Fields and Sync health say "Coming soon" until CRM-Q4 and CRM-Q9.

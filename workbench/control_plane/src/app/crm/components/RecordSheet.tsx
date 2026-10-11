@@ -56,6 +56,7 @@ export default function RecordSheet({
   onOpenContact,
   related = NO_RELATED,
   onOpenRelated,
+  onRetryRelated,
 }: {
   entity: EntitySlug;
   record: Row | null;
@@ -81,6 +82,7 @@ export default function RecordSheet({
   related?: RelatedLists;
   /** A related row opens that record. */
   onOpenRelated?: (entity: EntitySlug, id: string) => void;
+  onRetryRelated?: () => void;
 }) {
   const { isMobile } = useViewMode();
 
@@ -159,6 +161,7 @@ export default function RecordSheet({
               onOpenContact={onOpenContact}
               related={related}
               onOpenRelated={onOpenRelated}
+              onRetryRelated={onRetryRelated}
             />
           </div>
         </div>

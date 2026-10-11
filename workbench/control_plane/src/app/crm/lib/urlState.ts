@@ -141,7 +141,7 @@ export function parseView(search: string | URLSearchParams): CrmView {
   const tab: CrmView["tab"] = legacy ? legacy.tab : isTab(raw) ? raw : "deals";
   return {
     tab,
-    layout: parseLayout(tab, legacy?.layout, params.get("layout")),
+    layout: parseLayout(tab, legacy?.layout, params.get("layout"), params),
     pipelineId: params.get("pipeline") || null,
     record: parseRecord(params),
     q: params.get("q") ?? "",
@@ -161,10 +161,15 @@ function parseLayout(
   tab: CrmView["tab"],
   legacy: CrmLayout | undefined,
   raw: string | null,
+  params: URLSearchParams,
 ): CrmLayout {
   if (!hasBoard(tab)) return "list";
   if (raw === "board" || raw === "list") return raw;
-  return legacy ?? defaultLayout(tab);
+  if (legacy) return legacy;
+  // An old list link such as `?tab=deals&status=X` carries a filter. The board
+  // would drop it without a word, so a link with one opens the list.
+  if (["status", "sort", "q"].some((key) => params.get(key))) return "list";
+  return defaultLayout(tab);
 }
 
 export function hasBoard(tab: CrmView["tab"]): tab is "deals" | "leads" {
@@ -201,7 +206,13 @@ export function parseRecord(params: URLSearchParams): OpenRecord | null {
 export function serializeView(view: CrmView): string {
   const params = new URLSearchParams();
   if (view.tab !== "deals") params.set("tab", view.tab);
-  if (hasBoard(view.tab) && view.layout !== defaultLayout(view.tab)) {
+  // A board that carries a filter says so, or the link would reopen as a list
+  // (parseLayout): the filter is what the reader sent.
+  const filtered = Boolean(view.q.trim() || view.statusId || view.sort);
+  if (
+    hasBoard(view.tab) &&
+    (view.layout !== defaultLayout(view.tab) || (filtered && view.layout === "board"))
+  ) {
     params.set("layout", view.layout);
   }
   if (view.pipelineId && view.tab === "deals") params.set("pipeline", view.pipelineId);

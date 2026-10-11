@@ -116,6 +116,7 @@ export default function FieldsPanel({
   onOpenContact,
   related = NO_RELATED,
   onOpenRelated,
+  onRetryRelated,
 }: {
   entity: EntitySlug;
   record: Row;
@@ -131,6 +132,7 @@ export default function FieldsPanel({
   /** The related lists of a company or a contact (CRM-Q3). */
   related?: Related;
   onOpenRelated?: (entity: EntitySlug, id: string) => void;
+  onRetryRelated?: () => void;
 }) {
   const status =
     statuses.find((s) => s.id === record.status_id) ?? null;
@@ -239,7 +241,12 @@ export default function FieldsPanel({
       </dl>
 
       {onOpenRelated && (
-        <RelatedLists entity={entity} related={related} onOpen={onOpenRelated} />
+        <RelatedLists
+          entity={entity}
+          related={related}
+          onOpen={onOpenRelated}
+          onRetry={onRetryRelated}
+        />
       )}
 
       {custom.length > 0 && (
