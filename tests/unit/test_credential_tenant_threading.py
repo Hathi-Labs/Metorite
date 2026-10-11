@@ -199,7 +199,10 @@ def _total(sites: dict[str, list[str]]) -> int:
 #: credential or model-config call site appearing while slice 5 is in flight.
 #: Measured 2026-08-19 on this branch's parent (50e203c0) and unchanged by
 #: round 1, which is the point: 38 and 10 describe the surface, not the debt.
-GET_KEY_STORE_LINES_CEILING = 38
+#: 39 since 2026-10-11 (WS-53 CRM-Z2): ``connections/store.py`` seals the
+#: connection blob with the deployment master key. That call takes no
+#: ``organization_id``, so it is not a tenant credential fetch. One site only.
+GET_KEY_STORE_LINES_CEILING = 39
 BLOB_LINES_CEILING = 10
 
 #: The real debt, measured with :func:`untenanted_sites` on 50e203c0:

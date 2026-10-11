@@ -27,7 +27,7 @@ from typing import Any
 
 from acb_common import get_logger, get_settings
 from acb_common.env_guard import EnvWriteRefused, check_env_write, is_platform_env
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken  # noqa: F401 (re-exported)
 
 _log = get_logger("key_store")
 

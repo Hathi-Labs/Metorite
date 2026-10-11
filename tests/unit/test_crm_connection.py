@@ -166,9 +166,16 @@ class FakeRegistry:
         self.adopted.append((org, connection_id))
 
 
+class _LockOnly:
+    """The fake store answers every query. Only the advisory lock reaches here."""
+
+    async def execute(self, statement: Any, params: Any = None) -> None:
+        assert "pg_advisory_xact_lock" in str(statement), str(statement)
+
+
 @asynccontextmanager
 async def _no_session(*_a: Any, **_k: Any):
-    yield object()
+    yield _LockOnly()
 
 
 def _credential(*, refresh: str = S_REFRESH, access: str = S_ACCESS,
@@ -590,10 +597,21 @@ async def test_a_throttle_does_not_mark_the_connection(
     assert registry.rows[ORG_A]["status"] == "connected"
 
 
-async def test_a_blob_that_does_not_open_is_none_or_undecryptable_with_no_cause() -> None:
+async def test_a_blob_that_does_not_open_is_none_or_undecryptable_with_no_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """CRM-Z2 review P1. The plain read gives ``None``, so a disconnect and a
-    reconnect go on. The locked read raises, so the shared token can stop."""
+    reconnect go on. The locked read raises, so the shared token can stop.
+
+    A key IS set: with none, the key store raises RuntimeError, and that must
+    not count as a blob that does not open (re-review P1)."""
     from types import SimpleNamespace
+
+    import acb_llm.key_store as key_store
+
+    monkeypatch.setattr(get_settings(), "acb_master_key", "z2-hermetic-master-key",
+                        raising=False)
+    monkeypatch.setattr(key_store, "_store", None)
 
     class _OneRow:
         async def execute(self, *_a: Any, **_k: Any) -> Any:
@@ -607,6 +625,14 @@ async def test_a_blob_that_does_not_open_is_none_or_undecryptable_with_no_cause(
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "bm90" not in str(caught.value)
+    assert str(caught.value) == "InvalidToken"
+
+    # With no key at all, the fault is loud and is not a dead blob.
+    monkeypatch.setattr(key_store, "_store", None)
+    monkeypatch.setattr(get_settings(), "acb_master_key", "", raising=False)
+    monkeypatch.delenv("ACB_MASTER_KEY", raising=False)
+    with pytest.raises(RuntimeError):
+        await store.load_credential(db, ORG_A, "zoho", "crm")
 
 
 def test_the_last_error_keeps_a_code_and_never_free_text() -> None:

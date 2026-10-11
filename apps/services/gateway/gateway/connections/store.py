@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_common import get_logger
-from acb_llm.key_store import get_key_store
+from acb_llm.key_store import InvalidToken, get_key_store
 from sqlalchemy import text
 
 from gateway.crm_sources.base import SourceCredential
@@ -181,6 +181,11 @@ def _key(
 # ── The blob ────────────────────────────────────────────────────────────────
 
 
+def _keys() -> Any:
+    """The one key seam (``ACB_MASTER_KEY``). The blob has no tenant key."""
+    return get_key_store()
+
+
 def _seal(credential: SourceCredential) -> str:
     plain = json.dumps(
         {
@@ -192,16 +197,23 @@ def _seal(credential: SourceCredential) -> str:
         },
         separators=(",", ":"),
     )
-    return get_key_store().encrypt(plain)
+    return _keys().encrypt(plain)
 
 
 def _unseal(blob: str) -> SourceCredential:
     """Open the blob, or raise :class:`Undecryptable` with no cause attached.
 
     ``from None`` drops the cause, so no trace can carry the blob or a token.
+
+    ⚠️ The key store is fetched OUTSIDE the ``try``. A missing or wrong
+    ``ACB_MASTER_KEY`` setting is an operator fault that a restart repairs. It
+    must fail loud and write nothing. If it became ``Undecryptable``, every
+    org would be marked ``needs_reconnect`` for good (CRM-Z2 re-review P1).
+    Only a blob that this key cannot open is ``Undecryptable``.
     """
+    keys = _keys()
     try:
-        data = json.loads(get_key_store().decrypt(blob))
+        data = json.loads(keys.decrypt(blob))
         return SourceCredential(
             access_token=str(data["access_token"]),
             refresh_token=str(data["refresh_token"]),
@@ -211,7 +223,8 @@ def _unseal(blob: str) -> SourceCredential:
                 str(k): str(v) for k, v in (data.get("provider_meta") or {}).items()
             },
         )
-    except Exception as exc:  # InvalidToken, binascii.Error, ValueError, KeyError
+    # ValueError covers binascii.Error, UnicodeDecodeError and a bad JSON.
+    except (InvalidToken, ValueError, KeyError, TypeError) as exc:
         raise Undecryptable(type(exc).__name__) from None
 
 

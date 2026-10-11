@@ -414,6 +414,105 @@ async def test_a_failed_save_revokes_nothing(ns, app_engine, monkeypatch) -> Non
     assert after.credentials_encrypted == before.credentials_encrypted, "the save rolled back"
 
 
+class _NewTokenEachTime(Zoho):
+    """Zoho A, with a new refresh token on each code exchange."""
+
+    def __init__(self) -> None:
+        import httpx
+
+        super().__init__("A", "accounts.zoho.in", "https://www.zohoapis.in")
+        self.issued = 0
+        self.fake.transport = httpx.MockTransport(self._handle)
+
+    def _handle(self, request: Any) -> Any:
+        import httpx
+
+        self.fake.requests.append(request)
+        if request.url.path.endswith("/token/revoke"):
+            return httpx.Response(200, json={"status": "success"})
+        self.issued += 1
+        return httpx.Response(200, json={
+            "access_token": f"ACCESS-R{self.issued}",
+            "refresh_token": f"REFRESH-R{self.issued}",
+            "expires_in": 3600, "api_domain": "https://www.zohoapis.in",
+        })
+
+
+async def test_two_first_connects_at_one_time_revoke_the_replaced_token(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """CRM-Z2 re-review P2. With no row yet, ``FOR UPDATE`` locks nothing. The
+    advisory lock makes the second callback wait, then read the first token."""
+    import asyncio
+    from urllib.parse import parse_qs, urlsplit
+
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.connections import store
+    from gateway.routes import crm as crm_package
+
+    _assert_non_priv(app_engine)
+    zoho = _NewTokenEachTime()
+    ns.active["zoho"] = zoho
+    user = _admin(ADMIN_A, ns.org_a)
+    real_save = store.save_credential
+
+    async def _slow_save(*a: Any, **k: Any) -> Any:
+        await asyncio.sleep(0.3)  # both callbacks are past the read now
+        return await real_save(*a, **k)
+
+    async def _caller() -> Any:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(crm_package.router)
+    app.dependency_overrides[get_current_user] = _caller
+    scope = clear_tenant()
+    try:
+        async with tenant_engine_scope(_app_dsn(ns)), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://crm.test",
+            follow_redirects=False,
+        ) as client:
+            states = []
+            for _ in range(2):
+                started = await client.post("/crm/connection/zoho/start")
+                states.append(parse_qs(urlsplit(started.json()["url"]).query)["state"][0])
+            monkeypatch.setattr(store, "save_credential", _slow_save)
+            done = await asyncio.gather(*(
+                client.get("/crm/oauth/zoho/callback", params=zoho.params(s, "in"))
+                for s in states))
+    finally:
+        release_tenant(scope)
+    assert [r.status_code for r in done] == [302, 302], [r.text for r in done]
+    revokes = [r for r in zoho.fake.requests if r.url.path.endswith("/token/revoke")]
+    assert len(revokes) == 1, "the token that the second save replaced is revoked"
+    (row,) = _raw(ns, ns.org_a)
+    assert row.status == "connected"
+
+
+async def test_a_missing_master_key_fails_loud_and_marks_nothing(ns, app_engine, monkeypatch) -> None:  # noqa: F811
+    """CRM-Z2 re-review P1. An operator fault is not a dead token."""
+    from gateway.connections import store
+    from gateway.routes.crm import connection as conn
+
+    _assert_non_priv(app_engine)
+    assert (await _connect(ns, ns.org_a, ADMIN_A, ZOHO_A, "in")).status_code == 302
+    await _age_the_token(ns, ns.org_a)
+
+    def _no_key() -> Any:
+        raise RuntimeError("ACB_MASTER_KEY is not set")
+
+    monkeypatch.setattr(store, "get_key_store", _no_key)
+    ZOHO_A.fake.requests.clear()
+    async with tenant_engine_scope(_app_dsn(ns)):
+        with pytest.raises(RuntimeError):
+            await conn.fresh_zoho_credential(ns.org_a, transport=ZOHO_A.fake.transport)
+    (row,) = _raw(ns, ns.org_a)
+    assert (row.status, row.last_error) == ("connected", None)
+    assert ZOHO_A.fake.requests == []
+
+
 async def test_a_patch_that_read_a_stale_mode_writes_nothing(ns, app_engine, monkeypatch) -> None:  # noqa: F811
     """CRM-Z2 review P2: the callback set 'mirror' after the PATCH read the mode."""
     from gateway.routes.crm import settings as crm_settings

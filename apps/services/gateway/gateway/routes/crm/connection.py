@@ -113,6 +113,9 @@ ZOHO_READ_SCOPES: tuple[str, ...] = (
 
 _MODE_SQL = "SELECT mode FROM crm_settings WHERE organization_id = CAST(:org AS uuid)"
 
+#: One callback at a time for each org and provider, until the commit.
+_CONNECT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
 #: Move the org to Mirror and point it at its connection. The WHERE keeps a
 #: Native org Native, also when a change of mode lands between the read and
 #: this write. No row back means the guard refused.
@@ -223,9 +226,16 @@ def _refuse_native(mode: str | None) -> None:
 async def _old_credential_locked(db: Any, org: str) -> SourceCredential | None:
     """The stored credential, with ``FOR UPDATE`` on its row, or ``None``.
 
+    The transaction first takes an advisory lock on the org and the provider.
+    ``FOR UPDATE`` needs a row, so without the advisory lock, two first connects
+    at one time each read no old token. The second save then replaces the
+    first token, and nobody revokes it (CRM-Z2 re-review P2). The lock ends
+    with the transaction.
+
     A blob that does not open counts as no old token. A new consent is the
     repair for it, so it must not fail here (CRM-Z2 review P1).
     """
+    await db.execute(text(_CONNECT_LOCK_SQL), {"key": f"crm.connect:{org}:{PROVIDER}"})
     row = await store.get(db, org, PROVIDER, OWNING_APP)
     if row is None:
         return None
