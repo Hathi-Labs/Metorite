@@ -221,6 +221,10 @@ const COLOR_EXCEPTIONS: Record<string, string> = {
   "app/settings/appearance/page.tsx":
     "the theme picker: accent presets and swatches, i.e. colour as this page's DATA",
   "app/whatsapp/connect/page.tsx": "Meta brand blue on a 'Connect with Facebook' button",
+  "components/MetoriteMark.tsx":
+    "the Metorite comet's own gradient, copied once from brand/metorite-logo.svg and " +
+    "its -dark twin. A brand mark keeps its colours under every accent, or it stops " +
+    "being the mark",
   "app/manifest.ts":
     "the web manifest's splash and frame colours: the browser reads this JSON " +
     "outside the page, where no CSS token exists, so it can only take a literal",
@@ -732,7 +736,6 @@ describe("checkboxes go through the Checkbox primitive", () => {
     "app/build/apps/[slug]/edit/page.tsx": 1,
     "app/build/apps/[slug]/page.tsx": 1,
     "app/calendar/components/CalendarSettings.tsx": 2,
-    "app/crm/components/PipelineSettings.tsx": 2,
     "app/email/components/automation/BulkUnsubscribeView.tsx": 3,
     "app/email/components/automation/ai-settings/RulesTab.tsx": 2,
     "app/email/components/automation/ai-settings/SettingsTab.tsx": 1,
@@ -859,7 +862,6 @@ describe("selects and file pickers go through the primitives", () => {
    */
   const SELECT_DEBT: Record<string, number> = {
     "app/artifacts/page.tsx": 3,
-    "app/crm/components/PipelineSettings.tsx": 2,
     "app/email/components/SignatureEditor.tsx": 1,
     "app/email/components/TaskCaptureModal.tsx": 2,
     "app/email/components/automation/DigestSettingsDialog.tsx": 2,
@@ -1179,6 +1181,13 @@ describe("the headless substrate is wrapped, not imported", () => {
     // panel and buttons, and no portalled picker inside.
     ...MY_TASKS_ALERT_LAYER,
     "app/tasks/components/TaskSettingsModal.tsx",
+    // CRM-U2 (WS-53, 2026-10-11) — the five CRM overlays. The record sheet
+    // is a `Modal` drawer, and the lost-reason delete is a `ConfirmDialog`.
+    "app/crm/components/ConvertModal.tsx",
+    "app/crm/components/MoveModal.tsx",
+    "app/crm/components/PipelineSettings.tsx",
+    "app/crm/components/QuickCreateModal.tsx",
+    "app/crm/components/RecordSheet.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {
@@ -1196,7 +1205,10 @@ describe("the headless substrate is wrapped, not imported", () => {
     // Guards the assertion above the two ways it can go vacuous: a renamed
     // file (read() throws, so this is the readable failure) and a dialog that
     // quietly stopped rendering the primitive while keeping a clean file.
-    const notWired = CONVERTED.filter((f) => !/from "@\/components\/ui\/Modal"/.test(read(f)));
+    // `ConfirmDialog` counts: it is a `Modal` with fixed words (CRM-U2).
+    const notWired = CONVERTED.filter(
+      (f) => !/from "@\/components\/ui\/(?:Modal|ConfirmDialog)"/.test(read(f)),
+    );
     expect(
       notWired,
       "These no longer import `Modal`, so the scan above fences nothing for " +

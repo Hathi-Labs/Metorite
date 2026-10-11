@@ -8,7 +8,8 @@
  * parent already refuses a non-admin before this renders.
  *
  * Today that is one thing: the logo that replaces our mark in the top-left of
- * every member's shell, with "powered by Metorite" beneath it. The page is
+ * every member's shell, alone since 2026-10-11 (our comet signs the right end
+ * of the shell bar instead, owner decision). The page is
  * scoped to the org, so it is admin-gated — one member changing what the whole
  * company sees is exactly the kind of write that has an admin gate on it.
  *
@@ -23,11 +24,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
 import Button from "@/components/ui/Button";
-import { BrandMark, invalidateOrgBranding } from "@/components/OrgBrandLockup";
+import { BAR_LOCKUP, BrandMark, invalidateOrgBranding } from "@/components/OrgBrandLockup";
 import { LOGO_PICK_ACCEPT, type Source, decodeFile } from "@/lib/logoCanvas";
 import {
   LOGO_RULES,
-  POWERED_BY,
   type OrgBranding,
   formatBytes,
   precheckLogoFile,
@@ -195,6 +195,8 @@ export default function BrandingTab() {
   }
 
   const logo = branding?.logo ?? null;
+  // The same name the bar shows beside our mark when there is no logo (D51).
+  const orgName = access.organization?.display_name?.trim() || access.organization?.slug?.trim() || "";
 
   return (
     <div className="flex h-full flex-col">
@@ -211,24 +213,24 @@ export default function BrandingTab() {
         <section className="max-w-2xl rounded-xl border border-border p-4 sm:p-5">
           <h2 className="text-sm font-semibold text-foreground">Logo</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Every member of your organization sees it, above “{POWERED_BY}”:
-            at the top of the sidebar on a computer, and at the top of the menu
-            on a phone.
+            Every member of your organization sees it at the top left of the
+            app on a computer, and at the top of the menu on a phone.
           </p>
 
           {/* Both colour modes, side by side, each on the sidebar's own
-              background, because that is where the logo lives. Width-matched
-              to the sidebar's lockup slot, so the preview clips where the
-              real thing clips. The shell's own component draws both. */}
+              background. The shell bar's own lockup (`BAR_LOCKUP`), in a box
+              as wide as its 176px slot, so the preview clips where the real
+              thing clips. The no-logo case shows the organization's name, as
+              the bar does. */}
           <div className="mt-4 flex flex-wrap items-start gap-4">
             {(["light", "dark"] as const).map((mode) => (
               <div key={mode} className="flex flex-col gap-1">
                 <span className="text-xs text-muted-foreground">{mode === "light" ? "Light mode" : "Dark mode"}</span>
-                <div className="flex h-20 w-[184px] items-center rounded-lg border px-4" style={modeVars(mode)}>
+                <div className="flex h-20 w-[204px] items-center rounded-lg border px-3" style={modeVars(mode)}>
                   {loading ? (
                     <span className="text-xs text-muted-foreground">Loading…</span>
                   ) : (
-                    <BrandMark branding={branding} fallbackCaption="No logo uploaded" mode={mode} />
+                    <BrandMark branding={branding} fallbackCaption="No logo uploaded" orgName={orgName} mode={mode} {...BAR_LOCKUP} />
                   )}
                 </div>
               </div>

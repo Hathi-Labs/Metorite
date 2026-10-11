@@ -5164,6 +5164,30 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/crm_platform.md` §12 and §13.5 CRM-Z0 · `work_plan.md` WS-53
 - **Added:** 2026-10-11 · branch `crm-z0`
 
+### H-298 · Nine directory names are email addresses, and two paths still write more · [AGENT]
+- **Check:** `SELECT count(*) FROM people WHERE name LIKE '%@%'` on production
+  → above 0 means this is open. 9 of 38 on 2026-10-10.
+- **Why:** the owner saw their own address where a name belongs (Projects,
+  "Who has the hours"). The Projects app and its report email no longer
+  print an address as a name (`src/lib/personName.ts`, `PersonName`, fenced
+  by a sweep of `src/app/projects`), but the rows are still wrong. Readers
+  outside that sweep still print them: the server's conflict text
+  (`analytics_conflicts._label`), the chat tools and the People app.
+  Three causes, all in the code:
+  - The founder bootstrap (`acb_auth/access.py`, `_BOOTSTRAP_OWNER_SQL`)
+    writes the address into `app_user.display_name`, which is `NOT NULL`.
+  - The directory trigger (migration 206, restated in 209) copies any
+    non-empty `display_name` into `people.name`, an address included.
+  - The trigger only inserts (`ON CONFLICT DO NOTHING`). So a later rename
+    through `PATCH /admin/members/{email}` never reaches `people.name`.
+- **Do:** one migration. The trigger function treats a `display_name` that
+  holds an "@" as empty, so it falls back to the address's left half, and it
+  updates `people.name` while that row's name is still the member-derived one.
+  Verify it on a real database (R8). Then decide the nine rows: a member or an
+  admin sets the real name in People. Do not invent names.
+- **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
+- **Added:** 2026-10-10 · the person names session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

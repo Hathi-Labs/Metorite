@@ -5,7 +5,8 @@
 > `origin/main` `7176fdf56` (#837). The owner approved the plan and told the
 > agent to build it. D95 is decided (§16).
 
-> **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-0, the
+> **Built:** CRM-U1, the app bar and the rail of views (2026-10-11). CRM-U2, the
+> dialogs on `Modal` and the `ui/` controls (2026-10-11). CRM-0, the
 > kill switch, default OFF (2026-10-11). CRM-Z1, the `crm_sources` seam and the
 > Zoho read adapter (2026-10-11). CRM-Z0, the Zoho facts (§5.2, §7.2) and the
 > OAuth runbook `docs/ZOHO_OAUTH_SETUP.md` (2026-10-11). CRM-T1, the tenant port
@@ -856,7 +857,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | Id | What | Gate | Done when |
 |---|---|---|---|
 | **CRM-U1** ✅ built 2026-10-11 | `AppTopBar` and the rail of views. Tabs leave | 🟢 AGENT-SAFE | `app-title-bar.spec.ts` covers `/crm`. `railRows.test.ts` lists the CRM rail. Visual review passes |
-| **CRM-U2** | `Modal`, `ConfirmDialog` and the `ui/` controls replace the hand-rolled ones | 🟢 AGENT-SAFE | The 5 dialog files join `CONVERTED` in `conformance.test.ts`. The `PipelineSettings` rows in `SELECT_DEBT` and `CHECKBOX_DEBT` are deleted, not set to 0. `grep "fixed inset-0" src/app/crm` finds nothing |
+| **CRM-U2** ✅ built 2026-10-11 | `Modal`, `ConfirmDialog` and the `ui/` controls replace the hand-rolled ones | 🟢 AGENT-SAFE | The 5 dialog files join `CONVERTED` in `conformance.test.ts`. The `PipelineSettings` rows in `SELECT_DEBT` and `CHECKBOX_DEBT` are deleted, not set to 0. `grep "fixed inset-0" src/app/crm` finds nothing |
 | **CRM-U3** | Stage colour through `statusAccent`, categories through `categoricalAccent`, drops through `boardDrop.ts` | 🟢 AGENT-SAFE | `TONES` is gone. The `SCOPE` regex in `sharedTaskUi.test.ts:479` includes `app/crm/`, the comment at lines 467-477 is deleted, and the suite passes |
 | **CRM-U4** | Reads through `useCachedResource`. Skeletons and `EmptyState` | 🟢 AGENT-SAFE | `dataCache.test.ts` patterns hold. No "Loading…" text remains |
 | **CRM-U5** | The first-open choice (§8.3) | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |

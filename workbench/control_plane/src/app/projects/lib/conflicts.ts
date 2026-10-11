@@ -25,6 +25,7 @@ import type { AccentHue } from "@/lib/statusAccent";
 import { asList } from "./analyticsRead";
 import type { ConflictKind, ConflictRow, ConflictsReport } from "./api";
 import { shortDate } from "./outlook";
+import { personDisplayName } from "@/lib/personName";
 
 /** The seven kinds, in the order the server sorts them (§13.5 table). */
 export const CONFLICT_KINDS: readonly ConflictKind[] = [
@@ -80,8 +81,8 @@ export function severityHue(row: ConflictRow): AccentHue {
 /** The people a row names, as a person reads them. */
 export function rowPeople(row: ConflictRow): string | null {
   const names = asList<{ email: string; name: string | null }>(row.people)
-    .filter((p) => p && typeof p === "object" && (p.name || p.email))
-    .map((p) => p.name || p.email);
+    .filter((p) => p && typeof p === "object" && Boolean(p.email || p.name))
+    .map((p) => (p.email ? personDisplayName(p.name, p.email) : (p.name ?? "")));
   return names.length > 0 ? names.join(", ") : null;
 }
 

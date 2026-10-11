@@ -23,6 +23,7 @@
  * one that starts bouncing.
  */
 import { shortDate } from "@/app/projects/lib/outlook";
+import { personDisplayName } from "@/lib/personName";
 import { CAPACITY_HR_HINT, CONFLICTS_HR_HINT, REBALANCE_HR_HINT } from "@/app/projects/lib/hrHints";
 import { asOfDay, periodFree, sectionName } from "@/app/projects/lib/reportBuilder";
 import { clearNote } from "@/app/projects/lib/sectionEmpty";
@@ -598,7 +599,7 @@ export function reportLayout(
         const who =
           p.kind === "unassigned" || !p.assignee
             ? "Unassigned"
-            : p.name || p.assignee;
+            : personDisplayName(p.name, p.assignee);
         // ⚠️ The spare figure is the server's, verbatim, and it is printed
         // ONLY when the server said the hours mean something. A missing figure
         // is "no hours", never "0h" — zero reads as free.
@@ -635,7 +636,7 @@ export function reportLayout(
     // week when the row carries them, else overdue of open tasks. A row
     // without its HR half has no status, so the line prints none.
     const items = pulse.rows.slice(0, maxRows).map((r) => {
-      const who = r.name || r.assignee;
+      const who = r.assignee ? personDisplayName(r.name, r.assignee) : (r.name ?? "");
       const status =
         typeof r.status === "string"
           ? ` · ${PULSE_STATUS_WORDS[r.status] ?? r.status}`
@@ -772,7 +773,7 @@ export function reportLayout(
             .filter(Boolean)
             .join(", ");
           return (
-            `${t.title} — held by ${t.holder?.name || t.holder?.email || "somebody"}` +
+            `${t.title} — held by ${t.holder?.email ? personDisplayName(t.holder.name, t.holder.email) : t.holder?.name || "somebody"}` +
             `, due ${t.due_on ? day(t.due_on.slice(0, 10)) : "with no date"}` +
             `: helpers ${helpers || "none"}`
           );
