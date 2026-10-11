@@ -122,6 +122,38 @@ def test_every_route_that_needs_agents_manage_to_write_is_gated() -> None:
     assert not bare, bare
 
 
+#: Every write route on the agent router that is NOT a registry writer, with
+#: why. Anything else that writes must carry the operator gate, whatever
+#: permission it names. A new writer fails here until a reviewer places it.
+_NOT_REGISTRY_WRITERS = {
+    # Run, stream, cancel and answer a running agent. No repo, no path.
+    ("POST", "/agent/run"), ("POST", "/agent/run/async"),
+    ("POST", "/agent/run/stream"), ("POST", "/agent/run/{thread_id}/cancel"),
+    ("POST", "/agent/respond-input"),
+    # The self-mutation review queue. require_internal_auth, a fixed repo.
+    ("POST", "/agent/mutations/pending/{commit_id}/approve"),
+    ("POST", "/agent/mutations/pending/{commit_id}/reject"),
+    ("POST", "/agent/mutations/pending/{commit_id}/remutate"),
+    ("DELETE", "/agent/mutations/pending/{commit_id}"),
+    ("DELETE", "/agent/mutations/audit/{run_id}"),
+    # An inbound event that starts a run of a registered agent.
+    ("POST", "/agent/webhook/{source}"),
+}
+
+
+def test_every_other_writer_is_gated_or_named_here() -> None:
+    """Closes the gap of a writer gated by another permission name."""
+    bare = []
+    for route in agent_routes.router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods & {"POST", "PUT", "PATCH", "DELETE"}:
+            if (method, route.path) in _NOT_REGISTRY_WRITERS or _gated(route):
+                continue
+            bare.append(f"{method} {route.path}")
+    assert not bare, bare
+
+
 def test_the_user_comes_from_the_server_session() -> None:
     sig = agent_routes._require_registry_operator.__defaults__ or ()
     assert any(getattr(d, "dependency", None) is get_current_user for d in sig)
