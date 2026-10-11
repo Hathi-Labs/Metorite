@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/whatsapp_assistant_channel.md`` §5.1 and §7.
 
-This module is the ONE reader of the six settings below. The webhook branch
+This module is the ONE reader of the eight settings below. The webhook branch
 of WAC-2 and the run of WAC-3 ask it, and never read the settings themselves.
 
 * ``WHATSAPP_ASSISTANT_ENABLED`` — the kill switch, default OFF.
@@ -20,6 +20,10 @@ of WAC-2 and the run of WAC-3 ask it, and never read the settings themselves.
   except :func:`bot_credentials`, whose one caller builds the provider.
 * ``WHATSAPP_ASSISTANT_NATIVE_UI`` — the WhatsApp run profile and its native
   UI (WAC-10a), default OFF.
+* ``WHATSAPP_ASSISTANT_WRITES`` — a confirmed write from WhatsApp (WAC-4),
+  default OFF. It works only with ``WHATSAPP_ASSISTANT_NATIVE_UI`` on, and
+  only for an org of ``WHATSAPP_ASSISTANT_WRITES_ORGS`` (comma list, empty
+  allows none, no ``*``).
 
 The organization always comes from the caller, who takes it from
 ``current_tenant()``. It never comes from request input (R5, R11).
@@ -50,6 +54,22 @@ def native_ui_enabled() -> bool:
     and never replaces it: with the channel off, no run starts at all.
     """
     return get_settings().whatsapp_assistant_native_ui is True
+
+
+def writes_enabled(organization_id: str | None) -> bool:
+    """True when a bot run in *organization_id* may park a write (WAC-4).
+
+    ``WHATSAPP_ASSISTANT_WRITES``, default OFF, and the org must be on
+    ``WHATSAPP_ASSISTANT_WRITES_ORGS`` (§14.6: the switch is per org). It needs
+    the profile as well, because the Confirm and Cancel buttons go out
+    through the profile's outbox. The org comes from the link row.
+    """
+    if not organization_id or not native_ui_enabled():
+        return False
+    if get_settings().whatsapp_assistant_writes is not True:
+        return False
+    orgs = _parse_orgs(str(get_settings().whatsapp_assistant_writes_orgs or ""))
+    return str(organization_id).strip().lower() in orgs
 
 
 @functools.lru_cache(maxsize=16)
