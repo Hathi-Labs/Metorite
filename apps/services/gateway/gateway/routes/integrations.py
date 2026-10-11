@@ -657,7 +657,7 @@ def _guide_env_var(service: str, key_name: str) -> str | None:
     mapped = INTEGRATION_ENV_MAP.get(service, {}).get(key_name)
     guide_keys = {v["key"] for v in _SETUP_GUIDES.get(service, {}).get("env_vars", [])}
     if mapped and mapped in guide_keys:
-        return mapped
+        return str(mapped)
     for var in _SETUP_GUIDES.get(service, {}).get("env_vars", []):
         suffix = var["key"].lower().removeprefix(
             f"{service}_".upper().lower()

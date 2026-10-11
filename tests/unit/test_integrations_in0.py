@@ -34,7 +34,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -813,7 +813,7 @@ async def test_put_keys_stores_the_name_the_startup_copy_reads(
 class _RecordingGithub(_FakeGithub):
     """Records the ``client_id`` of each POST to GitHub."""
 
-    sent: list[str] = []
+    sent: ClassVar[list[str]] = []
 
     async def post(self, url: str, *_: Any, data: dict[str, Any] | None = None, **__: Any,
                    ) -> httpx.Response:
