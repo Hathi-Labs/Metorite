@@ -1,7 +1,7 @@
 """Outside-agent connections and tokens — the store (WS-55 EA-1).
 
 Spec: ``project-docs/specs/external_agent_access.md`` §5.5, §7, §10.3 and §15
-EA-1 · decision D97 · migration ``infra/postgres/241_agent_access_tokens.sql``.
+EA-1 · decision D97 · migration ``infra/postgres/247_agent_access_tokens.sql``.
 
 **What this module is.** The one place that mints, finds, spends and revokes
 the tokens an outside agent holds. An access token, a refresh token and an
