@@ -56,6 +56,7 @@ from gateway.routes.crm.core import (
     load_default_status,
     now,
     record_zoho_tombstone,
+    related_filters,
     require_row,
     router,
     row_to_dict,
@@ -94,6 +95,8 @@ class ListParams:
         source: str | None = None,
         include_converted: bool = False,
         pipeline_id: str | None = None,
+        company_id: str | None = None,
+        contact_id: str | None = None,
     ) -> None:
         self.q = q
         self.sort = sort
@@ -106,6 +109,8 @@ class ListParams:
         self.include_converted = include_converted
         #: Deals only (WS-53 CRM-Q2). With none, a list behaves as it always did.
         self.pipeline_id = pipeline_id
+        self.company_id = company_id
+        self.contact_id = contact_id
 
 
 class DeleteResponse(BaseModel):
@@ -130,12 +135,18 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
         # invisibly forever if that deal were deleted (the FK SET-NULLs the
         # link; the timestamp survives as history).
         extra = ("converted_deal_id IS NULL",)
+    extra_params: dict[str, Any] = {}
+    related_where, related_params = related_filters(
+        entity, company_id=params.company_id, contact_id=params.contact_id,
+    )
+    extra = (*extra, *related_where)
+    extra_params.update(related_params)
     query = list_contract(
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
         page=params.page, page_size=params.page_size,
         status_id=params.status_id, owner=params.owner, source=params.source,
-        pipeline_id=params.pipeline_id, extra_where=extra,
+        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=extra_params,
     )
     async with _tenant_session() as db:
         return await run_list(db, entity, query)

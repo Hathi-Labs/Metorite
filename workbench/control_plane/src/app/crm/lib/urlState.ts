@@ -26,26 +26,49 @@ export const SHEET_ENTITY: Record<SheetParam, EntitySlug> = {
 export type OpenRecord = { param: SheetParam; entity: EntitySlug; id: string };
 
 /**
- * The three tabs that are not a collection.
+ * The two tabs that are not a collection.
  *
- * `settings` is the pipeline manager (WS-26f f2) and `reports` is the forecast
- * & funnel surface (WS-26g). Both are deliberately part of the SAME grammar
+ * `settings` is CRM settings (WS-26f f2, CRM-Q3) and `reports` is the forecast
+ * and funnel surface (WS-26g). Both are deliberately part of the SAME grammar
  * rather than routes of their own: each is one more thing this page can be
  * showing, and giving them routes would mean the record sheet (which is URL
- * state) could not stay open across them — `?tab=reports&deal=<id>` is a
- * legitimate link, and it is how somebody sends "this stage is where we are
- * losing them, look at this deal".
+ * state) could not stay open across them. `?tab=reports&deal=<id>` is a
+ * legitimate link.
+ *
+ * The old `board` tab is gone (CRM-Q3, spec section 18.4). The board is the
+ * `board` LAYOUT of the Deals view, and `LEGACY_TABS` keeps the old links alive.
  *
  * ⚠️ Adding one here is not the whole job: `page.tsx`'s branch chain and the
- * load effect both have to learn it, or the tab parses, the pill highlights
+ * load effect both have to learn it, or the tab parses, the row highlights
  * and the screen keeps showing whatever was there.
  */
-export const NON_ENTITY_TABS = ["board", "settings", "reports"] as const;
+export const NON_ENTITY_TABS = ["settings", "reports"] as const;
 export type NonEntityTab = (typeof NON_ENTITY_TABS)[number];
 
+/** How a Deals or Leads view draws its records. */
+export type CrmLayout = "list" | "board";
+
+/** The views that have a board. Leads columns are the Lead Status values. */
+export const BOARD_TABS = ["deals", "leads"] as const;
+
+/** What a tab draws when the URL does not say. Deals opens as a board. */
+export function defaultLayout(tab: CrmView["tab"]): CrmLayout {
+  return tab === "deals" ? "board" : "list";
+}
+
+/** Old `?tab=` values and where they now open (CRM-Q3). */
+const LEGACY_TABS: Record<string, { tab: CrmView["tab"]; layout?: CrmLayout }> = {
+  board: { tab: "deals", layout: "board" },
+  pipeline: { tab: "deals", layout: "board" },
+};
+
 export type CrmView = {
-  /** Which list is behind the sheet. `board` is the landing tab. */
+  /** Which view is behind the sheet. `deals` is the landing tab. */
   tab: NonEntityTab | EntitySlug;
+  /** List or board. Only Deals and Leads have a board; the rest are lists. */
+  layout: CrmLayout;
+  /** The deal pipeline in view, or null for the remembered or default one. */
+  pipelineId: string | null;
   /** The record the sheet is showing, or null when it is closed. */
   record: OpenRecord | null;
   /** Free-text search on the list. */
@@ -71,7 +94,9 @@ export type CrmView = {
 };
 
 export const DEFAULT_VIEW: CrmView = {
-  tab: "board",
+  tab: "deals",
+  layout: "board",
+  pipelineId: null,
   record: null,
   q: "",
   statusId: null,
@@ -104,16 +129,20 @@ export function isTab(value: string | null): value is CrmView["tab"] {
  * Read the view out of a query string.
  *
  * Tolerant on the way in and strict about what it produces: an unknown tab
- * falls back to the board rather than rendering an empty list for a
+ * falls back to Deals rather than rendering an empty list for a
  * collection that does not exist, because the URL is a shared artefact and
  * somebody will hand-edit it.
  */
 export function parseView(search: string | URLSearchParams): CrmView {
   const params =
     typeof search === "string" ? new URLSearchParams(search) : search;
-  const tab = params.get("tab");
+  const raw = params.get("tab");
+  const legacy = raw ? LEGACY_TABS[raw] : undefined;
+  const tab: CrmView["tab"] = legacy ? legacy.tab : isTab(raw) ? raw : "deals";
   return {
-    tab: isTab(tab) ? tab : "board",
+    tab,
+    layout: parseLayout(tab, legacy?.layout, params.get("layout"), params),
+    pipelineId: params.get("pipeline") || null,
     record: parseRecord(params),
     q: params.get("q") ?? "",
     statusId: params.get("status") || null,
@@ -125,6 +154,31 @@ export function parseView(search: string | URLSearchParams): CrmView {
     // render a list rather than an error.
     dir: params.get("dir") === "asc" ? "asc" : "desc",
   };
+}
+
+/** A tab with no board is a list, whatever the URL says. */
+function parseLayout(
+  tab: CrmView["tab"],
+  legacy: CrmLayout | undefined,
+  raw: string | null,
+  params: URLSearchParams,
+): CrmLayout {
+  if (!hasBoard(tab)) return "list";
+  if (raw === "board" || raw === "list") return raw;
+  if (legacy) return legacy;
+  // An old list link such as `?tab=deals&status=X` carries a filter. The board
+  // would drop it without a word, so a link with one opens the list.
+  if (["status", "sort", "q"].some((key) => params.get(key))) return "list";
+  return defaultLayout(tab);
+}
+
+export function hasBoard(tab: CrmView["tab"]): tab is "deals" | "leads" {
+  return (BOARD_TABS as readonly string[]).includes(tab);
+}
+
+/** Is this view drawing a board? */
+export function isBoardView(view: CrmView): boolean {
+  return hasBoard(view.tab) && view.layout === "board";
 }
 
 /**
@@ -151,7 +205,17 @@ export function parseRecord(params: URLSearchParams): OpenRecord | null {
  */
 export function serializeView(view: CrmView): string {
   const params = new URLSearchParams();
-  if (view.tab !== "board") params.set("tab", view.tab);
+  if (view.tab !== "deals") params.set("tab", view.tab);
+  // A board that carries a filter says so, or the link would reopen as a list
+  // (parseLayout): the filter is what the reader sent.
+  const filtered = Boolean(view.q.trim() || view.statusId || view.sort);
+  if (
+    hasBoard(view.tab) &&
+    (view.layout !== defaultLayout(view.tab) || (filtered && view.layout === "board"))
+  ) {
+    params.set("layout", view.layout);
+  }
+  if (view.pipelineId && view.tab === "deals") params.set("pipeline", view.pipelineId);
   if (view.q.trim()) params.set("q", view.q.trim());
   if (view.statusId) params.set("status", view.statusId);
   if (view.includeConverted) params.set("converted", "1");
@@ -200,6 +264,7 @@ export function selectTab(view: CrmView, tab: CrmView["tab"]): CrmView {
   return {
     ...view,
     tab,
+    layout: defaultLayout(tab),
     record: null,
     statusId: null,
     includeConverted: false,
@@ -221,4 +286,17 @@ export function applySort(view: CrmView, key: string): CrmView {
     return { ...view, dir: view.dir === "asc" ? "desc" : "asc" };
   }
   return { ...view, sort: key, dir: "desc" };
+}
+
+/** The list or board switch. A tab with no board stays a list. */
+export function selectLayout(view: CrmView, layout: CrmLayout): CrmView {
+  if (!hasBoard(view.tab) || layout === view.layout) return view;
+  // A status lane is a list filter and a board column at once. Keep it off the
+  // board, where the columns already are the statuses.
+  return { ...view, layout, record: view.record, statusId: layout === "board" ? null : view.statusId };
+}
+
+/** The pipeline picker. It changes the lanes, so it closes no record. */
+export function selectPipeline(view: CrmView, pipelineId: string | null): CrmView {
+  return { ...view, pipelineId, statusId: null };
 }

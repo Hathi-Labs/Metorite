@@ -823,6 +823,54 @@ def list_contract(
     )
 
 
+#: CRM-Q3 — the related lists of a record page. A company shows its contacts
+#: and deals, and a contact shows its deals. Only these entities carry the link.
+_COMPANY_FILTERABLE = frozenset({"contacts", "deals"})
+
+
+def _uuid_param(name: str, value: str) -> str:
+    """A UUID from the query string, or a 422 — never a database cast error."""
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"'{name}' must be a UUID.") from None
+
+
+def related_filters(
+    entity: Entity, *, company_id: str | None, contact_id: str | None,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The ``?company_id=`` and ``?contact_id=`` filters, as SQL and parameters.
+
+    Refused with a 422 on an entity that has no such link. Ignoring the filter
+    would answer 200 with the whole table, as ``?status_id`` is refused on
+    contacts. The SQL is a literal here, and the id is a bound parameter.
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    if company_id:
+        if entity.slug not in _COMPANY_FILTERABLE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{entity.slug} have no company link, so '?company_id' "
+                       "cannot filter them. Drop the parameter.",
+            )
+        clauses.append("company_id = CAST(:company_id AS uuid)")
+        bound["company_id"] = _uuid_param("company_id", company_id)
+    if contact_id:
+        if entity.slug != "deals":
+            raise HTTPException(
+                status_code=422,
+                detail=f"'?contact_id' filters deals only, not {entity.slug}. "
+                       "Drop the parameter.",
+            )
+        clauses.append(
+            "id IN (SELECT deal_id FROM crm_deal_contacts "
+            "WHERE contact_id = CAST(:contact_id AS uuid))"
+        )
+        bound["contact_id"] = _uuid_param("contact_id", contact_id)
+    return tuple(clauses), bound
+
+
 def project_joined(entity: Entity, inner: str, order_by: str) -> str:
     """Wrap a base-table SELECT so its rows carry their joined display names.
 

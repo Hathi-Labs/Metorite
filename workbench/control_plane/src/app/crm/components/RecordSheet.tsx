@@ -15,7 +15,8 @@
 
 import Modal from "@/components/ui/Modal";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { isMirrored } from "../lib/connect";
+import { isMirrored, zohoLink } from "../lib/connect";
+import { NO_RELATED, type RelatedLists } from "../lib/related";
 import FieldsPanel from "./FieldsPanel";
 import Timeline from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
@@ -53,6 +54,9 @@ export default function RecordSheet({
   onSetPrimary,
   onDetach,
   onOpenContact,
+  related = NO_RELATED,
+  onOpenRelated,
+  onRetryRelated,
 }: {
   entity: EntitySlug;
   record: Row | null;
@@ -74,6 +78,11 @@ export default function RecordSheet({
   onSetPrimary: (contactId: string) => void;
   onDetach: (contactId: string) => void;
   onOpenContact: (contactId: string) => void;
+  /** The related lists of a company or a contact (CRM-Q3). */
+  related?: RelatedLists;
+  /** A related row opens that record. */
+  onOpenRelated?: (entity: EntitySlug, id: string) => void;
+  onRetryRelated?: () => void;
 }) {
   const { isMobile } = useViewMode();
 
@@ -83,6 +92,8 @@ export default function RecordSheet({
         .filter(Boolean)
         .join(" ") || "Untitled"
     : "Loading…";
+
+  const zoho = zohoLink(record);
 
   return (
     // On `Modal` (CRM-U2), as a drawer at the right edge on a desktop and as
@@ -94,7 +105,25 @@ export default function RecordSheet({
       open
       onClose={onClose}
       title={title}
-      description={ENTITY_NOUN[entity]}
+      description={
+        <>
+          {ENTITY_NOUN[entity]}
+          {zoho && (
+            // The record header carries the way back to Zoho (CRM-Q1).
+            <>
+              {" · "}
+              <a
+                href={zoho}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline underline-offset-2"
+              >
+                Open in Zoho
+              </a>
+            </>
+          )}
+        </>
+      }
       size="4xl"
       placement={isMobile ? "sheet" : "end"}
       closeLabel="Close record"
@@ -130,6 +159,9 @@ export default function RecordSheet({
               onSetPrimary={onSetPrimary}
               onDetach={onDetach}
               onOpenContact={onOpenContact}
+              related={related}
+              onOpenRelated={onOpenRelated}
+              onRetryRelated={onRetryRelated}
             />
           </div>
         </div>

@@ -300,19 +300,38 @@ async def test_the_microsoft_tile_offers_no_field_and_no_setup_step(monkeypatch)
         assert step not in text, step
 
 
+CONSOLE = PAGE.parent
+
+
+def _console_sources() -> dict[str, str]:
+    """Every source file of the Integrations console, tests excluded."""
+    return {
+        str(p.relative_to(CONSOLE)): p.read_text(encoding="utf-8")
+        for p in sorted(CONSOLE.rglob("*.ts*"))
+        if ".test." not in p.name
+    }
+
+
 def test_the_banner_gives_no_setup_step_and_no_link() -> None:
-    """The banner of the Integrations page states a fact. It links nowhere
-    and tells the reader to register no app (review round 1, P2)."""
-    page = PAGE.read_text(encoding="utf-8")
-    start = page.index('data-testid="mail-app-banner"')
-    banner = page[start:page.index(")}", start)]
-    assert "<a " not in banner and "href" not in banner
-    assert "Outlook connect is not available yet" in banner
-    for step in ("register", "one-time setup", "set up", "OAuth"):
-        assert step not in banner, step
-    # No other part of the page sends a reader to a mail-app tile.
-    for link in ("search=Microsoft+OAuth", "search=Gmail+OAuth"):
-        assert link not in page, link
+    """No part of the Integrations console sends a reader to set up a mail
+    app (review round 1, P2).
+
+    The banner lived in the Email tab, which WS-54 IN-2 (2026-10-11) removed:
+    mailboxes are connected in the Email app. So the rule now covers every
+    console file. If a mail-app banner comes back anywhere, it must still
+    state a fact, link nowhere and name no setup step.
+    """
+    sources = _console_sources()
+    assert "page.tsx" in sources and len(sources) > 3, sorted(sources)
+    for name, text in sources.items():
+        for link in ("search=Microsoft+OAuth", "search=Gmail+OAuth"):
+            assert link not in text, (name, link)
+        if 'data-testid="mail-app-banner"' in text:
+            start = text.index('data-testid="mail-app-banner"')
+            banner = text[start:text.index(")}", start)]
+            assert "<a " not in banner and "href" not in banner, name
+            for step in ("register", "one-time setup", "set up", "OAuth"):
+                assert step not in banner, (name, step)
 
 
 # ── The startup load names no mail-app key (round 1, P3) ───────────────────

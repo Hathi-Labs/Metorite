@@ -94,9 +94,10 @@
  * Semantic tokens only (`bg-card`, `border-border`, `text-success`,
  * `text-destructive`), icons through `<Icon name>` with names that are mapped
  * for every pack in `lib/theme/icon-data/registry.json`, and every control is a
- * `<Button>` so it carries `.cc-control`. The layer is `z-50`, the value
- * `DESIGN_SYSTEM.md` §4a names — **not** a `z-[60]` invented to win a fight
- * with `Modal`.
+ * `<Button>` so it carries `.cc-control`. The layer is `z-[110]`, above the
+ * highest `Modal` layer (`alert`, `z-[100]`), so a toast raised while a side
+ * panel or a dialog is open stays in view (IN-2 visual review, 2026-10-11).
+ * Fence: `toastViewport.test.ts`.
  *
  * ⚠️ **Do not raise a toast from inside a `Modal` in this slice.** Base UI's
  * `markOthers` sets `aria-hidden="true"` on the dialog portal's siblings, and
@@ -340,7 +341,7 @@ function ToastViewport() {
           newest belongs nearest the corner it grew from.
           `toast-viewport-bottom` (globals.css): above the phone bottom nav,
           and 1rem from the edge from `sm` up, as before. */}
-      <BaseToast.Viewport className="toast-viewport-bottom pointer-events-none fixed right-4 z-50 flex w-[min(24rem,calc(100vw-2rem))] flex-col-reverse gap-2 outline-none">
+      <BaseToast.Viewport className="toast-viewport-bottom pointer-events-none fixed right-4 z-[110] flex w-[min(24rem,calc(100vw-2rem))] flex-col-reverse gap-2 outline-none">
         {toasts.map((toast) => {
           const variant = (toast.type ?? "loading") as ToastVariant;
           const action = toast.data?.action;
