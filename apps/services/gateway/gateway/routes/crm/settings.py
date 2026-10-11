@@ -47,7 +47,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 #: The ``crm_settings.mode`` vocabulary, mirrored from the CHECK in
-#: migration 242.
+#: migration 243.
 MODES: tuple[str, ...] = ("native", "mirror")
 
 #: The one change of mode that CRM-T5 allows: (stored, requested).

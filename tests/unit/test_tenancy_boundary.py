@@ -126,7 +126,7 @@ EXPECTED_SCOPED = {
     "crm_contacts", "crm_deal_contacts", "crm_deal_statuses", "crm_deals",
     "crm_lead_statuses", "crm_leads", "crm_lost_reasons",
     "crm_status_changes", "crm_sync_cursors", "crm_zoho_tombstones",
-    # WS-53 CRM-T5 (2026-10-11): migration 242, one settings row for each
+    # WS-53 CRM-T5 (2026-10-11): migration 243, one settings row for each
     # organization, keyed on the tenant `organization_id`, FORCE RLS.
     "crm_settings",
 }

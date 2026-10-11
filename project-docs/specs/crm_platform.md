@@ -10,7 +10,7 @@
 > Zoho read adapter (2026-10-11). CRM-Z0, the Zoho facts (§5.2, §7.2) and the
 > OAuth runbook `docs/ZOHO_OAUTH_SETUP.md` (2026-10-11). CRM-T1, the tenant port
 > (2026-10-11). CRM-T5, the access rule, the admin floor on stages and the seed
-> when the mode becomes Native (migration 242, 2026-10-11, not merged). The
+> when the mode becomes Native (migration 243, 2026-10-11, not merged). The
 > other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built

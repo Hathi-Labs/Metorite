@@ -1,5 +1,5 @@
 -- ============================================================================
--- 242_crm_settings.sql — one CRM settings row for each organization.
+-- 243_crm_settings.sql — one CRM settings row for each organization.
 --
 -- What: `crm_settings`, keyed on the tenant `organization_id`. It holds the
 --       CRM mode of the organization and who in it may open the CRM.

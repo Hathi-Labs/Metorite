@@ -52,7 +52,7 @@ from sqlalchemy import text
 ADMIN_PERMISSION = "admin:access:manage"
 
 #: The ``crm_settings.access`` vocabulary, mirrored from the CHECK in
-#: migration 242 so a bad value is a 422 at the boundary and not a 500.
+#: migration 243 so a bad value is a 422 at the boundary and not a 500.
 ACCESS_MODES: tuple[str, ...] = ("admins", "everyone", "groups")
 
 #: What a missing row means (§16 Q3).

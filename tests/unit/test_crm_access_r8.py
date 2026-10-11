@@ -1,6 +1,6 @@
 """R8 — the CRM access rule and the change to Native mode (WS-53 CRM-T5).
 
-Migration 242 adds ``crm_settings``. ``routes/crm/access.py`` reads it on
+Migration 243 adds ``crm_settings``. ``routes/crm/access.py`` reads it on
 each ``/crm`` request, and ``PATCH /crm/settings`` writes it and seeds the
 pipeline (``routes/crm/seed.py``). Spec: ``crm_platform.md`` §3.1, §13.3 (the
 CRM-T5 row) and §16 Q3.
@@ -22,7 +22,7 @@ organizations:
   on a real catalog, so no fake can prove this;
 - ``crm_settings`` forces row level security: a write for another tenant is
   refused, and an unbound session reads no row;
-- migration 242 replays with no change (idempotent).
+- migration 243 replays with no change (idempotent).
 
 A hermetic fake agrees with any SQL it is handed, so none of these could be
 proved without the database. ``tests/unit/test_crm_access.py`` holds the same

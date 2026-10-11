@@ -247,7 +247,7 @@ class TestTheExclusionCannotGoStale:
         """WS-53 CRM-T1: the positive half, so the empty set above is not
         vacuous for the CRM. Each of the 13 ``crm_*`` tables carries an
         ``organization_id`` that cascades from ``organization``. WS-53 CRM-T5
-        adds the 14th, ``crm_settings`` (migration 242), whose primary key is
+        adds the 14th, ``crm_settings`` (migration 243), whose primary key is
         that column."""
         with eng.begin() as conn:
             cascading = {
