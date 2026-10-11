@@ -93,6 +93,16 @@ def test_the_zip_name_is_one_clean_base_name() -> None:
     assert pa.zip_name("Q3 report.ZIP") == "Q3 report.zip"
     assert pa.zip_name("a/b\\c:d") == "c-d.zip"
     assert pa.zip_name(".env") == "env.zip"
+    # A name the file routes refuse would make a card that cannot download.
+    for blocked in ("Staff credentials pack", "Secret Santa list", "token_cache dump"):
+        assert pa.zip_name(blocked) == "files.zip", blocked
+
+
+def test_a_zip_time_past_the_format_is_clamped() -> None:
+    from datetime import UTC, datetime
+
+    assert pa._zip_time(datetime(2200, 1, 1, tzinfo=UTC)) == (2107, 12, 31, 23, 59, 58)
+    assert pa._zip_time(datetime(1970, 1, 1, tzinfo=UTC)) == (1980, 1, 1, 0, 0, 0)
 
 
 def test_a_second_name_is_made_unique() -> None:
@@ -392,6 +402,34 @@ async def test_over_the_zip_cap_nothing_is_written(runs, monkeypatch) -> None:
         out = await _pack()
     assert "nothing was packaged" in out.get("error", ""), out
     assert _zips(ws) == [] and runs["cards"] == []
+
+
+async def test_a_walk_that_hits_its_cap_packs_nothing(runs, monkeypatch) -> None:
+    from acb_skills.agent_paths import thread_slug
+
+    monkeypatch.setattr(pa, "_WALK_CAP", 3)
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t) as ws:
+        for i in range(3):
+            _put(ws, f"outputs/{thread_slug(t)}/node_modules/m{i}.js", "x")
+        _put(ws, f"outputs/{thread_slug(t)}/z.md", "Z")
+        out = await _pack()
+        named = await _pack(["outputs"])
+    assert "too many files" in out.get("error", ""), out
+    assert "too many files" in named.get("error", ""), named
+    assert _zips(ws) == [] and runs["cards"] == []
+
+
+async def test_the_zip_name_never_hides_the_zip(runs) -> None:
+    from acb_skills.agent_paths import is_blocked_rel, thread_slug
+
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t) as ws:
+        _put(ws, f"outputs/{thread_slug(t)}/a.md", "A")
+        out = await _pack(name="client credentials")
+    assert out["path"] == f"outputs/{thread_slug(t)}/files.zip"
+    assert not is_blocked_rel(out["path"])
+    assert _zips(ws) == [out["path"]]
 
 
 async def test_a_chat_with_no_files_gets_a_plain_error(runs) -> None:

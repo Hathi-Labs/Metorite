@@ -146,12 +146,20 @@ def _path_list(paths: Any) -> list[str] | str:
 
 
 def zip_name(name: Any) -> str:
-    """The file name of the zip: the base name cleaned, then ``.zip``."""
+    """The file name of the zip: the base name cleaned, then ``.zip``.
+
+    A name that the file routes refuse (``is_blocked_rel``: "credentials",
+    "secret" and the other markers) becomes ``files.zip``. Otherwise the card
+    would link a zip that no route serves (review P1).
+    """
+    from acb_skills.agent_paths import is_blocked_rel
+
     base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
     if base.lower().endswith(".zip"):
         base = base[:-4]
     base = _NAME_UNSAFE.sub("-", base).strip(" .-")[:80].strip(" .-")
-    return f"{base or 'files'}.zip"
+    out = f"{base or 'files'}.zip"
+    return "files.zip" if is_blocked_rel(f"outputs/{out}") else out
 
 
 def entry_name(parts: list[str]) -> str:
@@ -239,6 +247,20 @@ def _named_rel(raw: str, root: Path, ctx: Mapping[str, Any]) -> str:
     return scoped
 
 
+#: The most entries one folder walk reads. ``walk_files`` stops there and
+#: says nothing, so a walk that reaches it is refused (review P2).
+_WALK_CAP = MAX_FILES * 5
+
+
+def _refuse_a_full_walk(found: list[Any], what: str) -> None:
+    """Raise ``ValueError`` when a walk stopped at its cap: the rest is unknown."""
+    if len(found) >= _WALK_CAP:
+        raise ValueError(
+            f"{what} holds too many files to package. Name the files or "
+            "smaller folders."
+        )
+
+
 def _kind_of(root: Path, rel: str) -> str | None:
     """``"file"``, ``"dir"`` or ``None`` (absent, or a link) for *rel*, with no link followed."""
     from acb_skills import safe_open
@@ -276,9 +298,10 @@ def _collect_named(
             files[rel] = None
         elif kind == "dir":
             try:
-                found = safe_open.walk_files(root, rel, max_files=MAX_FILES * 5)
+                found = safe_open.walk_files(root, rel, max_files=_WALK_CAP)
             except safe_open.UnsafePath as exc:
                 raise ValueError(f"'{raw}' was refused: it goes through a link.") from exc
+            _refuse_a_full_walk(found, raw)
             for path, _size, _mtime in found:
                 if not_this_chats(path) or is_blocked_rel(path):
                     skipped.append(path)
@@ -307,8 +330,9 @@ async def _collect_chat(root: Path, ctx: Mapping[str, Any]) -> tuple[list[str], 
             raise ValueError("This chat has no thread folder, so nothing was packaged.") from exc
         try:
             found = await asyncio.to_thread(
-                safe_open.walk_files, root, folder, max_files=MAX_FILES * 5,
+                safe_open.walk_files, root, folder, max_files=_WALK_CAP,
             )
+            _refuse_a_full_walk(found, "this chat")
         except safe_open.UnsafePath as exc:
             raise ValueError("This chat's folder goes through a link, so nothing was packaged.") from exc
         candidates = [path for path, _size, _mtime in found]
@@ -391,6 +415,8 @@ def _zip_time(stamp: datetime) -> tuple[int, int, int, int, int, int]:
     """A zip timestamp. The format starts in 1980, so an older time is clamped."""
     if stamp.year < 1980:
         return (1980, 1, 1, 0, 0, 0)
+    if stamp.year > 2107:
+        return (2107, 12, 31, 23, 59, 58)
     return (stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second)
 
 
@@ -407,8 +433,12 @@ def _publish(root: Path, rel: str, data: bytes) -> str:
     from acb_skills import safe_open
 
     p = PurePosixPath(rel)
+    parent = str(p.parent) if str(p.parent) != "." else ""
+    taken = {n.casefold() for n, _kind in (safe_open.list_dir(root, parent) or [])}
     for counter in range(1000):
         name = p.name if counter == 0 else f"{p.stem} ({counter}){p.suffix}"
+        if name.casefold() in taken:
+            continue
         candidate = str(p.with_name(name))
         try:
             safe_open.publish_bytes(root, candidate, data)
