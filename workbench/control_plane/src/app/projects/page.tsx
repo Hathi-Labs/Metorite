@@ -3624,6 +3624,7 @@ function ProjectsWorkspace() {
       : null,
     selectedTaskIds: Array.from(picked),
     scopes: chatScopes,
+    scopeRoots: visibleRoots,
   };
 
   const workArea = app === "settings" ? (

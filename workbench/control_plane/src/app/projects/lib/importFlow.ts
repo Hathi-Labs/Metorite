@@ -13,6 +13,7 @@
 import type { SelectOption } from "@/components/ui/SelectButton";
 import type { Access } from "@/lib/access";
 import { hasCapability } from "@/lib/access";
+import { personDisplayName } from "@/lib/personName";
 
 /** The permission every import route checks (gateway `imports.IMPORT_PERMISSION`). */
 export const IMPORT_PERMISSION = "admin:access:manage";
@@ -866,7 +867,7 @@ export function memberOptions(
   unassigned: string,
 ): SelectOption[] {
   const listed: SelectOption[] = plan?.members
-    ? plan.members.map((m) => ({ value: m.email, label: m.name || m.email, hint: m.email }))
+    ? plan.members.map((m) => ({ value: m.email, label: personDisplayName(m.name, m.email), hint: m.email }))
     : [...fallback];
   const options: SelectOption[] = [{ value: unassigned, label: "Leave unassigned" }, ...listed];
   if (person.member && !options.some((o) => o.value === person.member)) {

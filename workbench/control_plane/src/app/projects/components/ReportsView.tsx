@@ -43,6 +43,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { personDisplayName } from "@/lib/personName";
+import { usePersonNames } from "../lib/usePersonNames";
 import { LayoutBoundary } from "@/components/LayoutBoundary";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -51,6 +53,7 @@ import { CollapsibleSection } from "@/components/ui/Collapsible";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import Input from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
+import { ProjectSelect } from "./ProjectSelect";
 import { Skeleton, SkeletonRows } from "@/components/ui/Skeleton";
 import { periodLabel } from "@/lib/reportEmail";
 import { accentForHue, statusAccent } from "@/lib/statusAccent";
@@ -431,6 +434,8 @@ export function RenderedBody({
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
   const { sections } = body;
+  // The Load table names people as the Load panel does (owner, 2026-10-10).
+  const loadNames = usePersonNames(sections.load?.people.map((p) => p.assignee) ?? []);
   const grid = layout === "grid";
   // R5g rule 1. Which panels take the full row. `gridSpans` leaves no row
   // with one panel alone.
@@ -706,11 +711,15 @@ export function RenderedBody({
                   {sections.load.people.slice(0, 8).map((p) => (
                     <Row
                       key={p.assignee ?? "__unassigned"}
-                      name={p.assignee ?? "Unassigned"}
+                      name={
+                        p.assignee
+                          ? personDisplayName(loadNames.get(p.assignee.toLowerCase()), p.assignee)
+                          : "Unassigned"
+                      }
                       value={p.open_tasks}
                       aside={p.overdue ? `${p.overdue} late` : undefined}
                       title={
-                        `${p.open_tasks} open for ${p.assignee ?? "nobody"}` +
+                        `${p.open_tasks} open for ${p.assignee ? personDisplayName(loadNames.get(p.assignee.toLowerCase()), p.assignee) : "nobody"}` +
                         (p.overdue ? `, ${p.overdue} overdue` : "")
                       }
                     />
@@ -961,15 +970,21 @@ export function RenderedBody({
                         <span className="font-medium text-foreground">{t.title}</span>
                         <span className="text-muted-foreground">
                           {" "}
-                          · held by {t.holder?.name || t.holder?.email} ·{" "}
+                          · held by{" "}
+                          {t.holder?.email
+                            ? personDisplayName(t.holder.name, t.holder.email)
+                            : t.holder?.name}{" "}
+                          ·{" "}
                           {t.due_on ? `due ${shortDate(t.due_on)}` : "no due date"} ·
                           helpers {helpersLine(t) ?? "none"}
                         </span>
                       </li>
                     ))}
                     {rebalancePickups(sections.rebalance).map((p) => (
-                      <li key={p.email} className="text-xs" title={p.name}>
-                        <span className="font-medium text-foreground">{p.name}</span>
+                      <li key={p.email} className="text-xs" title={p.email}>
+                        <span className="font-medium text-foreground">
+                          {personDisplayName(p.name, p.email)}
+                        </span>
                         <span className="text-muted-foreground">
                           {" "}
                           could take: {pickupLine(p)}
@@ -1461,14 +1476,35 @@ export function ReportBuilder({
   const workControl = (
     <>
       <ChipSlot error={scopeError}>
-        <SelectButton
+        {/* ⚠️ `ProjectSelect`, not a `SelectButton` over every node (owner,
+            2026-10-10): a search box over a tree whose spaces start closed.
+            `scopeChoices` still decides whether "Whole organization" is
+            offered, so a project-only template keeps its rule. */}
+        <ProjectSelect
           label="Which work?"
           prompt={onlyProjects ? "Choose a project" : undefined}
           widthClass={CHIP_WIDTH}
-          value={state.projectId ?? WHOLE_ORGANIZATION}
+          roots={roots}
+          value={state.projectId ?? (onlyProjects ? "" : WHOLE_ORGANIZATION)}
           defaultValue={onlyProjects ? "" : WHOLE_ORGANIZATION}
-          options={scopeChoices(scopes, template, isEdit)}
-          filterAbove={8}
+          lead={
+            scopeChoices(scopes, template, isEdit).some((s) => s.value === WHOLE_ORGANIZATION)
+              ? [
+                  {
+                    key: "org",
+                    rows: [
+                      {
+                        value: WHOLE_ORGANIZATION,
+                        label: "Whole organization",
+                        icon: (
+                          <Icon name="Building2" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ),
+                      },
+                    ],
+                  },
+                ]
+              : []
+          }
           disabled={isEdit}
           onChange={(value) =>
             setState((s) => ({
@@ -2492,7 +2528,8 @@ export default function ReportsView({
 
   function authorName(row: ReportRow): string {
     const who = (row.created_by ?? "").trim().toLowerCase();
-    return subjects.data?.people.find((p) => p.email === who)?.name || row.created_by;
+    if (!row.created_by) return "";
+    return personDisplayName(subjects.data?.people.find((p) => p.email === who)?.name, row.created_by);
   }
 
   function cardLine(row: ReportRow): string {
