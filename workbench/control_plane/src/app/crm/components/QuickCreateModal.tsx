@@ -15,7 +15,8 @@
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
-import { useState } from "react";
+import { firstField } from "../lib/focus";
+import { useRef, useState } from "react";
 import type { EntitySlug } from "../lib/types";
 
 type FieldDef = {
@@ -84,6 +85,7 @@ export default function QuickCreateModal({
 }) {
   const form = FORMS[entity];
   const [values, setValues] = useState<Record<string, string>>({});
+  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   const missing = form.fields
     .filter((f) => f.required && !(values[f.key] ?? "").trim())
@@ -114,8 +116,10 @@ export default function QuickCreateModal({
       title={form.title}
       icon="Plus"
       size="md"
+      initialFocus={() => firstField(bodyRef.current)}
       className="max-h-[85vh]"
     >
+      <div ref={bodyRef} className="contents">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
         {form.fields.map((field) => (
           <label key={field.key} className="block">
@@ -165,6 +169,7 @@ export default function QuickCreateModal({
           Create
         </Button>
       </footer>
+      </div>
     </Modal>
   );
 }

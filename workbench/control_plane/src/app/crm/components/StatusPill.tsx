@@ -20,7 +20,7 @@
 import Icon from "@/components/Icon";
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { statusTone } from "../lib/board";
 import type { Status } from "../lib/types";
 
@@ -40,8 +40,38 @@ export default function StatusPill({
   // State, not a ref, so the panel measures again when the trigger mounts.
   const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
   const menuId = useId();
+  const sorted = useMemo(
+    () => [...statuses].sort((a, b) => a.position - b.position),
+    [statuses],
+  );
+  // The option the keyboard is on. Focus stays on the pill: the menu is
+  // portalled outside the record sheet's focus trap, so moving DOM focus
+  // into it would be pulled back. `aria-activedescendant` names the option
+  // instead, which works inside any trap.
+  const [active, setActive] = useState(0);
+  const optionId = (index: number) => `${menuId}-option-${index}`;
+
+  function toggle() {
+    if (!open) {
+      // The keyboard starts on the current status, set once when the menu
+      // opens so it does not jump while the menu is up.
+      const current = sorted.findIndex((option) => option.id === status?.id);
+      setActive(current >= 0 ? current : 0);
+    }
+    setOpen((value) => !value);
+  }
+
+  const choose = useCallback(
+    (option: Status) => {
+      setOpen(false);
+      root.current?.querySelector("button")?.focus();
+      if (option.id !== status?.id) onChange?.(option.id);
+    },
+    [status?.id, onChange],
+  );
 
   useEffect(() => {
+    if (!open) return;
     if (!open) return;
     const onDown = (event: MouseEvent) => {
       if (shouldDismiss(event.target as Element | null, domClickWalk(root.current))) {
@@ -50,13 +80,31 @@ export default function StatusPill({
     };
     // In the CAPTURE phase on `window`, and stopped there. The pill sits in
     // the record sheet, and the sheet's `Modal` hears Escape on `document`.
-    // Without the stop, one Escape closed the menu AND the record.
+    // Without the stop, one Escape closed the menu AND the record. The arrow
+    // keys, Home, End and Enter are stopped for the same reason.
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      const count = sorted.length;
+      let handled = true;
+      if (event.key === "Escape") {
+        setOpen(false);
+        root.current?.querySelector("button")?.focus();
+      } else if (event.key === "ArrowDown") {
+        setActive((index) => (index + 1) % count);
+      } else if (event.key === "ArrowUp") {
+        setActive((index) => (index - 1 + count) % count);
+      } else if (event.key === "Home") {
+        setActive(0);
+      } else if (event.key === "End") {
+        setActive(count - 1);
+      } else if (event.key === "Enter" || event.key === " ") {
+        const option = sorted[active];
+        if (option) choose(option);
+      } else {
+        handled = false;
+      }
+      if (!handled) return;
       event.stopPropagation();
       event.preventDefault();
-      setOpen(false);
-      root.current?.querySelector("button")?.focus();
     };
     document.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey, true);
@@ -64,7 +112,7 @@ export default function StatusPill({
       document.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [open]);
+  }, [open, sorted, active, choose]);
 
   const readOnly = disabled || !onChange || statuses.length === 0;
 
@@ -85,10 +133,14 @@ export default function StatusPill({
       <button
         ref={setTrigger}
         type="button"
+        // The ARIA 1.2 select-only combobox: focus stays here and
+        // `aria-activedescendant` names the option the keyboard is on.
+        role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((v) => !v)}
+        aria-activedescendant={open ? optionId(active) : undefined}
+        onClick={toggle}
         className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-2.5 py-1 text-xs text-foreground hover:border-primary/40 tech-transition"
       >
         <span className={`w-1.5 h-1.5 rounded-full ${tone}`} />
@@ -101,24 +153,21 @@ export default function StatusPill({
         className="w-52 p-1"
         panelProps={{ id: menuId, role: "listbox", "aria-label": "Status" }}
       >
-        {[...statuses]
-          .sort((a, b) => a.position - b.position)
-          .map((option) => (
+        {sorted.map((option, index) => (
             <button
               key={option.id}
+              id={optionId(index)}
               type="button"
               role="option"
+              tabIndex={-1}
               aria-selected={option.id === status?.id}
-              onClick={() => {
-                setOpen(false);
-                root.current?.querySelector("button")?.focus();
-                if (option.id !== status?.id) onChange(option.id);
-              }}
+              onClick={() => choose(option)}
+              onMouseEnter={() => setActive(index)}
               className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs tech-transition ${
                 option.id === status?.id
                   ? "bg-primary/10 text-foreground"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-              }`}
+              } ${index === active ? "ring-1 ring-primary/40" : ""}`}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full ${statusTone(option)}`}

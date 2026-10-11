@@ -25,7 +25,8 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
-import { useState } from "react";
+import { firstField } from "../lib/focus";
+import { useRef, useState } from "react";
 import {
   REQUIREABLE_FIELD_LABELS,
   type RequireableField,
@@ -57,6 +58,7 @@ export default function MoveModal({
   onConfirm: (payload: MovePayload) => void;
 }) {
   const [reasonId, setReasonId] = useState<string>(reasons[0]?.id ?? "");
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const [note, setNote] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
 
@@ -106,8 +108,10 @@ export default function MoveModal({
       icon="ArrowRight"
       size="sm"
       closeLabel="Cancel"
+      initialFocus={() => firstField(bodyRef.current)}
       className="max-h-[85vh]"
     >
+      <div ref={bodyRef} className="contents">
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {needsReason && (
           <section className="space-y-2">
@@ -199,6 +203,7 @@ export default function MoveModal({
           {needsReason ? "Mark lost" : "Move"}
         </Button>
       </footer>
+      </div>
     </Modal>
   );
 }

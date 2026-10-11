@@ -16,7 +16,8 @@
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
-import { useState } from "react";
+import { firstField } from "../lib/focus";
+import { useRef, useState } from "react";
 import {
   canConvert,
   convertBody,
@@ -44,6 +45,7 @@ export default function ConvertModal({
   onClose: () => void;
   onConvert: (body: Record<string, unknown>) => void;
 }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const [choice, setChoice] = useState<ConvertChoice>(() =>
     initialChoice(lead, contacts, organizations)
   );
@@ -76,8 +78,10 @@ export default function ConvertModal({
       description={`${lead.lead_name} becomes a deal, with a contact and a company behind it.`}
       icon="ArrowRightLeft"
       size="lg"
+      initialFocus={() => firstField(bodyRef.current)}
       className="max-h-[85vh]"
     >
+      <div ref={bodyRef} className="contents">
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         <section>
           <h3 className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -234,6 +238,7 @@ export default function ConvertModal({
           Convert
         </Button>
       </footer>
+      </div>
     </Modal>
   );
 }
