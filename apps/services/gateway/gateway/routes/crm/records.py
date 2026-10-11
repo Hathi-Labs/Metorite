@@ -229,6 +229,9 @@ async def create_record(
     values.setdefault("owner_email", actor(user))
 
     async with _tenant_session() as db:
+        await assert_writable(
+            db, current_tenant(), entity, values, creating=True,
+        )
         await _resolve_status(db, entity, values)
         row = await insert_row(db, entity.table, values)
         return row_to_dict(row, entity.model)
