@@ -27,9 +27,10 @@ So the tests that matter are the ones about what it must NOT do:
   ``sync_zoho``'s own push statement rather than from a comment about it.
 
 Hermetic, in ``test_crm_routes.py``'s convention: no Postgres, no network, no
-TestClient; the step is called directly with ``_get_db`` monkeypatched onto the
-SUT submodules against the shared ``_crm_fakes.FakeCrmDB``. The real settings
-object is never mutated — the ON state is the module's own
+TestClient; the step is called directly with ``_tenant_session`` monkeypatched
+onto the SUT submodules against the shared ``_crm_fakes.FakeCrmDB``, and with
+the mailbox's tenant bound, as the email hook binds it (WS-53 CRM-T3). The real
+settings object is never mutated — the ON state is the module's own
 ``auto_lead_enabled`` predicate, monkeypatched, exactly as
 ``test_crm_zoho_sync.py`` does for ``sync_enabled``.
 """
@@ -40,11 +41,13 @@ import ast
 import inspect
 import json
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_common.db import bind_tenant, release_tenant
 from gateway.routes.crm import auto_lead
 from gateway.routes.crm import core as crm_core
 from gateway.routes.crm import pipeline as crm_pipeline
@@ -78,18 +81,29 @@ ACTIVATED = _at(1)
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
+#: The tenant the email hook binds before it runs the step. The fake does not
+#: model RLS. The R8 suite ``test_crm_sync_tenancy.py`` does.
+MAILBOX_ORG = "99999999-9999-9999-9999-999999999999"
+
+
 @pytest.fixture
-def db(monkeypatch: pytest.MonkeyPatch) -> FakeCrmDB:
+def db(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeCrmDB]:
     """The in-memory schema, bound to every module that opens a session.
 
-    ``auto_lead`` is in the tuple because it imports ``_get_db`` from ``core``
-    by name; ``records`` is in it because ``create_record`` opens its OWN
-    session and the lead has to land in the same fake.
+    ``auto_lead`` is in the tuple because it imports ``_tenant_session`` from
+    ``core`` by name; ``records`` is in it because ``create_record`` opens its
+    OWN session and the lead has to land in the same fake. The mailbox's
+    tenant is bound for the test, because with none bound the step opens no
+    session at all (WS-53 CRM-T3).
     """
     fake = FakeCrmDB()
     bind_db(monkeypatch, fake,
             (crm_core, crm_records, crm_pipeline, auto_lead))
-    return fake
+    token = bind_tenant(MAILBOX_ORG)
+    try:
+        yield fake
+    finally:
+        release_tenant(token)
 
 
 @pytest.fixture
@@ -192,12 +206,10 @@ def _seed_account(
     db: FakeCrmDB, *, owner: str = OWNER, address: str = OWNER,
     org_domains: list[str] | None = None,
 ) -> None:
+    # The mailbox belongs to the tenant the `db` fixture binds. `_load_account`
+    # filters on it (RLS on `email_accounts` is not on prod yet).
     db.seed("email_accounts", id=ACCOUNT_ID, user_id=owner,
-            email_address=address)
-    # H4 fix: _create_lead binds the owner's organization explicitly before
-    # calling the converted create_record — the lookup reads app_user.
-    db.seed("app_user", email=owner,
-            organization_id="99999999-9999-9999-9999-999999999999")
+            email_address=address, organization_id=MAILBOX_ORG)
     if org_domains is not None:
         db.seed("email_assistant_settings", account_id=ACCOUNT_ID,
                 org_domains=org_domains)
@@ -488,6 +500,26 @@ async def test_dw3_an_unknown_external_sender_becomes_exactly_one_lead(
     assert rows[0]["owner_email"] == OWNER
     assert rows[0]["lead_name"] == "Asha Menon"
     assert rows[0]["status_id"]  # `_resolve_status` ran — NOT NULL satisfied
+
+
+async def test_a_mailbox_of_another_org_makes_no_lead_without_rls(
+    db: FakeCrmDB, on: None,
+) -> None:
+    """The fake has no RLS, like prod's `email_accounts` today. A mailbox of
+    another org must still make no lead in the bound org: `_load_account`
+    filters on `organization_id` by itself (CRM-T3 review, P2)."""
+    db.seed("email_accounts", id=ACCOUNT_ID, user_id=OWNER,
+            email_address=OWNER,
+            organization_id="88888888-8888-8888-8888-888888888888")
+    _seed_status(db)
+    _seed_cursor(db)
+    _message(db, received_at=_at(5))
+
+    stats = await auto_lead.create_leads_from_new_mail(ACCOUNT_ID)
+
+    assert stats["candidates"] == 0
+    assert stats["created"] == 0
+    assert _leads(db) == []
 
 
 async def test_dw3_the_display_name_is_stripped_before_it_is_split(

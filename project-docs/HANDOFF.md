@@ -4619,15 +4619,20 @@ line — never reclaim a number by deleting the other entry.
 - **Still open from the broker work.** Two kinds of caller bind no tenant,
   so the broker refuses their queue write. The RLS policy refused it before
   too. A third note follows them.
-  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). With
-    `ACTION_BROKER_ENFORCE` off it never reaches the queue.
+  - The scheduled Zoho sync cycle (`crm/sync_zoho.py`). Since WS-53 CRM-T3
+    the loop starts no task, so it reaches no queue. CRM-Z5 rebuilds the
+    cycle with one `tenant_session(org)` for each step. Do this work there.
   - A CRON or webhook workflow run (`workflows/service.py` and
     `workflows/tools.py`). A manual run has the request's tenant. A trigger
     run would inherit the tenant of the request that emits its event, but
     `triggers.py` reads `workflow_triggers` unbound, so no trigger run starts.
-  - A manual `POST /crm/sync/zoho` runs the cycle in the request. So its
-    queue row goes to the admin's tenant. The sync configuration has no
-    tenant yet. When it gets one, bind that tenant.
+  - `POST /crm/sync/zoho`. Since WS-53 CRM-T3 it answers 409 and runs no
+    cycle. CRM-Z5 makes it run the cycle of one connection, with the tenant
+    of that connection. Do this work there.
+- **Done, the CRM auto-lead step and the CRM push handler (WS-53 CRM-T3,
+  2026-10-11).** Each binds the tenant that its caller bound, and with no
+  tenant it opens no session. The fence is
+  `tests/unit/test_crm_sync_tenancy.py`. Do not do it again.
 - **Done in part 4 (2026-09-30, `projects_ai_chat.md` §21.16).** The run's
   artifact context is a ContextVar, and `artifact_context()` is its one
   reader. The process-global `_WRITE_ARTIFACT_CONTEXT` is gone. Two runs of
