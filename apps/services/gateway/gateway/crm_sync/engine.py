@@ -81,6 +81,8 @@ from gateway.crm_sources.base import (
 from gateway.crm_sources.registry import mapping_for, source_class
 from gateway.crm_sync import runs
 from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
+from gateway.routes.crm import flags
+from gateway.routes.crm.access import read_settings
 from gateway.routes.crm.core import (
     compute_lead_name,
     delete_from_source,
@@ -132,14 +134,37 @@ SYNC_ACTOR = "crm:zoho-sync"
 #: The time between two runs of one organization.
 INTERVAL_SECONDS = 10 * 60
 
-#: 10 % of an assumed 50,000 daily credits (the base of Standard and
-#: Professional, §5.2 item 6). The real cap depends on the edition.
-DAILY_CREDIT_BUDGET = 5_000
+#: The edition of the customer is not known, so assume the Free edition: 5,000
+#: credits a day (§5.2 item 6). The sync may spend 10 % of that in 24 hours.
+#: Zoho sends ``X-API-CREDITS-REMAINING`` only after half of the day is spent,
+#: so that header alone cannot protect a small organization.
+ASSUMED_DAILY_CREDITS = 5_000
+BUDGET_FRACTION = 0.10
+DAILY_CREDIT_BUDGET = int(ASSUMED_DAILY_CREDITS * BUDGET_FRACTION)
 
 #: Stop when the provider reports fewer credits than this.
 CREDITS_FLOOR = 1_000
 
 RECONCILE_EVERY = timedelta(hours=24)
+#: The deleted lists cost 2 credits each, so an idle run reads them hourly.
+DELETED_EVERY = timedelta(hours=1)
+#: The longest wait that the spend of a run can add between two runs.
+MAX_INTERVAL_SECONDS = 6 * 3600
+#: A record that fails to write is read again for this many runs.
+RETRY_LIMIT = 5
+FAILED_CAP = 200
+#: A reconcile refuses to delete more than this share of the local rows, once
+#: an organization holds more than ``REFUSE_MIN_ROWS`` of them.
+REFUSE_FRACTION = 0.2
+REFUSE_MIN_ROWS = 10
+
+
+def next_interval(credits_used: int | None) -> int:
+    """Seconds between two runs. A run that spent credits spaces the next one,
+    so the average spend stays inside :data:`DAILY_CREDIT_BUDGET` a day."""
+    spent = int(credits_used or 0)
+    spaced = -(-spent * 86_400 // DAILY_CREDIT_BUDGET)
+    return min(max(INTERVAL_SECONDS, spaced), MAX_INTERVAL_SECONDS)
 #: The provider keeps a delete for 60 days. Past 50 days without a good run,
 #: only a full id compare finds the deletes.
 GAP_RECONCILE = timedelta(days=50)
@@ -153,6 +178,10 @@ TRANSPORT: httpx.AsyncBaseTransport | None = None
 
 class NotConnected(Exception):
     """The organization has no live connection to the provider."""
+
+
+class ModeChanged(Exception):
+    """The organization is no longer in Mirror mode, or the switch went off."""
 
 
 class Stopped(Exception):
@@ -251,7 +280,10 @@ def plan(
     due: set[str] = set()
     for entity in ENTITY_ORDER:
         row = cursors[changed_module(entity)]
-        if (row.state or {}).get("offset_paged") and (
+        state = row.state or {}
+        if state.get("in_progress") and state.get("walk_start"):
+            due.add(entity)  # a walk that stopped resumes first
+        elif state.get("offset_paged") and (
             row.last_reconciled_at is None or now - row.last_reconciled_at >= RECONCILE_EVERY
         ):
             due.add(entity)
@@ -281,6 +313,8 @@ def error_code(exc: BaseException) -> str:
         return "transport"
     if isinstance(exc, HTTPException):
         return "not_configured"
+    if isinstance(exc, ModeChanged):
+        return "mode_changed"
     if isinstance(exc, Stopped):
         return "shutdown"
     return "internal"
@@ -319,7 +353,10 @@ class RunResult:
 
 def _blank_counts() -> dict[str, dict[str, int]]:
     return {
-        slug: {"seen": 0, "upserted": 0, "deleted": 0, "unlinked": 0, "failed": 0}
+        slug: {
+            "seen": 0, "upserted": 0, "deleted": 0, "unlinked": 0, "failed": 0,
+            "refused": 0,
+        }
         for slug in SLUG_ORDER
     }
 
@@ -333,6 +370,11 @@ def _merge_counts(saved: dict[str, Any]) -> dict[str, dict[str, int]]:
     return counts
 
 
+def _enabled(org: str) -> bool:
+    """The kill switch, ``CRM_MIRROR`` and the org list, read in one place."""
+    return flags.mirror_sync_enabled() and flags.crm_org_allowed(org)
+
+
 async def acquire(org: str) -> RunHandle:
     """Take the run lock for ``org`` and plan the run.
 
@@ -344,6 +386,11 @@ async def acquire(org: str) -> RunHandle:
         connection = await store.get(db, org, PROVIDER, OWNING_APP)
         if connection is None or connection.status != store.STATUS_CONNECTED:
             raise NotConnected(connection.status if connection else "none")
+        if not _enabled(org):
+            raise NotConnected("disabled")
+        settings = await read_settings(db, org)
+        if getattr(settings, "mode", None) != "mirror":
+            raise NotConnected("mode")
         cursors = await runs.read_cursors(db, org, f"{PROVIDER}:")
         last_ok = await runs.last_success_at(db, org)
         kind, reconcile = plan(cursors, now, last_ok)
@@ -386,6 +433,8 @@ class _Ctx:
         self.budget_total: int | None = credit_budget
         self.members: frozenset[str] = frozenset()
         self.owners: dict[str, str] | None = None
+        #: The start of a full id walk. A written row is stamped with it.
+        self.stamp: datetime | None = None
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -394,13 +443,23 @@ class _Ctx:
             return None
         return max(self.budget_total - self.credits, 0)
 
-    async def call(self, op: Callable[[CrmSource], Awaitable[T]]) -> T:
+    async def call(
+        self, op: Callable[[CrmSource], Awaitable[T]], *, floor: bool = True,
+    ) -> T:
         """One provider call, with a fresh shared credential and the budget.
 
         No database session is open while the call runs.
         """
         if self.should_stop():
             raise Stopped()
+        if not _enabled(self.org):
+            raise ModeChanged()
+        if floor and self.credits_left is not None and self.credits_left <= CREDITS_FLOOR:
+            # Checked BEFORE the next call, so the page already paid for is kept.
+            raise BudgetExhausted(
+                "The provider reports few credits left",
+                used=self.credits, budget=self.budget_total or 0,
+            )
         left = self._budget_left()
         if left is not None and left <= 0:
             raise BudgetExhausted(
@@ -418,11 +477,6 @@ class _Ctx:
             reported = await source.credits_remaining()
             if reported is not None:
                 self.credits_left = reported
-            if self.credits_left is not None and self.credits_left <= CREDITS_FLOOR:
-                raise BudgetExhausted(
-                    "The provider reports few credits left",
-                    used=self.credits, budget=self.budget_total or 0,
-                )
 
     # ── Pages ───────────────────────────────────────────────────────────────
 
@@ -436,6 +490,9 @@ class _Ctx:
         snapshot = copy.deepcopy(self.counts)
         try:
             async with tenant_session(self.org) as db:
+                settings = await read_settings(db, self.org)
+                if getattr(settings, "mode", None) != "mirror":
+                    raise ModeChanged()
                 yield db
                 await runs.progress(
                     db, self.org, self.handle.run_id, self.counts, self.estimate,
@@ -454,7 +511,8 @@ class _Ctx:
         if self.owners is None:
             owners: dict[str, str] = {}
             try:
-                users = await self.call(lambda s: s.list_users())
+                # One credit, and it must not drop the page that waits for it.
+                users = await self.call(lambda s: s.list_users(), floor=False)
             except (NotConnected, Stopped):
                 raise
             except SourceError as exc:
@@ -604,6 +662,8 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
     custom = dict(values.get("custom") or {})
     values["ext_source"] = EXT_SOURCE
     values["ext_id"] = record.ext_id
+    if ctx.stamp is not None:
+        values["ext_seen_at"] = ctx.stamp
 
     member = mapped.owner_email if mapped.owner_email in ctx.members else None
     if member is None and mapped.owner_name:
@@ -673,8 +733,12 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
 
 async def _apply_records(
     ctx: _Ctx, db: Any, entity: str, records: tuple[SourceRecord, ...],
-) -> None:
+) -> tuple[set[str], list[tuple[str, str | None]]]:
+    """Write the records. Returns the ids that landed, and the ids that failed
+    with their ``Modified_Time`` (for the retry)."""
     caches = _Caches()
+    landed: set[str] = set()
+    failed: list[tuple[str, str | None]] = []
     for record in records:
         ctx.bump(entity, "seen")
         try:
@@ -688,9 +752,13 @@ async def _apply_records(
                 "crm.sync.record_failed entity=%s ext_id=%s error=%s",
                 entity, record.ext_id, type(exc).__name__,
             )
+            stamp = record.fields.get("Modified_Time")
+            failed.append((record.ext_id, stamp if isinstance(stamp, str) else None))
             continue
+        landed.add(record.ext_id)
         if written:
             ctx.bump(entity, "upserted")
+    return landed, failed
 
 
 # ── The passes ──────────────────────────────────────────────────────────────
@@ -712,107 +780,199 @@ def _later(left: datetime | None, right: datetime | None) -> datetime | None:
     return right if right > left else left
 
 
+async def _safe_count(ctx: _Ctx, entity: str) -> int | None:
+    """The provider count of an entity, or None. A failure other than a stop is
+    not an answer, so the caller keeps its guard."""
+    try:
+        return await ctx.call(lambda s: s.count_records(entity))
+    except (NotConnected, Stopped, ModeChanged):
+        raise
+    except SourceError as exc:
+        if _fatal(exc):
+            raise
+        return None
+
+
+def _merge_failed(
+    failed: dict[str, list[Any]],
+    landed: set[str],
+    bad: list[tuple[str, str | None]],
+) -> dict[str, list[Any]]:
+    """The ids to read again: ``{id: [modified_time, attempts]}``, capped."""
+    merged = {k: v for k, v in failed.items() if k not in landed}
+    for ext_id, stamp in bad:
+        attempts = int(merged[ext_id][1]) + 1 if ext_id in merged else 1
+        merged[ext_id] = [stamp, attempts]
+    while len(merged) > FAILED_CAP:
+        merged.pop(next(iter(merged)))
+    return merged
+
+
+def _pin(failed: dict[str, list[Any]]) -> datetime | None:
+    """The earliest time that a failed record, still inside its retries, needs."""
+    stamps = [
+        _parse(v[0]) for v in failed.values()
+        if v[0] and int(v[1]) < RETRY_LIMIT
+    ]
+    stamps = [t for t in stamps if t is not None]
+    return min(stamps) - timedelta(seconds=1) if stamps else None
+
+
 async def _changed_pass(ctx: _Ctx, entity: str) -> None:
-    """Read the records changed since the cursor, one page at a time."""
+    """Read the records changed since the cursor, one page at a time.
+
+    A module that hides ``Modified_Time`` has no cursor to move, so an
+    incremental run does not list it. A reconcile (a full id walk) reads it, at
+    most once in 24 hours. The walk stamps each row it reads with its start, so
+    it can stop and resume across runs. At the end it deletes the rows that it
+    did not read, unless the walk looks cut short (:func:`_drop_stale`).
+    """
     module = changed_module(entity)
     row = _row(ctx, module)
-    fresh = entity in ctx.reconcile
-    saved = None if fresh else row.state
-    resumed = bool(saved and saved.get("in_progress"))
-    hidden = bool(saved and saved.get("offset_paged")) if resumed else False
-    if resumed and saved is not None:
+    saved = row.state or {}
+    walking = entity in ctx.reconcile
+    if row.initial_done_at is not None and saved.get("offset_paged") and not walking:
+        return
+    in_progress = bool(saved.get("in_progress"))
+    resumed = in_progress and (bool(saved.get("walk_start")) or not walking)
+    hidden = bool(saved.get("offset_paged")) if resumed else False
+    walk_start = ctx.started
+    walk_count = 0
+    if walking and resumed:
+        walk_start = _parse(saved.get("walk_start")) or ctx.started
+        walk_count = int(saved.get("walk_count") or 0)
+    ctx.stamp = walk_start if walking else None
+    failed_map: dict[str, list[Any]] = {
+        str(k): list(v) for k, v in (saved.get("failed") or {}).items()
+    }
+    if resumed:
         cursor = cursor_from(saved)
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if fresh else row.last_pulled_at
-        ids = tuple((saved or {}).get("watermark_ids") or ()) if since is not None else ()
+        since = None if walking else row.last_pulled_at
+        ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
         newest_ids = set(ids)
-    walked: set[str] | None = set() if fresh else None
     first_pass = row.initial_done_at is None and not resumed
     table = _table(entity)
+    try:
+        while True:
+            page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
+            if page.records and ctx.owners is None:
+                await ctx.load_owners()
+            for record in page.records:
+                stamp = _parse(record.fields.get("Modified_Time"))
+                if stamp is None:
+                    hidden = True
+                    continue
+                if newest is None or stamp > newest:
+                    newest, newest_ids = stamp, {record.ext_id}
+                elif stamp == newest:
+                    newest_ids.add(record.ext_id)
+            walk_count += len(page.records)
+            last_page = page.next_cursor is None
+            known = await _safe_count(ctx, entity) if (walking and last_page) else None
+            async with ctx.page() as db:
+                landed, bad = await _apply_records(ctx, db, entity, page.records)
+                failed_map = _merge_failed(failed_map, landed, bad)
+                if not last_page and page.next_cursor is not None:
+                    extra: dict[str, Any] = {}
+                    if walking:
+                        extra = {"walk_start": _iso(walk_start), "walk_count": walk_count}
+                    state = cursor_state(
+                        page.next_cursor,
+                        max_modified=_iso(newest),
+                        watermark_ids=sorted(newest_ids),
+                        offset_paged=hidden,
+                        failed=failed_map,
+                        **extra,
+                    )
+                    row = CursorRow(
+                        module, row.last_pulled_at, state, row.initial_done_at,
+                        row.last_reconciled_at,
+                    )
+                else:
+                    complete_at = _now()
+                    if walking:
+                        await _drop_stale(
+                            ctx, db, entity, table, walk_start, walk_count, known,
+                            set(failed_map),
+                        )
+                    pin = None if hidden else _pin(failed_map)
+                    mark = None if hidden else _later(row.last_pulled_at, newest)
+                    if pin is not None and mark is not None:
+                        mark = min(mark, pin)
+                    row = CursorRow(
+                        module,
+                        mark,
+                        {
+                            "in_progress": False,
+                            "offset_paged": hidden,
+                            "watermark_ids": [] if hidden or pin else sorted(newest_ids),
+                            "failed": failed_map,
+                        },
+                        row.initial_done_at or complete_at,
+                        complete_at if (walking or first_pass) else row.last_reconciled_at,
+                    )
+                await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
+            ctx.cursors[module] = row
+            if last_page:
+                break
+            cursor = page.next_cursor  # type: ignore[assignment]
+    finally:
+        ctx.stamp = None
 
-    while True:
-        page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
-        if page.records and ctx.owners is None:
-            await ctx.load_owners()
-        for record in page.records:
-            stamp = _parse(record.fields.get("Modified_Time"))
-            if stamp is None:
-                hidden = True
-                continue
-            if newest is None or stamp > newest:
-                newest, newest_ids = stamp, {record.ext_id}
-            elif stamp == newest:
-                newest_ids.add(record.ext_id)
-        if walked is not None:
-            walked.update(r.ext_id for r in page.records)
-        last_page = page.next_cursor is None
-        async with ctx.page() as db:
-            await _apply_records(ctx, db, entity, page.records)
-            if not last_page and page.next_cursor is not None:
-                state = cursor_state(
-                    page.next_cursor,
-                    max_modified=_iso(newest),
-                    watermark_ids=sorted(newest_ids),
-                    offset_paged=hidden,
-                )
-                row = CursorRow(
-                    module, row.last_pulled_at, state, row.initial_done_at,
-                    row.last_reconciled_at,
-                )
-            else:
-                complete_at = _now()
-                row = CursorRow(
-                    module,
-                    None if hidden else _later(row.last_pulled_at, newest),
-                    {
-                        "in_progress": False,
-                        "offset_paged": hidden,
-                        "watermark_ids": [] if hidden else sorted(newest_ids),
-                    },
-                    row.initial_done_at or complete_at,
-                    complete_at if (fresh or first_pass) else row.last_reconciled_at,
-                )
-            await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
-        ctx.cursors[module] = row
-        if last_page:
-            break
-        cursor = page.next_cursor  # type: ignore[assignment]
 
-    if walked is not None:
-        await _drop_missing(ctx, entity, table, walked)
+async def _drop_stale(
+    ctx: _Ctx, db: Any, entity: str, table: str, walk_start: datetime,
+    walked: int, known: int | None, failed_ids: set[str],
+) -> None:
+    """Delete the local rows that the walk did not read (reconcile).
 
+    The delete cannot be undone, so it refuses when the walk looks cut short:
 
-async def _drop_missing(ctx: _Ctx, entity: str, table: str, walked: set[str]) -> None:
-    """Delete the local rows whose id the provider no longer lists (reconcile).
+    * the walk read nothing while rows exist here;
+    * the walk read fewer records than the provider counts;
+    * the delete is more than 20 % of the local rows, for more than 10 rows.
 
-    A walk that found nothing, while rows exist here, is not trusted: a provider
-    fault looks the same, and a delete cannot be undone.
+    A refusal keeps the rows, logs ``reconcile_refused`` with the figures, and
+    counts in ``refused``. A record that failed to write is never deleted.
     """
     kind_clause = " AND type = :type" if table == "crm_activities" else ""
-    params: dict[str, Any] = {"org": ctx.org, "src": EXT_SOURCE}
+    params: dict[str, Any] = {"org": ctx.org, "src": EXT_SOURCE, "start": walk_start}
     if kind_clause:
         params["type"] = ACTIVITY_TYPES[entity]
-    async with ctx.page() as db:
-        local = {
-            str(r.ext_id) for r in (await db.execute(
-                text(
-                    f"SELECT ext_id FROM {table} WHERE organization_id = "
-                    f"CAST(:org AS uuid) AND ext_source = :src{kind_clause}"
-                ),
-                params,
-            )).fetchall()
-        }
-        missing = local - walked
-        if local and not walked:
-            _log.warning("crm.sync.reconcile_skipped entity=%s reason=empty_walk", entity)
-            return
-        if missing:
-            removed = await delete_from_source(db, table, EXT_SOURCE, sorted(missing))
-            ctx.bump(entity, "deleted", removed)
+    base = (
+        f"FROM {table} WHERE organization_id = CAST(:org AS uuid) "
+        f"AND ext_source = :src{kind_clause}"
+    )
+    local = (await db.execute(text(f"SELECT count(*) AS n {base}"), params)).first().n
+    stale = [
+        str(r.ext_id) for r in (await db.execute(
+            text(f"SELECT ext_id {base} AND (ext_seen_at IS NULL OR ext_seen_at < :start)"),
+            params,
+        )).fetchall()
+        if str(r.ext_id) not in failed_ids
+    ]
+    reason = None
+    if local and walked == 0:
+        reason = "empty_walk"
+    elif known is not None and walked < known:
+        reason = "short_walk"
+    elif local > REFUSE_MIN_ROWS and len(stale) > REFUSE_FRACTION * local:
+        reason = "large_delete"
+    if reason:
+        ctx.bump(entity, "refused")
+        _log.warning(
+            "crm.sync.reconcile_refused entity=%s reason=%s walked=%s known=%s "
+            "local=%s stale=%s", entity, reason, walked, known, local, len(stale),
+        )
+        return
+    if stale:
+        removed = await delete_from_source(db, table, EXT_SOURCE, sorted(stale))
+        ctx.bump(entity, "deleted", removed)
 
 
 async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
@@ -821,6 +981,12 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
     row = _row(ctx, module)
     saved = row.state
     resumed = bool(saved and saved.get("in_progress"))
+    checked = _parse((saved or {}).get("checked_at"))
+    if (
+        not resumed and checked is not None and entity not in ctx.reconcile
+        and ctx.started - checked < DELETED_EVERY
+    ):
+        return
     if resumed and saved is not None:
         cursor = cursor_from(saved)
         window = _parse(saved.get("window_start")) or ctx.started - DELETED_MARGIN
@@ -844,7 +1010,8 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
                 )
             else:
                 row = CursorRow(
-                    module, window, {"in_progress": False},
+                    module, window,
+                    {"in_progress": False, "checked_at": _iso(ctx.started)},
                     row.initial_done_at or _now(), row.last_reconciled_at,
                 )
             await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
@@ -999,7 +1166,7 @@ async def execute(
     except Exception as exc:
         error = error_code(exc)
         stopped = isinstance(
-            exc, NeedsReconnect | BudgetExhausted | Stopped | NotConnected,
+            exc, NeedsReconnect | BudgetExhausted | Stopped | NotConnected | ModeChanged,
         )
         status = runs.STATUS_STOPPED if stopped else runs.STATUS_FAILED
         if isinstance(exc, NotConnected):
@@ -1032,6 +1199,7 @@ __all__ = [
     "INTERVAL_SECONDS",
     "SLUGS",
     "SLUG_ORDER",
+    "ModeChanged",
     "NotConnected",
     "RunHandle",
     "RunResult",
@@ -1040,6 +1208,7 @@ __all__ = [
     "acquire",
     "error_code",
     "execute",
+    "next_interval",
     "plan",
     "run_org",
 ]

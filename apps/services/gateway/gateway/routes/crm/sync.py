@@ -52,6 +52,7 @@ class SyncStatusModel(BaseModel):
     finished_at: datetime | None = None
     last_success_at: datetime | None = None
     counts: dict[str, int] = {}
+    failed: int = 0
     estimate: dict[str, int] | None = None
     error: str | None = None
     next_run_at: datetime | None = None
@@ -77,6 +78,13 @@ def _seen(counts: dict) -> dict[str, int]:
         value = counts.get(key)
         out[key] = int(value.get("seen") or 0) if isinstance(value, dict) else int(value or 0)
     return out
+
+
+def _failed(counts: dict) -> int:
+    """The records of the last run that failed to write."""
+    return sum(
+        int(v.get("failed") or 0) for v in counts.values() if isinstance(v, dict)
+    )
 
 
 def _estimate(estimate: dict | None) -> dict[str, int] | None:
@@ -117,7 +125,8 @@ async def get_sync_status(
         and connection is not None
         and connection.status == store.STATUS_CONNECTED
     ):
-        next_run = latest.finished_at + timedelta(seconds=engine.INTERVAL_SECONDS)
+        next_run = latest.finished_at + timedelta(
+            seconds=engine.next_interval(latest.credits_used))
     return SyncStatusModel(
         state="running" if live else "idle",
         kind=latest.kind,  # type: ignore[arg-type]
@@ -125,6 +134,7 @@ async def get_sync_status(
         finished_at=latest.finished_at,
         last_success_at=last_ok,
         counts=_seen(latest.counts),
+        failed=_failed(latest.counts),
         estimate=_estimate(latest.estimate),
         error=latest.error,
         next_run_at=next_run,

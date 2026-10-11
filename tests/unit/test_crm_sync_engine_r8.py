@@ -77,6 +77,10 @@ class ZohoTenant:
         self.token_error: str | None = None
         self.fail_after: dict[str, int] = {}
         self.reads: dict[str, int] = {}
+        self.truncate: dict[str, int] = {}  # module -> first page that comes back empty
+        self.no_count = False
+        self.low_credits: set[str] = set()  # modules whose reply reports few credits
+        self.on_read: dict[str, Any] = {}
         self.requests: list[httpx.Request] = []
 
     def add(self, module: str, ident: str, minute: int, **fields: Any) -> None:
@@ -108,6 +112,8 @@ class ZohoTenant:
                 request.url.params.get("module", ""))})
         count = re.match(r"/crm/v8/(\w+)/actions/count$", path)
         if count:
+            if self.no_count:
+                return httpx.Response(200, json={})
             return httpx.Response(200, json={"count": len(self.data[count.group(1)])})
         deleted = re.match(r"/crm/v2/(\w+)/deleted$", path)
         if deleted:
@@ -120,7 +126,12 @@ class ZohoTenant:
             limit = self.fail_after.get(module)
             if limit is not None and self.reads[module] > limit:
                 raise httpx.ConnectError("injected fault")
-            return self._page(request, self.data[module], deleted=False, module=module)
+            if module in self.on_read:
+                self.on_read[module](self.reads[module])
+            response = self._page(request, self.data[module], deleted=False, module=module)
+            if module in self.low_credits:
+                response.headers["X-API-CREDITS-REMAINING"] = "500"
+            return response
         return httpx.Response(404, json={"code": "INVALID_URL_PATTERN"})
 
     def _fields(self, module: str) -> list[dict[str, Any]]:
@@ -152,6 +163,8 @@ class ZohoTenant:
                 rows = [r for r in rows if datetime.fromisoformat(r[key]) >= since]
         page = int(request.url.params.get("page", "1"))
         per = int(request.url.params.get("per_page", "200"))
+        if module in self.truncate and not deleted and page >= self.truncate[module]:
+            return httpx.Response(204)
         chunk = rows[(page - 1) * per: page * per]
         if not chunk:
             return httpx.Response(204)
@@ -607,7 +620,7 @@ async def test_the_status_route_shape_and_sync_now(ns) -> None:
     assert never.json() == {
         "state": "never", "kind": None, "started_at": None, "finished_at": None,
         "last_success_at": None, "counts": {}, "estimate": None, "error": None,
-        "next_run_at": None}
+        "next_run_at": None, "failed": 0}
     refused = await _call(admin, "POST", "/crm/sync/zoho")
     assert (refused.status_code, refused.json()) == (409, {"detail": "not_connected"})
 
@@ -692,3 +705,168 @@ async def test_no_token_and_no_record_content_reach_a_log_line(
     for secret in (SENTINEL, "ACCESS-A", "REFRESH-A", "r8-client-secret"):
         assert secret not in everything, secret
     assert "s1" in everything  # the id is logged, the content is not
+
+
+# ── Review round 1 ───────────────────────────────────────────────────────────
+
+async def _import_hidden(ns, count: int = 5) -> None:
+    from gateway.crm_sync import engine
+
+    for i in range(1, count + 1):
+        ZOHO_A.add("Accounts", f"Aa{i}", i, Account_Name=f"Co-{i}")
+    ZOHO_A.hide.add("Accounts")
+    await _connect(ns, ns.org_a, ZOHO_A)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+
+
+def _make_due_for_reconcile(ns) -> None:
+    with ns.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_sync_cursors SET last_reconciled_at = now() - "
+                       "interval '2 days' WHERE organization_id = CAST(:o AS uuid) "
+                       "AND module = 'zoho:company'"), {"o": ns.org_a})
+
+
+async def test_p1_1_an_offset_paged_entity_is_not_listed_by_an_incremental_run(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns)
+    before = ZOHO_A.reads["Accounts"]
+    for _ in range(2):
+        assert (await engine.run_org(ns.org_a)).kind == "incremental"
+    assert ZOHO_A.reads["Accounts"] == before, "an incremental run listed the whole module"
+
+
+def test_p1_1_the_default_budget_assumes_the_free_edition_and_idle_spend_spaces_runs() -> None:
+    from gateway.crm_sync import engine
+
+    assert engine.DAILY_CREDIT_BUDGET == 500
+    assert engine.next_interval(0) == engine.INTERVAL_SECONDS
+    assert engine.next_interval(8) > engine.INTERVAL_SECONDS  # 8 credits a run, 500 a day
+
+
+async def test_p1_2_a_reconcile_that_stops_resumes_where_it_stopped(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 6)
+    ZOHO_A.drop("Accounts", "Aa6", tombstone=False)
+    _make_due_for_reconcile(ns)
+    ZOHO_A.fail_after["Accounts"] = ZOHO_A.reads["Accounts"] + 1  # page 2 faults
+    first = await engine.run_org(ns.org_a)
+    assert (first.kind, first.status) == ("reconcile", "failed")
+    del ZOHO_A.fail_after["Accounts"]
+    mark = ZOHO_A.reads["Accounts"]
+    second = await engine.run_org(ns.org_a)
+    assert (second.kind, second.status) == ("reconcile", "ok"), second
+    assert ZOHO_A.reads["Accounts"] - mark == 2, "the walk restarted at page 1"
+    assert _count(ns, "crm_companies", ns.org_a, "ext_id = 'Aa6'") == 0
+    assert _count(ns, "crm_companies", ns.org_a) == 5
+
+
+async def test_p1_3_a_truncated_walk_deletes_nothing(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns)
+    ZOHO_A.truncate["Accounts"] = 2  # page 2 comes back empty, as a 204
+    _make_due_for_reconcile(ns)
+    result = await engine.run_org(ns.org_a)
+    assert result.status == "ok"
+    assert _count(ns, "crm_companies", ns.org_a) == 5
+    assert result.counts["organizations"]["refused"] == 1
+
+
+async def test_p1_3_a_delete_of_more_than_a_fifth_of_the_rows_is_refused(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 12)
+    for i in (1, 2, 3, 4):
+        ZOHO_A.drop("Accounts", f"Aa{i}", tombstone=False)
+    ZOHO_A.no_count = True  # no count to compare: the 20% rule must hold alone
+    _make_due_for_reconcile(ns)
+    result = await engine.run_org(ns.org_a)
+    assert _count(ns, "crm_companies", ns.org_a) == 12
+    assert result.counts["organizations"]["refused"] == 1
+
+
+async def test_p2_1_a_failed_record_is_counted_in_the_status_and_retried(ns, monkeypatch) -> None:
+    from gateway.crm_sync import engine
+
+    seed_basic(ZOHO_A, "A")
+    await _connect(ns, ns.org_a, ZOHO_A)
+    real = engine._write_record
+    failed_once: set[str] = set()
+
+    async def flaky(ctx, db, entity, record, caches):
+        if record.ext_id == "Aa3" and "Aa3" not in failed_once:
+            failed_once.add("Aa3")
+            raise RuntimeError("boom")
+        return await real(ctx, db, entity, record, caches)
+
+    monkeypatch.setattr(engine, "_write_record", flaky)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _count(ns, "crm_companies", ns.org_a, "ext_id = 'Aa3'") == 0
+    body = (await _call(_admin("a@crm-sync.test", ns.org_a), "GET", "/crm/sync/status")).json()
+    assert body["failed"] == 1 and body["counts"]["organizations"] == 5
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _count(ns, "crm_companies", ns.org_a, "ext_id = 'Aa3'") == 1
+
+
+async def test_p2_2_a_page_already_paid_for_is_kept_when_credits_run_low(ns) -> None:
+    from gateway.crm_sync import engine
+
+    seed_basic(ZOHO_A, "A")
+    ZOHO_A.low_credits.add("Accounts")
+    await _connect(ns, ns.org_a, ZOHO_A)
+    result = await engine.run_org(ns.org_a)
+    assert (result.status, result.error) == ("stopped", "budget")
+    assert _count(ns, "crm_companies", ns.org_a) == 2  # the first page of two rows
+
+
+async def test_p2_3_due_orgs_run_at_the_same_time(ns, monkeypatch) -> None:
+    from gateway.crm_sync import engine, scheduler
+
+    await _connect(ns, ns.org_a, ZOHO_A)
+    await _connect(ns, ns.org_b, ZOHO_B)
+    entered: list[str] = []
+    both = asyncio.Event()
+
+    async def fake_run(org, **kw):
+        entered.append(org)
+        if len(entered) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 3)
+
+    monkeypatch.setattr(engine, "run_org", fake_run)
+    assert await asyncio.wait_for(scheduler.run_tick(), 10) == 2
+
+
+async def test_p2_4_acquire_refuses_an_org_that_is_not_in_mirror_mode(ns, monkeypatch) -> None:
+    from acb_common import get_settings
+    from gateway.crm_sync import engine
+
+    await _connect(ns, ns.org_a, ZOHO_A, mode="native")
+    with pytest.raises(engine.NotConnected):
+        await engine.acquire(ns.org_a)
+    refused = await _call(_admin("a@crm-sync.test", ns.org_a), "POST", "/crm/sync/zoho")
+    assert (refused.status_code, refused.json()) == (409, {"detail": "not_connected"})
+    await _connect(ns, ns.org_a, ZOHO_A)
+    monkeypatch.setattr(get_settings(), "crm_orgs", ns.org_b, raising=False)
+    with pytest.raises(engine.NotConnected):
+        await engine.acquire(ns.org_a)
+
+
+async def test_p2_4_a_run_stops_when_the_mode_changes_between_pages(ns) -> None:
+    from gateway.crm_sync import engine
+
+    seed_basic(ZOHO_A, "A")
+    await _connect(ns, ns.org_a, ZOHO_A)
+
+    def flip(read: int) -> None:
+        if read == 2:
+            with ns.admin_engine.begin() as c:
+                c.execute(text("UPDATE crm_settings SET mode = 'native' WHERE "
+                               "organization_id = CAST(:o AS uuid)"), {"o": ns.org_a})
+
+    ZOHO_A.on_read["Accounts"] = flip
+    result = await engine.run_org(ns.org_a)
+    assert (result.status, result.error) == ("stopped", "mode_changed")
+    assert _count(ns, "crm_companies", ns.org_a) < 5

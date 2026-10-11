@@ -14,8 +14,9 @@
 --       A partial unique index allows ONE `running` row for each organization.
 --       That index is the run lock, and it works across gateway workers.
 --       A run with a heartbeat older than 15 minutes can be taken over.
---       `crm_sync_cursors` (145, tenant-scoped since 241) gains three nullable
---       columns: `cursor_state` (where a read stops, so it can resume),
+--       The five mirror tables gain `ext_seen_at` (the last full walk that read
+--       the row). `crm_sync_cursors` (145, tenant-scoped since 241) gains three
+--       nullable columns: `cursor_state` (where a read stops, so it can resume),
 --       `initial_done_at` (the first full read of the entity ended) and
 --       `last_reconciled_at` (the last full id compare).
 -- Why:  WS-53 CRM-Z4 and CRM-Z5, spec project-docs/specs/crm_platform.md
@@ -24,7 +25,7 @@
 --             145_crm_zoho_sync.sql and 241_crm_tenancy.sql (crm_sync_cursors),
 --             245_integration_connections.sql (integration_connections).
 --
--- Expand only (R6): one new table and three new nullable columns. No rename,
+-- Expand only (R6): one new table and eight new nullable columns. No rename,
 -- no drop, no UPDATE. Old code names no new object.
 -- Idempotent per infra/postgres/README.md: CREATE TABLE IF NOT EXISTS,
 -- CREATE INDEX IF NOT EXISTS, ADD COLUMN IF NOT EXISTS, and an RLS block
@@ -96,6 +97,15 @@ $rls$;
 
 -- Where a read stops, so a stopped import resumes with no repeat. The
 -- cursor of an entity moves only in the transaction that wrote its page.
+-- `ext_seen_at` is the time of the last full id walk (a reconcile) that read the
+-- row. A walk deletes the mirror rows that it did not read. The stamp lets a
+-- walk stop and resume across runs with no list of ids in memory.
+ALTER TABLE crm_companies  ADD COLUMN IF NOT EXISTS ext_seen_at TIMESTAMPTZ NULL;
+ALTER TABLE crm_contacts   ADD COLUMN IF NOT EXISTS ext_seen_at TIMESTAMPTZ NULL;
+ALTER TABLE crm_leads      ADD COLUMN IF NOT EXISTS ext_seen_at TIMESTAMPTZ NULL;
+ALTER TABLE crm_deals      ADD COLUMN IF NOT EXISTS ext_seen_at TIMESTAMPTZ NULL;
+ALTER TABLE crm_activities ADD COLUMN IF NOT EXISTS ext_seen_at TIMESTAMPTZ NULL;
+
 ALTER TABLE crm_sync_cursors
     ADD COLUMN IF NOT EXISTS cursor_state       JSONB NULL,
     ADD COLUMN IF NOT EXISTS initial_done_at    TIMESTAMPTZ NULL,

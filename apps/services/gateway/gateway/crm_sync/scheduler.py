@@ -79,8 +79,13 @@ async def is_due(org: str) -> bool:
         connection = await store.get(db, org, engine.PROVIDER, engine.OWNING_APP)
         if connection is None or connection.status != store.STATUS_CONNECTED:
             return False
-        due, running = await runs.due(db, org, engine.INTERVAL_SECONDS)
-    return due and not running
+        info = await runs.due_info(db, org)
+    if info.running:
+        return False
+    if info.last_finished is None:
+        return True
+    wait = engine.next_interval(info.last_credits)
+    return (info.db_now - info.last_finished).total_seconds() >= wait
 
 
 async def due_orgs() -> list[str]:
@@ -94,22 +99,34 @@ async def due_orgs() -> list[str]:
     return due
 
 
-async def run_tick() -> int:
-    """Run each due organization once, one at a time. Returns how many ran."""
-    ran = 0
-    for org in await due_orgs():
+#: Organizations that run at the same time. Each one is single-flight by the run lock.
+CONCURRENCY = 3
+
+
+async def _run_one(org: str, gate: asyncio.Semaphore) -> int:
+    async with gate:
         if _stopping.is_set():
-            break
+            return 0
         try:
             await engine.run_org(org, should_stop=_stopping.is_set)
-            ran += 1
         except (SyncRunning, NotConnected):
-            continue  # a request took the lock, or the admin disconnected
+            return 0  # a request took the lock, or the admin disconnected
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             _log.warning("crm.sync.tick_failed class=%s", type(exc).__name__)
-    return ran
+            return 0
+        return 1
+
+
+async def run_tick() -> int:
+    """Run the due organizations, up to :data:`CONCURRENCY` at a time.
+
+    One long import must not hold back the others. Returns how many ran.
+    """
+    gate = asyncio.Semaphore(CONCURRENCY)
+    done = await asyncio.gather(*(_run_one(org, gate) for org in await due_orgs()))
+    return sum(done)
 
 
 async def _loop() -> None:

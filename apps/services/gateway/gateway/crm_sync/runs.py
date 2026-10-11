@@ -118,17 +118,18 @@ _RESUMABLE_IMPORT_SQL = (
 )
 
 _DUE_SQL = (
-    "SELECT (SELECT max(finished_at) FROM crm_sync_runs "
-    "         WHERE organization_id = CAST(:org AS uuid)) AS last_finished, "
+    "SELECT now() AS db_now, "
+    "       (SELECT finished_at FROM crm_sync_runs "
+    "         WHERE organization_id = CAST(:org AS uuid) AND finished_at IS NOT NULL "
+    "         ORDER BY finished_at DESC LIMIT 1) AS last_finished, "
+    "       (SELECT credits_used FROM crm_sync_runs "
+    "         WHERE organization_id = CAST(:org AS uuid) AND finished_at IS NOT NULL "
+    "         ORDER BY finished_at DESC LIMIT 1) AS last_credits, "
     "       EXISTS (SELECT 1 FROM crm_sync_runs "
     "                WHERE organization_id = CAST(:org AS uuid) "
     "                  AND status = 'running' "
     "                  AND heartbeat_at >= now() - make_interval(secs => :stale)) "
-    "       AS running, "
-    "       (SELECT max(finished_at) IS NULL "
-    "           OR max(finished_at) <= now() - make_interval(secs => :interval) "
-    "          FROM crm_sync_runs "
-    "         WHERE organization_id = CAST(:org AS uuid)) AS due"
+    "       AS running"
 )
 
 _MEMBERS_SQL = (
@@ -252,13 +253,20 @@ async def resumable_import(db: Any, org: str) -> tuple[dict[str, Any], dict[str,
     return _json(row.counts) or {}, _json(row.estimate)
 
 
-async def due(db: Any, org: str, interval_seconds: int) -> tuple[bool, bool]:
-    """``(due, running)``: a run is due, and a live run holds the lock."""
+@dataclass(frozen=True)
+class DueInfo:
+    db_now: datetime
+    last_finished: datetime | None
+    last_credits: int | None
+    running: bool
+
+
+async def due_info(db: Any, org: str) -> DueInfo:
+    """When the last run ended, what it spent, and whether a live run holds the lock."""
     row = (await db.execute(text(_DUE_SQL), {
-        "org": org, "interval": float(interval_seconds),
-        "stale": float(STALE_AFTER_SECONDS),
+        "org": org, "stale": float(STALE_AFTER_SECONDS),
     })).first()
-    return bool(row.due), bool(row.running)
+    return DueInfo(row.db_now, row.last_finished, row.last_credits, bool(row.running))
 
 
 async def member_emails(db: Any, org: str) -> frozenset[str]:
@@ -339,11 +347,12 @@ __all__ = [
     "STATUS_RUNNING",
     "STATUS_STOPPED",
     "CursorRow",
+    "DueInfo",
     "RunLost",
     "RunRow",
     "SyncRunning",
     "credits_used_24h",
-    "due",
+    "due_info",
     "finish",
     "last_success_at",
     "latest",
