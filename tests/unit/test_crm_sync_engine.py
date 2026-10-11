@@ -74,7 +74,7 @@ def test_a_contact_with_only_a_surname_keeps_it() -> None:
 def test_the_links_of_each_entity() -> None:
     contact = mapping.map_record(
         "contact", {"id": "1", "Account_Name": {"id": "a9"}}, modified_at=None, owners={})
-    assert [(l.ext_id, l.candidates) for l in contact.links] == [
+    assert [(k.ext_id, k.candidates) for k in contact.links] == [
         ("a9", (("company_id", "company"),))]
     deal = mapping.map_record(
         "deal", {"id": "1", "Contact_Name": {"id": "c1"}, "Stage": "Won"},
@@ -89,7 +89,7 @@ def test_the_links_of_each_entity() -> None:
     call = mapping.map_record(
         "call", {"id": "1", "Who_Id": {"id": "w"}, "What_Id": {"id": "x"},
                  "$se_module": "Deals"}, modified_at=None, owners={})
-    assert [l.candidates[0][0] for l in call.links] == ["contact_id", "deal_id"]
+    assert [k.candidates[0][0] for k in call.links] == ["contact_id", "deal_id"]
 
 
 def test_a_field_def_is_made_only_for_a_custom_field() -> None:

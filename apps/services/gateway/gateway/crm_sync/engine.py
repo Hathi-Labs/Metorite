@@ -593,7 +593,7 @@ class _Caches:
     statuses: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
-async def _write_record(
+async def _write_record(  # noqa: C901 - one record, one linear mapping to columns
     ctx: _Ctx, db: Any, entity: str, record: SourceRecord, caches: _Caches,
 ) -> bool:
     """Map and write one record. False when the record has no parent here."""
@@ -1030,8 +1030,8 @@ __all__ = [
     "DAILY_CREDIT_BUDGET",
     "ENTITY_ORDER",
     "INTERVAL_SECONDS",
-    "SLUG_ORDER",
     "SLUGS",
+    "SLUG_ORDER",
     "NotConnected",
     "RunHandle",
     "RunResult",

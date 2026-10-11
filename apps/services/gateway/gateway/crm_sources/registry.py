@@ -9,7 +9,8 @@ from collections.abc import Mapping
 from types import MappingProxyType, ModuleType
 
 from gateway.crm_sources.base import CrmSource
-from gateway.crm_sources.zoho import ZohoSource, mapping as zoho_mapping
+from gateway.crm_sources.zoho import ZohoSource
+from gateway.crm_sources.zoho import mapping as zoho_mapping
 
 SOURCES: Mapping[str, type[CrmSource]] = MappingProxyType(
     {

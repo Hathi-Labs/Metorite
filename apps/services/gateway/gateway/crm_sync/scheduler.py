@@ -149,7 +149,7 @@ async def stop_crm_mirror_sync() -> None:
     _task = None
     if not tasks:
         return
-    done, pending = await asyncio.wait(tasks, timeout=STOP_GRACE_SECONDS)
+    _done, pending = await asyncio.wait(tasks, timeout=STOP_GRACE_SECONDS)
     for task in pending:
         _log.warning("crm.mirror_sync.stop_timed_out")
         task.cancel()

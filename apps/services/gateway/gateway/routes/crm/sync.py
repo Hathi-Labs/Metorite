@@ -33,12 +33,11 @@ from typing import Literal
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
-from pydantic import BaseModel
-
 from gateway.connections import store
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import _tenant_session, router
 from gateway.routes.crm.flags import require_crm_mirror
+from pydantic import BaseModel
 
 #: The five keys of ``counts`` and ``estimate``. Mirrors ``engine.SLUG_ORDER``.
 COUNT_KEYS: tuple[str, ...] = ("organizations", "contacts", "leads", "deals", "activities")

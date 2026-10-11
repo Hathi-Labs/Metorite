@@ -66,7 +66,6 @@ from acb_common.db import (
     clear_tenant,
     release_tenant,
 )
-from fastapi import HTTPException
 from gateway.routes.crm import auto_lead
 from gateway.routes.crm import broker_handlers as crm_broker
 from gateway.routes.crm import core as crm_core
