@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -37,6 +37,7 @@ from gateway.routes.crm.core import (
     ContactIn,
     DealIn,
     Entity,
+    ExtraFilterInput,
     LeadIn,
     ListResponse,
     OrganizationIn,
@@ -48,7 +49,9 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     count_where,
     current_tenant,
+    custom_pairs,
     default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -58,6 +61,7 @@ from gateway.routes.crm.core import (
     record_zoho_tombstone,
     related_filters,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     run_list,
@@ -97,6 +101,13 @@ class ListParams:
         pipeline_id: str | None = None,
         company_id: str | None = None,
         contact_id: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        updated_from: str | None = None,
+        updated_to: str | None = None,
+        close_from: str | None = None,
+        close_to: str | None = None,
+        request: Request = None,  # type: ignore[assignment]
     ) -> None:
         self.q = q
         self.sort = sort
@@ -111,6 +122,17 @@ class ListParams:
         self.pipeline_id = pipeline_id
         self.company_id = company_id
         self.contact_id = contact_id
+        #: CRM-Q8. ISO dates. A bad one is a 422 before any SQL.
+        self.created_from = created_from
+        self.created_to = created_to
+        self.updated_from = updated_from
+        self.updated_to = updated_to
+        #: Deals only.
+        self.close_from = close_from
+        self.close_to = close_to
+        #: ``custom.<key>=<value>`` and ``custom.<key>.in=a,b``, read off the
+        #: request because the key names are not known up front.
+        self.custom = tuple(custom_pairs(request.query_params if request else None))
 
 
 class DeleteResponse(BaseModel):
@@ -127,7 +149,9 @@ class DeleteResponse(BaseModel):
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
-async def _list(entity: Entity, params: ListParams) -> ListResponse:
+async def _list(
+    entity: Entity, params: ListParams, user: Any = None,
+) -> ListResponse:
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6 — a lead is "converted" while the deal it became still
@@ -141,14 +165,26 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
     )
     extra = (*extra, *related_where)
     extra_params.update(related_params)
-    query = list_contract(
-        entity,
-        q=params.q, sort=params.sort, direction=params.direction,
-        page=params.page, page_size=params.page_size,
-        status_id=params.status_id, owner=params.owner, source=params.source,
-        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=extra_params,
-    )
+    params.owner = resolve_owner(params.owner, user)
     async with _tenant_session() as db:
+        # CRM-Q8: the date ranges and the custom field filters. They validate
+        # first, so a bad value is a 422 before the list query runs.
+        more_where, more_params = await extra_filters(
+            db, entity, ExtraFilterInput(
+                created_from=params.created_from, created_to=params.created_to,
+                updated_from=params.updated_from, updated_to=params.updated_to,
+                close_from=params.close_from, close_to=params.close_to,
+                custom=params.custom,
+            ),
+        )
+        query = list_contract(
+            entity,
+            q=params.q, sort=params.sort, direction=params.direction,
+            page=params.page, page_size=params.page_size,
+            status_id=params.status_id, owner=params.owner, source=params.source,
+            pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
+            extra_params={**extra_params, **more_params},
+        )
         return await run_list(db, entity, query)
 
 
@@ -420,7 +456,7 @@ async def list_leads(
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
     """Leads, newest first. Converted leads are hidden unless asked for."""
-    return await _list(LEADS, params)
+    return await _list(LEADS, params, user)
 
 
 @router.post("/leads", status_code=201)
@@ -459,7 +495,7 @@ async def list_deals(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(DEALS, params)
+    return await _list(DEALS, params, user)
 
 
 @router.post("/deals", status_code=201)
@@ -498,7 +534,7 @@ async def list_contacts(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(CONTACTS, params)
+    return await _list(CONTACTS, params, user)
 
 
 @router.post("/contacts", status_code=201)
@@ -537,7 +573,7 @@ async def list_organizations(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(ORGANIZATIONS, params)
+    return await _list(ORGANIZATIONS, params, user)
 
 
 @router.post("/organizations", status_code=201)
