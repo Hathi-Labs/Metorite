@@ -150,10 +150,64 @@ export const DRAFT_NOTICES: Record<"stopped" | "timeout" | DraftErrorReason, str
  *  the default `AbortError`. */
 const CLIENT_TIMEOUT = "TimeoutError";
 
+/** Stop does nothing for this long after a round starts. Stop takes the
+ *  place of the run button, so a double-click on Draft must not stop the
+ *  draft it just started. */
+export const STOP_GRACE_MS = 400;
+
+/** One round of a session: its abort, and whether it still owns the
+ *  composer. A round that a reset or a newer round ended writes nothing. */
+export interface DraftRound {
+  controller: AbortController;
+  isCurrent: () => boolean;
+}
+
+/**
+ * The rounds of one session, with no React in it. `begin` ends the round
+ * before it. `reset` aborts the round and ends it, so it writes nothing to
+ * a composer that now shows another mail. `stop` aborts the round and keeps
+ * it current, so it can say why it stopped. It does nothing inside
+ * {@link STOP_GRACE_MS}.
+ */
+export function createDraftRounds(now: () => number = () => Date.now()) {
+  let seq = 0;
+  let current: (DraftRound & { startedAt: number }) | null = null;
+  return {
+    begin(): DraftRound {
+      current?.controller.abort();
+      const token = ++seq;
+      current = {
+        controller: new AbortController(),
+        isCurrent: () => seq === token,
+        startedAt: now(),
+      };
+      return current;
+    },
+    /** True when Stop aborted the round. */
+    stop(): boolean {
+      if (!current || now() - current.startedAt < STOP_GRACE_MS) return false;
+      current.controller.abort();
+      return true;
+    },
+    reset(): void {
+      current?.controller.abort();
+      seq += 1;
+      current = null;
+    },
+    finish(round: DraftRound): void {
+      if (current === round) current = null;
+    },
+  };
+}
+
+export type DraftRounds = ReturnType<typeof createDraftRounds>;
+
 /** The state setters a round writes. The hook passes its own, and a test
  *  passes recorders, so the round runs with no DOM. */
 export interface DraftRoundIO {
   controller: AbortController;
+  /** False once a reset or a newer round ended this round. Default: true. */
+  isCurrent?: () => boolean;
   onBody: (body: string) => void;
   setSteps: (update: (prev: DraftStep[]) => DraftStep[]) => void;
   setThinking: (update: (prev: string) => string) => void;
@@ -168,9 +222,12 @@ export interface DraftRoundIO {
  * draft, or with null when the round gave none.
  *
  * - The round aborts at {@link CLIENT_TOTAL_MS}, and on Stop (the caller
- *   aborts `io.controller`). Both give back the text of the member (A5).
+ *   aborts `io.controller`). The member keeps their own text (A5).
  * - A `model_*` or `server_timeout` error keeps the streamed preview (A6).
- * - Each other failure gives back the text of the member, as before.
+ * - On a failure, the round gives back the text of the member only when the
+ *   round itself wrote to the body. A round that wrote nothing leaves the
+ *   body alone, so text that the member typed meanwhile stays.
+ * - A round that `isCurrent` calls ended writes nothing at all.
  */
 export async function runDraftRound(
   args: ComposeAssistArgs,
@@ -182,29 +239,49 @@ export async function runDraftRound(
   const withQuote = (text: string) =>
     quote ? `${text.replace(/\s+$/, "")}\n\n${quote}` : text;
   const { signal } = io.controller;
+  const live = io.isCurrent ?? (() => true);
+  // Each write goes through these, so an ended round writes nothing.
+  let wrote = false;
+  let streamed = "";
+  const body = (text: string) => {
+    if (!live()) return;
+    wrote = true;
+    io.onBody(text);
+  };
+  const restoreBody = () => {
+    if (wrote) body(withQuote(priorBody));
+  };
+  const notice = (text: string | null) => {
+    if (live()) io.setNotice(text);
+  };
+  const steps = (update: (prev: DraftStep[]) => DraftStep[]) => {
+    if (live()) io.setSteps(update);
+  };
   const timer = setTimeout(
     () => io.controller.abort(new DOMException("The draft took too long.", CLIENT_TIMEOUT)),
     io.totalMs ?? CLIENT_TOTAL_MS,
   );
 
-  io.setNotice(null);
-  let streamed = "";
+  notice(null);
   try {
+    // A result that arrived wins over a later abort: the stream returns at
+    // `done`, so a Stop after it reaches no catch.
     const res = await composeAssistStream(args, {
       signal,
-      onActivity: (evt) => io.setSteps((prev) => applyEvent(prev, evt)),
-      onStatus: (stage, detail) => io.setSteps((prev) => applyStatus(prev, stage, detail)),
+      onActivity: (evt) => steps((prev) => applyEvent(prev, evt)),
+      onStatus: (stage, detail) => steps((prev) => applyStatus(prev, stage, detail)),
       onDelta: (kind, text) => {
         if (kind === "reasoning") {
-          io.setThinking((t) => (t + text).slice(-4000));
+          if (live()) io.setThinking((t) => (t + text).slice(-4000));
           return;
         }
         streamed += text;
-        io.onBody(withQuote(streamed));
+        body(withQuote(streamed));
       },
     });
+    if (!live()) return null;
     if (!res.draft) {
-      io.onBody(withQuote(priorBody)); // never leave a half-streamed preview
+      restoreBody(); // never leave a half-streamed preview
       io.onError?.(
         res.skipped === "low_confidence"
           ? "The assistant wasn't confident enough to draft this — try adding an instruction."
@@ -212,25 +289,25 @@ export async function runDraftRound(
       );
       return null;
     }
-    io.onBody(withQuote(res.draft));
+    body(withQuote(res.draft));
     return res.draft;
   } catch (err) {
-    io.setSteps(failRunning);
+    if (!live()) return null;
+    steps(failRunning);
     if (signal.aborted) {
       // Stop or the client bound. The member keeps their own text.
-      io.onBody(withQuote(priorBody));
+      restoreBody();
       const timedOut = (signal.reason as Error | undefined)?.name === CLIENT_TIMEOUT;
-      io.setNotice(timedOut ? DRAFT_NOTICES.timeout : DRAFT_NOTICES.stopped);
+      notice(timedOut ? DRAFT_NOTICES.timeout : DRAFT_NOTICES.stopped);
       return null;
     }
     const reason = err instanceof DraftStreamError ? err.reason : null;
     if (reason) {
       // The model or the server ran out of time. The text so far stays.
-      if (!streamed.trim()) io.onBody(withQuote(priorBody));
-      io.setNotice(DRAFT_NOTICES[reason]);
+      notice(DRAFT_NOTICES[reason]);
       return null;
     }
-    io.onBody(withQuote(priorBody));
+    restoreBody();
     io.onError?.((err as Error)?.message || "AI draft failed");
     return null;
   } finally {
@@ -261,10 +338,11 @@ export function useDraftSession({
   /** Why the last round ended with no draft: Stop, a bound or a model error. */
   const [notice, setNotice] = useState<string | null>(null);
   const revisionSeq = useRef(0);
-  const controllerRef = useRef<AbortController | null>(null);
+  const [rounds] = useState(() => createDraftRounds());
 
-  // A composer that closes mid-draft stops paying for the draft.
-  useEffect(() => () => controllerRef.current?.abort(), []);
+  // A composer that unmounts mid-draft aborts the round. A composer that
+  // closes and stays mounted calls `reset`, which aborts it too.
+  useEffect(() => () => rounds.reset(), [rounds]);
 
   /** Run a draft/refine round against the CURRENT body text. */
   const run = useCallback(
@@ -274,9 +352,7 @@ export function useDraftSession({
     ) => {
       const startedAt = Date.now();
       const priorBody = args.body ?? "";
-      const controller = new AbortController();
-      controllerRef.current?.abort();
-      controllerRef.current = controller;
+      const round = rounds.begin();
 
       setBusy(true);
       setSteps([]);
@@ -295,14 +371,15 @@ export function useDraftSession({
 
       try {
         const draft = await runDraftRound(args, opts, {
-          controller,
+          controller: round.controller,
+          isCurrent: round.isCurrent,
           onBody,
           setSteps,
           setThinking,
           setNotice,
           onError,
         });
-        if (draft === null) return null;
+        if (draft === null || !round.isCurrent()) return null;
         revisionSeq.current += 1;
         const id = revisionSeq.current;
         setRevisions((prev) => [
@@ -320,17 +397,20 @@ export function useDraftSession({
         onSettled?.(draft);
         return draft;
       } finally {
-        if (controllerRef.current === controller) controllerRef.current = null;
-        setBusy(false);
+        // An ended round leaves `busy` to the reset or the newer round.
+        if (round.isCurrent()) {
+          rounds.finish(round);
+          setBusy(false);
+        }
       }
     },
-    [onBody, onSettled, onError],
+    [rounds, onBody, onSettled, onError],
   );
 
   /** Stop the round that runs now. The member keeps their own text. */
   const stop = useCallback(() => {
-    controllerRef.current?.abort();
-  }, []);
+    rounds.stop();
+  }, [rounds]);
 
   /** Flip the composer back to a saved revision (non-destructive). */
   const restore = useCallback(
@@ -343,8 +423,11 @@ export function useDraftSession({
     [revisions, onBody],
   );
 
-  /** Forget the session (composer closed / a new message opened). */
+  /** Forget the session (composer closed / a new message opened). The round
+   *  that runs now aborts, and it writes nothing after this. */
   const reset = useCallback(() => {
+    rounds.reset();
+    setBusy(false);
     setNotice(null);
     setSteps([]);
     setThinking("");
@@ -352,7 +435,7 @@ export function useDraftSession({
     setActiveRevision(null);
     setElapsedMs(null);
     revisionSeq.current = 0;
-  }, []);
+  }, [rounds]);
 
   return {
     busy,

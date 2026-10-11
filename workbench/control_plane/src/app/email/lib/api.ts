@@ -2556,7 +2556,6 @@ export async function composeAssistStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let done: { draft: string; skipped?: string } | null = null;
   let streamError: DraftStreamError | null = null;
   for (;;) {
     const { value, done: eof } = await reader.read();
@@ -2593,7 +2592,10 @@ export async function composeAssistStream(
           evt.text
         );
       } else if (evt.type === "done") {
-        done = { draft: evt.draft ?? "", skipped: evt.skipped };
+        // Return at once. A Stop or a bound that lands before EOF must not
+        // throw away a draft that already arrived.
+        reader.cancel().catch(() => undefined);
+        return { draft: evt.draft ?? "", skipped: evt.skipped };
       } else if (evt.type === "error") {
         streamError = new DraftStreamError(
           evt.error || "draft failed",
@@ -2602,7 +2604,6 @@ export async function composeAssistStream(
       }
     }
   }
-  if (done) return done;
   throw streamError ?? new DraftStreamError("draft stream ended without a result", null);
 }
 

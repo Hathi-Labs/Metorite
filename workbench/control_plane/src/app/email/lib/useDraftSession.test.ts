@@ -19,8 +19,10 @@ import { composeAssistStream, DraftStreamError, type ComposeAssistArgs } from ".
 import {
   applyStatus,
   CLIENT_TOTAL_MS,
+  createDraftRounds,
   DRAFT_NOTICES,
   runDraftRound,
+  STOP_GRACE_MS,
   type DraftStep,
 } from "./useDraftSession";
 
@@ -170,7 +172,8 @@ describe("email-draft-abort-no-fallback (A5)", () => {
     wiring.controller.abort();
     await expect(run).resolves.toBeNull();
     expect(calls).toEqual([STREAM_URL]);
-    expect(io.bodies.at(-1)).toBe("My words.");
+    // The round wrote nothing, so it writes nothing back.
+    expect(io.bodies).toEqual([]);
     expect(io.notice).toBe(DRAFT_NOTICES.stopped);
     expect(io.errors).toEqual([]);
   });
@@ -179,7 +182,14 @@ describe("email-draft-abort-no-fallback (A5)", () => {
 describe("email-draft-client-timeout (A5)", () => {
   it("the composer aborts at 180 s, keeps the text of the member and shows the message", async () => {
     vi.useFakeTimers();
-    const calls = hangingFetch();
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(url);
+        return sseThenHang([data({ type: "delta", kind: "content", text: "Half" })], init!.signal!);
+      }),
+    );
     const { io, wiring } = makeIO();
     const run = runDraftRound({ ...ARGS }, { instruction: "", quote: "> quoted" }, wiring);
 
@@ -191,7 +201,8 @@ describe("email-draft-client-timeout (A5)", () => {
     await expect(run).resolves.toBeNull();
 
     expect(calls).toEqual([STREAM_URL]);
-    expect(io.bodies.at(-1)).toBe("My words.\n\n> quoted");
+    // The round wrote a preview, so it gives back the text of the member.
+    expect(io.bodies).toEqual(["Half\n\n> quoted", "My words.\n\n> quoted"]);
     expect(io.notice).toBe("The draft took too long. Try again.");
     expect(io.notice).toBe(DRAFT_NOTICES.timeout);
   });
@@ -228,14 +239,14 @@ describe("email-draft-preview-stays (A6)", () => {
     expect(io.errors).toEqual([]);
   });
 
-  it("a typed error with no preview gives the text of the member back", async () => {
+  it("a typed error with no preview leaves the body alone", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => sseResponse([data({ type: "error", error: "slow", reason: "model_slow" })])),
     );
     const { io, wiring } = makeIO();
     await runDraftRound(ARGS, { instruction: "" }, wiring);
-    expect(io.bodies.at(-1)).toBe("My words.");
+    expect(io.bodies).toEqual([]);
     expect(io.notice).toBe(DRAFT_NOTICES.model_slow);
   });
 
@@ -320,5 +331,172 @@ describe("email-draft-status-step", () => {
     wiring.controller.abort();
     await run;
     expect(io.steps.map((s) => s.state)).toEqual(["failed"]);
+  });
+});
+
+/** A stream the test feeds one chunk at a time. It errors on the abort. */
+function pushStream() {
+  const enc = new TextEncoder();
+  let ctl!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctl = c;
+    },
+  });
+  return {
+    fetch: vi.fn(async (_u: string, init?: RequestInit) => {
+      init?.signal?.addEventListener("abort", () => ctl.error(init.signal!.reason), { once: true });
+      return new Response(body, { status: 200 });
+    }),
+    push: (chunk: string) => ctl.enqueue(enc.encode(chunk)),
+    close: () => ctl.close(),
+  };
+}
+
+/** A composer body that the round and the member both write. */
+function makeComposer(start: string) {
+  const composer = { body: start };
+  const { io, wiring } = makeIO();
+  const onBody = (b: string) => {
+    io.bodies.push(b);
+    composer.body = b;
+  };
+  return { composer, io, wiring: { ...wiring, onBody } };
+}
+
+describe("email-draft-member-text-stays (fix round 1, P1 #1)", () => {
+  it("the member types during a stalled round, presses Stop, and the typed text stays", async () => {
+    hangingFetch();
+    const { composer, io, wiring } = makeComposer("My words.");
+    const run = runDraftRound(ARGS, { instruction: "" }, wiring);
+    composer.body = "My words. And more that I typed.";
+    wiring.controller.abort();
+    await run;
+    expect(composer.body).toBe("My words. And more that I typed.");
+    expect(io.bodies).toEqual([]);
+    expect(io.notice).toBe(DRAFT_NOTICES.stopped);
+  });
+
+  it("the same at the client bound", async () => {
+    vi.useFakeTimers();
+    hangingFetch();
+    const { composer, io, wiring } = makeComposer("My words.");
+    const run = runDraftRound(ARGS, { instruction: "" }, wiring);
+    composer.body = "My words. Typed meanwhile.";
+    await vi.advanceTimersByTimeAsync(CLIENT_TOTAL_MS);
+    await run;
+    expect(composer.body).toBe("My words. Typed meanwhile.");
+    expect(io.notice).toBe(DRAFT_NOTICES.timeout);
+  });
+
+  it("the same on model_slow", async () => {
+    const s = pushStream();
+    vi.stubGlobal("fetch", s.fetch);
+    const { composer, io, wiring } = makeComposer("My words.");
+    const run = runDraftRound(ARGS, { instruction: "" }, wiring);
+    composer.body = "My words. Typed meanwhile.";
+    s.push(data({ type: "error", error: "slow", reason: "model_slow" }));
+    s.close();
+    await run;
+    expect(composer.body).toBe("My words. Typed meanwhile.");
+    expect(io.notice).toBe(DRAFT_NOTICES.model_slow);
+  });
+});
+
+describe("email-draft-reset-ends-the-round (fix round 1, P1 #2)", () => {
+  it("a reset aborts the round, and the round writes nothing after it", async () => {
+    const rounds = createDraftRounds();
+    const a = pushStream();
+    vi.stubGlobal("fetch", a.fetch);
+    const r1 = rounds.begin();
+    const mailA = makeComposer("A text.");
+    const run1 = runDraftRound(ARGS, { instruction: "" }, { ...mailA.wiring, ...r1 });
+    a.push(data({ type: "delta", kind: "content", text: "Draft for A" }));
+    await vi.waitFor(() => expect(mailA.io.bodies).toEqual(["Draft for A"]));
+
+    // The member opens mail B. The composer stays mounted and calls reset.
+    rounds.reset();
+    expect(r1.controller.signal.aborted).toBe(true);
+    const before = { bodies: [...mailA.io.bodies], notice: mailA.io.notice, steps: mailA.io.steps };
+    await expect(run1).resolves.toBeNull();
+    expect(mailA.io.bodies).toEqual(before.bodies);
+    expect(mailA.io.notice).toBe(before.notice);
+    expect(mailA.io.steps).toBe(before.steps);
+    expect(mailA.io.errors).toEqual([]);
+  });
+
+  it("a newer round ends the round before it, and only the newer one writes", async () => {
+    const rounds = createDraftRounds();
+    const a = pushStream();
+    const b = pushStream();
+    const fetches = [a.fetch, b.fetch];
+    vi.stubGlobal("fetch", vi.fn((u: string, i?: RequestInit) => fetches.shift()!(u, i)));
+    const shared = makeComposer("");
+
+    const r1 = rounds.begin();
+    const run1 = runDraftRound(ARGS, { instruction: "" }, { ...shared.wiring, ...r1 });
+    a.push(data({ type: "delta", kind: "content", text: "Old" }));
+    await vi.waitFor(() => expect(shared.composer.body).toBe("Old"));
+
+    rounds.reset();
+    const r2 = rounds.begin();
+    const run2 = runDraftRound({ ...ARGS, body: "B text." }, { instruction: "" }, { ...shared.wiring, ...r2 });
+    b.push(data({ type: "done", draft: "Draft for B" }));
+
+    await expect(run1).resolves.toBeNull();
+    await expect(run2).resolves.toBe("Draft for B");
+    expect(shared.composer.body).toBe("Draft for B");
+    expect(shared.io.bodies).toEqual(["Old", "Draft for B"]);
+    expect(shared.io.notice).toBeNull();
+  });
+});
+
+describe("email-draft-stop-grace (fix round 1, P2)", () => {
+  it("Stop does nothing for 400 ms after a round starts, so a double-click on Draft does not stop it", () => {
+    let t = 1_000;
+    const rounds = createDraftRounds(() => t);
+    const r = rounds.begin();
+    t += STOP_GRACE_MS - 1;
+    expect(rounds.stop()).toBe(false);
+    expect(r.controller.signal.aborted).toBe(false);
+    t += 1;
+    expect(rounds.stop()).toBe(true);
+    expect(r.controller.signal.aborted).toBe(true);
+    expect(STOP_GRACE_MS).toBe(400);
+  });
+});
+
+describe("email-draft-done-wins (fix round 1, P3)", () => {
+  it("a Stop after `done` and before EOF keeps the draft", async () => {
+    const s = pushStream();
+    vi.stubGlobal("fetch", s.fetch);
+    const { io, wiring } = makeIO();
+    const run = runDraftRound(ARGS, { instruction: "" }, wiring);
+    s.push(data({ type: "done", draft: "Finished" }));
+    await new Promise((r) => setTimeout(r, 20));
+    wiring.controller.abort();
+    await expect(run).resolves.toBe("Finished");
+    expect(io.bodies.at(-1)).toBe("Finished");
+    expect(io.notice).toBeNull();
+  });
+});
+
+describe("email-draft-split-data-line (verifier finding 3)", () => {
+  it("a data line split across two reads still parses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"delta","kind":"content","te',
+          'xt":"Hel"}\n\ndata: {"type":"do',
+          'ne","draft":"Split"}\n\n',
+        ]),
+      ),
+    );
+    const deltas: string[] = [];
+    await expect(
+      composeAssistStream(ARGS, { onDelta: (_k, t) => deltas.push(t) }),
+    ).resolves.toEqual({ draft: "Split", skipped: undefined });
+    expect(deltas).toEqual(["Hel"]);
   });
 });
