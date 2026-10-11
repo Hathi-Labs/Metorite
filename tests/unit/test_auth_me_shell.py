@@ -105,6 +105,11 @@ class TestValidation:
         {"answered": "maybe"},
         {"answered": "answered"},
         {"pins": ["/tasks"] * 30},
+        # `known` takes the same names and the same cap as `pins`.
+        {"known": ["/nowhere"]},
+        {"known": ["/"]},
+        {"known": ["/tasks"] * 30},
+        {"known": "/tasks"},
         # The body never names the member or the tenant (R5, R11).
         {"pins": [], "user_id": "someone@else.example"},
         {"pins": [], "organization_id": "00000000-0000-0000-0000-000000000001"},
@@ -125,6 +130,15 @@ class TestValidation:
         [(sql, params)] = _writes(fake)
         assert "INSERT INTO user_settings" in sql
         assert json.loads(params["shell_prefs"])["preset"] == "engineer"
+
+    def test_known_is_stored_beside_the_stars(self, fake: _FakeDB) -> None:
+        body = {"preset": "engineer", "answered": "answered", "pins": ["/projects"],
+                "known": ["/projects", "/chat", "/chat", "/tasks"]}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["known"] == ["/projects", "/chat", "/tasks"]
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["known"] == ["/projects", "/chat", "/tasks"]
 
     def test_skip_is_a_stored_choice(self, fake: _FakeDB) -> None:
         res = _client(_user()).put("/auth/me/shell", json={"answered": "skipped"})
@@ -194,7 +208,22 @@ class TestTheRead:
                                   "pins": ["/tasks", "/gone"], "newOrder": ["capture", "x"]})
         body = _client(_user()).get("/auth/me/shell").json()
         assert body == {"preset": None, "answered": "skipped", "pins": ["/tasks"],
-                        "cardOrder": None, "newOrder": ["capture"]}
+                        "known": None, "cardOrder": None, "newOrder": ["capture"]}
+
+    def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
+                                  "pins": ["/projects"], "known": ["/projects", "/gone", 7]})
+        body = _client(_user()).get("/auth/me/shell").json()
+        assert body["known"] == ["/projects"]
+
+    def test_an_ns7_row_reads_known_as_null(self, fake: _FakeDB) -> None:
+        """A row saved before `known` existed. The client reads null as
+        "every app not in pins is known" (`starredHrefs`)."""
+        fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
+                                  "pins": ["/tasks", "/projects"]})
+        body = _client(_user()).get("/auth/me/shell").json()
+        assert body["pins"] == ["/tasks", "/projects"]
+        assert body["known"] is None
 
 
 # ── A guest (done-when 2) ──────────────────────────────────────────────────
