@@ -244,7 +244,7 @@ def _require_entry_fields(
     3. ``import_zoho.apply_record`` → ``core.upsert_by_zoho_id``, reached by the
        backfill route **and by ``sync_zoho.pull_phase`` — the ENABLED 600s
        production loop** → **ungated, and it must stay that way.** It builds its
-       own ``INSERT … ON CONFLICT (zoho_id)`` and calls neither
+       own ``INSERT … ON CONFLICT (organization_id, zoho_id)`` and calls neither
        ``core.insert_row`` nor ``records.create_record``. A pulled deal carries
        whatever stage Zoho has it in and owes nothing to a requirement set here
        afterwards; a gate on that path would start refusing rows from the live

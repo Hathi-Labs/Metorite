@@ -301,12 +301,16 @@ each step is `IF NOT EXISTS` or guarded.
    to each of the 13 `crm_*` tables where it is missing. Declare the foreign
    key inline, because generated phase 3 adds `<t>_org_fk` by name.
 2. Fill a NULL `organization_id` with the id of `fracktalworks` if it
-   exists, else with the only org. With two or more orgs and no
-   `fracktalworks`, stop and name the table. The seed rows on prod already
-   belong to `default`, and they stay there. An org gets its own seed when
-   its mode becomes `native` (CRM-T5). A Mirror org gets its stages from
-   the source.
-3. Set `NOT NULL`.
+   exists, else with the only org. The seed rows on prod already belong to
+   `default`, and they stay there. An org gets its own seed when its mode
+   becomes `native` (CRM-T5). A Mirror org gets its stages from the source.
+3. Set `NOT NULL` on each table with no NULL row. *(Changed in the build,
+   2026-10-11.)* With two or more orgs and no `fracktalworks`, the migration
+   does not stop. That table keeps a nullable column, FORCE RLS hides its
+   orphan rows, and a NOTICE names the table. Prod never reaches this, and a
+   fresh install has one org. Only a shared dev database does. A stop there
+   would break `scripts/dev_db.sh`. The migration looks up no `default`
+   slug, because the D43-A ratchet refuses a new one.
 4. `ENABLE` and `FORCE ROW LEVEL SECURITY`, with one `USING` and `WITH CHECK`
    policy on `app.tenant_id`.
 5. Replace each global unique key with a per-tenant one (CR-3).
