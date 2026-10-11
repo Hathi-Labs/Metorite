@@ -177,6 +177,66 @@ describe("the writes", () => {
   });
 });
 
+describe("overlapping saves: only the newest writes the cache", () => {
+  /** A fetch whose replies the test releases, in any order. */
+  function heldFetch() {
+    const waiting: Array<(r: Response) => void> = [];
+    vi.stubGlobal(
+      "fetch",
+      () => new Promise<Response>((resolve) => waiting.push(resolve)),
+    );
+    const answer = (i: number, status: number, body: unknown) =>
+      waiting[i](new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
+    return { answer };
+  }
+  const ONE: StoredShell = { ...ENGINEER, pins: ["/tasks"], known: ["/tasks", "/chat"] };
+  const TWO: StoredShell = { ...ENGINEER, pins: ["/tasks", "/chat"], known: ["/tasks", "/chat"] };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("an older success never paints over the newer choice", async () => {
+    put(SHELL_PREFS_PATH, ENGINEER);
+    const { answer } = heldFetch();
+    const first = saveShellPrefs(ONE);
+    const second = saveShellPrefs(TWO);
+    await flush();
+    answer(0, 200, ONE);
+    await first;
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(TWO);
+    answer(1, 200, TWO);
+    await second;
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(TWO);
+    expect(confirmedLayout()).toEqual(TWO);
+  });
+
+  it("an older failure never undoes the newer save", async () => {
+    put(SHELL_PREFS_PATH, ENGINEER);
+    const { answer } = heldFetch();
+    const first = saveShellPrefs(ONE);
+    const second = saveShellPrefs(TWO);
+    await flush();
+    answer(0, 503, { detail: "unavailable" });
+    await expect(first).rejects.toThrow();
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(TWO);
+    answer(1, 200, TWO);
+    await second;
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(TWO);
+  });
+
+  it("a newer answer that lands first is not replaced by the older one", async () => {
+    put(SHELL_PREFS_PATH, ENGINEER);
+    const { answer } = heldFetch();
+    const first = saveShellPrefs(ONE);
+    const second = saveShellPrefs(TWO);
+    await flush();
+    answer(1, 200, TWO);
+    await second;
+    answer(0, 200, ONE);
+    await first;
+    expect(peek<StoredShell>(SHELL_PREFS_PATH)?.data).toEqual(TWO);
+    expect(confirmedLayout()).toEqual(TWO);
+  });
+});
+
 describe("the read starts with the access read", () => {
   const on = { navOn: true, sessionStatus: "authenticated", accessLoading: true, hasWorkspace: false };
 

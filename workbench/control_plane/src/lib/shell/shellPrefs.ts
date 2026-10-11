@@ -62,11 +62,16 @@ let confirmed: StoredShell | undefined;
 let unsaved: StoredShell | undefined;
 /** The question was asked in this page. It is never asked twice in one. */
 let askedHere = false;
+/** Each save takes the next number. Only the newest writes the cache. */
+let saveSeq = 0;
+/** The number of the newest save that the server confirmed. */
+let confirmedSeq = 0;
 
 onClear(() => {
   confirmed = undefined;
   unsaved = undefined;
   askedHere = false;
+  confirmedSeq = saveSeq;
 });
 
 /** Tests only: start a new page. */
@@ -74,6 +79,7 @@ export function __newShellPageForTests(): void {
   confirmed = undefined;
   unsaved = undefined;
   askedHere = false;
+  confirmedSeq = saveSeq;
 }
 
 export function markAsked(): void {
@@ -114,11 +120,19 @@ export async function readShellPrefs(): Promise<StoredShell> {
  * On a refusal it throws, so the caller can say so. With `keep`, the chosen
  * layout stays for this page (an answer to the question). Without it, the
  * cache goes back to what it held (a star).
+ *
+ * ⚠️ **Saves can overlap** (two quick stars). Each save takes a number, and
+ * only the NEWEST one writes the cache or reverts it. An older success must
+ * not paint over the newer choice, and an older failure must not undo it.
+ * A newer save carries the older change too, because a toggle builds on
+ * `latestShell()`. Fence: `shellCache.test.ts`, "overlapping saves".
  */
 export async function saveShellPrefs(
   next: StoredShell | null,
   opts: { keep?: boolean } = {},
 ): Promise<StoredShell> {
+  const seq = ++saveSeq;
+  const newest = () => seq === saveSeq;
   const before = peek<StoredShell>(SHELL_PREFS_PATH)?.data;
   const shown = next ?? EMPTY_SHELL;
   put(SHELL_PREFS_PATH, shown);
@@ -130,12 +144,20 @@ export async function saveShellPrefs(
     });
     if (!res.ok) throw new Error(`shell layout ${res.status}`);
     const saved = asLayout(await res.json()) ?? shown;
-    confirmed = saved;
-    unsaved = undefined;
-    put(SHELL_PREFS_PATH, saved);
+    // The server's word, unless a newer save already confirmed a later one.
+    if (seq > confirmedSeq) {
+      confirmedSeq = seq;
+      confirmed = saved;
+    }
+    if (newest()) {
+      unsaved = undefined;
+      put(SHELL_PREFS_PATH, saved);
+    }
     return saved;
   } catch (err) {
-    if (opts.keep) {
+    if (!newest()) {
+      // A newer save owns the cache now. It carries this change too.
+    } else if (opts.keep) {
       unsaved = shown;
       put(SHELL_PREFS_PATH, shown);
     } else if (before) {

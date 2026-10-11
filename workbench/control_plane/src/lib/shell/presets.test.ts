@@ -69,7 +69,7 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
         const held = hrefs(sections);
         const label = `${preset.label}, ${g.name}${preview ? ", preview apps restored" : ""}`;
 
-        const stars = { pins: answerStars(preset, sections), known: null };
+        const stars = { pins: answerStars(preset, sections), known: [...held] };
         const raw = { pins: [...preset.pins, "/tasks", "/approvals"], known: [] };
 
         it(`${label}: draws no star outside visibleSections`, () => {
@@ -109,14 +109,14 @@ describe("the subset rule: a preset never draws what the member does not hold (Â
   it("draws a preview pin only when the app is promoted (CRM)", () => {
     const sales = presetById("sales-manager")!;
     expect(sales.pins).toContain("/crm");
-    const stars = { pins: sales.pins, known: null };
+    const stars = { pins: sales.pins, known: [] };
     expect([...starredHrefs(stars, visibleSections(ALL, false, false))!]).not.toContain("/crm");
     expect([...starredHrefs(stars, visibleSections(ALL, false, true))!]).toContain("/crm");
   });
 
   it("never pins a page about the member, even when one is named", () => {
     const sections = visibleSections(ALL, true);
-    const stars = { pins: ["/people/me", "/settings/appearance", "/tasks"], known: null };
+    const stars = { pins: ["/people/me", "/settings/appearance", "/tasks"], known: PANES.map((p) => p.href) };
     expect([...starredHrefs(stars, sections)!]).toEqual(["/tasks"]);
   });
 });
@@ -301,7 +301,8 @@ describe("the star model: only starred apps show, under their own category", () 
     );
     expect(personal).toEqual(["/tasks", "/calendar", "/email", "/whatsapp"]);
     expect(answerStars(presetById("founder")!, sections)).toEqual([...personal, "/projects", "/chat", "/approvals"]);
-    expect(answerStars(presetById("accounts-assistant")!, sections)).toEqual(personal);
+    // Approvals is starred for every answer of a member who holds it.
+    expect(answerStars(presetById("accounts-assistant")!, sections)).toEqual([...personal, "/approvals"]);
     // A member who lacks an app gets no star for it.
     const few = visibleSections(["tasks", "projects"], false);
     expect(answerStars(presetById("founder")!, few)).toEqual(["/tasks", "/calendar", "/projects"]);
@@ -311,6 +312,15 @@ describe("the star model: only starred apps show, under their own category", () 
       "Chat",
       "Approvals",
     ]);
+  });
+
+  // Orchestrator decision, 2026-10-11: the sidebar row is an approver's main
+  // door to the queue, because the bell and My Day are not reliably on.
+  it("an approver who answers Engineer gets Approvals starred, and a member without it does not", () => {
+    const engineer = presetById("engineer")!;
+    expect(engineer.pins).not.toContain("/approvals");
+    expect(answerStars(engineer, visibleSections(["tasks", "approvals"], false))).toContain("/approvals");
+    expect(answerStars(engineer, visibleSections(["tasks"], false))).not.toContain("/approvals");
   });
 
   it("a new app shows starred until a save covers it (the known rule)", () => {
@@ -330,11 +340,29 @@ describe("the star model: only starred apps show, under their own category", () 
     expect(starredHrefs(hidden, sections)!.has("/chat")).toBe(false);
   });
 
-  it("an NS-7 row with no known keeps exactly its pins, and no app appears by surprise", () => {
+  // NS-7's pins were a "My apps" list on top of the whole sidebar, never a
+  // filter. So a row with no `known` shows every held app, as on the day
+  // before the merge.
+  it("an NS-7 row with no known shows every held app, as the day before", () => {
     const old = { pins: ["/tasks", "/projects"], known: null };
-    expect([...starredHrefs(old, sections)!]).toEqual(["/tasks", "/projects"]);
-    const groups = shellSidebar(sections, old);
-    expect(groups.flatMap((g) => g.items.map((p) => p.href))).toEqual(["/tasks", "/projects"]);
+    expect(starredHrefs(old, sections)).toBeNull();
+    expect(shellSidebar(sections, old)).toEqual(shellSidebar(sections));
+  });
+
+  it("an NS-7 row that pinned and then unpinned (pins: [], no known) still shows every app", () => {
+    const emptied = { pins: [], known: null };
+    expect(starredHrefs(emptied, sections)).toBeNull();
+    expect(shellSidebar(sections, emptied)).toEqual(shellSidebar(sections));
+    for (const h of heldApps()) expect(isStarred(emptied, sections, h)).toBe(true);
+  });
+
+  it("the first star-model save of an NS-7 row writes known, and the stars filter from then on", () => {
+    const old = { pins: ["/tasks"], known: null };
+    const saved = toggleStar(old, sections, "/chat");
+    expect([...saved.known].sort()).toEqual(heldApps().sort());
+    expect(saved.pins).not.toContain("/chat");
+    expect(saved.pins).toContain("/projects");
+    expect(starredHrefs(saved, sections)!.has("/chat")).toBe(false);
   });
 
   it("toggles a star on and off, and saves every held app as known", () => {

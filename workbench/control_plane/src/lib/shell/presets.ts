@@ -292,23 +292,27 @@ export interface Stars {
  *
  * 1. `pins` null: the member never chose (never asked, or skipped). Every
  *    held app shows, so the sidebar is the one it was before stars.
- * 2. An app in `pins` shows.
- * 3. **An app that is not in `known` is new to the member** (newly granted,
+ * 2. ⚠️ **`known` null: every held app shows too.** That is a row that
+ *    NS-7 saved before the star model. NS-7's pins were a "My apps" list ON
+ *    TOP of the whole sidebar, never a filter, and a member who pinned and
+ *    then unpinned stored `pins: []`. Reading those pins as stars would
+ *    hide apps that the member never chose to hide, or every app. So such
+ *    a row draws the sidebar of the day before the merge. The first save
+ *    of the star model (a star, a hide, or the dialog) writes `known`, and
+ *    from then on the stars filter.
+ * 3. An app in `pins` shows.
+ * 4. **An app that is not in `known` is new to the member** (newly granted,
  *    or newly live), and it shows until a save covers it. Without this
  *    rule, a new app would be hidden from every member who ever saved.
- * 4. ⚠️ **`known` null with `pins` set** is a row that NS-7 saved before
- *    this field existed. Every app that is not in `pins` counts as known,
- *    so the member keeps exactly the apps they pinned, and no app appears
- *    by surprise.
  */
 export function starredHrefs(stars: Stars | null | undefined, sections: readonly NavSection[]): Set<string> | null {
-  if (!stars || stars.pins === null) return null;
+  if (!stars || stars.pins === null || stars.known === null) return null;
   const pins = new Set(stars.pins);
-  const known = stars.known === null ? null : new Set(stars.known);
+  const known = new Set(stars.known);
   return new Set(
     starrableHeld(sections)
       .map((p) => p.href)
-      .filter((h) => pins.has(h) || (known !== null && !known.has(h))),
+      .filter((h) => pins.has(h) || !known.has(h)),
   );
 }
 
@@ -348,13 +352,21 @@ export function toggleStar(
 }
 
 /**
+ * The one app every answer stars for a member who holds it: Approvals.
+ * Orchestrator decision, 2026-10-11. The bell and My Day are owner-only
+ * flags that are not reliably on, so the sidebar row is an approver's main
+ * door to the queue (§3.2a item 2).
+ */
+export const ALWAYS_STARRED: readonly string[] = ["/approvals"];
+
+/**
  * What an answer stars (owner, 2026-10-11, "Personal + preset"): every
- * Personal Center app the member holds, and the preset's apps that they
- * hold. In `nav.ts` order.
+ * Personal Center app the member holds, the preset's apps that they hold,
+ * and `ALWAYS_STARRED`. In `nav.ts` order.
  */
 export function answerStars(preset: Preset, sections: readonly NavSection[]): string[] {
   return starrableHeld(sections)
-    .filter((p) => p.team === "personal" || preset.pins.includes(p.href))
+    .filter((p) => p.team === "personal" || preset.pins.includes(p.href) || ALWAYS_STARRED.includes(p.href))
     .map((p) => p.href);
 }
 

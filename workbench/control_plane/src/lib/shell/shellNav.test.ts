@@ -172,9 +172,12 @@ describe("the desktop frame (owner, 2026-10-09: one bar across the top)", () => 
 
 describe("the star model: each category lists only its starred apps (owner, 2026-10-11)", () => {
   const all = visibleSections(ALL, true);
+  // Every pane known, as after a star-model save, so the stars filter.
+  const KNOWN = PANES.map((p) => p.href);
+  const starred = (pins: string[]) => ({ pins, known: KNOWN });
 
   it("draws only the starred apps, in nav.ts order and never in star order", () => {
-    const groups = shellSidebar(all, { pins: ["/chat", "/projects", "/email"], known: null });
+    const groups = shellSidebar(all, starred(["/chat", "/projects", "/email"]));
     expect(shape(groups)).toEqual([
       ["personal", ["/email"]],
       ["across", ["/projects"]],
@@ -183,23 +186,23 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 
   it("puts Personal Center first, and has no My apps group", () => {
-    const groups = shellSidebar(all, { pins: ["/approvals", "/chat", "/tasks"], known: null });
+    const groups = shellSidebar(all, starred(["/approvals", "/chat", "/tasks"]));
     expect(groups.map((g) => g.id)).toEqual(["personal", "studio", "admin"]);
     expect(groups.map((g) => g.label)).not.toContain("My apps");
   });
 
   it("hides a category with no starred app, and keeps every other one", () => {
-    const groups = shellSidebar(all, { pins: ["/tasks", "/approvals"], known: null });
+    const groups = shellSidebar(all, starred(["/tasks", "/approvals"]));
     expect(groups.map((g) => g.id)).toEqual(["personal", "admin"]);
   });
 
   it("keeps My Email in Personal Center: nothing moves between categories", () => {
-    const groups = shellSidebar(all, { pins: ["/email", "/projects"], known: null });
+    const groups = shellSidebar(all, starred(["/email", "/projects"]));
     expect(groups.find((g) => g.id === "personal")!.items.map((p) => p.href)).toEqual(["/email"]);
   });
 
   it("draws no star the member does not hold", () => {
-    const groups = shellSidebar(visibleSections(["tasks"], false), { pins: ["/projects", "/crm", "/tasks"], known: null });
+    const groups = shellSidebar(visibleSections(["tasks"], false), starred(["/projects", "/crm", "/tasks"]));
     expect(shape(groups)).toEqual([["personal", ["/tasks"]]]);
   });
 
