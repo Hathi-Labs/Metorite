@@ -148,6 +148,7 @@ async def test_reset_from_mirror_with_a_disconnected_zoho_works(ns, app_engine) 
 
 
 async def test_a_member_who_is_not_admin_gets_403(ns, app_engine) -> None:  # noqa: F811
+    """Regression only: the router dependency already gave 403 before U5b."""
     _assert_non_priv(app_engine)
     await _native(ns)
     r = await _reset(ns, _member(_address("m"), ns.org_a))
@@ -176,3 +177,105 @@ async def test_a_stale_expected_mode_is_409(ns, app_engine, monkeypatch) -> None
     assert r.status_code == 409, r.text
     assert "changed while this request ran" in r.json()["detail"]
     assert _counts(ns, ns.org_a) == (6, 5, 6)
+
+
+def _seed_sync_state(ns: Any) -> None:  # noqa: F811
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_sync_cursors (organization_id, module, "
+            "last_pulled_at, initial_done_at) VALUES (CAST(:o AS uuid), "
+            "'Leads', now(), now())"), {"o": ns.org_a})
+        c.execute(text(
+            "INSERT INTO crm_field_defs (organization_id, entity, key, label, source) "
+            "VALUES (CAST(:o AS uuid), 'lead', 'zk', 'ZK', 'zoho'), "
+            "(CAST(:o AS uuid), 'lead', 'mk', 'MK', 'manual')"), {"o": ns.org_a})
+        c.execute(text(
+            "INSERT INTO crm_sync_runs (organization_id, kind, status) "
+            "VALUES (CAST(:o AS uuid), 'import', 'ok')"), {"o": ns.org_a})
+
+
+def _sync_counts(ns: Any) -> tuple[int, ...]:  # noqa: F811
+    q = "SELECT count(*) FROM {t} WHERE organization_id = CAST(:o AS uuid){w}"
+    with ns.admin_engine.connect() as c:
+        return tuple(
+            int(c.execute(text(q.format(t=t, w=w)), {"o": ns.org_a}).scalar())
+            for t, w in (
+                ("crm_sync_cursors", ""),
+                ("crm_sync_runs", ""),
+                ("crm_field_defs", " AND source = 'zoho'"),
+                ("crm_field_defs", " AND source = 'manual'"),
+            )
+        )
+
+
+@pytest.fixture(autouse=True)
+def _clean_sync(ns):  # noqa: F811
+    yield
+    with ns.admin_engine.begin() as c:
+        for t in ("crm_sync_cursors", "crm_sync_runs", "crm_field_defs"):
+            c.execute(text(f"DELETE FROM {t} WHERE organization_id = CAST(:o AS uuid)"),
+                      {"o": ns.org_a})
+
+
+async def test_reset_clears_the_zoho_sync_state(ns, app_engine) -> None:  # noqa: F811
+    _assert_non_priv(app_engine)
+    await _native(ns)
+    _seed_sync_state(ns)
+    assert _sync_counts(ns) == (1, 1, 1, 1)
+    assert (await _reset(ns)).status_code == 200
+    # No cursor, so the engine takes the import path next time. The Zoho field
+    # def goes. A manual one stays.
+    assert _sync_counts(ns) == (0, 0, 0, 1)
+
+
+async def test_a_record_written_after_the_count_is_409_not_500(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    await _native(ns)
+    from gateway.routes.crm import settings as mod
+
+    real = mod._check_reset_allowed
+
+    async def racing(db: Any, org: str) -> None:
+        await real(db, org)  # passes: 0 records
+        _add_lead(ns)  # a record lands before the delete
+
+    monkeypatch.setattr(mod, "_check_reset_allowed", racing)
+    r = await _reset(ns)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == _HAS_RECORDS
+    assert _counts(ns, ns.org_a) == (6, 5, 6)
+    assert _mode(ns)[0] == "native"
+
+
+async def test_reset_drops_the_credential_of_a_needs_reconnect_row(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    _assert_non_priv(app_engine)
+    from gateway.routes.crm import connection as cmod
+
+    async def no_revoke(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(cmod, "_best_effort_revoke", no_revoke)
+    import acb_llm.key_store as key_store
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "acb_master_key", "r8-master-key", raising=False)
+    monkeypatch.setattr(key_store, "_store", None)
+    conn = _add_connection(ns, "needs_reconnect")
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE integration_connections SET credentials_encrypted = 'blob' "
+            "WHERE id = CAST(:i AS uuid)"), {"i": conn})
+        c.execute(text(
+            "INSERT INTO crm_settings (organization_id, mode, connection_id) "
+            "VALUES (CAST(:o AS uuid), 'mirror', CAST(:c AS uuid))"),
+            {"o": ns.org_a, "c": conn})
+    assert (await _reset(ns)).status_code == 200
+    with ns.admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT status, credentials_encrypted FROM integration_connections "
+            "WHERE id = CAST(:i AS uuid)"), {"i": conn}).first()
+    assert tuple(row) == ("disconnected", None)

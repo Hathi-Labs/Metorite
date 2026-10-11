@@ -49,11 +49,13 @@ from gateway.routes.crm.access import (
     DEFAULT_ACCESS,
     read_settings,
 )
+from gateway.routes.crm.connection import OWNING_APP, PROVIDER, disconnect_zoho
 from gateway.routes.crm.core import _tenant_session, router
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: The ``crm_settings.mode`` vocabulary, mirrored from the CHECK in
 #: migration 243.
@@ -77,7 +79,18 @@ _RECORD_TABLES: tuple[str, ...] = (
 _RESET_DELETES: tuple[str, ...] = (
     "crm_status_changes", "crm_deal_statuses", "crm_lead_statuses",
     "crm_lost_reasons",
+    # Zoho sync state. A cursor with ``initial_done_at`` set would make a later
+    # reconnect skip the first import (engine.py reads it), so it goes too.
+    "crm_sync_cursors", "crm_sync_runs",
 )
+
+_HAS_RECORDS = {
+    "code": "crm_has_records",
+    "message": (
+        "This CRM has records, so its setup cannot change. "
+        "Remove the records first."
+    ),
+}
 
 _UPSERT_SQL = (
     "INSERT INTO crm_settings "
@@ -161,14 +174,8 @@ async def _check_reset_allowed(db: Any, org: str) -> None:
             text(f"SELECT 1 FROM {table} LIMIT 1"),
         )).first()
         if found is not None:
-            raise HTTPException(status_code=409, detail={
-                "code": "crm_has_records",
-                "message": (
-                    "This CRM has records, so its setup cannot change. "
-                    "Remove the records first."
-                ),
-            })
-    connection = await store.get(db, org, "zoho", "crm")
+            raise HTTPException(status_code=409, detail=dict(_HAS_RECORDS))
+    connection = await store.get(db, org, PROVIDER, OWNING_APP)
     if connection is not None and connection.status == store.STATUS_CONNECTED:
         raise HTTPException(status_code=409, detail={
             "code": "crm_connected",
@@ -181,10 +188,21 @@ async def _reset_setup(db: Any, org: str) -> None:
     await db.execute(text(
         "UPDATE crm_settings SET connection_id = NULL "
         "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
-    for table in _RESET_DELETES:
+    try:
+        for table in _RESET_DELETES:
+            await db.execute(text(
+                f"DELETE FROM {table} "
+                "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
         await db.execute(text(
-            f"DELETE FROM {table} "
-            "WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
+            "DELETE FROM crm_field_defs WHERE organization_id = "
+            "CAST(:o AS uuid) AND source = 'zoho'"), {"o": org})
+    except DBAPIError as exc:
+        # A record written after the count names a stage: RESTRICT refuses the
+        # delete. That is "has records", not a 500.
+        code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if code == "23503":
+            raise HTTPException(status_code=409, detail=dict(_HAS_RECORDS)) from exc
+        raise
 
 
 def _check_access(access: str | None) -> None:
@@ -252,6 +270,10 @@ async def patch_crm_settings(
         )
         resetting = mode_changes and values["mode"] is None
         if resetting:
+            # Serialise with any other write of this settings row, then count.
+            await db.execute(text(
+                "SELECT 1 FROM crm_settings "
+                "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"), {"o": org})
             await _check_reset_allowed(db, org)
         merged = {
             "organization_id": org,
@@ -274,4 +296,9 @@ async def patch_crm_settings(
             await seed_native_pipeline(db, org)
         if resetting:
             await _reset_setup(db, org)
-        return _wire(row)
+        result = _wire(row)
+    if resetting:
+        # Drop the credential too: revoke best-effort, delete the blob. A
+        # `connected` row never gets here (409 above).
+        await disconnect_zoho(org)
+    return result

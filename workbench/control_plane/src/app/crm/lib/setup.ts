@@ -12,7 +12,7 @@ export const SETUP_ANCHOR = "crm-setup";
 
 export const CONFIRM_TITLE = "Change your CRM setup?";
 export const CONFIRM_BODY =
-  "The pipeline stages and lost reasons go, and you choose again how your CRM works.";
+  "The pipeline stages, the lost reasons and any Zoho sync state go, and you choose again how your CRM works.";
 export const CONNECTED_REASON = "Disconnect Zoho first, then change the setup.";
 export const RECORDS_REASON = "This CRM has records, so its setup cannot change.";
 export const FAILED_TOAST = "The setup did not change. Try again.";
