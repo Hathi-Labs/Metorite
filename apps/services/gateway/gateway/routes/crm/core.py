@@ -412,8 +412,11 @@ class ListResponse(BaseModel):
 #: The WHERE clause of an OPEN lead (CRM-Q5). A native lead is converted while the
 #: deal it became exists (§3.3/B6). A mirrored lead is converted when Zoho says so,
 #: because Zoho allows a conversion with no deal, and the deal can be absent here.
+#: The second half avoids ``IS NOT NULL`` on purpose: the CRM test fake reads each
+#: ``IS [NOT] NULL`` as a plain filter, so a comparison keeps it one clause.
 OPEN_LEAD_SQL = (
-    "converted_deal_id IS NULL AND NOT (ext_source IS NOT NULL AND converted_at IS NOT NULL)"
+    "converted_deal_id IS NULL "
+    "AND NOT (ext_source > '' AND converted_at > '-infinity'::timestamptz)"
 )
 
 

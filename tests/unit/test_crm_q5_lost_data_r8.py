@@ -34,9 +34,9 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import text
 
 from tests.unit.test_crm_sync_engine_r8 import (  # noqa: F401
+    ZohoTenant,
     _admin,
     _call,
-    ZohoTenant,
     _connect,
     _count,
     _q,
