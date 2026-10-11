@@ -495,7 +495,9 @@ async def convert_lead(
     async with _tenant_session() as db:
         lead = await require_row(db, LEADS.table, lead_id, "Lead")
         await assert_writable(db, current_tenant(), LEADS, None, row=lead)
-        if getattr(lead, "converted_deal_id", None):
+        if getattr(lead, "converted_deal_id", None) or (
+            getattr(lead, "ext_source", None) and getattr(lead, "converted_at", None)
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="This lead has already been converted.",

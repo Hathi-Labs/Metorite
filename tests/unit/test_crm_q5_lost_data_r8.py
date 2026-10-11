@@ -34,6 +34,8 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import text
 
 from tests.unit.test_crm_sync_engine_r8 import (  # noqa: F401
+    _admin,
+    _call,
     ZohoTenant,
     _connect,
     _count,
@@ -60,7 +62,11 @@ class Q5Zoho(ZohoTenant):
         self.roles: dict[str, list[dict[str, Any]]] = {}
         self.role_calls: list[str] = []
         self.scope_denied: set[str] = set()
+        #: module -> (status, body) for a fault on its record and deleted reads.
+        self.faults: dict[str, tuple[int, dict[str, Any]]] = {}
+        self.roles_fault: tuple[int, dict[str, str]] | None = None
         self.lead_params: list[str | None] = []
+        self.lead_since: list[str | None] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -68,11 +74,19 @@ class Q5Zoho(ZohoTenant):
         if roles:
             self.requests.append(request)
             self.role_calls.append(roles.group(1))
+            if self.roles_fault is not None:
+                return httpx.Response(
+                    self.roles_fault[0], json={"code": "X"},
+                    headers=self.roles_fault[1])
             rows = self.roles.get(roles.group(1), [])
             if not rows:
                 return httpx.Response(204)
             return httpx.Response(200, json={"data": rows})
         module = re.match(r"/crm/v2/(\w+)(/deleted)?$", path)
+        if module and module.group(1) in self.faults:
+            self.requests.append(request)
+            status, body = self.faults[module.group(1)]
+            return httpx.Response(status, json=body)
         if module and module.group(1) in self.scope_denied:
             self.requests.append(request)
             return httpx.Response(401, json={
@@ -80,6 +94,7 @@ class Q5Zoho(ZohoTenant):
         if module and module.group(1) == "Leads" and not module.group(2):
             both = request.url.params.get("converted")
             self.lead_params.append(both)
+            self.lead_since.append(request.headers.get("If-Modified-Since"))
             if both != "both":
                 held = self.data["Leads"]
                 self.data["Leads"] = [r for r in held if not r.get("Converted__s")]
@@ -409,3 +424,137 @@ async def test_two_orgs_with_the_same_zoho_ids_never_cross(ns, zoho) -> None:
     assert (await engine.run_org(ns.org_a)).status == "ok"
     assert _count(ns, "crm_activities", ns.org_a, "type = 'task'") == 0
     assert _count(ns, "crm_activities", ns.org_b, "type = 'task'") == 1
+
+
+# ── Review fixes ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("status,body", [
+    (403, {"code": "NO_PERMISSION", "message": "no permission to access this module"}),
+    (400, {"code": "INVALID_MODULE", "message": "the module name given seems to be invalid"}),
+    (500, {"code": "INTERNAL_ERROR", "message": "boom"}),
+])
+async def test_any_failure_to_read_tasks_skips_it_and_the_plan_leaves_import(
+    ns, zoho, status, body,
+) -> None:
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.faults["Tasks"] = (status, body)
+    await _connect(ns, ns.org_a, a)
+
+    first = await engine.run_org(ns.org_a)
+    assert (first.status, first.error) == ("ok", None)
+    assert first.counts["tasks"]["unavailable"] == 1
+    a.drop("Contacts", "c2", tombstone=True)
+    second = await engine.run_org(ns.org_a)
+    assert (second.status, second.kind) == ("ok", "incremental")
+    assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c2'") == 0, "deletes still run"
+
+
+async def test_a_lead_with_no_deal_is_hidden_by_default_and_shown_on_request(ns, zoho) -> None:
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Leads", "l1", 4, Last_Name="Open", Company="Acme", Lead_Status="Fresh")
+    a.add("Leads", "l2", 5, Last_Name="Gone", Company="Acme", Lead_Status="Qualified",
+          Converted__s=True, Converted_Date_Time=stamp(6),
+          Converted_Contact={"id": "c1"})  # converted, and no deal at all
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+
+    admin = _admin("admin@crm-sync.test", ns.org_a)
+    shown = await _call(admin, "GET", "/crm/leads")
+    assert shown.status_code == 200
+    assert [r["ext_id"] for r in shown.json()["rows"]] == ["l1"]
+    both = await _call(admin, "GET", "/crm/leads?include_converted=true")
+    assert sorted(r["ext_id"] for r in both.json()["rows"]) == ["l1", "l2"]
+
+
+async def test_the_roles_queue_is_seeded_once_from_the_mirrored_deals(ns, zoho) -> None:
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    for i in (1, 2):
+        a.add("Deals", f"d{i}", 3 + i, Deal_Name=f"Deal {i}", Stage="Qualify")
+        a.roles[f"d{i}"] = [{"id": "c1", "Contact_Role": "R"}]
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert sorted(a.role_calls) == ["d1", "d2"]
+    # A mirror that was built before the roles step: no queue row at all.
+    with ns.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_sync_cursors WHERE organization_id = "
+                       "CAST(:o AS uuid) AND module = 'zoho:deal_roles'"), {"o": ns.org_a})
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert sorted(a.role_calls) == ["d1", "d1", "d2", "d2"], "seeded and drained"
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert len(a.role_calls) == 4, "the flag stops a second seeding"
+
+
+async def test_a_native_link_on_a_mirrored_deal_survives_a_roles_sync(ns, zoho) -> None:
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Deals", "d1", 4, Deal_Name="Deal", Stage="Qualify")
+    a.roles["d1"] = [{"id": "c1", "Contact_Role": "Boss"}]
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_deal_contacts (deal_id, contact_id, role, organization_id) "
+            "SELECT d.id, ct.id, 'Mine', d.organization_id FROM crm_deals d, crm_contacts ct "
+            "WHERE d.ext_id = 'd1' AND ct.ext_id = 'c2' AND d.organization_id = "
+            "CAST(:o AS uuid) AND ct.organization_id = d.organization_id"), {"o": ns.org_a})
+    a.roles["d1"] = [{"id": "c1", "Contact_Role": "Boss 2"}]
+    a.data["Deals"][0]["Modified_Time"] = stamp(30)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _roles(ns, ns.org_a) == {"c1": "Boss 2", "c2": "Mine"}
+
+
+async def test_a_failed_roles_read_requeues_the_deal_and_drops_it_after_three(ns, zoho) -> None:
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Deals", "d1", 4, Deal_Name="Deal", Stage="Qualify")
+    a.roles["d1"] = [{"id": "c1", "Contact_Role": "R"}]
+    a.roles_fault = (503, {"Retry-After": "0"})
+    await _connect(ns, ns.org_a, a)
+
+    def queue() -> dict[str, Any]:
+        return _q(ns, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
+                      "CAST(:o AS uuid) AND module = 'zoho:deal_roles'", o=ns.org_a)[0][0]
+
+    for tries in (1, 2):
+        assert (await engine.run_org(ns.org_a)).status == "ok"
+        assert queue()["pending"] == ["d1"] and queue()["attempts"] == {"d1": tries}
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert queue()["pending"] == [], "the third failure drops the deal"
+    a.roles_fault = None
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert _roles(ns, ns.org_a) == {}, "a dropped deal is read again only when it changes"
+
+
+async def test_the_one_time_lead_re_read_does_not_repeat(ns, zoho) -> None:
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.add("Leads", "l1", 4, Last_Name="Open", Company="Acme", Lead_Status="Fresh")
+    await _connect(ns, ns.org_a, a)
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = cursor_state - 'converted_both' "
+            "WHERE organization_id = CAST(:o AS uuid) AND module = 'zoho:lead'"),
+            {"o": ns.org_a})
+    a.lead_since.clear()
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert a.lead_since[0] is None, "the first run after a build older than Q5 reads in full"
+    a.lead_since.clear()
+    assert (await engine.run_org(ns.org_a)).status == "ok"
+    assert a.lead_since and a.lead_since[0] is not None, "the second run is incremental"

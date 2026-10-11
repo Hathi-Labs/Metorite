@@ -409,6 +409,14 @@ class ListResponse(BaseModel):
 
 # ── Entity registry ─────────────────────────────────────────────────────────
 
+#: The WHERE clause of an OPEN lead (CRM-Q5). A native lead is converted while the
+#: deal it became exists (§3.3/B6). A mirrored lead is converted when Zoho says so,
+#: because Zoho allows a conversion with no deal, and the deal can be absent here.
+OPEN_LEAD_SQL = (
+    "converted_deal_id IS NULL AND NOT (ext_source IS NOT NULL AND converted_at IS NOT NULL)"
+)
+
+
 @dataclass(frozen=True)
 class Entity:
     """One CRM record type, and everything generic code needs to know about it."""
@@ -1599,8 +1607,9 @@ async def set_deal_contacts_from_source(
     ``crm_deal_contacts`` has no ``ext_id``, so ``(deal_id, contact_id)`` is the
     natural key. *contacts* is ``[(contact_id, role), ...]`` with LOCAL ids.
 
-    A row that the list leaves out is removed, except the primary contact. The
-    primary comes from the ``Contact_Name`` of the deal itself, and a deal can
+    A row that the list leaves out is removed only when its ``ext_source`` is
+    ``'zoho'`` (migration 249), so a link a person made here on a mirrored deal
+    survives. The primary contact is never removed. The primary comes from the ``Contact_Name`` of the deal itself, and a deal can
     list no role for it. ``is_primary`` is never changed here. The tenant
     policy binds the organization, and the column default fills it on insert.
 
@@ -1610,16 +1619,19 @@ async def set_deal_contacts_from_source(
     removed = await db.execute(
         text(
             "DELETE FROM crm_deal_contacts WHERE deal_id = CAST(:d AS uuid) "
-            "AND NOT is_primary AND NOT (contact_id = ANY(CAST(:ids AS uuid[])))"
+            "AND ext_source = 'zoho' AND NOT is_primary AND NOT (contact_id = ANY(CAST(:ids AS uuid[])))"
         ),
         {"d": deal_id, "ids": ids},
     )
     for contact_id, role in contacts:
         await db.execute(
             text(
-                "INSERT INTO crm_deal_contacts (deal_id, contact_id, role) "
-                "VALUES (CAST(:d AS uuid), CAST(:c AS uuid), :role) "
-                "ON CONFLICT (deal_id, contact_id) DO UPDATE SET role = EXCLUDED.role"
+                "INSERT INTO crm_deal_contacts (deal_id, contact_id, role, ext_source) "
+                "VALUES (CAST(:d AS uuid), CAST(:c AS uuid), :role, 'zoho') "
+                "ON CONFLICT (deal_id, contact_id) DO UPDATE SET "
+                "role = EXCLUDED.role, ext_source = 'zoho' "
+                "WHERE crm_deal_contacts.ext_source = 'zoho' "
+                "OR crm_deal_contacts.is_primary"
             ),
             {"d": deal_id, "c": str(contact_id), "role": role},
         )

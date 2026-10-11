@@ -162,6 +162,8 @@ ROLES_MODULE = f"{PROVIDER}:deal_roles"
 #: credits remain, so it never starves the record passes of the next run.
 ROLES_RESERVE = 20
 ROLES_PENDING_CAP = 20_000
+#: A deal whose roles fail to read this many times is dropped from the queue.
+ROLES_MAX_ATTEMPTS = 3
 
 LEAD_STATUSES = "crm_lead_statuses"
 DEAL_STATUSES = "crm_deal_statuses"
@@ -328,11 +330,17 @@ def plan(
     """The kind of the next run, and the entities that need a full id compare."""
     for entity in ENTITY_ORDER:
         row = cursors.get(changed_module(entity))
+        if entity in OPTIONAL_ENTITIES:
+            # An optional module that never read must not hold the plan at
+            # import for ever (CRM-Q5). The incremental run reads it.
+            continue
         if row is None or row.initial_done_at is None:
             return runs.KIND_IMPORT, frozenset()
     due: set[str] = set()
     for entity in ENTITY_ORDER:
-        row = cursors[changed_module(entity)]
+        row = cursors.get(changed_module(entity))
+        if row is None:
+            continue
         state = row.state or {}
         if state.get("in_progress") and state.get("walk_start"):
             due.add(entity)  # a walk that stopped resumes first
@@ -497,6 +505,9 @@ class _Ctx:
         self.pipelines: _PipelineIndex | None = None
         #: The deals whose contact roles are not read yet, oldest first.
         self.roles_pending: list[str] | None = None
+        #: Failed reads for each queued deal, and whether the queue was seeded.
+        self.roles_attempts: dict[str, int] = {}
+        self.roles_seeded = False
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -608,10 +619,11 @@ _LOCAL_ID_SQL = (
 )
 
 _DEAL_CONTACT_SQL = (
-    "INSERT INTO crm_deal_contacts (deal_id, contact_id, is_primary) "
+    "INSERT INTO crm_deal_contacts (deal_id, contact_id, is_primary, ext_source) "
     "SELECT CAST(:deal_id AS uuid), CAST(:contact_id AS uuid), "
     "       NOT EXISTS (SELECT 1 FROM crm_deal_contacts "
-    "                    WHERE deal_id = CAST(:deal_id AS uuid) AND is_primary) "
+    "                    WHERE deal_id = CAST(:deal_id AS uuid) AND is_primary), "
+    "       'zoho' "
     "ON CONFLICT DO NOTHING"
 )
 
@@ -1065,8 +1077,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         while True:
             try:
                 page = await ctx.call(lambda s, c=cursor: s.list_changed(entity, c))
-            except SourceScopeError:
-                if entity not in OPTIONAL_ENTITIES:
+            except (SourceScopeError, SourceError) as exc:
+                # An optional module that cannot be read for ANY reason that is
+                # not a dead token, a spent budget or a throttle is skipped.
+                if entity not in OPTIONAL_ENTITIES or _fatal(exc) or isinstance(
+                    exc, UntrustedHost,
+                ):
                     raise
                 await _mark_unavailable(ctx, entity, row)
                 return
@@ -1272,10 +1288,12 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
     while True:
         try:
             page = await ctx.call(lambda s, c=cursor: s.list_deleted(entity, c))
-        except SourceScopeError:
-            if entity not in OPTIONAL_ENTITIES:
+        except SourceError as exc:
+            if entity not in OPTIONAL_ENTITIES or _fatal(exc) or isinstance(
+                exc, UntrustedHost,
+            ):
                 raise
-            _log.warning("crm.sync.module_unavailable entity=%s reason=scope", entity)
+            _log.warning("crm.sync.module_unavailable entity=%s reason=deleted", entity)
             return
         last_page = page.next_cursor is None
         async with ctx.page() as db:
@@ -1458,6 +1476,10 @@ async def _roles_pending(ctx: _Ctx) -> list[str]:
     if ctx.roles_pending is None:
         state = _row(ctx, ROLES_MODULE).state or {}
         ctx.roles_pending = [str(i) for i in state.get("pending") or ()]
+        ctx.roles_attempts = {
+            str(k): int(v) for k, v in (state.get("attempts") or {}).items()
+        }
+        ctx.roles_seeded = bool(state.get("seeded"))
     return ctx.roles_pending
 
 
@@ -1468,7 +1490,10 @@ async def _save_roles_pending(ctx: _Ctx, db: Any) -> None:
         pending = pending[-ROLES_PENDING_CAP:]
         ctx.roles_pending = pending
     old = _row(ctx, ROLES_MODULE)
-    row = CursorRow(ROLES_MODULE, old.last_pulled_at, {"pending": pending},
+    live = set(pending)
+    attempts = {k: v for k, v in ctx.roles_attempts.items() if k in live}
+    row = CursorRow(ROLES_MODULE, old.last_pulled_at,
+                    {"pending": pending, "attempts": attempts, "seeded": ctx.roles_seeded},
                     old.initial_done_at or _now(), old.last_reconciled_at)
     await _save_cursor(ctx, db, row, "ok")
     ctx.cursors[ROLES_MODULE] = row
@@ -1492,6 +1517,28 @@ def _roles_budget_low(ctx: _Ctx) -> bool:
     return ctx.credits_left is not None and ctx.credits_left <= CREDITS_FLOOR + ROLES_RESERVE
 
 
+_SEED_ROLES_SQL = (
+    "SELECT ext_id FROM crm_deals WHERE ext_source = :src AND ext_id IS NOT NULL "
+    "ORDER BY ext_id"
+)
+
+
+async def _seed_roles(ctx: _Ctx) -> None:
+    """Queue every mirrored deal once (CRM-Q5). A deal that was mirrored before
+    the roles step existed would never be queued, because its cursor is past
+    it. The queue drains over several runs, inside the budget and the reserve."""
+    await _roles_pending(ctx)
+    if ctx.roles_seeded:
+        return
+    async with ctx.page() as db:
+        rows = (await db.execute(text(_SEED_ROLES_SQL), {"src": EXT_SOURCE})).fetchall()
+        known = set(ctx.roles_pending or [])
+        ctx.roles_pending = [*(ctx.roles_pending or []),
+                             *(str(r.ext_id) for r in rows if str(r.ext_id) not in known)]
+        ctx.roles_seeded = True
+        await _save_roles_pending(ctx, db)
+
+
 async def _deal_roles(ctx: _Ctx) -> None:
     """Read the contact roles of the deals that changed (CRM-Q5), one call each.
 
@@ -1499,9 +1546,10 @@ async def _deal_roles(ctx: _Ctx) -> None:
     step stops when the budget is low and leaves the rest queued. ``skipped``
     counts the deals it left. A role that Zoho no longer lists is removed, and a
     contact that is not here is counted in ``unlinked``. A scope refusal or a
-    failed read leaves the deal queued for no more than one run.
+    failed read keeps the deal queued, and the third failure drops it.
     """
-    pending = await _roles_pending(ctx)
+    await _seed_roles(ctx)
+    pending = list(ctx.roles_pending or [])
     if not pending:
         return
     done: list[str] = []
@@ -1521,8 +1569,12 @@ async def _deal_roles(ctx: _Ctx) -> None:
                 raise
             _log.warning("crm.sync.deal_roles_unreadable deal=%s error=%s",
                          ext_id, error_code(exc))
-            ctx.step("deal_contacts", "skipped")
-            done.append(ext_id)  # one failed read is not retried for ever
+            tries = ctx.roles_attempts.get(ext_id, 0) + 1
+            ctx.roles_attempts[ext_id] = tries
+            if tries >= ROLES_MAX_ATTEMPTS:
+                _log.warning("crm.sync.deal_roles_dropped deal=%s", ext_id)
+                ctx.step("deal_contacts", "skipped")
+                done.append(ext_id)
             continue
         ctx.step("deal_contacts", "seen")
         async with ctx.page() as db:
@@ -1533,8 +1585,8 @@ async def _deal_roles(ctx: _Ctx) -> None:
             await _save_roles_pending(ctx, db)
     if pending and len(done) < len(pending):
         ctx.step("deal_contacts", "skipped", len(pending) - len(done))
-    if done:
-        # Failed reads leave no role write, and still leave the queue.
+    if done or ctx.roles_attempts:
+        # Save the queue and the attempt counts of the reads that failed.
         async with ctx.page() as db:
             gone = set(done)
             ctx.roles_pending = [i for i in pending if i not in gone]
