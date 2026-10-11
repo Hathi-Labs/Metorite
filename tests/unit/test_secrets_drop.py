@@ -415,11 +415,18 @@ def test_the_manifest_ships_the_three_entries() -> None:
     assert app["restart"] == ["acb-gateway"]
     assert app["health"] == {"acb-gateway": "http://127.0.0.1:8080/health"}
     # The list is a reviewed allowlist, one key at a time. WS-47 WAC-0
-    # (2026-10-10) added the WhatsApp bot's System User token, and nothing else.
-    assert app["allowed_keys"] == ["WHATSAPP_ASSISTANT_ACCESS_TOKEN"], (
+    # (2026-10-10) added the WhatsApp bot's System User token. WS-53 CRM-Z2
+    # (2026-10-11) added Metorite's own Zoho OAuth client, the id and the secret.
+    assert app["allowed_keys"] == [
+        "WHATSAPP_ASSISTANT_ACCESS_TOKEN", "CRM_ZOHO_CLIENT_ID", "CRM_ZOHO_CLIENT_SECRET",
+    ], (
         "app-env holds only reviewed keys, so it cannot be used by accident"
     )
-    assert app["validators"] == {"WHATSAPP_ASSISTANT_ACCESS_TOKEN": ["non_empty"]}
+    assert app["validators"] == {
+        "WHATSAPP_ASSISTANT_ACCESS_TOKEN": ["non_empty"],
+        "CRM_ZOHO_CLIENT_ID": ["non_empty"],
+        "CRM_ZOHO_CLIENT_SECRET": ["non_empty"],
+    }
     # A BACKUP_ line in the app env is an ERROR of the backup (H-123, BH-6a),
     # and the gateway's Copilot CLI inherits that env (H-270).
     assert not [k for k in app["allowed_keys"] if k.startswith("BACKUP_")]
