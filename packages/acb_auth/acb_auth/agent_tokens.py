@@ -187,9 +187,17 @@ CONNECTION_DEAD = "connection_dead"
 
 @dataclass(frozen=True)
 class Refused:
-    """An issue that did not happen, and why. See the reason constants."""
+    """An issue that did not happen, and why. See the reason constants.
+
+    For :data:`REUSED`, :data:`WRONG_CLIENT` and :data:`CONNECTION_DEAD` the
+    store knows the connection, so it names it here, and EA-2 can write an
+    audit row about the right agent. For :data:`INVALID` both ids stay None on
+    purpose: the caller must not learn whether a token existed.
+    """
 
     reason: str
+    connection_id: str | None = None
+    organization_id: str | None = None
 
 
 # ── SQL. Every parameter CAST explicitly: asyncpg cannot infer the type of a
@@ -273,8 +281,10 @@ SELECT id
 """
 
 #: Spend a refresh token. The single-row UPDATE the spec names (§15 EA-1).
-#: The client (and the resource, when the token has one) must match, so a
-#: token presented by the wrong client spends nothing.
+#: The client must match, so a token presented by the wrong client spends
+#: nothing. A ``resource`` the caller OMITS matches the stored one: RFC 8707
+#: lets a refresh request leave it out. A ``resource`` the caller SENDS must
+#: equal the stored value exactly.
 _SPEND_REFRESH_SQL = """
 UPDATE agent_token
    SET used_at = now()
@@ -284,7 +294,7 @@ UPDATE agent_token
    AND revoked_at IS NULL
    AND expires_at > now()
    AND client_id = CAST(:client_id AS TEXT)
-   AND (resource IS NULL OR resource = CAST(:resource AS TEXT))
+   AND (CAST(:resource AS TEXT) IS NULL OR resource = CAST(:resource AS TEXT))
 RETURNING connection_id, organization_id, client_id, resource, scope
 """
 
@@ -651,7 +661,9 @@ async def _issue_in(
     if not await _lock_live_connection(
         session, grant.organization_id, grant.connection_id
     ):
-        return Refused(CONNECTION_DEAD)
+        return Refused(
+            CONNECTION_DEAD, grant.connection_id, grant.organization_id
+        )
     return await _insert_pair_and_slide(
         session,
         organization_id=grant.organization_id,
@@ -697,7 +709,7 @@ async def _rotate_in(
 
     await _bind(session, organization_id)
     if not await _lock_live_connection(session, organization_id, connection_id):
-        return Refused(CONNECTION_DEAD)
+        return Refused(CONNECTION_DEAD, connection_id, organization_id)
 
     row = (
         await session.execute(
@@ -711,15 +723,17 @@ async def _rotate_in(
         ).one_or_none()
         if state is None:
             return Refused(INVALID)
+        # The same rule as the spend: an omitted resource matches any.
         if state.client_id != client_id or (
-            state.resource is not None and state.resource != resource
+            resource is not None and state.resource != resource
         ):
-            return Refused(WRONG_CLIENT)
+            return Refused(WRONG_CLIENT, connection_id, organization_id)
         if state.used_at is not None:
             # We hold the connection lock, so this revoke needs no upgrade and
             # sees every pair a racing rotation committed before us.
             await _revoke_in(session, organization_id, connection_id)
-            return Refused(REUSED)
+            return Refused(REUSED, connection_id, organization_id)
+        # Revoked or expired. Name nothing (see :class:`Refused`).
         return Refused(INVALID)
 
     return await _insert_pair_and_slide(
@@ -739,9 +753,10 @@ async def rotate_refresh(
     """Spend a refresh token and issue a new pair, or say why not.
 
     *client_id* is the authenticated client of the token request. *resource*
-    is the ``resource`` parameter, when the client sent one. A token that
-    belongs to another client, or to another resource, is refused with
-    :data:`WRONG_CLIENT` and is NOT spent.
+    is the ``resource`` parameter, when the client sent one. RFC 8707 lets a
+    refresh request omit it, and None then matches the stored resource. A
+    token that belongs to another client, or that the client sends for
+    another resource, is refused with :data:`WRONG_CLIENT` and is NOT spent.
 
     ⚠️ A refresh token that its own client ALREADY spent is a reuse. The store
     revokes the connection and every token of it, the new pair included, and
@@ -754,7 +769,15 @@ async def rotate_refresh(
         lambda s: _rotate_in(s, hash_token(raw_refresh), client_id, resource)
     )
     if isinstance(result, Refused) and result.reason == REUSED:
-        _log.warning("agent_tokens.refresh_reused")
+        # Ids only. A token or its hash never goes into a log line.
+        _log.warning(
+            "agent_tokens.refresh_reused", connection_id=result.connection_id
+        )
+        _log.warning(
+            "agent_tokens.connection_revoked",
+            connection_id=result.connection_id,
+            reason="refresh_reused",
+        )
     return result
 
 
