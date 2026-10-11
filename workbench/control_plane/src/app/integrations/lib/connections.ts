@@ -196,7 +196,10 @@ export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
 
 /** The `detail` fields as label and value pairs. Keys read as words. */
 export function detailRows(row: Connection): { label: string; value: string }[] {
-  return Object.entries(row.detail ?? {}).map(([key, value]) => ({
+  // `key_names` shows in the Remove confirm only (spec: names show nowhere else).
+  return Object.entries(row.detail ?? {})
+    .filter(([key]) => key !== "key_names")
+    .map(([key, value]) => ({
     label: key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
     value: String(value),
   }));
@@ -218,7 +221,12 @@ export function disconnectCopy(row: Connection): ConfirmCopy {
     };
   }
   if (row.kind === "api_key") {
-    return { title: "Remove this key?", body: "Agents lose this key.", confirmLabel: "Remove" };
+    const names = (row.detail?.key_names ?? "").trim();
+    return {
+      title: "Remove this key?",
+      body: names ? `These settings go: ${names}.` : "Agents lose this key.",
+      confirmLabel: "Remove",
+    };
   }
   if (row.provider === "zoho") {
     return {
@@ -308,4 +316,19 @@ export function refusalText(body: unknown, status: number): string {
   }
   if (typeof b.error === "string" && b.error) return b.error;
   return `The request failed (${status}).`;
+}
+
+/** A refused disconnect, as a toast line and an optional link to the app. */
+export function disconnectFailure(
+  err: { code?: string; setupHref?: string; message?: string } | null,
+  row: Pick<Connection, "owner" | "owning_app" | "setup_href">,
+): { title: string; href: string | null } {
+  if (err?.code === "member_connection") {
+    return {
+      title: `${row.owner || "The owner"} manages this connection in ${APP_LABEL[row.owning_app]}.`,
+      href: err.setupHref || row.setup_href,
+    };
+  }
+  // `key_locked` and every other refusal: the server's own message.
+  return { title: err?.message || "The request failed.", href: null };
 }

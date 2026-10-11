@@ -6,6 +6,7 @@ import {
   appPills,
   consoleAccess,
   detailRows,
+  disconnectFailure,
   disconnectCopy,
   errorMessage,
   filterConnections,
@@ -130,8 +131,23 @@ describe("the confirm copy names what happens", () => {
     expect(c.title).toBe("Remove this MCP server?");
     expect(c.body).toBe("Agents stop using it.");
   });
-  it("an API key", () => {
+  it("an API key names the settings that go", () => {
+    const c = disconnectCopy(row({ kind: "api_key", detail: { key_names: "APOLLO_API_KEY, APOLLO_URL" } }));
+    expect(`${c.title} ${c.body}`).toBe("Remove this key? These settings go: APOLLO_API_KEY, APOLLO_URL.");
     expect(disconnectCopy(row({ kind: "api_key" })).title).toBe("Remove this key?");
+  });
+
+  it("shows the key names nowhere else", () => {
+    expect(detailRows(row({ kind: "api_key", detail: { key_names: "A_KEY", note: "x" } }))).toEqual([
+      { label: "Note", value: "x" },
+    ]);
+  });
+
+  it("explains a refused disconnect", () => {
+    const k = disconnectFailure({ code: "key_locked", message: "The operator holds this key." }, row());
+    expect(k).toEqual({ title: "The operator holds this key.", href: null });
+    const m = disconnectFailure({ code: "member_connection", setupHref: "/email" }, ROWS[1]);
+    expect(m).toEqual({ title: "dana@x.test manages this connection in Email.", href: "/email" });
   });
   it("anything else says where to connect again", () => {
     const c = disconnectCopy(ROWS[1]);

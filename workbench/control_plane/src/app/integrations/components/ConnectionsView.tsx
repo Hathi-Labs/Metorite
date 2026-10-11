@@ -26,6 +26,7 @@ import {
   APP_LABEL,
   appPills,
   disconnectCopy,
+  disconnectFailure,
   filterConnections,
   mcpName,
   statusPills,
@@ -81,19 +82,17 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
       invalidateConnections();
     } catch (err) {
       setConfirming(false);
-      if (err instanceof api.IntegrationsError && err.code === "member_connection") {
-        toast.show({
-          key: "integrations-disconnect",
-          variant: "error",
-          title: `${open.owner || "The owner"} manages this connection in ${APP_LABEL[open.owning_app]}.`,
-        });
-      } else {
-        toast.show({
-          key: "integrations-disconnect",
-          variant: "error",
-          title: err instanceof Error ? err.message : "The request failed.",
-        });
-      }
+      // The row stays: nothing here removes it from the list.
+      const fail = disconnectFailure(err instanceof Error ? (err as api.IntegrationsError) : null, open);
+      const href = fail.href;
+      toast.show({
+        key: "integrations-disconnect",
+        variant: "error",
+        title: fail.title,
+        action: href
+          ? { label: `Open in ${APP_LABEL[open.owning_app]}`, onClick: () => router.push(href) }
+          : undefined,
+      });
     } finally {
       setBusy(false);
     }
