@@ -16,6 +16,13 @@ else the async ``current_tenant()``) — NEVER from tool args / the message (R11
 org-less "global" servers: the filter is strictly ``organization_id = :org`` and
 the fail-closed subset (flag ON, no resolvable org) is EMPTY.
 
+⚠️ **WS-8c review round 2 (2026-10-11): registry MCP is MAF-only.** A
+Copilot agent now gets NO registry server. It logs each in-scope row of the
+run's org as ``mcp.copilot_registry_skipped`` and drops it. So these fences
+read the org filter from those log lines: the names logged are exactly the
+rows that the filtered read returned. The MAF half is
+``tests/unit/test_maf_mcp_org_scope_r8.py``.
+
 Fences (R7):
 
 * ``mcp-servers-scoped-to-run-org`` (R8 — real Postgres, the two-org phase-4
@@ -25,8 +32,13 @@ Fences (R7):
   read WITHOUT the filter (the pre-fix query a revert restores) show BOTH, so the
   filter is load-bearing (RED-on-removal: drop ``AND organization_id = :org`` →
   org B's server appears and the isolation assertion goes RED).
-* flag-OFF regression: no filter, both orgs' servers inject — byte-identical.
-* flag ON + no resolvable org: fail closed to EMPTY, never another org's server.
+* **Inverted by WS-8c (2026-10-11).** This file pinned "flag OFF reads
+  every org's rows", which was a cross-tenant read of server URLs and
+  headers. The filter is now on whatever ``ACB_GRAPH_TENANT_BIND`` says:
+  with the flag OFF and org A bound, only org A's server injects.
+* No resolvable org, with the flag ON or OFF: fail closed to EMPTY.
+* The rows are ``http-sse``, because WS-8c drops a stdio row on both paths
+  (D85, ``tests/unit/test_no_mcp_stdio.py``).
 
 Run (Windows/psycopg, real Postgres)::
 
@@ -86,6 +98,19 @@ def graph_on_promoted(promoted, monkeypatch):  # noqa: F811
 _UNFILTERED_SQL = "SELECT name FROM mcp_servers WHERE enabled = true"
 
 
+async def _rows_read(agent) -> set[str]:
+    """Run the REAL injection, and return the names the read returned.
+
+    The Copilot path writes nothing (WS-8c). The rows the filtered read
+    returned are the ones it logs as ``mcp.copilot_registry_skipped``."""
+    import structlog
+
+    with structlog.testing.capture_logs() as logs:
+        await _inject_mcp_servers(agent, _AGENT)
+    assert agent._default_options == {}, "a registry row reached a Copilot agent"
+    return {e["name"] for e in logs if e["event"] == "mcp.copilot_registry_skipped"}
+
+
 class _Agent:
     """A bare agent stub: ``merge_mcp_servers`` only reads/writes
     ``_default_options["mcp_servers"]`` (the 2.0 wrapper's field, H-181)."""
@@ -95,14 +120,16 @@ class _Agent:
 
 
 def _seed_mcp(admin_engine, *, org: str, name: str) -> None:
-    """Seed one enabled stdio ``mcp_servers`` row for *org* as the RLS-bypassing
-    admin, stamping ``organization_id`` explicitly (NOT NULL since 158)."""
+    """Seed one enabled http-sse ``mcp_servers`` row for *org* as the
+    RLS-bypassing admin, stamping ``organization_id`` explicitly (NOT NULL
+    since 158). WS-8c: a stdio row would be dropped on both paths (D85)."""
     with admin_engine.begin() as c:
         c.execute(
             text(
-                "INSERT INTO mcp_servers (name, label, transport, command, "
+                "INSERT INTO mcp_servers (name, label, transport, url, "
                 "enabled, organization_id) VALUES "
-                "(:name, :name, 'stdio', 'npx -y srv', true, :org)"
+                "(:name, :name, 'http-sse', 'https://mcp.example.com/mcp', "
+                "true, :org)"
             ),
             {"name": name, "org": org},
         )
@@ -139,11 +166,10 @@ class TestMcpServersScopedToRunOrg:
             clear_tenant()
             tok = bind_tenant(p.org_a)
             try:
-                await _inject_mcp_servers(agent, _AGENT)
+                injected = await _rows_read(agent)
             finally:
                 release_tenant(tok)
 
-            injected = set(agent._default_options.get("mcp_servers") or {})
             assert srv_a in injected, (
                 "the org-A-bound injection did not include org A's own MCP "
                 f"server: {sorted(injected)!r}"
@@ -168,11 +194,12 @@ class TestMcpServersScopedToRunOrg:
             clear_tenant()
             _cleanup_mcp(p.admin_engine, names=[srv_a, srv_b])
 
-    async def test_flag_off_injects_all_orgs_servers_byte_identical(
+    async def test_flag_off_still_injects_only_the_run_orgs_servers(
         self, graph_on_promoted, monkeypatch,
     ):
-        """flag-OFF regression: no filter — EVEN with org A bound, both orgs'
-        servers inject, byte-identical to the pre-slice runtime."""
+        """WS-8c inverted this fence. With ``ACB_GRAPH_TENANT_BIND`` OFF and
+        org A bound, the filter still applies: org A's server injects, and
+        org B's does not. Before WS-8c, the flag-OFF path read every org."""
         monkeypatch.delenv("ACB_GRAPH_TENANT_BIND", raising=False)
         p = graph_on_promoted
         marker = uuid.uuid4().hex[:8]
@@ -183,28 +210,35 @@ class TestMcpServersScopedToRunOrg:
         try:
             agent = _Agent()
             clear_tenant()
-            tok = bind_tenant(p.org_a)  # bound, but the flag is OFF → ignored
+            tok = bind_tenant(p.org_a)  # bound, and the flag is OFF
             try:
-                await _inject_mcp_servers(agent, _AGENT)
+                injected = await _rows_read(agent)
             finally:
                 release_tenant(tok)
 
-            injected = set(agent._default_options.get("mcp_servers") or {})
-            assert srv_a in injected and srv_b in injected, (
-                "flag OFF must inject every org's servers (no filter) — "
-                f"byte-identical to today: {sorted(injected)!r}"
+            assert srv_a in injected, (
+                f"org A's own server did not inject: {sorted(injected)!r}"
+            )
+            assert srv_b not in injected, (
+                "flag OFF leaked org B's MCP server into an org-A run — the "
+                f"org filter must not depend on the flag: {sorted(injected)!r}"
             )
         finally:
             clear_tenant()
             _cleanup_mcp(p.admin_engine, names=[srv_a, srv_b])
 
-    async def test_flag_on_without_org_fails_closed_to_empty(
-        self, graph_on_promoted, monkeypatch,
+    @pytest.mark.parametrize("bind_flag", ["1", None], ids=["flag-on", "flag-off"])
+    async def test_without_org_fails_closed_to_empty(
+        self, graph_on_promoted, monkeypatch, bind_flag,
     ):
-        """flag ON + NO resolvable tenant → fail closed to EMPTY. ``mcp_servers``
-        has no org-less "global" rows (organization_id is NOT NULL), so the safe
-        subset is nothing — NEVER another org's server."""
-        monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", "1")
+        """NO resolvable tenant → fail closed to EMPTY, with the flag ON or
+        OFF (WS-8c). ``mcp_servers`` has no org-less "global" rows
+        (organization_id is NOT NULL), so the safe subset is nothing — NEVER
+        another org's server."""
+        if bind_flag:
+            monkeypatch.setenv("ACB_GRAPH_TENANT_BIND", bind_flag)
+        else:
+            monkeypatch.delenv("ACB_GRAPH_TENANT_BIND", raising=False)
         p = graph_on_promoted
         marker = uuid.uuid4().hex[:8]
         srv_a = f"srv-a-{marker}"
@@ -218,9 +252,7 @@ class TestMcpServersScopedToRunOrg:
             assert executor._stream_relay_thread_id.get(None) is None
             assert executor._current_run_org() is None
 
-            await _inject_mcp_servers(agent, _AGENT)
-
-            injected = set(agent._default_options.get("mcp_servers") or {})
+            injected = await _rows_read(agent)
             assert injected == set(), (
                 "flag ON + no resolvable org must inject NOTHING (fail closed), "
                 f"never another org's servers: {sorted(injected)!r}"

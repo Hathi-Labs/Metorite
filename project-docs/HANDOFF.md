@@ -4854,8 +4854,15 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
 ### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
-- **Check:** `grep -rn "MCPStdioTool\|MCPStreamableHTTPTool" apps/ packages/ --include=*.py`
-  → no hit means MAF still has no MCP wiring, and the entry is still open.
+- **Check:** run two commands. First,
+  `uv run pytest tests/unit/test_maf_mcp_injection.py -q -k native_agent_gets_the_server_tools`.
+  Then `ssh metorite 'grep -c "^MAF_MCP_ORGS=." /opt/acb/app/.env'`. The entry
+  closes only when the test passes AND the count is 1 or more. A missing test
+  file means WS-8c has not merged. A count of 0 means the flag allows no org,
+  so a `*` server still reaches no MAF agent.
+  ⚠️ Do not use a grep for `MCPStreamableHTTPTool` here. It matches
+  `acb_skills/egress.py:101`, which only names the class, and it gives a
+  false pass.
 - **Why:** `merge_mcp_servers` writes the field that only the Copilot agent
   class reads (WS-8c). apis-config was a Copilot agent until PR #585. So an
   `mcp_servers` row with agent scope `*` reached it before, and reaches only
@@ -5170,6 +5177,23 @@ line — never reclaim a number by deleting the other entry.
   admin sets the real name in People. Do not invent names.
 - **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
 - **Added:** 2026-10-10 · the person names session
+
+### H-299 · A destructive MCP tool runs with no confirmation card · [AGENT]
+- **Check:** `grep -n "destructiveHint" apps/services/orchestrator/orchestrator/_maf_mcp.py`
+  → no hit means this is open.
+- **Why:** an MCP function of a native MAF agent goes through
+  `permission_policy.decide()` (WS-8c), and `decide()` approves any name
+  it does not know as `unknown_allowed`. So a server tool that deletes or
+  sends runs with no confirmation card. The review of PR #869 found it.
+- **Do:** read the MCP tool annotations. A tool with `destructiveHint` true,
+  or with `readOnlyHint` false or missing, asks for a confirmation card
+  before it runs. Fence it with a test that a destructive tool waits for
+  the card.
+- **When:** before the first production flip of `MAF_MCP_ORGS` (gate
+  `enforcement-flip`).
+- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (left open) ·
+  PR #869 review, round 2
+- **Added:** 2026-10-11 · WS-8c
 
 # DONE — deleted, not archived
 

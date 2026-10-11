@@ -75,6 +75,13 @@ ZOHO_MODULES: Mapping[str, str] = MappingProxyType(
 
 _RATE_LIMIT_CODE = "TOO_MANY_REQUESTS"
 
+#: Zoho sends this header only after half of the daily credits are spent
+#: (``crm_platform.md`` §5.2 item 6).
+_CREDITS_HEADER = "X-API-CREDITS-REMAINING"
+
+#: A deleted-records call costs 2 credits (§5.2 item 5). Every other call costs 1.
+DELETED_CALL_COST = 2
+
 
 def _with_modified_since(
     headers: dict[str, str],
@@ -370,6 +377,8 @@ class ZohoSource:
         self._clock = clock
         self.credit_budget = credit_budget
         self._credits_used = 0
+        # The last ``X-API-CREDITS-REMAINING``. ``None`` until Zoho sends one.
+        self._credits_left: int | None = None
         # Single flight: one refresh at a time on this instance. A call that
         # waited re-checks the expiry, so N calls at expiry send ONE token
         # request. ``_dead`` keeps a NeedsReconnect, so the waiters do not each
@@ -476,10 +485,14 @@ class ZohoSource:
         *,
         params: Mapping[str, Any],
         since: datetime | None = None,
+        cost: int = 1,
     ) -> httpx.Response:
-        """One GET to ``api_domain``, with credits, the budget and the backoff."""
+        """One GET to ``api_domain``, with credits, the budget and the backoff.
+
+        ``cost`` is the credits of one request. A retry costs it again.
+        """
         credential = self._connected()
-        self._check_budget()
+        self._check_budget(cost)
         auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
         credential = await self._fresh_credential()
         base = auth.check_api_domain(auth.meta(credential, auth.META_API_DOMAIN))
@@ -490,8 +503,10 @@ class ZohoSource:
         reason = ""
         for attempt in range(1, MAX_TRIES + 1):
             # Each request that leaves costs a credit, a retry included.
-            self._spend_credit()
+            self._spend_credit(cost)
             r, reason = await self._send_once(f"{base}{path}", path, headers, params)
+            if r is not None:
+                self._note_credits_left(r)
             if r is not None and not reason:
                 return r
             if attempt == MAX_TRIES:
@@ -544,19 +559,25 @@ class ZohoSource:
             return r, f"HTTP {r.status_code}"
         return r, ""
 
-    def _check_budget(self) -> None:
+    def _note_credits_left(self, r: httpx.Response) -> None:
+        """Keep ``X-API-CREDITS-REMAINING`` when it is a whole number."""
+        raw = r.headers.get(_CREDITS_HEADER, "").strip()
+        if raw.isdigit():
+            self._credits_left = int(raw)
+
+    def _check_budget(self, cost: int = 1) -> None:
         """Refuse the next call before it leaves when it would pass the budget."""
         budget = self.credit_budget
-        if budget is not None and self._credits_used + 1 > budget:
+        if budget is not None and self._credits_used + cost > budget:
             raise BudgetExhausted(
                 f"The Zoho credit budget of {budget} is spent",
                 used=self._credits_used,
                 budget=budget,
             )
 
-    def _spend_credit(self) -> None:
-        self._check_budget()
-        self._credits_used += 1
+    def _spend_credit(self, cost: int = 1) -> None:
+        self._check_budget(cost)
+        self._credits_used += cost
 
     @staticmethod
     def _raise_for_status(r: httpx.Response, path: str) -> None:
@@ -574,10 +595,13 @@ class ZohoSource:
         extra: Mapping[str, Any],
         *,
         keyset: bool,
+        cost: int = 1,
     ) -> SourcePage:
         cursor = cursor or SourceCursor()
         since = _request_since(cursor) if keyset else cursor.since
-        r = await self._get(path, params=_page_params(cursor, extra), since=since)
+        r = await self._get(
+            path, params=_page_params(cursor, extra), since=since, cost=cost,
+        )
         # 204 = nothing there; 304 = nothing changed since the cursor.
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
@@ -673,6 +697,7 @@ class ZohoSource:
             cursor,
             {"type": kind},
             keyset=False,
+            cost=DELETED_CALL_COST,
         )
 
     # ── 6. Users ────────────────────────────────────────────────────────────
@@ -791,21 +816,42 @@ class ZohoSource:
                     out.append({**pipeline, "layout_id": layout_id})
         return out
 
-    # ── 7 and 8. Wait for CRM-Z0 ────────────────────────────────────────────
+    # ── 10. The record count ────────────────────────────────────────────────
+
+    async def count_records(self, entity: str) -> int | None:
+        """The number of records of one module, for the progress estimate.
+
+        ``GET /crm/v8/{module}/actions/count``. One credit. ``None`` when
+        Zoho gives no number, so the caller shows no estimate and reads on.
+        """
+        module = _module(entity)
+        path = f"/crm/{SETTINGS_API_VERSION}/{module}/actions/count"
+        r = await self._get(path, params={})
+        if r.status_code in (204, 304):
+            return 0
+        self._raise_for_status(r, path)
+        count = _error_body(r).get("count")
+        return count if isinstance(count, int) and count >= 0 else None
+
+    # ── 7 and 8. The deep link waits for CRM-Z6 ─────────────────────────────
 
     def deep_link(self, entity: str, ext_id: str) -> str:
         raise NotImplementedError(
             "The Zoho deep link waits for CRM-Z0, which confirms its shape for each data centre"
         )
 
-    async def credits_remaining(self) -> int:
-        raise NotImplementedError(
-            "The credits that Zoho has left wait for CRM-Z0. Read credits_used for "
-            "the credits this instance spent"
-        )
+    async def credits_remaining(self) -> int | None:
+        """The credits Zoho has left, from the last ``X-API-CREDITS-REMAINING``.
+
+        Zoho sends the header only after half of the daily credits are
+        spent, so ``None`` means "not reported: more than half is left"
+        (§5.2 item 6).
+        """
+        return self._credits_left
 
 
 __all__ = [
+    "DELETED_CALL_COST",
     "FIELDS_SCOPE",
     "LAYOUTS_SCOPE",
     "MAX_TRIES",

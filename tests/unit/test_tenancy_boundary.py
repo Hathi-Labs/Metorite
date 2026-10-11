@@ -132,6 +132,8 @@ EXPECTED_SCOPED = {
     "crm_settings",
     # WS-53 CRM-Z2 (2026-10-11): the registry of external connections.
     "integration_connections",
+    # WS-53 CRM-Z4/Z5 (2026-10-11): one row for each run of the mirror sync.
+    "crm_sync_runs",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

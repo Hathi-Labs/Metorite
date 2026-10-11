@@ -395,6 +395,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.crm_zoho_sync_skipped", error=str(exc))
 
+    # Start the CRM mirror sync loop (gateway/crm_sync/scheduler.py; spec
+    # crm_platform.md §5.4, WS-53 CRM-Z5). It READS Zoho into the mirror and
+    # writes nothing back. Dark by default: with CRM_MIRROR or CRM_ENABLED off
+    # it starts no task and logs once. Each run binds one tenant_session(org)
+    # for each step.
+    try:
+        from gateway.crm_sync.scheduler import start_crm_mirror_sync
+        crm_mirror_started = await start_crm_mirror_sync()
+        _log.info("gateway.crm_mirror_sync", started=crm_mirror_started)
+    except Exception as exc:
+        _log.warning("gateway.crm_mirror_sync_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -462,6 +474,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.routes.crm.sync_zoho import stop_crm_zoho_sync
         await stop_crm_zoho_sync()
+    except Exception:
+        pass
+
+    # Stop the CRM mirror sync loop and wait for a run in progress.
+    try:
+        from gateway.crm_sync.scheduler import stop_crm_mirror_sync
+        await stop_crm_mirror_sync()
     except Exception:
         pass
 

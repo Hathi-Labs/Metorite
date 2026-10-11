@@ -710,6 +710,11 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "It reads only through the SECURITY DEFINER "
         "`whatsapp_member_links_for_phone`, granted to `acb_app` alone, and "
         "it writes nothing",
+    ("apps/services/gateway/gateway/crm_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-53 CRM-Z5: which organizations the CRM mirror loop looks at. It "
+        "lists the RLS-EXEMPT `organization` table, so it does not go blind. "
+        "Every read after it binds one organization with `tenant_session`",
     ("apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py",
      "_code_rows"):
         "WS-47 WAC-2: which org issued the link code that a phone sent. The "

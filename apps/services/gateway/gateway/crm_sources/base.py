@@ -158,7 +158,7 @@ class UntrustedHost(SourceError):
 
 
 class CrmSource(Protocol):
-    """The nine operations of ``crm_platform.md`` §5.1.
+    """The operations of ``crm_platform.md`` §5.1 (nine, and the count of CRM-Z4).
 
     Each numbered comment names the operation of the spec.
     """
@@ -210,15 +210,20 @@ class CrmSource(Protocol):
     # 7. The deep link to one record.
     def deep_link(self, entity: str, ext_id: str) -> str: ...
 
-    # 8. The budget used, and what is left.
+    # 8. The budget used, and what is left. ``None`` means the provider has
+    # not reported it, so more than half of the daily credits is left.
     @property
     def credits_used(self) -> int: ...
 
-    async def credits_remaining(self) -> int: ...
+    async def credits_remaining(self) -> int | None: ...
 
     # 9. Revoke the credential at the provider. True when the provider
     # confirms. The caller treats a revoke as best effort.
     async def revoke(self) -> bool: ...
+
+    # 10. The record count of one entity, for the import progress estimate.
+    # ``None`` when the provider gives no number.
+    async def count_records(self, entity: str) -> int | None: ...
 
 
 __all__ = [

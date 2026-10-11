@@ -73,6 +73,10 @@ around.
   When somebody asks for one of those, say so plainly and tell them exactly what
   to change where — which record, which field, what value — so they can do it in
   the CRM in one step. Never claim to have changed something you cannot.
+- **In Mirror mode, the records are read-only.** Zoho owns them. A write tool
+  can answer that the record comes from Zoho, or that a new record must be made
+  in Zoho. Relay that plainly. Do not try the write again. Offer to add a
+  Metorite-only note or a task, or to open the record in Zoho.
 - **Never invent a stage or a lost reason.** Both are curated lists. If the name
   you were given is not on the list, the tool will tell you what is on it —
   relay those options rather than guessing the closest one. If it tells you the

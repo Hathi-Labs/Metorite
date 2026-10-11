@@ -622,6 +622,7 @@ def _resolver(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str]]) -> N
     monkeypatch.setattr(outbound_guard, "_resolve", _resolve)
 
 
+@pytest.mark.usefixtures("tenant")  # WS-8c: plugin install needs a tenant
 class TestCustomerUrlsPassTheGuard:
     @pytest.mark.parametrize(("url", "dns"), REFUSED_URLS)
     async def test_mcp_test_refuses_and_sends_nothing(self, url, dns, monkeypatch) -> None:
@@ -704,7 +705,8 @@ class TestCustomerUrlsPassTheGuard:
 
         import acb_graph
 
-        monkeypatch.setattr(acb_graph, "get_session", lambda: _Session())
+        # WS-8c: plugins has FORCE RLS, so the install binds the tenant.
+        monkeypatch.setattr(acb_graph, "tenant_session", lambda _org=None: _Session())
         out = await integrations.install_plugin(
             integrations.PluginInstallRequest(manifest_url="https://plugins.example.com/ai-plugin.json"),
             user=USER,
@@ -880,6 +882,7 @@ class TestTheDeviceFlowReadsTheOrgClientId:
 # ── Fix round 1, P2: the guard reads raw bytes, so ask for no encoding ───────
 
 
+@pytest.mark.usefixtures("tenant")  # WS-8c: plugin install needs a tenant
 class TestTheGuardedFetchesAskForNoEncoding:
     """``outbound_guard`` keeps the raw bytes of an answer and never decodes them.
 
@@ -950,7 +953,8 @@ class TestTheGuardedFetchesAskForNoEncoding:
 
         import acb_graph
 
-        monkeypatch.setattr(acb_graph, "get_session", lambda: _Session())
+        # WS-8c: plugins has FORCE RLS, so the install binds the tenant.
+        monkeypatch.setattr(acb_graph, "tenant_session", lambda _org=None: _Session())
         out = await integrations.install_plugin(
             integrations.PluginInstallRequest(manifest_url="https://plugins.example.com/ai-plugin.json"),
             user=USER,
