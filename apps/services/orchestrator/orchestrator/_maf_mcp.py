@@ -134,7 +134,7 @@ def _reason(exc: BaseException) -> str:
             continue
         seen.add(id(cur))
         if isinstance(cur, OutboundRefused):
-            return cur.reason[:_REASON_CHARS]
+            return str(cur.reason)[:_REASON_CHARS]
         nested = list(getattr(cur, "exceptions", None) or [])
         for nxt in (cur.__cause__, cur.__context__, *nested):
             if isinstance(nxt, BaseException):
