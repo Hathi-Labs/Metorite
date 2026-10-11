@@ -325,7 +325,7 @@ export function humanizeKey(key: string): string {
   return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : key;
 }
 
-function customValue(value: unknown): string {
+export function customValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) return value.map(customValue).join(", ");

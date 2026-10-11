@@ -101,7 +101,7 @@ import {
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-import { invalidateCrmMode, useCrmMode, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import { invalidateCrmMode, useCrmMode, useFieldDefs, usePipelines, useSyncStatus } from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
 import { viewLabel } from "./lib/views";
 
@@ -214,6 +214,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   /** The collection a LIST is showing. A board is not a list, so it is null there. */
   const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
+  const { defs: listFieldDefs } = useFieldDefs(listEntity);
 
   /** What the Refresh button re-reads — one branch per kind of tab. */
   function reload(): void {
@@ -549,6 +550,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             listEntity && (
               <RecordList
                 entity={listEntity}
+                fieldDefs={listFieldDefs}
                 rows={store.rows}
                 total={store.total}
                 loading={store.loading}
