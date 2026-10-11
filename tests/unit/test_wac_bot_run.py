@@ -89,7 +89,8 @@ class _Store:
 
     async def insert(self, *, org: str, email: str, wa_id: str, wamid: str,
                      direction: str, state: str, session_id: str | None,
-                     code: str | None = None) -> str | None:
+                     code: str | None = None,
+                     context_wamid: str | None = None) -> str | None:
         assert current_tenant() == org, "an unbound write"
         if wamid in self.by_wamid:
             return None
@@ -98,7 +99,8 @@ class _Store:
         self.rows[rid] = {"id": rid, "org": org, "email": email, "wa_id": wa_id,
                           "wamid": wamid, "direction": direction, "state": state,
                           "sid": session_id, "tries": 0, "code": code,
-                          "stale": False, "order": self._next()}
+                          "stale": False, "order": self._next(),
+                          "context": context_wamid}
         return rid
 
     def _next(self) -> int:

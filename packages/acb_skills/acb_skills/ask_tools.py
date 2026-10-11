@@ -56,6 +56,10 @@ _CARDS_REFUSED: _contextvars.ContextVar[bool] = _contextvars.ContextVar(
     "acb_cards_refused", default=False,
 )
 
+# WS-47 WAC-4 adds one exception, and ``request_confirmation`` asks it first:
+# ``acb_skills.whatsapp_acts.answer_card`` parks an allowed act for the
+# member's Confirm, or answers that Confirm. Every other card is denied here.
+
 #: What ``ask_questions`` returns in a run with no card channel.
 NO_CARD_QUESTIONS = (
     "This chat cannot show questions. Ask the member in plain text in your "
@@ -524,6 +528,24 @@ def confirmation_channel_open() -> bool:
         return False
 
 
+def _whatsapp_answer(title: str, detail: str, context: str,
+                     rows: list[dict] | None) -> bool | frozenset[str] | None:
+    """``acb_skills.whatsapp_acts.answer_card``, or None (WS-47 WAC-4).
+
+    A card with rows gets an empty set, never an approval. A fault here is
+    no answer, so the card falls to the gate, which denies inside
+    ``refuse_cards``. It fails closed.
+    """
+    try:
+        from acb_skills.whatsapp_acts import answer_card
+        answer = answer_card(title, detail, context, rows)
+    except Exception:
+        return None
+    if answer is None:
+        return None
+    return frozenset() if rows is not None else answer
+
+
 async def request_confirmation(
     title: str, detail: str = "", context: str = "",
     non_interactive_default: str = "deny",
@@ -571,11 +593,20 @@ async def request_confirmation(
 
         Inside :func:`refuse_cards` (WS-47 WAC-3) it denies at once, before
         any channel is tried, whatever ``non_interactive_default`` says.
+        One exception comes first (WS-47 WAC-4): the WhatsApp profile parks
+        an allowed act and answers False, or answers the Confirm of a parked
+        act (``acb_skills.whatsapp_acts.answer_card``).
     """
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
     _rows = clean_card_rows(rows)
+    # WS-47 WAC-4: the WhatsApp profile answers first. It parks an allowed
+    # act ("not yet"), or answers the Confirm of a parked one. None leaves
+    # the card to the gate below. It never approves a card with rows.
+    _profile = _whatsapp_answer(_title, _detail, _context, _rows)
+    if _profile is not None:
+        return _profile
     if cards_refused():
         # A deny, never an approve: a channel with no card is no consent.
         return frozenset() if _rows is not None else False

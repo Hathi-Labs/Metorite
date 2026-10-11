@@ -1056,6 +1056,14 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_wac_chart_engine.py.
     whatsapp_chart_engine: bool = False
     whatsapp_chart_node: str = "node"
+    # WAC-4 (spec §14): a confirmed write from WhatsApp. ON, with the profile
+    # above also ON, `create_task` parks its act in an org of
+    # `whatsapp_assistant_writes_orgs`, and the member's Confirm runs it. OFF,
+    # or an org off the list, every card stays refused. Default OFF, and an
+    # empty list allows no org. Turning it on for an org is the owner's act
+    # (WAC-9). Fence: tests/unit/test_wac_writes.py.
+    whatsapp_assistant_writes: bool = False
+    whatsapp_assistant_writes_orgs: str = ""
 
     # ── Token accessors ────────────────────────────────────────────────────
 
