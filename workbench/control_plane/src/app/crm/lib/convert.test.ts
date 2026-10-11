@@ -165,7 +165,7 @@ describe("convertBody", () => {
       organization: { kind: "none" },
       deal: { name: "Walk-in", amount: "", expected_close_date: "" },
     });
-    expect(body.organization_id).toBeUndefined();
+    expect(body.company_id).toBeUndefined();
   });
 
   it("parses a stated amount and drops an unparseable one", () => {

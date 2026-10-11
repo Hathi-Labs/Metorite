@@ -67,6 +67,14 @@ a room, and no reply is written into one.
 at once and writes nothing, and the scope rule tells the model to send the
 member to the web app for a change.
 
+**A confirmed write (WAC-4, §14).** With ``WHATSAPP_ASSISTANT_WRITES`` and the
+profile on, the run opens the profile with writes. Then ``create_task``, and
+no other tool, parks its card (``acb_skills.whatsapp_acts``). The run stores
+the act (``acts.park``) and sends the card as text with code's Confirm and
+Cancel buttons. The phone's next message in the thread is settled before any
+run (``acts.settle``): Confirm runs the stored call once with no model, Cancel
+closes the act, and any other message voids it and runs as normal.
+
 **The WhatsApp profile (WAC-10a, §12).** With ``WHATSAPP_ASSISTANT_NATIVE_UI``
 on, the run opens ``acb_skills.whatsapp_ui.whatsapp_run`` as well. The
 injection seam then drops the web-only tools and the web prompt blocks, and
@@ -88,6 +96,7 @@ across processes.
 
 Fences: ``tests/unit/test_wac_bot_run.py`` (database-free) and
 ``tests/unit/test_wac_bot_run_r8.py`` (R8, FORCE RLS as a non-privileged role).
+WAC-4: ``tests/unit/test_wac_writes.py`` and ``tests/unit/test_wac_writes_r8.py``.
 """
 
 
@@ -185,6 +194,25 @@ SCOPE_RULE_NATIVE = (
     "code, a page, a long search), FIRST call whatsapp_ui kind \"working\" with "
     "one line: what you are doing and about how long it takes. Then do the job."
 )
+
+#: The one sentence of :data:`SCOPE_RULE_NATIVE` that WAC-4 changes.
+_NO_CHANGE = (
+    "You cannot change data from WhatsApp. When the member asks for a change, "
+    "tell them to make it in the Metorite web app, and add a link button.\n"
+)
+#: The scope rule of a run with writes on (WAC-4, §14). Adding a task is the
+#: one change allowed. Every other change, class C and class X among them,
+#: still goes to the web app with a link. Advisory, like ``SCOPE_RULE``: the
+#: card gate, not this text, is what keeps every other write out.
+SCOPE_RULE_WRITES = SCOPE_RULE_NATIVE.replace(_NO_CHANGE, (
+    "You can add a task from WhatsApp, and make no other change. To add one, "
+    "ask the Projects assistant to create it. Nothing is written until the "
+    "member taps Confirm: Metorite sends them the summary and the Confirm and "
+    "Cancel buttons itself. So say in one line that the task is ready for "
+    "their Confirm, add no buttons, and never say that it is done. For any "
+    "other change, tell the member to make it in the Metorite web app, and "
+    "add a link button.\n"
+))
 
 # ── The limits ──────────────────────────────────────────────────────────────
 
@@ -318,9 +346,9 @@ SELECT status FROM app_user
 _INSERT_SQL = """
 INSERT INTO whatsapp_bot_messages
        (organization_id, member_email, wa_id, wamid, direction, state,
-        chat_session_id, error_code)
+        chat_session_id, error_code, context_wamid)
 VALUES (CAST(:org AS uuid), :email, :wa, :wamid, :direction, :state,
-        :sid, :code)
+        :sid, :code, :ctx)
 ON CONFLICT (wamid) DO NOTHING
 RETURNING id::text AS id
 """
@@ -553,13 +581,18 @@ async def _member_active(org: str, email: str) -> bool:
 async def _insert(
     *, org: str, email: str, wa_id: str, wamid: str, direction: str,
     state: str, session_id: str | None, code: str | None = None,
+    context_wamid: str | None = None,
 ) -> str | None:
-    """Record one message. Returns the new row id, or None for a repeat."""
+    """Record one message. Returns the new row id, or None for a repeat.
+
+    *context_wamid* is the message that an inbound tap or swipe reply
+    answers (WAC-4). A Confirm counts only for the card that it names.
+    """
     async with tenant_session() as db:
         row = (await db.execute(text(_INSERT_SQL), {
             "org": org, "email": email, "wa": wa_id, "wamid": wamid,
             "direction": direction, "state": state, "sid": session_id,
-            "code": code,
+            "code": code, "ctx": (context_wamid or None) and context_wamid[:200],
         })).mappings().first()
     return str(row["id"]) if row else None
 
@@ -767,12 +800,14 @@ def current_link(links: list[Any]) -> Any | None:
 
 async def record_inbound(
     links: list[Any], wa_id: str, wamid: str, body: str,
+    context_wamid: str | None = None,
 ) -> RunRequest | None:
     """Record one text from a linked phone. Returns the run to start, or None.
 
     *links* is what ``whatsapp_member_links_for_phone`` returned. Runs inside
     the webhook request, before the 200, so the turn is durable before Meta
-    hears that the message arrived.
+    hears that the message arrived. *context_wamid* is the message that a tap
+    or a swipe reply answers (Meta's ``context.id``), or None.
     """
     hint = wa_id[-4:]
     link = current_link(links)
@@ -808,7 +843,8 @@ async def record_inbound(
                 session_id = await _write_turn(org, email, wamid, body)
             row_id = await _insert(org=org, email=email, wa_id=wa_id,
                                    wamid=wamid, direction="in",
-                                   state="received", session_id=session_id)
+                                   state="received", session_id=session_id,
+                                   context_wamid=context_wamid)
     finally:
         release_tenant(token)
 
@@ -1199,22 +1235,25 @@ def _offered_ai_choice(history: list[dict[str, str]]) -> bool:
 
 
 def build_payload(message: str, history: list[dict[str, str]],
-                  member_email: str, *, native: bool = False) -> dict[str, Any]:
+                  member_email: str, *, native: bool = False,
+                  writes: bool = False) -> dict[str, Any]:
     """The event payload of one run.
 
     ``_history_loader`` makes the batch executor take its STRUCTURED path on
     every turn, the first one too: the scope rule is then a leading system
     message, and never text folded into the member's turn
     (``executor._run_with_maf_agent``). *native* picks the scope rule of the
-    WhatsApp profile (WAC-10a).
+    WhatsApp profile (WAC-10a), and *writes* the rule of WAC-4.
     """
     prior = [model_turn(m) for m in history]
+    rule = (SCOPE_RULE_WRITES if native and writes
+            else SCOPE_RULE_NATIVE if native else SCOPE_RULE)
     return {
         "mode": "chat",
         "message": message,
         "messages": prior,
         "_history_loader": lambda: list(prior),
-        "system_context": SCOPE_RULE_NATIVE if native else SCOPE_RULE,
+        "system_context": rule,
         "think_mode": "auto",
         # How the tools reach the member (`executor._payload_user`). The
         # server's value, from the link row, never from the message.
@@ -1240,66 +1279,32 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
     ui: list[Any] = []
     if reply is None:
         native = flags.native_ui_enabled()
-        from acb_skills.whatsapp_ui import VIEW_MARK, polish, thread_record, whatsapp_run
-        from gateway.routes.whatsapp_channel import views
+        writes = flags.writes_enabled(req.organization_id)
+        from acb_skills.whatsapp_ui import VIEW_MARK, thread_record
+        from gateway.routes.whatsapp_channel import acts
 
+        # WAC-4: a pending act is settled BEFORE any run. "Confirm" runs the
+        # stored call with no model, "Cancel" closes it, and any other
+        # message voids it and runs below as a normal message.
+        # A room is not this member's thread: no act settles there, and the
+        # room check below refuses the message (WAC-4 verifier, D7).
+        settled = (await acts.settle(req, message)
+                   if writes and not await _thread_shared(req.chat_session_id) else None)
         # WAC-10c: a quick command ("today", "calendar", a menu tap) is
         # answered by code, with no AI call. A view that fails falls back
         # to the assistant, so it never costs the member an answer.
-        view = await _quick_answer(req, message, history) if native else None
-        if view is not None:
+        view = (await _quick_answer(req, message, history)
+                if native and settled is None else None)
+        if settled is not None:
+            reply = settled
+        elif view is not None:
             reply, ui = view.text, list(view.ui)
         else:
-            payload = build_payload(message, history, req.member_email, native=native)
-            from acb_skills.ask_tools import refuse_cards
-
-            if native:
-                await _show_typing(req)
-            try:
-                with refuse_cards(), (whatsapp_run(
-                        AGENT, org=req.organization_id,
-                        views=views.runner(req.member_email, req.organization_id),
-                        notify=_notifier(req))
-                        if native else contextlib.nullcontext()) as wa_run:
-                    result = await _still_working(req, wa_run, asyncio.wait_for(
-                        _executor()(
-                            AGENT, payload,
-                            run_id=run_id,
-                            thread_id=req.chat_session_id,
-                            model=None,
-                            # D-WAC-3: the link's org, bound explicitly.
-                            organization_id=req.organization_id,
-                            # H-73: the member who pays is the link's member.
-                            session_user=req.member_email,
-                        ),
-                        timeout=RUN_TIMEOUT_S,
-                    ))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                code = _error_code(exc)
-                _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
-                             message_id=req.message_id, code=code,
-                             error_type=type(exc).__name__)
-                if await _end(req.message_id, "failed", code):
-                    await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
-                                kind="failed", attempt=attempt)
+            answered = await _model_answer(req, message, history, attempt, run_id,
+                                           native=native, writes=writes)
+            if answered is None:
                 return
-
-            from gateway.routes.projects.agent_dispatch import reply_text
-
-            reply = reply_text(result).strip()
-            if wa_run is not None:
-                ui = list(wa_run.outbox)
-                # The reply guard: no copied element record, and no tap
-                # promise with nothing to tap (whatsapp_ui.polish). It may
-                # draw, so it runs off the event loop, in the run's context.
-                with whatsapp_run(AGENT, org=req.organization_id):
-                    reply, ui = await asyncio.to_thread(polish, reply, ui)
-            if not reply and not ui:
-                if await _end(req.message_id, "failed", "empty"):
-                    await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
-                return
+            reply, ui = answered
         if await _thread_shared(req.chat_session_id):
             # The thread became a room while the agent ran. The answer was
             # made for one member, so it goes into no room: nothing is
@@ -1311,7 +1316,7 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
         # next turn knows which buttons it offered. A resend cuts the
         # renditions off again (`_resend_text`).
         record = thread_record(reply, ui)
-        if view is not None:
+        if view is not None or settled is not None:
             record = VIEW_MARK + record  # code built it (`_offered_ai_choice`)
         await _write_reply(req, record)
     else:
@@ -1320,6 +1325,116 @@ async def _answer(req: RunRequest, attempt: _Attempt) -> None:
 
     await _deliver(req, reply, attempt, frm="running",
                    last_try=attempt.tries >= MAX_TRIES, ui=ui)
+
+
+async def _model_answer(req: RunRequest, message: str,
+                        history: list[dict[str, str]], attempt: _Attempt,
+                        run_id: str, *, native: bool, writes: bool,
+                        ) -> tuple[str, list[Any]] | None:
+    """Run the assistant for one message. Returns the reply and its elements.
+
+    None when the run failed: the row is closed and the member got the
+    failure text once.
+    """
+    from acb_skills.ask_tools import refuse_cards
+    from acb_skills.whatsapp_ui import whatsapp_run
+    from gateway.routes.whatsapp_channel import views
+
+    payload = build_payload(message, history, req.member_email,
+                            native=native, writes=writes)
+    if native:
+        await _show_typing(req)
+    try:
+        with refuse_cards(), (whatsapp_run(
+                AGENT, org=req.organization_id,
+                views=views.runner(req.member_email, req.organization_id),
+                notify=_notifier(req), writes=writes)
+                if native else contextlib.nullcontext()) as wa_run:
+            result = await _still_working(req, wa_run, asyncio.wait_for(
+                _executor()(
+                    AGENT, payload,
+                    run_id=run_id,
+                    thread_id=req.chat_session_id,
+                    model=None,
+                    # D-WAC-3: the link's org, bound explicitly.
+                    organization_id=req.organization_id,
+                    # H-73: the member who pays is the link's member.
+                    session_user=req.member_email,
+                ),
+                timeout=RUN_TIMEOUT_S,
+            ))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        code = _error_code(exc)
+        _log.warning("whatsapp_channel.run.agent_failed", run_id=run_id,
+                     message_id=req.message_id, code=code,
+                     error_type=type(exc).__name__)
+        if await _end(req.message_id, "failed", code):
+            await _send(req, [REPLY_CREDITS if code == "credits" else REPLY_FAILED],
+                        kind="failed", attempt=attempt)
+        return None
+
+    from gateway.routes.projects.agent_dispatch import reply_text
+
+    reply = reply_text(result).strip()
+    ui: list[Any] = []
+    if wa_run is not None:
+        reply, ui = await _native_parts(req, wa_run, reply)
+    if not reply and not ui:
+        if await _end(req.message_id, "failed", "empty"):
+            await _send(req, [REPLY_FAILED], kind="failed", attempt=attempt)
+        return None
+    return reply, ui
+
+
+async def _native_parts(req: RunRequest, wa_run: Any,
+                        reply: str) -> tuple[str, list[Any]]:
+    """The reply and the elements of a run with the WhatsApp profile.
+
+    A parked act (WAC-4) goes into the table first, and its summary and its
+    Confirm and Cancel buttons go last. They go in before the guard, so the
+    guard sees the buttons that a "tap Confirm" names.
+    """
+    from acb_skills.whatsapp_ui import polish, whatsapp_run
+
+    ui = list(wa_run.outbox)
+    offer = (await _offer_act(req, wa_run.parked)
+             if wa_run.parked is not None else None)
+    if isinstance(offer, str):
+        reply = f"{reply}\n\n{offer}".strip()
+        offer = None
+    elif offer:
+        ui = [*ui, *offer]
+    # The reply guard: no copied element record, and no tap promise with
+    # nothing to tap (whatsapp_ui.polish). It may draw, so it runs off the
+    # event loop, in the run's context.
+    with whatsapp_run(AGENT, org=req.organization_id):
+        reply, ui = await asyncio.to_thread(polish, reply, ui)
+    if offer:
+        ui = [m for m in ui if all(m is not o for o in offer)] + list(offer)
+    return reply, ui
+
+
+async def _offer_act(req: RunRequest, act: Any) -> list[Any] | str:
+    """Store the act that the run parked, and the parts that offer it (WAC-4).
+
+    The parts are the card as text, then the Confirm and Cancel buttons. Only
+    code builds them. When the act cannot be stored, nothing waits for a
+    Confirm, and the member gets a line that sends the change to the web app.
+    """
+    from acb_skills.whatsapp_acts import confirm_buttons, summary
+    from acb_skills.whatsapp_ui import OutMessage
+    from gateway.routes.whatsapp_channel import acts
+
+    act_id = await acts.park(req, act)
+    if act_id is None:
+        return acts.REPLY_NOT_HELD
+    # The buttons name the act. Only when Meta takes that part is the act
+    # offered (`_send`), so a card that never reached the phone waits for no
+    # Confirm.
+    return [*(OutMessage("text", part) for part in split_reply(summary(act))),
+            confirm_buttons(act_id)]
 
 
 def _resend_text(stored: str | None) -> str | None:
@@ -1583,6 +1698,13 @@ async def _send(req: RunRequest, texts: list[Any], *, kind: str,
         sent += 1
         if attempt is not None:
             attempt.sent = True
+        act_id = getattr(part, "act_id", None)
+        if act_id and out_id:
+            # WAC-4: Meta took the Confirm and Cancel buttons, so the act
+            # can now be confirmed, and only from those buttons or later.
+            from gateway.routes.whatsapp_channel import acts
+
+            await acts.offered(str(act_id), str(out_id))
         if out_id:
             try:
                 await _insert(

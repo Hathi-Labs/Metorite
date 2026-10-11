@@ -350,7 +350,8 @@ async def ensure_status(
     """The id of the status called ``name``, creating the lane if it is new.
 
     Returns ``(status_id, created)``. The INSERT carries
-    ``ON CONFLICT (name) DO NOTHING`` because two modules (or two cycles) can
+    ``ON CONFLICT (organization_id, name) DO NOTHING`` (the per-tenant key of
+    migration 241, WS-53 CRM-T1) because two modules (or two cycles) can
     reach the same unseen stage at once and the second one must not abort the
     import with a unique violation. **The test that this stays idempotent is
     static, against this statement's text** — the unit suite's fake DB models
@@ -378,7 +379,7 @@ async def ensure_status(
     await db.execute(
         text(
             f"INSERT INTO {table} ({columns}) VALUES ({binds}) "
-            f"ON CONFLICT (name) DO NOTHING"
+            f"ON CONFLICT (organization_id, name) DO NOTHING"
         ),
         values,
     )
@@ -499,11 +500,11 @@ async def apply_record(
     if status_id:
         values["status_id"] = status_id
     if entity is CONTACTS:
-        values["organization_id"] = await _linked_native_id(
+        values["company_id"] = await _linked_native_id(
             db, ORGANIZATIONS, record.get("Account_Name"),
         )
     if entity is DEALS:
-        values["organization_id"] = await _linked_native_id(
+        values["company_id"] = await _linked_native_id(
             db, ORGANIZATIONS, record.get("Account_Name"),
         )
 
@@ -781,8 +782,8 @@ async def import_from_zoho(
 ) -> ImportReport:
     """Backfill the native CRM from Zoho (§7.1's mapping table).
 
-    Idempotent: every record is written ``ON CONFLICT (zoho_id)``, so running
-    it twice converges rather than duplicating. Unresolvable owners fall back
+    Idempotent: every record is written ``ON CONFLICT (organization_id,
+    zoho_id)``, so running it twice converges rather than duplicating. Unresolvable owners fall back
     to the caller and are counted; stages Zoho has that we do not are created
     as new lanes at the end of the pipeline.
     """

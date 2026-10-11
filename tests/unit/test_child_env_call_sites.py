@@ -164,14 +164,16 @@ async def test_gh_auth_status_alone_gets_the_gh_names(monkeypatch: pytest.Monkey
     assert env["GH_TOKEN"] == "gho_bh1_status"
     assert env["GITHUB_TOKEN"] == "ghp_bh1canary"  # gh reads both names (spec §2.2)
 
+    # WS-54 IN-0: connect-cli is retired. It answers 410 and runs no `gh`
+    # subprocess, so the operator's own `gh` token is never read.
+    from fastapi import HTTPException
+
     seen.clear()
     monkeypatch.setattr(integrations, "_refuse_provider_key_without_byok", lambda _keys: None)
-    with pytest.raises(Exception):  # noqa: B017 - gh prints no token, so it refuses
+    with pytest.raises(HTTPException) as caught:
         await integrations.github_connect_cli(user=SimpleNamespace(email="a@b.c"))
-    args, env = seen[0]
-    assert args == ["gh", "auth", "token"]
-    _clean(env)
-    assert "GH_TOKEN" not in env
+    assert caught.value.status_code == 410
+    assert seen == []
 
 
 async def test_docker_cli_gets_the_daemon_names(monkeypatch: pytest.MonkeyPatch) -> None:

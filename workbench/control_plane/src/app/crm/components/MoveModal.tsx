@@ -49,7 +49,7 @@ export default function MoveModal({
   /** Entry requirements the deal does not satisfy, in the stage's own order. */
   missing: RequireableField[];
   reasons: LostReason[];
-  /** Loaded on open — the picker for an `organization_id` requirement. */
+  /** Loaded on open — the picker for an `company_id` requirement. */
   organizations: Organization[];
   saving: boolean;
   onCancel: () => void;
@@ -159,7 +159,7 @@ export default function MoveModal({
               <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 {REQUIREABLE_FIELD_LABELS[field]}
               </label>
-              {field === "organization_id" ? (
+              {field === "company_id" ? (
                 <OrganizationPicker
                   organizations={organizations}
                   selected={value(field)}
@@ -213,7 +213,7 @@ export default function MoveModal({
 /**
  * A short, searchable account list.
  *
- * A picker and not a free-text box because `organization_id` is a foreign key:
+ * A picker and not a free-text box because `company_id` is a foreign key:
  * a typed name reaches the gateway as an invalid UUID and comes back as a 422
  * about a cast, which is not an answer to "which company is this".
  */
@@ -243,7 +243,7 @@ function OrganizationPicker({
       />
       {organizations.length === 0 ? (
         <p className="text-[10px] text-muted-foreground">
-          No organizations loaded yet.
+          No companies loaded yet.
         </p>
       ) : (
         <div className="space-y-1">

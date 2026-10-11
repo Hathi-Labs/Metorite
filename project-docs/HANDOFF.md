@@ -5140,6 +5140,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner ask, 2026-10-10 · `app/projects/lib/pickerTree.ts`
 - **Added:** 2026-10-10 · the project picker session
 
+### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
+- **Check:** `grep -cE '^CRM_ZOHO_CLIENT_(ID|SECRET)=.+' "$HOME/.metorite/secrets/app.env"`
+  on the owner's PC. A count below 2, or no file, means this is open. When it
+  prints 2, an agent pushes the values and runs
+  `scripts/secrets.sh status app-env`. `in-sync` closes the entry. Neither
+  command prints a value.
+- **Why.** Metorite owns one Zoho OAuth client, and every customer connects
+  through it with one click. Only the owner can make it, because it lives in a
+  Zoho account of the company. CRM-Z2 cannot run a consent without it.
+- **Do this:** follow `docs/ZOHO_OAUTH_SETUP.md`. Make a server-based app.
+  Turn on every data centre with one secret for all. Set the redirect URI to
+  `https://app.metorite.com/api/crm/oauth/zoho/callback`. Put
+  `CRM_ZOHO_CLIENT_ID` and `CRM_ZOHO_CLIENT_SECRET` in `app.env` of the drop
+  folder.
+- **Then the agent:** adds the two names to `allowed_keys` of `app-env` in
+  `deploy/secrets/manifest.json`, and runs `scripts/secrets.sh push app-env`.
+- **Authority:** `specs/crm_platform.md` §12 and §13.5 CRM-Z0 · `work_plan.md` WS-53
+- **Added:** 2026-10-11 · branch `crm-z0`
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

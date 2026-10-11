@@ -1,50 +1,62 @@
-"""OAuth 2.0 authorization-code flow for integrations (M2.6 / L1-14).
+"""OAuth 2.0 authorization-code flow for integrations (M2.6 / L1-14). RETIRED.
 
-Generic, provider-driven token exchange used by the Control Plane Integration
-page. Each provider is configured once in ``_PROVIDERS``; the same authorize →
-callback → refresh code path serves all of them.
+🔒 **Retired by WS-54 IN-0 (2026-10-11, D96.3).** This flow wrote the tokens
+of a provider to ``.env`` through ``_persist_tokens``. The env file and the
+process env have one value for the whole deployment, so one organization's
+Zoho or Google token served every organization on the box. Nothing calls
+these routes: no UI and no caller of ``refresh_access_token`` (measured
+2026-10-11). So:
 
-Flow
-----
-1. ``GET /integrations/oauth/{service}/authorize`` → returns the provider's
-   consent URL (with a signed ``state`` to prevent CSRF).
-2. The operator approves; the provider redirects to
-   ``GET /integrations/oauth/callback/{service}?code=...&state=...``.
-3. The callback exchanges the code for access (+ refresh) tokens and persists
-   them to ``.env`` via the Integration Registry writer.
-4. ``refresh_access_token(service)`` renews an access token before expiry using
-   the stored refresh token (called by the agent run path).
+1. ``GET /integrations/oauth/{service}/authorize`` answers 410.
+2. ``GET /integrations/oauth/callback/{service}`` answers the "retired" page.
+   It does not exchange the code, and it writes nothing.
+3. ``POST /integrations/oauth/{service}/refresh`` answers 410.
+4. ``refresh_access_token(service)`` no longer writes the refreshed token.
+
+Authorize and refresh need ``integrations:manage`` beside
+``feature:integrations``. The callback is in ``main.PUBLIC_ROUTES``.
+``_persist_tokens`` stays, with no caller, until IN-5 removes it. A connect
+flow now lives in the app that needs it (D96.1). The Zoho connection is
+CRM-Z2 (``crm_platform.md``). The fence is
+``tests/unit/test_integrations_in0.py``.
 
 Security
 --------
 - ``state`` is an HMAC-signed ``service:nonce:ts`` token (gateway secret).
-- Client secrets never leave the server; tokens are written to ``.env`` only.
-- The authorize/callback endpoints are admin-gated in the router include.
+- Client secrets never leave the server.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
+import html
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
-from acb_common.env_guard import EnvWriteRefused, check_env_write
-from fastapi import APIRouter, Depends, HTTPException, Query
+from acb_common.env_guard import check_env_write
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
-from gateway.routes.integrations import _find_env_file, _upsert_env_var
+from gateway.routes.integrations import MANAGE_PERMISSION, _find_env_file, _upsert_env_var
 
 _log = get_logger("gateway.oauth")
 
 router = APIRouter(prefix="/integrations/oauth", tags=["integrations", "oauth"])
 
 _STATE_TTL_SECONDS = 600  # authorize → callback must complete within 10 minutes
+
+#: What a caller of a retired route reads (WS-54 IN-0).
+RETIRED_DETAIL = (
+    "This OAuth flow is retired. Connect the tool from the app that uses it."
+)
+
+#: The gate of the two routes that a member calls. The callback is public.
+_GATE = [require_permission("feature:integrations"), require_permission(MANAGE_PERMISSION)]
 
 
 # ---------------------------------------------------------------------------
@@ -123,38 +135,14 @@ def _verify_state(state: str, service: str, settings: Any) -> bool:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/{service}/authorize", dependencies=[require_permission("feature:integrations")])
+@router.get("/{service}/authorize", dependencies=_GATE)
 async def oauth_authorize(
     service: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Return the provider consent URL for the named service."""
-    provider = _PROVIDERS.get(service)
-    if not provider:
-        raise HTTPException(status_code=404, detail=f"Unknown OAuth service: {service}")
-
-    settings = get_settings()
-    client_id = getattr(settings, provider["client_id_attr"], "")
-    if not client_id:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{service}: {provider['client_id_attr']} is not configured.",
-        )
-
-    state = _sign_state(service, settings)
-    params = {
-        "client_id": client_id,
-        "redirect_uri": _redirect_uri(settings, service),
-        "response_type": "code",
-        "state": state,
-    }
-    if provider["scopes"]:
-        params["scope"] = provider["scopes"]
-    params.update(provider["extra_authorize"])
-
-    authorize_url = f"{provider['authorize_url'](settings)}?{urlencode(params)}"
-    _log.info("oauth.authorize", service=service, actor=user.email)
-    return {"service": service, "authorize_url": authorize_url, "state": state}
+    """Retired (WS-54 IN-0). It answers 410 and builds no consent URL."""
+    _log.info("oauth.authorize_retired", service=service, actor=user.email)
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=RETIRED_DETAIL)
 
 
 @router.get("/callback/{service}", response_class=HTMLResponse)
@@ -164,64 +152,23 @@ async def oauth_callback(
     state: str = Query(default=""),
     error: str = Query(default=""),
 ) -> HTMLResponse:
-    """Exchange the authorization code for tokens and persist them."""
-    provider = _PROVIDERS.get(service)
-    if not provider:
-        return _html_result(service, ok=False, detail="Unknown OAuth service.")
-    if error:
-        return _html_result(service, ok=False, detail=f"Provider returned error: {error}")
-    if not code:
-        return _html_result(service, ok=False, detail="No authorization code returned.")
+    """Retired (WS-54 IN-0). It answers the "retired" page.
 
-    settings = get_settings()
-    if not _verify_state(state, service, settings):
-        return _html_result(service, ok=False, detail="Invalid or expired state (CSRF check failed).")
-
-    client_id = getattr(settings, provider["client_id_attr"], "")
-    client_secret = getattr(settings, provider["client_secret_attr"], "")
-
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "redirect_uri": _redirect_uri(settings, service),
-    }
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(provider["token_url"](settings), data=data)
-    except Exception as exc:
-        return _html_result(service, ok=False, detail=f"Token request failed: {exc}")
-
-    if resp.status_code != 200:
-        return _html_result(service, ok=False, detail=f"Token exchange failed: {resp.text[:200]}")
-
-    tokens = resp.json()
-    access = tokens.get("access_token")
-    if not access:
-        return _html_result(service, ok=False, detail=f"No access_token in response: {resp.text[:200]}")
-
-    try:
-        _persist_tokens(provider, tokens)
-    except EnvWriteRefused as exc:
-        _log.warning("oauth.token_refused", service=service, key=exc.key, reason=exc.reason)
-        return _html_result(
-            service, ok=False, detail="The provider returned a token that Metorite cannot store.",
-        )
-    _log.info("oauth.callback_success", service=service)
-    return _html_result(service, ok=True, detail="Connected successfully. You can close this tab.")
+    It does not exchange the code and it writes nothing. ``_persist_tokens``
+    wrote the tokens to ``.env``, which every organization on the box reads.
+    """
+    _log.info("oauth.callback_retired", service=service)
+    return _html_result(service, ok=False, detail=RETIRED_DETAIL)
 
 
-@router.post("/{service}/refresh", dependencies=[require_permission("feature:integrations")])
+@router.post("/{service}/refresh", dependencies=_GATE)
 async def oauth_refresh(
     service: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Force-refresh the access token for a service (admin / scheduled use)."""
-    if service not in _PROVIDERS:
-        raise HTTPException(status_code=404, detail=f"Unknown OAuth service: {service}")
-    token = await refresh_access_token(service)
-    return {"service": service, "refreshed": bool(token)}
+    """Retired (WS-54 IN-0). It answers 410 and refreshes nothing."""
+    _log.info("oauth.refresh_retired", service=service, actor=user.email)
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=RETIRED_DETAIL)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +177,10 @@ async def oauth_refresh(
 
 def _persist_tokens(provider: dict[str, Any], tokens: dict[str, Any]) -> None:
     """Write access/refresh/expiry tokens to .env and hot-reload Settings.
+
+    ⚠️ No caller since WS-54 IN-0, and the fence in
+    ``tests/unit/test_integrations_in0.py`` refuses a new one. A value it
+    writes reaches every organization on the box. IN-5 removes it.
 
     🔒 All or nothing (2026-10-05): ``check_env_write`` runs on every pair
     before the first write, so a bad refresh token cannot leave a new access
@@ -262,11 +213,15 @@ def _persist_tokens(provider: dict[str, Any], tokens: dict[str, Any]) -> None:
 
 
 async def refresh_access_token(service: str) -> str | None:
-    """Refresh and persist the access token for a service if it is near expiry.
+    """Refresh the access token for a service if it is near expiry.
 
     Returns the (possibly refreshed) access token, or ``None`` if the service
-    has no refresh token / is not configured. Called by the agent run path
-    before injecting credentials so agents always get a live token.
+    has no refresh token / is not configured. Nothing calls it (measured
+    2026-10-11).
+
+    🔒 WS-54 IN-0: it no longer writes the new token to ``.env``. That write
+    reached every organization on the box. The caller gets the token, and
+    nothing else keeps it.
     """
     provider = _PROVIDERS.get(service)
     if not provider or not provider["refresh_env"]:
@@ -304,7 +259,6 @@ async def refresh_access_token(service: str) -> str | None:
             tokens = resp.json()
             # Zoho refresh responses omit refresh_token — keep the existing one.
             tokens.setdefault("refresh_token", refresh_token)
-            _persist_tokens(provider, tokens)
             _log.info("oauth.refreshed", service=service)
             return tokens.get("access_token")
         _log.warning("oauth.refresh_failed", service=service, status=resp.status_code)
@@ -318,6 +272,13 @@ async def refresh_access_token(service: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _html_result(service: str, *, ok: bool, detail: str) -> HTMLResponse:
+    """A small HTML page. 🔒 It escapes ``service`` and ``detail``.
+
+    The callback is a public route and ``service`` is a path value, so the
+    raw value would be a reflected XSS (WS-54 IN-0 fix round 1).
+    """
+    service = html.escape(service)
+    detail = html.escape(detail)
     colour = "#16a34a" if ok else "#dc2626"
     title = "Connected" if ok else "Connection failed"
     body = (

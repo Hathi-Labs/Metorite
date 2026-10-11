@@ -109,16 +109,24 @@ _DENORMALISE_NOTE = (
 
 #: ⚠️ Tables that ALREADY have a column called ``organization_id`` meaning
 #: something else entirely. **These are not exempt and they are not scoped —
-#: they are BLOCKED**, and the difference matters:
+#: they are BLOCKED**, and the difference matters.
 #:
-#: ``crm_contacts.organization_id`` is the customer COMPANY a contact works at
-#: (``REFERENCES crm_organizations``), not the tenant that owns the row. The
+#: **EMPTY since WS-53 CRM-T1 (2026-10-11, D95.2).** The three CRM tables that
+#: were here now call the customer company ``company_id`` (144_crm.sql renames
+#: it), and migration 241 gives them the tenant ``organization_id`` with FORCE
+#: row level security. The map stays, because :func:`main` and
+#: ``tests/unit/test_tenancy_boundary.py`` still compare it with
+#: :func:`discover_homonyms`, so a new homonym fails the build. The rest of
+#: this note is the record of why the map exists.
+#:
+#: ``crm_contacts.organization_id`` was the customer COMPANY a contact works at
+#: (``REFERENCES crm_companies``), not the tenant that owns the row. The
 #: generator's phases are name-based, so left alone they would emit, for each:
 #:
 #:   phase 1  ADD COLUMN IF NOT EXISTS  -> silent no-op, the column exists
 #:   phase 2  UPDATE ... WHERE organization_id IS NULL
 #:                                      -> writes a TENANT id into a column whose
-#:                                         FK points at ``crm_organizations``;
+#:                                         FK points at ``crm_companies``;
 #:                                         aborts on that FK, mid-window
 #:   phase 3  ADD CONSTRAINT ... REFERENCES organization(id)
 #:                                      -> a second, contradictory FK on one
@@ -128,18 +136,9 @@ _DENORMALISE_NOTE = (
 #: which is the worst moment to learn about it. Refusing at GENERATION time is
 #: the whole point of this map.
 #:
-#: **These three tables therefore carry NO tenant isolation**, and they hold
-#: customer CRM data. That is a real hole, not a resolved item. Closing it needs
-#: an owner call this branch does not make: rename the CRM column
-#: (``organization_id`` -> ``crm_organization_id``, touching every CRM route and
-#: query), or give the tenant key a different name on these three tables alone
-#: and accept that the column name means two things across the schema. Recorded
-#: in ``specs/multi_tenancy_leak_audit.md``.
-HOMONYM_BLOCKED: dict[str, str] = {
-    "crm_contacts":   "organization_id = the customer company (144_crm.sql:74)",
-    "crm_deals":      "organization_id = the customer company (144_crm.sql:197)",
-    "crm_activities": "organization_id = the customer company (144_crm.sql:289)",
-}
+#: Those three tables carried NO tenant isolation until the owner call: D95.2
+#: renamed the CRM column to ``company_id`` and freed the name for the tenant.
+HOMONYM_BLOCKED: dict[str, str] = {}
 
 _CREATE_RE = re.compile(
     r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"

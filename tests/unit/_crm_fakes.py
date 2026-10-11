@@ -111,7 +111,7 @@ _COALESCE_CMP = re.compile(
 #: ``<col> < :param`` — the attempt ceiling.
 _NUM_CMP = re.compile(r"\b(\w+)\s*(<=|<|>=|>)\s*:(\w+)")
 
-#: ``LEFT JOIN crm_organizations org ON org.id = base.organization_id`` — the
+#: ``LEFT JOIN crm_companies org ON org.id = base.company_id`` — the
 #: display-name projection ``core.project_joined`` wraps a list/board SELECT
 #: in. Read from the statement (which table, which alias, which foreign key)
 #: rather than hard-coded, so changing the join changes the answer here too.
@@ -374,7 +374,7 @@ def _now() -> datetime:
 #: Column defaults migration 144 declares. Kept here so a row read back after an
 #: INSERT looks like Postgres would have returned it.
 _DEFAULTS: dict[str, dict[str, Any]] = {
-    "crm_organizations": {"source": "manual"},
+    "crm_companies": {"source": "manual"},
     "crm_contacts": {"source": "manual"},
     "crm_leads": {"source": "manual"},
     "crm_deals": {"source": "manual", "currency": "INR", "probability": None},
@@ -416,7 +416,7 @@ _ZOHO_TRACKED: dict[str, Any] = {
 
 #: Tables whose rows carry the timestamp trio.
 _TIMESTAMPED = {
-    "crm_organizations", "crm_contacts", "crm_leads", "crm_deals",
+    "crm_companies", "crm_contacts", "crm_leads", "crm_deals",
 }
 
 
@@ -715,7 +715,7 @@ class FakeCrmDB:
 
         Two shapes exist in this package and both are read here rather than
         special-cased: ``core.project_joined``'s display-name wrapper
-        (``LEFT JOIN crm_organizations org ON org.id = base.organization_id``
+        (``LEFT JOIN crm_companies org ON org.id = base.company_id``
         plus ``org.name AS organization_name``) and the deal-contacts read
         (``JOIN crm_contacts c ON c.id = dc.contact_id``, whose ``SELECT c.*``
         makes the CONTACT the row body). Change the join in the route and this

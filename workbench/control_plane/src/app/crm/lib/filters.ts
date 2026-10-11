@@ -183,7 +183,7 @@ export const SORTS: Record<EntitySlug, { key: string; label: string }[]> = {
     { key: "last_activity_at", label: "Last touched" },
   ],
   organizations: [
-    { key: "name", label: "Organization" },
+    { key: "name", label: "Company" },
     { key: "owner_email", label: "Owner" },
     { key: "last_activity_at", label: "Last touched" },
   ],
