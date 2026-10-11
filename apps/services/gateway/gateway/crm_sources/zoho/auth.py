@@ -304,11 +304,15 @@ async def refresh(
     raw_error = str(body.get("error") or "")
     error = safe_code(raw_error)
     if raw_error in _RECONNECT_ERRORS:
-        raise NeedsReconnect(f"Zoho refused the refresh ({error}). An admin must connect again")
+        dead = NeedsReconnect(f"Zoho refused the refresh ({error}). An admin must connect again")
+        dead.code = error
+        raise dead
     if _is_token_throttle(raw_error, body):
         raise RateLimited("The Zoho accounts server throttled the refresh", tries=1)
     if status >= 300 or raw_error or not body.get("access_token"):
-        raise SourceError(f"The Zoho token refresh failed ({error or status})")
+        failed = SourceError(f"The Zoho token refresh failed ({error or status})")
+        failed.code = error
+        raise failed
     provider_meta = dict(credential.provider_meta)
     if body.get("api_domain"):
         provider_meta[META_API_DOMAIN] = check_api_domain(str(body["api_domain"]))

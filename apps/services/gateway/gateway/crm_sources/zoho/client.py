@@ -446,6 +446,12 @@ class ZohoSource:
             raise
         return self._credential
 
+    # ── 9. Revoke ───────────────────────────────────────────────────────────
+
+    async def revoke(self) -> bool:
+        """Revoke the refresh token at Zoho. True when Zoho confirms."""
+        return await auth.revoke(self._config, self._connected(), transport=self._transport)
+
     async def _fresh_credential(self) -> SourceCredential:
         """The credential, refreshed first when it expires within five minutes."""
         credential = self._connected()
