@@ -495,7 +495,8 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(panel + table).not.toContain("This report hides");
     // The table names each card and every focus task the server sent.
     expect(table).toContain("focus task 4");
-    expect(table).toContain("eli@example.test");
+    // A name, never the address (owner, 2026-10-10). Eli has no name on file.
+    expect(table).toContain(">eli<");
   });
 
   it("pulse draws 'On leave' for a person away today, never 'Idle'", () => {
@@ -511,7 +512,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     for (const word of ["On track", "On leave", "Idle", "Behind", "At risk", "Overloaded"]) {
       expect(panel, word).not.toContain(word);
     }
-    expect(panel).toContain("eli@example.test");
+    expect(panel).toContain(">eli<");
   });
 
   it("pulse, for a member: one card, the waiting count and the hidden line", () => {
@@ -646,7 +647,7 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     // The hidden div is BARE. `until-found` does not set display: none, so a
     // border or padding on it would paint an empty band under a closed card.
     expect(html).toMatch(/<div hidden=""><div class="mt-3 border-t border-border pt-3"><div role="group" aria-label="Open work, as a table/);
-    expect(table).toContain("ana@example.test");
+    expect(table).toContain(">ana<");
   });
 
   it("drops the report's own section heading where a panel draws", () => {

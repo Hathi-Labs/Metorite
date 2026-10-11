@@ -15,6 +15,8 @@ export interface ProjectNode {
   name: string;
   parent_project_id?: string | null;
   kind?: string | null;
+  /** Migration 196: this node keeps its own status set. Absent on an old gateway. */
+  owns_statuses?: boolean | null;
   /** Migration 194 — a themed icon NAME and a ramp SLOT (1..8), never a colour. */
   icon?: string | null;
   icon_slot?: number | null;

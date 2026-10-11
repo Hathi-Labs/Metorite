@@ -82,6 +82,7 @@ import {
   reportLines,
   uploadProblem,
 } from "../lib/importFlow";
+import { personDisplayName } from "@/lib/personName";
 
 const UNASSIGNED = "__unassigned__";
 const NEW_SPACE = "__new_space__";
@@ -198,7 +199,7 @@ export default function ImportDialog({ open, onClose, roots, onDone, onOpenSpace
       .then((res) => {
         if (!live) return;
         const rows = Array.isArray(res?.people) ? res.people : [];
-        setMembers(rows.map((p) => ({ value: p.assignee.toLowerCase(), label: p.name || p.assignee, hint: p.assignee })));
+        setMembers(rows.map((p) => ({ value: p.assignee.toLowerCase(), label: personDisplayName(p.name, p.assignee), hint: p.assignee })));
       })
       .catch(() => live && setMembers([]));
     return () => {

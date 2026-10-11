@@ -42,6 +42,7 @@ import type {
 } from "./api";
 import { shortDate } from "./outlook";
 import { flatten } from "./tree";
+import { personDisplayName, realName } from "@/lib/personName";
 
 /**
  * The sections, in the server's `SECTIONS` order, with the ONE name of each.
@@ -566,8 +567,10 @@ export function subjectOptions(
     const twin = (named.get((p.name ?? "").trim().toLowerCase()) ?? 0) > 1;
     return {
       value: subjectValue({ kind: "person", email: p.email }),
-      label: own ? "Me" : p.name || p.email,
-      hint: own || (p.name && twin) ? p.email : undefined,
+      label: own ? "Me" : personDisplayName(p.name, p.email),
+      // The address beside a person with no real name too, so "mia" can be
+      // told from another mia (owner, 2026-10-10: names, address on the side).
+      hint: own || !realName(p.name) || twin ? p.email : undefined,
       // The filter matches the address too, so a search by address finds a
       // named person whose address the menu does not show.
       keywords: p.email,
@@ -1010,7 +1013,7 @@ export function subjectLabel(
     return teamLabel(team?.name || subject.slug);
   }
   const person = answer?.people.find((p) => p.email === subject.email);
-  return person?.name || subject.email;
+  return personDisplayName(person?.name, subject.email);
 }
 
 /** The label of a scope option, or `null` when the tree does not hold it. */
