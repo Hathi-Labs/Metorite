@@ -89,22 +89,36 @@ def test_each_registry_writer_carries_the_operator_gate(method: str, path: str) 
     assert all(_gated(r) for r in routes), (method, path)
 
 
+def _requires(dep_call: object, permission: str) -> bool:
+    """True when a ``require_permission(...)`` checker holds *permission*.
+
+    The checker keeps its permissions in the closure cell ``required``.
+    """
+    for cell in getattr(dep_call, "__closure__", None) or ():
+        try:
+            value = cell.cell_contents
+        except ValueError:  # an empty cell
+            continue
+        if isinstance(value, tuple) and permission in value:
+            return True
+    return False
+
+
 def test_every_route_that_needs_agents_manage_to_write_is_gated() -> None:
     """A new registry writer that skips the gate fails here."""
-    bare = []
+    writers, bare = [], []
     for route in agent_routes.router.routes:
         if not isinstance(route, APIRoute):
             continue
         if not (route.methods & {"POST", "PUT", "PATCH", "DELETE"}):
             continue
-        needs_manage = any(
-            "agents:manage" in repr(getattr(dep.call, "__closure__", None) or "")
-            or "agents:manage" in repr(getattr(dep.call, "__defaults__", None) or "")
-            or "agents:manage" in str(getattr(dep.call, "permission", ""))
-            for dep in route.dependant.dependencies
-        )
-        if needs_manage and not _gated(route):
+        if not any(_requires(dep.call, "agents:manage") for dep in route.dependant.dependencies):
+            continue
+        writers.append(route.path)
+        if not _gated(route):
             bare.append(f"{sorted(route.methods)} {route.path}")
+    # Never vacuous: the walk must see the four writers it guards.
+    assert len(writers) >= 4, writers
     assert not bare, bare
 
 
