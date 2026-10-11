@@ -16,7 +16,8 @@
 > Native (migration 243, 2026-10-11). CRM-T4, the real-database tenancy suite and
 > the CRM purge (2026-10-11).
 > CRM-Z3, the mirror columns, `crm_field_defs` and `upsert_from_source`
-> (2026-10-11, migration 244). The other slices are not built yet.
+> (2026-10-11, migration 244). CRM-Z6, the mirror write guard (2026-10-11).
+> The other slices are not built yet.
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -879,7 +880,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-Z3** ✅ built 2026-10-11 (not merged). `crm_pipelines` did not land: a Zoho pipeline is a subset of the one Stage picklist, so CRM-S7 adds it. The write guard moved to CRM-Z6 | The mirror columns, `crm_field_defs`, and pipelines if Zoho needs them | 🟢 AGENT-SAFE | R8: an upsert on `(organization_id, ext_source, ext_id)` is idempotent. Two orgs import one Zoho id with no collision |
 | **CRM-Z4** | The first import, with progress, estimate and resume. The owner map | 🟢 AGENT-SAFE | A paused import resumes with no duplicate. Counts per entity match the source |
 | **CRM-Z5** | The incremental loop per org, Sync now, the credit budget, `crm_sync_runs`. From CRM-T3: one `tenant_session(org)` per step, the advisory lock in place of `_cycle_lock`, and a working `POST /crm/sync/zoho` | 🟢 AGENT-SAFE to build. 🔴 first real customer connect is the owner's | Two orgs sync on one loop with no crossover. A run stops at its budget |
-| **CRM-Z6** | Read-only enforcement in Mirror mode, "Only in Metorite" items, deep links | 🟢 AGENT-SAFE | `test_crm_mirror_readonly.py`: each write route returns 409 on a mirrored field, for each of the 4 entities. A Metorite-only note saves |
+| **CRM-Z6** ✅ built 2026-10-11. Built as: deep links move to CRM-Z7 after the sync stores the org domain | Read-only enforcement in Mirror mode, "Only in Metorite" items, deep links | 🟢 AGENT-SAFE | `test_crm_mirror_readonly.py`: each write route returns 409 on a mirrored field, for each of the 4 entities. A Metorite-only note saves |
 | **CRM-Z7** | The mirror UI: connect flow, mirror marks, custom fields in the panel and the filters, sync health | 🟢 AGENT-SAFE | Visual review passes. A custom field filters a list |
 
 ### 13.6 Phase 4 — launch
