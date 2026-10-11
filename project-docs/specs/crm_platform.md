@@ -13,7 +13,8 @@
 > (2026-10-11). CRM-T3, narrowed (2026-10-11): the auto-lead step and the broker
 > push handler bind their tenant. The Zoho sync stays off until CRM-Z5. CRM-T5,
 > the access rule, the admin floor on stages and the seed when the mode becomes
-> Native (migration 243, 2026-10-11).
+> Native (migration 243, 2026-10-11). CRM-T4, the real-database tenancy suite and
+> the CRM purge (2026-10-11).
 > CRM-Z3, the mirror columns, `crm_field_defs` and `upsert_from_source`
 > (2026-10-11, migration 244). The other slices are not built yet.
 
@@ -850,10 +851,12 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-T1** ✅ built 2026-10-11 | The rename (§4.1) and the tenant column, RLS and per-tenant keys (§4.2), in one migration. The code sweep for the rename in the same PR: routes, agent, UI types, fakes, tests | 🟢 AGENT-SAFE. After CRM-0 is merged and deployed | `HOMONYM_BLOCKED` is empty. `test_tenancy_boundary.py` and `test_tenant_coverage.py` pass with the CRM tables scoped. A fresh install, an upgrade and a replay give the same schema (the `test_gtd_rename_upgrade.py` shape) |
 | ~~**CRM-T2**~~ | ✅ **Already true** (audit, 2026-10-11). Every request handler uses `_tenant_session` (`test_db_engine_seam.py:359-361`). `_get_db` stays only in the three background paths, and CRM-T3 removes them | — | Moved into CRM-T3 |
 | **CRM-T3** 🔨 built 2026-10-11, narrowed (not merged) | The three background paths bind their tenant (§4.3). The auto-lead step and the broker push handler bind it now. The sync loop fails closed: it starts no task, and `POST /crm/sync/zoho` answers 409. CRM-Z5 builds the sync binding and the advisory lock | 🟢 AGENT-SAFE. ⚠️ Touches the sync loop, which `work_plan.md` §6 WS-26 (a) gates while it runs. On prod it does not run (0 cursors) | `test_crm_sync_tenancy.py`: an auto-lead run for an org-B mailbox writes an org-B lead, and org A reads none of it. The broker handler bound to org A refuses an org-B row with no Zoho call. `test_db_engine_seam.py` exempts only `sync_zoho.py`, which no path reaches until CRM-Z5. H-201's CRM bullets point at CRM-Z5 |
-| **CRM-T4** | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
+| **CRM-T4** ✅ built 2026-10-11 | R8: a real-database suite for the CRM. Offboarding purges CRM rows | 🟢 AGENT-SAFE | `test_crm_tenancy_r8.py` on the dev DB: org B reads 0 of org A's rows on every list, `WITH CHECK` refuses a cross-org insert, an unbound session reads 0 rows. `test_org_purge_tenant.py` covers the CRM. Each case red first |
 | **CRM-T5** ✅ built 2026-10-11 | Per-org seeds of stages and lost reasons, in the write that sets the mode to `native`. Stage and lost-reason writes need `admin:access:manage` (CR-10). `crm_settings` with `mode` and `access` (Q3). Groups resolve through the Projects grant model (D12) | 🟢 AGENT-SAFE | An admin sets a new org to Native, and the org gets its own 6 deal stages, 5 lead stages and 6 lost reasons. A member who is not an admin gets 403 on `POST /crm/statuses/deal`. With `access = admins`, a member gets 403 on every `/crm` route |
 
-**For CRM-T4 (found in CRM-T1, 2026-10-11).** Intra-CRM FKs (`company_id`, `deal_id`, `status_id` and others) can point at another tenant's row, because referential checks bypass RLS. A composite `(organization_id, id)` key closes it.
+**For CRM-T4 (found in CRM-T1, 2026-10-11).** Intra-CRM FKs (`company_id`, `deal_id`, `status_id` and others) can point at another tenant's row, because referential checks bypass RLS. A composite `(organization_id, id)` key closes it. CRM-T4 measured the gap: `POST /crm/contacts` accepts another org's `company_id`. `test_crm_tenancy_r8.py::TestTheForeignKeyGap` is a strict xfail that fences it. The key itself is still open work.
+
+**CRM-T4 result (2026-10-11).** The RESTRICT hazard on `status_id` did not reproduce with the bare cascade on Postgres 16, because the check runs after the cascade removes the records. `purge_tenant_organization` still deletes `crm_activities`, `crm_deals` and `crm_leads` for its own org first, so it does not rest on that order. Each delete names the org, because a role that bypasses RLS would delete every org's rows. The receipt `kept` list never named the CRM.
 
 ### 13.4 Phase 2 — the one look (§8)
 
