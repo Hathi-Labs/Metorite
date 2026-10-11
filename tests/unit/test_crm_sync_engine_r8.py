@@ -962,3 +962,19 @@ async def test_r2_an_empty_walk_keeps_the_offset_paged_flag(ns) -> None:
     state = _q(ns, "SELECT cursor_state FROM crm_sync_cursors WHERE organization_id = "
                    "CAST(:o AS uuid) AND module = 'zoho:company'", o=ns.org_a)[0][0]
     assert state["offset_paged"] is True
+
+
+async def test_r2_a_row_inserted_after_a_walk_gets_two_strikes_too(ns) -> None:
+    from gateway.crm_sync import engine
+
+    await _import_hidden(ns, 5)
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)  # walk one
+    with ns.admin_engine.begin() as c:  # a row an incremental run made: no stamp, new
+        c.execute(text(
+            "INSERT INTO crm_companies (organization_id, name, ext_source, ext_id, "
+            "source, created_at) VALUES (CAST(:o AS uuid), 'New', 'zoho', 'Anew', "
+            "'import', now() + interval '1 day')"), {"o": ns.org_a})
+    _make_due_for_reconcile(ns)
+    await engine.run_org(ns.org_a)  # walk two misses it: strike one only
+    assert _count(ns, "crm_companies", ns.org_a, "ext_id = 'Anew'") == 1

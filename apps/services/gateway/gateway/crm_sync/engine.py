@@ -1008,7 +1008,7 @@ async def _drop_stale(
     if prev_walk is not None:
         stale = [
             str(r.ext_id) for r in (await db.execute(
-                text(f"SELECT ext_id {base} AND (ext_seen_at IS NULL OR ext_seen_at < :prev)"),
+                text(f"SELECT ext_id {base} AND ((ext_seen_at IS NULL AND created_at < :prev) OR ext_seen_at < :prev)"),
                 {**params, "prev": prev_walk},
             )).fetchall()
             if str(r.ext_id) not in failed_ids
