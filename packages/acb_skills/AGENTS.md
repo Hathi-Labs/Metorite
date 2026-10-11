@@ -39,6 +39,13 @@ clone cache.
    `agent_paths.is_other_thread_rel` is the ONE rule for another chat's
    folder, and it covers both folders. Fence:
    tests/unit/test_h227_thread_scope.py.
+   `package_artifacts.py` zips the files of one chat into one card. With no
+   paths, it reads the thread's `outputs/` folder in a tenant dir. In any
+   other dir, it reads the files of `acb_memory.session_paths`. A named path
+   goes through the `share_artifact` rules. Every read and the write go
+   through `safe_open`. `agent_paths.is_blocked_rel` is the ONE secret-name
+   rule. The gateway's file routes read it too. Fence:
+   tests/unit/test_package_artifacts.py.
    A batch run (no chat, `batch_thread` from the executor) writes the flat
    `outputs/`, never replaces a file, and records the actor `batch`
    (`_is_batch_run`, `BATCH_ACTOR`). Its document is the organization's to

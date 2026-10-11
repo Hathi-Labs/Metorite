@@ -973,28 +973,19 @@ def _not_this_chats(ctx: Mapping[str, Any]) -> Callable[[str], bool]:
 
 
 async def share_artifact(path: str) -> dict:
-    """Surface a file you ALREADY created as a downloadable, previewable card in
-    the chat — and get back a download link.
+    """Show a file you ALREADY created as a download and preview card in the chat.
 
-    Use this whenever you produced a file with your own tools (shell, editor,
-    Write, a script you ran) instead of ``write_artifact``.  Do NOT re-create or
-    re-read the file's contents — just point this tool at the path you already
-    wrote and it will appear in the chat with a Download button and an inline
-    preview, with zero extra effort on your part.  You do not need to construct
-    any URL by hand; the returned ``download_url`` is the canonical link.
-
-    Pass a single file, or a directory to share every file inside it.
+    Use it for a file you made with your own tools (shell, editor, a script)
+    instead of ``write_artifact``. Do not re-create or re-read the file. Never
+    build a URL: the returned ``download_url`` is the link.
 
     Args:
-        path: File or directory path relative to your workspace (e.g.
-              ``"outputs/report.pdf"``, ``"q2_summary.xlsx"``, or ``"outputs"``
-              to share the whole folder).  Absolute paths inside the workspace
-              are also accepted.
+        path: A file or a directory (every file inside it) in your workspace,
+              e.g. ``"outputs/report.pdf"`` or ``"outputs"``.
 
     Returns:
-        ``{"artifacts": [{"path","name","size","mime_type","download_url"}, ...],
-        "download_url": <first file's link>}``.  On error,
-        ``{"error": str, "artifacts": []}``.
+        ``{"artifacts": [{"path","name","size","mime_type","download_url"}],
+        "download_url"}``, or ``{"error", "artifacts": []}``.
     """
     import asyncio
 

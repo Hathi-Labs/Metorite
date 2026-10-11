@@ -20,6 +20,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import {
   canDownloadPdf,
   classifyArtifact,
+  isArchive,
   isRenderable,
   pdfNameFor,
   workspaceFileUrl,
@@ -103,6 +104,8 @@ function fileIcon(artifact: ArtifactMeta): React.ReactNode {
     return <Icon name="FileText" size={15} className="shrink-0 text-red-400" />;
   if (["xlsx", "xls"].includes(ext))
     return <Icon name="FileSpreadsheet" size={15} className="shrink-0 text-emerald-400" />;
+  if (isArchive(artifact.name, mime))
+    return <Icon name="FileArchive" size={15} className="shrink-0 text-muted-foreground" />;
   return <Icon name="File" size={15} className="shrink-0 text-muted-foreground" />;
 }
 
@@ -123,6 +126,8 @@ export default function ArtifactCard({
   const image = isImage(artifact);
   const { isMobile } = useViewMode();
   const isDoc = hasRenderedView(artifact.name, artifact.path);
+  // A zip has nothing to preview, so its card offers the download alone.
+  const archive = isArchive(artifact.name, artifact.mimeType);
   const [imgError, setImgError] = useState(false);
 
   // Build a FileEntry-compatible object for the ArtifactViewerModal
@@ -261,7 +266,7 @@ export default function ArtifactCard({
             Open
           </button>
         )}
-        {!isMobile && (
+        {!isMobile && !archive && (
           <Button variant="ghost" size="icon-sm" layout="" onClick={(e) => { e.stopPropagation(); handleOpen(); }} title={isDoc ? "Open in modal viewer" : "Open in viewer"}>
             <Icon name="Maximize2" size={14} />
           </Button>
@@ -272,6 +277,7 @@ export default function ArtifactCard({
           onClick={(e) => e.stopPropagation()}
           className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
           title="Download"
+          aria-label={`Download ${artifact.name}`}
         >
           <Icon name="Download" size={14} />
         </a>

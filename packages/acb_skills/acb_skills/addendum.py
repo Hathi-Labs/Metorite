@@ -327,6 +327,10 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
 
 **Delivering files to the user:** to give the user a downloadable/previewable file, call ``write_artifact`` (for content you generate) or ``share_artifact`` (for a file you already wrote). That is ALL you need — the card renders itself. Never try to guess or assemble a download URL yourself.
 """),
+    # 2026-10-11: one zip of this chat's files, for "zip", "package" or
+    # "bundle". Gated, so an agent that opts the tool out never reads it.
+    Section("core", ("package_artifacts",), """- **package_artifacts(paths?, name?)** — When the member asks to zip, package or bundle files, call this. With no paths it zips every file this chat produced. It shows ONE download card for the .zip, so do not list the files' links again. On WhatsApp it cannot send a file, so say so.
+"""),
     # H-229: the text of a file attached in this chat, with no code run. A
     # floor tool since 2026-10-09, and the failure rule is the incident's.
     Section("core", ("read_attachment",), f"""### Chat attachments
@@ -451,6 +455,10 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("core", ("share_artifact",), (
         "share_artifact(path) — show a file you already wrote as a "
         "download/preview card"
+    )),
+    Section("core", ("package_artifacts",), (
+        "package_artifacts(paths?,name?) — zip this chat's files into one "
+        "download card when the member asks to zip, package or bundle them"
     )),
     Section("core", ("read_attachment",), (
         f"read_attachment(name,offset?) — the text of a {_ATTACHMENT_KINDS} "

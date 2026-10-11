@@ -49,6 +49,13 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+
+# The excluded dirs, the secret and junk names and the blocked-path rule are
+# ONE rule in ``acb_skills.agent_paths`` since 2026-10-11, because
+# ``package_artifacts`` must leave out the same files. These names are aliases.
+from acb_skills.agent_paths import EXCLUDED_DIRS as _EXCLUDED_DIRS
+from acb_skills.agent_paths import is_blocked_rel as _is_blocked_path
+from acb_skills.agent_paths import is_hidden_or_secret_name as _is_hidden_or_secret_file
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -1515,40 +1522,17 @@ async def _apply_write_rules(
 # below).  These three are kept only for up-front creation and categorisation.
 _VISIBLE_WORKSPACE_DIRS = frozenset({"inputs", "outputs", "agent-data"})
 
-# Directories excluded from traversal: VCS, dependency, build, and cache noise.
-# Pruned wherever they appear so a whole-repo clone (e.g. the dev agent that
-# clones the entire monorepo) doesn't flood the UI with node_modules/.git/etc.
-_EXCLUDED_DIRS = frozenset({
-    "__pycache__", "node_modules", ".git", ".mypy_cache", ".pytest_cache",
-    ".ruff_cache", ".venv", "venv", ".next", ".turbo", ".cache", "dist",
-    "build", ".idea", ".vscode", "coverage", ".nyc_output", "test-results",
-    "playwright-report", ".pnpm-store", ".gradle", ".terraform",
-    "site-packages", ".egg-info",
-})
+# Directories excluded from traversal (``_EXCLUDED_DIRS``, imported above):
+# VCS, dependency, build, and cache noise. Pruned wherever they appear so a
+# whole-repo clone doesn't flood the UI with node_modules/.git/etc.
 
-# File suffixes never surfaced (compiled junk + key/cert material).
-_EXCLUDED_FILE_SUFFIXES = (".pid", ".pem", ".key", ".crt", ".pyc", ".pyo")
-
-# Substrings that mark a file as secret/credential material to hide from the UI.
-_SECRET_FILE_MARKERS = ("token_cache", "credential", "secret", "id_rsa", "id_ed25519")
+# A zip is served as application/zip on every box. A Windows registry can
+# map .zip to application/x-zip-compressed, and the file card reads the type
+# (package_artifacts, 2026-10-11).
+mimetypes.add_type("application/zip", ".zip")
 
 # Hard cap on files returned per workspace walk — bounds huge monorepo clones.
 _MAX_TREE_FILES = 4000
-
-
-def _is_hidden_or_secret_file(name: str) -> bool:
-    """True if *name* is a dotfile, secret/credential, or compiled-junk file.
-
-    Dotfiles (``.env``, ``.zoho_token_cache.json``, ``.git-credentials`` …)
-    are hidden wholesale — this is the primary guard against leaking secrets
-    that live in an agent's working-directory root into the file browser.
-    """
-    if name.startswith("."):
-        return True
-    if name.endswith(_EXCLUDED_FILE_SUFFIXES):
-        return True
-    low = name.lower()
-    return any(m in low for m in _SECRET_FILE_MARKERS)
 
 
 def _ensure_workspace_dirs(root: Path) -> None:
@@ -1629,22 +1613,10 @@ def _is_visible_workspace_path(rel_path: str) -> bool:
     )
 
 
-def _is_blocked_path(rel_path: str) -> bool:
-    """True if *rel_path* points into excluded/secret territory.
-
-    The file browser now lists the whole working tree, so the raw-file
-    endpoints must independently refuse anything the walkers hide — otherwise
-    a crafted ``?path=.env`` would still stream a secret that never appeared
-    in any listing.  Blocks excluded/dot directories anywhere in the path and
-    secret/dot/junk basenames.
-    """
-    parts = [p for p in rel_path.replace("\\", "/").split("/") if p not in ("", ".")]
-    if not parts:
-        return True
-    for seg in parts[:-1]:
-        if seg.startswith(".") or seg in _EXCLUDED_DIRS:
-            return True
-    return _is_hidden_or_secret_file(parts[-1])
+# ``_is_blocked_path`` (``acb_skills.agent_paths.is_blocked_rel``, imported
+# above): the file browser lists the whole working tree, so the raw-file
+# endpoints must refuse anything the walkers hide. Otherwise a crafted
+# ``?path=.env`` would stream a secret that never appeared in any listing.
 
 
 async def _room_for(session_id: str, user: UserContext) -> Any:

@@ -42,6 +42,11 @@ _log = get_logger("orchestrator.tool_injection")
 _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     "web_search", "fetch_page",          # web access
     "write_artifact", "share_artifact",  # file writing / delivery
+    # One zip of this chat's files, as one download card (2026-10-11). In the
+    # floor, because the owner asked for it in EVERY assistant, and all eight
+    # in-tree agents set a tool_scope that would narrow a family away.
+    # No shell, no egress. Fence: ``tests/unit/test_package_artifacts.py``.
+    "package_artifacts",
     "emit_generative_ui",                # rich/interactive HITL UI (genui_2)
     "load_design_system",                # on-demand design language (genui_2 §7)
     "load_artifact_kit",                 # on-demand @cc/ui component reference
@@ -1323,6 +1328,14 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
         _all_tools = _all_tools + [
             write_artifact, share_artifact, emit_generative_ui,
         ]
+    except ImportError:
+        pass
+
+    # One zip of the files of THIS chat, shown as a download card through the
+    # same card seam (`write_artifact.announce_artifact`). No code, no egress.
+    try:
+        from acb_skills.package_artifacts import package_artifacts
+        _all_tools = [*_all_tools, package_artifacts]
     except ImportError:
         pass
 

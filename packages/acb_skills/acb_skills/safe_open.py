@@ -50,6 +50,7 @@ __all__ = [
     "is_file",
     "list_dir",
     "open_read",
+    "publish_bytes",
     "read_bytes",
     "remove_tree",
     "replace_bytes",
@@ -429,6 +430,41 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
         with contextlib.suppress(OSError, UnsafePath):
             unlink(root, tmp_rel)
         raise
+
+
+def publish_bytes(root: Path, rel: str, data: bytes) -> None:
+    """Make the NEW file ``root/rel`` with *data* in one step, and never replace one.
+
+    It writes a temp file with an exclusive create in the same dir, then
+    hard-links it at *rel* through the dir descriptor, and removes the temp
+    name. A reader sees no file or the whole file, never a partial one. An
+    existing *rel*, also a link, raises ``FileExistsError`` and keeps its
+    bytes. The temp file is removed on any failure. ``package_artifacts``
+    writes its zip with it.
+    """
+    import secrets
+
+    parts = split_rel(rel)
+    if not parts:
+        raise UnsafePath("A publish needs a file name.")
+    # A short temp name: it must not push a long path past a Windows limit
+    # that the final name stays under.
+    tmp_name = f".{secrets.token_hex(6)}.tmp"
+    tmp_rel = "/".join([*parts[:-1], tmp_name])
+    try:
+        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=True)
+        if _FD_WALK:
+            with _dir_fd(root, parts[:-1]) as fd:
+                os.link(
+                    tmp_name, parts[-1], src_dir_fd=fd, dst_dir_fd=fd,
+                    follow_symlinks=False,
+                )
+        else:
+            parent = _windows_dir(root, parts[:-1], create=False)
+            os.link(parent / tmp_name, parent / parts[-1])
+    finally:
+        with contextlib.suppress(OSError, UnsafePath):
+            unlink(root, tmp_rel)
 
 
 def unlink(root: Path, rel: str) -> bool:
