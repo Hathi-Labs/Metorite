@@ -130,6 +130,8 @@ EXPECTED_SCOPED = {
     # WS-53 CRM-T5 (2026-10-11): migration 243, one settings row for each
     # organization, keyed on the tenant `organization_id`, FORCE RLS.
     "crm_settings",
+    # WS-53 CRM-Z2 (2026-10-11): the registry of external connections.
+    "integration_connections",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

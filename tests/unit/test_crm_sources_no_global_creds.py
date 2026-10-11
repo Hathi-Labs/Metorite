@@ -4,7 +4,7 @@ Spec ``crm_platform.md`` §5.1 and §15, WS-53 CRM-Z1. The rule (R7): no file
 under ``gateway/crm_sources/`` reads the settings, the environment or a file on
 disk for a credential. The credential comes in through the constructor, and
 CRM-Z2 reads it from ``crm_connections``. Mirror v1 reads only (D95.3), so no
-file sends a write verb. The one POST is the OAuth token call in
+file sends a write verb. The only POSTs are the OAuth token call and the revoke call in
 ``zoho/auth.py``.
 
 The scan reads the AST, not the text, so a comment or a docstring that names a
@@ -38,7 +38,8 @@ EXPECTED_FILES = {
 
 #: The one file that may call ``.post(``, and the path it must post to.
 POST_ALLOWED_FILE = "zoho/auth.py"
-TOKEN_PATH_SUFFIX = "/oauth/v2/token"
+#: The token call and, since CRM-Z2, the revoke call (spec §5.2 item 4).
+TOKEN_PATH_SUFFIXES = ("/oauth/v2/token", "/oauth/v2/token/revoke")
 
 #: A package that holds or loads settings, or that loads a module by name.
 #: ``acb_common`` is refused WHOLE, because ``import acb_common`` reaches
@@ -95,19 +96,19 @@ def _check_import(node: ast.Import | ast.ImportFrom) -> list[str]:
 
 
 def _post_target_ok(call: ast.Call) -> bool:
-    """True when the URL of a ``.post(`` call ends in the token path."""
+    """True when the URL of a ``.post(`` call ends in the token path or the revoke path."""
     url: ast.expr | None = call.args[0] if call.args else None
     for kw in call.keywords:
         if kw.arg == "url":
             url = kw.value
     if isinstance(url, ast.Constant) and isinstance(url.value, str):
-        return url.value.endswith(TOKEN_PATH_SUFFIX)
+        return url.value.endswith(TOKEN_PATH_SUFFIXES)
     if isinstance(url, ast.JoinedStr) and url.values:
         last = url.values[-1]
         return (
             isinstance(last, ast.Constant)
             and isinstance(last.value, str)
-            and last.value.endswith(TOKEN_PATH_SUFFIX)
+            and last.value.endswith(TOKEN_PATH_SUFFIXES)
         )
     return False
 
@@ -139,7 +140,7 @@ def _check_call(node: ast.Call, rel: str, os_names: frozenset[str]) -> list[str]
         if rel != POST_ALLOWED_FILE:
             found.append(f"calls .post( outside {POST_ALLOWED_FILE}")
         elif not _post_target_ok(node):
-            found.append(f"calls .post( to a URL that does not end in {TOKEN_PATH_SUFFIX}")
+            found.append(f"calls .post( to a URL that does not end in {TOKEN_PATH_SUFFIXES}")
     return found
 
 
@@ -203,8 +204,8 @@ def test_the_token_post_is_present_so_the_post_rule_is_live() -> None:
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "post"
     ]
-    assert len(posts) == 1
-    assert _post_target_ok(posts[0])
+    assert len(posts) == 2, "the token call and the revoke call"
+    assert all(_post_target_ok(p) for p in posts)
 
 
 # ── Self-tests: a planted violation makes the scan fail ─────────────────────

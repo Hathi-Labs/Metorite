@@ -235,6 +235,25 @@ class Settings(BaseSettings):
     crm_enabled: bool = False
     crm_orgs: str = ""
 
+    # ── The CRM mirror (WS-53 CRM-Z2, 2026-10-11) ───────────────────────────
+    #
+    # `crm_mirror` is the kill switch of the Zoho connection routes
+    # (`/crm/connection*` and `/crm/oauth/zoho/callback`), default OFF. With it
+    # off each of those routes answers 404, on top of the `CRM_ENABLED` check.
+    # The one reader is `gateway.routes.crm.flags`.
+    #
+    # `crm_zoho_client_id` and `crm_zoho_client_secret` are Metorite's OWN Zoho
+    # OAuth client (docs/ZOHO_OAUTH_SETUP.md). A customer never sets them. The
+    # one reader is `gateway.routes.crm.connection`. With either unset, the
+    # start route answers 503 `zoho_not_configured`. The secret never goes in a
+    # log line or a response.
+    #
+    # 🔴 A flip of `CRM_MIRROR` on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_crm_kill_switch.py, tests/unit/test_crm_connection.py.
+    crm_mirror: bool = False
+    crm_zoho_client_id: str = ""
+    crm_zoho_client_secret: str = ""
+
     # ── Customer Console sign-in resolve (WS-31 CP-2b, spec customer_console.md
     # §6(f)) ────────────────────────────────────────────────────────────────
     #
