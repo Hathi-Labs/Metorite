@@ -50,6 +50,8 @@ from uuid import uuid4
 import pytest
 
 from tests.unit._crm_agent_fakes import (
+    FakeClient,
+    FakeResponse,
     agent_source,
     approve,
     deny,
@@ -822,3 +824,29 @@ async def test_an_unknown_entity_never_reaches_the_gateway_or_a_human(
     with pytest.raises(RuntimeError, match="Unknown CRM record type"):
         await _M.log_activity("invoices", _DEAL_ID, "note", "x")
     assert calls == [] and cards == []
+
+
+# ── Mirror mode (WS-53 CRM-Z6) ──────────────────────────────────────────────
+
+class _MirrorRefusingClient(FakeClient):
+    """The gateway in Mirror mode: every write answers 409 with a coded detail."""
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if method.upper() == "GET":
+            return resp
+        code = "mirror_mode_create" if url.endswith("/crm/leads") else "mirrored_record"
+        return FakeResponse(
+            {"detail": {"code": code, "message": "This record comes from Zoho."}},
+            status_code=409,
+        )
+
+
+@pytest.mark.parametrize("tool", ["create_lead", "update_deal_status", "convert_lead"])
+async def test_a_mirror_mode_refusal_comes_back_as_a_message(monkeypatch, tool) -> None:
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER,
+                 client_class=_MirrorRefusingClient)
+    out = await _CALLS[tool]()  # must return text, not raise
+    assert "Nothing was changed" in out
+    assert "Zoho" in out and "read-only" in out
