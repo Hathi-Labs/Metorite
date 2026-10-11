@@ -219,9 +219,24 @@ sees whose workspace this is at all times (D51).
 - The brand zone is as wide as the open sidebar (`w-64`). It keeps that width
   when the sidebar folds, so the logo does not move.
 - The zone holds the sidebar's fold control, then the logo on one line, 24px
-  tall. A logo-less organization shows our mark and its own name.
-- "powered by Metorite" follows the logo from the `lg` width up. Below `lg`
-  it hides, because a cut byline reads as a defect.
+  tall. A logo-less organization shows our comet (`MetoriteMark`) and its own
+  name. The comet replaced a ⌘ glyph on 2026-10-11, and no accent recolours it.
+- The customer's logo stands alone, with no words of ours beside it (owner,
+  2026-10-11). It has the whole 176px slot (`BAR_LOCKUP`).
+- Our comet signs the bar's right end (owner, 2026-10-11). It is the last
+  item, after the activity control and a thin divider, at 20px.
+- The comet is not a control. It has no link, no button and no focus stop.
+  `BarSignature` in `src/lib/shell/ShellBar.tsx` draws it.
+- It shows from the `xl` width (1280px) up. Below that, with the bell on,
+  it pushed the bell over the command bar (measured 2026-10-11).
+- With no logo, the left end already shows our comet. Then the right end
+  shows none, so the bar shows one comet only (`ourMarkLeads`).
+- The phone has no shell row, so it shows no signature. The sidebar and the
+  phone drawer show no signature either.
+- A phone drawer with no logo shows our comet as its workspace badge, in the
+  drawer's head. That is the owner's no-logo badge decision of 2026-10-11.
+- Fences: `shellSignature.test.ts`, `metoriteMark.test.ts`,
+  `orgBrandLockup.mode.test.ts` and `e2e/shell-signature.spec.ts`.
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
 

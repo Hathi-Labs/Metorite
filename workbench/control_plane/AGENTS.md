@@ -363,9 +363,15 @@ Seven rules on top of the three above. Each one exists because it was broken:
    don't want to have any of the individual apps' UI/UX elements be on the
    top bar." The shell bar holds the fold control, the logo, the command bar
    and the activity control, and nothing else.
+   **Amended by the owner, 2026-10-11:** our Metorite comet signs the right
+   end, as the last item after a thin divider (`BarSignature` in
+   `src/lib/shell/ShellBar.tsx`). It is a signature, not a control, and it
+   shows from `xl` up. With no logo it hides, because the logo slot already
+   shows our comet. Do not remove it. `src/lib/shell/shellSignature.test.ts`
+   and `e2e/shell-signature.spec.ts` fence it.
    **Amended by the owner, 2026-10-10:** the shell's one bell and its one
-   assistant toggle sit at the right end of the shell bar, because "they
-   belong to the whole product, not to an app." The bell shows only while
+   assistant toggle sit at the bar's right end. The owner said
+   "they belong to the whole product, not to an app." The bell shows only while
    `NEXT_PUBLIC_SHELL_DOCK` is on (NS-6 slice 6a, `src/lib/shell/ShellBell.tsx`).
    The toggle follows in slice 6b. An app's own bell or tool never goes there.
    Fences: `src/lib/shell/shellBell.test.ts` and `e2e/shell-bell.spec.ts`.

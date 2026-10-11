@@ -134,7 +134,9 @@ test.describe("desktop", () => {
           for (const chip of Array.from(copy.querySelectorAll("button span"))) {
             if (/^in /.test(chip.textContent ?? "")) chip.textContent = "in ·";
           }
-          return copy.innerHTML;
+          // Each comet's gradient id comes from React's `useId`, so it differs
+          // per render (`MetoriteMark.tsx`). The id is not the bar's shape.
+          return copy.innerHTML.replace(/metorite-comet-[A-Za-z0-9_-]+/g, "metorite-comet-·");
         }),
       );
       // Each app's name is its own title bar's h1.
@@ -487,9 +489,10 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   }
 
   // Measured 2026-10-09: at compact density the brand zone is 224px, and the
-  // px-sized caption ran past it into the app's rail toggle. The logo gives
-  // way instead, and "powered by Metorite" stays whole inside the zone.
-  test("both flags: a customer's logo and its caption fit the brand zone at every density", async ({ page }) => {
+  // px-sized logo must give way inside it. Owner, 2026-10-11: the logo stands
+  // alone, with no "powered by Metorite" beside it, and it has the room the
+  // caption kept. Our comet signs the bar's right end (`shell-signature.spec.ts`).
+  test("both flags: a customer's logo stands alone, and fits the brand zone at every density", async ({ page }) => {
     await shellOn(page);
     await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
     await stub(page);
@@ -507,15 +510,20 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     );
     await page.goto("/settings/appearance");
     const brand = bar(page).locator("[data-shell-brand]");
-    const caption = brand.getByText("powered by Metorite");
-    await expect(caption).toBeVisible();
+    const img = brand.locator("img:visible");
+    await expect(img).toBeVisible();
+    // No caption: the lockup draws no words at all.
+    expect((await brand.locator("a[href='/']").textContent())?.trim()).toBe("");
+    expect(await bar(page).textContent()).not.toMatch(/powered by/i);
+    // 600×160 at 24px tall wants 90px. With the caption's 100px reserve the
+    // cap was 76px, so a 90px logo proves the reserve is gone.
+    expect(Math.round((await box(img)).width)).toBe(90);
     for (const scale of ["0.875", "1", "1.125"]) {
       await page.evaluate((s) => document.documentElement.style.setProperty("--ui-scale", s), scale);
       await page.waitForTimeout(200);
       const zone = await box(brand);
-      const c = await box(caption);
-      expect(c.x + c.width, `the caption stays in the zone at ${scale}`).toBeLessThanOrEqual(zone.x + zone.width);
-      expect(await caption.evaluate((e) => e.scrollWidth > e.clientWidth + 1)).toBe(false);
+      const l = await box(img);
+      expect(l.x + l.width, `the logo stays in the zone at ${scale}`).toBeLessThanOrEqual(zone.x + zone.width);
     }
   });
 
