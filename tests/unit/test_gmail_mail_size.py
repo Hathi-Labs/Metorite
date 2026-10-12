@@ -88,6 +88,9 @@ from tests.unit.test_gmail_send_and_drafts import (  # noqa: F401
 PDF = "application/pdf"
 QUOTE = b"%PDF-1.7 the quote"
 DETAIL = "This mail is too large to send."
+#: A local draft id: ``email_messages.id`` is a uuid, and the draft routes
+#: answer 404 for any other value (``email_app_master_plan.md`` §17.11).
+LOCAL_DRAFT_ID = "00000000-0000-4000-8000-0000000000d1"
 
 
 def _file(content: bytes = QUOTE) -> dict[str, Any]:
@@ -541,14 +544,14 @@ async def test_each_route_answers_413_with_the_text(
         if route.startswith("save-"):
             await drafting.upsert_draft(drafting.DraftUpsertRequest(
                 account_id="acc-1", to=[RAVI], body="See the quote.",
-                draft_id="local-7" if route == "save-update" else None,
+                draft_id=LOCAL_DRAFT_ID if route == "save-update" else None,
                 reply_to_message_id=(
                     "local-1" if route == "save-reply" else None),
                 attachments=[pdf]), user=_ME)
         elif route == "signed-send":
             await drafting.send_draft_endpoint(
                 drafting.DraftSendRequest(account_id="acc-1",
-                                          draft_id="local-7"),
+                                          draft_id=LOCAL_DRAFT_ID),
                 BackgroundTasks(), user=_ME)
         else:
             await _send_route(monkeypatch, db)
