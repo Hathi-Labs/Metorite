@@ -18,8 +18,9 @@
  *
  * Mutations, run by hand (2026-10-13):
  *   - drop `if (answer.needs) putNeeds(answer.needs);`: "fills the needs key" fails;
- *   - sort the cards by score in `feedGroups`: "keeps the server's order" fails;
- *   - make `needsRowFor` take the card id: "the needs row of a folded notification" fails.
+ *   - reverse the cards inside a group in `feedGroups`: "keeps the server's order" fails;
+ *   - make `needsRowFor` take the card id: "the needs row of a folded notification" fails;
+ *   - make the hook always hide the whole card: "by that rule" fails.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -398,6 +399,13 @@ describe("5. what an act takes away", () => {
     expect(html).not.toContain("Mark read");
     expect(html.match(/data-row-act=""/g)).toHaveLength(1);
     expect(heldIds([folded])).toEqual(["tasks:t1", "tasks:t1#done", "tasks:t1#read"]);
+  });
+
+  it("the hook hides the card or only the act, by that rule", () => {
+    const src = code(read_("./FeedCard.tsx"));
+    expect(src).toMatch(/const id = actLeavesCard\(card, a\) \? card\.signal_id : actKey\(card, a\);/);
+    // The page's own set forgets an id the next answer no longer holds.
+    expect(src).toMatch(/keepRemoved\(removed, heldIds\(feed\.data\.cards\)\)/);
   });
 });
 
