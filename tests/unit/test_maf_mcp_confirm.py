@@ -721,13 +721,14 @@ def test_a_stream_that_shows_no_cards_refuses_end_to_end(monkeypatch):
 
 
 def _stream_calls() -> list[tuple[str, Any]]:
-    """Every call of ``run_agent_stream`` in ``apps/`` and ``packages/``."""
+    """Every call of ``run_agent_stream`` in ``apps/``, ``packages/``,
+    ``evals/`` and ``scripts/``. The evals drive the real executor too."""
     import ast
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
     found: list[tuple[str, Any]] = []
-    for base in ("apps", "packages"):
+    for base in ("apps", "packages", "evals", "scripts"):
         for path in (root / base).rglob("*.py"):
             if "node_modules" in path.parts or ".venv" in path.parts:
                 continue
@@ -748,7 +749,7 @@ def test_every_stream_declares_if_it_shows_cards() -> None:
     """A new caller of ``run_agent_stream`` must say ``shows_cards=``. One that
     forgets fails here, and it would refuse every card at run time."""
     calls = _stream_calls()
-    assert len(calls) >= 2, calls
+    assert len(calls) >= 4, calls
     missing = [p for p, node in calls
                if not any(k.arg == "shows_cards" for k in node.keywords)]
     assert missing == [], f"run_agent_stream without shows_cards= in {missing}"
