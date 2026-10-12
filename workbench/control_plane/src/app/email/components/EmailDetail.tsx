@@ -368,6 +368,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setReplyQuote("");
     setAiOpen(false);
     setAiInstruction("");
+    // The pane stays mounted across a switch, so the AI round of the mail
+    // before ends here. Else its draft lands in this mail's reply (EM-T17).
+    ai.reset();
     draftIdRef.current = null;
     replyDirty.current = false;
     setDraftStatus("idle");
@@ -678,6 +681,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setForwardUnsure(false);
     setAiOpen(false);
     setAiInstruction("");
+    // A new reply ends the AI round of the reply before (EM-T17).
+    ai.reset();
     // HTML-only mail (e.g. Outlook) has no bodyText — fall back to the snippet.
     const quoteSrc = src.bodyText || src.snippet || "";
     // The editable box starts with just the SIGNATURE (Gmail-style — it's part
@@ -1577,6 +1582,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   // (EM-G3c-2 item 11).
                   autosave.flush();
                   setReplyMode(null);
+                  // The reply closes, so its AI round ends (EM-T17).
+                  ai.reset();
                 }}
               >
                 <AppIcon name="X" size={14} />
