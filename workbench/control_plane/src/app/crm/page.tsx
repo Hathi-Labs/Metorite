@@ -22,7 +22,7 @@
  */
 
 import Icon from "@/components/Icon";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useMobileDrawer } from "@/components/AppShell";
@@ -129,6 +129,7 @@ import {
   useSyncStatus,
 } from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
+import { pushView, replaceView } from "./lib/history";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -154,7 +155,6 @@ type MirrorContext = {
 };
 
 function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
-  const router = useRouter();
   const toast = useToast();
   const searchParams = useSearchParams();
   const view = useMemo(
@@ -243,18 +243,18 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     missing: RequireableField[];
   } | null>(null);
 
-  /** Every navigation in this app is a URL rewrite — Back closes the sheet. */
-  const go = useCallback(
-    (next: CrmView) => router.push(viewHref(next), { scroll: false }),
-    [router]
-  );
+  /** Every navigation in this app is a URL rewrite — Back closes the sheet.
+   *  ⚠️ `pushView`, never `router.push`: a router push waits on a server
+   *  request before the view changes, and a held request left the rail dead
+   *  (`lib/history.ts`). */
+  const go = useCallback((next: CrmView) => pushView(viewHref(next)), []);
 
   // A link that carries only `?view=<id>` opens that view (CRM-Q8).
   const search = searchParams.toString();
   useEffect(() => {
     const opened = resolveBareLink(search, savedList);
-    if (opened) router.replace(viewHref(opened), { scroll: false });
-  }, [search, savedList, router]);
+    if (opened) replaceView(viewHref(opened));
+  }, [search, savedList]);
 
   useEffect(() => {
     store.loadVocabulary();
@@ -901,14 +901,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           tab={view.recordTab ?? "overview"}
           // A tab replaces the URL, so Back still closes the sheet.
           onTab={(tab) =>
-            router.replace(viewHref(selectRecordTab(view, tab)), { scroll: false })
+            replaceView(viewHref(selectRecordTab(view, tab)))
           }
           // No step while a dialog is open over the sheet.
           order={converting || pendingMove ? null : recordOrder()}
           // The step replaces the URL too: Back closes the sheet, and does not
           // walk back through every record the keys passed.
           onStep={(id) =>
-            router.replace(viewHref(openRecord(view, view.record!.param, id)), { scroll: false })
+            replaceView(viewHref(openRecord(view, view.record!.param, id)))
           }
           onPatch={(body) =>
             store.patchRecord(view.record!.entity, view.record!.id, body)
@@ -1028,7 +1028,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
  * the gate says "ready".
  */
 function CrmGate(): ReactNode {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -1071,8 +1070,8 @@ function CrmGate(): ReactNode {
     invalidateCrmMode();
     // CRM-X0: another Zoho account opens the setup hub (`returnTarget`).
     const rest = returnTarget(search);
-    router.replace(rest ? `${pathname}?${rest}` : pathname, { scroll: false });
-  }, [search, pathname, router, toast]);
+    replaceView(rest ? `${pathname}?${rest}` : pathname);
+  }, [search, pathname, toast]);
 
   async function connectZoho() {
     setBusy("zoho");
