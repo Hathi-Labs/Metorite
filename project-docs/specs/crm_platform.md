@@ -2320,3 +2320,52 @@ it names no scope.
 
 ⚠️ Before the build, check each WRITE scope name against Zoho's published
 scope list. Zoho refuses the whole consent for one unknown scope (§18.7).
+
+### 19.10 Audit notes for CRM-X1 to CRM-X4 (2026-10-12)
+
+The spec audit of 2026-10-12 gave GO-NARROWED to the four slices. These notes
+bind. Where a note and §19.5 to §19.8 disagree, the note wins.
+
+**CRM-X1.**
+
+- The search box shows on the list layout only. `get_pipeline` takes no `q`,
+  so a board would ignore the box.
+- Done-when 2 reads: `GET /crm/contacts?q=<part of the phone as the record
+  holds it>` returns that contact.
+- The deals search adds `company_id IN (SELECT c.id FROM crm_companies c WHERE
+  c.name ILIKE :q)`.
+- `GET /crm/owners` reads `app_user` where `COALESCE(status, 'active') =
+  'active'`, as `_directory` in `rooms.py` does. It returns `email`, `name` and
+  `member` only.
+
+**CRM-X2.** Build it after CRM-X1 merges.
+
+- Each read of `search_records` passes `sort="last_activity_at"`. The default
+  sort of leads is `created_at`.
+- `search_records` does not call `attach_next_activity`, because the search
+  has a budget of 1.5 seconds.
+- `log-call` with no open record opens `/crm?tab=deals&layout=list`. Deals
+  open as a board, and a board has no search box.
+
+**CRM-X3.** The scope is items 1 to 4. Idle days and the tint for rot belong
+to CRM-I1.
+
+- The slice needs no migration. `idx_crm_activities_deal_id_created_at` and
+  `idx_crm_activities_lead_id_created_at` (`144_crm.sql`) serve the query.
+- Done-when 5 reads: one `GET /crm/pipeline` with the default `card_sort`, over
+  3 lanes and 40 cards, issues one statement for the next activities.
+- With `card_sort=next_activity`, each lane read also reads `crm_activities`.
+  Done-when 5 does not count that read.
+
+**CRM-X4.** The scope is items 1 to 7.
+
+- `fields.ts` exports `isEmail`. Today it is private.
+- The `j` and `k` handler checks that no modifier is down (`!e.metaKey &&
+  !e.ctrlKey`). `seams.test.ts` is a fence of this slice, because its `cmdk`
+  pattern can match a bare `k` handler.
+- `crmX4.test.ts` also covers item 7.
+- Exactly three raw controls are in `app/crm/` today: `FieldsPanel.tsx` (one)
+  and `Timeline.tsx` (two). The slice replaces all three.
+
+**Order.** CRM-X1, CRM-X3 and CRM-X4 run in parallel. CRM-X2 follows CRM-X1.
+None of the four needs a migration.
