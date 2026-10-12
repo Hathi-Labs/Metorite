@@ -1366,29 +1366,33 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-01 · the Outlook onboarding session
 
 ### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
-- **Check:** `rg -n "Q-GM-6 \(answered" project-docs/specs/email_app_master_plan.md`
-  → no hit means open. The owner closes it. The owner confirms that the client on
-  the box is the mail app of §12.4. An agent then writes
-  `**Q-GM-6 (answered, <date>).**` under §12.5.
-- ⚠️ **Do not count the keys on the box.** The box holds a Google client since
-  2026-10-05, and nobody in the plan set it (Q-GM-6). So a key count of 1 does
-  not show that the owner registered the app. The old Check counted
-  `GMAIL_OAUTH_CLIENT_ID=` lines. The orchestrator found that key by name on
-  2026-10-05 (§12.1), so a `/handoff` run can delete this entry too early.
-  The EM-G9 session wrote this Check on 2026-10-05.
+- **Check:** `rg -n "^\*\*Step 9 done \(20[0-9][0-9]-" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. Only §12.4 step 9 writes that line, after an agent puts
+  the client of the owner on the box and both values measure non-empty.
+- ⚠️ **The Check changed on 2026-10-12.** The old Check keyed on the answer to
+  Q-GM-6. PR-D0 answered Q-GM-6 on 2026-10-12: the box holds no client. So the
+  old Check would delete this OWNER entry while the app still does not exist.
+- ⚠️ **Do not count the key lines on the box.** The box holds both
+  `GMAIL_OAUTH_*` names with EMPTY values (measured by length, 2026-10-12,
+  §12.1). A count of the names gives 1 with no client. Count by length only,
+  with the command of §12.4 step 9, and never print a value.
 - **Why.** On 2026-10-04 the owner amended D-EM-5: Gmail and Google Workspace
   mailboxes join Outlook. The code needs ONE Google OAuth app that Metorite
   owns. An agent cannot create it, because it needs a Google account of
   Metorite (`work_plan.md` §6.0 B).
 - **Do.**
   1. Do steps 1 to 8 of `specs/email_app_master_plan.md` §12.4, in Testing mode.
+     The owner chose path A on 2026-10-12: one Metorite-owned app, External,
+     in Testing (§12.4).
   2. Give the client ID and the secret to an agent through a one-time channel.
      Do not paste the secret into a chat.
-  3. The agent writes the two keys on the box under gate `env-write`.
-  4. Answer Q-GM-1 to Q-GM-6 (§12.5).
-- **Then.** The owner's test (EM-G10) runs after EM-G5a, EM-G9 and EM-G7b
-  merge (D-EM-36, amended 2026-10-05). EM-G5b, EM-G3b and EM-G3c come before
-  customers, with Google verification and CASA (§12.4 steps 10 to 15).
+  3. The agent writes the two keys on the box under gate `env-write`, and
+     writes the line of §12.4 step 9.
+  4. Answer Q-GM-1 to Q-GM-5 (§12.5). PR-D0 answered Q-GM-6.
+- **Then.** The owner's test (EM-G10) runs. EM-G5a, EM-G9 and EM-G7b are
+  merged (D-EM-36, amended 2026-10-05). Before customers: the six slices of
+  §12.3.12, Google verification and CASA (§12.4 steps 10 to 15), and the
+  privacy draft after §12.4 step 15.
 - **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
