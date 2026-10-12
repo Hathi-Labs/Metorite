@@ -32,6 +32,7 @@ import {
   searchCommitter,
   type CrmOwner,
 } from "../lib/filterBar";
+import { navLabel, neighbour } from "../lib/recordNav";
 import { useCrmStore } from "../lib/store";
 import { DEFAULT_VIEW, type CrmView } from "../lib/urlState";
 import FilterBar from "./FilterBar";
@@ -300,6 +301,39 @@ describe("review round 1: the end of the list, and the depth after a write", () 
     );
     expect(html).toContain("98 of 100");
     expect(html).not.toContain("Load more");
+  });
+});
+
+describe("j and k after Load more (CRM-X4 meets CRM-X1)", () => {
+  // `page.tsx` `recordOrder()` reads `store.rows` for a list, and `loadMore`
+  // appends to `store.rows`. So the keys step across the appended rows.
+  beforeEach(() => {
+    listRecords.mockReset();
+    useCrmStore.setState({ rows: [], total: 0, page: 1, hasMore: true, loadingMore: false, lastView: null });
+  });
+
+  it("steps from the last row of page 1 into page 2, and back", async () => {
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 50), total: 120 });
+    await useCrmStore.getState().loadList("contacts", view());
+    listRecords.mockResolvedValueOnce({ rows: rows(51, 100), total: 120 });
+    await useCrmStore.getState().loadMore();
+
+    const order = useCrmStore.getState().rows.map((r) => String(r.id));
+    expect(neighbour(order, "r50", 1)).toBe("r51");
+    expect(neighbour(order, "r51", -1)).toBe("r50");
+    expect(navLabel(order, "r100")).toBe("100 of 100");
+  });
+
+  it("keeps the appended rows in the order after a write", async () => {
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 50), total: 120 });
+    await useCrmStore.getState().loadList("contacts", view());
+    listRecords.mockResolvedValueOnce({ rows: rows(51, 100), total: 120 });
+    await useCrmStore.getState().loadMore();
+    listRecords.mockResolvedValueOnce({ rows: rows(1, 100), total: 120 });
+    await useCrmStore.getState().refreshCollection();
+
+    const order = useCrmStore.getState().rows.map((r) => String(r.id));
+    expect(neighbour(order, "r75", 1)).toBe("r76");
   });
 });
 

@@ -35,6 +35,7 @@ import {
   listQuery,
   queryString,
 } from "./filters";
+import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
   reorderFailureMessage,
@@ -72,6 +73,9 @@ let latestList = 0;
 function listKey(entity: EntitySlug, view: CrmView): string {
   return `${entity}${queryString(listQuery(entity, view))}`;
 }
+
+/** The number of the last board read. A slower, older read never wins. */
+let latestBoard = 0;
 
 type CrmState = {
   lanes: BoardLane[];
@@ -119,7 +123,8 @@ type CrmState = {
   /** Re-read whichever collection is showing (board or list). */
   refreshCollection: () => Promise<void>;
   loadVocabulary: () => Promise<void>;
-  loadBoard: (view: CrmView) => Promise<void>;
+  /** `cardSort` orders the cards of each deal lane (CRM-X3). */
+  loadBoard: (view: CrmView & { cardSort?: CardSort }) => Promise<void>;
   loadLeadBoard: (view: CrmView) => Promise<void>;
   /** A lead dropped on a Lead Status lane. `move.dealId` holds the lead id. */
   moveLead: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
@@ -284,18 +289,23 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadBoard(view) {
+    // `lastView` keeps `cardSort` too, so a re-read after a write keeps the
+    // member's lane order (CRM-X3).
+    const mine = ++latestBoard;
     set({ loading: true, lastView: view });
     try {
-      const extra = extraQuery("deals", view);
+      const extra = { ...extraQuery("deals", view), ...cardSortQuery(view.cardSort) };
       const pipeline =
         Object.keys(extra).length > 0
           ? await api.getPipeline(view.owner, view.pipelineId, extra)
           : await api.getPipeline(view.owner, view.pipelineId);
+      if (mine !== latestBoard) return;
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
+      if (mine !== latestBoard) return;
       set({ error: message(err) });
     } finally {
-      set({ loading: false });
+      if (mine === latestBoard) set({ loading: false });
     }
   },
 

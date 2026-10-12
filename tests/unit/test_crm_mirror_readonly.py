@@ -58,6 +58,8 @@ _TABLES = (
     "crm_status_changes", "crm_activities", "crm_deals", "crm_leads",
     "crm_contacts", "crm_companies", "crm_deal_statuses", "crm_lead_statuses",
     "crm_lost_reasons", "crm_settings",
+    # CRM-Q6a: the generic record store. No native writer exists.
+    "crm_module_records",
 )
 
 
@@ -440,7 +442,7 @@ async def test_the_wire_carries_the_mirror_fields(ns, app_engine) -> None:  # no
 _RAW_WRITE = re.compile(
     r"(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(\{[a-z_.]+\}|crm_(leads|deals|contacts|"
     r"companies|activities|deal_statuses|lead_statuses|lost_reasons|pipelines|"
-    r"pipeline_stages))",
+    r"pipeline_stages|module_records))",
     re.IGNORECASE,
 )
 #: Functions that write raw SQL to a guarded table and are not guarded. Each has
@@ -458,6 +460,12 @@ _RAW_ALLOW = {
     # CRM-Q2: the stages of a mirrored pipeline. The third door of the same
     # bypass, fenced by name in `test_crm_upsert_from_source_fence.py`.
     "core.py::set_pipeline_stages_from_source",
+    # CRM-Q6a: the two doors of the generic record store. Only `crm_sync/`
+    # calls them, and the same name fence keeps routes, agents and skills out.
+    # `crm_module_records` has no native writer, so any other raw write to it
+    # from a route fails here.
+    "core.py::upsert_module_records_from_source",
+    "core.py::delete_module_records_from_source",
     "core.py::insert_row", "core.py::update_row",
     # The legacy importer, the sync and the stage repair refuse Mirror mode.
     "import_zoho.py", "sync_zoho.py",
@@ -514,6 +522,12 @@ def test_the_raw_write_fence_catches_a_planted_update() -> None:
         "await db.execute", "await assert_writable(db)" + nl + "    await db.execute",
     )
     assert _unguarded_raw_writes(guarded, "planted.py") == []
+    # CRM-Q6a: a route that writes the generic record store is caught too.
+    module_write = (
+        "async def sneaky(db):" + nl
+        + "    await db.execute(text('DELETE FROM crm_module_records'))" + nl
+    )
+    assert _unguarded_raw_writes(module_write, "planted.py") == ["planted.py::sneaky"]
 
 
 @_DB_GATE

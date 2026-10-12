@@ -155,16 +155,16 @@ describe("the custom rows of a record", () => {
     }
   });
 
-  it("draws the panel from the definitions, and read only in Mirror mode", () => {
+  it("draws the Fields tab from the definitions, and read only in Mirror mode", () => {
     const html = renderToStaticMarkup(
       createElement(FieldsPanel, {
+        part: "fields",
         entity: "deals",
         record: { id: "d1", name: "Deal", ext_source: "zoho", custom: { tier: "Gold", site: "https://x.in" } },
         statuses: [],
         dealContacts: [],
         saving: false,
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,

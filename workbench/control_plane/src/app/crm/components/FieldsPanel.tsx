@@ -1,9 +1,16 @@
 "use client";
 
 /**
- * The record sheet's right panel: fields with inline edit, the status pill,
- * the deal's people, and the Convert button on a lead
+ * The fields of the record page, with inline edit
  * (specs/crm_app.md §5 surface 3).
+ *
+ * Since WS-53 CRM-X4 (`crm_platform.md` section 19.8) the page draws it in
+ * three parts, one for each tab:
+ *
+ * - `overview`: the lead's Convert and the fixed fields. The status pill
+ *   moved to the record header, because it is one control (`StatusPill`).
+ * - `related`: the deal's people with their roles, and the related lists.
+ * - `fields`: the custom fields of `crm_field_defs`.
  *
  * Inline edit rather than an edit mode: a CRM record is corrected constantly
  * — a phone number, a close date, a next step — and a form that has to be
@@ -12,13 +19,13 @@
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { useState } from "react";
 import { isMirrored, LOCK_TIP } from "../lib/connect";
-import { fieldRows, type FieldDef } from "../lib/fields";
+import { contactValue, fieldRows, type FieldDef } from "../lib/fields";
 import { money, shortDate } from "../lib/format";
 import FieldValue from "./FieldValue";
 import RelatedLists from "./RelatedLists";
-import StatusPill from "./StatusPill";
 import { NO_RELATED, type RelatedLists as Related } from "../lib/related";
 import type { DealContact, EntitySlug, Status } from "../lib/types";
 
@@ -38,6 +45,11 @@ type Field = {
    * weighted pipeline is computed from.
    */
   show?: (row: Row, status: Status | null) => string;
+  /**
+   * The value is an email or a phone, so it reads as a `mailto:` or a `tel:`
+   * link (CRM-X4 item 6). The rules are those of `contactValue`.
+   */
+  link?: "email" | "phone";
 };
 
 const FIELDS: Record<EntitySlug, Field[]> = {
@@ -77,8 +89,8 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     { key: "first_name", label: "First name" },
     { key: "last_name", label: "Last name" },
     { key: "organization_name", label: "Company" },
-    { key: "email", label: "Email" },
-    { key: "phone", label: "Phone" },
+    { key: "email", label: "Email", link: "email" },
+    { key: "phone", label: "Phone", link: "phone" },
     { key: "lead_source", label: "Source" },
     { key: "owner_email", label: "Owner" },
     { key: "description", label: "Notes" },
@@ -87,9 +99,9 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     { key: "first_name", label: "First name" },
     { key: "last_name", label: "Last name" },
     { key: "title", label: "Title" },
-    { key: "email", label: "Email" },
-    { key: "phone", label: "Phone" },
-    { key: "mobile", label: "Mobile" },
+    { key: "email", label: "Email", link: "email" },
+    { key: "phone", label: "Phone", link: "phone" },
+    { key: "mobile", label: "Mobile", link: "phone" },
     { key: "owner_email", label: "Owner" },
     { key: "description", label: "Notes" },
   ],
@@ -97,21 +109,24 @@ const FIELDS: Record<EntitySlug, Field[]> = {
     { key: "name", label: "Name" },
     { key: "website", label: "Website" },
     { key: "industry", label: "Industry" },
-    { key: "phone", label: "Phone" },
-    { key: "email", label: "Email" },
+    { key: "phone", label: "Phone", link: "phone" },
+    { key: "email", label: "Email", link: "email" },
     { key: "owner_email", label: "Owner" },
     { key: "description", label: "Notes" },
   ],
 };
 
+/** The part of the panel that one tab of the record page draws. */
+export type FieldsPart = "overview" | "related" | "fields";
+
 export default function FieldsPanel({
+  part = "overview",
   entity,
   record,
   statuses,
   dealContacts,
   saving,
   onPatch,
-  onMoveStatus,
   onConvert,
   onSetPrimary,
   onDetach,
@@ -121,13 +136,15 @@ export default function FieldsPanel({
   onRetryRelated,
   fieldDefs = null,
 }: {
+  /** Which tab draws the panel. Overview when it is not given. */
+  part?: FieldsPart;
   entity: EntitySlug;
   record: Row;
+  /** The record's own status reads the inherited probability of a deal. */
   statuses: Status[];
   dealContacts: DealContact[];
   saving: boolean;
   onPatch: (body: Record<string, unknown>) => void;
-  onMoveStatus: (statusId: string) => void;
   onConvert: () => void;
   onSetPrimary: (contactId: string) => void;
   onDetach: (contactId: string) => void;
@@ -145,90 +162,118 @@ export default function FieldsPanel({
   // A record that Zoho owns (CRM-Z7, spec §3.3): its fields, its stage and its
   // people are read-only here. Notes and calls stay open, in the timeline.
   const mirrored = isMirrored(record);
-  const custom = fieldRows(record, fieldDefs);
+
+  if (part === "related") {
+    return (
+      <div className="flex flex-col">
+        {entity === "deals" && (
+          <section className="border-b border-border px-4 py-3">
+            <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+              Contacts
+            </h3>
+            {dealContacts.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No contacts on this deal.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {dealContacts.map(({ contact, role, is_primary }) => (
+                  <li key={contact.id} className="flex items-center gap-2">
+                    <button
+                      onClick={() => onOpenContact(contact.id)}
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <span className="block truncate text-xs text-foreground">
+                        {contact.first_name} {contact.last_name ?? ""}
+                      </span>
+                      <span className="block truncate text-[10px] text-muted-foreground">
+                        {role || contact.title || contact.email || "—"}
+                      </span>
+                    </button>
+                    {!mirrored && (
+                    <>
+                    <button
+                      onClick={() => onSetPrimary(contact.id)}
+                      title={
+                        is_primary
+                          ? "Primary contact"
+                          : "Make primary — the current primary is demoted"
+                      }
+                      className={`p-1 rounded tech-transition ${
+                        is_primary
+                          ? "text-warning"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Icon name="Star"
+                        className="w-3.5 h-3.5"
+                        fill={is_primary ? "currentColor" : "none"}
+                      />
+                    </button>
+                    <button
+                      onClick={() => onDetach(contact.id)}
+                      title="Remove from this deal (the contact record is kept)"
+                      className="p-1 rounded text-muted-foreground hover:text-destructive tech-transition"
+                    >
+                      <Icon name="UserMinus" className="w-3.5 h-3.5" />
+                    </button>
+                    </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {onOpenRelated && (
+          <RelatedLists
+            entity={entity}
+            related={related}
+            onOpen={onOpenRelated}
+            onRetry={onRetryRelated}
+          />
+        )}
+      </div>
+    );
+  }
+
+  if (part === "fields") {
+    const custom = fieldRows(record, fieldDefs);
+    return custom.length === 0 ? (
+      <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+        No custom fields on this record.
+      </p>
+    ) : (
+      <dl className="divide-y divide-border/60">
+        {custom.map((row) => (
+          <div key={row.key} className="flex items-start gap-3 px-4 py-2">
+            <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              {row.label}
+            </dt>
+            <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
+              <FieldValue value={row.value} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      {statuses.length > 0 && (
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <StatusPill
-            status={status}
-            statuses={statuses}
-            onChange={onMoveStatus}
-            disabled={saving || mirrored}
-          />
-          {entity === "leads" &&
-            !mirrored &&
-            (converted ? (
-              <span className="ml-auto rounded-full bg-success/10 px-2 py-0.5 text-[10px] text-success">
-                converted
-              </span>
-            ) : (
-              <Button variant="primary" size="sm" onClick={onConvert} className="ml-auto">
-                Convert
-              </Button>
-            ))}
-        </div>
-      )}
-
-      {entity === "deals" && (
-        <section className="border-b border-border px-4 py-3">
-          <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-            Contacts
-          </h3>
-          {dealContacts.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No contacts on this deal.
-            </p>
+    <div className="flex flex-col">
+      {entity === "leads" && !mirrored && (
+        <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-3">
+          {converted ? (
+            <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] text-success">
+              converted
+            </span>
           ) : (
-            <ul className="space-y-1.5">
-              {dealContacts.map(({ contact, role, is_primary }) => (
-                <li key={contact.id} className="flex items-center gap-2">
-                  <button
-                    onClick={() => onOpenContact(contact.id)}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <span className="block truncate text-xs text-foreground">
-                      {contact.first_name} {contact.last_name ?? ""}
-                    </span>
-                    <span className="block truncate text-[10px] text-muted-foreground">
-                      {role || contact.title || contact.email || "—"}
-                    </span>
-                  </button>
-                  {!mirrored && (
-                  <>
-                  <button
-                    onClick={() => onSetPrimary(contact.id)}
-                    title={
-                      is_primary
-                        ? "Primary contact"
-                        : "Make primary — the current primary is demoted"
-                    }
-                    className={`p-1 rounded tech-transition ${
-                      is_primary
-                        ? "text-warning"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <Icon name="Star"
-                      className="w-3.5 h-3.5"
-                      fill={is_primary ? "currentColor" : "none"}
-                    />
-                  </button>
-                  <button
-                    onClick={() => onDetach(contact.id)}
-                    title="Remove from this deal (the contact record is kept)"
-                    className="p-1 rounded text-muted-foreground hover:text-destructive tech-transition"
-                  >
-                    <Icon name="UserMinus" className="w-3.5 h-3.5" />
-                  </button>
-                  </>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <Button variant="primary" size="sm" onClick={onConvert}>
+              Convert
+            </Button>
           )}
-        </section>
+        </div>
       )}
 
       <dl className="divide-y divide-border/60">
@@ -244,35 +289,6 @@ export default function FieldsPanel({
           />
         ))}
       </dl>
-
-      {onOpenRelated && (
-        <RelatedLists
-          entity={entity}
-          related={related}
-          onOpen={onOpenRelated}
-          onRetry={onRetryRelated}
-        />
-      )}
-
-      {custom.length > 0 && (
-        <section className="border-t border-border">
-          <h3 className="px-4 pt-3 text-[10px] uppercase tracking-wide text-muted-foreground">
-            From Zoho
-          </h3>
-          <dl className="divide-y divide-border/60">
-            {custom.map((row) => (
-              <div key={row.key} className="flex items-start gap-3 px-4 py-2">
-                <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {row.label}
-                </dt>
-                <dd className="min-w-0 flex-1 break-words text-xs text-foreground">
-                  <FieldValue value={row.value} />
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-      )}
     </div>
   );
 }
@@ -320,6 +336,20 @@ function EditableField({
     });
   }
 
+  // An email or a phone that passes its guard reads as its link. Every other
+  // value reads as text, as before.
+  const linked = field.link ? contactValue(field.link, raw) : null;
+  const link = linked && (linked.kind === "mailto" || linked.kind === "tel") ? linked : null;
+  const shown = link ? (
+    <FieldValue value={link} />
+  ) : field.show ? (
+    field.show(row, status)
+  ) : raw === null || raw === undefined || raw === "" ? (
+    "—"
+  ) : (
+    String(raw)
+  );
+
   return (
     <div className="flex items-start gap-3 px-4 py-2">
       <dt className="w-28 shrink-0 pt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -328,13 +358,7 @@ function EditableField({
       <dd className="min-w-0 flex-1">
         {locked ? (
           <span className="flex items-start gap-1.5 text-xs text-foreground" title={LOCK_TIP}>
-            <span className="min-w-0 flex-1 break-words">
-              {field.show
-                ? field.show(row, status)
-                : raw === null || raw === undefined || raw === ""
-                  ? "—"
-                  : String(raw)}
-            </span>
+            <span className="min-w-0 flex-1 break-words">{shown}</span>
             <Icon
               name="Lock"
               className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground"
@@ -343,8 +367,11 @@ function EditableField({
           </span>
         ) : editing ? (
           <div className="flex items-center gap-1">
-            <input
+            {/* The shared primitive, never a raw field (design rule 3, CRM-X4). */}
+            <Input
               autoFocus
+              inputSize="sm"
+              aria-label={field.label}
               type={field.kind === "date" ? "date" : field.kind === "number" ? "number" : "text"}
               value={value}
               onChange={(e) => setValue(e.target.value)}
@@ -352,7 +379,7 @@ function EditableField({
                 if (e.key === "Enter") commit();
                 if (e.key === "Escape") setEditing(false);
               }}
-              className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground focus:border-primary/40 focus:outline-none"
+              className="min-w-0 flex-1"
             />
             <button
               onClick={commit}
@@ -370,16 +397,25 @@ function EditableField({
               <Icon name="X" className="w-3.5 h-3.5" />
             </button>
           </div>
+        ) : link ? (
+          // The link and the edit button sit side by side. A link inside the
+          // button that starts the edit would be two controls in one.
+          <span className="flex items-start gap-1.5 text-xs text-foreground">
+            <span className="min-w-0 flex-1 break-words">{shown}</span>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="Pencil"
+              aria-label={`Edit ${field.label.toLowerCase()}`}
+              onClick={begin}
+            />
+          </span>
         ) : (
           <button
             onClick={begin}
             className="w-full break-words text-left text-xs text-foreground hover:text-primary tech-transition"
           >
-            {field.show
-              ? field.show(row, status)
-              : raw === null || raw === undefined || raw === ""
-                ? "—"
-                : String(raw)}
+            {shown}
           </button>
         )}
       </dd>
