@@ -76,7 +76,7 @@ describe("the CRM card's spoken name", () => {
       title: "Fixture set",
       amount: "₹2,50,000",
       detail: "Bosch India",
-      next: { key: "next", label: "Call Priya today", tone: "accent" },
+      next: { key: "next", label: "Call Priya today", tone: "accent", title: "Call" },
       needsReason: true,
     });
     expect(label).toBe("Fixture set, ₹2,50,000, Bosch India, Call Priya today, Needs a lost reason");
@@ -86,7 +86,7 @@ describe("the CRM card's spoken name", () => {
     expect(cardLabel({ title: "Lathe", overdue: true })).toBe("Lathe, Overdue");
     // The chip already says it, and the name says it once.
     expect(
-      cardLabel({ title: "Lathe", overdue: true, next: { key: "next", label: "Overdue 3d", tone: "danger" } }),
+      cardLabel({ title: "Lathe", overdue: true, next: { key: "next", label: "Overdue 3d", tone: "danger", title: "Call" } }),
     ).toBe("Lathe, Overdue 3d");
   });
 
