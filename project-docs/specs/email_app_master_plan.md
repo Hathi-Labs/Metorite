@@ -16767,7 +16767,7 @@ The owner's screenshot showed a mail from 2026-10-09 03:58 PM on "Loading messag
 ### 16.6 Inline pictures in the body (2026-10-13)
 
 **Status: 🔨 BUILT on branch `email-inline-images`, not merged (2026-10-13). The security
-review gave APPROVE, and its P2 and P3 fixes are in (below).** No migration and no flag. A
+review and the re-review gave APPROVE, and their P2 and P3 fixes are in (below).** No migration and no flag. A
 WS-17 bug fix, and it needed no spec audit.
 
 **The report.** The owner's screenshot showed the reading pane in dark mode. A broken
@@ -16856,17 +16856,17 @@ This change fixes its four P2 and two P3 findings.
 
 1. **P2-1, the binary Redis pool.** That pool holds 4 connections
    (`BINARY_POOL_MAX_CONNECTIONS`), and redis-py raises when it is full, with no wait.
-   The route's binary calls now pass one gate of `REDIS_GATE_SIZE`, one below the pool.
-   So a burst queues, and a cache hit never turns into a provider read. The pool class
-   stays as it is, because the download route shares it.
+   Each binary call now passes one gate, one below the pool. So a burst queues, and a
+   cache hit seldom turns into a provider read. Seldom, not never: the gate binds this
+   process only. The pool class stays as it is.
 2. **P2-2, one owner read for each picture.** A body of 165 pictures took 165 owner
    reads, and that filled the database pool. The route now keeps a POSITIVE verdict in
    the process for 60 s, by organization, member and message. The requests of one open
-   share one owner read. A denial is never kept. A rotated token drops the verdict. The
-   owner SQL stays in the handler body for the owner-scope fence.
+   share one owner read. A denial is never kept. The verdict holds no credentials (P3-b
+   below). The owner SQL stays in the handler body for the owner-scope fence.
 3. **P2-3, no bytes past the caps.** Gmail reads a part only when it is inline AND of an
-   `image/*` type, so it never downloads a PDF with a Content-ID. Outlook and Gmail stop
-   choosing parts when the listed sizes reach `MAX_INLINE_TOTAL_BYTES` (`max_total`).
+   `image/*` type, so it never downloads a PDF with a Content-ID. Outlook and Gmail skip
+   each part that would take the listed sizes over `MAX_INLINE_TOTAL_BYTES` (`max_total`).
 4. **P2-4, a passing fault.** A part that fails for a reason other than a rate limit
    makes the read incomplete (`InlineRead.complete`). The list of names then lives
    `INLINE_RETRY_TTL_SECS` (60 s), not one hour, so the next open reads that part again.
@@ -16890,6 +16890,36 @@ kills:
   complete.
 - `TestARateLimitStopsTheSiblings`: no read runs on after a 429. It kills `gather`.
 - The header test kills a browser cache of one hour.
+
+**Security re-review of 2026-10-13: APPROVE, and three P3 fixes.**
+
+1. **P3-a, a logo that the budget left out.** The budget took the parts in list order and
+   stopped at the cap. So more than 20 MB of image files ahead of a small inline logo
+   left the logo out, and the cached list then said 404 for an hour.
+   - Outlook takes the `isInline` parts first. Gmail takes the parts with an `inline`
+     disposition first.
+   - Each provider, and the route's own cap, now skips a part that does not fit, so a
+     smaller part after it can still fit.
+   - A skipped inline part makes the read incomplete, so the list lives 60 s.
+2. **P3-b, a kept grant.** The kept verdict held the whole row, with
+   `credentials_encrypted`. A reconnect inside the minute let the route refresh from the
+   old grant and write over the new tokens. The owner read now selects no credentials.
+   The pictures flight reads the grant again, with the owner predicate. That is one
+   database read for each provider read.
+3. **P3-c, the other user of the pool.** The file cache of `transport/attachments.py`
+   shares the binary pool. It now queues on the same gate, `_binary_redis_gate`, which
+   moved into `attachments.py`. Both routes import it from there.
+
+Fences, and the mutation that each one kills:
+
+- `TestInlinePartsComeFirst`: an Outlook list with 25 MB of image files and then an
+  inline logo reads the logo. A large inline part is skipped, and a small one after it is
+  read. On Gmail the inline logo is read first. It kills the list order and a `break`.
+- `test_a_reconnect_after_the_verdict_uses_the_new_grant`: a reconnect after the verdict
+  is kept, and then a picture miss, reads the new grant. It kills a flight that takes the
+  grant from the kept row.
+- `TestOneGateForTheBinaryPool`: both routes use the one gate, and the file cache passes
+  it for its read and its write.
 
 ## 17. Email AI context: the whole conversation, chosen by Jev, and no stall (2026-10-12)
 
