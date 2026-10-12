@@ -569,9 +569,12 @@ async def test_the_zip_is_admin_only(x0, app_engine) -> None:  # noqa: F811
 
 
 async def test_the_reset_waits_for_a_sync_page_in_flight(x0, app_engine) -> None:  # noqa: F811
-    """A page holds the mode ``FOR SHARE`` (the engine's own statement). The
-    reset takes the row ``FOR UPDATE``, so it waits, and the record that the
-    page wrote is removed too."""
+    """A page holds the mode ``FOR SHARE`` (the engine's own statement) and
+    has written a record it has not committed. The reset takes the row ``FOR
+    UPDATE``, so it waits for the commit, and then it removes that record too.
+
+    Without the share lock the reset does not wait. Its DELETE cannot see the
+    page's row, so the row stays after the commit. Mutation-checked."""
     _assert_non_priv(app_engine)
     from gateway.crm_sync import engine
 
@@ -581,15 +584,19 @@ async def test_the_reset_waits_for_a_sync_page_in_flight(x0, app_engine) -> None
     page.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": x0.org_a})
     mode = page.execute(text(engine.MODE_SHARE_SQL), {"org": x0.org_a}).scalar()
     assert mode == "mirror"
-    task = asyncio.create_task(_reset(x0, {"confirm": "DELETE", "then": "none"}))
-    await asyncio.sleep(1.5)
-    assert not task.done(), "the reset did not wait for the page"
     page.execute(text(
         "INSERT INTO crm_companies (organization_id, name, ext_source, ext_id) "
         "VALUES (CAST(:o AS uuid), 'Late', 'zoho', 'late')"), {"o": x0.org_a})
+    task = asyncio.create_task(_reset(x0, {"confirm": "DELETE", "then": "none"}))
+    for _ in range(40):  # up to 8 s: the reset must still be waiting
+        await asyncio.sleep(0.2)
+        if task.done():
+            break
+    waited = not task.done()
     tx.commit()
     page.close()
     r = await task
+    assert waited, "the reset did not wait for the page"
     assert r.status_code == 200, r.text
     assert _counts(x0, x0.org_a)["crm_companies"] == 0
     # The next page reads the new mode and stops.
