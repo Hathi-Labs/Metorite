@@ -1478,7 +1478,7 @@ only.
   data, so it costs no credit. The backfill goes through a new door,
   `apply_field_rule_from_source`, in `routes/crm/core.py`. Its name joins
   `NAMES` in `tests/unit/test_crm_upsert_from_source_fence.py`.
-- After a reject of an approved rule, or when a rule goes `stale`, the next run
+- An approved rule can be rejected, or it can go `stale`. Then the next run
   reads that entity in full once, as CRM-Q5 does for an old lead cursor. Each
   row then gets the fixed map's value again. A full read costs about 1 credit
   for each 200 records.
