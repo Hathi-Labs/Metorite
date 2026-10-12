@@ -126,6 +126,15 @@ _MERGE_META_SQL = (
     "AND status <> 'disconnected'"
 )
 
+#: Merge keys into ``provider_meta`` of one row, found by its key, under any
+#: status. For a family such as MCP, where a disabled row is still the admin's
+#: (H-300).
+_MERGE_META_BY_KEY_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), updated_at = now() "
+    f"WHERE {_KEY_WHERE} RETURNING {_PUBLIC_COLUMNS}"
+)
+
 _NEEDS_RECONNECT_SQL = (
     "UPDATE integration_connections SET status = 'needs_reconnect', "
     "last_error = :code, updated_at = now() "
@@ -501,6 +510,28 @@ async def merge_provider_meta(
     await db.execute(text(_MERGE_META_SQL), {
         "id": str(connection_id), "org": str(org), "extra": json.dumps(kept),
     })
+
+
+async def merge_meta_by_key(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    extra: dict[str, Any],
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """Merge *extra* into ``provider_meta`` of one row, under any status.
+
+    The row is found by its key, so the org is in the statement. The other
+    keys, the blob and the status stay. ``None`` when no row has that key.
+    *extra* must hold no secret: ``provider_meta`` is plain text.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["extra"] = json.dumps(dict(extra))
+    row = (await db.execute(text(_MERGE_META_BY_KEY_SQL), params)).first()
+    return _connection(row) if row is not None else None
 
 
 def safe_error_code(code: str | None) -> str:

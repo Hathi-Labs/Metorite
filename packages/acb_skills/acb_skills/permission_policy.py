@@ -31,7 +31,10 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
   * a tool of an MCP server (WS-8c, H-299)     → APPROVE with ``mcp_confirm``
                                                  (the caller shows a card) unless
                                                  it says read-only and not
-                                                 destructive (:func:`mcp_needs_confirmation`)
+                                                 destructive (:func:`mcp_needs_confirmation`),
+                                                 or with ``mcp_always_confirm``
+                                                 for EVERY tool of a server that
+                                                 an admin set so (H-300)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
   * unknown / unclassifiable                   → APPROVE + WARN (fail-open-loud;
@@ -149,6 +152,10 @@ def _is_within(path: str, root: str) -> bool:
 MCP_CONFIRM = "mcp_confirm"
 #: The code of an MCP tool that runs at once. No other code skips the card.
 MCP_READ_ONLY = "mcp_read_only"
+#: The code of a tool of a server that an admin set to "always confirm"
+#: (H-300). Every tool of that server needs the card, whatever its hints say,
+#: because the server writes its own hints and a hostile server can lie.
+MCP_ALWAYS_CONFIRM = "mcp_always_confirm"
 
 
 def mcp_needs_confirmation(annotations: Any) -> bool:
@@ -249,7 +256,12 @@ def decide(request: Any) -> tuple[bool, str, str]:
     #     platform annotations, so a server tool never borrows the hints of a
     #     platform tool of the same name. Approved, and the caller shows a
     #     confirmation card for MCP_CONFIRM (orchestrator._maf_mcp).
+    #     H-300: a server that an admin set to "always confirm" needs the card
+    #     for EVERY tool, so the read-only shortcut never applies to it. The
+    #     MCP gate passes the flag as the fact ``mcp_always_confirm``.
     if _field(request, "mcp_tool"):
+        if _field(request, "mcp_always_confirm"):
+            return True, MCP_ALWAYS_CONFIRM, tool_name or "(mcp tool)"
         if mcp_needs_confirmation(_field(request, "mcp_annotations")):
             return True, MCP_CONFIRM, tool_name or "(mcp tool)"
         return True, MCP_READ_ONLY, tool_name or "(mcp tool)"
