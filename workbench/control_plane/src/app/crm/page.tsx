@@ -22,7 +22,7 @@
  */
 
 import Icon from "@/components/Icon";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useMobileDrawer } from "@/components/AppShell";
@@ -122,6 +122,7 @@ import {
 } from "./lib/urlState";
 import { invalidateCrmMode, useCrmMode, useFieldDefs, usePipelines, useSyncStatus } from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
+import { pushView, replaceView } from "./lib/history";
 import { viewLabel } from "./lib/views";
 
 /** Which URL parameter opens a record of each collection. */
@@ -147,7 +148,6 @@ type MirrorContext = {
 };
 
 function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
-  const router = useRouter();
   const toast = useToast();
   const searchParams = useSearchParams();
   const view = useMemo(
@@ -226,18 +226,18 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     missing: RequireableField[];
   } | null>(null);
 
-  /** Every navigation in this app is a URL rewrite — Back closes the sheet. */
-  const go = useCallback(
-    (next: CrmView) => router.push(viewHref(next), { scroll: false }),
-    [router]
-  );
+  /** Every navigation in this app is a URL rewrite — Back closes the sheet.
+   *  ⚠️ `pushView`, never `router.push`: a router push waits on a server
+   *  request before the view changes, and a held request left the rail dead
+   *  (`lib/history.ts`). */
+  const go = useCallback((next: CrmView) => pushView(viewHref(next)), []);
 
   // A link that carries only `?view=<id>` opens that view (CRM-Q8).
   const search = searchParams.toString();
   useEffect(() => {
     const opened = resolveBareLink(search, savedList);
-    if (opened) router.replace(viewHref(opened), { scroll: false });
-  }, [search, savedList, router]);
+    if (opened) replaceView(viewHref(opened));
+  }, [search, savedList]);
 
   useEffect(() => {
     store.loadVocabulary();
@@ -959,7 +959,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
  * the gate says "ready".
  */
 function CrmGate(): ReactNode {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const toast = useToast();
@@ -1001,8 +1000,8 @@ function CrmGate(): ReactNode {
     }
     invalidateCrmMode();
     const rest = clearReturnParams(search);
-    router.replace(rest ? `${pathname}?${rest}` : pathname, { scroll: false });
-  }, [search, pathname, router, toast]);
+    replaceView(rest ? `${pathname}?${rest}` : pathname);
+  }, [search, pathname, toast]);
 
   async function connectZoho() {
     setBusy("zoho");
