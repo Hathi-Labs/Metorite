@@ -96,6 +96,10 @@ interface ChatRequest {
    *  writes the words the model reads, from the saved partial reply, so this
    *  is a flag and never text. */
   resume?: boolean;
+  /** The answered card of a card answer that went as a new message (owner
+   *  report, 2026-10-13, `lib/cardAnswer.ts`). The gateway checks it and
+   *  saves it on the member's turn. It never reaches the model. */
+  cardAnswer?: unknown;
 }
 
 const LITELLM_BASE_URL =
@@ -650,7 +654,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs } = body;
+  const { agentName, message, messages, threadId, mode, model, context, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, cardAnswer } = body;
   if (!agentName || !message) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
@@ -813,6 +817,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               }
               : {}),
             ...(supersedes ? { supersedes } : {}),
+            ...(cardAnswer && typeof cardAnswer === "object" ? { card_answer: cardAnswer } : {}),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,

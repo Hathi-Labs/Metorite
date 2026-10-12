@@ -34,6 +34,8 @@ import { pillsForTurn } from "@/lib/projectsAgent";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
+import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
+import CardAnswerContent from "@/components/CardAnswerContent";
 import ChatSendButton from "@/components/ChatSendButton";
 import Button from "@/components/ui/Button";
 
@@ -164,6 +166,11 @@ function MessageBubble({
       message.authorEmail.toLowerCase() === viewerEmail.toLowerCase());
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
+  // A card answer that went as a new message (`lib/cardAnswer.ts`). The
+  // turn's content is the envelope the model reads, and the member reads
+  // the answered card instead. It is never edited: its words are the
+  // server's.
+  const cardAnswer = isUser ? cardAnswerOf(message) : null;
   const author = message.authorEmail
     ? participants?.find((p) => p.subject === message.authorEmail)
     : undefined;
@@ -386,7 +393,7 @@ function MessageBubble({
     setEditError(null);
     setEditText(message.content);
   };
-  const startEdit = onEditLast
+  const startEdit = onEditLast && !cardAnswer
     ? () => { setEditText(message.content); setEditError(null); setEditing(true); }
     : undefined;
 
@@ -424,12 +431,16 @@ function MessageBubble({
             <span className="text-[10px] text-muted-foreground">{timestamp}</span>
           </div>
           <div className="px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-secondary text-foreground rounded-2xl rounded-tl-md">
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            {cardAnswer ? (
+              <CardAnswerContent answer={cardAnswer} />
+            ) : (
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            )}
           </div>
           {message.content.trim() && (
             <div className="flex items-center gap-2 mt-1 pl-0.5">
               <MessageActionBar
-                content={message.content}
+                content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
                 messageId={message.id}
                 role="user"
               />
@@ -502,12 +513,16 @@ function MessageBubble({
               className={`px-4 py-2.5 text-[13px] sm:text-sm leading-relaxed bg-primary/15 text-foreground rounded-2xl rounded-tr-md tech-transition ${startEdit ? "cursor-pointer select-none hover:bg-primary/20" : ""}`}
               title={startEdit ? "Double-click to edit" : undefined}
             >
-              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+              {cardAnswer ? (
+                <CardAnswerContent answer={cardAnswer} />
+              ) : (
+                <p className="whitespace-pre-wrap break-words">{message.content}</p>
+              )}
             </div>
             <div className="flex items-center justify-end gap-2 mt-1 pr-0.5 opacity-100 transition-opacity">
               {message.content.trim() && (
                 <MessageActionBar
-                  content={message.content}
+                  content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
                   messageId={message.id}
                   role="user"
                   onEdit={startEdit}

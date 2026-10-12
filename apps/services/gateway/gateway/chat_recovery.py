@@ -16,6 +16,8 @@ dead and closes it. This module does what only the gateway can do with that:
 * :func:`card_answer_from_ask` does the same from the card's durable row
   (WS-51 S2, ``orchestrator.pending_ask``), so the question survives the
   stream's one-hour TTL and a run that parked.
+* Both return a :class:`CardResend`: the fenced text the model reads, and the
+  ``card_answer`` display the member reads (owner report, 2026-10-13).
 
 Fence (R7): ``tests/unit/test_chat_deploy_recovery.py``.
 """
@@ -146,15 +148,207 @@ def _question_of(value: Any) -> str | None:
     return question_of(value)
 
 
-def find_card_question(events: list[dict[str, Any]], request_id: str) -> str | None:
-    """The words of the card *request_id* asked, from a run's own events."""
+def find_card_event(
+    events: list[dict[str, Any]], request_id: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """``(kind, value)`` of the card *request_id* asked, from a run's events."""
     for evt in reversed(events or []):
         if evt.get("type") != "CUSTOM" or evt.get("name") not in _CARD_EVENTS:
             continue
         value = evt.get("value")
         if isinstance(value, dict) and str(value.get("request_id") or "") == request_id:
-            return _question_of(value)
+            return _KIND_BY_EVENT[str(evt.get("name"))], value
     return None
+
+
+def find_card_question(events: list[dict[str, Any]], request_id: str) -> str | None:
+    """The words of the card *request_id* asked, from a run's own events."""
+    found = find_card_event(events, request_id)
+    return _question_of(found[1]) if found else None
+
+
+# ── The card answer as the member sees it (owner report, 2026-10-13) ────────
+#
+# The resend's text is the fenced envelope above, because the model must read
+# the question as data. The member must never read it. So the resend carries
+# a second part, the DISPLAY: what the card asked and what the member chose.
+# The chat puts it on the turn as the custom event ``card_answer``, the same
+# seam as the ``edited`` marker (``lib/chatEdit.ts``), and the saved row keeps
+# it in ``custom_events``. The model reads only the turn's content.
+
+#: The custom event that marks a member's turn as a card answer.
+CARD_ANSWER_EVENT = "card_answer"
+
+#: The card kinds a display may name (``orchestrator.pending_ask``).
+_DISPLAY_KINDS = frozenset(_KIND_BY_EVENT.values())
+_DISPLAY_QUESTION_CHARS = 500
+_DISPLAY_ANSWER_CHARS = 2000
+_DISPLAY_ROW_CHARS = 200
+_DISPLAY_ROWS_MAX = 100
+_ROW_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_DISPLAY_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+#: The longest rows answer that the display parses (``ask_tools.MAX_ROWS_ANSWER``).
+_ROWS_ANSWER_CHARS = 8 + 12 + _DISPLAY_ROWS_MAX * 68
+
+#: The words the card-answer envelope starts with (``compose_card_answer``).
+_ENVELOPE_STARTS = (
+    "You asked me a question. The block below quotes it.",
+    "My answer to your last question: ",
+)
+
+
+def _one_line(text: Any, limit: int) -> str:
+    return " ".join(str(text or "").split())[:limit]
+
+
+def _card_rows(value: dict[str, Any]) -> list[tuple[str, str]]:
+    """``(id, label)`` of each row a confirmation card offered, in order."""
+    rows = value.get("rows")
+    out: list[tuple[str, str]] = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows[:_DISPLAY_ROWS_MAX]:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or "").strip()
+        if not _ROW_ID.match(rid):
+            continue
+        out.append((rid, _one_line(row.get("label") or rid, _DISPLAY_ROW_CHARS)))
+    return out
+
+
+def card_question(kind: str, value: dict[str, Any] | None, question: str | None) -> str | None:
+    """The question that the envelope quotes for a card.
+
+    A card with no rows quotes its question, exactly as before. A card with
+    rows (the Projects batch cards, WS-46 P13) also lists each row, by its id
+    and its label. The answer names row ids (``APPROVE {"rows": [...]}``),
+    and the next run reads only the turn's text, so with no list the ids mean
+    nothing to it. The list sits INSIDE the quoted block, so the
+    neutralising pass of :func:`compose_card_answer` covers each label.
+    """
+    q = (question or "").strip()
+    rows = _card_rows(value) if kind == "confirmation" and isinstance(value, dict) else []
+    if not q or not rows:
+        return question
+    listed = "\n".join(f"{rid}: {label}" for rid, label in rows)
+    return f"{q}\n\nThe card listed these rows, by id:\n{listed}"
+
+
+def _approved_ids(answer: str) -> list[str] | None:
+    """The row ids that an ``APPROVE {"rows": [...]}`` names, or None."""
+    import json
+
+    text = (answer or "").strip()
+    if not text.upper().startswith("APPROVE ") or len(text) > _ROWS_ANSWER_CHARS:
+        return None
+    try:
+        body = json.loads(text[len("APPROVE "):])
+    except (TypeError, ValueError, RecursionError):
+        return None
+    ids = body.get("rows") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return None
+    return ids
+
+
+def card_answer_display(
+    kind: str, value: dict[str, Any] | None, question: str | None,
+    answer: str, request_id: str,
+) -> dict[str, Any]:
+    """What the chat draws for a card answer that went as a new message.
+
+    A confirmation says ``approve`` or ``reject``. A card with rows also
+    names the rows the member ticked, by label, and how many it offered. Any
+    other card keeps the member's own words. Nothing here reaches the model.
+    """
+    v = value if isinstance(value, dict) else {}
+    out: dict[str, Any] = {
+        "kind": kind if kind in _DISPLAY_KINDS else "ask_user",
+        "question": _one_line(question, _DISPLAY_QUESTION_CHARS),
+    }
+    if _DISPLAY_REQUEST_ID.match(request_id or ""):
+        out["requestId"] = request_id
+    if v.get("fenced") is True:
+        out["fenced"] = True
+    said = (answer or "").strip()
+    if out["kind"] != "confirmation":
+        out["answer"] = said[:_DISPLAY_ANSWER_CHARS]
+        return out
+    out["decision"] = "approve" if said.upper().startswith("APPROVE") else "reject"
+    rows = _card_rows(v)
+    if rows:
+        out["rowsTotal"] = len(rows)
+        ids = _approved_ids(said) if out["decision"] == "approve" else None
+        if ids is not None:
+            chosen = set(ids)
+            out["rows"] = [label for rid, label in rows if rid in chosen]
+    return out
+
+
+def clean_card_answer(raw: Any) -> dict[str, Any] | None:
+    """A display that the browser sent back, checked and clipped, or None.
+
+    The browser echoes the display of the 409 when it sends the turn, and the
+    run route saves it with the turn (WS-51 S4). It is display only, on the
+    member's own row, which the browser save may write anyway. So the check
+    bounds its shape and its size. It grants nothing.
+    """
+    if not isinstance(raw, dict):
+        return None
+    kind = raw.get("kind")
+    question = raw.get("question")
+    if kind not in _DISPLAY_KINDS or not isinstance(question, str):
+        return None
+    out: dict[str, Any] = {"kind": kind, "question": _one_line(question, _DISPLAY_QUESTION_CHARS)}
+    rid = raw.get("requestId")
+    if isinstance(rid, str) and _DISPLAY_REQUEST_ID.match(rid):
+        out["requestId"] = rid
+    if raw.get("fenced") is True:
+        out["fenced"] = True
+    if raw.get("decision") in ("approve", "reject"):
+        out["decision"] = raw["decision"]
+    total = raw.get("rowsTotal")
+    if isinstance(total, int) and not isinstance(total, bool) and 0 < total <= _DISPLAY_ROWS_MAX:
+        out["rowsTotal"] = total
+    rows = raw.get("rows")
+    if isinstance(rows, list):
+        labels = (r for r in rows if isinstance(r, str))
+        out["rows"] = [
+            _one_line(r, _DISPLAY_ROW_CHARS) for _, r in zip(range(_DISPLAY_ROWS_MAX), labels, strict=False)
+        ]
+    answer = raw.get("answer")
+    if isinstance(answer, str):
+        out["answer"] = answer.strip()[:_DISPLAY_ANSWER_CHARS]
+    return out
+
+
+def is_card_answer_text(text: str) -> bool:
+    """True when *text* has the shape that :func:`compose_card_answer` writes."""
+    return (text or "").startswith(_ENVELOPE_STARTS)
+
+
+class CardResend:
+    """A card answer that goes as a new message: the text and the display."""
+
+    __slots__ = ("display", "message")
+
+    def __init__(self, message: str, display: dict[str, Any]) -> None:
+        #: What the model reads: the fenced envelope.
+        self.message = message
+        #: What the member reads: the ``card_answer`` event's value.
+        self.display = display
+
+
+def card_resend(
+    kind: str, value: dict[str, Any] | None, question: str | None,
+    answer: str, request_id: str,
+) -> CardResend:
+    """The envelope and the display of one card answer."""
+    return CardResend(
+        compose_card_answer(card_question(kind, value, question), answer),
+        card_answer_display(kind, value, question, answer, request_id),
+    )
 
 
 def was_interrupted(events: list[dict[str, Any]]) -> bool:
@@ -246,13 +440,13 @@ async def recover_dead_run(
 
 async def card_answer_after_restart(
     thread_id: str, request_id: str, answer: str, *, delivery: str,
-) -> str | None:
+) -> CardResend | None:
     """The message to send in place of a card answer that reached no run.
 
     ``None`` when the run is not dead (an old card, or a run that is still
     alive): the route then keeps its old 409. When the run IS dead, it is
     closed here, and the answer comes back with the question it answers, read
-    from the run's own stream.
+    from the run's own stream, and with the display the chat draws.
     """
     from orchestrator.run_liveness import run_liveness
     from orchestrator.stream_relay import replay_events
@@ -271,12 +465,13 @@ async def card_answer_after_restart(
         await recover_dead_run(thread_id, why="card_answer_undelivered")
     elif not (liveness == "idle" and was_interrupted(events)):
         return None
-    return compose_card_answer(find_card_question(events, request_id), answer)
+    kind, value = find_card_event(events, request_id) or ("ask_user", {})
+    return card_resend(kind, value, _question_of(value), answer, request_id)
 
 
 async def card_answer_from_ask(
     thread_id: str, row: dict[str, Any], answer: str,
-) -> str | None:
+) -> CardResend | None:
     """The message to send for an answer to a card that has a durable row.
 
     *row* is the caller's own row (``pending_ask.read_ask``, read under the
@@ -303,4 +498,11 @@ async def card_answer_from_ask(
             return None
     elif state != "parked":
         return None
-    return compose_card_answer(str(row.get("question") or "") or None, answer)
+    payload = row.get("payload")
+    return card_resend(
+        str(row.get("kind") or ""),
+        payload if isinstance(payload, dict) else {},
+        str(row.get("question") or "") or None,
+        answer,
+        str(row.get("request_id") or ""),
+    )

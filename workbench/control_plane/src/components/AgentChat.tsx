@@ -29,6 +29,7 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
+import { genUiAnswersFromTurns, parseCardAnswerEnvelope } from "@/lib/cardAnswer";
 import RollupCard, { RollupContext, type RollupScope } from "@/components/RollupCard";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll } from "@/lib/stickToBottom";
@@ -1136,7 +1137,7 @@ export default function AgentChat({
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, otherAccount }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount }) => {
         // Only touch the cards if the user is still on the session that asked.
         if (sessionIdRef.current !== forSession) return;
         if (otherAccount) {
@@ -1155,7 +1156,12 @@ export default function AgentChat({
             content: `__ERROR__${JSON.stringify({ code: "run_restarted", ref: null, raw: "" })}`,
             timestamp: Date.now(),
           }]);
-          void sendMessageRef.current(resend);
+          // The model reads the envelope. The member reads the answered
+          // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
+          // gateway sends no display, so the envelope is parsed instead.
+          void sendMessageRef.current(resend, {
+            cardAnswer: display ?? parseCardAnswerEnvelope(resend),
+          });
           settle?.("resent");
           return;
         }
@@ -1818,13 +1824,25 @@ export default function AgentChat({
   // The element that waits on the member, for the pin above the composer
   // (spec §24 rule 1). It reads the queue and the question state above, and
   // keeps none of its own.
+  // A blocking generative-UI card whose answer went as a new message after a
+  // restart: its run died before its tool result recorded the answer, so the
+  // answer comes from the member's turn (`lib/cardAnswer.ts`). The card then
+  // stays answered after a reload too. Keyed on the text, so a streamed
+  // token makes no new map and every bubble keeps its memo.
+  const restartAnswersKey = JSON.stringify([...genUiAnswersFromTurns(messages)]);
+  const cardAskAnswers = useMemo<ReadonlyMap<string, string>>(() => {
+    const fromTurns = JSON.parse(restartAnswersKey) as [string, string][];
+    return fromTurns.length === 0 ? askAnswers : new Map([...fromTurns, ...askAnswers]);
+  }, [askAnswers, restartAnswersKey]);
   const askSources = {
     confirmations: confirmations.cards,
     elicitation,
     userInput,
     messages,
     runActive: isRunActive,
-    answered: answeredAsks,
+    answered: cardAskAnswers.size === askAnswers.size
+      ? answeredAsks
+      : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
   };
   const waiting = pendingAsk(askSources);
 
@@ -2055,7 +2073,7 @@ export default function AgentChat({
                 )}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
-                  askAnswers={askAnswers}
+                  askAnswers={cardAskAnswers}
                   emailContext={emailContext}
                   onFileOpen={handleFileOpen}
                   onEditLast={msg.id === lastUserId ? handleEditLast : undefined}

@@ -52,6 +52,7 @@ import { chatModelField } from "@/lib/tierRouting";
 import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
+import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT } from "@/lib/cardAnswer";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -71,6 +72,14 @@ const HITL_CONTROL_EVENTS = new Set([
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
 ]);
+
+/** The `cardAnswer` field of a chat request: the answered card that the
+ *  turn carries (`lib/cardAnswer.ts`), or nothing. Exported for its test. */
+export function cardAnswerField(m: Pick<ChatMessage, "customEvents">): { cardAnswer?: unknown } {
+  const e = m.customEvents?.find((x) => x.name === CARD_ANSWER_EVENT);
+  const d = e ? cardAnswerFrom(e.value) : null;
+  return d ? { cardAnswer: d } : {};
+}
 
 /**
  * Read an SSE response body and yield each parsed event object.
@@ -309,6 +318,8 @@ export function useAgentChat({
       if (plan === "hold") {
         const heldMsg: ChatMessage = {
           id: nanoid(), role: "user", content: text, timestamp: Date.now(), pendingDelivery: true,
+          // A card answer keeps its answered card while it waits.
+          ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
           // A held send has not reached the server either, so it carries the
           // same mark: a later run-cap refusal must leave no row (review of
           // #821). The retry spreads the bubble, so the mark travels with it.
@@ -337,6 +348,10 @@ export function useAgentChat({
         : {
           id: nanoid(), role: "user", content: text, timestamp: turnTs,
           ...(supersedes ? { customEvents: [editedMarker(supersedes)] } : {}),
+          // A card answer that went as a new message: the content is the
+          // envelope the model reads, and the bubble draws this marker. It
+          // persists in `custom_events`, so a reload draws it too.
+          ...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),
           // WS-51 D-3: on the gateway path the server saves this turn at run
           // start (S4). The chat saves it only once the server answers, so a
           // send the run cap refuses leaves no row behind.
@@ -461,6 +476,9 @@ export function useAgentChat({
             // Continue after an app update: a flag, never words. The gateway
             // writes the note the model reads (gateway/chat_recovery.py).
             ...(opts?.resume ? { resume: true } : {}),
+            // The answered card of a card answer, for the turn the gateway
+            // saves at run start. It never reaches the model.
+            ...cardAnswerField(userMsg),
           }),
         });
         gotResponse = true;

@@ -129,9 +129,11 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     tone: "notice",
     action: "Continue",
   },
+  // The chat sends the answer when it draws this notice, so the words say
+  // what HAS happened (owner report, 2026-10-13).
   run_restarted: {
     title: "The assistant restarted",
-    body: "Your answer will be sent as a new message.",
+    body: "Your answer went to it as a new message.",
     retry: false,
     tone: "notice",
   },

@@ -330,6 +330,42 @@ the move, the actor filter removed twice, and no neutralising pass.
 - On a Windows checkout, three source-reading vitest files fail on CRLF.
   They fail on `origin/main` too, and none of them is an S2 file.
 
+**The display rule (owner report, 2026-10-13).** After a restart, the owner
+approved a "Create 9 tasks" card. His bubble then showed the fenced envelope,
+`<<<asked-question>>>` and all. The rule is now this:
+
+1. **The model reads the envelope, and the member never does.** The 409
+   `run_restarted` carries two parts. `resumeMessage` is the envelope, and
+   `resumeDisplay` is what the card asked and what the member chose
+   (`gateway/chat_recovery.py`, `CardResend`).
+2. **The display is the `card_answer` custom event on the member's turn.**
+   This is the same seam as the `edited` marker. The chat stamps it, and both
+   saves keep it in `custom_events`: the run route's save at run start
+   (`prompt_to_save`) and the browser's save. The model reads only the
+   turn's content.
+3. **The bubble draws the answered card.** `CardAnswerContent` draws inside
+   the member's normal bubble. It shows "Approved", "Approved 7 of 9",
+   "Rejected" or "Your answer", the question, and then the approved rows by
+   name or the member's own words. A card answer offers no Edit.
+4. **An old row still draws as a card.** A row saved before this rule holds
+   only the envelope. `parseCardAnswerEnvelope` reads that exact shape,
+   anchored at both ends, for display only. Other text stays plain.
+5. **A rows card lists its rows inside the quote.** The answer names row ids
+   (`row-1`), and the next run reads only text. So the quoted block lists each
+   row by id and label. The neutralising pass covers each label. A card with no
+   rows keeps its envelope byte for byte.
+6. **A blocking generative UI stays answered.** Its run died before its tool
+   result kept the answer. The chat reads the answer from the `card_answer`
+   event instead (`genUiAnswersFromTurns`).
+
+The notice now says what has happened: "Your answer went to it as a new
+message."
+
+**Fences (R7).** `src/lib/cardAnswer.test.ts`,
+`tests/unit/test_card_answer_display.py`, the R8 case in
+`tests/unit/test_chat_prompt_saved_at_start.py`, and
+`e2e/chat-card-restart.spec.ts`.
+
 ### S3 — the top-right activity control
 
 **What.** One control in the shell bar's right side, beside the bell. It shows
