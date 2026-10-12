@@ -8869,9 +8869,14 @@ measure of 2026-10-12 counts the lines by length only, and it reads no value:
 ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=$" /opt/acb/app/.env; sudo grep -c "^GMAIL_OAUTH_CLIENT_SECRET=$" /opt/acb/app/.env'
 # 1
 # 1
+ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=..*" /opt/acb/app/.env'
+# 0
+ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_SECRET=..*" /opt/acb/app/.env'
+# 0
 ```
 
-Each count of 1 is one line with an empty value. `OAuthApp.configured`
+Each count of 1 is one line with an empty value. Each count of 0 shows that no line holds a value.
+Neither command prints a value. `OAuthApp.configured`
 (`email_ingestion/providers/app_credentials.py:53`) is False for an empty string. So
 `GET /email/oauth/providers` answers `gmail: false` from the keys alone, and the authorize route
 cannot connect Gmail today, also by URL. The flag of D-EM-36 stays the guard for the time after
@@ -9006,7 +9011,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
 | **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
-| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 · visual review | Before customers, PR-C. A Gmail-web draft keeps its HTML and its inline images when a save leaves the text as it was | Any time | M | §12.3.12.5 |
+| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1) · visual review (PR-C2) | Before customers, PR-C1 then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M | §12.3.12.5 |
 | **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
 | **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
@@ -12505,7 +12510,7 @@ reverse it.
 | **EM-G4a-f1** | PR-A | 🟢 AGENT-SAFE | S | §12.3.12.4 |
 | **EM-G2-f1** | PR-A | 🟢 AGENT-SAFE | S | §12.3.12.3 |
 | **EM-G4b-f1** | PR-B | 🟢 AGENT-SAFE · R8 | M | §12.3.12.2 |
-| **EM-G3a-f7** | PR-C | 🟢 AGENT-SAFE · R8 · visual review | M | §12.3.12.5 |
+| **EM-G3a-f7** | PR-C1, then PR-C2 | 🟢 AGENT-SAFE · R8 (PR-C1) · visual review (PR-C2) | M + M | §12.3.12.5 |
 | **EM-G3b-f7** | PR-E | 🟢 AGENT-SAFE · R8 | S | §12.3.12.6 |
 | **EM-G8-f1** | PR-F | 🟢 AGENT-SAFE · visual review | S | §12.3.12.7 |
 
@@ -12514,13 +12519,15 @@ reverse it.
 1. PR-B merges before PR-A. Both change the fetch paths of `gmail.py`. PR-B changes
    `_history_sync` and `_fetch_into`. PR-A changes `get_message` and `bulk_apply`. One order
    gives one rebase, not two.
-2. PR-C, PR-E and PR-F can run in parallel with PR-B and with each other. PR-C touches the drafts
-   path, PR-E touches the Reply Zero SQL, and PR-F touches the UI only.
-3. There is no PR-D. The id stays free, because this PR is PR-D0.
+2. PR-C1, PR-E and PR-F can run in parallel with PR-B and with each other. PR-C1 touches the
+   drafts path, PR-E touches the Reply Zero SQL, and PR-F touches the UI only.
+3. PR-C2 merges after PR-C1, because the UI sends a field that PR-C1 adds.
+4. There is no PR-D. The id stays free, because this PR is PR-D0.
 
 **What binds each PR.** No migration and no new flag. Gmail stays dark until EM-G10 (D-EM-36). A
-PR that merges updates its status here and the WS-17 row in the same PR (R4). ⚠️ PR-E and PR-F
-change code that is live for Outlook. So each one carries an Outlook acceptance item.
+PR that merges updates its status here and the WS-17 row in the same PR (R4). ⚠️ PR-C1, PR-E and
+PR-F change code that is live for Outlook: the draft save and the signed send, the Reply Zero SQL,
+and the rule editor and the banner. So each one carries an Outlook acceptance item.
 
 #### 12.3.12.2 EM-G4b-f1 — the history cursor moves at each page
 
@@ -12803,11 +12810,22 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-C. The measure below widened the scope.
+**Status.** 📝 Specified 2026-10-12, not built. Re-specified on 2026-10-12 after the re-audit
+(E1, C1 to C4, P3). The measure below widened the scope, so PR-C splits in two: PR-C1 (backend)
+and PR-C2 (UI).
 
-**Gate.** 🟢 AGENT-SAFE · R8 · visual review. No migration, no flag.
+**Gate.** 🟢 AGENT-SAFE · R8 (PR-C1) · visual review (PR-C2). No migration, no flag.
 
-**Size.** M. About 120 lines of backend, 100 lines of UI, and tests of about 250 lines.
+**Size.** The whole fix is about 650 lines with tests. That is past the bound of about 600 lines,
+so it splits:
+
+- **PR-C1, backend.** M. About 220 lines in `gmail.py`, `drafting.py` and `signature.py`, with
+  tests of about 250 lines.
+- **PR-C2, UI.** M. About 80 lines in `lib/` and `ConversationView.tsx`, with tests of about 120
+  lines.
+
+**Order.** PR-C1 merges first. Alone, it changes nothing that a member sees: no client sends
+`keep_html` yet, and the send path keeps the HTML that the row already holds. PR-C2 follows.
 
 **The measure (2026-10-12, at `3d73313a4`). The `cid:` references do NOT survive.** They are lost
 in the composer, and the whole HTML body goes with them. Each hop:
@@ -12821,108 +12839,220 @@ in the composer, and the whole HTML body goes with them. Each hop:
 3. **The composer edits text only. The HTML is lost here.** A synced draft opens in `DraftCard`
    (`components/EmailDetail.tsx:1420`, `components/ConversationView.tsx:161-172`). Its body comes
    from `draft.bodyText` (`ConversationView.tsx:355`), and its editor is a `<textarea>`
-   (`:681-687`). The autosave calls `saveDraft` (`:483-491`). `saveDraft` (`lib/api.ts:1235-1250`)
-   sends `body` and no HTML field.
-4. **The update route has no HTML field.** `DraftUpsertRequest` (`automation/drafting.py:2358-2373`)
+   (`:681-687`). `saveDraft` (`lib/api.ts:1235-1250`) sends `body` and no HTML field.
+4. **DraftCard saves at two sites.** The autosave calls `saveDraft` at `ConversationView.tsx:483`.
+   The pre-send save in `send` calls it again at `:526`, before `sendDraft`. Both send the text
+   only.
+5. **The update route has no HTML field.** `DraftUpsertRequest` (`automation/drafting.py:2358-2373`)
    holds `body: str` only. `upsert_draft` calls `provider.update_draft` with `body_text=body` and
    no `body_html` (`:2422-2427`). `_build_gmail_mail` then builds one `text/plain` part
    (`gmail.py:796-801`).
-5. **The files lose their `Content-ID`.** `_draft_files` (`gmail.py:1412-1449`) reads the draft
+6. **The local row keeps stale HTML.** `_upsert_local_draft` writes `body_text` (`drafting.py:2192`)
+   and never touches `body_html`. So after a text save, the row still holds the HTML of the text
+   from before.
+7. **The signed send drops the HTML.** `send_draft_endpoint` reads no `body_html` (`:2579-2583`).
+   With a signature, it calls `build_signed_bodies(signature, drow.body_text or "", None)`
+   (`:2649-2650`), and then `update_draft` with that pair (`:2658-2664`). So a signed send of a
+   Gmail-web draft goes out with HTML from its text. Its inline images go.
+8. **The files lose their `Content-ID`.** `_draft_files` (`gmail.py:1412-1449`) reads the draft
    with `iter_attachments`. With `multipart/related` at the top level, the inline image comes back
    as a plain file with no `Content-ID`. Now let `multipart/mixed` hold `multipart/related` and a
    PDF. The read then does not return the inline image, so its bytes leave the draft with no
    warning.
 
-So any save of a Gmail-web draft in Metorite drops its HTML. The inline images go too, or come back
-as plain files.
+So any save of a Gmail-web draft in Metorite drops its HTML, and so does a signed send. The inline
+images go too, or come back as plain files.
 
-**Decisions (orchestrator, 2026-10-12, from the measure).**
+**Decisions (orchestrator, 2026-10-12, from the measure and the re-audit).**
 
 - **D-G3a-f7-1. The composer stays a text editor.** An HTML editor for drafts is a product
-  change, and it is out of scope. *Reason:* the dispatch named the UI branch M. An HTML editor is
-  L, and it changes the composer of Outlook too.
-- **D-G3a-f7-2. A save that does not change the text keeps the HTML.** The composer sends the
-  stored `bodyHtml` of the draft as `body_html` when the text of the body is unchanged since it
-  opened. An edit of the recipients, the subject or the files then keeps the HTML and the inline
-  images. *Reason:* the most common edit of a Gmail-web draft is the recipients or the files.
-- **D-G3a-f7-3. A save that changes the text saves the text only, and the member knows first.** A
-  Gmail draft whose stored HTML holds `cid:` or any HTML shows a notice in the card before the
-  first edit. *Reason:* a silent loss is the defect. A known loss is a choice of the member.
-- **D-G3a-f7-4. The builder puts an inline part back only when the new HTML names its cid.**
+  change, and it is out of scope. *Reason:* an HTML editor is L on its own, and it changes the
+  composer of Outlook too.
+- **D-G3a-f7-2. A save that leaves the text as it was keeps the HTML.** The client says so with
+  one flag, `keep_html: true`, and sends no HTML. The gateway takes the HTML from the row, or from
+  Gmail (D-G3a-f7-6). An edit of the recipients, the subject or the files then keeps the HTML and
+  the inline images. *Reason:* the most common edit of a Gmail-web draft is the recipients or the
+  files. The client cannot hold the HTML after the hot window of §14, and the gateway must read
+  Gmail for D-G3a-f7-6 anyway. So the gateway is the one owner of the HTML (spec writer,
+  2026-10-12, replacing "the composer sends the stored `bodyHtml`").
+- **D-G3a-f7-3. A save that changes the text saves the text only, and the member knows first.**
+  The card shows the notice of the table below before the first edit. *Reason:* a silent loss is
+  the defect. A known loss is a choice of the member.
+- **D-G3a-f7-4. The builder puts an inline part back only when the HTML names its cid.**
   `_draft_files` returns each inline part with its `Content-ID`, apart from the files. The builder
   wraps the HTML and those parts in `multipart/related` only when `body_html` holds
   `cid:<that id>`. With no `body_html`, no inline part goes back, and none becomes a plain file.
-- **D-G3a-f7-5. Gmail only.** The UI sends `body_html` only for a Gmail draft. The gateway passes
-  `body_html` to `update_draft` only when the request holds it. *Reason:* an Outlook draft must
-  behave as on main.
+- **D-G3a-f7-5. Gmail only.** `draftSavePayload` sets `keep_html` only for a Gmail draft. The
+  gateway reads `keep_html` only for a Gmail mailbox. *Reason:* an Outlook draft must behave as on
+  main.
+- **D-G3a-f7-6 (C4). With no HTML in the row, the gateway reads it from Gmail.** The §14 hot
+  window can leave a Gmail draft row with no `body_html`. Before a save with `keep_html`, and
+  before a signed send, the gateway then reads the current HTML of the draft through
+  `provider.get_message_body` (`base.py:540`). It holds no session across that read (§14.4.2). If
+  the read fails, the save keeps the text-only behaviour, and the answer says `html: "lost"`. The
+  card then shows the notice. So the loss is never silent.
+- **D-G3a-f7-7 (C3, option a). The signed send keeps the HTML.** `send_draft_endpoint` reads
+  `body_html` with the row. For a Gmail draft it takes the stored HTML, or the HTML of
+  D-G3a-f7-6. It puts the signature into that HTML with a new helper,
+  `sign_html(signature, body_html)`, in `signature.py`. It no longer calls
+  `build_signed_bodies(signature, body_text, None)` for such a draft. *Reason:*
+  `build_signed_bodies` returns the HTML unchanged when the text already holds the signature
+  (`signature.py:137`), and the upsert always puts the signature into the text
+  (`drafting.py:2394`). So the existing helper would send the HTML with no signature.
+  `sign_html` adds the signature HTML above the quote (`split_quoted_html`), and adds nothing when
+  the HTML already holds it.
+- **D-G3a-f7-8. The row never holds stale HTML.** `_upsert_local_draft` sets `body_html` to NULL
+  on a save with no `keep_html`. A save with `keep_html` leaves the column as it is. *Reason:* with
+  D-G3a-f7-7 a stale HTML would send the text from before a text edit. This write clears HTML and
+  stores none, so it agrees with §14 (EM-S3).
+- **D-G3a-f7-9 (C1). Each UI fence runs in vitest.** `vitest.config.ts` includes only
+  `src/**/*.test.ts`, with `environment: "node"`. The repo has no `.test.tsx` and no testing
+  library. So the UI rules live in pure helpers in `lib/draftSave.ts`, and
+  `lib/draftSave.test.ts` holds their fences. A source-text case, in the pattern of
+  `lib/allInboxes.test.ts:443`, proves that both save sites use the helper.
 
-**Scope.**
+**Scope of PR-C1 (backend).**
 
-1. **Backend, `gmail.py`.** `_draft_files` returns two lists: the files, and the inline parts. An
-   inline part has a `Content-ID` and no `attachment` disposition. The read finds it at any depth
-   of the raw mail. Each inline part keeps its bytes, its type and its `Content-ID`.
-2. **Backend, the builder.** `_build_gmail_mail` takes the inline parts. When `body_html` names a
-   cid, the HTML alternative goes inside `multipart/related` with the parts that it names. The
+1. **`gmail.py`.** `_draft_files` returns two lists: the files, and the inline parts. An inline
+   part has a `Content-ID` and no `attachment` disposition. The read finds it at any depth of the
+   raw mail. Each inline part keeps its bytes, its type and its `Content-ID`.
+2. **`gmail.py`, the builder.** `_build_gmail_mail` takes the inline parts. When `body_html` names
+   a cid, the HTML alternative goes inside `multipart/related` with the parts that it names. The
    parts that it does not name are dropped.
-3. **Gateway.** `DraftUpsertRequest` gets `body_html: str | None = None`. `upsert_draft` passes it
-   to `update_draft` only when it is not None. The create path does not change.
-4. **UI.** `DraftCard` keeps the text at open. When the text is unchanged and the draft is a Gmail
-   draft, `saveDraft` sends `body_html` with the stored `bodyHtml`. `lib/api.ts` sends the field
-   only when it is set.
-5. **UI, the notice.** A Gmail draft with stored HTML shows the notice of the table below, above
-   the text box. The notice uses the `warning` tokens of the design system.
+3. **`drafting.py`, the save.** `DraftUpsertRequest` gets `keep_html: bool = False`. For a Gmail
+   mailbox with `keep_html`, `upsert_draft` takes the HTML of D-G3a-f7-6 and passes it to
+   `update_draft` as `body_html`. The answer gets `html`, one of `kept`, `none` or `lost`.
+   `_upsert_local_draft` follows D-G3a-f7-8.
+4. **`drafting.py`, the send.** `send_draft_endpoint` reads `body_html` with the row and follows
+   D-G3a-f7-6 and D-G3a-f7-7.
+5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
+
+**Scope of PR-C2 (UI).**
+
+1. **`lib/draftSave.ts`.** Three pure helpers:
+   - `draftSavePayload(draft, openedText, text, provider)` gives the body of `PUT /email/drafts`.
+     It sets `keep_html: true` only for a Gmail draft whose text equals `openedText`.
+   - `showsFormattingNotice(provider, html, htmlReadFailed)` is true for a Gmail draft with HTML,
+     and for a Gmail draft whose HTML read failed.
+   - `noticeAfterSave(answer)` is true when the answer says `html: "lost"`.
+2. **`ConversationView.tsx`.** `DraftCard` keeps the text at open. The autosave (`:483`) and the
+   pre-send save (`:526`) both build their body with `draftSavePayload`. For a Gmail draft with no
+   `bodyHtml`, the hydrate step (`:438-462`) also reads `fetchFullBody` once. So the card knows
+   about HTML that the row lost. `lib/api.ts` sends `keep_html` only when it is set.
+3. **The notice.** A card for which `showsFormattingNotice` or `noticeAfterSave` is true shows
+   the notice of the table below, above the text box. The notice uses the `warning` tokens of the
+   design system.
 
 **The words (E-D3 form).**
 
 | Item | Where | The words | Test |
 |---|---|---|---|
-| 5 | The notice in a Gmail draft with HTML | `This draft has formatting or images from Gmail. If you change the text here, Metorite saves the text only, and the formatting and images go.` | `a-gmail-html-draft-shows-the-notice` |
+| PR-C2 3 | The notice in a Gmail draft with HTML | `This draft has formatting or images from Gmail. If you change the text here, Metorite saves the text only, and the formatting and images go.` | `a-gmail-html-draft-shows-the-notice` |
 
-**Non-goals.** No HTML editor. No change to the send path (`drafting.py:2650-2651`, `:2683`). No
-change to Outlook or IMAP drafts. No change to the create of a draft. No change to the parse.
+The words stay true. A save or a send that leaves the text as it was keeps the formatting
+(D-G3a-f7-2, D-G3a-f7-7). A text edit loses it. When the HTML read fails (D-G3a-f7-6), the save
+keeps the text only, and the same notice then tells the member.
 
-**Acceptance (done when).**
+**Non-goals.** No HTML editor. No change to the send of a draft with no signature: Gmail sends the
+draft that it holds. No change to Outlook or IMAP drafts. No change to the create of a draft. No
+change to the parse.
 
-1. Fixture `c_related_inline_image.json` as a draft. An update with an unchanged text and its
-   stored HTML sends a mail with `multipart/related`. The image part keeps its `Content-ID`, and
-   the HTML keeps `src="cid:…"`.
-2. An update with no `body_html` sends no inline part, and no plain file named `image.png` or
-   alike.
+**Known limit EM-G3a-f7-k1 (P3), the chat tools.** The re-audit noted that chat-tool draft updates
+also call `update_draft` with no `body_html`.
+
+The measure at `3d73313a4` finds two callers of
+`update_draft` in the gateway, both in `drafting.py`: the upsert (`:2422`) and the signed send
+(`:2658`). The assistant tool `send_draft` reaches the signed send through `/email/drafts/send`
+(`agents.py:2965`), so D-G3a-f7-7 covers it. The tool card "save" (`EmailToolCards.tsx:588`,
+`:599`) calls `/email/drafts/save` (`drafting.py:2716`), which makes a NEW text draft with
+`create_draft`. The AI drafter trashes an old AI draft and makes a new one
+(`_resolve_existing_thread_draft`, `drafting.py:381`). Neither updates a Gmail-web draft.
+
+The limit that stays: a later caller of `upsert_draft` without `keep_html` saves the text only. A Gmail-web
+draft then loses its HTML, and no card shows the notice.
+
+**Acceptance of PR-C1 (done when).**
+
+1. Fixture `c_related_inline_image.json` as a draft. A save with `keep_html` sends a mail with
+   `multipart/related`. The image part keeps its `Content-ID`, and the HTML keeps `src="cid:…"`.
+2. A save with no `keep_html` sends no inline part, and no plain file named `image.png` or alike.
 3. A draft with an inline image and a PDF keeps the PDF on each update.
-4. An update with `body_html` that names no cid sends no inline part.
-5. An Outlook draft update sends no `body_html` field (a UI test). The gateway then calls
-   `update_draft` with no `body_html` (an R8 test on the real route).
-6. The notice shows for a Gmail draft with HTML. It does not show for an Outlook draft, or for a
-   draft with text only.
-7. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at compact
-   density, with a changed accent and at 390 px.
+4. An HTML that names no cid sends no inline part.
+5. A save with `keep_html` for a row with no `body_html` reads the HTML from Gmail, keeps it, and
+   answers `html: "kept"`. When that read fails, it saves the text only and answers
+   `html: "lost"`.
+6. A save with no `keep_html` sets the row `body_html` to NULL. A save with `keep_html` leaves it.
+7. A signed send of a Gmail-web draft keeps its HTML and its cid inline parts. The signature HTML
+   shows once, above the quote. This holds for a row with stored HTML and for a row whose HTML
+   comes from Gmail.
+8. A text save and then a signed send sends the NEW text, and no HTML from before the edit.
+9. ⚠️ An Outlook draft: the upsert and the signed send call the provider with the same arguments
+   as on main.
 
-**Fences (R7).**
+**Acceptance of PR-C2 (done when).**
+
+10. `draftSavePayload` sets `keep_html` for a Gmail draft with the text as it opened, and not after
+    a text edit.
+11. The pre-send save keeps the HTML too: `send` builds its save with `draftSavePayload`, so a send
+    with the text as it opened carries `keep_html`.
+12. An Outlook draft never gets `keep_html`.
+13. `showsFormattingNotice` is true for a Gmail draft with HTML, and for a Gmail draft whose HTML
+    read failed. It is false for an Outlook draft and for a Gmail draft with text only.
+14. `noticeAfterSave` is true for `html: "lost"` only.
+15. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at
+    compact density, with a changed accent and at 390 px.
+
+**Fences of PR-C1 (R7).**
 
 - `tests/unit/test_gmail_send_and_drafts.py`:
-  `test_an_unchanged_gmail_web_draft_keeps_its_inline_image` (acceptance 1),
-  `test_an_update_with_no_html_sends_no_inline_part` (acceptance 2),
-  `test_an_update_keeps_a_file_beside_an_inline_image` (acceptance 3),
-  `test_an_inline_part_goes_back_only_when_the_html_names_it` (acceptance 4)
-- R8 `tests/unit/test_email_drafts_upsert_html.py`, with `pytestmark = _DB_GATE`:
-  `test_the_upsert_passes_body_html_only_when_sent` (acceptance 5)
-- `src/app/email/components/ConversationView.test.tsx`: `a-gmail-html-draft-shows-the-notice`,
-  `an-unchanged-gmail-draft-sends-its-html`, `an-outlook-draft-sends-no-html` (acceptance 5 and 6)
+  - `test_a_kept_html_draft_keeps_its_inline_image` (acceptance 1)
+  - `test_an_update_with_no_html_sends_no_inline_part` (acceptance 2)
+  - `test_an_update_keeps_a_file_beside_an_inline_image` (acceptance 3)
+  - `test_an_inline_part_goes_back_only_when_the_html_names_it` (acceptance 4)
+- `tests/unit/test_email_signature.py`: `test_sign_html_adds_the_signature_once_above_the_quote`
+  (acceptance 7)
+- R8 `tests/unit/test_email_drafts_keep_html.py`, with `pytestmark = _DB_GATE`:
+  - `test_keep_html_with_no_stored_html_reads_gmail` (acceptance 5)
+  - `test_a_failed_html_read_saves_text_and_answers_lost` (acceptance 5)
+  - `test_a_text_save_clears_the_stored_html` (acceptance 6)
+  - `test_a_signed_send_keeps_the_html_and_the_inline_parts` (acceptance 7)
+  - `test_a_signed_send_after_a_text_edit_sends_the_new_text` (acceptance 8)
+  - `test_an_outlook_draft_calls_the_provider_as_on_main` (acceptance 9)
 
-**Mutations.** M1: `_draft_files` drops the `Content-ID`, and the first fence fails. M2: the
-builder always adds the inline parts, and the fourth fence fails. M3: the UI sends `body_html` for
-Outlook, and `an-outlook-draft-sends-no-html` fails.
+**Fences of PR-C2 (R7).** `src/app/email/lib/draftSave.test.ts`:
+
+- `keeps-html-when-the-gmail-text-is-unchanged` and `drops-keep-html-after-a-text-edit`
+  (acceptance 10)
+- `the-pre-send-save-and-the-autosave-both-use-the-payload-helper` (acceptance 11). It reads
+  `ConversationView.tsx` as text, and finds `draftSavePayload(` in each of the two `saveDraft`
+  calls of `DraftCard`.
+- `an-outlook-draft-never-keeps-html` (acceptance 12)
+- `a-gmail-html-draft-shows-the-notice` (acceptance 13)
+- `a-lost-html-answer-shows-the-notice` (acceptance 14)
+
+**Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
+
+| Id | Mutation | The fence that fails |
+|---|---|---|
+| M1 | `_draft_files` drops the `Content-ID` | `test_a_kept_html_draft_keeps_its_inline_image` |
+| M2 | The builder always adds the inline parts | `test_an_inline_part_goes_back_only_when_the_html_names_it` |
+| M3 | The signed send passes `None` as the HTML again | `test_a_signed_send_keeps_the_html_and_the_inline_parts` |
+| M4 | `_upsert_local_draft` keeps the stale HTML | `test_a_signed_send_after_a_text_edit_sends_the_new_text` |
+| M5 | A failed read answers `kept` | `test_a_failed_html_read_saves_text_and_answers_lost` |
+| M6 | The pre-send save builds its body by hand | `the-pre-send-save-and-the-autosave-both-use-the-payload-helper` |
+| M7 | `draftSavePayload` sets `keep_html` for Outlook | `an-outlook-draft-never-keeps-html` |
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_gmail_send_and_drafts.py tests/unit/test_gmail_mail_size.py \
-  tests/unit/test_email_drafts_upsert_html.py -v -rs
+  tests/unit/test_email_signature.py tests/unit/test_email_drafts_keep_html.py -v -rs
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme
 ```
 
-The R8 tests must show PASSED, with 0 skips.
+The R8 tests must show PASSED, with 0 skips. If `tests/unit/test_email_signature.py` does not
+exist at dispatch, put the `sign_html` case into the file that tests `build_signed_bodies` now.
 
 #### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
 
@@ -13073,8 +13203,9 @@ below reads `availableLabels` instead, because `folders` cannot hold them.
 
 1. A pure helper `moveTargets(provider, folders, labels)` in `lib/connect.ts` gives the list of the
    field. `MoveFolderField` reads the provider of the selected mailbox and calls it.
-2. The create button and its error take the words of the table for Gmail. The route does not
-   change.
+2. A pure helper `moveFieldCopy(provider)` in `lib/connect.ts` gives the placeholder, the words of
+   the create button for a name, and the create error. The words come from the table.
+   `MoveFolderField` reads all three from it. The route does not change.
 3. `page.tsx` reads `liveProviders(connectProviders)`. For a Gmail mailbox with Gmail not live, it
    shows the line of the table in place of the button. A pure helper `reconnectAction(account,
    live)` in `lib/connect.ts` decides: a button, the line, or the "Disconnect it" text of today.
@@ -13099,16 +13230,24 @@ below reads `availableLabels` instead, because `folders` cannot hold them.
 
 **Fences (R7).**
 
-- `src/app/email/lib/connect.test.ts`: `gmail-move-field-suggests-labels`,
-  `outlook-move-field-keeps-its-folders`,
-  `gmail-reconnect-banner-has-no-button-when-the-read-says-no`,
-  `outlook-reconnect-banner-keeps-its-button`, `provider-unavailable-copy`
-- `src/app/email/components/automation/ai-settings/RulesTab.test.tsx`:
-  `gmail-move-field-creates-a-label`, `outlook-move-field-says-create-folder`
+All fences are in `src/app/email/lib/connect.test.ts`. vitest runs only `src/**/*.test.ts` in
+`environment: "node"`, and the repo has no testing library. So each fence tests a pure helper.
+
+- `gmail-move-field-suggests-labels` and `outlook-move-field-keeps-its-folders` (`moveTargets`)
+- `gmail-move-field-creates-a-label` and `outlook-move-field-says-create-folder`
+  (`moveFieldCopy`)
+- `move-field-reads-its-words-from-the-helper`. It reads `RulesTab.tsx` as text, in the pattern of
+  `lib/allInboxes.test.ts:443`. It finds `moveFieldCopy(` in `MoveFolderField`, and no literal
+  `Create folder` in that file.
+- `gmail-reconnect-banner-has-no-button-when-the-read-says-no` and
+  `outlook-reconnect-banner-keeps-its-button` (`reconnectAction`)
+- `provider-unavailable-copy` (`callbackView`)
 
 **Mutations.** M1: `moveTargets` reads `folders` for Gmail, and `gmail-move-field-suggests-labels`
 fails. M2: `reconnectAction` ignores the read, and the Gmail banner fence fails. M3: the Outlook
-branch takes the Gmail words, and `outlook-move-field-says-create-folder` fails.
+branch of `moveFieldCopy` takes the Gmail words, and `outlook-move-field-says-create-folder` fails.
+M4: `MoveFolderField` keeps its literal words, and `move-field-reads-its-words-from-the-helper`
+fails.
 
 **Verify with.**
 
@@ -13198,11 +13337,15 @@ the process loaded at start.
 11. Update `site/privacy.html` and the terms. Today they name Google for sign-in only
     (`site/privacy.html:107`, `:158`, read at `3d73313a4`). 🔴 A merge publishes the page, because
     Caddy serves `/opt/acb/app/site`. So the owner approves the text before an agent edits the file.
-    The draft below is the text to approve.
+    The draft after step 15 is the text to approve.
 12. The privacy text says how Metorite reads, uses, stores and shares Gmail data. It states that
     Metorite meets the Limited Use rules of the Google API Services User Data Policy.
 13. The privacy text names the AI sub-processors of D-EM-9 (TypeSafe, AI/ML API). It states that
     no Gmail data trains a general AI model. Q-GM-5 asks the owner to confirm this.
+14. Pass the CASA security assessment with a lab that Google authorizes, once each year. It costs
+    a fee and takes weeks. 🔴 Money and a third party: an owner act only (CLAUDE.md §3a rule 3).
+15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
+    did not verify shows the warning, and Google caps it at 100 new users.
 
 **Draft for owner approval — not published.** 🔴 OWNER-GATE to publish. An agent wrote this draft
 on 2026-10-12 for steps 11 to 13. Do NOT copy it into `site/privacy.html` before the owner approves
@@ -13223,7 +13366,7 @@ each one before approval.
   does today. The Google review can ask for each name. The owner names them, or keeps the class.
 
 **The quoted text, for "2. What we collect", after the WhatsApp section.** The words are the page
-text. The fence keeps them as written.
+text.
 
 ```text
 A Gmail or Google Workspace mailbox you connect
@@ -13284,10 +13427,6 @@ rows (A1).
 The row "AI model providers" stays, and it covers the drafts and the assistant (A3). The page
 `site/terms.html` gets one line that points to this section for a Google mailbox. The owner
 approves that line with this draft.
-14. Pass the CASA security assessment with a lab that Google authorizes, once each year. It costs
-    a fee and takes weeks. 🔴 Money and a third party: an owner act only (CLAUDE.md §3a rule 3).
-15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
-    did not verify shows the warning, and Google caps it at 100 new users.
 
 **Engineering before customers.** These are not owner acts. §12.3.12 holds the one list, and
 §12.3.12.1 holds the slices and their order. Each one closes before the app moves to Production.
@@ -13323,7 +13462,7 @@ refresh token from Testing still ends after 7 days.
 - **Q-GM-5. Does D-EM-9 cover Gmail content?** Google's Limited Use rules bind each transfer of
   Gmail data, also to TypeSafe and AI/ML API, and the privacy text must name them. The proposal is
   yes, on the same terms as Outlook, with the text of §12.4 steps 12 and 13. This is a legal and
-  third-party call, so the agent does not make it. The draft under §12.4 step 13 assumes yes, and
+  third-party call, so the agent does not make it. The draft after §12.4 step 15 assumes yes, and
   marks each place that hangs on this answer.
 - **Q-GM-6. Whose Google client does the box hold today?** The box `.env` holds
   `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` (measured by name, 2026-10-05). Nobody in

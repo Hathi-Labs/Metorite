@@ -1392,7 +1392,7 @@ line — never reclaim a number by deleting the other entry.
 - **Then.** The owner's test (EM-G10) runs. EM-G5a, EM-G9 and EM-G7b are
   merged (D-EM-36, amended 2026-10-05). Before customers: the six slices of
   §12.3.12, Google verification and CASA (§12.4 steps 10 to 15), and the
-  privacy draft under §12.4 step 13.
+  privacy draft after §12.4 step 15.
 - **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
