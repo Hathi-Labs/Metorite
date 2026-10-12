@@ -164,6 +164,36 @@ describe("score and rank", () => {
   });
 });
 
+describe("the CRM jobs (WS-53 CRM-X2)", () => {
+  // A rep holds the CRM and the People directory, so their words meet.
+  const crm = pane("/crm", "CRM", "Pipeline, leads and customers");
+  const items = buildItems([...HELD, crm]);
+  const top = (query: string) => rank({ items, query, context: null, recent: [] })[0]?.key;
+
+  it("finds each job by the words a rep would type", () => {
+    expect(top("new deal")).toBe("do:new-deal");
+    expect(top("opportunity")).toBe("do:new-deal");
+    expect(top("log a call")).toBe("do:log-call");
+    expect(top("phone call")).toBe("do:log-call");
+    expect(top("find a record")).toBe("do:find-record");
+    expect(top("lookup company")).toBe("do:find-record");
+    expect(top("new lead")).toBe("do:new-lead");
+  });
+
+  it("leaves the words of other jobs with them", () => {
+    expect(top("contact")).toBe("do:find-person");
+    expect(top("colleague")).toBe("do:find-person");
+    expect(top("remind me")).toBe("do:capture");
+  });
+
+  it("offers none of them to a member without the CRM", () => {
+    const keys = buildItems(HELD).map((i) => i.key);
+    for (const id of ["new-lead", "new-deal", "log-call", "find-record"]) {
+      expect(keys).not.toContain(`do:${id}`);
+    }
+  });
+});
+
 describe("the empty bar follows the member's preset (NS-7)", () => {
   const items = buildItems(HELD);
   const jobs = (order?: string[], context: string | null = null) =>

@@ -117,6 +117,14 @@ JOBS: tuple[Job, ...] = (
         None, "/settings/organization?do=invite", admin=True),
     Job("new-lead", "New lead", "add a new sales lead or prospect to the CRM",
         "crm", "/crm?do=new-lead"),
+    # WS-53 CRM-X2 (crm_platform.md §19.6). Each opens a form or a list in
+    # the CRM and saves nothing.
+    Job("new-deal", "New deal", "add a new deal or sales opportunity to the CRM",
+        "crm", "/crm?do=new-deal"),
+    Job("log-call", "Log a call", "log a phone call with a lead, a contact or a customer in the CRM",
+        "crm", "/crm?do=log-call"),
+    Job("find-record", "Find a record", "find a lead, a deal, a contact or a company in the CRM",
+        "crm", "/crm?do=find-record"),
     Job("add-mcp", "Add an MCP server", "connect a new MCP server, a tool source for the agents",
         "integrations", "/integrations?do=add-mcp"),
     Job("review-integrations", "Review connections", "review the connections the company has made and their health",
