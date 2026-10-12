@@ -1,84 +1,59 @@
 "use client";
 
 /**
- * A bare `#171` in a chat answer, drawn as the task pill when it is a task.
+ * A `#171` in a chat answer, drawn as the task pill when it is a task.
  *
  * Owner report, 2026-10-13: a `#172 «one surface»` drew a pill that opens the
- * task, and a bare `#171` in the same paragraph stayed text. This draws the
- * bare form as the SAME pill: `EntityPill` with the task's number, title and
- * status, and the same link (`taskHref`, the `?task=` deep link the fenced
- * pill and the tool cards open).
+ * task, and a bare `#171` in the same paragraph stayed text. The parser, the
+ * lookup and the pill are `lib/taskRefs.ts`, shared with the task card. This
+ * file is the chat's wiring only:
  *
- * Where the task comes from, first match wins:
- *
- * 1. The message's own tool results (`entityIndex.ts`), when exactly one task
- *    there has that number. No request.
- * 2. The lookup (`lib/taskRefResolver.ts`): one batched read per answer, under
- *    the member's own visibility, cached for the chat session.
- *
- * Until the lookup answers, and whenever it finds no task or two, the
- * reference is the plain text it was. It never draws a pill that does not
- * open.
+ * 1. **The turn's own tool results first** (`entityIndex.ts`). One task there
+ *    with that number: the pill, with no request. Two: plain text, because
+ *    the turn itself read two tasks with that number and a wrong link is
+ *    worse than none. The lookup does not overrule that.
+ * 2. **Then the lookup** (`TaskRefPill`): one batched read per answer, cached
+ *    for the chat session.
+ * 3. **Text while the answer streams**, because the number can be half typed.
+ * 4. **No title twice.** When the answer already wrote the task's title right
+ *    after the number (`#171 Composer always steers`), the pill shows the
+ *    number only, and the title stays in the text after it.
  */
 
 import EntityPill from "@/components/ui/EntityPill";
-import { taskHref, type EntityIndex } from "@/lib/entityIndex";
-import { statusAccent } from "@/lib/statusAccent";
+import { nameKey, type EntityIndex } from "@/lib/entityIndex";
 import {
-  pickTask,
+  TaskPill,
+  TaskRefPill,
   taskRefResolver,
-  useTaskRef,
+  type TaskRef,
   type TaskRefResolver,
-} from "@/lib/taskRefResolver";
+} from "@/lib/taskRefs";
 
-/** The one task in the index with this number, or null. Exported for its test. */
-export function indexTaskByNumber(
-  index: EntityIndex | null | undefined,
-  ref: string,
-): { id: string; title: string; status?: string; category?: string } | null {
-  if (!index) return null;
+/** The distinct tasks in the index with this number. Exported for its test. */
+export function indexTasksByNumber(index: EntityIndex | null | undefined, ref: string) {
+  if (!index) return [];
   const hits = index.tasks.filter((t) => t.number === ref);
-  return new Set(hits.map((t) => t.id)).size === 1 ? hits[0] : null;
+  return hits.filter((t, k) => hits.findIndex((o) => o.id === t.id) === k);
 }
 
-/** `#171` → 171, or null for anything else. */
-function numberOf(ref: string): number | null {
-  const m = ref.match(/^#([1-9][0-9]{0,8})$/);
-  return m ? Number(m[1]) : null;
-}
-
-/** The pill, the same props the fenced task pill passes. */
-export function TaskPill({
-  id,
-  number,
-  title,
-  status,
-  category,
-}: {
-  id: string;
-  number: string;
-  title: string;
-  status?: string | null;
-  category?: string | null;
-}) {
-  return (
-    <EntityPill
-      kind="task"
-      label={title}
-      number={number}
-      href={taskHref(id)}
-      dot={
-        status || category
-          ? statusAccent({ category: category ?? undefined, name: status ?? undefined })
-          : undefined
-      }
-      statusName={status ?? undefined}
-    />
-  );
+/**
+ * True when `after`, the words right after the reference, start with the
+ * task's whole title. Space, a dash or a colon before it do not count.
+ * Exported for its test.
+ */
+export function echoesTitle(after: string, title: string): boolean {
+  const key = nameKey(title);
+  if (!key) return false;
+  const lead = nameKey(after.replace(/^[\s:–—-]+/, ""));
+  if (!lead.startsWith(key)) return false;
+  const next = lead.charAt(key.length);
+  return next === "" || !/[\p{L}\p{N}]/u.test(next);
 }
 
 export default function ChatTaskRef({
   refText,
+  after = "",
   index,
   scope = "",
   live = true,
@@ -86,40 +61,39 @@ export default function ChatTaskRef({
 }: {
   /** The reference as the answer wrote it: `#171`. */
   refText: string;
-  /** The message's index. `MarkdownBody` passes it, so this file needs no
-   *  context (and `ChatEntityPill`, which imports this file, is not imported
-   *  back). */
+  /** The words right after it in the same text run. */
+  after?: string;
+  /** The message's index. `MarkdownBody` passes it. */
   index?: EntityIndex;
   /** The chat session, the cache's key. */
   scope?: string;
-  /** False while the answer streams: text, and no lookup for a number that
-   *  is still being typed. */
+  /** False while the answer streams. */
   live?: boolean;
   resolver?: TaskRefResolver;
 }) {
-  const local = indexTaskByNumber(index, refText);
-  const number = numberOf(refText);
-  const entry = useTaskRef(scope, number, live && !local, resolver);
-  // While the answer streams, the number may be half typed: `#17` on its way
-  // to `#171`. A pill for #17 would flash and go. So: text until it is done.
-  if (!live) return <>{refText}</>;
-  if (local) {
-    return (
-      <TaskPill id={local.id} number={refText} title={local.title}
-        status={local.status} category={local.category} />
-    );
+  const number = Number(refText.slice(1));
+  const label = (task: Pick<TaskRef, "title">) => (echoesTitle(after, task.title) ? "" : task.title);
+  const local = indexTasksByNumber(index, refText);
+  if (local.length === 1 && live) {
+    const t = local[0];
+    const task: TaskRef = { id: t.id, number, title: t.title, status: t.status, category: t.category };
+    return <TaskPill task={task} label={label(task)} />;
   }
-  const hit = entry?.state === "done" ? pickTask(entry.hits) : null;
-  if (!hit) return <>{refText}</>;
   return (
-    <TaskPill id={hit.id} number={refText} title={hit.title}
-      status={hit.status_name} category={hit.category} />
+    <TaskRefPill
+      number={number}
+      scope={scope}
+      // Two tasks in the turn's own reads: no lookup, text. Streaming: text.
+      live={live && local.length === 0}
+      label={label}
+      resolver={resolver}
+    />
   );
 }
 
 /**
- * The fenced form `#5 «Title»` whose task the message's tools did not read
- * (an earlier turn read it). The same lookup, and the title must match too.
+ * The fenced form `#5 «Title»` whose task the turn's tools did not read (an
+ * earlier turn read it). The same lookup, and the title must match too.
  * Until it answers, and when it finds no single match, the neutral chip the
  * fenced form always drew.
  */
@@ -136,12 +110,14 @@ export function FencedTaskRef({
   live?: boolean;
   resolver?: TaskRefResolver;
 }) {
-  const number = numberOf(refText);
-  const entry = useTaskRef(scope, number, live, resolver);
-  const hit = entry?.state === "done" ? pickTask(entry.hits, title) : null;
-  if (!hit) return <EntityPill kind="task" label={title} number={refText} />;
   return (
-    <TaskPill id={hit.id} number={refText} title={title}
-      status={hit.status_name} category={hit.category} />
+    <TaskRefPill
+      number={Number(refText.slice(1))}
+      title={title}
+      scope={scope}
+      live={live}
+      resolver={resolver}
+      fallback={<EntityPill kind="task" label={title} number={refText} />}
+    />
   );
 }

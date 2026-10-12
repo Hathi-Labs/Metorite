@@ -55,6 +55,9 @@ export const PILL_TEXT_ATTR = "data-entity-text";
 export const PILL_NUMBER_ATTR = "data-entity-number";
 /** The attribute of a bare task reference (`#171`). It carries the `#n`. */
 export const TASK_REF_ATTR = "data-task-ref";
+/** The words right after a bare reference, so the pill can see that the
+ *  answer already wrote the title there (review round 1). */
+export const TASK_REF_AFTER_ATTR = "data-task-ref-after";
 
 const EMAIL_SOURCE = String.raw`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`;
 
@@ -90,12 +93,12 @@ function pillNode(text: string, number?: string): MdNode {
   };
 }
 
-function taskRefNode(ref: string): MdNode {
+function taskRefNode(ref: string, after: string): MdNode {
   return {
     type: "taskRef",
     data: {
       hName: "span",
-      hProperties: { [TASK_REF_ATTR]: ref },
+      hProperties: { [TASK_REF_ATTR]: ref, [TASK_REF_AFTER_ATTR]: after.slice(0, 200) },
       // The fallback text if no component draws it: the reference as written.
       hChildren: [{ type: "text", value: ref }],
     },
@@ -167,9 +170,15 @@ export function splitText(value: string, emails = true, refs = false): MdNode[] 
       out.push({ type: "text", value: clean });
       return;
     }
-    for (const part of splitTaskRefs(clean)) {
-      out.push(part.kind === "ref" ? taskRefNode(part.ref) : { type: "text", value: part.text });
-    }
+    const parts = splitTaskRefs(clean);
+    parts.forEach((part, k) => {
+      const next = parts[k + 1];
+      out.push(
+        part.kind === "ref"
+          ? taskRefNode(part.ref, next?.kind === "text" ? next.text : "")
+          : { type: "text", value: part.text },
+      );
+    });
   };
   for (const m of value.matchAll(emails ? PILL : FENCE_ONLY)) {
     const start = m.index ?? 0;

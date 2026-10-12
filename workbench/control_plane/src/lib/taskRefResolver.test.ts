@@ -1,16 +1,20 @@
 /**
- * The task reference lookup (owner report, 2026-10-13): one batched call per
- * answer, a cache per chat session, and text until the lookup answers.
+ * `lib/taskRefs.ts` part (b), the task reference lookup (owner report,
+ * 2026-10-13): one batched call per answer, a cache per scope, and text until
+ * the lookup answers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import {
   MAX_REFS_PER_CALL,
   RETRY_MS,
   createTaskRefResolver,
   pickTask,
+  resolveTaskRefs,
   type TaskRefHit,
-} from "@/lib/taskRefResolver";
+} from "@/lib/taskRefs";
 
 const hit = (n: number, extra: Partial<TaskRefHit> = {}): TaskRefHit => ({
   id: `id-${n}${extra.archived ? "-old" : ""}`,
@@ -118,5 +122,43 @@ describe("pickTask", () => {
     const twin = { ...hit(5), id: "other-root", title: "Something else" };
     expect(pickTask([hit(5), twin], "task 5")).toEqual(hit(5));
     expect(pickTask([hit(5)], "A different title")).toBeNull();
+  });
+});
+
+describe("resolveTaskRefs", () => {
+  it("answers a map in ONE batched call, and asks the cache first", async () => {
+    const fetcher = vi.fn(async (ns: number[]) => ns.filter((n) => n !== 404).map((n) => hit(n)));
+    const r = createTaskRefResolver(fetcher);
+    const first = resolveTaskRefs([171, 87, 404, 171], "s", r);
+    await vi.runOnlyPendingTimersAsync();
+    const map = await first;
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(map.get(171)).toEqual({ id: "id-171", number: 171, title: "Task 171", status: undefined, category: undefined, archived: undefined });
+    expect(map.get(404)).toBeNull();
+    // A second call for known numbers sends nothing.
+    expect((await resolveTaskRefs([171, 87], "s", r)).get(87)?.id).toBe("id-87");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("never rejects: a failed lookup maps to null, and a later call finds the task", async () => {
+    let up = false;
+    const r = createTaskRefResolver(async (ns: number[]) => {
+      if (!up) throw new Error("down");
+      return ns.map((n) => hit(n));
+    });
+    const first = resolveTaskRefs([5], "s", r);
+    await vi.runOnlyPendingTimersAsync();
+    expect((await first).get(5)).toBeNull();
+    up = true;
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]);
+    await vi.runOnlyPendingTimersAsync();
+    expect((await resolveTaskRefs([5], "s", r)).get(5)?.id).toBe("id-5");
+  });
+
+  it("drops what is not a task number", async () => {
+    const fetcher = vi.fn(async () => []);
+    const r = createTaskRefResolver(fetcher);
+    expect((await resolveTaskRefs([0, -1, 1.5], "s", r)).size).toBe(0);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });

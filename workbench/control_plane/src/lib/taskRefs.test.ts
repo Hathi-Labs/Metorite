@@ -1,7 +1,8 @@
 /**
- * The bare task reference parser (owner report, 2026-10-13).
+ * `lib/taskRefs.ts` parts (a) and (c): the parser and the pill (owner report,
+ * 2026-10-13). Part (b), the lookup, is `taskRefResolver.test.ts`.
  *
- * Two halves. `findTaskRefs` holds the rules on a plain string. The second
+ * The parser in two halves. `findTaskRefs` holds the rules on a plain string. The second
  * half renders real Markdown through `MarkdownBody`, with a lookup that says
  * EVERY number is a task, so each chip in the output is a reference the parser
  * let through. That is how code, a heading and a URL are proven: those never
@@ -14,15 +15,21 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { MarkdownBody } from "@/components/MarkdownMessage";
-import { findTaskRefs, splitTaskRefs } from "@/lib/taskRefs";
-import { taskRefResolver } from "@/lib/taskRefResolver";
+import {
+  TaskPill,
+  TaskRefPill,
+  createTaskRefResolver,
+  findTaskRefs,
+  splitTaskRefs,
+  taskRefResolver,
+} from "@/lib/taskRefs";
 
-const refs = (text: string) => findTaskRefs(text).map((r) => r.ref);
+const refs = (text: string) => findTaskRefs(text).map((r) => text.slice(r.start, r.end));
 
 describe("findTaskRefs", () => {
   it("finds a bare #171", () => {
     expect(refs("See #171 for the rest")).toEqual(["#171"]);
-    expect(findTaskRefs("See #171")[0]).toMatchObject({ index: 4, length: 4, number: 171 });
+    expect(findTaskRefs("See #171")).toEqual([{ start: 4, end: 8, number: 171 }]);
   });
 
   it("finds several references in one line", () => {
@@ -68,6 +75,18 @@ describe("findTaskRefs", () => {
     expect(refs("go to example.com/#12 now")).toEqual([]);
     expect(refs("www.example.com?x=#12")).toEqual([]);
     expect(refs("&#12; and ##12")).toEqual([]);
+  });
+
+  it("does not link an HTML entity", () => {
+    expect(refs("a &#123; b &#8212; c")).toEqual([]);
+    expect(refs("a &#123; and #124")).toEqual(["#124"]);
+  });
+
+  it("does not link another kind of number, or a rank (review round 1)", () => {
+    expect(refs("PR #120, Order #45, Sprint #3, invoice #4521, v#2")).toEqual([]);
+    expect(refs("Your #1 priority is the launch, and #2 spot goes to QA")).toEqual([]);
+    // A task named by a word that can mean a task still reaches the lookup.
+    expect(refs("Task #12, issue #13 and bug #14 are open")).toEqual(["#12", "#13", "#14"]);
   });
 
   it("does not link a number that cannot be a task number", () => {
@@ -144,5 +163,37 @@ describe("bare references in Markdown", () => {
     expect(linked("#18 first, last #19.")).toEqual(["#18", "#19"]);
     // The full stop sits right after the pill, in its no-wrap group.
     expect(html).toMatch(/<\/a>\.<\/span><\/p>$/);
+  });
+});
+
+// ── (c) The pill ─────────────────────────────────────────────────────────────
+
+describe("TaskPill and TaskRefPill", () => {
+  const task = { id: "00000000-0000-4000-8000-000000000171", number: 171, title: "Composer always steers", status: "To do", category: "todo" };
+  const html = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(el);
+
+  it("draws a known task through EntityPill, with the ?task= link", () => {
+    const out = html(createElement(TaskPill, { task }));
+    expect(out).toContain(`href="/projects?task=${task.id}"`);
+    expect(out).toContain("lucide-list-checks");
+    expect(out).toMatch(/#171<\/span><span[^>]*>Composer always steers<\/span>/);
+  });
+
+  it("draws the plain #n, or the fallback, until a single task is known", async () => {
+    const none = createTaskRefResolver(async () => []);
+    expect(html(createElement(TaskRefPill, { number: 9, resolver: none }))).toBe("#9");
+    none.request("", 9);
+    await none.flush();
+    expect(html(createElement(TaskRefPill, { number: 9, resolver: none, fallback: "nine" }))).toBe("nine");
+  });
+
+  it("draws the pill once the lookup knows the task, and matches a written title", async () => {
+    const r = createTaskRefResolver(async () => [{ id: task.id, task_number: 171, title: task.title }]);
+    r.request("", 171);
+    await r.flush();
+    expect(html(createElement(TaskRefPill, { number: 171, resolver: r }))).toContain(`/projects?task=${task.id}`);
+    expect(html(createElement(TaskRefPill, { number: 171, title: "Other", resolver: r }))).toBe("#171");
+    // Not live (a streaming answer): text, even with the answer cached.
+    expect(html(createElement(TaskRefPill, { number: 171, live: false, resolver: r }))).toBe("#171");
   });
 });

@@ -35,7 +35,7 @@ import type { ChatMessage } from "@/hooks/useAgentChat";
 import { buildEntityIndex } from "@/lib/entityIndex";
 import { OWNER_TOOL_EVENTS, TASK5_ID } from "@/lib/entityPills.fixture";
 import { agentAuthor, PROJECTS_AGENT, taskRefsForTurn } from "@/lib/projectsAgent";
-import { taskRefResolver } from "@/lib/taskRefResolver";
+import { taskRefResolver } from "@/lib/taskRefs";
 
 const SCOPE = "chatTaskRef.test";
 const T171 = "00000000-0000-4000-8000-000000000171";
@@ -106,6 +106,26 @@ describe("a bare #N in an assistant answer", () => {
     expect(html).toContain("Ticket #404 is gone, and #999 was never asked for.");
     expect(html).not.toContain("<a ");
     expect(html).not.toContain("ListChecks");
+  });
+
+  it("shows the number only when the answer wrote the title right after it (review round 1)", () => {
+    const html = body("- #171 Composer always steers (In progress)");
+    const a = pill(html);
+    expect(a).toContain(`href="/projects?task=${T171}"`);
+    expect(a).not.toContain("Composer always steers</span>");
+    // The title is said once, in the text after the pill.
+    expect(html.match(/Composer always steers/g)?.length).toBe(1);
+    expect(html).toContain("</a> Composer always steers (In progress)");
+  });
+
+  it("stays text when the turn's own tools read two tasks with that number", () => {
+    const twice = buildEntityIndex([
+      { status: "done", result: ["- #171 «One» · status «To do»", "  full_id: 11111111-1111-4111-8111-111111111111"].join("\n") },
+      { status: "done", result: ["- #171 «Two» · status «To do»", "  full_id: 22222222-2222-4222-8222-222222222222"].join("\n") },
+    ]);
+    expect(twice.tasks).toHaveLength(2);
+    const html = body("See #171.", { entityIndex: twice });
+    expect(html).not.toContain("<a ");
   });
 
   it("stays text while the answer streams", () => {

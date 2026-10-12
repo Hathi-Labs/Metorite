@@ -34,6 +34,7 @@ import remarkEntityPills, {
   PILL_ATTR,
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
+  TASK_REF_AFTER_ATTR,
   TASK_REF_ATTR,
   spaceBeforeBold,
   typedBulletsToList,
@@ -396,7 +397,8 @@ export function MarkdownBody({
           const attrs = rest as Record<string, unknown>;
           if (refs && typeof attrs[TASK_REF_ATTR] === "string") {
             return (
-              <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string} index={entityIndex}
+              <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
+                after={String(attrs[TASK_REF_AFTER_ATTR] ?? "")} index={entityIndex}
                 scope={sessionId} live={live} />
             );
           }
