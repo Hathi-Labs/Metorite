@@ -13156,7 +13156,7 @@ signature too, and that copy must not stop the signature.
 - Review round 1 (P4). The answer type of `saveDraft` in `api.ts` is `DraftSaveResult`.
   `lib/draftAutosave.ts` already exports a `SavedDraft`.
 
-The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `GMAIL_C2_SHOTS` set, it also
+The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `E2E_GMAIL_C2_SHOTS` set, it also
 saves the screenshots of acceptance 23.
 
 **Acceptance of PR-C1 (done when).**

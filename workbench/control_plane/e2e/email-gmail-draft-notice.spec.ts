@@ -21,12 +21,12 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *      HTML reads its HTML from `full-body` (B5), and the notice shows while
  *      that read runs.
  *
- * Acceptance 23 is a visual review. With `GMAIL_C2_SHOTS` set to a folder,
+ * Acceptance 23 is a visual review. With `E2E_GMAIL_C2_SHOTS` set to a folder,
  * the spec saves a screenshot of each state there: dark, light, compact
  * density with a changed accent, and 390 px.
  */
 
-const SHOTS = process.env.GMAIL_C2_SHOTS;
+const SHOTS = process.env.E2E_GMAIL_C2_SHOTS;
 const NOTICE =
   "This draft has formatting or images from Gmail. If you change the text here, " +
   "Metorite saves the text only, and the formatting and images go.";
@@ -311,7 +311,7 @@ test.describe("The DraftCard of a Gmail-web draft", () => {
 
 test.describe("The notice in other looks (acceptance 23)", () => {
   test.describe.configure({ timeout: 120_000 });
-  test.skip(!SHOTS, "Set GMAIL_C2_SHOTS to a folder to save the visual review.");
+  test.skip(!SHOTS, "Set E2E_GMAIL_C2_SHOTS to a folder to save the visual review.");
 
   const LOOKS: { name: string; width: number; store: Record<string, string> }[] = [
     { name: "notice-light-1280", width: 1280, store: { theme: "light" } },
