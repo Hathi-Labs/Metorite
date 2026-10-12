@@ -318,6 +318,12 @@ export type PipelineLane = {
    * Zero on lanes whose type is not open/ongoing (D-CRM-10).
    */
   weighted: number;
+  /**
+   * The stage's place in the chosen pipeline. Null with no pipeline chosen,
+   * and for a stage the pipeline does not list that still holds its deals.
+   * Optional for the R6 window, when a new bundle meets an older gateway.
+   */
+  pipeline_position?: number | null;
 };
 
 export type Pipeline = { lanes: PipelineLane[] };

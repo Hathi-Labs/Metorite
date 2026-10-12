@@ -6,7 +6,8 @@
  * `entity` picks the card and the lane header. The drop, the lane and the
  * Mirror-mode rule are shared, so the two boards cannot disagree about them.
  *
- * Deal lanes are the chosen pipeline's stages by position, colored. Lead lanes
+ * Deal lanes are the chosen pipeline's stages in `orderLanes` order, colored.
+ * The page may hide the empty ones (`lib/emptyStages.ts`). Lead lanes
  * are the Lead Status values. Cards carry name / company / amount / owner /
  * stage-age. Dragging a card issues a `PATCH` of `status_id`. Each deal lane
  * header shows its count and ₹ total for the WHOLE lane, not the page of cards
@@ -42,6 +43,7 @@ export default function KanbanBoard({
   onMove,
   onOpen,
   onCreate,
+  hiddenEmpty = 0,
 }: {
   /** Which record the cards are. Deals unless stated. */
   entity?: "deals" | "leads";
@@ -55,10 +57,26 @@ export default function KanbanBoard({
   onOpen: (id: string) => void;
   /** Omitted in Mirror mode, where a record is made in Zoho (CRM-Z7). */
   onCreate?: () => void;
+  /** How many empty stages the page hid (`lib/emptyStages.ts`). */
+  hiddenEmpty?: number;
 }) {
   const [dragging, setDragging] = useState<Card | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const isDeals = entity === "deals";
+
+  if (!loading && lanes.length === 0 && hiddenEmpty > 0) {
+    // Every stage is empty and hidden. Say so, and do not claim that no
+    // stage exists.
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-sm text-muted-foreground">No deals match this view.</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          {hiddenEmpty} empty {hiddenEmpty === 1 ? "stage is" : "stages are"} hidden. Use
+          &quot;Empty stages&quot; in the bar to show them.
+        </p>
+      </div>
+    );
+  }
 
   if (!loading && lanes.length === 0) {
     return (

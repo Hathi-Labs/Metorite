@@ -138,7 +138,8 @@ def test_the_crm_sync_runs_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize(
-    "table", ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages"],
+    "table",
+    ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages", "crm_views"],
 )
 def test_the_crm_q1_q2_tables_are_tenant_scoped(table: str) -> None:
     """WS-53 CRM-Q1/Q2 (``crm_platform.md`` §18). The source profile and the
