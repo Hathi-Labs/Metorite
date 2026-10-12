@@ -1239,7 +1239,10 @@ class Visibility:
             clause = f"{column} IN ({_TENANT_PROJECTS_SQL})"
         else:
             clause = f"{column} IN ({_VISIBLE_PROJECTS_SQL})"
-        return _narrow_for_agent(clause, column, self.agent)
+        # getattr, not `.agent`: tests hand Visibility-like stand-ins to the
+        # seam. A real Visibility always has the field, so a missing attribute
+        # can only mean "no agent narrowing".
+        return _narrow_for_agent(clause, column, getattr(self, "agent", None))
 
 
 async def resolve_organization_id(db: Any, email: str) -> str | None:
@@ -1675,7 +1678,11 @@ def task_visibility_clause(vis: Visibility, alias: str = "t") -> str:
         )
     # WS-55 EA-3a: ONE `AND` over both arms, so the assignee arm is narrowed
     # by the agent's pins, its personal opt-out and the seal too (§7.3).
-    return _narrow_for_agent(clause, f"{alias}.project_id", vis.agent)
+    # getattr, not `vis.agent`: callers and tests pass Visibility-like
+    # stand-ins (a SimpleNamespace with `unrestricted` and `params`). A real
+    # Visibility always has the field, so a missing attribute can only mean
+    # "no agent narrowing", and the string stays byte-identical.
+    return _narrow_for_agent(clause, f"{alias}.project_id", getattr(vis, "agent", None))
 
 
 def triage_exclusion_clause(alias: str = "t") -> str:

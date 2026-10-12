@@ -315,9 +315,19 @@ async def test_a_kid_that_names_another_usable_key_refuses(world, monkeypatch):
     assert (await _call("GET", TASK, headers)).status_code == 401
 
 
-@pytest.mark.parametrize("skew", [61, -61, 3600])
+#: Five seconds clear of the window. The header carries WHOLE seconds, so a
+#: skew of exactly 61 can truncate to 60 on a slow run and pass (it did once,
+#: 2026-10-12). The exact boundary is pinned without a clock below.
+@pytest.mark.parametrize("skew", [65, -65, 3600])
 async def test_a_timestamp_more_than_60_seconds_off_refuses(world, skew):
     assert (await _get(TASK, now=time.time() - skew)).status_code == 401
+
+
+@pytest.mark.parametrize("offset, fresh", [
+    (60, True), (-60, True), (61, False), (-61, False), (0, True)])
+def test_the_window_is_60_seconds_either_way(offset, fresh):
+    now = 1_700_000_000
+    assert agent_signing.timestamp_is_fresh(str(now + offset), now=now) is fresh
 
 
 async def test_a_timestamp_inside_the_window_passes(world):
@@ -528,7 +538,7 @@ def test_the_canonical_string_is_the_eight_lines_of_the_spec():
     canonical = agent_signing.canonical_string(
         timestamp="1700000000", organization_id=ORG_A, connection_id=CONN,
         actor_via=VIA, method="get", path="/projects/tasks",
-        query="q=b&page=2&q=a&blank=",
+        query="q=b&page=2&a=x%20y&blank=",
     )
     assert canonical == "\n".join([
         "v1",
@@ -537,7 +547,7 @@ def test_the_canonical_string_is_the_eight_lines_of_the_spec():
         CONN,
         VIA,
         "GET",
-        "/projects/tasks?blank=&page=2&q=a&q=b",
+        "/projects/tasks?a=x+y&blank=&page=2&q=b",
         hashlib.sha256(b"").hexdigest(),
     ])
     assert agent_signing.canonical_target("/projects/tree") == "/projects/tree"
@@ -597,3 +607,95 @@ def test_the_settings_defaults_are_unset_keys_and_a_loopback_gateway():
     assert fields["agent_edge_signing_key"].default == ""
     assert fields["agent_edge_signing_key_previous"].default == ""
     assert fields["agent_edge_gateway_url"].default == "http://127.0.0.1:8080"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 1: the query, the regexes and the outage
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_a_repeated_query_key_refuses(world):
+    """Starlette keeps the LAST value of a key, and the signed string sorts
+    every pair. So a replay with ``q=b&q=a`` reordered to ``q=a&q=b`` would
+    read another value under the same signature. Branch 0 refuses both."""
+    for raw in ("q=a&q=b", "q=b&q=a"):
+        headers = _signed("/projects/tasks", [("q", "a"), ("q", "b")])
+        r = await _call("GET", f"/projects/tasks?{raw}", headers)
+        assert r.status_code == 401, raw
+    assert world.reads == [], "refused before any read"
+
+
+def test_the_edge_cannot_sign_a_repeated_key():
+    with pytest.raises(ValueError):
+        agent_signing.canonical_target("/projects/tasks", "q=a&q=b")
+
+
+@pytest.mark.parametrize("raw", ["q=%FF", "q=%FE", "q=%C3", b"q=\xc3\xa9"])
+def test_a_query_that_is_not_strict_utf8_or_ascii_is_refused(raw):
+    assert agent_signing.query_pairs(raw) is None
+
+
+def test_ff_and_fe_cannot_share_one_signature():
+    """With a lenient decode both become U+FFFD and one signature covers two
+    different raw queries. The strict parse refuses each one."""
+    assert agent_signing.query_pairs("q=%FF") is None
+    assert agent_signing.query_pairs("q=%FE") is None
+    assert agent_signing.query_pairs("q=%C3%A9") == [("q", "é")]
+
+
+async def test_a_bad_utf8_query_refuses_through_the_gateway(world):
+    headers = _signed("/projects/tasks", [("q", "�")])
+    r = await _call("GET", "/projects/tasks?q=%FF", headers)
+    assert r.status_code == 401
+
+
+def test_a_trailing_newline_never_passes_a_header_regex():
+    """``$`` matches before a trailing newline. The checks use ``fullmatch``."""
+    kid = agent_signing.key_id(KEY)
+    digest = "a" * 64
+    assert agent_signing.parse_signature_header(f"v1,{kid},{digest}") == (kid, digest)
+    assert agent_signing.parse_signature_header(f"v1,{kid}\n,{digest}") is None
+    assert agent_signing.parse_signature_header(f"v1,{kid},{digest}\n") is None
+    assert agent_signing.timestamp_is_fresh("1700000000", now=1700000000)
+    assert not agent_signing.timestamp_is_fresh("1700000000\n", now=1700000000)
+
+
+def _pool_timeout() -> Exception:
+    import sqlalchemy.exc
+
+    return sqlalchemy.exc.TimeoutError(
+        "QueuePool limit of size 5 overflow 10 reached, connection timed out,"
+        " timeout 30.00")
+
+
+async def test_a_pool_timeout_in_the_connection_read_is_the_one_503(world, monkeypatch):
+    """An outage is not a refusal. A 401 would make the MCP client drop a good
+    token. The answer is the 503 of ``_with_resolved_access``."""
+    async def _timeout(org, conn):
+        raise _pool_timeout()
+
+    monkeypatch.setattr(agent_tokens, "read_live_connection", _timeout)
+    r = await _get(TASK)
+    assert r.status_code == 503, r.text
+    assert r.headers["retry-after"] == "2"
+    assert r.json()["detail"] == deps.IDENTITY_UNAVAILABLE_DETAIL
+
+
+async def test_the_503_never_falls_through_to_another_branch(world, monkeypatch):
+    """A bearer and a member header beside the signed request change nothing:
+    branch 0 answers the 503 itself."""
+    async def _timeout(org, conn):
+        raise _pool_timeout()
+
+    monkeypatch.setattr(agent_tokens, "read_live_connection", _timeout)
+    r = await _get(TASK, extra={"Authorization": f"Bearer {INTERNAL}",
+                                "X-User-Email": MEMBER})
+    assert r.status_code == 503, r.text
+
+
+async def test_any_other_failed_read_stays_a_refusal(world, monkeypatch):
+    async def _broken(org, conn):
+        raise RuntimeError("a SQL fault, not a timeout")
+
+    monkeypatch.setattr(agent_tokens, "read_live_connection", _broken)
+    assert (await _get(TASK)).status_code == 401

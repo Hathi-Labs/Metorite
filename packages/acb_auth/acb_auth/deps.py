@@ -87,6 +87,7 @@ from acb_auth import agent_oauth, agent_signing, agent_tokens
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
+    _raise_if_pool_timeout,
     identity_cutover_enabled,
     resolve_access,
     resolve_identity,
@@ -295,11 +296,16 @@ async def _with_resolved_access(user: UserContext) -> UserContext:
     try:
         return await _resolve_and_bind(user)
     except IdentityUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=IDENTITY_UNAVAILABLE_DETAIL,
-            headers={"Retry-After": "2"},
-        ) from exc
+        raise _identity_unavailable() from exc
+
+
+def _identity_unavailable() -> HTTPException:
+    """The ONE 503 of an identity read that timed out. Branch 0 reuses it."""
+    return HTTPException(
+        status_code=503,
+        detail=IDENTITY_UNAVAILABLE_DETAIL,
+        headers={"Retry-After": "2"},
+    )
 
 
 async def _resolve_and_bind(user: UserContext) -> UserContext:
@@ -468,7 +474,8 @@ def _one_header(request: Request, name: str) -> str | None:
 #: info, so a stranger cannot fill the warning log. A refusal after a good
 #: signature logs at warning, because only a key holder reaches it.
 _UNSIGNED_REFUSALS = frozenset({
-    "disabled", "no_key", "headers", "connection_header", "body", "signature",
+    "disabled", "no_key", "headers", "connection_header", "body", "query",
+    "signature",
 })
 
 
@@ -479,6 +486,77 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
     return _anonymous()
 
 
+def _verify_signed_request(
+    request: Request, keys: dict[str, str],
+) -> tuple[str, str, str] | str:
+    """Step 2 of branch 0: ``(organization, connection, actor stamp)`` of a
+    well-signed, fresh request, or the reason to refuse it.
+    """
+    # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
+    connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
+    timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
+    signature = _one_header(request, agent_signing.HEADER_SIGNATURE)
+    actor_via = _one_header(request, agent_signing.HEADER_ACTOR_VIA)
+    if not connection_header or not timestamp or not signature or not actor_via:
+        return "headers"
+    organization_id, _, connection_id = connection_header.partition(".")
+    if not organization_id or not connection_id:
+        return "connection_header"
+    # A GET has no body, so the body line is the hash of zero bytes. A request
+    # that announces a body is refused rather than read.
+    if request.headers.get("content-length", "0").strip() not in ("", "0") or (
+        "transfer-encoding" in request.headers
+    ):
+        return "body"
+    # The path and the query come from the ASGI scope, never from `request.url`.
+    # `request.url` is built with the Host header, and this branch reads no
+    # host input (fence: `test_tenant_request_binding.py`). The query parses
+    # strictly, and a repeated key is refused: Starlette keeps the LAST value
+    # of a key, and the signed string sorts every pair, so a reordered replay
+    # would read another value under the same signature.
+    pairs = agent_signing.query_pairs(request.scope.get("query_string") or b"")
+    if pairs is None:
+        return "query"
+    canonical = agent_signing.canonical_string(
+        timestamp=timestamp,
+        organization_id=organization_id,
+        connection_id=connection_id,
+        actor_via=actor_via,
+        method=request.method,
+        path=str(request.scope.get("path") or ""),
+        query=pairs,
+    )
+    if not agent_signing.verify(signature, canonical, keys):
+        return "signature"
+    if not agent_signing.timestamp_is_fresh(timestamp):
+        return "timestamp"
+    return organization_id, connection_id, actor_via
+
+
+async def _read_connection(
+    organization_id: str, connection_id: str,
+) -> agent_tokens.LiveConnection | None:
+    """Step 4 of branch 0: the live connection in the SIGNED organization.
+
+    ``None`` for no live connection and for any failed read, which is a
+    refusal. A pool or connect timeout raises the ONE 503 instead.
+    """
+    try:
+        return await agent_tokens.read_live_connection(
+            organization_id, connection_id,
+        )
+    except Exception as exc:
+        # A pool or connect timeout is an outage: the ONE 503, never a 401.
+        # The access module decides what a timeout is.
+        try:
+            _raise_if_pool_timeout(exc, "agent_connection")
+        except IdentityUnavailable as unavailable:
+            raise _identity_unavailable() from unavailable
+        # Any other failed read is a refusal, not a 500. Ids only in the log.
+        _log.exception("auth.agent_connection_read_failed")
+        return None
+
+
 async def _agent_user(request: Request) -> UserContext:
     """Branch 0 of :func:`get_current_user`: the seven steps of spec §10.1.
 
@@ -487,9 +565,15 @@ async def _agent_user(request: Request) -> UserContext:
     triggered branch 0 is decided here, whatever bearer or ``X-User-Email``
     it also carries. The member comes ONLY from the connection row.
 
-    A pool timeout in the member's resolve still answers 503, as in every
-    other branch (:func:`_with_resolved_access`). That is an outage, not a
-    refusal.
+    The order differs from the numbering of §10.1 on purpose: the stamp and
+    both organization checks run BEFORE the member resolve, so a refused
+    request never binds a tenant.
+
+    ⚠️ A pool or connect timeout is an outage, not a refusal. In the
+    connection read and in the member's resolve it answers the ONE 503 of
+    :func:`_identity_unavailable`, with ``Retry-After``, and it never falls
+    through to another branch. A 401 there would make an MCP client drop a
+    good token and sign in again. Every other failed read is a refusal.
     """
     # 1. The flag is on, and a usable key is set.
     if not agent_oauth.enabled():
@@ -499,63 +583,30 @@ async def _agent_user(request: Request) -> UserContext:
         return _refuse_agent("no_key")
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
-    connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
-    timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
-    signature = _one_header(request, agent_signing.HEADER_SIGNATURE)
-    actor_via = _one_header(request, agent_signing.HEADER_ACTOR_VIA)
-    if not connection_header or not timestamp or not signature or not actor_via:
-        return _refuse_agent("headers")
-    organization_id, _, connection_id = connection_header.partition(".")
-    if not organization_id or not connection_id:
-        return _refuse_agent("connection_header")
-    # A GET has no body, so the body line is the hash of zero bytes. A request
-    # that announces a body is refused rather than read.
-    if request.headers.get("content-length", "0").strip() not in ("", "0") or (
-        "transfer-encoding" in request.headers
-    ):
-        return _refuse_agent("body")
-    # The path and the query come from the ASGI scope, never from `request.url`.
-    # `request.url` is built with the Host header, and this branch reads no
-    # host input (fence: `test_tenant_request_binding.py`).
-    canonical = agent_signing.canonical_string(
-        timestamp=timestamp,
-        organization_id=organization_id,
-        connection_id=connection_id,
-        actor_via=actor_via,
-        method=request.method,
-        path=str(request.scope.get("path") or ""),
-        query=bytes(request.scope.get("query_string") or b"").decode("latin-1"),
-    )
-    if not agent_signing.verify(signature, canonical, keys):
-        return _refuse_agent("signature")
-    if not agent_signing.timestamp_is_fresh(timestamp):
-        return _refuse_agent("timestamp")
+    signed = _verify_signed_request(request, keys)
+    if isinstance(signed, str):
+        return _refuse_agent(signed)
+    organization_id, connection_id, actor_via = signed
 
-    # 3. GET only, and the matched route template is in MCP_ROUTES. A missing
-    # route is refused BEFORE `_route_template` runs, so its URL fallback is
-    # never reached from here.
+    # 3. GET only, and the matched route template is in MCP_ROUTES. The
+    # template comes from `_matched_template`, which has no URL fallback.
     method = request.method.upper()
     if method != "GET":
         return _refuse_agent("method")
     if request.scope.get("route") is None or (
-        method, _route_template(request)
+        method, _matched_template(request)
     ) not in agent_oauth.MCP_ROUTES:
         return _refuse_agent("route")
 
     # 4. The live connection, read in the SIGNED organization.
-    try:
-        connection = await agent_tokens.read_live_connection(
-            organization_id, connection_id,
-        )
-    except Exception:
-        # A failed read is a refusal, not a 500. Ids only in the log.
-        _log.exception("auth.agent_connection_read_failed")
-        return _anonymous()
+    connection = await _read_connection(organization_id, connection_id)
     if connection is None or not connection.member_email:
         return _refuse_agent("connection")
     ids = {"connection_id": connection.connection_id}
-    # The organization is the ROW's. The signed one must equal it. The read
-    # already filters on it, and this check holds if a read ever does not.
+    # The organization is the one the ROW holds (the read selects it). The
+    # signed one must equal it. The read also filters on it, so this check
+    # holds even for a read that runs as a role which bypasses RLS and lost
+    # its predicate (R8: test_mcp_edge_authority.py).
     if connection.organization_id != organization_id:
         return _refuse_agent("connection_org", **ids)
 
@@ -565,7 +616,7 @@ async def _agent_user(request: Request) -> UserContext:
     if (
         not connection.client_origin
         or actor_via != expected_via
-        or not agent_oauth.ACTOR_VIA_PATTERN.match(expected_via)
+        or not agent_oauth.ACTOR_VIA_PATTERN.fullmatch(expected_via)
     ):
         return _refuse_agent("actor_via", **ids)
 
@@ -886,11 +937,21 @@ def _route_template(request: Request) -> str:
     for the effective path of the route that matched. Fence:
     ``tests/unit/test_route_template_prefixes.py``.
     """
+    return _matched_template(request) or request.url.path
+
+
+def _matched_template(request: Request) -> str | None:
+    """The template of the route that matched, or None. No URL fallback.
+
+    :func:`_route_template` without its last resort, which reads
+    ``request.url``. Branch 0 of :func:`get_current_user` calls this one,
+    because it reads no host input (``test_tenant_request_binding.py``).
+    """
     route = request.scope.get("route")
     full = _effective_template(request, route)
     if full:
         return full
-    return getattr(route, "path", None) or request.url.path
+    return getattr(route, "path", None)
 
 
 #: ``id(route)`` → (the route, the contexts FastAPI serves it at). The route

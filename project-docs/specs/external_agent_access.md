@@ -1,6 +1,8 @@
 # External agent access — Metorite as an MCP server
 
-**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-12. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`). EA-3a is BUILT and dark on the branch `feat/ws55-ea3-mcp-read-tools`, and it is not merged. EA-3b is next. EA-2b, EA-3b, EA-3c and EA-4 to EA-11 are not built.**
+**Status: DECIDED (D97, 2026-10-10). Updated 2026-10-12. EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
+
+**EA-3a is BUILT, with fix round 1, and dark on the branch `feat/ws55-ea3-mcp-read-tools`. It is not merged. EA-3b is next. EA-2b, EA-3b, EA-3c and EA-4 to EA-11 are not built.**
 
 **EA-3, 2026-10-11.** The spec audit of EA-3 gave NO-GO. The engineering decisions EA3-1 to EA3-8 (§6.1) answer it. EA-3 now splits into EA-3a (the gateway) and EA-3b (the edge), with EA-3c as a later follow-up.
 
@@ -272,7 +274,7 @@ The rule is `member's live access ∩ effective scopes ∩ agent scope`. A scope
 5. Check that the effective scopes hold the scope of the tool. If not, answer 403 `insufficient_scope` (§9.6).
 6. Call the gateway with a signed request (§10.1). A gateway 401 becomes an MCP 401.
 
-**At the gateway (EA-3a), in branch 0 of `get_current_user`:** the seven steps of §10.1. Its steps 5 and 6 are the seat check. "Seat" means that `resolve_access` returns `is_active` true, and that the member holds an active membership in the organization of the connection.
+**At the gateway (EA-3a), in branch 0 of `get_current_user`:** the seven steps of §10.1. Its steps 6 and 7 are the seat check. "Seat" means that `resolve_access` returns `is_active` true, and that the member holds an active membership in the organization of the connection.
 
 **Why the gateway checks the seat, and not the edge.** The edge may not import the Console seat reader (`tests/unit/test_console_dependency_boundary.py`). The edge may not bind a tenant (`tests/unit/test_agent_oauth_server.py:766`). The gateway already resolves both on every request.
 
@@ -494,6 +496,8 @@ v1
 - The path is the URL path as sent. The gateway reads it from the ASGI scope, `scope["path"]`.
 - The query is its pairs, sorted by key and then by value, and encoded with `urllib.parse.urlencode`. The gateway parses `scope["query_string"]` with `keep_blank_values=True` and encodes it again the same way. With no pairs, the line is the path alone, with no `?`.
 - The gateway never reads `request.url`, because Starlette builds it with the `Host` header. Branch 0 reads no host input. The fence is a source scan in `tests/unit/test_tenant_request_binding.py`.
+- The gateway refuses a query with a repeated key. Starlette keeps the last value of a key, and the signed string sorts every pair. So a replay with the pairs in another order would read another value under the same signature. The edge cannot sign such a query either.
+- The gateway refuses a query that is not ASCII, or whose `%XX` sequences do not decode as UTF-8. Then `%FF` and `%FE` cannot share one signature.
 - A GET has an empty body, so its hash is the SHA-256 of zero bytes.
 
 **The keys.**
@@ -517,19 +521,23 @@ v1
 
 **The trigger.** Branch 0 runs before branch 1 when the request carries any header whose name starts with `X-Agent-`. It also runs when `X-Actor-Via`, after strip and lower case, starts with `mcp:`.
 
-**The seven steps.** Any failure returns the anonymous context with `NO_ACCESS`, so default-deny answers 401.
+**The seven steps, in the order the code runs them.** Any failure returns the anonymous context with `NO_ACCESS`, so default-deny answers 401.
 
 1. The flag `agent_access_enabled` is on, and a usable key is set.
 2. The `kid` names a usable key, and `hmac.compare_digest` matches the signature. The timestamp is within 60 seconds of the gateway clock, before or after.
-3. The method is `GET`. The pair of the method and `_route_template(request)` (`deps.py:679`) is in `MCP_ROUTES`.
-4. A new function in `agent_tokens.py` reads the connection by its id. It reuses `_session` and `_BIND_SQL`, and it binds the signed organization. The connection must be live: not revoked, and not past `expires_at`.
-5. The member email comes from that row, never from a header. Branch 0 then calls `_with_resolved_access` with that email.
-6. The resolved organization must equal the signed organization, and `access.is_active` must be true.
-7. `X-Actor-Via` must equal `agent_oauth.actor_via_for(client_origin)` for that row, and match `ACTOR_VIA_PATTERN`.
+3. The method is `GET`. The pair of the method and the matched route template (`deps._matched_template`, which has no URL fallback) is in `MCP_ROUTES`.
+4. A function in `agent_tokens.py`, `read_live_connection`, reads the connection by its id. It reuses `_session` and `_BIND_SQL`, and it binds the signed organization. The connection must be live: not revoked, and not past `expires_at`. The read returns the organization of the ROW, and that organization must equal the signed one.
+5. `X-Actor-Via` must equal `agent_oauth.actor_via_for(client_origin)` for that row, and match `ACTOR_VIA_PATTERN`.
+6. The member email comes from that row, never from a header. Branch 0 then calls `_with_resolved_access` with that email.
+7. The resolved organization must equal the organization of the row, and `access.is_active` must be true.
+
+**Why this order.** The first draft checked the stamp last. The code checks the stamp and the two organization checks before the member resolve, because the resolve binds a tenant. So a request that fails on a stamp or an organization never binds one. A refusal after the resolve also clears the tenant it bound.
+
+**An outage is a 503.** A pool or connect timeout in the connection read (step 4) or in the member resolve (step 6) answers the 503 of `_with_resolved_access`, with `Retry-After`. It never falls through to another branch. A 401 there would make an MCP client drop a good token and sign in again. Every other failed read is a refusal.
 
 On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind_session_member`, because no route in `MCP_ROUTES` calls a model.
 
-**`actor_via_for`.** EA-3a adds it to `agent_oauth.py`. It returns `mcp:` plus the lower-case ASCII host of the origin, with no scheme and no port. When that value does not match `ACTOR_VIA_PATTERN`, it returns `mcp:` plus the first 16 hex characters of the SHA-256 of the origin. An empty `client_origin` fails step 7.
+**`actor_via_for`.** EA-3a adds it to `agent_oauth.py`. It returns `mcp:` plus the lower-case ASCII host of the origin, with no scheme and no port. When that value does not match `ACTOR_VIA_PATTERN`, it returns `mcp:` plus the first 16 hex characters of the SHA-256 of the origin. An empty `client_origin` fails step 5.
 
 **One copy of the pattern.** `acb_auth` may not import the gateway. So `ACTOR_VIA_PATTERN` moves to `agent_oauth.py`, and `core.py:79` imports it from there. One copy stays.
 
@@ -731,6 +739,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - Dynamic Client Registration and metadata fetches are open to abuse. The limits in §10.2 are proposals.
 - Branch 0 of §10.1 changes the gateway auth path. It is the riskiest change in this spec. It needs the adversarial review of EA-11. It needs no `guard-write` grant, because `plan-guard.mjs` protects no file in `acb_auth`.
 - Branch 0 is reachable from the internet, because the Caddy block of `api.metorite.com` strips no header. The HMAC is the boundary. The edge calls the gateway on loopback, so EA-10 can also strip `X-Agent-*` at Caddy. EA-10 decides that.
+- The gateway does not check the scopes of a connection. EA3-3 puts that check at the edge. So a thief with the signing key can read Projects as any member who holds a live connection, whatever its scopes. The key is the boundary. Rotate it at once on any suspicion (§10.1, HANDOFF H-301).
 - A replay inside the 60 second window repeats an identical GET and changes nothing. A write tool needs a nonce, so EA-6 must add one first.
 - The edge allows only the origin of the issuer in `Origin` (§9.6). A client that runs in a browser on another origin gets 403. EA-11 checks the real clients.
 - Data that an agent reads goes to its provider. That is the customer's choice, and it is not a Metorite sub-processor. The terms page must say so. This is an owner and legal point (work_plan.md WS-37).
@@ -778,10 +787,16 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
   - **The slices (§15).** EA-3 splits into EA-3a, EA-3b and EA-3c, with the acceptance D1 to D16 (§15.2) and the commands of §15.1. EA-3 needs no migration and does not stamp `last_used_at`.
   - **Other fixes.** §5.3 names the revision of each protocol rule. §4 carries anchors read again at `0bd098f18`. §5.1, §10.2 and §17 drop the internal bearer from the edge.
 - 2026-10-12 — EA-3a is built, and it ships dark. It is not merged. No migration.
-  - **The signed request.** `packages/acb_auth/acb_auth/agent_signing.py` holds the one canonical string, the HMAC, the `kid` and the key rules. Branch 0 of `get_current_user` (`acb_auth/deps.py`) runs the seven steps of §10.1, and it never falls through to branch 1. It checks step 7 before the member resolve, so a bad stamp binds no tenant. It also refuses a connection row whose organization differs from the signed one, and a GET that announces a body.
+  - **The signed request.** `packages/acb_auth/acb_auth/agent_signing.py` holds the one canonical string, the HMAC, the `kid` and the key rules. Branch 0 of `get_current_user` (`acb_auth/deps.py`) runs the seven steps of §10.1, and it never falls through to branch 1. It checks the stamp before the member resolve, so a bad stamp binds no tenant. It also refuses a connection row whose organization differs from the signed one, and a GET that announces a body.
   - **No host input.** Branch 0 reads the path and the query from the ASGI scope, not from `request.url` (§10.1). `test_tenant_request_binding.py` used to ban a `request` parameter on `get_current_user`. Its parameter set now holds `request`, and a source scan of branch 0 carries the rule instead. The orchestrator decided this edit of the fence on 2026-10-12.
   - **The allowlist and the stamp.** `MCP_ROUTES`, `actor_via_for` and `ACTOR_VIA_PATTERN` are in `agent_oauth.py`. `gateway/routes/projects/core.py` imports the pattern, so one copy stays.
   - **The store.** `agent_tokens.read_live_connection` reads a live connection in the signed organization. `lookup_token` now returns `scopes`, `pinned_projects`, `include_personal` and `client_origin`.
   - **The agent scope.** `AgentScope` holds `connection_id`, `scopes`, `pinned_projects`, `include_personal`, `client_origin` and `actor_via`. That is two fields more than §7.3 names, both from the connection row. `Visibility` narrows both arms of `task_visibility_clause` and the project clause, and with `agent` None every string is byte-identical to before.
   - **The Settings.** `agent_edge_signing_key`, `agent_edge_signing_key_previous` and `agent_edge_gateway_url`.
-  - **The fences.** `tests/unit/test_mcp_edge_signing.py` (D1, D2 and the gateway half of D14), `tests/unit/test_mcp_edge_authority.py` (D3, D4 and D14 on a real database as a non-privileged role) and `tests/unit/test_mcp_edge_coverage.py` (rules 1 and 2 of §9.5). EA-3b adds rules 3 and 4.
+  - **The fences.** `tests/unit/test_mcp_edge_signing.py` holds D1, D2 and the gateway half of D14. `tests/unit/test_mcp_edge_authority.py` holds D3 and D4, and it holds D14 on a real database as a non-privileged role. `tests/unit/test_mcp_edge_coverage.py` holds rules 1 and 2 of §9.5. EA-3b adds rules 3 and 4.
+- 2026-10-12 — Fix round 1 of EA-3a, after the independent verification and an adversarial review.
+  - **Stand-ins.** The Projects clauses read `agent` with `getattr`, so a Visibility-like stand-in with no `agent` field gives the old string. Two older unit tests pass such a stand-in.
+  - **The row's organization.** `read_live_connection` now returns the organization of the ROW, not its argument, so the comparison in branch 0 can refuse. An R8 test removes the read's predicate and runs as a role that bypasses RLS, and branch 0 still refuses.
+  - **An outage is a 503.** A pool or connect timeout in the connection read answers the same 503 as the member resolve, with `Retry-After`. Every other failed read stays a refusal.
+  - **The query.** Branch 0 refuses a repeated query key and a query that is not strict ASCII and UTF-8 (§10.1). The header checks use `fullmatch`, so a trailing newline never passes.
+  - **The fence scan.** The source scan of branch 0 follows aliases, keywords, bytes, built strings and every function that receives the request. Fourteen bypasses each turn it red.

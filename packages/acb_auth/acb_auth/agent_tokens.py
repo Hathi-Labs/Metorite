@@ -387,9 +387,12 @@ SELECT connection_id, organization_id, kind, client_id, resource, scope,
 #: predicate keeps that answer for a role that bypasses RLS too.
 #:
 #: ``pinned_projects`` comes back as ``text[]``, so a pin is a plain string
-#: and never an asyncpg ``UUID`` object.
+#: and never an asyncpg ``UUID`` object. ``organization_id`` comes back too:
+#: :func:`read_live_connection` reports the ROW's organization, never the
+#: one it was asked for, so branch 0 can compare the two.
 _CONNECTION_LIVE_SQL = """
-SELECT member_email, client_origin, scopes,
+SELECT CAST(organization_id AS TEXT) AS organization_id,
+       member_email, client_origin, scopes,
        CAST(pinned_projects AS TEXT[]) AS pinned_projects, include_personal
   FROM agent_connection
  WHERE id = CAST(:connection_id AS UUID)
@@ -1119,8 +1122,9 @@ async def read_live_connection(
     a revoked one and one past ``expires_at`` all give ``None``.
 
     ``member_email`` of the result is the ONE source of the member of a
-    signed request. Each call reads the row again and keeps no cache, so a
-    revoke takes effect on the next call.
+    signed request, and ``organization_id`` is the one the ROW holds. Each
+    call reads the row again and keeps no cache, so a revoke takes effect on
+    the next call.
     """
     from sqlalchemy import text
 
@@ -1143,7 +1147,8 @@ async def read_live_connection(
         return None
     return LiveConnection(
         connection_id=connection,
-        organization_id=org,
+        # The ROW's organization, never the argument: branch 0 compares them.
+        organization_id=str(row.organization_id),
         member_email=(row.member_email or "").strip().lower(),
         client_origin=row.client_origin or "",
         scopes=tuple(row.scopes or ()),

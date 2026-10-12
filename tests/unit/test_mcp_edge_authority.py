@@ -59,6 +59,7 @@ from acb_auth import (
     agent_tokens,
     require_authenticated,
 )
+from acb_auth import access as access_module
 from acb_auth.access import invalidate as invalidate_access
 from acb_auth.permissions import build_access
 from acb_common import get_settings
@@ -194,6 +195,22 @@ class TestTheHumanPathIsByteIdentical:
     def test_agent_none_is_the_default(self):
         assert Visibility(unrestricted=False, email="", groups=()).agent is None
 
+    @pytest.mark.parametrize("unrestricted", [False, True])
+    def test_a_stand_in_with_no_agent_attribute_gives_the_old_sql(self, unrestricted):
+        """Callers and tests hand the seam a Visibility-like stand-in with no
+        ``agent`` field (``test_projects_analytics_throughput.py``,
+        ``test_subtasks_s5.py``). It must give the old string, not raise."""
+        stand_in = SimpleNamespace(
+            unrestricted=unrestricted, email="dev@golden.test",
+            groups=("group:ops",), organization_id=GOLDEN_ORG)
+        kind = "unrestricted" if unrestricted else "restricted"
+        assert task_visibility_clause(stand_in) == GOLDEN[
+            f"task_visibility_clause({kind})"][0]
+        assert task_visibility_clause(stand_in, "x") == GOLDEN[
+            f"task_visibility_clause({kind}, 'x')"][0]
+        assert Visibility.project_clause(stand_in) == GOLDEN[
+            f"{kind}.project_clause()"][0]
+
 
 def _scope(**over: Any) -> AgentScope:
     values: dict[str, Any] = {
@@ -290,6 +307,7 @@ INTERNAL = "mcp-authority-internal-token"
 MEMBER = "agent-member@mcpauth.test"
 READER = "org-reader@mcpauth.test"
 OTHER = "someone-else@mcpauth.test"
+B_MEMBER = "b-member@mcpauth.test"
 OWNER = "owner@mcpauth.test"
 ORIGIN = "https://client.example"
 VIA = "mcp:client.example"
@@ -489,9 +507,15 @@ def world():
     w.c["suspend"] = a.connection(MEMBER)
     w.c["expired"] = a.connection(MEMBER, expires="now() - interval '1 second'")
     w.c["b"] = b.connection(MEMBER)
+    b.member(B_MEMBER, ["feature:projects"])
+    w.c["b_member"] = b.connection(B_MEMBER)
     w.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
+    #: The superuser of the catalog. It BYPASSES RLS, which is the point of
+    #: the one test that uses it.
+    w.admin_dsn = admin_url.set(database=dedicated).render_as_string(
+        hide_password=False)
     w.seeder_a = a
     yield w
 
@@ -509,6 +533,11 @@ def armed(monkeypatch, world):
     monkeypatch.setenv("IDENTITY_CUTOVER", "1")
     monkeypatch.setenv("ALLOWED_EMAIL_DOMAIN", "mcpauth.test")
     monkeypatch.delenv("GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS", raising=False)
+    # `access._tables_missing` is a process-wide latch. An earlier suite that
+    # reached a database with no access tables sets it, and every member then
+    # resolves to the legacy mapping. Clear it here and restore it after, so
+    # this suite does not depend on the order of the run.
+    monkeypatch.setattr(access_module, "_tables_missing", False)
     invalidate_access()
     yield world
     invalidate_access()
@@ -525,23 +554,24 @@ def _gateway() -> FastAPI:
     return app
 
 
-async def _send(world, url: str, headers: dict[str, str]) -> httpx.Response:
+async def _send(world, url: str, headers: dict[str, str],
+                dsn: str | None = None) -> httpx.Response:
     async def _go() -> httpx.Response:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=_gateway()), base_url="http://gw",
         ) as client:
             return await client.get(url, headers=headers)
 
-    async with tenant_engine_scope(world.app_dsn):
+    async with tenant_engine_scope(dsn or world.app_dsn):
         return await asyncio.create_task(_go())
 
 
 async def _agent(world, connection: str, path: str, query: str = "",
-                 org: str | None = None) -> httpx.Response:
+                 org: str | None = None, dsn: str | None = None) -> httpx.Response:
     headers = agent_signing.signed_headers(
         KEY, organization_id=org or world.org_a, connection_id=connection,
         actor_via=VIA, method="GET", path=path, query=query)
-    return await _send(world, f"{path}?{query}" if query else path, headers)
+    return await _send(world, f"{path}?{query}" if query else path, headers, dsn)
 
 
 async def _human(world, email: str, path: str, query: str = "") -> httpx.Response:
@@ -782,3 +812,41 @@ class TestTheConnectionReads:
         finally:
             engine.dispose()
         assert (row.rolbypassrls, row.rolsuper) == (False, False)
+
+
+@_DB_GATE
+class TestTheRowOrganizationIsTheOneThatCounts:
+    """Fix round 1, P2-2. Branch 0 compares the SIGNED organization with the
+    one the connection ROW holds. Normally the read's own predicate and RLS
+    make the two agree. This class removes both: the read loses its
+    ``organization_id = :org`` line (a mutated copy of the SQL string), and it
+    runs as the catalog's superuser, which bypasses RLS. Only the comparison
+    in branch 0 is then left to refuse."""
+
+    _PREDICATE = "   AND organization_id = CAST(:org AS UUID)\n"
+
+    def _lenient(self, monkeypatch) -> None:
+        assert agent_tokens._CONNECTION_LIVE_SQL.count(self._PREDICATE) == 1
+        monkeypatch.setattr(
+            agent_tokens, "_CONNECTION_LIVE_SQL",
+            agent_tokens._CONNECTION_LIVE_SQL.replace(self._PREDICATE, ""))
+
+    async def test_the_lenient_read_reports_the_rows_organization(self, armed, monkeypatch):
+        self._lenient(monkeypatch)
+        async with tenant_engine_scope(armed.admin_dsn):
+            found = await agent_tokens.read_live_connection(
+                armed.org_a, armed.c["b_member"])
+        assert found is not None, "the lenient read found org B's row"
+        assert found.organization_id == armed.org_b, "the ROW's org, not the argument"
+
+    async def test_a_signed_org_that_is_not_the_rows_is_refused(self, armed, monkeypatch):
+        self._lenient(monkeypatch)
+        # Control: signed as its own org, the connection works on this path.
+        ok = await _agent(armed, armed.c["b_member"], "/auth/me",
+                          org=armed.org_b, dsn=armed.admin_dsn)
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["email"] == B_MEMBER
+        # Signed as org A: the row and the member both say org B.
+        r = await _agent(armed, armed.c["b_member"], "/auth/me",
+                         org=armed.org_a, dsn=armed.admin_dsn)
+        assert r.status_code == 401, r.text

@@ -72,9 +72,9 @@ MIN_KEY_BYTES = 32
 #: The SHA-256 of zero bytes: the body hash of every GET.
 EMPTY_BODY_SHA256 = hashlib.sha256(b"").hexdigest()
 
-_KID = re.compile(r"^[0-9a-f]{8}$")
-_HEX = re.compile(r"^[0-9a-f]{64}$")
-_DIGITS = re.compile(r"^[0-9]{1,12}$")
+_KID = re.compile(r"[0-9a-f]{8}")
+_HEX = re.compile(r"[0-9a-f]{64}")
+_DIGITS = re.compile(r"[0-9]{1,12}")
 
 
 # ── Keys ────────────────────────────────────────────────────────────────────
@@ -135,15 +135,42 @@ def signing_key() -> str | None:
 # ── The canonical string ────────────────────────────────────────────────────
 
 
+def query_pairs(query: str | bytes) -> list[tuple[str, str]] | None:
+    """The pairs of a raw query string, or ``None`` when branch 0 must refuse it.
+
+    Strict on purpose. The raw query must be ASCII, and each ``%XX`` sequence
+    must decode as UTF-8, so ``%FF`` and ``%FE`` cannot both collapse to one
+    replacement character under one signature. A repeated key gives ``None``
+    too: Starlette keeps the LAST value of a key and the signed string sorts
+    every pair, so a replay with the pairs reordered would read another value
+    under the same signature. ``a=`` stays a pair (``keep_blank_values``).
+    """
+    try:
+        text = query.decode("ascii") if isinstance(query, bytes) else query
+        if not text.isascii():
+            return None
+        pairs = parse_qsl(text, keep_blank_values=True, encoding="utf-8",
+                          errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        return None
+    return pairs
+
+
 def canonical_target(path: str, query: str | Iterable[tuple[str, str]] = "") -> str:
     """``<path>?<sorted query>``, or the path alone when there is no pair.
 
     The pairs are sorted by key and then by value, and encoded with
-    ``urlencode``. A query string is parsed with ``keep_blank_values=True``
-    first, so ``a=`` stays a pair.
+    ``urlencode``. A query string goes through :func:`query_pairs` first, and
+    one that it refuses raises ``ValueError``, so the edge cannot sign it.
     """
     if isinstance(query, str):
-        pairs = parse_qsl(query, keep_blank_values=True)
+        parsed = query_pairs(query)
+        if parsed is None:
+            raise ValueError("the query has a repeated key or a bad encoding")
+        pairs = parsed
     else:
         pairs = [(str(k), str(v)) for k, v in query]
     if not pairs:
@@ -193,7 +220,7 @@ def parse_signature_header(value: str | None) -> tuple[str, str] | None:
     if len(parts) != 3 or parts[0] != VERSION:
         return None
     kid, digest = parts[1], parts[2]
-    if not _KID.match(kid) or not _HEX.match(digest):
+    if not _KID.fullmatch(kid) or not _HEX.fullmatch(digest):
         return None
     return kid, digest
 
@@ -216,7 +243,7 @@ def verify(header_value: str | None, canonical: str, keys: Mapping[str, str]) ->
 
 def timestamp_is_fresh(value: str | None, *, now: float | None = None) -> bool:
     """True when *value* is whole Unix seconds within :data:`MAX_SKEW_S`."""
-    if not value or not _DIGITS.match(value):
+    if not value or not _DIGITS.fullmatch(value):
         return False
     current = time.time() if now is None else now
     return abs(current - int(value)) <= MAX_SKEW_S
@@ -276,6 +303,7 @@ __all__ = [
     "canonical_target",
     "key_id",
     "parse_signature_header",
+    "query_pairs",
     "signature",
     "signature_header",
     "signed_headers",

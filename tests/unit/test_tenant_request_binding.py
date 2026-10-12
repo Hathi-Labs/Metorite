@@ -212,18 +212,23 @@ def test_the_dependency_takes_no_host_derived_input_at_all(identity):
 # ``get_current_user`` holds the ``Request``: the request may be read only for
 # what the signed string covers, and the tenant comes from the connection row.
 
-#: The functions that make up branch 0. ``_route_template`` is the shared
-#: default-deny helper. Branch 0 refuses a request with no matched route BEFORE
-#: it calls it, so that helper's URL fallback cannot run from branch 0
-#: (:func:`test_branch_zero_checks_the_route_before_the_template`).
-_BRANCH_ZERO = ("get_current_user", "_is_agent_request", "_one_header", "_agent_user")
+#: The functions that make up branch 0, by name in ``acb_auth.deps``. The scan
+#: reads each one, and any function that receives the request must be here.
+_BRANCH_ZERO = (
+    "get_current_user", "_is_agent_request", "_one_header", "_agent_user",
+    "_verify_signed_request", "_matched_template", "_effective_template",
+)
 
-#: What branch 0 may read from the request, and nothing else.
-_REQUEST_ATTRS = frozenset({"method", "headers", "scope"})
-#: ``route`` is the matched route. ``path`` and ``query_string`` are the
-#: signed path and query (§10.1). Never ``server``, ``client`` or ``headers``
-#: by scope key.
-_SCOPE_KEYS = frozenset({"route", "path", "query_string"})
+#: The only attribute chains a scanned function may take from the request (or
+#: from a name assigned from it). ``()`` is the request itself.
+_ALLOWED_CHAINS = frozenset({
+    (), ("method",), ("method", "upper"),
+    ("headers",), ("headers", "get"), ("headers", "getlist"),
+    ("scope",), ("scope", "get"),
+})
+#: ``route`` and ``app`` find the matched route template. ``path`` and
+#: ``query_string`` are the signed path and query (§10.1).
+_SCOPE_KEYS = frozenset({"route", "app", "path", "query_string"})
 #: The four signed headers, and the two that tell branch 0 to refuse a body.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
@@ -234,14 +239,24 @@ _HOST_NAMES = frozenset({
     "host", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
     "x-real-ip", "forwarded", "origin", "referer", "server", "client",
 })
+#: A function outside branch 0 that may receive the request's SCOPE, with the
+#: reason. Nothing outside branch 0 may receive the request or its headers.
+_SCOPE_HANDOFFS = {
+    "matches": (
+        "Starlette's route matcher, in `_effective_template`. It answers which "
+        "route FastAPI matched, from the scope's type, path and method."
+    ),
+}
 
 
-def _function_tree(name: str):
-    import ast
+def _sources() -> dict[str, str]:
     import inspect
     import textwrap
 
-    return ast.parse(textwrap.dedent(inspect.getsource(getattr(deps, name))))
+    return {
+        name: textwrap.dedent(inspect.getsource(getattr(deps, name)))
+        for name in _BRANCH_ZERO
+    }
 
 
 def _docstring_ids(tree) -> set[int]:
@@ -256,14 +271,25 @@ def _docstring_ids(tree) -> set[int]:
     return out
 
 
-def _literal(node) -> str | None:
-    """The string a header or key argument names, or None when it is computed."""
+def _fold(node) -> str | None:
+    """The text a constant, a ``+`` of constants, an f-string of constants or
+    an ``agent_signing.HEADER_*`` name spells. None when it is computed."""
     import ast
 
     from acb_auth import agent_signing
 
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return node.value
+        if isinstance(node.value, bytes):
+            return node.value.decode("latin-1")
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _fold(node.left), _fold(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = [_fold(v) for v in node.values]
+        return None if any(p is None for p in parts) else "".join(parts)  # type: ignore[arg-type]
     if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
             and node.value.id == "agent_signing"):
         value = getattr(agent_signing, node.attr, None)
@@ -271,162 +297,260 @@ def _literal(node) -> str | None:
     return None
 
 
-def _is_request(node, attr: str | None = None) -> bool:
+def _chain(node, aliases: dict[str, tuple[str, ...]]) -> tuple[str, ...] | None:
+    """The attribute chain of *node* from the request, or None."""
     import ast
 
-    if attr is None:
-        return isinstance(node, ast.Name) and node.id == "request"
-    return (isinstance(node, ast.Attribute) and node.attr == attr
-            and _is_request(node.value))
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    if isinstance(node, ast.Attribute):
+        base = _chain(node.value, aliases)
+        return None if base is None else (*base, node.attr)
+    return None
 
 
-def _key_is(key: str | None, allowed: frozenset[str]) -> bool:
-    return key is not None and key.lower() in allowed
+def _callee(call) -> str:
+    return getattr(call.func, "id", None) or getattr(call.func, "attr", "") or ""
 
 
-def _check_strings(name: str, node, docstrings: set[int]) -> list[str]:
-    """(1) No string anywhere names a host-derived input."""
-    import ast
+class _FunctionScan:
+    """The checks of one function. Each finding names the function and line."""
 
-    if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and id(node) not in docstrings
-            and node.value.strip().lower() in _HOST_NAMES):
-        return [f"{name} names {node.value!r}"]
-    return []
+    def __init__(self, name: str, source: str, sources: dict[str, str]) -> None:
+        import ast
+
+        self.name = name
+        self.sources = sources
+        self.tree = ast.parse(source)
+        self.docstrings = _docstring_ids(self.tree)
+        self.parents = {
+            child: parent
+            for parent in ast.walk(self.tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        self.aliases: dict[str, tuple[str, ...]] = {"request": ()}
+        for node in ast.walk(self.tree):  # `h = request.headers` and the like
+            if isinstance(node, ast.Assign):
+                chain = _chain(node.value, self.aliases)
+                if chain is not None:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            self.aliases[target.id] = chain
+        self.problems: list[str] = []
+
+    def flag(self, node, what: str) -> None:
+        self.problems.append(f"{self.name}:{getattr(node, 'lineno', '?')} {what}")
+
+    def run(self) -> list[str]:
+        import ast
+
+        for node in ast.walk(self.tree):
+            self.strings(node)
+            if isinstance(node, ast.Attribute):
+                self.attribute(node)
+            if isinstance(node, ast.Call):
+                self.call(node)
+            if isinstance(node, ast.Subscript):
+                self.subscript(node)
+            if isinstance(node, ast.Compare):
+                self.membership(node)
+        return self.problems
+
+    def strings(self, node) -> None:
+        """No string or bytes literal, and no ``+`` or f-string of them, names
+        a host-derived input."""
+        import ast
+
+        if isinstance(node, (ast.Constant, ast.BinOp, ast.JoinedStr)):
+            if id(node) in self.docstrings:
+                return
+            text = _fold(node)
+            if text is not None and text.strip().lower() in _HOST_NAMES:
+                self.flag(node, f"names {text!r}")
+
+    def attribute(self, node) -> None:
+        """Every attribute chain from the request ends inside the allowlist."""
+        import ast
+
+        parent = self.parents.get(node)
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            return  # only the outermost attribute of a chain is judged
+        chain = _chain(node, self.aliases)
+        if chain is not None and chain not in _ALLOWED_CHAINS:
+            self.flag(node, f"reads request.{'.'.join(chain)}")
+
+    def key(self, node, allowed: frozenset[str], what: str, *, param_ok: bool) -> None:
+        import ast
+
+        text = _fold(node)
+        if text is None:
+            fn = self.tree.body[0]
+            params = {a.arg for a in (*fn.args.args, *fn.args.kwonlyargs)}
+            if param_ok and isinstance(node, ast.Name) and node.id in params - {"request"}:
+                return  # `_one_header(request, name)`: its call sites are checked
+            self.flag(node, f"reads a computed {what}")
+        elif text.lower() not in allowed:
+            self.flag(node, f"reads {what} {text!r}")
+
+    def call(self, node) -> None:
+        chain = _chain(node.func, self.aliases)
+        if chain in (("headers", "get"), ("headers", "getlist")) and node.args:
+            self.key(node.args[0], _HEADERS, "header",
+                     param_ok=self.name == "_one_header")
+        if chain == ("scope", "get") and node.args:
+            self.key(node.args[0], _SCOPE_KEYS, "scope key", param_ok=False)
+        if _callee(node) == "_one_header":
+            if len(node.args) > 1:
+                self.key(node.args[1], _HEADERS, "header", param_ok=False)
+            else:
+                self.flag(node, "calls _one_header with no header name")
+        values = [*node.args, *(k.value for k in node.keywords)]
+        for value in values:
+            handed = _chain(value, self.aliases)
+            if handed is None:
+                continue
+            callee = _callee(node)
+            if handed == ():
+                if callee not in self.sources:
+                    self.flag(node, f"hands the request to {callee or '?'}")
+                elif "request" not in self.sources[callee].split("(", 1)[1].split(")", 1)[0]:
+                    self.flag(node, f"{callee} takes the request under another name")
+            elif handed == ("method",):
+                continue  # the method is a plain string, and it is signed
+            elif handed == ("scope",) and callee in _SCOPE_HANDOFFS:
+                continue
+            else:
+                self.flag(node, f"hands request.{'.'.join(handed)} to {callee or '?'}")
+
+    def subscript(self, node) -> None:
+        chain = _chain(node.value, self.aliases)
+        if chain == ("headers",):
+            self.key(node.slice, _HEADERS, "header", param_ok=False)
+        elif chain == ("scope",):
+            self.key(node.slice, _SCOPE_KEYS, "scope key", param_ok=False)
+        elif chain is not None:
+            self.flag(node, f"subscripts request.{'.'.join(chain) or '(itself)'}")
+
+    def membership(self, node) -> None:
+        for comparator in node.comparators:
+            chain = _chain(comparator, self.aliases)
+            if chain == ("headers",):
+                self.key(node.left, _HEADERS, "header", param_ok=False)
+            elif chain == ("scope",):
+                self.key(node.left, _SCOPE_KEYS, "scope key", param_ok=False)
 
 
-def _check_attributes(name: str, node, _docstrings: set[int]) -> list[str]:
-    """(2) Only request.method, request.headers and request.scope."""
-    import ast
-
-    if (isinstance(node, ast.Attribute) and _is_request(node.value)
-            and node.attr not in _REQUEST_ATTRS):
-        return [f"{name} reads request.{node.attr}"]
-    return []
-
-
-def _check_method_calls(name: str, node, _docstrings: set[int]) -> list[str]:
-    """(3) ``request.headers.get/getlist`` and ``request.scope.get`` name an
-    allowed key. Only ``_one_header`` reads a computed header name: its own
-    parameter, which (4) checks at every call site."""
-    import ast
-
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-        return []
-    owner, method = node.func.value, node.func.attr
-    key = _literal(node.args[0]) if node.args else None
-    if _is_request(owner, "headers"):
-        if method not in ("get", "getlist"):
-            return [f"{name} calls request.headers.{method}"]
-        if key is None and name == "_one_header":
-            return []
-        if not _key_is(key, _HEADERS):
-            return [f"{name} reads header {key!r}"]
-    if _is_request(owner, "scope") and key not in _SCOPE_KEYS:
-        return [f"{name} reads scope {key!r}"]
-    return []
-
-
-def _check_one_header_calls(name: str, node, _docstrings: set[int]) -> list[str]:
-    """(4) Every ``_one_header`` call names an allowed header."""
-    import ast
-
-    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "_one_header"):
-        key = _literal(node.args[1]) if len(node.args) > 1 else None
-        if not _key_is(key, _HEADERS):
-            return [f"{name} _one_header({key!r})"]
-    return []
-
-
-def _check_subscripts(name: str, node, _docstrings: set[int]) -> list[str]:
-    """(5) A subscript of the headers or the scope names an allowed key."""
-    import ast
-
-    if not isinstance(node, ast.Subscript):
-        return []
-    key = _literal(node.slice)
-    if _is_request(node.value, "headers") and not _key_is(key, _HEADERS):
-        return [f"{name} request.headers[{key!r}]"]
-    if _is_request(node.value, "scope") and key not in _SCOPE_KEYS:
-        return [f"{name} request.scope[{key!r}]"]
-    return []
-
-
-def _check_membership(name: str, node, _docstrings: set[int]) -> list[str]:
-    """(6) ``"x" in request.headers`` names an allowed header."""
-    import ast
-
-    if isinstance(node, ast.Compare) and any(
-            _is_request(c, "headers") for c in node.comparators):
-        key = _literal(node.left)
-        if not _key_is(key, _HEADERS):
-            return [f"{name} {key!r} in request.headers"]
-    return []
-
-
-def _check_handoffs(name: str, node, _docstrings: set[int]) -> list[str]:
-    """(7) The request goes to no other function, except the route template
-    and the branch-0 helpers themselves."""
-    import ast
-
-    if isinstance(node, ast.Call) and any(_is_request(a) for a in node.args):
-        callee = getattr(node.func, "id", getattr(node.func, "attr", ""))
-        if callee not in {*_BRANCH_ZERO, "_route_template"}:
-            return [f"{name} hands the request to {callee}"]
-    return []
-
-
-_CHECKS = (
-    _check_strings, _check_attributes, _check_method_calls,
-    _check_one_header_calls, _check_subscripts, _check_membership,
-    _check_handoffs,
-)
-
-
-def _branch_zero_problems() -> list[str]:
-    import ast
-
+def _scan(sources: dict[str, str]) -> list[str]:
     problems: list[str] = []
-    for name in _BRANCH_ZERO:
-        tree = _function_tree(name)
-        docstrings = _docstring_ids(tree)
-        for node in ast.walk(tree):
-            for check in _CHECKS:
-                found = check(name, node, docstrings)
-                problems += [f"{p} (line {getattr(node, 'lineno', '?')})" for p in found]
+    for name, source in sources.items():
+        problems += _FunctionScan(name, source, sources).run()
     return problems
 
 
 def test_branch_zero_reads_no_host_derived_input():
-    """The source of branch 0 reads no host, no forwarded header, no origin and
-    no referer, and never ``request.url``, ``request.base_url`` or
-    ``request.client``. It reads the method, the matched route, the signed path
-    and query, the four signed headers and the two body headers. Nothing else.
+    """A static scan of the functions in ``_BRANCH_ZERO``. What it proves:
 
-    Mutation, measured 2026-10-12: put ``request.headers["host"]`` into
-    ``_agent_user`` and this goes red.
+    * no string or bytes literal, and no ``+`` or f-string of literals, in
+      those functions names a host, a forwarded header, an origin, a referer,
+      ``server`` or ``client`` (docstrings aside);
+    * every attribute chain from the request, or from a name assigned from it,
+      is one of ``_ALLOWED_CHAINS``: the method, the headers, the scope, and
+      ``get``/``getlist`` on them. So no ``request.url``, ``base_url``,
+      ``client``, ``headers.raw`` or ``headers.items()``;
+    * every header read names one of ``_HEADERS``, and every scope read one of
+      ``_SCOPE_KEYS``, as a literal. A computed name is refused, except the
+      parameter of ``_one_header``, whose call sites must pass a literal;
+    * the request, as a positional or a keyword argument, goes only to a
+      function in ``_BRANCH_ZERO`` that takes it as ``request``, so the scan
+      follows it. Its scope goes only to ``_SCOPE_HANDOFFS``, and its headers
+      nowhere.
+
+    What it does not prove: code that reaches the request through a dynamic
+    path the AST cannot see, such as ``eval``. A review must still read a
+    change to these functions.
+
+    Mutations, measured 2026-10-12: :func:`test_the_scan_turns_red_for_each_bypass`.
     """
-    assert _branch_zero_problems() == []
+    assert _scan(_sources()) == []
 
 
-def test_the_scan_sees_what_it_scans():
-    """The scan is not vacuous: each scanned function reads the request."""
+def test_every_scanned_function_exists_and_reads_the_request():
+    """The scan is not vacuous: each name is a real function that reads the
+    request."""
     import ast
 
-    seen = {
-        name: any(_is_request(n) for n in ast.walk(_function_tree(name)))
-        for name in _BRANCH_ZERO
-    }
-    assert all(seen.values()), seen
+    for name, source in _sources().items():
+        tree = ast.parse(source)
+        assert any(isinstance(n, ast.Name) and n.id == "request"
+                   for n in ast.walk(tree)), name
 
 
-def test_branch_zero_checks_the_route_before_the_template():
+def test_branch_zero_never_calls_the_url_fallback():
+    """``_route_template`` falls back to ``request.url``. Branch 0 calls
+    ``_matched_template``, which has no fallback."""
     import inspect
 
     source = inspect.getsource(deps._agent_user)
-    refusal = source.index('request.scope.get("route") is None')
-    assert refusal < source.index("_route_template(request)")
+    assert "_route_template(" not in source
+    assert "_matched_template(request)" in source
+
+
+#: One bypass each, inserted into ``_agent_user``. B3 and B4 also add the
+#: helper they call, so the scan sees the helper too.
+_HELPER_CLIENT = "def _peer(request):\n    return request.client\n"
+_HELPER_SCOPE = "def _peer(scope):\n    return scope.get('client')\n"
+_BYPASSES = {
+    "B1 request.headers['host']": ("_h = request.headers['host']", None),
+    "B2 request.url.hostname": ("_h = request.url.hostname", None),
+    "B3 a helper that reads request.client": ("_h = _peer(request)", _HELPER_CLIENT),
+    "B3b the same helper, not scanned": ("_h = _peer(request)", None),
+    "B4 _peer(request.scope)": ("_h = _peer(request.scope)", _HELPER_SCOPE),
+    "B5 getattr(request, 'url')": ("_h = getattr(request, 'url')", None),
+    "B6 list(request.headers.raw)": ("_h = list(request.headers.raw)", None),
+    "B6b request.headers.items()": ("_h = dict(request.headers.items())", None),
+    "B7 request.scope['server']": ("_h = request.scope['server']", None),
+    "B8 helper(req=request)": ("_h = _helper(req=request)", None),
+    "B9 a bytes literal": ("_h = b'x-forwarded-host'", None),
+    "B10 a built header name": ("_h = request.headers.get('x-forwarded-' + 'host')", None),
+    "B11 an alias": ("_r = request\n    _h = _r.url", None),
+    "B12 request.scope.get('client')": ("_h = request.scope.get('client')", None),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_BYPASSES))
+def test_the_scan_turns_red_for_each_bypass(label):
+    """Each bypass goes into a COPY of the source, parsed with ``ast``. The real
+    file never changes."""
+    line, helper = _BYPASSES[label]
+    sources = _sources()
+    anchor = "    keys = agent_signing.usable_keys()\n"
+    assert sources["_agent_user"].count(anchor) == 1
+    sources["_agent_user"] = sources["_agent_user"].replace(
+        anchor, f"    {line}\n{anchor}")
+    if helper is not None:
+        sources["_peer"] = helper
+    problems = _scan(sources)
+    assert any(_EXPECT[label] in p for p in problems), (label, problems)
+
+
+#: The finding each bypass must produce, so a bypass cannot pass on a finding
+#: about something else.
+_EXPECT = {
+    "B1 request.headers['host']": "reads header 'host'",
+    "B2 request.url.hostname": "reads request.url.hostname",
+    "B3 a helper that reads request.client": "_peer:2 reads request.client",
+    "B3b the same helper, not scanned": "hands the request to _peer",
+    "B4 _peer(request.scope)": "hands request.scope to _peer",
+    "B5 getattr(request, 'url')": "hands the request to getattr",
+    "B6 list(request.headers.raw)": "reads request.headers.raw",
+    "B6b request.headers.items()": "reads request.headers.items",
+    "B7 request.scope['server']": "reads scope key 'server'",
+    "B8 helper(req=request)": "hands the request to _helper",
+    "B9 a bytes literal": "names 'x-forwarded-host'",
+    "B10 a built header name": "reads header 'x-forwarded-host'",
+    "B11 an alias": "reads request.url",
+    "B12 request.scope.get('client')": "reads scope key 'client'",
+}
 
 
 def _signed_app(monkeypatch, *, row_org: str, member_org: str):
