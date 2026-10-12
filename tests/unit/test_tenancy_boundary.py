@@ -138,6 +138,8 @@ EXPECTED_SCOPED = {
     "crm_source_profiles",
     "crm_pipelines",
     "crm_pipeline_stages",
+    # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
+    "crm_module_records",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

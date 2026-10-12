@@ -6,7 +6,7 @@
 --
 -- Nullable ADD COLUMN. No table scan, no lock of consequence. Safe to apply on a live system.
 --
--- Tables in this phase: 155
+-- Tables in this phase: 156
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -184,6 +184,10 @@ ALTER TABLE crm_pipelines
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE crm_source_profiles
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_module_records
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 

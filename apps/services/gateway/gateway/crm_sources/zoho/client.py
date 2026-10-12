@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -246,7 +247,19 @@ def _parse_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+#: A generic module entity is ``module:<ApiName>`` (CRM-Q6a). The API name
+#: goes into a URL path, so it must be a plain identifier.
+_GENERIC_PREFIX = "module:"
+_GENERIC_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+
 def _module(entity: str) -> str:
+    """The Zoho module API name of a canonical entity or a generic module."""
+    if entity.startswith(_GENERIC_PREFIX):
+        name = entity[len(_GENERIC_PREFIX):]
+        if not _GENERIC_NAME.match(name):
+            raise ValueError(f"{name!r} is not a Zoho module API name")
+        return name
     try:
         return ZOHO_MODULES[entity]
     except KeyError:
