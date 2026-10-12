@@ -43,10 +43,23 @@ The rules:
    ``mcp_always_confirm``. ``decide()`` stays the one gate.
 7. **No stdio.** Nothing here builds an ``MCPStdioTool`` (D85). Fence:
    ``tests/unit/test_no_mcp_stdio.py``.
+8. **Tools on demand** (WS-8c items 22 to 30). Each tool is built with MAF's
+   own progressive disclosure on. So the model sees three loaders
+   (``<prefix>_list_mcp_tools``, ``_load_tool`` and ``_unload_tool``) in
+   place of the full schemas. A Metorite meta-tool would be a second seam.
+   After the connect, a server with :data:`DIRECT_TOOLS_MAX` tools or fewer
+   whose schemas fit :data:`SERVER_SCHEMA_TOKENS` shows its tools directly.
+   When the servers of a run pass :data:`RUN_SCHEMA_TOKENS`, the largest
+   server that still shows full schemas changes to the loaders, until the
+   sum fits. The list loader returns an index only (:func:`mcp_index`). The
+   loaders carry ``egress.MCP_LOADER_KEY``, so they are egress, and the gate
+   lets them pass with no card. A loaded tool is an MCP function, and its
+   card rule holds. A run attaches :data:`MAX_SERVERS` servers or fewer.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
-``tests/unit/test_maf_mcp_org_scope_r8.py`` and
-``tests/unit/test_maf_mcp_confirm.py`` (H-299).
+``tests/unit/test_maf_mcp_org_scope_r8.py``,
+``tests/unit/test_maf_mcp_confirm.py`` (H-299) and
+``tests/unit/test_maf_mcp_budget.py`` (items 22 to 30).
 """
 from __future__ import annotations
 
@@ -57,11 +70,15 @@ import itertools
 import json
 import re
 import unicodedata
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger, get_settings
+
+if TYPE_CHECKING:
+    from agent_framework import FunctionInvocationContext
 
 _log = get_logger("orchestrator.maf_mcp")
 
@@ -82,6 +99,19 @@ MAX_TOOL_PAGES = 10
 #: The most tools that one server may expose. A server past it is left out,
 #: because hundreds of tools crowd the model and each one is egress.
 MAX_TOOLS = 128
+#: A server with this many tools or fewer may show its full schemas (WS-8c
+#: item 23). A server with more shows the three MAF loaders only.
+DIRECT_TOOLS_MAX = 12
+#: The most MCP schema tokens that one server may cost at run start (item 24).
+SERVER_SCHEMA_TOKENS = 1500
+#: The most MCP schema tokens that all servers of one run may cost (item 24).
+RUN_SCHEMA_TOKENS = 4000
+#: The most servers that one run attaches, in name order (item 28).
+MAX_SERVERS = 8
+#: The longest line of one tool in the index (item 25).
+INDEX_LINE_CHARS = 80
+#: The action of each MAF loader, in the order that MAF builds them.
+LOADER_ACTIONS = ("list", "load", "unload")
 #: The longest reason that a log line carries.
 _REASON_CHARS = 80
 #: The MCP hint names, from the ``annotations`` of one tool (MCP 2025-03-26).
@@ -409,6 +439,102 @@ def _log_tool_hints(tool: Any) -> None:
                   tool=str(remote)[:100], hints=info.hints)
 
 
+# ── Tools on demand (WS-8c items 22 to 30) ───────────────────────────────────
+
+
+def schema_tokens(functions: Any) -> int:
+    """What the schemas of *functions* cost the model, in tokens.
+
+    Measured as ``tests/unit/test_tool_schema_diet.py`` measures the platform
+    tools: ``skill_families.tool_json_schema`` and the tokenizer of
+    ``acb_llm.context.count_message_tokens``, one schema at a time."""
+    from acb_llm.context import count_message_tokens
+    from acb_skills.skill_families import tool_json_schema
+
+    return sum(
+        count_message_tokens([{"role": "system", "content": json.dumps(tool_json_schema(fn))}])
+        for fn in list(functions or [])
+    )
+
+
+def _loader_functions(tool: Any) -> list[Any]:
+    """The MAF loaders of *tool* that exist now. It never builds them."""
+    return list(getattr(tool, "__dict__", {}).get("_progressive_loader_functions") or [])
+
+
+def is_mcp_loader(function: Any) -> bool:
+    """True for a loader tool that :func:`_mark_loaders` marked."""
+    from acb_skills.egress import MCP_LOADER_KEY
+
+    props = getattr(function, "additional_properties", None)
+    return isinstance(props, Mapping) and props.get(MCP_LOADER_KEY) is True
+
+
+def _mark_loaders(loaders: list[Any]) -> list[Any]:
+    """Mark each MAF loader with ``egress.MCP_LOADER_KEY`` (item 26).
+
+    MAF builds the loaders with no ``_mcp_is_tool`` key, so the egress rule
+    and the gate would not see them as MCP tools. The key is Metorite's, so
+    the loops of MAF that read ``_mcp_is_tool`` do not change."""
+    from acb_skills.egress import MCP_LOADER_KEY
+
+    for fn in loaders:
+        props = dict(getattr(fn, "additional_properties", None) or {})
+        if props.get(MCP_LOADER_KEY) is not True:
+            props[MCP_LOADER_KEY] = True
+            fn.additional_properties = props
+    return loaders
+
+
+def _index_line(text: Any) -> str:
+    """The first line of *text* that holds a character, for the index.
+
+    Each control, format and line separator character is written as
+    ``\\uXXXX``, so a description cannot reorder the line or start a fake
+    one. The line is cut at :data:`INDEX_LINE_CHARS`."""
+    first = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    shown = "".join(
+        f"\\u{ord(ch):04x}" if unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs", "Zl", "Zp")
+        else ch
+        for ch in first
+    )
+    return shown if len(shown) <= INDEX_LINE_CHARS else shown[: INDEX_LINE_CHARS - 1] + "…"
+
+
+def mcp_index(tool: Any) -> list[dict[str, Any]]:
+    """The index that the list loader of *tool* returns (item 25).
+
+    Each entry holds the name to load, one line of the server's description
+    (:func:`_index_line`), and ``read_only``, and nothing else. MAF's own list
+    returns the full ``parameters()`` of each tool, so one list call cost what
+    the disclosure saved. ``read_only`` is true only when the gate would
+    answer ``mcp_read_only`` (item 13): the hints say read-only and not
+    destructive, and the server is not set to always confirm (H-300). The
+    model gets the full schema when it loads the tool. This is the two-tier
+    model of ``acb_skills.artifact_kit``."""
+    from acb_skills.permission_policy import mcp_needs_confirmation
+
+    always = server_always_confirms(tool)
+    loaders = {getattr(f, "name", "") for f in _loader_functions(tool)}
+    out: list[dict[str, Any]] = []
+    for fn in list(getattr(tool, "_functions", None) or []):
+        name = str(getattr(fn, "name", "") or "")
+        if not name or name in loaders:
+            continue
+        props = getattr(fn, "additional_properties", None) or {}
+        remote = str(props.get("_mcp_remote_name") or name)
+        meta = tool_meta(tool, remote)
+        text = (meta.description if meta is not None else "") or str(
+            getattr(fn, "description", "") or "")
+        out.append({
+            "name": name,
+            "description": _index_line(text),
+            "read_only": not always and not mcp_needs_confirmation(
+                meta.hints if meta is not None else None),
+        })
+    return out
+
+
 @functools.lru_cache(maxsize=1)
 def _run_scoped_tool_class() -> type:
     """``MCPStreamableHTTPTool``, with the connection owned by the run.
@@ -427,10 +553,23 @@ def _run_scoped_tool_class() -> type:
 
     Each session it opens gets the ``tools/list`` caps (:func:`_cap_list_tools`),
     and the tool keeps the hints of each listed tool (:func:`tool_meta`).
+
+    With progressive disclosure on (WS-8c items 25 and 26), each loader that
+    MAF builds is marked (:func:`_mark_loaders`), and the list loader returns
+    the index of :func:`mcp_index`, not the full schemas.
     """
     from agent_framework import MCPStreamableHTTPTool
 
     class RunScopedMCPTool(MCPStreamableHTTPTool):
+        def _progressive_loader_tools(self) -> list[Any]:
+            return _mark_loaders(super()._progressive_loader_tools())
+
+        def _list_progressive_mcp_tools(  # type: ignore[override]
+            self, ctx: FunctionInvocationContext,
+        ) -> list[dict[str, Any]]:
+            # The annotation names the class, so MAF passes the context in.
+            return mcp_index(self)
+
         @property
         def session(self) -> Any:
             return self.__dict__.get("_ws8c_session")
@@ -472,7 +611,43 @@ def _names_held(agent: Any) -> set[str]:
     held = {tool_name(t) for t in (opts.get("tools") or [])} if isinstance(opts, dict) else set()
     for tool in getattr(agent, "mcp_tools", None) or []:
         held |= {tool_name(f) for f in getattr(tool, "functions", None) or []}
+        held |= {tool_name(f) for f in getattr(tool, "_functions", None) or []}
     return {n for n in held if n}
+
+
+def _choose_disclosure(tool: Any) -> None:
+    """Turn the loaders off for a small server, after its connect (item 23).
+
+    A server with :data:`DIRECT_TOOLS_MAX` tools or fewer, whose full
+    schemas fit :data:`SERVER_SCHEMA_TOKENS`, shows its tools directly. Each
+    other server keeps the loaders. MAF reads the attribute each time it
+    reads ``functions``, so the change holds."""
+    functions = list(getattr(tool, "_functions", None) or [])
+    direct = (len(functions) <= DIRECT_TOOLS_MAX
+              and schema_tokens(functions) <= SERVER_SCHEMA_TOKENS)
+    tool.use_progressive_disclosure = not direct
+
+
+def _fit_run_budget(tools: list[Any]) -> None:
+    """Keep the MCP schemas of one run within :data:`RUN_SCHEMA_TOKENS` (item 24).
+
+    While the sum passes the budget, the largest server that still shows
+    full schemas changes to the loaders. Logs ``mcp.schema_budget`` with the
+    cost of each server, the servers that show the index, and the total."""
+    cost = {id(t): schema_tokens(t.functions) for t in tools}
+    while sum(cost.values()) > RUN_SCHEMA_TOKENS:
+        direct = [t for t in tools if not t.use_progressive_disclosure]
+        if not direct:
+            break
+        largest = max(direct, key=lambda t: cost[id(t)])
+        largest.use_progressive_disclosure = True
+        cost[id(largest)] = schema_tokens(largest.functions)
+    total = sum(cost.values())
+    _log.info("mcp.schema_budget", total=total,
+              servers={t.name: cost[id(t)] for t in tools},
+              index=[t.name for t in tools if t.use_progressive_disclosure])
+    if total > RUN_SCHEMA_TOKENS:
+        _log.warning("mcp.schema_over_budget", total=total, budget=RUN_SCHEMA_TOKENS)
 
 
 async def attach_mcp_tools(
@@ -492,14 +667,28 @@ async def attach_mcp_tools(
 
     *member_present* says that a member can answer a card in this run
     (H-299). It goes to the run's :class:`McpPermissionGate`. False, the
-    default, refuses each tool that needs a card."""
+    default, refuses each tool that needs a card.
+
+    WS-8c items 23 to 30: the run attaches :data:`MAX_SERVERS` servers or
+    fewer, in name order, and logs ``mcp.server_cap`` with the rest. Each
+    tool is built with progressive disclosure on, and
+    :func:`_choose_disclosure` and :func:`_fit_run_budget` keep the schemas
+    within the budget. The clash check reads every tool of the server, also
+    the tools that the loaders hide."""
     try:
         tool_cls = _run_scoped_tool_class()
+        from agent_framework._feature_stage import ExperimentalWarning
         from gateway import outbound_guard
     except ImportError as exc:
         _log.warning("mcp.client_unavailable", reason=type(exc).__name__)
         return []
 
+    # WS-8c item 28: 8 servers or fewer, in name order. The rest never open.
+    servers = sorted(servers, key=lambda s: s.name)
+    if len(servers) > MAX_SERVERS:
+        _log.warning("mcp.server_cap", cap=MAX_SERVERS,
+                     left_out=[s.name for s in servers[MAX_SERVERS:]])
+        servers = servers[:MAX_SERVERS]
     held = _names_held(agent)
     tools: list[Any] = []
     for server in servers:
@@ -514,15 +703,21 @@ async def attach_mcp_tools(
             continue
         tool = None
         try:
-            tool = tool_cls(
-                name=server.name,
-                url=server.url,
-                tool_name_prefix=server.name,
-                http_client=client,
-                static_headers=dict(server.headers) or None,
-                load_prompts=False,
-                request_timeout=REQUEST_TIMEOUT_S,
-            )
+            # WS-8c item 30: progressive disclosure is experimental in MAF, and
+            # its constructor raises ExperimentalWarning. Only that class is
+            # ignored, and only here. Nothing filters it for the process.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ExperimentalWarning)
+                tool = tool_cls(
+                    name=server.name,
+                    url=server.url,
+                    tool_name_prefix=server.name,
+                    http_client=client,
+                    static_headers=dict(server.headers) or None,
+                    load_prompts=False,
+                    request_timeout=REQUEST_TIMEOUT_S,
+                    use_progressive_disclosure=True,
+                )
             # H-300: the gate reads the server's flag from the tool.
             tool.__dict__[_ALWAYS_CONFIRM_KEY] = server.always_confirm is True
             async with asyncio.timeout(CONNECT_BUDGET_S):
@@ -535,7 +730,13 @@ async def attach_mcp_tools(
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
             await _close_one(tool, client, client_first=True)
             continue
-        exposed = {getattr(f, "name", "") for f in tool.functions}
+        _choose_disclosure(tool)
+        # WS-8c item 29: with disclosure on, ``functions`` holds the loaders
+        # only. So the check reads every tool of the server, and the names of
+        # the loaders, which the budget below may still turn on.
+        exposed = {getattr(f, "name", "") for f in (
+            *tool._functions, *tool.functions, *tool._progressive_loader_tools())}
+        exposed.discard("")
         clash = exposed & held
         if clash:
             _log.warning("mcp.name_collision", name=server.name, tools=sorted(clash)[:5])
@@ -548,6 +749,7 @@ async def attach_mcp_tools(
 
     if not tools:
         return []
+    _fit_run_budget(tools)
     # New lists, so an agent object that another run holds never changes.
     agent.mcp_tools = [*list(getattr(agent, "mcp_tools", None) or []), *tools]
     # One gate, with the facts of THIS attach. An older gate is replaced, so
@@ -611,6 +813,10 @@ CARD_TOO_LONG_TEXT = (
     "[not run: the arguments of {tool} are too long or too deeply nested "
     "for the member to see them all on the card, and a card that hides part "
     "of a call is not consent. Make a smaller call, or split it.]"
+)
+#: What the model reads when it calls a loader that no server of this run holds.
+LOADER_REFUSED_TEXT = (
+    "[not run: {tool} is not a loader of an MCP server of this run.]"
 )
 #: What the model reads when the gate cannot read the arguments at all.
 UNREADABLE_ARGUMENTS_TEXT = (
@@ -947,6 +1153,42 @@ def _owner_of(tools: list[Any], function: Any) -> tuple[str, str, ToolMeta | Non
     return str(getattr(owner, "name", "") or ""), remote, tool_meta(owner, remote)
 
 
+def _loader_owner(tools: list[Any], function: Any) -> tuple[str, str] | None:
+    """The server and the action of the loader *function*, or None.
+
+    The match is BY IDENTITY among the loaders of *tools*, so a loader of
+    another run, or a function that only carries the key, matches nothing."""
+    for tool in tools:
+        for index, loader in enumerate(_loader_functions(tool)):
+            if loader is function:
+                action = LOADER_ACTIONS[index] if index < len(LOADER_ACTIONS) else "?"
+                return str(getattr(tool, "name", "") or ""), action
+    return None
+
+
+async def _pass_or_refuse_loader(tools: list[Any], context: Any, function: Any,
+                                 call_next: Callable[[], Any]) -> None:
+    """The gate's path for a function that is not an MCP tool, and for a loader.
+
+    A function that is not a loader passes, because its own wrapper gates
+    it. List, load and unload show no card (WS-8c item 27): the gate finds
+    the loader BY IDENTITY among the loaders of an MCP tool of this run, and
+    logs ``mcp.loader`` with the server and the action. A loader that no tool
+    of the run holds is refused. A loaded tool is an MCP function, so its own
+    card rule decides each call to it."""
+    if function is None or not is_mcp_loader(function):
+        await call_next()
+        return
+    found = _loader_owner(tools, function)
+    if found is not None:
+        _log.info("mcp.loader", server=found[0], action=found[1])
+        await call_next()
+        return
+    name = _shown_name(getattr(function, "name", "") or "")
+    _log.warning("mcp.loader", server="(unknown server)", action="refused", tool=name)
+    context.result = LOADER_REFUSED_TEXT.format(tool=name)
+
+
 def _make_gate_class() -> type:
     from agent_framework import FunctionMiddleware
 
@@ -963,7 +1205,11 @@ def _make_gate_class() -> type:
         answers ``mcp_read_only``. *tools* are the MCP
         tools of the run, so the gate can find the server of a function.
         *member_present* is False for a run with no member, and then a tool
-        that needs a card is refused."""
+        that needs a card is refused.
+
+        WS-8c item 27: a loader of progressive disclosure passes with no
+        card, when it is a loader of a tool of this run
+        (:func:`_pass_or_refuse_loader`)."""
 
         def __init__(self, tools: list[Any] | None = None,
                      member_present: bool = False) -> None:
@@ -982,8 +1228,9 @@ def _make_gate_class() -> type:
             from orchestrator._tool_injection import _permission_gate
 
             function = getattr(context, "function", None)
-            if function is None or not _from_mcp(function):
-                await call_next()
+            if function is None or not _from_mcp(function) or is_mcp_loader(function):
+                # Not an MCP function, or a loader (WS-8c item 27).
+                await _pass_or_refuse_loader(self.tools, context, function, call_next)
                 return
             name = tool_name(function)
             arguments = _arguments(context)
@@ -1049,9 +1296,14 @@ __all__ = [
     "ALL_ORGS",
     "CARD_TOO_LONG_TEXT",
     "DENIED_TEXT",
+    "DIRECT_TOOLS_MAX",
+    "LOADER_REFUSED_TEXT",
+    "MAX_SERVERS",
     "NO_CARD_CHANNEL_TEXT",
     "NO_MEMBER_TEXT",
     "REDACTED",
+    "RUN_SCHEMA_TOKENS",
+    "SERVER_SCHEMA_TOKENS",
     "UNREADABLE_ARGUMENTS_TEXT",
     "McpPermissionGate",
     "McpServer",
@@ -1059,11 +1311,14 @@ __all__ = [
     "attach_mcp_tools",
     "card_text",
     "close_mcp_tools",
+    "is_mcp_loader",
     "is_native_maf_agent",
     "maf_mcp_org_allowed",
     "maf_mcp_orgs",
+    "mcp_index",
     "mcp_service",
     "redact_arguments",
+    "schema_tokens",
     "server_always_confirms",
     "tool_hints",
     "tool_meta",

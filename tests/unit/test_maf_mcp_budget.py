@@ -264,7 +264,7 @@ def _ctx(fn: Any, arguments: dict[str, Any] | None = None) -> Any:
 _FLEET = {
     "big": _many(128),
     "s2": _many(4, "a"), "s3": _many(5, "b"), "s4": _many(6, "c"), "s5": _many(7, "d"),
-    "s6": _many(8, "e"), "s7": _many(3, "f"), "s8": _many(2, "g"),
+    "s6": _many(7, "e"), "s7": _many(3, "f"), "s8": _many(2, "g"),
 }
 
 
