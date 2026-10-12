@@ -221,7 +221,7 @@ test.describe("The notice in other looks (acceptance 23)", () => {
   test.describe.configure({ timeout: 120_000 });
   test.skip(!SHOTS, "Set GMAIL_C2_SHOTS to a folder to save the visual review.");
 
-  const LOOKS = [
+  const LOOKS: { name: string; width: number; store: Record<string, string> }[] = [
     { name: "notice-light-1280", width: 1280, store: { theme: "light" } },
     {
       name: "notice-light-compact-accent-1280",
