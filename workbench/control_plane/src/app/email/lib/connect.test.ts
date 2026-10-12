@@ -64,6 +64,10 @@ import {
   mapMailAppInfo,
   reconnectProvider,
   shouldPollFirstSync,
+  GMAIL_RECONNECT_UNAVAILABLE,
+  moveFieldCopy,
+  moveTargets,
+  reconnectAction,
 } from "./connect";
 import { syncBanners } from "./onboarding";
 
@@ -396,7 +400,7 @@ describe("the reconnect banner sends the mailbox as login_hint (done-when 6)", (
   });
 
   it("the banner passes the address of the account", () => {
-    expect(PAGE).toContain("handleConnect(provider, attentionAccount.emailAddress)");
+    expect(PAGE).toContain("handleConnect(action.provider, attentionAccount.emailAddress)");
     expect(callbackBody(PAGE, "handleConnect")).toContain(
       "connectQuery(window.location.href, loginHint, importMonths)",
     );
@@ -710,7 +714,7 @@ describe("the range goes to the gateway (EM-T6d item 3)", () => {
   it("the reconnect target holds no import_months", () => {
     // The banner passes the address and nothing else, so handleConnect gets
     // no range, and connectQuery then sends none (D-EM-13).
-    expect(PAGE).toContain("onClick={() => handleConnect(provider, attentionAccount.emailAddress)}");
+    expect(PAGE).toContain("onClick={() => handleConnect(action.provider, attentionAccount.emailAddress)}");
     const q = new URLSearchParams(connectQuery("https://app.test/email", "ravi@contoso.test"));
     expect(q.get("login_hint")).toBe("ravi@contoso.test");
     expect(q.has("import_months")).toBe(false);
@@ -1385,13 +1389,202 @@ describe("gmail-folder-tree-shows-well-known-folders", () => {
 describe("reconnect-banner-names-the-provider", () => {
   it("the reconnect button names Outlook or Gmail (E-D3)", () => {
     expect(RECONNECT_LABEL).toEqual({ microsoft: "Reconnect Outlook", gmail: "Reconnect Gmail" });
+    // EM-G8-f1: the banner draws what `reconnectAction` decides, and the
+    // label of the button is still `RECONNECT_LABEL` of the provider.
+    expect(reconnectAction({ provider: "microsoft" }, BOTH)).toEqual({
+      kind: "button", provider: "microsoft", label: RECONNECT_LABEL.microsoft,
+    });
     expect(PAGE).toMatch(
-      /const provider = reconnectProvider\(attentionAccount\);[\s\S]*?onClick=\{\(\) => handleConnect\(provider, attentionAccount\.emailAddress\)\}\s*>\s*\{RECONNECT_LABEL\[provider\]\}/,
+      /const action = reconnectAction\(attentionAccount, liveConnect\);[\s\S]*?onClick=\{\(\) => handleConnect\(action\.provider, attentionAccount\.emailAddress\)\}\s*>\s*\{action\.label\}/,
     );
   });
 
   it("the words of the banner name no provider, so they hold for both", () => {
     expect(PAGE).toContain("reach the provider — message bodies, folders and statuses may be stale.");
     expect(PAGE).toContain('"The connection may have expired. Reconnect to restore full access."');
+  });
+});
+
+// ── WS-17 EM-G8-f1 (§12.3.12.7) — the known limits of the connect UI ─────────
+//
+// ⚠️ The move field and the banner are LIVE for Outlook (acceptance 3). Each
+// Outlook case below holds the words and the list of main, word for word.
+
+/** The folder tree of the store, as `mergeFolders` builds it. */
+const tree = (keys: Array<[string, string, "system" | "user"]>) =>
+  keys.map(([key, label, type]) => ({ key, label, type, icon: "Folder", count: 0 }));
+
+/** A Gmail tree: the well-known folders only, and no user label (EM-G8 M4). */
+const GMAIL_TREE = tree([
+  ["all", "All", "system"], ["inbox", "Inbox", "system"], ["sent", "Sent", "system"],
+  ["drafts", "Drafts", "system"], ["archive", "Archive", "system"], ["junk", "Junk", "system"],
+  ["trash", "Trash", "system"],
+]);
+
+/** An Outlook tree: the well-known folders, then the user folders. */
+const OUTLOOK_TREE = tree([
+  ["inbox", "Inbox", "system"], ["sent", "Sent", "system"], ["archive", "Archive", "system"],
+  ["junk", "Junk", "system"], ["trash", "Trash", "system"],
+  ["projects", "Projects", "user"], ["receipts", "Receipts", "user"],
+]);
+
+describe("gmail-move-field-suggests-labels", () => {
+  it("a Gmail mailbox suggests Archive, Junk and its labels (acceptance 1)", () => {
+    const labels = ["Newsletter", "Projects", "Receipts"];
+    expect(moveTargets("gmail", GMAIL_TREE, labels).map((t) => t.label)).toEqual([
+      "Archive", "Junk", "Newsletter", "Projects", "Receipts",
+    ]);
+  });
+
+  it("a label never comes twice, and never takes the place of Archive", () => {
+    const got = moveTargets("gmail", GMAIL_TREE, ["Archive", "projects", "Projects"]);
+    expect(got.map((t) => t.label)).toEqual(["Archive", "Junk", "projects"]);
+    expect(new Set(got.map((t) => t.key)).size).toBe(got.length);
+    expect(got.find((t) => t.label === "Archive")?.key).toBe("archive");
+  });
+
+  it("the labels of the store are the list, because `folders` holds no Gmail label", () => {
+    // A user folder in the tree of a Gmail mailbox is not a target. Only the
+    // labels are (D-G8-f1-1).
+    const stray = [...GMAIL_TREE, ...tree([["stray", "Stray", "user"]])];
+    expect(moveTargets("gmail", stray, []).map((t) => t.label)).toEqual(["Archive", "Junk"]);
+  });
+
+  it("the field reads the provider of the mailbox and the labels of the store", () => {
+    const field = moveFieldSource();
+    expect(field).toMatch(/moveTargets\(provider, folders, labels\)/);
+    expect(field).toContain("s.availableLabels");
+    expect(field).toMatch(/s\.accounts\.find\(\(a\) => a\.id === s\.selectedAccountId\)\?\.provider/);
+    // D-G8-f1-1: with no labels read, the field asks for them once.
+    expect(field).toMatch(/fetchLabels\(accountId\)/);
+  });
+});
+
+describe("outlook-move-field-keeps-its-folders", () => {
+  it("an Outlook mailbox suggests the list of main: Archive, Junk and its user folders", () => {
+    const main = OUTLOOK_TREE.filter((f) => f.type === "user" || f.key === "archive" || f.key === "junk")
+      .map((f) => ({ key: f.key, label: f.label }));
+    expect(moveTargets("microsoft", OUTLOOK_TREE, ["Newsletter", "Blue"])).toEqual(main);
+    expect(main.map((t) => t.label)).toEqual(["Archive", "Junk", "Projects", "Receipts"]);
+  });
+
+  it("an IMAP mailbox and a mailbox that the store does not know keep the folders", () => {
+    const main = moveTargets("microsoft", OUTLOOK_TREE, []);
+    expect(moveTargets("imap", OUTLOOK_TREE, ["X"])).toEqual(main);
+    expect(moveTargets(undefined, OUTLOOK_TREE, ["X"])).toEqual(main);
+  });
+});
+
+describe("gmail-move-field-creates-a-label", () => {
+  it("a Gmail mailbox reads the words of the table (E-D3, acceptance 2)", () => {
+    const copy = moveFieldCopy("gmail");
+    expect(copy.placeholder).toBe("Choose or type a label name");
+    expect(copy.createLabel("Receipts")).toBe("Create label “Receipts”");
+    expect(copy.createError).toBe("Couldn't create that label. Try again.");
+    expect(copy.createIcon).toBe("Tag");
+    expect(isKnownIcon(copy.createIcon)).toBe(true);
+  });
+
+  it("the button calls the existing route, and a Gmail create reads the labels again", () => {
+    const field = moveFieldSource();
+    expect(field).toContain("createEmailFolder(accountId, typed)");
+    expect(field).toMatch(/gmail \? fetchLabels\(accountId\) : fetchFolders\(accountId\)/);
+    expect(codeOnly(read("lib/api.ts"))).toMatch(
+      /createEmailFolder[\s\S]*?`\/email\/accounts\/\$\{accountId\}\/folders`,\s*\{ method: "POST"/,
+    );
+  });
+});
+
+describe("outlook-move-field-says-create-folder", () => {
+  it("an Outlook mailbox keeps the words of main", () => {
+    for (const provider of ["microsoft", "imap", undefined] as const) {
+      const copy = moveFieldCopy(provider);
+      expect(copy.placeholder).toBe("Choose or type a folder name");
+      expect(copy.createLabel("Receipts")).toBe("Create folder “Receipts”");
+      expect(copy.createError).toBe("Couldn't create that folder. Try again.");
+      expect(copy.createIcon).toBe("FolderPlus");
+    }
+  });
+});
+
+/** The source of `MoveFolderField`, up to the next top-level function. */
+function moveFieldSource(): string {
+  const src = codeOnly(read("components/automation/ai-settings/RulesTab.tsx"));
+  const start = src.indexOf("function MoveFolderField(");
+  expect(start, "MoveFolderField not found").toBeGreaterThan(-1);
+  const end = src.indexOf("\nfunction ", start + 1);
+  return src.slice(start, end === -1 ? undefined : end);
+}
+
+describe("move-field-reads-its-words-from-the-helper", () => {
+  it("MoveFolderField takes its words from moveFieldCopy, and RulesTab holds no literal (M4)", () => {
+    const field = moveFieldSource();
+    expect(field).toContain("moveFieldCopy(provider)");
+    expect(field).toContain("placeholder={copy.placeholder}");
+    expect(field).toContain("{copy.createLabel(typed)}");
+    expect(field).toContain("setErr(copy.createError)");
+    // The whole file, comments too: no second copy of the words.
+    const raw = read("components/automation/ai-settings/RulesTab.tsx");
+    expect(raw).not.toContain("Create folder");
+    expect(raw).not.toContain("Choose or type a folder name");
+    expect(raw).not.toContain("Couldn't create that folder");
+  });
+});
+
+describe("gmail-reconnect-banner-has-no-button-when-the-read-says-no", () => {
+  it("a Gmail mailbox shows the line, and no button, while the read says gmail: false", () => {
+    expect(GMAIL_RECONNECT_UNAVAILABLE).toBe("Gmail reconnect is not available right now.");
+    expect(reconnectAction({ provider: "gmail" }, MS_ONLY)).toEqual({
+      kind: "unavailable", text: GMAIL_RECONNECT_UNAVAILABLE,
+    });
+    // A failed read, or one that has not settled, is the same (fail closed).
+    expect(reconnectAction({ provider: "gmail" }, liveProviders(null)).kind).toBe("unavailable");
+    expect(reconnectAction({ provider: "gmail" }, liveProviders(undefined)).kind).toBe("unavailable");
+  });
+
+  it("a Gmail mailbox shows Reconnect Gmail while the read says gmail: true (acceptance 4)", () => {
+    expect(reconnectAction({ provider: "gmail" }, BOTH)).toEqual({
+      kind: "button", provider: "gmail", label: "Reconnect Gmail",
+    });
+  });
+
+  it("the page passes the live set of the capability read, and draws the line with no button", () => {
+    expect(PAGE).toContain("const liveConnect = liveProviders(connectProviders);");
+    expect(PAGE).toMatch(/const action = reconnectAction\(attentionAccount, liveConnect\);/);
+    expect(PAGE).toMatch(/if \(action\.kind !== "button"\) \{[\s\S]*?\{action\.text\}[\s\S]*?\}\s*return \(\s*<Button/);
+  });
+});
+
+describe("outlook-reconnect-banner-keeps-its-button", () => {
+  it("an Outlook mailbox keeps its button for each read (acceptance 3)", () => {
+    const button = { kind: "button", provider: "microsoft", label: "Reconnect Outlook" };
+    for (const read of [BOTH, MS_ONLY, liveProviders({ microsoft: false, gmail: true }), liveProviders(null)]) {
+      expect(reconnectAction({ provider: "microsoft" }, read)).toEqual(button);
+    }
+  });
+
+  it("a mailbox of another provider keeps the words of main", () => {
+    expect(reconnectAction({ provider: "imap" }, BOTH)).toEqual({
+      kind: "disconnect", text: "Disconnect it from the account menu, then connect it again.",
+    });
+  });
+});
+
+describe("provider-unavailable-copy", () => {
+  it("provider_unavailable has its own view with the words of the table, and no retry (acceptance 5)", () => {
+    const view = callbackView({ error: "provider_unavailable", accountId: null, email: null, provider: "gmail" });
+    expect(view).toEqual({
+      kind: "provider_unavailable",
+      title: "Gmail is not available yet",
+      body: "Gmail is not available for your account yet.",
+    });
+    expect(offersTryAgain(view.kind)).toBe(false);
+    expect(offersConnectAgain(view.kind)).toBe(false);
+    // The body names the account, never the organization (D-G8-f1-4).
+    expect(view.body).not.toMatch(/organization/i);
+  });
+
+  it("the callback page draws the kind with a tone of its own", () => {
+    expect(CALLBACK_PAGE).toMatch(/provider_unavailable: \{ icon: "Clock", className: "bg-muted text-muted-foreground" \}/);
   });
 });
