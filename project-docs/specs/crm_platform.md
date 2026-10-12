@@ -2463,7 +2463,7 @@ to CRM-I1.
 **Order.** CRM-X1, CRM-X3 and CRM-X4 run in parallel. CRM-X2 follows CRM-X1.
 None of the four needs a migration.
 
-### 19.11 CRM-X0: Setup, connection and start over (owner report, 2026-10-12)
+### 19.11 CRM-X0: Setup, connection and start over (owner report, 2026-10-12) (✅ built 2026-10-12)
 
 **The report.** The owner connected Zoho, disconnected it, and then tried to
 sync again. The CRM showed "This CRM has records, so its setup cannot change.

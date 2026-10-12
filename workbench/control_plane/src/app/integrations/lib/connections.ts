@@ -179,6 +179,11 @@ export interface PanelPlan {
   reconnectHref: string | null;
   disconnect: boolean;
   test: boolean;
+  /**
+   * The H-300 switch of an MCP server: `"edit"` for a manager, `"view"` for
+   * a reader, `null` on a row that is not an MCP server.
+   */
+  alwaysConfirm: "edit" | "view" | null;
   /** For a member row: who manages it, and where. */
   memberNote: string | null;
 }
@@ -203,6 +208,7 @@ export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
     reconnectHref: reconnectHref(row),
     disconnect: canManage && row.can_disconnect,
     test: canManage && row.kind === "mcp" && mcpName(row) !== null,
+    alwaysConfirm: row.kind === "mcp" && mcpName(row) !== null ? (canManage ? "edit" : "view") : null,
     memberNote:
       row.scope === "member" ? `${row.owner || "The owner"} manages this connection in ${app}.` : null,
   };
@@ -211,8 +217,9 @@ export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
 /** The `detail` fields as label and value pairs. Keys read as words. */
 export function detailRows(row: Connection): { label: string; value: string }[] {
   // `key_names` shows in the Remove confirm only (spec: names show nowhere else).
+  // `always_confirm` is drawn as a switch (H-300), not as a line of text.
   return Object.entries(row.detail ?? {})
-    .filter(([key]) => key !== "key_names")
+    .filter(([key]) => key !== "key_names" && key !== "always_confirm")
     .map(([key, value]) => ({
     label: key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
     value: String(value),
@@ -268,6 +275,24 @@ export function mcpName(row: Connection): string | null {
   return null;
 }
 
+// ── The "always confirm" switch of an MCP server (H-300) ──────────────────
+//
+// A server says which of its tools only read, and a hostile server can lie.
+// With the switch on, every tool of the server waits for a member to approve
+// it. The gateway sends it as `detail.always_confirm`, "true" or "false". A
+// row with no key reads as off, which is what the gateway reads too.
+
+export const ALWAYS_CONFIRM_LABEL = "Always ask before any tool runs";
+export const ALWAYS_CONFIRM_HELP =
+  "A server says which of its tools only read data. Metorite does not trust that claim. " +
+  "With this on, every tool of this server waits for a member to approve it.";
+
+/** The switch of an MCP row. `null` on a row that is not an MCP server. */
+export function mcpAlwaysConfirm(row: Connection): boolean | null {
+  if (row.kind !== "mcp") return null;
+  return row.detail?.always_confirm === "true";
+}
+
 // ── The MCP add form (spec §3.4) ──────────────────────────────────────────
 
 export interface McpForm {
@@ -279,6 +304,8 @@ export interface McpForm {
   /** Write-only. It goes out in the POST and is never drawn again. */
   headerValue: string;
   agentScope: string;
+  /** H-300. ON for a new server. */
+  alwaysConfirm: boolean;
 }
 
 export const EMPTY_MCP_FORM: McpForm = {
@@ -289,6 +316,7 @@ export const EMPTY_MCP_FORM: McpForm = {
   headerName: "",
   headerValue: "",
   agentScope: "*",
+  alwaysConfirm: true,
 };
 
 export function mcpFormReady(f: McpForm): boolean {
@@ -311,6 +339,7 @@ export function mcpBody(f: McpForm): Record<string, unknown> {
     headers,
     agent_scope: scope.length ? scope : ["*"],
     enabled: true,
+    always_confirm: f.alwaysConfirm,
   };
 }
 

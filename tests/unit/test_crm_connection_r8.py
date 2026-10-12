@@ -431,6 +431,8 @@ class _NewTokenEachTime(Zoho):
         self.fake.requests.append(request)
         if request.url.path.endswith("/token/revoke"):
             return httpx.Response(200, json={"status": "success"})
+        if request.url.path.endswith("/org"):  # CRM-X0: each callback reads it
+            return httpx.Response(200, json={"org": [{"id": "Z-A", "domain_name": "a"}]})
         self.issued += 1
         return httpx.Response(200, json={
             "access_token": f"ACCESS-R{self.issued}",

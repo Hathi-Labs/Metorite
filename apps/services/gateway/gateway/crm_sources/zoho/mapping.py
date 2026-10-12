@@ -802,6 +802,8 @@ def _org_summary(org: Mapping[str, Any] | None) -> dict[str, Any]:
     )
     multi = org.get("mc_status")
     return {
+        # CRM-X0: the Zoho org id. A new consent compares it (``org_identity``).
+        "id": text_value(org.get("id")),
         "edition": edition_of(org),
         "currency": text_value(org.get("iso_currency") or org.get("currency")),
         "multi_currency": multi if isinstance(multi, bool) else None,
@@ -809,6 +811,36 @@ def _org_summary(org: Mapping[str, Any] | None) -> dict[str, Any]:
         "domain_name": text_value(org.get("domain_name")),
         "licences": licences,
     }
+
+
+def org_identity(org: Mapping[str, Any] | None) -> dict[str, str | None]:
+    """The id and the domain name of a Zoho org (CRM-X0).
+
+    *org* is a raw ``GET org`` row or the ``org`` section of a stored profile.
+    Both carry the same two keys. A profile from before CRM-X0 has the domain
+    name only.
+    """
+    org = org if isinstance(org, Mapping) else {}
+    return {
+        "id": text_value(org.get("id")),
+        "domain_name": text_value(org.get("domain_name")),
+    }
+
+
+def same_org(
+    stored: Mapping[str, Any] | None, fresh: Mapping[str, Any] | None,
+) -> bool | None:
+    """Is *fresh* the Zoho org that *stored* names? ``None`` when nothing tells.
+
+    The id decides when both sides have one. Else the domain name decides,
+    because Zoho gives each org its own domain name. With neither on both
+    sides, the answer is ``None``, and the caller decides.
+    """
+    a, b = org_identity(stored), org_identity(fresh)
+    for key in ("id", "domain_name"):
+        if a[key] and b[key]:
+            return a[key] == b[key]
+    return None
 
 
 def _module_rows(
@@ -1092,10 +1124,12 @@ __all__ = [
     "module_of",
     "module_read_scope",
     "module_record_link",
+    "org_identity",
     "pipeline_ref",
     "pipeline_rows",
     "pipeline_stages",
     "profile_tabs",
+    "same_org",
     "scope_set_key",
     "stage_type_hint",
     "with_module_fields",

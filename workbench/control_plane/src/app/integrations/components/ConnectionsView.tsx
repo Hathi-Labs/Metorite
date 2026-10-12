@@ -5,8 +5,9 @@
  *
  * The gateway builds the rows (`GET /integrations/connections`, IN-1). This
  * view filters them by app and status, opens one in a side panel, and runs the
- * two acts the console owns: Disconnect and the MCP Test. Setup stays in the
- * owning app (spec §3.1), so every other action is a link.
+ * acts the console owns: Disconnect, the MCP Test and the MCP "always
+ * confirm" switch (H-300). Setup stays in the owning app (spec §3.1), so
+ * every other action is a link.
  *
  * A 404 from the list route means the read model is not deployed yet. The
  * view then shows a line and the API keys view, so the page is never blank.
@@ -56,6 +57,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [savingConfirm, setSavingConfirm] = useState(false);
 
   const all = res.data ?? [];
   const rows = useMemo(() => filterConnections(all, app, status), [all, app, status]);
@@ -122,6 +124,33 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
+  async function setAlwaysConfirm(next: boolean) {
+    const name = open ? mcpName(open) : null;
+    if (!open || !name) return;
+    setSavingConfirm(true);
+    try {
+      await api.setMcpAlwaysConfirm(name, next);
+      toast.show({
+        key: "integrations-always-confirm",
+        variant: "success",
+        // A live run keeps the flag it read at the attach, so the words
+        // speak of new chats only (H-300).
+        title: next
+          ? "New chats will ask before any tool runs."
+          : "New chats will ask only before tools that can change data.",
+      });
+      invalidateConnections();
+    } catch (err) {
+      toast.show({
+        key: "integrations-always-confirm",
+        variant: "error",
+        title: err instanceof Error ? err.message : "The request failed.",
+      });
+    } finally {
+      setSavingConfirm(false);
+    }
+  }
+
   const copy = open ? disconnectCopy(open) : null;
 
   return (
@@ -172,6 +201,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           onNavigate={(href) => router.push(href)}
           onDisconnect={() => setConfirming(true)}
           onTest={test}
+          onAlwaysConfirm={setAlwaysConfirm}
+          savingAlwaysConfirm={savingConfirm}
         />
       )}
       {open && copy && (

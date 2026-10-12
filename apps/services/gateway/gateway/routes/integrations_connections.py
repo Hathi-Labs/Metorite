@@ -157,7 +157,13 @@ def _registry_row(conn: store.Connection, user: UserContext) -> Row:
         owning_app=app,
         scope=conn.scope_kind,
         owner=(conn.member_email if not org_scope else conn.connected_by) or None,
-        status=conn.status,
+        # CRM-X0: `needs_reset` is the CRM's own state. The console has one
+        # word for "an admin must act in the app". Its link opens the CRM,
+        # and the CRM's banner leads to the setup hub and the start over.
+        status=(
+            store.STATUS_NEEDS_RECONNECT if conn.status == store.STATUS_NEEDS_RESET
+            else conn.status
+        ),
         last_sync_at=_iso(conn.last_sync_at),
         last_error=store.safe_error_code(conn.last_error) if conn.last_error else None,
         setup_href=_SETUP_HREF[app],
@@ -246,6 +252,8 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             "name": srv.name,
             "transport": srv.transport,
             "agent_scope": ", ".join(srv.agent_scope),
+            # H-300: the console draws this key as a switch, not as text.
+            "always_confirm": "true" if srv.always_confirm else "false",
         }
         host = _host_only(srv.url)
         if host:
@@ -381,19 +389,10 @@ async def list_connections(
 
 
 def _audit(user: UserContext, org: str, target: str, **payload: Any) -> None:
-    """One audit event: who, what, when, which organization (spec §4.4)."""
-    try:
-        from acb_audit import AuditEvent, record
-
-        record(AuditEvent(
-            actor=f"user:{user.email}",
-            action="integration.disconnect",
-            target=target,
-            payload={"organization_id": org, **payload},
-            organization_id=org,
-        ))
-    except Exception as exc:  # an audit backend that is down must not block this
-        _log.warning("connections.audit_failed", error=type(exc).__name__)
+    """One audit event of a disconnect (spec §4.4), through the one helper."""
+    integrations.audit_integration(
+        user, org, target, action="integration.disconnect", **payload,
+    )
 
 
 def _member_refusal(app: str) -> HTTPException:

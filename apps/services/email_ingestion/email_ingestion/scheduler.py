@@ -701,8 +701,17 @@ def _next_cursor(
     seed failed too, it logs ``gmail.reseed_failed``, and the cycle backs
     off, because the stale cursor stays and the next cycle sweeps again.
     Without the back-off, a sticky abandon swept at each interval (review
-    round 1 F6). No line names a subject or an address."""
+    round 1 F6). No line names a subject or an address.
+
+    A rate limit after a finished history page sets ``rate_limited`` (WS-17
+    EM-G4b-f1, D-G4b-f1-2). Phase (d) then writes the page position and the
+    messages of the finished pages. The cycle keeps the watermark, because
+    the backlog past the position is not read yet, and the loop backs off,
+    as for a short catch-up. Only Gmail sets the flag, so Outlook and IMAP
+    get the same answer as before."""
     new = getattr(sync_result, "new_history_id", None)
+    if getattr(sync_result, "rate_limited", False):
+        return new, catch_up._replace(back_off=True, keep_watermark=True)
     if not getattr(sync_result, "cursor_reset", False):
         return new, catch_up
     fresh = getattr(sync_result, "reseed_history_id", None)

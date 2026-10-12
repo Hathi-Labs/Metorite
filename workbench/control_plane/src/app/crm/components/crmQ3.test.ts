@@ -276,7 +276,6 @@ describe("CRM settings", () => {
       createElement(PipelineSettings, {
         setup: createElement("section", { "aria-label": "Setup" }, "SETUP"),
         access: createElement("section", { "aria-label": "Access" }, "ACCESS"),
-        connection: createElement("section", { "aria-label": "Connection" }, "CONNECTION"),
         showAdminCards: true,
         dealStatuses: deal,
         leadStatuses: [status("l1", "New", 0)],
@@ -297,7 +296,6 @@ describe("CRM settings", () => {
     const order = [
       "SETUP",
       "ACCESS",
-      "CONNECTION",
       "Pipelines and stages",
       "Lead Status",
       "Lost reasons",

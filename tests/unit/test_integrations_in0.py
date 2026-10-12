@@ -526,6 +526,8 @@ def test_the_walk_sees_every_writer() -> None:
         ("DELETE", "/integrations/keys"), ("POST", "/integrations/discover"),
         ("POST", "/integrations/custom"), ("DELETE", "/integrations/custom/{service_id}"),
         ("POST", "/integrations/mcp"), ("DELETE", "/integrations/mcp/{name}"),
+        # H-300: the always-confirm switch.
+        ("PATCH", "/integrations/mcp/{name}"),
         ("POST", "/integrations/mcp/test"), ("POST", "/integrations/plugins/install"),
         ("DELETE", "/integrations/plugins/{plugin_id}"),
         ("POST", "/integrations/github/device/start"),
@@ -536,7 +538,7 @@ def test_the_walk_sees_every_writer() -> None:
         ("POST", "/integrations/oauth/{service}/refresh"),
     ]:
         assert expected in paths, expected
-    assert len(WRITERS) == 17, WRITERS
+    assert len(WRITERS) == 18, WRITERS
 
 
 def _client(permissions: list[str], monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, list[str]]:
