@@ -431,6 +431,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("PUT", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B"),
     Route("GET", "/projects/tasks/{task_id}/relations", "task_detail", "A"),
+    # ── refs.py — a task's URL references (WS-57 TR-1, TR-3) ─────────────
+    Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A"),
+    Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B"),
+    Route("DELETE", "/projects/tasks/{task_id}/refs/{ref_id}", "remove_task_ref", "B"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -635,6 +639,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/tasks/{task_id}/links"): {
         "target_task_id": "link_tasks.other_task_id",
         "link_type": "link_tasks.link_type",
+    },
+    # WS-57 TR-3: the URL and the optional title the member gave.
+    ("POST", "/projects/tasks/{task_id}/refs"): {
+        "url": "add_task_ref.url",
+        "title": "add_task_ref.title",
     },
     ("POST", "/projects/tasks/bulk"): {
         "task_ids": "bulk_update.task_ids",

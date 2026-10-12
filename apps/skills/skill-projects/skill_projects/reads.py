@@ -409,6 +409,31 @@ async def _attachments_block(task_id: str) -> list[str]:
     return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
 
 
+async def _refs_block(task_id: str) -> list[str]:
+    """The task's URL references (WS-57 TR-3), one line each with its ref id.
+
+    A failed read says so. It never reads as "no references", because the
+    model would then tell the member that a linked pull request is absent.
+    """
+    tid = uuid_of(task_id, "task_id")
+    try:
+        listed = await get(f"/projects/tasks/{tid}/refs")
+    except GatewayRefusal:
+        return ["References: unknown, the list could not be read."]
+    rows = (listed or {}).get("rows") or []
+    if not rows:
+        return []
+    out = [f"References ({len(rows)}):"]
+    for row in rows:
+        line = f"- {data(row.get('kind'))} {data(row.get('label') or row.get('url'))}"
+        if row.get("title"):
+            line += f" {data(row.get('title'))}"
+        if row.get("state"):
+            line += f" ({data(row.get('state'))})"
+        out.append(f"{line} {data(row.get('url'))} (ref id {row.get('id')})")
+    return out
+
+
 async def _timeline_block(task_id: str) -> list[str]:
     """The latest timeline rows, newest first, bodies fenced."""
     tid = uuid_of(task_id, "task_id")
@@ -436,7 +461,8 @@ async def _timeline_block(task_id: str) -> list[str]:
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
-    blockers, attachments, and the latest timeline entries. Read this before
+    blockers, URL references (pull requests, issues, docs) with their ref
+    ids, attachments, and the latest timeline entries. Read this before
     answering a specific question about a task, and before proposing a
     change to it. task_id is the `full_id` from a list or a search."""
     tid = uuid_of(task_id, "task_id")
@@ -487,6 +513,7 @@ async def task_detail(task_id: str) -> str:
             out.append(f"  Repeats: {_rule_text(rule)}")
 
     out.extend(await _relations_block(tid))
+    out.extend(await _refs_block(tid))
     out.extend(await _attachments_block(tid))
     out.extend(await _timeline_block(tid))
     return "\n".join(out)

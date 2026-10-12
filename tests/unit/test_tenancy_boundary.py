@@ -142,6 +142,8 @@ EXPECTED_SCOPED = {
     "crm_views",
     # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
     "crm_module_records",
+    # WS-57 TR-1 (2026-10-13): the URL references of a task.
+    "pm_task_refs",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

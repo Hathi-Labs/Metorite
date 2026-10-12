@@ -134,6 +134,9 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
+  // WS-57 TR-3: a URL on a task, not a second task.
+  add_task_ref: { icon: "Link2", label: "Reference added" },
+  remove_task_ref: { icon: "Unlink", label: "Reference removed" },
   move_task: { icon: "MoveRight", label: "Task moved" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },

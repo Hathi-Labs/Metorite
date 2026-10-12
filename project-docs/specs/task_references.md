@@ -1,6 +1,6 @@
 # Task references — links, pull requests, commits, pasted images and `#123` pills
 
-**Status:** 🆕 PROPOSED 2026-10-13, owner directive. Nothing is built. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
+**Status:** 🟡 IN PROGRESS. TR-1 and TR-3 are BUILT on 2026-10-13 (branch `task-links`, migration 255). TR-2, TR-4 and TR-5 are not built. Proposed 2026-10-13, owner directive. Verified against code on 2026-10-13 at `origin/main` 68e26cad.
 
 **Board row:** WS-57 (`work_plan.md` §2).
 
@@ -81,6 +81,7 @@ The owner asked for five things on 2026-10-13:
 - **The host is fixed.** The read calls `api.github.com` only, with owner and repo limited to `[A-Za-z0-9._-]`. It does not use `outbound_guard`, which is for URLs a caller chooses.
 - **Disclosure.** The read uses the organization's token. So every member who can see the task sees the title and state of a private repository that the token can reach. A member can also learn such a title by pasting its URL. That is the reach the organization chose when it connected GitHub (WS-54 IN-7). A member never sees the token, and never sees a repository the token cannot reach.
 - **Done when:** the classifier passes a table test of at least 20 URLs. The route adds, lists and removes a reference, and a second add of the same URL returns the first row. A read for another org's task returns 404 against a real database (R8). Each add and remove writes one `link` activity row.
+- **Built 2026-10-13.** Migration `255_pm_task_refs.sql` creates the table, and the four generated phase files carry it. The classifier is `routes/projects/refs_classify.py`, and the routes and the GitHub read are `routes/projects/refs.py`. A new row answers 201. A second add answers 200 with the first row and writes no activity, because it changes nothing. A GitHub title replaces a typed title. Only a pull request or an issue is read. Fences: `test_task_refs_classifier.py` and `test_task_refs_route.py` (R8 on a private database). ⚠️ Check the migration number again at merge (R1).
 
 ### TR-2 — the Links section on the card (AGENT-SAFE)
 
@@ -94,6 +95,7 @@ The owner asked for five things on 2026-10-13:
 - `add_task_ref(task, url, title?)` and `remove_task_ref(task, url)` in `skill_projects/writes.py`. The names stay clear of `link_tasks`, which links two tasks. Both call the TR-1 route, so the chat agent and a person write one path.
 - `task_detail` in `reads.py` lists the references.
 - **Done when:** `tests/unit/test_projects_task_refs_tools.py` shows that `add_task_ref` posts `{url, title}` to the TR-1 route for the resolved task, and that `remove_task_ref` deletes the matching row. The manifest and parity fences pass (`test_projects_agent_writes.py`, `test_projects_chat_coverage.py`, `test_projects_field_parity.py`).
+- **Built 2026-10-13.** The argument is `task_id`, as in every other tool of the family. Both tools are class B, with one card each. `remove_task_ref` matches the URL, the stored ref or the ref id. The agent's `own_tool_scope`, `chatPlacement.ts` and the receipt labels in `ProjectToolCards.tsx` carry both tools.
 
 ### TR-4 — the description renders, and a pasted image attaches (AGENT-SAFE)
 
@@ -137,3 +139,4 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 
 - 2026-10-13 — Written. Research of Plane, Linear and OpenProject in §2. The table follows `external_agent_access.md` §11, with `issue`, `comment` and `doc` added, and `fetched_at` and `via` as columns.
 - 2026-10-13 — The spec audit (GO-NARROWED) changed six things. The activity table is `pm_activities`. EA-6 keeps only the MCP tool. TR-1 states the disclosure rule and reads GitHub outside the transaction. The chat tools are `add_task_ref` and `remove_task_ref`, with a named test. TR-4 adds one safe image path. TR-5 names the real exports.
+- 2026-10-13 — TR-1 and TR-3 built. Migration 255 holds the table. The status header, §6 and the WS-57 row say so.

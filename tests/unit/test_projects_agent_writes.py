@@ -63,6 +63,18 @@ P0_ID = "9f8fad5b-d9cb-469f-a165-70867728950e"
 ARCHIVED = "af8fad5b-d9cb-469f-a165-70867728950e"
 CHANGE = "bf8fad5b-d9cb-469f-a165-70867728950e"
 FILE = "cf8fad5b-d9cb-469f-a165-70867728950e"
+#: One reference on the task, as `GET /projects/tasks/{id}/refs` answers it.
+REF_ROW: dict[str, Any] = {
+    "id": "d1f8fad5-d9cb-469f-a165-70867728950e",
+    "task_id": UUID,
+    "kind": "pull_request",
+    "provider": "github",
+    "ref": "acme/widgets#12",
+    "url": "https://github.com/acme/widgets/pull/12",
+    "label": "widgets#12",
+    "title": "Fix the login",
+    "state": "open",
+}
 VIEW_ID = "df8fad5b-d9cb-469f-a165-70867728950e"
 LIVE = "ef8fad5b-d9cb-469f-a165-70867728950e"
 SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
@@ -278,6 +290,14 @@ def _s2b_answers(call: dict) -> Any:
     return None
 
 
+def _refs_answers(call: dict) -> Any:
+    """WS-57 TR-3: the task's references, in the TR-1 route's row shape
+    (refs.py `_row`)."""
+    if call["method"] == "GET" and call["path"] == f"/projects/tasks/{UUID}/refs":
+        return {"rows": [REF_ROW]}
+    return None
+
+
 def _answered(call: dict, *tables: Any) -> Any:
     for table in tables:
         answered = table(call)
@@ -296,7 +316,7 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
+    answered = _answered(call, _refs_answers, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -416,6 +436,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "add_subtasks": [{"task_id": UUID, "titles": "Draft the spec\nReview it"}],
     "link_tasks": [{"task_id": UUID, "other_task_id": OTHER, "link_type": "blocks"}],
     "unlink_tasks": [{"task_id": UUID, "link_id": LINK}],
+    # WS-57 TR-3 — a URL on the task, through the TR-1 route.
+    "add_task_ref": [
+        {"task_id": UUID, "url": REF_ROW["url"], "title": "Fix the login"},
+        {"task_id": UUID, "url": "https://docs.google.com/document/d/1AbCdEfGhIjK/edit"},
+    ],
+    "remove_task_ref": [{"task_id": UUID, "url": REF_ROW["url"]}],
     "move_task": [
         {"task_ids": UUID, "destination_project_id": OTHER},
         {"task_ids": UUID, "parent_task_id": OTHER},
