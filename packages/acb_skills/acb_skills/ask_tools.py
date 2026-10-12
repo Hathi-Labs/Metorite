@@ -89,7 +89,12 @@ def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
     token from its start to its ``finally`` (review of PR #888, P2).
     *refused* is ``not shows_cards``. A stream that says it shows cards,
     inside a scope that refuses them, stays refused: a run never widens what
-    its caller allowed. Give the token to :func:`release_cards_switch`."""
+    its caller allowed. Give the token to :func:`release_cards_switch`.
+
+    It is a ContextVar, so it covers the callers of ``run_agent_stream`` on
+    MAF, whose tools run in the run's context. A Copilot SDK tool that runs
+    in a JSON-RPC thread reads a fresh context, so it is NOT covered. Only
+    the email chat passes ``shows_cards=False`` today, and it runs MAF."""
     return _CARDS_REFUSED.set(bool(refused) or _CARDS_REFUSED.get())
 
 

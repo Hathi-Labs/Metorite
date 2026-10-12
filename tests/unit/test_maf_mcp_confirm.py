@@ -983,9 +983,12 @@ def test_the_card_counts_whole_and_partly_hidden_values() -> None:
 
 @pytest.mark.parametrize("scope", ["refuse_cards", "refuse_cards_for_run"])
 async def test_a_blocking_genui_card_is_refused_where_no_card_can_show(scope) -> None:
+    import importlib
     import json
 
-    from acb_skills import write_artifact
+    # ``acb_skills.write_artifact`` is also the name of a function in the
+    # package, so import the module by its path.
+    write_artifact = importlib.import_module("acb_skills.write_artifact")
 
     spec = json.dumps({"type": "template", "hitl": True, "props": {
         "name": "optionPicker",

@@ -3657,6 +3657,11 @@ async def run_agent_stream(
     refused. Fence: ``tests/unit/test_maf_mcp_confirm.py`` (A19), which also
     fails when a new caller does not say ``shows_cards=``.
 
+    The switch is a ContextVar, so it covers the tools of a MAF agent. A
+    Copilot SDK tool that runs in a JSON-RPC thread reads a fresh context,
+    so it is NOT covered. Only the email chat passes ``False`` today, and it
+    runs MAF.
+
     Strategy (two-tier with automatic fallback):
 
     Tier 1 — MAF AG-UI streaming (preferred)
