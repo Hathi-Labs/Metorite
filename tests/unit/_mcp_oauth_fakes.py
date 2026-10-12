@@ -131,9 +131,17 @@ class World:
     def handle(self, request: httpx.Request) -> httpx.Response:
         """The answer as a raw stream: the guard reads it with ``aiter_raw``."""
         answer = self._answer(request)
+        body = answer.content
+        headers = httpx.Headers(answer.headers)
+        # As many real origins do: gzip when the client accepts it.
+        if body and "gzip" in request.headers.get("accept-encoding", ""):
+            import gzip
+
+            body = gzip.compress(body)
+            headers["content-encoding"] = "gzip"
+            headers["content-length"] = str(len(body))
         return httpx.Response(
-            answer.status_code, headers=answer.headers,
-            stream=httpx.ByteStream(answer.content))
+            answer.status_code, headers=headers, stream=httpx.ByteStream(body))
 
     def _answer(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)

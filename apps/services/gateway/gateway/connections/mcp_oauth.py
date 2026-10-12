@@ -160,10 +160,15 @@ async def _fetch(
 ) -> outbound_guard.Answer:
     """ONE hop, through the https-only mode of the guard. A refusal is
     :class:`OAuthFailed` ``refused``, and a transport fault is ``unreachable``.
-    The log line names the host and the reason, never the path or the query."""
+    The log line names the host and the reason, never the path or the query.
+
+    ⚠️ ``Accept-Encoding: identity`` on EVERY hop (review of #931, P1). The
+    guard reads the raw bytes and never decompresses them, so a gzip answer
+    would never parse as JSON. ``agent_access.py`` states the same rule."""
+    sent = {**(headers or {}), "Accept-Encoding": "identity"}
     try:
         return await outbound_guard.request_https(
-            method, url, headers=headers, content=content, json=json_body)
+            method, url, headers=sent, content=content, json=json_body)
     except outbound_guard.OutboundRefused as exc:
         _log.warning("mcp.oauth_refused", host=exc.host, reason=exc.reason)
         raise OAuthFailed("refused") from None
