@@ -1103,6 +1103,7 @@ async def run_list(db: Any, entity: Entity, query: ListQuery) -> ListResponse:
     )).fetchall()
     wired = [row_to_dict(r, entity.model) for r in rows]
     await attach_ext_urls(db, entity.table, wired)
+    await attach_next_activity(db, entity, wired)
     return ListResponse(rows=wired, total=int(total))
 
 
@@ -1171,6 +1172,75 @@ async def attach_ext_urls(db: Any, table: str, rows: list[dict[str, Any]]) -> No
             context.accounts_server, context.domain_name, entity, row["ext_id"],
             context.tabs,
         )
+
+
+# ── The next activity on a card (WS-53 CRM-X3, crm_platform.md §19.7) ──────
+
+#: What counts as a record's next activity, over ``crm_activities a``. It is
+#: the ONE rule: the card chip (:func:`attach_next_activity`) and the lane sort
+#: (``pipeline.get_pipeline``) both read it. An open task counts when it has a
+#: due date. A call or a meeting counts while it is still ahead. The rule has
+#: no branch on ``ext_source``: CRM-Q5 writes a Zoho task with the same
+#: ``type`` and ``due_at`` as the composer writes a native one.
+NEXT_ACTIVITY_SQL = (
+    "a.completed_at IS NULL AND ("
+    "(a.type = 'task' AND a.due_at IS NOT NULL) "
+    "OR (a.type IN ('call', 'meeting') AND a.occurred_at > now()))"
+)
+
+#: The instant that orders the next activities of one record.
+NEXT_AT_SQL = "COALESCE(a.due_at, a.occurred_at)"
+
+#: The entities whose rows carry ``next_activity``. Contacts and companies
+#: get nothing, because a card is a deal or a lead.
+_NEXT_ACTIVITY_SLUGS = frozenset({"deals", "leads"})
+
+
+async def attach_next_activity(
+    db: Any, entity: Entity, rows: list[dict[str, Any]],
+) -> None:
+    """Set ``next_activity`` on each deal or lead of *rows*, in place.
+
+    ONE statement for all the rows, whatever their count: ``DISTINCT ON`` the
+    target column keeps the first row of each record under
+    :data:`NEXT_AT_SQL`, then the smaller ``id``. The column comes from
+    ``Entity.activity_column``, a registry literal and never caller text, and
+    the index on ``(<column>, created_at)`` serves ``= ANY``. Row level
+    security keeps another tenant's activity off every card.
+
+    Each row gets ``{id, type, subject, at, all_day}``, or ``None`` when
+    nothing counts. ``all_day`` is true for a task, whose ``due_at`` holds a
+    date at 00:00 UTC.
+    """
+    if entity.slug not in _NEXT_ACTIVITY_SLUGS:
+        return
+    for row in rows:
+        row["next_activity"] = None
+    ids = [str(row["id"]) for row in rows if row.get("id")]
+    if not ids:
+        return
+    column = entity.activity_column
+    found = (await db.execute(
+        text(
+            f"SELECT DISTINCT ON (a.{column}) a.{column} AS record_id, a.id, "
+            f"a.type, a.subject, {NEXT_AT_SQL} AS at, "
+            "(a.type = 'task') AS all_day "
+            "FROM crm_activities a "
+            f"WHERE a.{column} = ANY(CAST(:ids AS uuid[])) "
+            f"AND {NEXT_ACTIVITY_SQL} "
+            f"ORDER BY a.{column}, {NEXT_AT_SQL}, a.id"
+        ),
+        {"ids": ids},
+    )).fetchall()
+    by_record = {
+        str(r.record_id): {
+            "id": wire(r.id), "type": r.type, "subject": r.subject,
+            "at": wire(r.at), "all_day": bool(r.all_day),
+        }
+        for r in found
+    }
+    for row in rows:
+        row["next_activity"] = by_record.get(str(row.get("id")))
 
 
 async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:

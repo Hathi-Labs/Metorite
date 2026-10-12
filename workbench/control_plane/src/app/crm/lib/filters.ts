@@ -46,6 +46,8 @@ export type ListQuery = {
   /** Deals only. */
   close_from?: string;
   close_to?: string;
+  /** CRM-X3, the board only: the order of the cards in a deal lane. */
+  card_sort?: "stage_age" | "next_activity";
   /** CRM-Q8: `custom.<key>.in` = the chosen options, joined by commas. */
   [custom: `custom.${string}`]: string | undefined;
 };

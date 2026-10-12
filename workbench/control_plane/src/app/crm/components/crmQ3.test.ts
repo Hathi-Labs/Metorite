@@ -178,7 +178,9 @@ describe("related lists", () => {
 
   it("opens the record from the sheet with the existing sheet parameter", () => {
     const page = read("../page.tsx");
-    expect(page).toMatch(/onOpenRelated=\{\(entity, id\) => go\(openRecord\(view, PARAM_FOR\[entity\], id\)\)\}/);
+    // `openAlone` is `go` that also forgets the list behind the sheet: a
+    // record opened from a related list has no `j` and `k` (CRM-X4 item 5).
+    expect(page).toMatch(/onOpenRelated=\{\(entity, id\) => openAlone\(openRecord\(view, PARAM_FOR\[entity\], id\)\)\}/);
     expect(page).toMatch(/related=\{store\.related\}/);
   });
 
@@ -192,8 +194,8 @@ describe("related lists", () => {
           { contact: { id: "c1", first_name: "Anitha", last_name: "Kumar" }, role: "Procurement", is_primary: true },
         ],
         saving: false,
+        part: "related",
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -205,16 +207,16 @@ describe("related lists", () => {
     expect(html).toContain("Procurement");
   });
 
-  it("mounts the sections in the fields panel for a company", () => {
+  it("mounts the sections in the Related tab of a company", () => {
     const html = renderToStaticMarkup(
       createElement(FieldsPanel, {
+        part: "related",
         entity: "organizations",
         record: { id: "o1", name: "Bosch" },
         statuses: [],
         dealContacts: [],
         saving: false,
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,

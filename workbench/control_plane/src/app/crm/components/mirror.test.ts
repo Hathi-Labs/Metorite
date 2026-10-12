@@ -106,16 +106,16 @@ describe("the banners", () => {
 });
 
 describe("the locked fields", () => {
-  const draw = (record: Record<string, unknown>) =>
+  const draw = (record: Record<string, unknown>, part: "overview" | "fields" = "overview") =>
     renderToStaticMarkup(
       createElement(FieldsPanel, {
+        part,
         entity: "organizations",
         record,
         statuses: [],
         dealContacts: [],
         saving: false,
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -138,7 +138,7 @@ describe("the locked fields", () => {
   });
 
   it("shows custom fields as read-only rows", () => {
-    const html = draw({ id: "1", name: "Acme", ext_source: "zoho", custom: { Lead_Source: "Web" } });
+    const html = draw({ id: "1", name: "Acme", ext_source: "zoho", custom: { Lead_Source: "Web" } }, "fields");
     expect(html).toContain("Lead Source");
     expect(html).toContain("Web");
   });

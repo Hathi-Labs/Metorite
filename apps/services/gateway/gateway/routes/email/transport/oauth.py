@@ -125,8 +125,10 @@ _GOOGLE_ERROR_REASONS = {
 def gmail_connect_enabled() -> bool:
     """True when the Gmail connect may run on this box (EM-G7, dark flag).
 
-    ``EMAIL_GMAIL_CONNECT`` is false by default. The production box already
-    holds a Google client, so the app alone cannot keep Gmail dark. While
+    ``EMAIL_GMAIL_CONNECT`` is false by default. On 2026-10-12 the production
+    box holds both ``GMAIL_OAUTH_*`` names with empty values, so the keys
+    alone keep Gmail dark today (spec §12.1). The client of the owner lands
+    at §12.4 step 9, and from then on only this flag keeps Gmail dark. While
     this is false, the capability read answers ``gmail: false``, and the
     authorize leg, the callback leg and the app facts refuse Gmail. A flip on
     a box is gate ``enforcement-flip``, and it waits for EM-G10. Only the env
