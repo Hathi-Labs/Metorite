@@ -30,7 +30,7 @@ import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
-import { pillsForTurn } from "@/lib/projectsAgent";
+import { pillsForTurn, taskRefsForTurn } from "@/lib/projectsAgent";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
@@ -119,6 +119,7 @@ function MessageBubble({
   participants,
   sessionAgentName,
   entityPills = false,
+  taskRefAgent,
 }: {
   message: ChatMessage;
   sessionId: string;
@@ -147,6 +148,9 @@ function MessageBubble({
    *  the Projects assistant only. A turn by another agent in the thread
    *  still draws none. */
   entityPills?: boolean;
+  /** The thread's agent, for the bare `#171` task links (owner report,
+   *  2026-10-13). `taskRefsForTurn` decides, by the agent of each turn. */
+  taskRefAgent?: string;
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
@@ -216,6 +220,7 @@ function MessageBubble({
   // the context. Only a Projects turn builds it: another agent's tools hold
   // email bodies and other text that no pill may resolve against.
   const pills = pillsForTurn(entityPills, message);
+  const refs = taskRefsForTurn(taskRefAgent, message);
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
@@ -616,6 +621,7 @@ function MessageBubble({
         entityPills={pills}
         entityIndex={entityIndex ?? undefined}
         fences
+        taskRefs={refs}
         evidenceFor={evidenceFor}
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
@@ -670,6 +676,7 @@ function MessageBubble({
                   entityPills={pills}
                   entityIndex={entityIndex ?? undefined}
                   fences
+                  taskRefs={refs}
                   caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
                 />
               </div>
@@ -761,5 +768,6 @@ export default React.memo(MessageBubble, (a, b) =>
   a.viewerEmail === b.viewerEmail &&
   a.sessionAgentName === b.sessionAgentName &&
   a.entityPills === b.entityPills &&
+  a.taskRefAgent === b.taskRefAgent &&
   sameParticipants(a.participants, b.participants),
 );
