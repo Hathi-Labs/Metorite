@@ -670,7 +670,9 @@ async def attach_mcp_tools(
     default, refuses each tool that needs a card.
 
     WS-8c items 23 to 30: the run attaches :data:`MAX_SERVERS` servers or
-    fewer, in name order, and logs ``mcp.server_cap`` with the rest. Each
+    fewer, in name order, and logs ``mcp.server_cap`` with the rest. The cap
+    counts the servers that ATTACH. A server that is refused, unreachable or
+    in a clash takes no slot (review of #922, P2). Each
     tool is built with progressive disclosure on, and
     :func:`_choose_disclosure` and :func:`_fit_run_budget` keep the schemas
     within the budget. The clash check reads every tool of the server, also
@@ -683,15 +685,17 @@ async def attach_mcp_tools(
         _log.warning("mcp.client_unavailable", reason=type(exc).__name__)
         return []
 
-    # WS-8c item 28: 8 servers or fewer, in name order. The rest never open.
+    # WS-8c item 28: 8 servers or fewer, in name order. The cap counts the
+    # servers that attach, so a server that fails takes no slot. The rest
+    # never open.
     servers = sorted(servers, key=lambda s: s.name)
-    if len(servers) > MAX_SERVERS:
-        _log.warning("mcp.server_cap", cap=MAX_SERVERS,
-                     left_out=[s.name for s in servers[MAX_SERVERS:]])
-        servers = servers[:MAX_SERVERS]
     held = _names_held(agent)
     tools: list[Any] = []
-    for server in servers:
+    for index, server in enumerate(servers):
+        if len(tools) >= MAX_SERVERS:
+            _log.warning("mcp.server_cap", cap=MAX_SERVERS,
+                         left_out=[s.name for s in servers[index:]])
+            break
         host = _host(server.url)
         try:
             client = await outbound_guard.mcp_client(server.url)

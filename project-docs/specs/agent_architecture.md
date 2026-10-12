@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-12. §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), which are built and wait for merge. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-10-12. §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -1037,8 +1037,7 @@ that gap, and items 18 to 21 harden them (review of PR #888). The first producti
 21. **Unreadable arguments refuse.** When the gate cannot read the arguments of a call, it
     refuses the call, so the card never shows less than what runs.
 
-**On-demand MCP tools (added 2026-10-12).** Items 22 to 30. 🔨 **BUILT 2026-10-12, PR pending**
-(branch `mcp-tool-budget`). The fence `test_maf_mcp_budget.py` holds rows A23 to A30 and a mutation
+**On-demand MCP tools (added 2026-10-12).** Items 22 to 30. ✅ **MERGED 2026-10-12 (#922).** The fence `test_maf_mcp_budget.py` holds rows A23 to A30 and a mutation
 table. The 128-tool server of the fence costs 24,832 tokens with full schemas, and 259 with the
 index. Two facts changed the build. First, `tool_json_schema` priced a MAF `FunctionTool` by the
 docstring of its class, so it now prices it by `to_json_schema_spec()`, which MAF sends. Second, the
@@ -1087,8 +1086,9 @@ at `origin/main` `713dc84ac`, with MAF 1.19.0 (`uv.lock:375-376`).
     before, and the H-300 setting `always_confirm` applies to it.
 28. **Caps.** A run attaches 8 servers or fewer (`MAX_SERVERS = 8`), in name order.
     `attach_mcp_tools` (`_maf_mcp.py:458`) leaves out the 9th server and each one after it. It
-    logs `mcp.server_cap` with the names only. Each server keeps the cap of 128 tools
-    (`MAX_TOOLS`, `:308`).
+    logs `mcp.server_cap` with the names only. The cap counts the servers that attach. A server
+    that is refused, unreachable or in a name clash takes no slot (review of #922). Each server
+    keeps the cap of 128 tools (`MAX_TOOLS`, `:308`).
 29. **The clash check reads every tool.** `attach_mcp_tools` checks name clashes against
     `tool.functions` (`:516-517`). With progressive disclosure on, that list holds the loaders
     only. So the check reads `_functions` too, and a hidden tool that clashes leaves its server
