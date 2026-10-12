@@ -80,7 +80,10 @@ export function BoardColumn({
   const Body = as;
   const EmptyBox = as === "ul" ? "li" : "div";
   return (
-    <section
+    // A group, not a `<section>` landmark: twelve CRM lanes made twelve
+    // landmarks, and a landmark list of lanes helps nobody find the page.
+    <div
+      role="group"
       aria-label={header?.title}
       {...frame}
       className={[
@@ -107,7 +110,7 @@ export function BoardColumn({
           <QuickAdd label={addLabel} onAdd={onAdd} />
         </div>
       ) : null}
-    </section>
+    </div>
   );
 }
 

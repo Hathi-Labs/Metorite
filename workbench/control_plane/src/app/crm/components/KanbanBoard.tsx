@@ -40,6 +40,7 @@ import {
   type LeadLane,
   type RotLevel,
 } from "../lib/board";
+import { cardLabel } from "../lib/cardLabel";
 import { isMirrored, type CrmMode } from "../lib/connect";
 import { compactMoney, money, shortEmail, stageAgeLabel } from "../lib/format";
 import { nextActivityChip } from "../lib/nextActivity";
@@ -258,7 +259,16 @@ function RecordCard({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onActivate={() => onOpen()}
-      ariaLabel={title}
+      // A `role="button"` is read by its name only, so the name carries the
+      // card: the money or the company, the next step and the warnings.
+      ariaLabel={cardLabel({
+        title,
+        amount: deal ? money(deal.amount, deal.currency) : null,
+        detail,
+        next,
+        overdue,
+        needsReason: warnLost,
+      })}
       atCursor={atCursor}
       // A won or a lost deal is closed, not done. The lane chip says so, so
       // the card is not dimmed and not struck through.

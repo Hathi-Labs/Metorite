@@ -210,6 +210,12 @@ describe("each board draws its lanes with BoardColumn", () => {
   /**
    * Moved here from `sharedTaskUi.test.ts` (CRM-C2), over three boards now.
    *
+   * ⚠️ ADVISORY. `globals.css` maps `--radius-xl` to `--radius`, the value of
+   * `--radius-lg`. So a `rounded-xl` lane draws the same corner as a
+   * `rounded-lg` lane, and this check cannot catch a change a person can see.
+   * It keeps the class vocabulary of the three boards the same, and nothing
+   * more. Kept, because a later change to the scale would make it real.
+   *
    * ⚠️ NOT a theming rule. `globals.css` maps `--radius-xl` to `--radius`, so
    * `rounded-xl` IS themed. It is a continuity rule: three boards drew one
    * object at two corner radii, and that alone made them read as two

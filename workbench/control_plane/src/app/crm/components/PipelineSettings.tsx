@@ -33,13 +33,13 @@ import Checkbox from "@/components/ui/Checkbox";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
-import { ACCENT_HUES } from "@/lib/statusAccent";
 import { useState } from "react";
 import {
   REQUIREABLE_FIELD_LABELS,
   REQUIREABLE_FIELDS,
   stageAccent,
 } from "../lib/board";
+import { colorOptions } from "../lib/colorOptions";
 import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
@@ -62,11 +62,8 @@ import type {
 
 const STATUS_TYPES: StatusType[] = ["open", "ongoing", "on_hold", "won", "lost"];
 
-/** The two pickers of a status row, as `SelectButton` options (CRM-U2). */
-const COLOR_OPTIONS: SelectOption[] = ACCENT_HUES.map((color) => ({
-  value: color,
-  label: color,
-}));
+/** The type picker of a status row, as `SelectButton` options (CRM-U2). The
+ *  colour picker is `colorOptions` (`lib/colorOptions.ts`). */
 const TYPE_OPTIONS: SelectOption[] = STATUS_TYPES.map((type) => ({
   value: type,
   label: type,
@@ -419,7 +416,7 @@ function StatusRow({
       <SelectButton
         label="Colour"
         value={draft.color || "gray"}
-        options={COLOR_OPTIONS}
+        options={colorOptions(draft.color)}
         defaultValue="gray"
         onChange={(color) => setDraft({ ...draft, color })}
         widthClass="w-24"
