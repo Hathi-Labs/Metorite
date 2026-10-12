@@ -198,7 +198,8 @@ All providers implement the `BaseEmailProvider` abstract interface:
      into `_REPEATABLE_POST_ACTIONS`.
    - A fetch whose tries are spent raises, and each loop of `sync_messages`
      raises it again through `_raise_rate_limit`. So the sync fails and
-     backs off, and the cursor stays.
+     backs off, and the cursor stays. The history read is the one exception
+     after a finished page (contract 10, EM-G4b-f1).
    - A fetch that fails for another reason calls `_record_fetch_failure`. It
      logs `gmail.fetch_failed` with the message id, the class of the error
      and the status, never a subject or an address. The record goes into
@@ -208,16 +209,25 @@ All providers implement the `BaseEmailProvider` abstract interface:
 
 10. **The Gmail history cursor (WS-17 EM-G4b).** `email_accounts.last_history_id`
     holds it, and no column was added. Fence:
-    `tests/unit/test_gmail_history_cursor.py`, with two R8 cases.
+    `tests/unit/test_gmail_history_cursor.py`, with four R8 cases.
     - **The seed.** `seed_cursor` reads `users.getProfile`. The base class
       returns None, so Outlook and IMAP get no seed. With no cursor,
       `scheduler._seed_before_import` seeds BEFORE the import, and the sweep
       with no cursor seeds before it reads. A failed seed never stops new
       mail. It logs, and the next cycle seeds again. A spent rate limit is no
       failed seed: a `ProviderRateLimited` fails the cycle.
-    - **The read.** The history read follows each `nextPageToken`. The cursor
-      is the `historyId` of the last answer. `labelsAdded` and
-      `labelsRemoved` fetch the message in full, as `messagesAdded` does.
+    - **The read (EM-G4b-f1).** The history read follows each
+      `nextPageToken`. Each page fetches its messages before the next page
+      is read, and an id that two pages name is fetched once. A finished
+      page that is not the last moves the position to the `id` of its last
+      record, never to the `historyId` of the answer (GM-17). After the last
+      page, the cursor is the `historyId` of the last answer. `labelsAdded`
+      and `labelsRemoved` fetch the message in full, as `messagesAdded` does.
+    - **A rate limit after a finished page.** The result holds the finished
+      pages only, and it sets `SyncResult.rate_limited`. The page that the
+      limit stopped drops what it fetched, and the next cycle reads it again.
+      `scheduler._next_cursor` writes the page position, keeps the watermark
+      and backs the loop off. A rate limit on page 1 still fails the cycle.
     - **A stale cursor.** A 404 seeds, then lists all mail after the later of
       the watermark and the floor, for `DEEP_SYNC_MAX_PAGES` pages at most. A
       short sweep returns no cursor and sets `catch_up_incomplete`, so the
@@ -225,11 +235,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
       abandon. Then `_next_cursor` writes `SyncResult.reseed_history_id`.
       The scheduler logs each reset with the mailbox id. A failed reseed
       backs the loop off.
-    - **A failed fetch.** A 5xx or a transport error keeps the old position.
-      The cursor counts its held cycles, not the cycles of each message. At
-      `GMAIL_FETCH_HOLD_CYCLES` (3), it moves on and logs
-      `gmail.fetch_abandoned` for each message that still fails. The cursor
-      holds no message id. A rate limit fails the cycle.
+    - **A failed fetch.** A 5xx or a transport error holds the cursor at the
+      end of the page before its page, or at the start for page 1. The read
+      goes on to the later pages. The cursor counts its held cycles, not the
+      cycles of each message. At `GMAIL_FETCH_HOLD_CYCLES` (3), it moves on
+      and logs `gmail.fetch_abandoned` for each message that still fails.
+      The cursor holds no message id.
 
 11. **Gmail send and drafts (WS-17 EM-G3a, O-GM-2).** Fence:
     `tests/unit/test_gmail_send_and_drafts.py`.

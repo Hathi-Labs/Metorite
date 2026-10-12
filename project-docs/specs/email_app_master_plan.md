@@ -9008,7 +9008,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
-| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
+| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g4b-cursor`). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
 | **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
 | **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
 | **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1) · visual review (PR-C2) | Before customers, PR-C1 then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M | §12.3.12.5 |
@@ -11202,7 +11202,7 @@ and the bullets above give the rules that apply now.
 **Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
 cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
 The next cycle then starts again at the old cursor. §12.3.12.2 owns the fix: the cursor moves at
-the end of each finished page.
+the end of each finished page. 🔨 The fix is built, not merged (2026-10-12).
 
 **The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
 on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
@@ -12482,7 +12482,8 @@ row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
    merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
    file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
-   the old cursor (§12.3.5.2). Slice: §12.3.12.2.
+   the old cursor (§12.3.5.2). Slice: §12.3.12.2. 🔨 Built 2026-10-12, not merged (branch
+   `gmail-g4b-cursor`).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
    (§12.3.2). Slice: §12.3.12.3.
 6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3). The
@@ -12531,7 +12532,30 @@ and the rule editor and the banner. So each one carries an Outlook acceptance it
 
 #### 12.3.12.2 EM-G4b-f1 — the history cursor moves at each page
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-B.
+**Status.** 🔨 Built 2026-10-12, not merged. PR-B, branch `gmail-g4b-cursor`. Specified
+2026-10-12.
+
+**As built (2026-10-12).**
+
+- `GmailProvider._history_sync` is the one loop over the pages. `_history_page` reads one page,
+  and `_apply_history_page` adds its markers and then fetches its messages. `_read_history` is
+  gone. `_page_end` gives the page position, and `_cursor_after_read` takes the held position.
+- **The auditor note P3.** A rate limit inside page P drops the messages that page P fetched
+  before the limit, and the markers of page P too. The cursor stays at the end of page P-1, so
+  the next cycle fetches them again (D-G4b-f1-7). The fence is
+  `test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page`.
+- A page with no record `id` keeps the position of the page before it. So the next read starts
+  earlier, never later.
+- `scheduler._next_cursor` reads `rate_limited` before `cursor_reset`. The reset sweep never
+  sets the flag, because the sweep still raises on a rate limit.
+- Four more fences beside the seven of the list below:
+  `test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page`,
+  `test_a_message_that_two_pages_name_is_fetched_once` (scope item 2),
+  `test_a_stale_cursor_on_a_later_page_keeps_the_finished_pages` (scope item 6) and
+  `test_a_partial_cycle_keeps_the_watermark_and_backs_off` (scope item 5, hermetic).
+  `test_a_result_that_is_not_rate_limited_keeps_its_catch_up` covers acceptance 8.
+- The R8 fence drives `_account_sync_loop` for one cycle at a time. It reads the real back-off
+  of the loop, and it does not trust the result dict alone.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
 `email_accounts.last_history_id` holds the cursor, as in EM-G4b.
