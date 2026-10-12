@@ -49,7 +49,8 @@ import {
   type PositionPatch,
 } from "../lib/settings";
 import FieldsCard from "./FieldsCard";
-import { Card, ComingSoonCard, NameList, PipelineSections } from "./SettingsCards";
+import { Card, NameList, PipelineSections } from "./SettingsCards";
+import SyncHealthCard from "./SyncHealthCard";
 import type {
   DealPipeline,
   LostReason,
@@ -186,10 +187,8 @@ export default function PipelineSettings({
       {showAdminCards && (
         <>
           <FieldsCard readOnly={readOnly} />
-          <ComingSoonCard
-            title="Sync health"
-            note="The Zoho count against ours, skipped records and the last error."
-          />
+          {/* Sync health reads the mirror, so Native mode does not draw it. */}
+          {readOnly && <SyncHealthCard />}
         </>
       )}
     </div>
