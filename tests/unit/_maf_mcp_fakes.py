@@ -26,12 +26,19 @@ from typing import Any
 def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,
-        scope: list[str] | None = None) -> dict[str, Any]:
-    """One registered MCP server, with its org."""
-    return {
+        scope: list[str] | None = None,
+        always_confirm: bool | None = None) -> dict[str, Any]:
+    """One registered MCP server, with its org.
+
+    *always_confirm* None stands for a row with no H-300 key, which reads as
+    false."""
+    out = {
         "org": org, "name": name, "transport": transport, "url": url,
         "headers": headers or {}, "agent_scope": scope or ["*"],
     }
+    if always_confirm is not None:
+        out["always_confirm"] = always_confirm
+    return out
 
 
 #: The one reader call that the spy records, with the org it was given.
@@ -67,6 +74,7 @@ class RegistrySpy:
                 transport=r["transport"], url=r["url"],
                 agent_scope=tuple(r["agent_scope"]), enabled=True,
                 header_names=tuple(sorted(r["headers"])), headers=dict(r["headers"]),
+                **({"always_confirm": r["always_confirm"]} if "always_confirm" in r else {}),
             )
             for r in self.rows if r["org"] == org
         ]
