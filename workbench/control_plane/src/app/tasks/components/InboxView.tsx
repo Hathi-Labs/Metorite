@@ -2,7 +2,6 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -14,7 +13,6 @@ import {
 import FilterPills from "@/components/FilterPills";
 import { EmptyState } from "@/components/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { taskDeepLink } from "@/app/projects/lib/card";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import {
   NO_SELECTION,
@@ -49,7 +47,6 @@ import {
   submitCaptureBox,
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
-import { promoteAllowed } from "../lib/promote";
 import { inboxEmptyCopy } from "../lib/emptyState";
 import { DELETE_LABEL, MIXED_LABEL, REMOVE_LABEL } from "../lib/removal";
 import { InboxCard } from "./InboxCard";
@@ -57,7 +54,6 @@ import { InboxTable } from "./InboxTable";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
-import { openShortcutsSheet } from "./TasksShortcuts";
 import { CaptureProjectChip } from "./CaptureProjectChip";
 import { filterWord, shellBarOn } from "@/lib/shell/registry";
 
@@ -109,7 +105,6 @@ type SortOrder = "newest" | "oldest";
  * this list. Clarify is where a capture gets its Area.
  */
 export function InboxView() {
-  const router = useRouter();
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const backend = useTaskStore((s) => s.backend);
@@ -120,7 +115,6 @@ export function InboxView() {
   const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const lastCaptureIds = useTaskStore((s) => s.lastCaptureIds);
   const undoLastCapture = useTaskStore((s) => s.undoLastCapture);
-  const quickDispose = useTaskStore((s) => s.quickDispose);
   const bulkDispose = useTaskStore((s) => s.bulkDispose);
   const requestDelete = useTaskStore((s) => s.requestDelete);
   const undeferItem = useTaskStore((s) => s.undeferItem);
@@ -281,16 +275,15 @@ export function InboxView() {
       : REMOVE_LABEL
     : DELETE_LABEL;
 
-  // ── keyboard navigation + triage over the visible list ──
+  // ── keyboard navigation over the visible list ──
   //
-  // WS-27ad — the movement half is the SHARED cursor (`@/lib/cursor`). What
-  // stays local is TRIAGE — `e`/`x`/`t`/`s`/`r`/`2` are GTD dispositions, and
-  // S6g adds `m` (Move to project, a capture) and `o` (Open on board, a board
-  // row). They walk both kinds, because `visible` holds both.
+  // WS-27ad — the SHARED cursor (`@/lib/cursor`): arrows move, Enter
+  // clarifies, Escape clears. The triage letter keys (`e x t s r 2 m o`)
+  // were removed on 2026-10-13 (owner: unnecessary and complicated). Each is
+  // a button on the row. Fence: `lib/noLetterKeys.test.ts`.
   //
-  // The cursor is held as an ID here rather than an index because triage
-  // ADVANCES it: dispose the current item and the row under it is gone, so
-  // "the next id" has to be read before the list changes.
+  // The cursor is held as an ID rather than an index, so it stays on its row
+  // when a button on another row changes the list.
   useEffect(() => {
     if (showTickler) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -308,26 +301,9 @@ export function InboxView() {
 
       const rows = visible.map((i) => i.id);
       const idx = visible.findIndex((i) => i.id === cursorId);
-      const cur = idx >= 0 ? visible[idx] : visible[0];
-      const curKind = kindOf(cur);
-      const disposeAdvance = (d: Disposition) => {
-        const nextId =
-          visible[idx + 1]?.id ?? visible[idx - 1]?.id ?? null;
-        quickDispose(cur.id, d);
-        setCursorId(nextId);
-      };
-      const removeAdvance = () => {
-        const nextId =
-          visible[idx + 1]?.id ?? visible[idx - 1]?.id ?? null;
-        // A board row: "Not mine", never a delete (see `bulkRemove`).
-        if (curKind === "board") quickDispose(cur.id, "TRASH");
-        else requestDelete([cur.id]);
-        setCursorId(nextId);
-      };
 
       // Arrows and Enter are the shared cursor's. `stepCursor` returns null for
-      // anything it does not own, so the triage switch below still sees every
-      // key it cares about and nothing is eaten twice.
+      // anything it does not own.
       const moved = stepCursor(
         rows,
         { cursor: clampCursor(rows.length, idx), anchor: null, selection: NOBODY },
@@ -343,51 +319,11 @@ export function InboxView() {
         return;
       }
 
-      switch (e.key) {
-        case "e":
-          // A board task's title is the team's. Edit it on the board.
-          if (curKind !== "personal") break;
-          e.preventDefault();
-          setEditingId(cur.id);
-          break;
-        case "x":
-          e.preventDefault();
-          toggleSelect(cur.id);
-          break;
-        case "t":
-          e.preventDefault();
-          removeAdvance();
-          break;
-        case "s":
-          e.preventDefault();
-          disposeAdvance("SOMEDAY");
-          break;
-        case "r":
-          e.preventDefault();
-          disposeAdvance("REFERENCE");
-          break;
-        case "2":
-          e.preventDefault();
-          disposeAdvance("DONE");
-          break;
-        case "m":
-          // Move to project — a capture only. A board row is on a board.
-          if (curKind !== "personal" || !promoteAllowed(cur)) break;
-          e.preventDefault();
-          openPromote(cur.id);
-          break;
-        case "o":
-          // Open on board — a board row only. A capture has no board.
-          if (curKind !== "board") break;
-          e.preventDefault();
-          router.push(taskDeepLink(cur));
-          break;
-        // `u` (undo) is handled globally by <UndoToast/> so it works in every
-        // view, not just the inbox.
-        case "Escape":
-          clearSelection();
-          setCursorId(null);
-          break;
+      // ⚠️ No letter keys (owner, 2026-10-13). Escape stays: it is not a
+      // shortcut.
+      if (e.key === "Escape") {
+        setSelection(NO_SELECTION);
+        setCursorId(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -400,13 +336,7 @@ export function InboxView() {
     clarifyModalOpen,
     quickCaptureOpen,
     promote,
-    openPromote,
-    kindOf,
-    router,
     openClarify,
-    quickDispose,
-    requestDelete,
-    toggleSelect,
   ]);
 
   const submit = () => {
@@ -525,18 +455,6 @@ export function InboxView() {
           >
             <AppIcon name="Wind" className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">Mind sweep</span>
-          </button>
-          {/* A pointer to the `?` sheet, which replaced the inline legend
-              (continuity P3). The sheet is printed from the key map in
-              `lib/shortcuts.ts`, so it cannot drift from the handlers. */}
-          <button
-            type="button"
-            onClick={openShortcutsSheet}
-            title="Keyboard shortcuts (?)"
-            aria-label="Keyboard shortcuts"
-            className="tech-transition inline-flex shrink-0 items-center rounded-md border border-border p-1.5 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-          >
-            <AppIcon name="Keyboard" className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
