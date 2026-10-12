@@ -1623,6 +1623,7 @@ def _discovery_due(ctx: _Ctx) -> bool:
     the profile was built with (a reconnect that grants or drops a module
     scope) makes discovery due at once. A profile that still waits for the
     fields of a module (the reserve stopped their read) is due after an hour.
+    CRM-Q7a adds one: a profile with no ``layout_fields`` is due at once.
     """
     current = ctx.profile
     if current is None or current.fetched_at is None:
@@ -1630,6 +1631,10 @@ def _discovery_due(ctx: _Ctx) -> bool:
     if current.connection_id != ctx.handle.connection_id:
         return True
     if current.profile.get("scope_set") != ctx.mapping.scope_set_key(ctx.handle.scopes):
+        return True
+    # CRM-Q7a: a profile from before the Field map has no layout list, so no
+    # fixed column can take a rule until discovery reads it once.
+    if "layout_fields" not in current.profile:
         return True
     age = ctx.started - current.fetched_at
     pending = any(

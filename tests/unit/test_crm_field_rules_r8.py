@@ -605,6 +605,30 @@ async def test_a_second_approved_rule_for_the_same_column_gives_409(fr) -> None:
     assert now.json()["proposed_by"] == "ai", "an approve keeps who proposed it"
 
 
+# ── A profile from before this slice ─────────────────────────────────────────
+
+
+async def test_a_profile_with_no_layout_list_is_read_again_at_once(fr) -> None:
+    """A profile stored before CRM-Q7a has no ``layout_fields``. Until the next
+    discovery no fixed column can take a rule, so the next run reads it."""
+    p, a, _b = fr
+    await _imported(p, p.org_a, a)
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_source_profiles SET profile = profile - 'layout_fields' "
+                       "- 'custom_field_types' WHERE organization_id = CAST(:o AS uuid)"),
+                  {"o": p.org_a})
+    closed = await _post(p.org_a, "Custom_Industry", "industry")
+    assert closed.status_code == 422
+    assert closed.json()["detail"]["code"] == "layout_unknown"
+    # A free column needs no layout.
+    assert (await _post(p.org_a, "Why_Lost", "lost_note")).status_code == 201
+
+    reads = a.org_reads
+    assert (await _run(p.org_a)).status == "ok"
+    assert a.org_reads == reads + 1, "the run read the profile again"
+    assert (await _post(p.org_a, "Custom_Industry", "industry")).status_code == 201
+
+
 # ── The migration ────────────────────────────────────────────────────────────
 
 
