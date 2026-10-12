@@ -15,6 +15,16 @@ The fences of the server half of the stall fix:
   tenant text.
 * A7 (PR-A2). The reply path sends the ``context`` ``done`` event, once and
   before the draft starts.
+* A2b (PR-A1). The context step of ``_compose_assist_run`` opens two short
+  blocks. The body fetch and the embed run with no session. Past
+  ``SIDE_STEP_BOUND_S`` a side step gives nothing, and the draft goes on. B2:
+  a refreshed token is written in a block that the context bound cannot roll
+  back.
+* A2c (PR-A1). Past ``CONTEXT_STEP_BOUND_S`` the draft goes on with the body
+  that the step holds, the thread or "", and each side block empty. B3: an
+  expiry before the owner check and the target row raises.
+* A4 (PR-A1). No session is open during the model call. A short new block
+  stores the draft. The R8 half is ``test_email_draft_store_rls.py``.
 
 Hermetic: the model, the provider and the session are fakes.
 """
@@ -581,3 +591,386 @@ async def test_each_other_path_sends_context_done_once(
         on_activity=on_activity)
 
     assert _context_events(events) == ["start", "done"]
+
+
+# ── PR-A1: the context step holds no session across the provider ──────────
+
+
+class _Blocks:
+    """A ``_tenant_session`` double that numbers each block, knows which
+    block is open, and records each step with the block it ran in. A step
+    with no block open records ``None``."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.current: int | None = None
+        self.trace: list[tuple[str, int | None]] = []
+        self.committed: list[int] = []
+        self.rolled_back: list[int] = []
+
+    @asynccontextmanager
+    async def session(self):
+        self.count += 1
+        n = self.count
+        self.current = n
+        try:
+            yield SimpleNamespace(block=n)
+        except BaseException:
+            self.rolled_back.append(n)
+            raise
+        else:
+            self.committed.append(n)
+        finally:
+            self.current = None
+
+    def step(self, name: str, result: Any = None, *, hang: bool = False):
+        """An async fake that records ``name`` and its block."""
+
+        async def fake(*_a: Any, **_k: Any) -> Any:
+            self.trace.append((name, self.current))
+            if hang:
+                await asyncio.Event().wait()
+            return result
+
+        return fake
+
+    def block_of(self, name: str) -> int | None:
+        return next(b for n, b in self.trace if n == name)
+
+    def names(self) -> list[str]:
+        return [n for n, _b in self.trace]
+
+
+_TARGET = SimpleNamespace(
+    id="m-1", account_id="acc-1", provider_message_id="pm-1", thread_id="t-1",
+    subject="Meeting next week", body_text="", snippet="SNIPPET-OF-THE-MAIL",
+    from_address={"email": "ravi@ext.test", "name": "Ravi"},
+    to_addresses=[], cc_addresses=[])
+_FULL = "FULL BODY: can we meet on Tuesday?"
+
+
+def _phased_world(monkeypatch, *, hang: str = "", stored_body: str = "",
+                  dirty: bool = False) -> SimpleNamespace:
+    """The real phased ``_compose_assist_run`` over fakes of each read. The
+    step named ``hang`` never returns."""
+    w = _Blocks()
+    seen: dict[str, Any] = {}
+
+    def step(name: str, result: Any = None) -> Any:
+        return w.step(name, result, hang=(name == hang))
+
+    async def fetch_body(_pmid: str) -> Any:
+        w.trace.append(("fetch", w.current))
+        if hang == "fetch":
+            await asyncio.Event().wait()
+        return SimpleNamespace(body_text=_FULL, body_html=None)
+
+    provider = MagicMock()
+    provider.authenticate = step("authenticate", True)
+    provider.get_message_body = fetch_body
+    provider.credentials_dirty = MagicMock(return_value=dirty)
+
+    async def read_fewshot(_db, _aid, qvec, **_k) -> str:
+        w.trace.append(("fewshot", w.current))
+        return "FEWSHOT" if qvec else ""
+
+    async def model(email, *_a, **_k) -> str:
+        w.trace.append(("model", w.current))
+        seen["ctx"] = dict(email)
+        return "Hello Ravi"
+
+    async def compose_model(**kw) -> str:
+        w.trace.append(("model", w.current))
+        seen["compose"] = kw
+        return "Improved"
+
+    row = SimpleNamespace(body_text=stored_body, body_html=None,
+                          snippet=_TARGET.snippet, received_at=None,
+                          stored_bytes=0)
+    target = SimpleNamespace(**{**vars(_TARGET), "body_text": stored_body})
+    for name, value in (
+        ("_tenant_session", w.session),
+        ("_assert_account_owner", step("owner")),
+        ("_load_assistant_about", step("about", ("About me", "Sig"))),
+        ("_reply_target", step("target", target)),
+        ("resolve_self", step("self", SelfIdentity(
+            address="me@a.test", label="Me",
+            self_addresses=frozenset({"me@a.test"})))),
+        ("resolve_org_domains", step("domains", frozenset())),
+        ("_attachment_summaries", step("files", {})),
+        ("_fetch_thread_context", step("thread", "THREAD")),
+        ("_fetch_sender_reply_examples", step("examples", "EXAMPLES")),
+        ("_fetch_reply_memories", step("memories", "MEMORIES")),
+        ("_read_sent_fewshot", read_fewshot),
+        ("_fetch_calendar_context", step("calendar", "CALENDAR")),
+        ("_embed_for_fewshot", step("embed", [0.1, 0.2])),
+        ("_agent_draft_reply", model),
+        ("_llm_compose_assist", compose_model),
+        ("_store_ai_draft", step("store_draft")),
+    ):
+        monkeypatch.setattr(drafting, name, value)
+    for name, value in (
+        ("_hydrate_row", step("hydrate_row", row)),
+        ("_provider_for_message", step(
+            "load_provider", (provider, "pm-1", "acc-1", MagicMock()))),
+        ("_store_hydrated_body", step("write_body")),
+        ("_persist_rotated_creds", step("write_creds")),
+    ):
+        monkeypatch.setattr(core, name, value)
+    return SimpleNamespace(blocks=w, seen=seen)
+
+
+def _reply_req(body: str = "") -> drafting.ComposeAssistRequest:
+    return drafting.ComposeAssistRequest(
+        account_id="acc-1", mode="reply", message_id="m-1", body=body)
+
+
+_BLOCK_1 = ("owner", "about", "target", "hydrate_row", "load_provider", "self",
+            "domains", "files", "thread", "examples")
+_SIDE = ("sender_examples", "reply_memories", "sent_examples", "calendar")
+
+
+async def test_the_context_step_opens_two_short_blocks(monkeypatch) -> None:
+    """A2b and A4. Block 1 reads. The fetch and the embed run with no
+    session. Block 2 writes the body and the creds, then reads. The model
+    runs with no session, and a short new block stores the draft."""
+    world = _phased_world(monkeypatch, dirty=True)
+    w = world.blocks
+    out = await asyncio.wait_for(
+        drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert out == {"draft": "Hello Ravi\n\nSig"}
+
+    b1 = w.block_of("target")
+    assert b1 is not None
+    for name in _BLOCK_1:
+        assert w.block_of(name) == b1, (name, w.trace)
+    for name in ("authenticate", "fetch", "embed"):
+        assert w.block_of(name) is None, f"a session was open during {name}"
+    write = w.block_of("write_body")
+    assert write not in (None, b1) and w.block_of("write_creds") == write
+    read = w.block_of("memories")
+    assert read not in (None, b1, write)
+    assert w.block_of("fewshot") == read and w.block_of("calendar") == read
+    order = w.names()
+    assert (order.index("fetch") < order.index("embed")
+            < order.index("write_body") < order.index("write_creds")
+            < order.index("memories"))
+    assert w.block_of("model") is None, "a session was open during the model"
+    assert w.block_of("store_draft") not in (None, b1, write, read)
+    assert w.rolled_back == []
+
+    ctx = world.seen["ctx"]
+    assert ctx["body"] == _FULL
+    assert (ctx["thread"], ctx["sender_examples"]) == ("THREAD", "EXAMPLES")
+    assert (ctx["reply_memories"], ctx["sent_examples"], ctx["calendar"]) == (
+        "MEMORIES", "FEWSHOT", "CALENDAR")
+
+
+async def test_improve_and_new_mail_call_the_model_with_no_session(
+    monkeypatch,
+) -> None:
+    """A4 for the compose model too: the improve path and new mail."""
+    world = _phased_world(monkeypatch)
+    w = world.blocks
+    await drafting._compose_assist_run(_reply_req(body="My own words."), _USER)
+    assert w.block_of("model") is None
+    assert "store_draft" not in w.names()
+    w.trace.clear()
+    await drafting._compose_assist_run(
+        drafting.ComposeAssistRequest(account_id="acc-1", to=["r@x.test"]), _USER)
+    assert w.block_of("model") is None
+    assert w.block_of("self") is not None
+
+
+async def test_a_stored_body_makes_no_fetch_and_no_write(monkeypatch) -> None:
+    world = _phased_world(monkeypatch, stored_body="STORED BODY")
+    await drafting._compose_assist_run(_reply_req(), _USER)
+    names = world.blocks.names()
+    assert "fetch" not in names and "load_provider" not in names
+    assert "write_body" not in names and "write_creds" not in names
+    assert world.seen["ctx"]["body"] == "STORED BODY"
+
+
+async def test_a_fetch_past_the_side_bound_gives_nothing(monkeypatch) -> None:
+    """A2b. The fetch hangs. Past SIDE_STEP_BOUND_S the draft goes on with
+    the snippet, and the step logs the bound."""
+    monkeypatch.setattr(drafting, "SIDE_STEP_BOUND_S", 0.05)
+    world = _phased_world(monkeypatch, hang="fetch")
+    with structlog.testing.capture_logs() as logs:
+        out = await asyncio.wait_for(
+            drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert out["draft"].startswith("Hello Ravi")
+    assert world.seen["ctx"]["body"] == _TARGET.snippet
+    assert "write_body" not in world.blocks.names()
+    line = next(e for e in logs if e["event"] == "hydrate_message_body.timeout")
+    assert line["bound_s"] == 0.05
+
+
+async def test_an_embed_past_the_side_bound_gives_no_fewshot(monkeypatch) -> None:
+    monkeypatch.setattr(drafting, "SIDE_STEP_BOUND_S", 0.05)
+    world = _phased_world(monkeypatch, hang="embed")
+    with structlog.testing.capture_logs() as logs:
+        await asyncio.wait_for(
+            drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert world.seen["ctx"]["sent_examples"] == ""
+    assert world.seen["ctx"]["reply_memories"] == "MEMORIES"
+    line = next(e for e in logs if e["event"] == "email.side_step_timeout")
+    assert (line["step"], line["bound_s"]) == ("embed", 0.05)
+
+
+async def test_a_refreshed_token_survives_a_fetch_past_the_side_bound(
+    monkeypatch,
+) -> None:
+    """B2. ``authenticate()`` refreshed the token, and then the fetch passed
+    SIDE_STEP_BOUND_S. Block 2a still writes the creds, and it commits."""
+    monkeypatch.setattr(drafting, "SIDE_STEP_BOUND_S", 0.05)
+    world = _phased_world(monkeypatch, hang="fetch", dirty=True)
+    w = world.blocks
+    await asyncio.wait_for(drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    creds = w.block_of("write_creds")
+    assert creds is not None and creds in w.committed
+    assert "write_body" not in w.names()
+
+
+async def test_a_refreshed_token_survives_the_context_bound(monkeypatch) -> None:
+    """B2. The CONTEXT bound ends during the fetch. The creds still land in
+    a block of their own that commits, and the draft goes on."""
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.1)
+    world = _phased_world(monkeypatch, hang="fetch", dirty=True)
+    w = world.blocks
+    out = await asyncio.wait_for(
+        drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert out["draft"].startswith("Hello Ravi")
+    creds = w.block_of("write_creds")
+    assert creds is not None and creds in w.committed
+    assert creds not in w.rolled_back
+
+
+@pytest.mark.parametrize("hang", ["remember", "consult_plan"])
+async def test_the_orchestrator_bounds_the_mem0_recall_and_the_plan(
+    monkeypatch, hang: str,
+) -> None:
+    """A2b. The Mem0 recall and the consult plan each end at
+    SIDE_STEP_BOUND_S, and the draft goes on. The rule path runs this too."""
+    import acb_skills.memory_tools as memory_tools
+
+    monkeypatch.setattr(drafting, "SIDE_STEP_BOUND_S", 0.05)
+
+    async def hangs(*_a: Any, **_k: Any) -> Any:
+        await asyncio.Event().wait()
+
+    async def no_plan(*_a: Any, **_k: Any) -> list:
+        return []
+
+    monkeypatch.setattr(memory_tools, "remember",
+                        hangs if hang == "remember" else AsyncMock(return_value="no relevant"))
+    monkeypatch.setattr(drafting, "_draft_consult_plan",
+                        hangs if hang == "consult_plan" else no_plan)
+    monkeypatch.setattr(drafting, "_llm_draft_reply", AsyncMock(return_value="NO_DRAFT"))
+    with structlog.testing.capture_logs() as logs:
+        draft = await asyncio.wait_for(
+            drafting._orchestrate_draft(_EMAIL, "", "", "owner@a.test"), 2.0)
+    assert draft == "NO_DRAFT"
+    steps = [e["step"] for e in logs if e["event"] == "email.side_step_timeout"]
+    assert steps == ["memory" if hang == "remember" else "consult_plan"]
+
+
+def test_the_side_and_context_bounds() -> None:
+    assert drafting.SIDE_STEP_BOUND_S == 5.0
+    assert drafting.CONTEXT_STEP_BOUND_S == 20.0
+    assert core.BODY_FETCH_TIMEOUT_S == 8.0, "the hydrate keeps its own bound"
+
+
+# ── A2c: the context step on expiry ────────────────────────────────────────
+
+
+async def test_an_expiry_in_block_1_keeps_the_thread_and_empties_the_side(
+    monkeypatch,
+) -> None:
+    """The sender examples hang, after the thread read. Past the bound the
+    target is the snippet, the thread is what block 1 read, each side block
+    is empty, and the block exited before the model."""
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.1)
+    world = _phased_world(monkeypatch, hang="examples")
+    w = world.blocks
+    with structlog.testing.capture_logs() as logs:
+        out = await asyncio.wait_for(
+            drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert out["draft"].startswith("Hello Ravi")
+    ctx = world.seen["ctx"]
+    assert ctx["body"] == _TARGET.snippet
+    assert ctx["thread"] == "THREAD"
+    assert all(ctx[k] == "" for k in _SIDE), ctx
+    assert w.block_of("model") is None
+    assert w.block_of("examples") in w.rolled_back
+    assert "fetch" not in w.names() and "memories" not in w.names()
+    line = next(e for e in logs if e["event"] == "email.context_step_timeout")
+    assert (line["stage"], line["ready"], line["bound_s"]) == ("block_1", True, 0.1)
+
+
+async def test_an_expiry_before_the_thread_read_gives_no_thread(monkeypatch) -> None:
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.1)
+    world = _phased_world(monkeypatch, hang="thread", stored_body="STORED BODY")
+    await asyncio.wait_for(drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    ctx = world.seen["ctx"]
+    assert ctx["body"] == "STORED BODY"
+    assert ctx["thread"] == ""
+    assert all(ctx[k] == "" for k in _SIDE), ctx
+
+
+async def test_an_expiry_in_block_2_empties_each_side_block(monkeypatch) -> None:
+    """The calendar hangs in block 2b. The memories that it read are dropped
+    too, and the draft keeps the body that the fetch brought."""
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.2)
+    world = _phased_world(monkeypatch, hang="calendar", dirty=True)
+    w = world.blocks
+    await asyncio.wait_for(drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    ctx = world.seen["ctx"]
+    assert ctx["body"] == _FULL
+    assert all(ctx[k] == "" for k in _SIDE), ctx
+    assert w.block_of("calendar") in w.rolled_back
+    assert w.block_of("write_creds") in w.committed
+    assert w.block_of("model") is None
+
+
+def test_the_other_callers_of_the_hydrate_keep_their_arguments() -> None:
+    """A2c. PR-A1 adds a path for compose-assist only (E2)."""
+    import inspect
+    import re
+
+    from gateway.routes.email.automation import actions, followups
+
+    assert list(inspect.signature(core.hydrate_message_body).parameters) == [
+        "db", "message_id", "user_email"]
+
+    def flat(fn: Any) -> str:
+        return re.sub(r"\s+", "", inspect.getsource(fn))
+
+    assert "hydrate_message_body(db,str(message_id),user_email)" in flat(
+        actions._apply_rule_actions)
+    assert "hydrate_message_body(db,str(r.last_message_id),acc.user_id)" in flat(
+        followups._maybe_send_follow_up_reminders)
+    assert "_build_reply_context(db,account_id,str(message_id),user_email)" in flat(
+        actions._apply_rule_actions)
+
+
+# ── B3: no draft without the owner check and the target row ────────────────
+
+
+@pytest.mark.parametrize("hang", ["owner", "target"])
+async def test_an_expiry_before_the_target_row_raises(monkeypatch, hang: str) -> None:
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.1)
+    world = _phased_world(monkeypatch, hang=hang)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert "model" not in world.blocks.names()
+
+
+async def test_the_route_sends_its_error_event_on_that_expiry(monkeypatch) -> None:
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.1)
+    world = _phased_world(monkeypatch, hang="target")
+    resp = await drafting.compose_assist_stream(_reply_req(), _USER)
+    events = _events(await asyncio.wait_for(_drain(resp.body_iterator), 2.0))
+    assert events[-1] == {"type": "error", "error": "draft failed"}
+    assert not any(e.get("type") == "done" for e in events)
+    assert "model" not in world.blocks.names()
