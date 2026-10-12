@@ -13,7 +13,9 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
 import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
-import type { DealPipeline } from "./types";
+import { isRunning, type SyncHealth } from "./syncHealth";
+import type { FieldDef } from "./fields";
+import type { DealPipeline, EntitySlug } from "./types";
 import {
   POLL_MS,
   WATCH_LIMIT_POLLS,
@@ -143,6 +145,52 @@ export function useSyncStatus(enabled: boolean, watchToken: number): SyncStatus 
   return status;
 }
 
+const KEY_SYNC_HEALTH = "crm:sync-health";
+
+export type SyncHealthState = {
+  health: SyncHealth | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+};
+
+/**
+ * The sync health (CRM-Q9). It polls every 3 s while the last run is
+ * `running`, with the poller of the status banner. A hidden tab is not polled.
+ */
+export function useSyncHealth(enabled: boolean): SyncHealthState {
+  const res = useCachedResource<SyncHealth | null>(
+    enabled ? KEY_SYNC_HEALTH : null,
+    api.getSyncHealth,
+  );
+  const health = res.data ?? null;
+  const refresh = res.refresh;
+  const running = isRunning(health);
+
+  const runningRef = useRef(false);
+  useEffect(() => {
+    runningRef.current = running;
+  });
+
+  useEffect(() => {
+    if (!enabled || !running) return;
+    const poller = startPoller({
+      refresh,
+      isRunning: () => runningRef.current,
+      isHidden: () => document.hidden,
+      ms: POLL_MS,
+      limit: WATCH_LIMIT_POLLS,
+    });
+    document.addEventListener("visibilitychange", poller.onVisible);
+    return () => {
+      poller.stop();
+      document.removeEventListener("visibilitychange", poller.onVisible);
+    };
+  }, [enabled, running, refresh]);
+
+  return { health, loading: enabled && res.loading, error: res.error, refresh };
+}
+
 const KEY_PIPELINES = "crm:pipelines";
 
 export type PipelinesState = {
@@ -163,4 +211,19 @@ export function usePipelines(enabled: boolean): PipelinesState {
     () => api.listPipelines().catch(() => null),
   );
   return { pipelines: res.data ?? null, loading: enabled && res.loading };
+}
+
+export type FieldDefsState = { defs: FieldDef[] | null; loading: boolean };
+
+/**
+ * The field definitions of one entity (CRM-Q4). Every failure reads as "no
+ * definitions", and the record then shows the humanised keys, as before. A
+ * record that fails to open because its labels failed is worse.
+ */
+export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
+  const res = useCachedResource<FieldDef[] | null>(
+    entity ? `crm:fields:${entity}` : null,
+    () => api.listFields(entity!).catch(() => null),
+  );
+  return { defs: res.data ?? null, loading: entity !== null && res.loading };
 }

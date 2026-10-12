@@ -17,6 +17,21 @@
  */
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
+import Modal from "@/components/ui/Modal";
+import { useState } from "react";
+import {
+  MAX_COLUMNS,
+  chosenDefs,
+  listCell,
+  pickable,
+  readColumns,
+  toggleColumn,
+  writeColumns,
+  type FieldDef,
+} from "../lib/fields";
+import FieldValue from "./FieldValue";
 import { COLUMNS } from "../lib/columns";
 import { SORTS } from "../lib/filters";
 import { money, shortDate, shortEmail } from "../lib/format";
@@ -67,6 +82,9 @@ export default function RecordList({
   direction,
   onSort,
   onOpen,
+  fieldDefs = null,
+  columnKeys,
+  onColumnsChange,
 }: {
   entity: EntitySlug;
   rows: Row[];
@@ -76,12 +94,58 @@ export default function RecordList({
   direction: "asc" | "desc";
   onSort: (key: string) => void;
   onOpen: (id: string) => void;
+  /** What each custom field means (CRM-Q4). The member may show up to five as columns. */
+  fieldDefs?: FieldDef[] | null;
+  /**
+   * The chosen custom columns of the saved view in effect (CRM-Q8). When it is
+   * given, the view owns the choice and the browser's choice is left alone.
+   * When it is absent, the choice is per entity and lives in this browser.
+   */
+  columnKeys?: string[];
+  onColumnsChange?: (keys: string[]) => void;
 }) {
   const columns = COLUMNS[entity];
+  // The choice is per entity and lives in this browser. The state re-seats
+  // while rendering when the entity changes, so no frame shows the old list's choice.
+  const [picked, setPicked] = useState(() => ({ entity, keys: readColumns(entity) }));
+  const [choosing, setChoosing] = useState(false);
+  let chosen = picked.keys;
+  if (picked.entity !== entity) {
+    chosen = readColumns(entity);
+    setPicked({ entity, keys: chosen });
+  }
+  const owned = columnKeys !== undefined;
+  if (owned) chosen = columnKeys;
+  const available = pickable(fieldDefs);
+  const extra = chosenDefs(chosen, fieldDefs);
+  function toggle(key: string) {
+    const keys = toggleColumn(chosen, key);
+    if (owned) {
+      onColumnsChange?.(keys);
+      return;
+    }
+    writeColumns(entity, keys);
+    setPicked({ entity, keys });
+  }
   const sortable = new Set(SORTS[entity].map((s) => s.key));
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      {available.length > 0 && (
+        <div className="flex shrink-0 justify-end border-b border-border px-4 py-1.5">
+          <Button variant="ghost" size="sm" onClick={() => setChoosing(true)}>
+            Columns
+          </Button>
+        </div>
+      )}
+      {choosing && (
+        <ColumnChooser
+          available={available}
+          chosen={chosen}
+          onToggle={toggle}
+          onClose={() => setChoosing(false)}
+        />
+      )}
       <div className="flex-1 overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 bg-background">
@@ -109,6 +173,14 @@ export default function RecordList({
                   )}
                 </th>
               ))}
+              {extra.map((def) => (
+                <th
+                  key={`custom:${def.key}`}
+                  className="px-4 py-2 text-left font-medium text-muted-foreground"
+                >
+                  {def.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -126,6 +198,11 @@ export default function RecordList({
                     {cell(column.key, row)}
                   </td>
                 ))}
+                {extra.map((def) => (
+                  <td key={`custom:${def.key}`} className="px-4 py-2 text-muted-foreground">
+                    <FieldValue value={listCell(row, def)} compact />
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -140,5 +217,49 @@ export default function RecordList({
         {loading ? "Loading…" : `${rows.length} of ${total}`}
       </footer>
     </div>
+  );
+}
+
+function ColumnChooser({
+  available,
+  chosen,
+  onToggle,
+  onClose,
+}: {
+  available: FieldDef[];
+  chosen: string[];
+  onToggle: (key: string) => void;
+  onClose: () => void;
+}) {
+  const full = chosen.length >= MAX_COLUMNS;
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Columns"
+      description={`Pick up to ${MAX_COLUMNS} fields to show in this list. ${chosen.length} of ${MAX_COLUMNS} chosen.`}
+      size="sm"
+      closeLabel="Close columns"
+      className="max-h-[85vh]"
+    >
+      <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+        {available.map((def) => {
+          const on = chosen.includes(def.key);
+          return (
+            <li key={def.key}>
+              <label className="flex items-center gap-2 text-xs text-foreground">
+                <Checkbox
+                  checked={on}
+                  disabled={full && !on}
+                  onChange={() => onToggle(def.key)}
+                  aria-label={def.label}
+                />
+                {def.label}
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </Modal>
   );
 }

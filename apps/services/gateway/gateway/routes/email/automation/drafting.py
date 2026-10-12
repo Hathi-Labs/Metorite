@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.providers.base import (
@@ -41,6 +42,7 @@ from gateway.routes.email.core import (
     _row_to_message,
     _savepoint,
     _tenant_session,
+    body_fetch_times,
     email_memory_scope,
     provider_session,
     router,
@@ -53,7 +55,9 @@ from gateway.routes.email.signature import (
 from gateway.routes.email.transport.send import (
     ArtifactAttachment,
     SendAttachment,
+    _as_uuid,
     load_artifact_attachments,
+    reply_row_match,
 )
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -963,6 +967,12 @@ async def _llm_draft_reply(
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.llm_draft_failed", error=str(exc)[:200],
                      interactive=interactive_fallback)
+        if interactive_fallback and isinstance(exc, StreamTimeout):
+            # EM-T17 PR-A (§17.3.7): a stalled model is not a draft. The
+            # member waits at the composer, so the route sends an `error`
+            # with the reason, never the template below. The rule path keeps
+            # the sentinel.
+            raise
         if interactive_fallback:
             body = ("Hi,\n\nThanks for your email — I'll review this and get "
                     "back to you shortly.")
@@ -1117,6 +1127,11 @@ async def _llm_compose_assist(
         body = _clean_draft_body(raw.strip())
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.compose_assist_failed", error=str(exc)[:200])
+        if isinstance(exc, StreamTimeout):
+            # EM-T17 PR-A (§17.3.7). Only the streamed call, which the member
+            # watches in the composer, raises it. The route sends an `error`
+            # with the reason, and the composer keeps the member's own text.
+            raise
         # Fall back to the owner's own text (improve) or a neutral opener (draft).
         return (current_body or "").strip() or DRAFT_NO_DRAFT_SENTINEL
     if _is_no_draft(body):
@@ -1880,6 +1895,11 @@ async def _compose_assist_run(
                 # to drop req.instruction entirely, so typing an instruction and
                 # hitting Draft on an empty reply changed nothing.
                 # Interactive → the COMPOSE tier.
+                # EM-T17 A7: this path returns before the shared "context
+                # done" below, so it sends its own here.
+                await _emit_activity(
+                    on_activity, kind="stage", id="context", status="done",
+                    detail="thread and recipient loaded")
                 draft = await _agent_draft_reply(
                     ctx, about, signature, user.email or "",
                     max_agents=1, agent_timeout=18.0,
@@ -1954,6 +1974,63 @@ async def compose_assist(
     return await _compose_assist_run(req, user)
 
 
+# ── No stall on the stream route (WS-17 EM-T17 PR-A, §17.3.7) ───────────────
+# Each bound is a module constant that a test can make short. The route reads
+# each one at call time. Fence: tests/unit/test_email_draft_no_stall.py.
+
+#: Quiet seconds before the route sends the SSE comment `: keepalive`.
+HEARTBEAT_S = 10.0
+#: The whole server path of one streamed draft: the context step, the consult
+#: plan, the consult and the model stream. It stays below the composer's
+#: `CLIENT_TOTAL_MS` (180 s, PR-A2), so the member sees the server's reason.
+SERVER_TOTAL_S = 170.0
+
+#: The text of an `error` event that a bound ended. The `reason` is the code.
+_BOUND_ERRORS: dict[str, str] = {
+    "model_slow": "The model did not start the draft in time.",
+    "model_stalled": "The model stopped during the draft.",
+    "model_timeout": "The draft took too long.",
+    "server_timeout": "The draft took too long.",
+}
+
+#: The modes that `email.draft_timing` names. Any other value is `other`,
+#: because `mode` arrives in the request and the log holds no free text.
+_TIMED_MODES = frozenset({"new", "reply", "forward"})
+
+
+def _log_draft_timing(
+    marks: dict[str, float], end: float, *, outcome: str, mode: str,
+    fetches: list[int] | None = None,
+) -> None:
+    """Log ``email.draft_timing``: the stage durations in ms and the outcome.
+
+    ``context_ms`` runs from the request to the start of the model step.
+    ``fetch_ms`` is the time of the provider body fetches of
+    ``hydrate_message_body`` in the context step, and ``None`` when no fetch
+    ran. ``decide_ms`` is ``None`` until PR-C adds the ``decide`` choice.
+    ``first_chunk_ms`` runs from the start of the model step to the first
+    chunk, and is ``None`` when no chunk came. The line holds no tenant text:
+    no subject, no body, no address and no instruction.
+    """
+    start = marks["start"]
+    draft_at = marks.get("draft") or marks.get("first_chunk")
+    first = marks.get("first_chunk")
+
+    def _ms(a: float | None, b: float | None) -> int | None:
+        return None if a is None or b is None else int((b - a) * 1000)
+
+    _log.info(
+        "email.draft_timing",
+        context_ms=_ms(start, draft_at if draft_at is not None else end),
+        decide_ms=None,
+        fetch_ms=sum(fetches) if fetches else None,
+        first_chunk_ms=_ms(draft_at, first),
+        total_ms=_ms(start, end),
+        outcome=outcome,
+        mode=mode if mode in _TIMED_MODES else "other",
+    )
+
+
 @router.post("/compose-assist/stream")
 async def compose_assist_stream(
     req: ComposeAssistRequest,
@@ -1974,34 +2051,88 @@ async def compose_assist_stream(
       {"type": "done", "draft": ..., "skipped"?: ...}
           — the FINAL cleaned draft (salutation/placeholder rules applied);
             always replaces any streamed preview text.
-      {"type": "error", "error": ...}
+      {"type": "error", "error": ..., "reason"?: ...}
+          — ``reason`` is set when a bound ended the draft: ``model_slow``,
+            ``model_stalled``, ``model_timeout`` or ``server_timeout``.
+
+    EM-T17 PR-A (``email_app_master_plan.md`` §17.3.7). The first event is
+    ``{"type": "status", "stage": "context"}``, sent before the task starts,
+    so before any session opens. A quiet stream sends the SSE comment
+    ``: keepalive`` every ``HEARTBEAT_S``. A client that skips each line
+    that does not start with ``data: `` ignores it. ``SERVER_TOTAL_S`` bounds
+    the whole server path. Each draft logs one ``email.draft_timing`` line.
     """
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    # The clock of `email.draft_timing`. Times only, no tenant text.
+    marks: dict[str, float] = {"start": loop.time()}
 
     async def on_activity(event: dict[str, Any]) -> None:
+        if (event.get("kind") == "stage" and event.get("id") == "draft"
+                and event.get("status") == "start"):
+            marks.setdefault("draft", loop.time())
         await queue.put({"type": "activity", **event})
 
     async def on_delta(kind: str, text_delta: str) -> None:
+        marks.setdefault("first_chunk", loop.time())
         await queue.put({"type": "delta", "kind": kind, "text": text_delta})
 
     async def runner() -> None:
+        outcome = "cancelled"
+        bound = asyncio.timeout(SERVER_TOTAL_S)
+        # The task runs in its own copy of the context, so this list sees the
+        # body fetches of this draft only.
+        fetches: list[int] = []
+        body_fetch_times.set(fetches)
         try:
-            result = await _compose_assist_run(
-                req, user, on_activity=on_activity, on_delta=on_delta)
+            async with bound:
+                result = await _compose_assist_run(
+                    req, user, on_activity=on_activity, on_delta=on_delta)
+            outcome = "skipped" if result.get("skipped") else "done"
             await queue.put({"type": "done", **result})
+        except StreamTimeout as exc:
+            # The model passed a stream bound (acb_llm.context). Never the
+            # neutral template: the member sees why the draft stopped.
+            outcome = exc.reason
+            await queue.put({"type": "error", "error": _BOUND_ERRORS[exc.reason],
+                             "reason": exc.reason})
+        except TimeoutError as exc:
+            if not bound.expired():
+                outcome = "failed"
+                _log.warning("email.compose_stream_failed", error=str(exc)[:200])
+                await queue.put({"type": "error", "error": "draft failed"})
+            else:
+                outcome = "server_timeout"
+                _log.warning("email.compose_stream_server_timeout",
+                             bound_s=SERVER_TOTAL_S)
+                await queue.put({"type": "error",
+                                 "error": _BOUND_ERRORS["server_timeout"],
+                                 "reason": "server_timeout"})
         except HTTPException as exc:
+            outcome = "refused"
             await queue.put({"type": "error", "error": str(exc.detail)})
         except Exception as exc:  # noqa: BLE001
+            outcome = "failed"
             _log.warning("email.compose_stream_failed", error=str(exc)[:200])
             await queue.put({"type": "error", "error": "draft failed"})
         finally:
+            _log_draft_timing(marks, loop.time(), outcome=outcome, mode=req.mode,
+                              fetches=fetches)
             await queue.put(None)
 
     async def event_stream():
+        # Before the task, so before the session: the composer sees life at once.
+        yield f"data: {json.dumps({'type': 'status', 'stage': 'context'})}\n\n"
         task = asyncio.create_task(runner())
         try:
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_S)
+                except TimeoutError:
+                    # An SSE comment. It keeps each proxy and the client from
+                    # reading a quiet context step as a dead connection.
+                    yield ": keepalive\n\n"
+                    continue
                 if item is None:
                     break
                 yield f"data: {json.dumps(item)}\n\n"
@@ -2212,6 +2343,18 @@ async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
     return _row_to_message(row).model_dump() if row else {}
 
 
+def _refuse_bad_draft_id(draft_id: str | None) -> None:
+    """Answer 404 for a draft id that is not a UUID.
+
+    ``email_messages.id`` is a uuid, so Postgres raises ``invalid input
+    syntax for type uuid`` on any other value, and the route answered 500.
+    No row can hold such an id, so the draft is not found. The check runs
+    before any database or provider call (``email_app_master_plan.md``
+    §17.11). Fence: ``tests/unit/test_email_reply_draft_save.py``."""
+    if draft_id and _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+
 class DraftUpsertRequest(BaseModel):
     account_id: str
     # Local id of an existing draft to UPDATE in place (omit to create a new one).
@@ -2242,6 +2385,7 @@ async def upsert_draft(
     place (no duplicates); ``reply_to_message_id`` threads a new reply draft;
     neither → a standalone draft. Returns the persisted message so the UI can show
     it in the Drafts folder and in-thread at once."""
+    _refuse_bad_draft_id(req.draft_id)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         # The signature lives IN the draft body so the upstream (provider)
@@ -2302,13 +2446,12 @@ async def upsert_draft(
                 # Accept either the local message id (inline reply) or the
                 # provider message id (full composer pop-out passes
                 # providerMessageId).
+                match, params = reply_row_match(req.reply_to_message_id)
                 rrow = (await db.execute(text(
                     "SELECT provider_message_id, thread_id, subject, from_address"
-                    " FROM email_messages WHERE account_id = :aid"
-                    " AND (id = :id OR provider_message_id = :id)"
-                    " LIMIT 1"
-                ), {"id": req.reply_to_message_id,
-                    "aid": req.account_id})).fetchone()
+                    f" FROM email_messages WHERE account_id = :aid AND {match}"
+                    " ORDER BY (provider_message_id = :rid) DESC LIMIT 1"
+                ), {**params, "aid": req.account_id})).fetchone()
                 if not rrow:
                     raise HTTPException(
                         status_code=404, detail="Reply target not found")
@@ -2430,6 +2573,7 @@ async def send_draft_endpoint(
     """Send an existing draft natively (Drafts → Sent, no duplicate) and drop the
     local draft row. Falls back to send-new-then-trash for providers without a
     native send-draft primitive."""
+    _refuse_bad_draft_id(req.draft_id)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         drow = (await db.execute(text(

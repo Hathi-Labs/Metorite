@@ -1483,6 +1483,22 @@ def _warn_fields(warnings: list[str]) -> dict:
     }
 
 
+#: What ``emit_generative_ui`` returns for a blocking card where no card can show.
+GENUI_NO_CARD_TEXT = (
+    "This chat cannot show a card that waits for the member. Ask the member in "
+    "plain text in your reply, and stop."
+)
+
+
+def _genui_card_refused(spec: dict) -> bool:
+    """True for a blocking card in a run that cannot show a card."""
+    if not spec.get("hitl"):
+        return False
+    from acb_skills.ask_tools import cards_refused
+
+    return cards_refused()
+
+
 async def emit_generative_ui(ui: str) -> dict:
     """Draw a card in the chat: a template, a component tree, React or HTML.
 
@@ -1535,6 +1551,12 @@ async def emit_generative_ui(ui: str) -> dict:
         return {"ok": False, "error": f"ui must be valid JSON: {exc}"}
     if not isinstance(spec, dict):
         return {"ok": False, "error": "ui must be a JSON object (a component node)"}
+    # A blocking card parks the run until a member answers. A stream that
+    # cannot show a card (WhatsApp, or a stream that does not declare
+    # ``shows_cards=True``) would wait an hour, so it is refused at once
+    # (review of PR #897). Fence: tests/unit/test_maf_mcp_confirm.py.
+    if _genui_card_refused(spec):
+        return {"ok": False, "error": GENUI_NO_CARD_TEXT}
     # The catalog on demand: a template with no data, an unknown or empty
     # template name, or a code mode with no code asks for its guide. Nothing
     # is parked or pushed for it.

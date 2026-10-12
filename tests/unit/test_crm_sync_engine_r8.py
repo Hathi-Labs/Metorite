@@ -58,7 +58,7 @@ MEMBER = "member@crm-sync.test"
 OUTSIDER = "outsider@zoho.test"
 SENTINEL = "SENTINEL-CUSTOMER-DATA"
 
-MODULES = ("Leads", "Deals", "Contacts", "Accounts", "Notes", "Calls", "Events")
+MODULES = ("Leads", "Deals", "Contacts", "Accounts", "Notes", "Calls", "Events", "Tasks")
 
 
 def stamp(minutes: int) -> str:
@@ -84,6 +84,8 @@ class ZohoTenant:
         self.requests: list[httpx.Request] = []
 
     def add(self, module: str, ident: str, minute: int, **fields: Any) -> None:
+        self.data.setdefault(module, [])
+        self.tombstones.setdefault(module, [])
         self.data[module].append(
             {"id": ident, "Modified_Time": stamp(minute), "Created_Time": stamp(0), **fields})
 
@@ -114,11 +116,12 @@ class ZohoTenant:
         if count:
             if self.no_count:
                 return httpx.Response(200, json={})
-            return httpx.Response(200, json={"count": len(self.data[count.group(1)])})
+            return httpx.Response(
+                200, json={"count": len(self.data.get(count.group(1), []))})
         deleted = re.match(r"/crm/v2/(\w+)/deleted$", path)
         if deleted:
-            return self._page(request, self.tombstones[deleted.group(1)], deleted=True,
-                              module=deleted.group(1))
+            return self._page(request, self.tombstones.get(deleted.group(1), []),
+                              deleted=True, module=deleted.group(1))
         records = re.match(r"/crm/v2/(\w+)$", path)
         if records:
             module = records.group(1)
@@ -128,7 +131,10 @@ class ZohoTenant:
                 raise httpx.ConnectError("injected fault")
             if module in self.on_read:
                 self.on_read[module](self.reads[module])
-            response = self._page(request, self.data[module], deleted=False, module=module)
+            # A module this tenant does not hold answers 204, as Zoho does for
+            # an empty module (CRM-Q6a reads modules beyond the eight).
+            response = self._page(
+                request, self.data.get(module, []), deleted=False, module=module)
             if module in self.low_credits:
                 response.headers["X-API-CREDITS-REMAINING"] = "500"
             return response
@@ -261,6 +267,7 @@ async def ns(promoted, monkeypatch):  # noqa: F811 — a fixture
                 "crm_contacts", "crm_companies", "crm_lead_statuses",
                 "crm_deal_statuses", "crm_field_defs", "crm_sync_runs",
                 "crm_sync_cursors", "crm_settings", "integration_connections",
+                "crm_module_records",
             ):
                 c.execute(text(
                     f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),

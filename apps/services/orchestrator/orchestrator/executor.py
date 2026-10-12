@@ -3641,8 +3641,26 @@ async def run_agent_stream(
     organization_id: str | None = None,
     #: The signed-in member, from the route's session. See `_run_member`.
     session_user: str | None = None,
+    #: True only when the caller's client DRAWS a card (a CUSTOM
+    #: ``confirmation_requested`` event). See below.
+    shows_cards: bool = False,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
+
+    **Cards are opt-in** (review of PR #888, P2). A card tool parks the run
+    until a member answers, so a stream that does not forward the card event
+    would wait an hour with no output, and then tell the model the member
+    said no. Only a caller whose client draws the card passes
+    ``shows_cards=True`` (the web chat, ``gateway.routes.agent``). Every
+    other run is inside ``ask_tools.refuse_cards_for_run``, as a WhatsApp run
+    is: a card answers "no" at once, and an MCP tool that needs one is
+    refused. Fence: ``tests/unit/test_maf_mcp_confirm.py`` (A19), which also
+    fails when a new caller does not say ``shows_cards=``.
+
+    The switch is a ContextVar, so it covers the tools of a MAF agent. A
+    Copilot SDK tool that runs in a JSON-RPC thread reads a fresh context,
+    so it is NOT covered. Only the email chat passes ``False`` today, and it
+    runs MAF.
 
     Strategy (two-tier with automatic fallback):
 
@@ -3804,6 +3822,9 @@ async def run_agent_stream(
 
     # ── Stream relay: tee all SSE events to Redis for reconnection support ─
     _relay_token = _stream_relay_thread_id.set(thread_id)
+    # Cards are opt-in (see the docstring). Released in the same finally.
+    from acb_skills.ask_tools import refuse_cards_for_run, release_cards_switch
+    _cards_token = refuse_cards_for_run(not shows_cards)
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
         artifact_context,
@@ -3958,12 +3979,16 @@ async def run_agent_stream(
             # no_egress run gets none. WS-8c: the org is the gateway's
             # server-side stamp (never the payload), a native agent's servers
             # pass the run's grant check, and the finally closes them.
+            # H-299: an MCP tool that can change data waits for a member's
+            # card. A run with no member (no authority) or a batch run has
+            # nobody to answer it, so such a tool is refused there.
             for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(
                     _a, agent_name,
                     organization_id=organization_id,
                     is_authorized=_authorizer,
                     opened=_mcp_opened,
+                    member_present=_authorizer is not None and not _batch_thread,
                 )
 
             # Per-session workspace override (Custom Apps builder sessions):
@@ -5830,6 +5855,7 @@ async def run_agent_stream(
             # that context is reset. A no-op when no sandbox ran.
             await _end_sandbox_run()
             _stream_relay_thread_id.reset(_relay_token)
+            release_cards_switch(_cards_token)
             _active_run_model.reset(_model_token)
             # H-201: the run's workspace, tenant key and session end with it.
             reset_artifact_context(_artifact_token)

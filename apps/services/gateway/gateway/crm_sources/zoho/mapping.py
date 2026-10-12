@@ -46,7 +46,7 @@ _NUMERIC_CEILING = 10**12
 _INT_CEILING = 2**31
 _SMALLINT_CEILING = 2**15
 
-_ACTIVITY_TYPES = {"note": "note", "call": "call", "meeting": "meeting"}
+_ACTIVITY_TYPES = {"note": "note", "call": "call", "meeting": "meeting", "task": "task"}
 
 #: The Zoho module a ``$se_module`` value names, as a canonical entity.
 _MODULE_ENTITY = {
@@ -72,6 +72,7 @@ ENTITY_TABLES: Mapping[str, str] = {
     "note": "crm_activities",
     "call": "crm_activities",
     "meeting": "crm_activities",
+    "task": "crm_activities",
 }
 
 
@@ -99,6 +100,10 @@ class Mapped:
     status_name: str | None = None
     #: A deal's contact. The engine adds it to ``crm_deal_contacts``.
     deal_contact: Link | None = None
+    #: A converted lead: the Zoho ids it became (``contact``, ``company``,
+    #: ``deal``), a key only when Zoho names it. ``None`` for a lead that is
+    #: not converted and for any other entity (CRM-Q5).
+    conversion: dict[str, str] | None = None
     owner_email: str | None = None
     owner_name: str | None = None
     #: A deal's pipeline: ``(ext_id, name)``. The engine resolves it to a local
@@ -197,6 +202,8 @@ _CONSUMED: Mapping[str, frozenset[str]] = {
         "id", "First_Name", "Last_Name", "Company", "Email", "Phone", "Mobile",
         "Website", "Industry", "No_of_Employees", "Annual_Revenue", "Lead_Source",
         "Description", "Lead_Status", "Owner", "Modified_Time",
+        "Converted__s", "Converted_Date_Time", "Converted_Contact",
+        "Converted_Account", "Converted_Deal",
     }),
     "deal": frozenset({
         "id", "Deal_Name", "Amount", "Probability", "Closing_Date", "Next_Step",
@@ -213,6 +220,11 @@ _CONSUMED: Mapping[str, frozenset[str]] = {
     "meeting": frozenset({
         "id", "Event_Title", "Description", "Start_DateTime", "Who_Id", "What_Id",
         "Owner", "Modified_Time",
+    }),
+    # ``Status`` and ``Priority`` stay in ``custom`` on purpose (CRM-Q5).
+    "task": frozenset({
+        "id", "Subject", "Description", "Due_Date", "Closed_Time", "Who_Id",
+        "What_Id", "Owner", "Modified_Time",
     }),
 }
 
@@ -332,6 +344,31 @@ def _activity_links(entity: str, fields: Mapping[str, Any]) -> tuple[Link, ...]:
     return tuple(links)
 
 
+def lead_conversion(fields: Mapping[str, Any]) -> dict[str, str] | None:
+    """The Zoho ids a converted lead became, or ``None`` for an open lead.
+
+    v2 sends ``Converted__s`` with ``Converted_Contact``, ``Converted_Account``
+    and ``Converted_Deal`` lookups, and older tenants send ``$converted`` with
+    a ``$converted_detail`` object. Both are read, and a key is present only
+    when Zoho names that record.
+    """
+    detail = fields.get("$converted_detail")
+    detail = detail if isinstance(detail, dict) else {}
+    ids = {
+        "contact": lookup_id(fields.get("Converted_Contact"))
+        or lookup_id(detail.get("contact") or detail.get("Contacts")),
+        "company": lookup_id(fields.get("Converted_Account"))
+        or lookup_id(detail.get("account") or detail.get("Accounts")),
+        "deal": lookup_id(fields.get("Converted_Deal"))
+        or lookup_id(detail.get("deal") or detail.get("Deals")),
+    }
+    flagged = fields.get("Converted__s") is True or fields.get("$converted") is True
+    found = {key: value for key, value in ids.items() if value}
+    if not flagged and not found and not instant(fields.get("Converted_Date_Time")):
+        return None
+    return found
+
+
 def _activity(entity: str, fields: Mapping[str, Any]) -> dict[str, Any]:
     created = instant(fields.get("Created_Time"))
     if entity == "note":
@@ -347,6 +384,19 @@ def _activity(entity: str, fields: Mapping[str, Any]) -> dict[str, Any]:
             "subject": text_value(fields.get("Subject")),
             "body": text_value(fields.get("Description")),
             "occurred_at": instant(fields.get("Call_Start_Time")) or created,
+        }
+    if entity == "task":
+        due = day(fields.get("Due_Date"))
+        closed = instant(fields.get("Closed_Time"))
+        done = (text_value(fields.get("Status")) or "").lower() == "completed"
+        return {
+            "type": "task",
+            "subject": text_value(fields.get("Subject")),
+            "body": text_value(fields.get("Description")),
+            "occurred_at": created,
+            "due_at": datetime(due.year, due.month, due.day, tzinfo=UTC) if due else None,
+            "completed_at": (closed or instant(fields.get("Modified_Time")) or created)
+            if done else None,
         }
     return {
         "type": "meeting",
@@ -383,6 +433,7 @@ def map_record(
     links: tuple[Link, ...] = ()
     status_name: str | None = None
     deal_contact: Link | None = None
+    conversion: dict[str, str] | None = None
     derived: tuple[str, ...] = ()
     pipeline: tuple[str | None, str | None] | None = None
 
@@ -398,6 +449,11 @@ def map_record(
         elif entity == "lead":
             status_name = text_value(fields.get("Lead_Status"))
             derived = ("lead_name",)
+            conversion = lead_conversion(fields)
+            if conversion is not None:
+                values["converted_at"] = instant(fields.get("Converted_Date_Time")) or (
+                    instant(fields.get("Modified_Time")) or modified_at
+                )
         elif entity == "deal":
             status_name = text_value(fields.get("Stage"))
             pipeline = pipeline_ref(fields)
@@ -421,6 +477,7 @@ def map_record(
         links=links,
         status_name=status_name,
         deal_contact=deal_contact,
+        conversion=conversion,
         owner_email=owner_email,
         owner_name=owner_name,
         pipeline=pipeline,
@@ -463,6 +520,14 @@ def map_field_def(
     api_name = text_value(definition.get("api_name"))
     if not api_name or api_name.startswith("$") or api_name in _CONSUMED[entity]:
         return None
+    return _field_def_row(entity, api_name, definition, position)
+
+
+def _field_def_row(
+    entity: str, api_name: str, definition: Mapping[str, Any], position: int,
+) -> dict[str, Any]:
+    """The ``crm_field_defs`` columns of one field. One rule for a known entity
+    and a generic module."""
     options = [
         {
             "label": text_value(o.get("display_value")) or text_value(o.get("actual_value")),
@@ -596,11 +661,91 @@ def pipeline_rows(pipelines: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 # ── The source profile (CRM-Q1) ─────────────────────────────────────────────
 
-#: The modules this mapping reads records from. A module in the profile is
-#: ``mirrored`` when its API name is here.
+#: The known modules of ``crm_platform.md`` §18.3 step 2. Each has a table of
+#: its own, and the fixed rules map it. A known module in the profile is always
+#: ``mirrored``. Tasks joined with CRM-Q5.
 MIRRORED_MODULES: frozenset[str] = frozenset(
-    {"Leads", "Contacts", "Accounts", "Deals", "Notes", "Calls", "Events"}
+    {"Leads", "Contacts", "Accounts", "Deals", "Notes", "Calls", "Events", "Tasks"}
 )
+
+#: The standard modules that the generic record store mirrors, in the order of
+#: ``crm_platform.md`` §18.7 (CRM-Q6a). The custom modules follow, in
+#: alphabetical order.
+GENERIC_STANDARD_MODULES: tuple[str, ...] = (
+    "Products", "Quotes", "Sales_Orders", "Purchase_Orders", "Invoices",
+    "Vendors", "Price_Books", "Cases", "Solutions", "Campaigns",
+)
+
+#: The most generic modules the sync mirrors. Sync health lists the rest as
+#: "not mirrored".
+GENERIC_MODULE_CAP = 25
+
+#: The ``generated_type`` values a generic module may have. A ``linking``
+#: module and a ``subform`` are never mirrored.
+_GENERIC_TYPES = frozenset({"default", "custom"})
+
+#: The prefix of a generic module's entity, in the cursors, the counts and
+#: ``crm_field_defs.entity`` (``module:Products``).
+MODULE_ENTITY_PREFIX = "module:"
+
+
+def module_entity(api_name: str) -> str:
+    """The entity of a generic module: ``module:<ApiName>``."""
+    return f"{MODULE_ENTITY_PREFIX}{api_name}"
+
+
+def module_of(entity: str) -> str | None:
+    """The API name of a generic module entity, or ``None`` for any other."""
+    if entity.startswith(MODULE_ENTITY_PREFIX):
+        return entity[len(MODULE_ENTITY_PREFIX):] or None
+    return None
+
+
+def module_read_scope(api_name: str, *, custom: bool) -> str:
+    """The OAuth scope that reads a generic module.
+
+    A standard module takes ``ZohoCRM.modules.<name>.READ``, with the API name
+    in lower case and with no underscore (``Sales_Orders`` gives
+    ``salesorders``). Each custom module takes ``ZohoCRM.modules.custom.READ``.
+    Zoho's published scope list for API v2 and v8 holds each of these names
+    (checked 2026-10-12).
+    """
+    if custom:
+        return "ZohoCRM.modules.custom.READ"
+    return f"ZohoCRM.modules.{api_name.lower().replace('_', '')}.READ"
+
+
+def _generic_candidate(row: Mapping[str, Any]) -> bool:
+    """The first four rules of §18.7 "Which modules". The scope is the fifth."""
+    api_name = row.get("api_name")
+    kind = row.get("generated_type")
+    return (
+        row.get("api_supported") is True
+        and kind in _GENERIC_TYPES
+        and api_name not in MIRRORED_MODULES
+        and (api_name in GENERIC_STANDARD_MODULES or kind == "custom")
+    )
+
+
+def _generic_rank(row: Mapping[str, Any]) -> tuple[int, str]:
+    api_name = str(row.get("api_name"))
+    if api_name in GENERIC_STANDARD_MODULES:
+        return GENERIC_STANDARD_MODULES.index(api_name), ""
+    return len(GENERIC_STANDARD_MODULES), api_name
+
+
+def generic_modules(profile: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The generic modules of a profile that the sync takes, in sync order.
+
+    Each row has ``generic`` true. ``mirrored`` is true when the connection
+    holds the module's read scope. A row with ``mirrored`` false and a
+    ``scope`` waits for a reconnect, and the sync counts it as unavailable.
+    """
+    rows = [
+        dict(m) for m in (profile or {}).get("modules") or []
+        if isinstance(m, Mapping) and m.get("generic")
+    ]
+    return sorted(rows, key=_generic_rank)
 
 #: The editions that Zoho names in ``license_details.paid_type``.
 EDITIONS: tuple[str, ...] = ("free", "standard", "professional", "enterprise", "ultimate")
@@ -666,7 +811,20 @@ def _org_summary(org: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _module_rows(modules: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _module_rows(
+    modules: list[Mapping[str, Any]], scopes: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """The module list of the profile.
+
+    A known module is ``mirrored``. A generic module (CRM-Q6a) passes the five
+    rules of ``crm_platform.md`` §18.7: the API supports it, it is ``default``
+    or ``custom`` (never ``linking`` or ``subform``), it is not a known module,
+    it is one of :data:`GENERIC_STANDARD_MODULES` or a custom module, and
+    *scopes* holds its read scope. At most :data:`GENERIC_MODULE_CAP` of them,
+    in the order of :func:`generic_modules`, are taken (``generic``). A taken
+    module whose scope is missing has ``mirrored`` false and keeps the
+    ``scope`` it waits for.
+    """
     rows: list[dict[str, Any]] = []
     for module in modules:
         api_name = text_value(module.get("api_name"))
@@ -683,7 +841,136 @@ def _module_rows(modules: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "visible": module.get("visible") is not False,
             "mirrored": api_name in MIRRORED_MODULES,
         })
+    taken = sorted((r for r in rows if _generic_candidate(r)), key=_generic_rank)
+    for row in taken[:GENERIC_MODULE_CAP]:
+        scope = module_read_scope(row["api_name"], custom=row["custom"])
+        row["generic"] = True
+        row["scope"] = scope
+        row["mirrored"] = scope in scopes
     return sorted(rows, key=lambda r: r["api_name"])
+
+
+def with_module_fields(
+    profile: dict[str, Any],
+    fields: Mapping[str, list[Mapping[str, Any]]],
+    previous: Mapping[str, Any] | None = None,
+    pending: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Put the display field of each generic module into the profile.
+
+    *fields* maps a module API name to its ``settings/fields`` rows. The field
+    with ``display_field`` true names the record (``crm_module_records.name``).
+    A module whose fields were not read keeps the display field of *previous*.
+    With none, ``display_field`` is ``None`` and the name stays NULL.
+
+    *pending* names the modules whose read waited for credits. Such a module
+    whose fields were never read gets ``fields_pending``. The sync reads no
+    record of it, and the next discovery reads its fields.
+    """
+    previous_rows = {
+        m.get("api_name"): m
+        for m in (previous or {}).get("modules") or [] if isinstance(m, Mapping)
+    }
+    old = {name: m.get("display_field") for name, m in previous_rows.items()}
+    for row in profile.get("modules") or []:
+        if not row.get("generic"):
+            continue
+        api_name = row["api_name"]
+        before = previous_rows.get(api_name) or {}
+        # An unmirrored row (no scope yet) also carries `display_field: None`,
+        # so only a module that was mirrored had its fields read.
+        read_before = bool(before.get("mirrored")) and not before.get("fields_pending")
+        row["fields_pending"] = api_name in pending and not read_before
+        if api_name in fields:
+            row["display_field"] = next(
+                (
+                    text_value(f.get("api_name")) for f in fields[api_name]
+                    if isinstance(f, Mapping) and f.get("display_field") is True
+                ),
+                None,
+            )
+        else:
+            row["display_field"] = old.get(api_name)
+    return profile
+
+
+def _lookup_module(definition: Mapping[str, Any]) -> str | None:
+    """The module a lookup field points at. v8 sends ``lookup.module`` as an
+    object with ``api_name``, and v2 as a plain name."""
+    lookup = definition.get("lookup")
+    if not isinstance(lookup, Mapping):
+        return None
+    target = lookup.get("module")
+    if isinstance(target, Mapping):
+        return text_value(target.get("api_name"))
+    return text_value(target)
+
+
+def map_module_field_def(
+    api_name: str, definition: Mapping[str, Any], position: int,
+) -> dict[str, Any] | None:
+    """One ``settings/fields`` row of a generic module as a ``crm_field_defs``
+    row with ``entity = 'module:<ApiName>'``, or ``None`` (CRM-Q6a).
+
+    Every field of the module gets a row, because every value lives in
+    ``fields``. A lookup keeps its target in ``options`` as
+    ``{"lookup_module": "<ApiName>"}``, so CRM-Q6b can resolve the link.
+    """
+    key = text_value(definition.get("api_name"))
+    if not key or key.startswith("$"):
+        return None
+    row = _field_def_row(module_entity(api_name), key, definition, position)
+    target = _lookup_module(definition)
+    if row["type"] == "lookup" and target:
+        row["options"] = {"lookup_module": target}
+    return row
+
+
+def module_record_link(
+    provider_meta: Mapping[str, Any], tab: str | None, ext_id: str,
+) -> str | None:
+    """The deep link of a generic record (CRM-Q1 rules), or ``None``.
+
+    *provider_meta* is the connection's registry row: ``accounts_server`` and
+    the ``domain_name`` that discovery stores. *tab* is the module's tab.
+    """
+    from gateway.crm_sources.zoho import links
+
+    return links.module_link(
+        text_value(provider_meta.get("accounts_server")),
+        text_value(provider_meta.get("domain_name")),
+        tab, ext_id,
+    )
+
+
+def map_module_record(
+    api_name: str,
+    fields: Mapping[str, Any],
+    *,
+    modified_at: datetime | None,
+    owners: Mapping[str, str],
+    display_field: str | None,
+) -> dict[str, Any]:
+    """One record of a generic module as the columns of ``crm_module_records``.
+
+    Pure, like :func:`map_record`. ``fields`` keeps each value keyed by its
+    API name, as ``custom`` does: a ``$`` system key is dropped, and ``id`` is
+    the ``ext_id``. A lookup stays as Zoho sends it (``{id, name}``). ``name``
+    is the value of the display field, or ``None``. ``owner_email`` is the
+    owner's email, which the engine keeps only for a member.
+    """
+    owner_email, _owner_name = _owner(fields, owners)
+    shown = fields.get(display_field) if display_field else None
+    return {
+        "name": _name_of(shown) if isinstance(shown, dict) else text_value(shown),
+        "owner_email": owner_email,
+        "fields": {
+            key: value for key, value in fields.items()
+            if key != "id" and not key.startswith("$")
+        },
+        "ext_created_at": instant(fields.get("Created_Time")),
+        "ext_modified_at": instant(fields.get("Modified_Time")) or modified_at,
+    }
 
 
 def _layout_rows(
@@ -721,9 +1008,14 @@ def _field_counts(
 
 
 def build_profile(
-    raw: Mapping[str, Any], previous: Mapping[str, Any] | None = None,
+    raw: Mapping[str, Any],
+    previous: Mapping[str, Any] | None = None,
+    scopes: frozenset[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The source profile from the raw discovery (``ZohoSource.discover``).
+
+    *scopes* are the scopes of the connection. They decide which generic
+    module is ``mirrored`` (CRM-Q6a, :func:`_module_rows`).
 
     **Metadata only.** The profile holds the edition, the currency, the module
     list, a summary of each layout, the count of fields, and the pipelines with
@@ -741,14 +1033,27 @@ def build_profile(
 
     return {
         "org": pick("org", _org_summary(raw.get("org"))),
-        "modules": pick("modules", _module_rows(raw.get("modules") or [])),
+        "modules": pick(
+            "modules", _module_rows(raw.get("modules") or [], frozenset(scopes)),
+        ),
         "layouts": pick("layouts", _layout_rows(raw.get("layouts") or {})),
         "fields": pick("fields", _field_counts(raw.get("fields") or {})),
         "pipelines": pick("pipelines", pipeline_rows(raw.get("pipelines") or [])),
         # The sections the read could not get. A section named here is the
         # copy of the previous profile, or empty.
         "unreadable": sorted(failed),
+        # The scope set the module rows were built with (CRM-Q6a). A connection
+        # whose scopes differ makes the next discovery due.
+        "scope_set": scope_set_key(scopes),
     }
+
+
+def scope_set_key(scopes: frozenset[str] | tuple[str, ...] | list[str]) -> str:
+    """A stable key of a scope set: order and repeats do not change it."""
+    import hashlib
+
+    joined = "\n".join(sorted({str(s) for s in scopes}))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 def profile_tabs(profile: Mapping[str, Any]) -> dict[str, str]:
@@ -765,7 +1070,10 @@ __all__ = [
     "EDITIONS",
     "EDITION_CREDITS",
     "ENTITY_TABLES",
+    "GENERIC_MODULE_CAP",
+    "GENERIC_STANDARD_MODULES",
     "MIRRORED_MODULES",
+    "MODULE_ENTITY_PREFIX",
     "OWNER_NAME_KEY",
     "Link",
     "Mapped",
@@ -775,11 +1083,20 @@ __all__ = [
     "daily_credits",
     "edition_of",
     "forecast_category_of",
+    "generic_modules",
     "map_field_def",
+    "map_module_field_def",
+    "map_module_record",
     "map_record",
+    "module_entity",
+    "module_of",
+    "module_read_scope",
+    "module_record_link",
     "pipeline_ref",
     "pipeline_rows",
     "pipeline_stages",
     "profile_tabs",
+    "scope_set_key",
     "stage_type_hint",
+    "with_module_fields",
 ]

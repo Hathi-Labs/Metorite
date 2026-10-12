@@ -177,7 +177,12 @@ export function ComposePanel({
   // A fresh compose session each time the window opens: re-sync fields from the
   // (possibly new) props and forget any prior draft so we don't update it.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // The panel stays mounted when it closes, so its AI round ends here.
+      // Else a late draft writes into a closed composer (EM-T17).
+      ai.reset();
+      return;
+    }
     setTo(defaultTo);
     setCc(defaultCc);
     setSubject(defaultSubject);
@@ -663,6 +668,8 @@ export function ComposePanel({
             revisions={ai.revisions}
             activeRevision={ai.activeRevision}
             elapsedMs={ai.elapsedMs}
+            notice={ai.notice}
+            onStop={ai.stop}
             onRun={runAi}
             onRestore={(id) => ai.restore(id, splitQuotedText(body).quoted)}
             onClose={() => setAiOpen(false)}

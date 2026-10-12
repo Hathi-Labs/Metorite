@@ -82,19 +82,24 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import Depends, HTTPException, Query, Request, Response
 from gateway.csv_export import csv_document
 from gateway.routes.crm.core import (
     CONTACTS,
     DEALS,
     LEADS,
+    OPEN_LEAD_SQL,
     ORGANIZATIONS,
     Entity,
+    ExtraFilterInput,
     _tenant_session,
+    custom_pairs,
+    extra_filters,
     list_contract,
     project_joined,
     qualify,
     related_filters,
+    resolve_owner,
     router,
     row_to_dict,
 )
@@ -184,6 +189,13 @@ class ExportParams:
         pipeline_id: str | None = None,
         company_id: str | None = None,
         contact_id: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        updated_from: str | None = None,
+        updated_to: str | None = None,
+        close_from: str | None = None,
+        close_to: str | None = None,
+        request: Request = None,  # type: ignore[assignment]
     ) -> None:
         self.q = q
         self.sort = sort
@@ -195,6 +207,14 @@ class ExportParams:
         self.pipeline_id = pipeline_id
         self.company_id = company_id
         self.contact_id = contact_id
+        # CRM-Q8: the same extra filters as the list, so the file is the list.
+        self.created_from = created_from
+        self.created_to = created_to
+        self.updated_from = updated_from
+        self.updated_to = updated_to
+        self.close_from = close_from
+        self.close_to = close_to
+        self.custom = tuple(custom_pairs(request.query_params if request else None))
 
 
 def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
@@ -241,32 +261,49 @@ def _too_many(entity: Entity, total: int, *, at_least: bool = False) -> HTTPExce
     )
 
 
-async def _export(entity: Entity, params: ExportParams) -> Response:
+async def _export(
+    entity: Entity, params: ExportParams, user: Any = None,
+) -> Response:
     """The caller's current filter, as a CSV file. One implementation, four
     entities — the shape ``records._list`` uses for the same reason."""
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6, `records._list`'s clause verbatim: a lead is "converted"
         # while the deal it became still exists.
-        extra = ("converted_deal_id IS NULL",)
+        extra = (OPEN_LEAD_SQL,)
     # CRM-Q3: the related-list filters travel with the export, so the file is
     # the list that is on screen.
     related_where, related_params = related_filters(
         entity, company_id=params.company_id, contact_id=params.contact_id,
     )
     extra = (*extra, *related_where)
-    # Reused for the WHERE clause and the ORDER BY — and for the 422s it raises
-    # on an unknown sort key, an unknown direction and a status filter on an
-    # entity with no pipeline. Its `limit` is the PAGE clamp and is never read
-    # here; see rule 2 in the module docstring.
-    query = list_contract(
-        entity,
-        q=params.q, sort=params.sort, direction=params.direction,
-        status_id=params.status_id, owner=params.owner, source=params.source,
-        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=related_params,
-    )
+    # `me` is the caller (CRM-Q8). The email comes from the session.
+    params.owner = resolve_owner(params.owner, user)
 
     async with _tenant_session() as db:
+        # CRM-Q8: the date ranges and the custom field filters, validated
+        # before the count runs.
+        more_where, more_params = await extra_filters(
+            db, entity, ExtraFilterInput(
+                created_from=params.created_from, created_to=params.created_to,
+                updated_from=params.updated_from, updated_to=params.updated_to,
+                close_from=params.close_from, close_to=params.close_to,
+                custom=params.custom,
+            ),
+        )
+        extra = (*extra, *more_where)
+        related_params = {**related_params, **more_params}
+        # Reused for the WHERE clause and the ORDER BY — and for the 422s it raises
+        # on an unknown sort key, an unknown direction and a status filter on an
+        # entity with no pipeline. Its `limit` is the PAGE clamp and is never read
+        # here; see rule 2 in the module docstring.
+        query = list_contract(
+            entity,
+            q=params.q, sort=params.sort, direction=params.direction,
+            status_id=params.status_id, owner=params.owner, source=params.source,
+            pipeline_id=params.pipeline_id, extra_where=extra,
+            extra_params=related_params,
+        )
         total = int((await db.execute(
             text(f"SELECT count(*) FROM {entity.table}{query.where}"),
             query.params,
@@ -344,7 +381,7 @@ async def export_leads_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(LEADS, params)
+    return await _export(LEADS, params, user)
 
 
 @router.get("/export/deals.csv")
@@ -352,7 +389,7 @@ async def export_deals_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(DEALS, params)
+    return await _export(DEALS, params, user)
 
 
 @router.get("/export/contacts.csv")
@@ -360,7 +397,7 @@ async def export_contacts_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(CONTACTS, params)
+    return await _export(CONTACTS, params, user)
 
 
 @router.get("/export/organizations.csv")
@@ -368,7 +405,7 @@ async def export_organizations_csv(
     params: ExportParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
-    return await _export(ORGANIZATIONS, params)
+    return await _export(ORGANIZATIONS, params, user)
 
 
 #: Slug → handler, for the tests that exercise all four without a TestClient.

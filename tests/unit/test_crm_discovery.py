@@ -353,3 +353,29 @@ def test_the_pipeline_tab_link() -> None:
     assert links.tab_link(ACCOUNTS, "org123", "deal") == (
         "https://crm.zoho.in/crm/org123/tab/Potentials")
     assert links.tab_link(ACCOUNTS, None, "deal") is None
+
+
+def test_stage_types_keep_won_and_lost_and_the_first_pipeline_decides() -> None:
+    """The type pass of the engine reads only ``won`` and ``lost``.
+
+    A stage with no type, or with another word, is absent, so its row keeps
+    its type. When two pipelines disagree, the first pipeline decides.
+    """
+    pipelines = [
+        {"name": "Sales", "stages": [
+            {"name": "Payment Complete", "type": "won"},
+            {"name": "Re-Evaluate", "type": "lost"},
+            {"name": "Discovery", "type": None},
+            {"name": "Odd", "type": "open"},
+        ]},
+        {"name": "Renewals", "stages": [
+            {"name": "Re-Evaluate", "type": "won"},
+            {"name": "", "type": "won"},
+            "not a stage",
+        ]},
+        "not a pipeline",
+    ]
+    assert engine.stage_types(pipelines) == {
+        "Payment Complete": "won", "Re-Evaluate": "lost",
+    }
+    assert engine.stage_types([]) == {}

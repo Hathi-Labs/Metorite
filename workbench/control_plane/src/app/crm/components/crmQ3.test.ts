@@ -178,7 +178,9 @@ describe("related lists", () => {
 
   it("opens the record from the sheet with the existing sheet parameter", () => {
     const page = read("../page.tsx");
-    expect(page).toMatch(/onOpenRelated=\{\(entity, id\) => go\(openRecord\(view, PARAM_FOR\[entity\], id\)\)\}/);
+    // `openAlone` is `go` that also forgets the list behind the sheet: a
+    // record opened from a related list has no `j` and `k` (CRM-X4 item 5).
+    expect(page).toMatch(/onOpenRelated=\{\(entity, id\) => openAlone\(openRecord\(view, PARAM_FOR\[entity\], id\)\)\}/);
     expect(page).toMatch(/related=\{store\.related\}/);
   });
 
@@ -192,8 +194,8 @@ describe("related lists", () => {
           { contact: { id: "c1", first_name: "Anitha", last_name: "Kumar" }, role: "Procurement", is_primary: true },
         ],
         saving: false,
+        part: "related",
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -205,16 +207,16 @@ describe("related lists", () => {
     expect(html).toContain("Procurement");
   });
 
-  it("mounts the sections in the fields panel for a company", () => {
+  it("mounts the sections in the Related tab of a company", () => {
     const html = renderToStaticMarkup(
       createElement(FieldsPanel, {
+        part: "related",
         entity: "organizations",
         record: { id: "o1", name: "Bosch" },
         statuses: [],
         dealContacts: [],
         saving: false,
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -290,7 +292,7 @@ describe("CRM settings", () => {
     );
 
   it("draws the cards in the order of the spec", () => {
-    const html = draw();
+    const html = draw({ readOnly: true });
     const order = [
       "SETUP",
       "ACCESS",
@@ -305,8 +307,10 @@ describe("CRM settings", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it("fills Fields and Sync health with a Coming soon card", () => {
-    expect(draw().match(/Coming soon/g)).toHaveLength(2);
+  it("draws Sync health in Mirror mode only (CRM-Q9)", () => {
+    expect(draw({ readOnly: true })).toContain("Sync health");
+    expect(draw()).not.toContain("Sync health");
+    expect(draw({ readOnly: true })).not.toContain("Coming soon");
   });
 
   it("keeps the admin cards from a member", () => {

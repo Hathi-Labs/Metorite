@@ -138,12 +138,15 @@ def test_the_crm_sync_runs_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize(
-    "table", ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages"],
+    "table",
+    ["crm_source_profiles", "crm_pipelines", "crm_pipeline_stages", "crm_views",
+     "crm_module_records"],
 )
 def test_the_crm_q1_q2_tables_are_tenant_scoped(table: str) -> None:
     """WS-53 CRM-Q1/Q2 (``crm_platform.md`` §18). The source profile and the
     deal pipelines hold one organization's data. None may be exempt, and the
-    committed policy phase must carry each."""
+    committed policy phase must carry each. CRM-Q6a adds the generic record
+    store (§18.7)."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT

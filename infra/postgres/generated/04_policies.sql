@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 154
+-- Tables in this phase: 157
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -51,6 +51,13 @@ ALTER TABLE agent_blob ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent_blob FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS agent_blob_tenant_isolation ON agent_blob;
 CREATE POLICY agent_blob_tenant_isolation ON agent_blob
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE agent_connection ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_connection FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS agent_connection_tenant_isolation ON agent_connection;
+CREATE POLICY agent_connection_tenant_isolation ON agent_connection
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -317,6 +324,20 @@ ALTER TABLE crm_source_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_source_profiles FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS crm_source_profiles_tenant_isolation ON crm_source_profiles;
 CREATE POLICY crm_source_profiles_tenant_isolation ON crm_source_profiles
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_views ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_views FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_views_tenant_isolation ON crm_views;
+CREATE POLICY crm_views_tenant_isolation ON crm_views
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_module_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_module_records FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_module_records_tenant_isolation ON crm_module_records;
+CREATE POLICY crm_module_records_tenant_isolation ON crm_module_records
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

@@ -26,7 +26,8 @@ import {
 } from "./board";
 import { MIRROR_REFUSALS } from "./connect";
 import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
-import { exportQuery, listQuery } from "./filters";
+import { exportQuery, extraQuery, listQuery } from "./filters";
+import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
   reorderFailureMessage,
@@ -52,6 +53,9 @@ type Rows = Record<string, unknown>[];
 
 /** The record whose related lists were asked for last. */
 let latestRelated = "";
+
+/** The number of the last board read. A slower, older read never wins. */
+let latestBoard = 0;
 
 type CrmState = {
   lanes: BoardLane[];
@@ -89,7 +93,8 @@ type CrmState = {
   /** Re-read whichever collection is showing (board or list). */
   refreshCollection: () => Promise<void>;
   loadVocabulary: () => Promise<void>;
-  loadBoard: (view: CrmView) => Promise<void>;
+  /** `cardSort` orders the cards of each deal lane (CRM-X3). */
+  loadBoard: (view: CrmView & { cardSort?: CardSort }) => Promise<void>;
   loadLeadBoard: (view: CrmView) => Promise<void>;
   /** A lead dropped on a Lead Status lane. `move.dealId` holds the lead id. */
   moveLead: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
@@ -244,14 +249,23 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadBoard(view) {
+    // `lastView` keeps `cardSort` too, so a re-read after a write keeps the
+    // member's lane order (CRM-X3).
+    const mine = ++latestBoard;
     set({ loading: true, lastView: view });
     try {
-      const pipeline = await api.getPipeline(view.owner, view.pipelineId);
+      const extra = { ...extraQuery("deals", view), ...cardSortQuery(view.cardSort) };
+      const pipeline =
+        Object.keys(extra).length > 0
+          ? await api.getPipeline(view.owner, view.pipelineId, extra)
+          : await api.getPipeline(view.owner, view.pipelineId);
+      if (mine !== latestBoard) return;
       set({ lanes: toBoardLanes(pipeline), error: null });
     } catch (err) {
+      if (mine !== latestBoard) return;
       set({ error: message(err) });
     } finally {
-      set({ loading: false });
+      if (mine === latestBoard) set({ loading: false });
     }
   },
 
@@ -269,6 +283,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
             status_id: status.id,
             page_size: 50,
             ...(view.owner ? { owner: view.owner } : {}),
+            ...extraQuery("leads", view),
           }),
         ),
       );

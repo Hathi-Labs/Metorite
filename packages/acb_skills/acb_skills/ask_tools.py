@@ -82,6 +82,31 @@ def cards_refused() -> bool:
     return _CARDS_REFUSED.get()
 
 
+def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
+    """Set the switch for a run whose scope is not a ``with`` block.
+
+    ``executor.run_agent_stream`` is an async generator, so it holds the
+    token from its start to its ``finally`` (review of PR #888, P2).
+    *refused* is ``not shows_cards``. A stream that says it shows cards,
+    inside a scope that refuses them, stays refused: a run never widens what
+    its caller allowed. Give the token to :func:`release_cards_switch`.
+
+    It is a ContextVar, so it covers the callers of ``run_agent_stream`` on
+    MAF, whose tools run in the run's context. A Copilot SDK tool that runs
+    in a JSON-RPC thread reads a fresh context, so it is NOT covered. Only
+    the email chat passes ``shows_cards=False`` today, and it runs MAF."""
+    return _CARDS_REFUSED.set(bool(refused) or _CARDS_REFUSED.get())
+
+
+def release_cards_switch(token: _contextvars.Token[bool]) -> None:
+    """Undo :func:`refuse_cards_for_run`. A token from another context sets
+    the default, so the switch never leaks into the next run on this task."""
+    try:
+        _CARDS_REFUSED.reset(token)
+    except ValueError:
+        _CARDS_REFUSED.set(False)
+
+
 # Tools that PARK the turn waiting on a human. When a run's last tool is one of
 # these, the turn ending with no closing assistant text is CORRECT, not a
 # failure: the card these render IS the output, and (as the module docstring

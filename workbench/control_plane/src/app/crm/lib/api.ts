@@ -13,6 +13,9 @@ import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
+import type { FieldDef } from "./fields";
+import type { SavedView, SavedViewBody } from "./savedViews";
+import type { SyncHealth } from "./syncHealth";
 import type {
   Activity,
   Contact,
@@ -145,6 +148,13 @@ export function deleteRecord(
   return call(`/${entity}/${id}`, { method: "DELETE" });
 }
 
+// ── Field definitions (CRM-Q4) ────────────────────────────────────────────
+
+/** What each custom field of one entity means. Read only. */
+export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
+  return call<FieldDef[]>(`/fields/${entity}`);
+}
+
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────
 
 /** What a download is called when the proxy dropped the server's header. */
@@ -192,10 +202,15 @@ export async function exportRecords(
 export function getPipeline(
   owner?: string | null,
   pipelineId?: string | null,
+  extra?: ListQuery,
 ): Promise<Pipeline> {
   const params = new URLSearchParams();
   if (owner) params.set("owner", owner);
   if (pipelineId) params.set("pipeline_id", pipelineId);
+  // CRM-Q8: the board takes the same filters as the list.
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
   const qs = params.toString();
   return call<Pipeline>(`/pipeline${qs ? `?${qs}` : ""}`);
 }
@@ -363,6 +378,11 @@ export function getSyncStatus(): Promise<SyncStatus | null> {
   return orNullOn404(call<SyncStatus>("/sync/status"));
 }
 
+/** Admin only (CRM-Q9). The sync health card reads it. A 404 means the mirror is off. */
+export function getSyncHealth(): Promise<SyncHealth | null> {
+  return orNullOn404(call<SyncHealth>("/sync/health"));
+}
+
 /** Admin only. A member gets 403, which the caller treats as "unknown". */
 export function getCrmSettings(): Promise<CrmSettings> {
   return call<CrmSettings>("/settings");
@@ -490,4 +510,22 @@ export function resetMode(): Promise<CrmSettings> {
     method: "PATCH",
     body: JSON.stringify({ mode: null }),
   });
+}
+
+// ── Saved views (CRM-Q8) ──────────────────────────────────────────────────
+
+export function listViews(entity: EntitySlug): Promise<SavedView[]> {
+  return call<SavedView[]>(`/views?entity=${entity}`);
+}
+
+export function createView(body: SavedViewBody): Promise<SavedView> {
+  return call<SavedView>("/views", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function patchView(id: string, body: Partial<SavedViewBody>): Promise<SavedView> {
+  return call<SavedView>(`/views/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteView(id: string): Promise<{ deleted: string }> {
+  return call<{ deleted: string }>(`/views/${id}`, { method: "DELETE" });
 }

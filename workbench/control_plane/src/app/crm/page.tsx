@@ -29,6 +29,7 @@ import { useMobileDrawer } from "@/components/AppShell";
 import FilterPills from "@/components/FilterPills";
 import { ModeSwitch } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -42,7 +43,8 @@ import { SetupSection } from "./components/SetupPanel";
 import ConnectionPanel from "./components/ConnectionPanel";
 import CrmBoundary from "./components/CrmBoundary";
 import ConvertModal from "./components/ConvertModal";
-import CrmRail from "./components/CrmRail";
+import CrmRail, { type RailViewActions } from "./components/CrmRail";
+import FilterBar from "./components/FilterBar";
 import FirstOpen from "./components/FirstOpen";
 import { ImportProgress, ReconnectBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
@@ -69,12 +71,29 @@ import {
 } from "./lib/connect";
 import {
   boardTotals,
+  orderLanes,
   missingRequiredFields,
   needsLostReason,
   type DealMove,
   type RequireableField,
 } from "./lib/board";
+import { readShowEmpty, showEmptyStages, visibleLanes, writeShowEmpty } from "./lib/emptyStages";
+import { readCardSort, writeCardSort, type CardSort } from "./lib/nextActivity";
+import { chatScope } from "@/lib/sessions";
 import { activeChip, applyChip, chipsFor } from "./lib/filters";
+import { readColumns } from "./lib/fields";
+import { pruneFilters } from "./lib/filterBar";
+import {
+  activeSavedView,
+  applyView,
+  canEditView,
+  captureView,
+  deleteCopy,
+  resolveBareLink,
+  viewDiverges,
+  type SavedView,
+} from "./lib/savedViews";
+import { invalidateViews, useAllSavedViews } from "./lib/useSavedViews";
 import {
   orderedPipelines,
   readRemembered,
@@ -95,13 +114,14 @@ import {
   parseView,
   selectLayout,
   selectPipeline,
+  selectRecordTab,
   selectTab,
   viewHref,
   type CrmLayout,
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-import { invalidateCrmMode, useCrmMode, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import { invalidateCrmMode, useCrmMode, useFieldDefs, usePipelines, useSyncStatus } from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
 import { viewLabel } from "./lib/views";
 
@@ -145,8 +165,50 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The pipeline a request filters by, or null for "no filter". */
   const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
   /** The view the loaders read: the URL's view plus the pipeline in effect. */
-  const loadView = useMemo(() => ({ ...view, pipelineId }), [view, pipelineId]);
+  /** The collection whose records the filters narrow: a list or a board. */
+  const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
+  const { defs: filterDefs, loading: defsLoading } = useFieldDefs(filterEntity);
+  // A filter the gateway would refuse is dropped before the fetch (CRM-Q8):
+  // a saved view can name a custom field that is gone, and one 422 would
+  // empty the whole list.
+  const pruned = useMemo(
+    () => pruneFilters(view, filterDefs, ctx.mode === "mirror"),
+    [view, filterDefs, ctx.mode],
+  );
+  // The member, for the choices this browser keeps (`lib/emptyStages.ts`,
+  // `lib/nextActivity.ts`). Each is kept per member and organization.
+  const { access } = useAccess();
+  const memberScope = chatScope(access.email, access.organization?.id);
+  // The order of the cards in a deal lane (CRM-X3): stage age or next activity.
+  const savedSort = useMemo(() => readCardSort(memberScope), [memberScope]);
+  const [pickedSort, setPickedSort] = useState<{ scope: string | null; sort: CardSort } | null>(
+    null
+  );
+  const cardSort: CardSort =
+    pickedSort && pickedSort.scope === memberScope ? pickedSort.sort : savedSort;
+  const loadView = useMemo(
+    () => ({ ...pruned.view, pipelineId, cardSort }),
+    [pruned.view, pipelineId, cardSort],
+  );
+  /** Custom filters wait for the definitions that check them. */
+  const hasCustom = Object.keys(view.custom).length > 0;
+  const waitingForDefs = defsLoading && hasCustom;
+  /** The definitions failed: the custom filters cannot be checked, so nothing is fetched. */
+  const unchecked = !defsLoading && pruned.unchecked;
   const boardOn = isBoardView(view);
+  // Stable keys for the filters that are objects: the load effect watches them.
+  const rangesKey = JSON.stringify(loadView.ranges);
+  const customKey = JSON.stringify(loadView.custom);
+  // Saved views (CRM-Q8): nested in the rail, and applied through `?view=`.
+  const allViews = useAllSavedViews();
+  const savedList = useMemo(() => Object.values(allViews).flat(), [allViews]);
+  const activeSaved = activeSavedView(savedList, view.viewId);
+  /** The columns the member picked since the saved view in effect was applied. */
+  const [draftColumns, setDraftColumns] = useState<{ viewId: string; keys: string[] } | null>(
+    null,
+  );
+  const [savingView, setSavingView] = useState(false);
+  const [deletingView, setDeletingView] = useState<SavedView | null>(null);
   const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
   /** The rail of views: open from `lg` up, folded below, the member's call
    *  inside a band. The one rule My Tasks uses (`lib/railFold.ts`). */
@@ -156,6 +218,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
    *  not the collection's, and reusing `saving` would grey out the sheet. */
   const [exporting, setExporting] = useState(false);
   const [converting, setConverting] = useState<Lead | null>(null);
+  /**
+   * Where the open record came from, for `j` and `k` (CRM-X4 item 5): the
+   * list on screen, or one lane of the board. Null for a record opened from
+   * a link, from Cmd-K or from a related list, which has no list behind it.
+   */
+  const [cameFrom, setCameFrom] = useState<
+    { param: SheetParam; lane: string | null } | null
+  >(null);
   /** A move the gateway would refuse as sent — held until the modal answers. */
   const [pendingMove, setPendingMove] = useState<{
     entity: "deals" | "leads";
@@ -171,6 +241,13 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     [router]
   );
 
+  // A link that carries only `?view=<id>` opens that view (CRM-Q8).
+  const search = searchParams.toString();
+  useEffect(() => {
+    const opened = resolveBareLink(search, savedList);
+    if (opened) router.replace(viewHref(opened), { scroll: false });
+  }, [search, savedList, router]);
+
   useEffect(() => {
     store.loadVocabulary();
     // Loaded once: the vocabulary is small and every tab needs it.
@@ -180,6 +257,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   useEffect(() => {
     // Deals waits for the pipeline list, so the board loads once and not twice.
     if (view.tab === "deals" && pipelinesLoading) return;
+    if (waitingForDefs || unchecked) return;
     if (boardOn) {
       if (view.tab === "leads") store.loadLeadBoard(loadView);
       else store.loadBoard(loadView);
@@ -205,6 +283,12 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     view.owner,
     view.sort,
     view.dir,
+    view.source,
+    rangesKey,
+    customKey,
+    waitingForDefs,
+    unchecked,
+    cardSort,
   ]);
 
   useEffect(() => {
@@ -214,6 +298,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   /** The collection a LIST is showing. A board is not a list, so it is null there. */
   const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
+  const listFieldDefs = filterDefs;
 
   /** What the Refresh button re-reads — one branch per kind of tab. */
   function reload(): void {
@@ -234,12 +319,113 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         ? store.leadStatuses
         : [];
 
+  const barDefs = filterDefs;
+  const barRows: Array<Record<string, unknown>> = boardOn
+    ? (view.tab === "leads" ? store.leadLanes : store.lanes).flatMap(
+        (lane) => lane.rows as Array<Record<string, unknown>>,
+      )
+    : store.rows;
+
+  /** The custom columns in effect: the view's own, or this browser's. */
+  const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
+  const viewColumns = draftOfView ?? activeSaved?.columns ?? [];
+  const currentColumns = (): string[] =>
+    activeSaved ? viewColumns : filterEntity ? readColumns(filterEntity) : [];
+  const dirty = activeSaved
+    ? viewDiverges(activeSaved, captureView(view, viewColumns, view.pipelineId))
+    : false;
+
+  async function saveView(name: string, shared: boolean) {
+    if (!filterEntity) return;
+    setSavingView(true);
+    try {
+      const state = captureView(view, currentColumns(), pipelineId);
+      const made = await api.createView({ entity: filterEntity, name, shared, ...state });
+      invalidateViews();
+      setDraftColumns(null);
+      go(applyView(made));
+      toast.show({ key: "crm-view", variant: "success", title: `Saved ${made.name}` });
+    } catch (err) {
+      store.setError(err instanceof CrmError ? err.message : "The view was not saved.");
+    } finally {
+      setSavingView(false);
+    }
+  }
+
+  async function updateView() {
+    if (!activeSaved || !filterEntity) return;
+    setSavingView(true);
+    try {
+      await api.patchView(activeSaved.id, captureView(view, viewColumns, pipelineId));
+      invalidateViews();
+      setDraftColumns(null);
+    } catch (err) {
+      store.setError(err instanceof CrmError ? err.message : "The view was not updated.");
+    } finally {
+      setSavingView(false);
+    }
+  }
+
+  async function changeView(saved: SavedView, body: Parameters<typeof api.patchView>[1]) {
+    try {
+      await api.patchView(saved.id, body);
+      invalidateViews();
+    } catch (err) {
+      store.setError(err instanceof CrmError ? err.message : "The view was not changed.");
+    }
+  }
+
+  async function removeView(saved: SavedView) {
+    setSavingView(true);
+    try {
+      await api.deleteView(saved.id);
+      invalidateViews();
+      // A deleted view in effect leaves its filters on screen but no longer names it.
+      if (view.viewId === saved.id) go({ ...view, viewId: null });
+    } catch (err) {
+      store.setError(err instanceof CrmError ? err.message : "The view was not deleted.");
+    } finally {
+      setSavingView(false);
+      setDeletingView(null);
+    }
+  }
+
+  /** What the rail needs to nest and run the views. */
+  const railSaved: RailViewActions = {
+    views: allViews,
+    activeViewId: view.viewId,
+    isAdmin: ctx.isAdmin,
+    onSelectView: (saved) => {
+      setDraftColumns(null);
+      go(applyView(saved));
+      if (isMobile) closeDrawer();
+    },
+    onRenameView: (saved, name) => void changeView(saved, { name }),
+    onShareView: (saved) => void changeView(saved, { shared: !saved.shared }),
+    onDeleteView: setDeletingView,
+  };
+
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view)
     : [];
 
   const totals = boardTotals(store.lanes);
   const leadCount = store.leadLanes.reduce((n, lane) => n + lane.count, 0);
+
+  // Empty stages on the Deals board (lib/emptyStages.ts). The member's choice
+  // is kept in this browser per member and organization. With no choice, the
+  // board hides them in Mirror mode and shows them in Native mode.
+  const savedEmpty = useMemo(() => readShowEmpty(memberScope), [memberScope]);
+  const [pickedEmpty, setPickedEmpty] = useState<{ scope: string | null; show: boolean } | null>(
+    null
+  );
+  const showEmpty = showEmptyStages(
+    ctx.mode,
+    pickedEmpty && pickedEmpty.scope === memberScope ? pickedEmpty.show : savedEmpty
+  );
+  // The one column order, for this mode (lib/board.ts `orderLanes`).
+  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty);
+  const dealBoard = boardOn && view.tab === "deals";
   const mayCreate = canCreate(ctx.mode);
 
   /** A board drop, or the status pill in the sheet. Same request either way. */
@@ -278,6 +464,29 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     if (view.record) store.loadRecord(view.record.entity, view.record.id);
   }
 
+  /**
+   * The ids of the list the open record came from, in the order on screen.
+   * Null when no list is behind it, or when the list no longer holds it (a
+   * deal moved to another lane), so the arrows hide and the keys do nothing.
+   */
+  function recordOrder(): string[] | null {
+    if (!cameFrom || !view.record || cameFrom.param !== view.record.param) return null;
+    const rows: Array<Record<string, unknown>> =
+      cameFrom.lane === null
+        ? store.rows
+        : ((view.tab === "leads" ? store.leadLanes : dealLanes).find(
+            (lane) => lane.status.id === cameFrom.lane,
+          )?.rows ?? []);
+    const ids = rows.map((row) => String(row.id));
+    return ids.includes(view.record.id) ? ids : null;
+  }
+
+  /** Open a record and forget the list: it came from a link or a related row. */
+  function openAlone(next: CrmView): void {
+    setCameFrom(null);
+    go(next);
+  }
+
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
     const dealId = await store.convertLead(converting.id, body);
@@ -285,7 +494,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     if (dealId) {
       // Land on the deal that was just made: the conversion's whole point is
       // that the work continues there.
-      go(openRecord(selectTab(view, "deals"), "deal", dealId));
+      openAlone(openRecord(selectTab(view, "deals"), "deal", dealId));
     }
   }
 
@@ -365,6 +574,48 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           label={`${viewLabel(view.tab)} layout`}
         />
       )}
+      {dealBoard && (
+        // Show or hide the stages that hold no deal under the filters on screen.
+        <Button
+          variant="ghost"
+          size={isMobile ? "icon-sm" : "sm"}
+          icon={showEmpty ? "Eye" : "EyeOff"}
+          selected={showEmpty}
+          aria-label="Show empty stages"
+          title={showEmpty ? "Hide the stages that hold no deal" : "Show the stages that hold no deal"}
+          onClick={() => {
+            const next = !showEmpty;
+            writeShowEmpty(memberScope, next);
+            setPickedEmpty({ scope: memberScope, show: next });
+          }}
+        >
+          {isMobile ? null : "Empty stages"}
+        </Button>
+      )}
+      {dealBoard && (
+        // The order of the cards in each lane (CRM-X3). Off: stage age, as
+        // before. On: the soonest next activity first. The gateway sorts,
+        // because a lane returns one page of its cards.
+        <Button
+          variant="ghost"
+          size={isMobile ? "icon-sm" : "sm"}
+          icon="CalendarClock"
+          selected={cardSort === "next_activity"}
+          aria-label="Order cards by next activity"
+          title={
+            cardSort === "next_activity"
+              ? "Cards are in order of next activity. Click to order them by time in stage"
+              : "Cards are in order of time in stage. Click to order them by next activity"
+          }
+          onClick={() => {
+            const next: CardSort = cardSort === "next_activity" ? "stage_age" : "next_activity";
+            writeCardSort(memberScope, next);
+            setPickedSort({ scope: memberScope, sort: next });
+          }}
+        >
+          {isMobile ? null : "Next activity"}
+        </Button>
+      )}
       {listEntity && (
         // WS-26i-export — the filter that is on screen, as a CSV.
         //
@@ -385,7 +636,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           title="Export what is on screen as a CSV"
           onClick={async () => {
             setExporting(true);
-            await store.exportList(listEntity, view);
+            await store.exportList(listEntity, loadView);
             setExporting(false);
           }}
         >
@@ -420,7 +671,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onClick={() =>
                 openDrawer(
                   <nav aria-label="CRM views" className="p-2">
-                    <CrmRail tab={view.tab} onSelect={chooseView} />
+                    <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} />
                   </nav>
                 )
               }
@@ -447,7 +698,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             aria-label="CRM views"
             className={`w-56 shrink-0 overflow-y-auto border-r border-border bg-card p-2 ${railClass(rail.settled)}`}
           >
-            <CrmRail tab={view.tab} onSelect={chooseView} />
+            <CrmRail tab={view.tab} onSelect={chooseView} saved={railSaved} />
           </nav>
         ) : null}
 
@@ -467,6 +718,31 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               items={chips}
               activeId={activeChip(view)}
               onChange={(id) => go(applyChip(view, id))}
+            />
+          )}
+
+          {filterEntity && (
+            <FilterBar
+              entity={filterEntity}
+              view={view}
+              onChange={go}
+              rows={barRows}
+              fieldDefs={barDefs}
+              mirror={ctx.mode === "mirror"}
+              removed={waitingForDefs ? [] : pruned.removed}
+              unchecked={unchecked}
+              activeView={activeSaved}
+              dirty={dirty}
+              canEdit={activeSaved ? canEditView(activeSaved, ctx.isAdmin) : false}
+              isAdmin={ctx.isAdmin}
+              saving={savingView}
+              onSave={saveView}
+              onUpdate={updateView}
+              onReset={() => {
+                if (!activeSaved) return;
+                setDraftColumns(null);
+                go(applyView(activeSaved));
+              }}
             />
           )}
 
@@ -492,7 +768,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           {boardOn ? (
             <KanbanBoard
               entity={view.tab === "leads" ? "leads" : "deals"}
-              lanes={view.tab === "leads" ? store.leadLanes : store.lanes}
+              lanes={view.tab === "leads" ? store.leadLanes : dealLanes}
+              hiddenEmpty={view.tab === "leads" ? 0 : store.lanes.length - dealLanes.length}
               loading={store.loading}
               readOnly={ctx.mode === "mirror"}
               onMove={
@@ -500,9 +777,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                   ? (move, target) => void moveCard("leads", move, target)
                   : moveDeal
               }
-              onOpen={(id) =>
-                go(openRecord(view, view.tab === "leads" ? "lead" : "deal", id))
-              }
+              onOpen={(id) => {
+                // `j` and `k` walk the cards of this lane (CRM-X4 item 5).
+                const lanes = view.tab === "leads" ? store.leadLanes : dealLanes;
+                const lane = lanes.find((l) => l.rows.some((row) => row.id === id));
+                const param = view.tab === "leads" ? "lead" : "deal";
+                setCameFrom({ param, lane: lane?.status.id ?? null });
+                go(openRecord(view, param, id));
+              }}
               onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
             />
           ) : view.tab === "reports" ? (
@@ -549,19 +831,40 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             listEntity && (
               <RecordList
                 entity={listEntity}
+                fieldDefs={listFieldDefs}
+                columnKeys={activeSaved ? viewColumns : undefined}
+                onColumnsChange={(keys) =>
+                  view.viewId && setDraftColumns({ viewId: view.viewId, keys })
+                }
                 rows={store.rows}
                 total={store.total}
                 loading={store.loading}
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}
-                onOpen={(id) => go(openRecord(view, PARAM_FOR[listEntity], id))}
+                onOpen={(id) => {
+                  // `j` and `k` walk the rows of this list (CRM-X4 item 5).
+                  setCameFrom({ param: PARAM_FOR[listEntity], lane: null });
+                  go(openRecord(view, PARAM_FOR[listEntity], id));
+                }}
               />
             )
           )}
           </CrmBoundary>
         </main>
       </div>
+
+      {deletingView && (
+        <ConfirmDialog
+          open
+          title={deleteCopy(deletingView).title}
+          body={deleteCopy(deletingView).body}
+          confirmLabel="Delete view"
+          busy={savingView}
+          onCancel={() => setDeletingView(null)}
+          onConfirm={() => void removeView(deletingView)}
+        />
+      )}
 
       {view.record && (
         <RecordSheet
@@ -577,8 +880,21 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             // still while a dialog above it is up: that key, or a click on
             // that dialog, closes the dialog and not the record.
             if (converting || pendingMove) return;
+            setCameFrom(null);
             go(closeRecord(view));
           }}
+          tab={view.recordTab ?? "overview"}
+          // A tab replaces the URL, so Back still closes the sheet.
+          onTab={(tab) =>
+            router.replace(viewHref(selectRecordTab(view, tab)), { scroll: false })
+          }
+          // No step while a dialog is open over the sheet.
+          order={converting || pendingMove ? null : recordOrder()}
+          // The step replaces the URL too: Back closes the sheet, and does not
+          // walk back through every record the keys passed.
+          onStep={(id) =>
+            router.replace(viewHref(openRecord(view, view.record!.param, id)), { scroll: false })
+          }
           onPatch={(body) =>
             store.patchRecord(view.record!.entity, view.record!.id, body)
           }
@@ -623,10 +939,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onDetach={(contactId) =>
             store.detachContact(view.record!.id, contactId)
           }
-          onOpenContact={(contactId) => go(openRecord(view, "contact", contactId))}
+          onOpenContact={(contactId) => openAlone(openRecord(view, "contact", contactId))}
           related={store.related}
           onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
-          onOpenRelated={(entity, id) => go(openRecord(view, PARAM_FOR[entity], id))}
+          onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
         />
       )}
 
@@ -648,7 +964,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             const entity = creating;
             const id = await store.createRecord(entity, body);
             setCreating(null);
-            if (id) go(openRecord(view, PARAM_FOR[entity], id));
+            if (id) openAlone(openRecord(view, PARAM_FOR[entity], id));
           }}
         />
       )}

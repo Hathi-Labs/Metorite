@@ -853,6 +853,7 @@ def _whatsapp_tool_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) 
 
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
+    facts: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Return (allowed, reason) for one tool call. Never raises. Logs EVERY decision.
 
@@ -871,12 +872,21 @@ def _permission_gate(
     the full call. Passed to build_tool_call_context so tools with a real
     command/path shape (run_script) are checked against what they're
     actually about to do, not just their name.
+
+    ``facts`` are fields that the CALLER knows and the arguments do not
+    carry. The MCP gate passes ``mcp_tool`` and the server's
+    ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
+    are set after the argument mapping, so a tool argument cannot write them.
+    A caller that needs a fail-closed answer must not trust ``gate_error``:
+    the MCP gate shows a card for every code but ``mcp_read_only``.
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
             build_tool_call_context, decide,
         )
         request = build_tool_call_context(tool_name, call_kwargs or {})
+        if facts:
+            request.update(facts)
         ok, code, _ = decide(request)
         mode = os.environ.get(
             "AGENT_PERMISSION_MODE", "enforce"
@@ -2095,16 +2105,6 @@ def merge_mcp_servers(
         pass
 
 
-#: The registry read of ONE organization. The ``organization_id`` predicate is
-#: the boundary, because ``mcp_servers`` is exempt from RLS. It is always on
-#: (WS-8c). Before WS-8c, the Copilot path dropped it when
-#: ``ACB_GRAPH_TENANT_BIND`` was off, and read the rows and headers of every
-#: org.
-_MCP_ROWS_SQL = (
-    "SELECT name, transport, url, headers, agent_scope FROM mcp_servers "
-    "WHERE enabled = true AND organization_id = :org"
-)
-
 #: The transports that the MAF path connects with ``MCPStreamableHTTPTool``.
 _MAF_HTTP_TRANSPORTS = frozenset({"http-sse", "http"})
 
@@ -2133,6 +2133,7 @@ async def _inject_mcp_servers(
     organization_id: str | None = None,
     is_authorized: Any = None,
     opened: list[Any] | None = None,
+    member_present: bool = False,
 ) -> None:
     """Give *agent* the enabled MCP servers of the run's organization.
 
@@ -2156,21 +2157,30 @@ async def _inject_mcp_servers(
     gateway's server-side stamp, else ``executor._current_run_org()`` on THIS
     event-loop frame. It never comes from tool arguments or the event payload
     (R11). With no org, nothing is read and nothing is injected.
-    ``mcp_servers.organization_id`` is NOT NULL (migration 158), so there are
-    no org-less "global" servers.
+    A registry row always names its org, so there are no org-less "global"
+    servers.
+
+    **The card** (H-299). *member_present* is True only when a member can
+    answer a confirmation card in this run. The executor passes it. The
+    default is False, so a caller that does not say refuses each MCP tool
+    that needs a card (``_maf_mcp.McpPermissionGate``).
 
     **No stdio** (D85). A stdio row starts a process on the host, so both
     paths drop it and log ``mcp.stdio_refused``.
 
-    ``mcp_servers`` is RLS-EXEMPT BY DESIGN (``gen_tenant_migration``'s
-    ``EXEMPT`` set), so a ``tenant_session`` would filter nothing. The
-    ``organization_id`` predicate of :data:`_MCP_ROWS_SQL` is the boundary,
-    and it is on whatever ``ACB_GRAPH_TENANT_BIND`` says.
+    **The store** (WS-54 IN-4). The servers live in the connection registry,
+    which has FORCE RLS, and the headers sit in its encrypted blob. The one
+    reader is ``gateway.connections.mcp.servers_for_org``. It opens
+    ``tenant_session(org)``, so row level security AND an org predicate bind
+    the read, whatever ``ACB_GRAPH_TENANT_BIND`` says. It decrypts the
+    headers, and they go to the MCP client as an argument only. An old
+    ``mcp_servers`` row of the org moves into the registry on that read.
 
     Best-effort: a registry fault or a server fault never blocks the run.
     Fences: ``tests/unit/test_maf_mcp_injection.py``,
-    ``tests/unit/test_maf_mcp_org_scope_r8.py`` and
-    ``tests/unit/test_mcp_servers_org_scope.py``.
+    ``tests/unit/test_maf_mcp_org_scope_r8.py``,
+    ``tests/unit/test_mcp_servers_org_scope.py`` and
+    ``tests/unit/test_mcp_registry_r8.py``.
     """
     from orchestrator import _maf_mcp
 
@@ -2183,24 +2193,27 @@ async def _inject_mcp_servers(
         return  # the flag is off for this org: read nothing
 
     try:
-        from acb_graph import get_session
-        from sqlalchemy import text
-        with get_session() as s:
-            rows = s.execute(text(_MCP_ROWS_SQL), {"org": str(org)}).fetchall()
-    except Exception:
-        return  # Table may not exist yet — skip gracefully
+        # Lazy, as ``_maf_mcp.attach_mcp_tools`` imports the URL guard: the
+        # orchestrator runs inside the gateway process.
+        from gateway.connections import mcp as mcp_registry
 
-    servers = [r for r in rows if _keep_mcp_row(r, agent_name)]
+        stored = await mcp_registry.servers_for_org(str(org))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.registry_unavailable", error=type(exc).__name__)
+        return
+
+    servers = [srv for srv in stored if _keep_mcp_server(srv, agent_name)]
     if native:
         maf_servers = _maf_servers(servers, is_authorized)
         if maf_servers:
             await _maf_mcp.attach_mcp_tools(
                 agent, maf_servers, opened if opened is not None else [],
+                member_present=member_present,
             )
         return
 
-    for name, *_rest in servers:
-        _log.info("mcp.copilot_registry_skipped", name=name)
+    for srv in servers:
+        _log.info("mcp.copilot_registry_skipped", name=srv.name)
 
 
 def _run_org_or_none() -> str | None:
@@ -2212,33 +2225,32 @@ def _run_org_or_none() -> str | None:
         return None
 
 
-def _keep_mcp_row(row: Any, agent_name: str) -> bool:
-    """True when *row* is in scope for *agent_name* and is not stdio (D85)."""
-    name, transport, _url, _headers, scope = row
-    if not _in_scope(scope, agent_name):
+def _keep_mcp_server(server: Any, agent_name: str) -> bool:
+    """True when *server* is in scope for *agent_name* and is not stdio (D85)."""
+    if not _in_scope(list(server.agent_scope), agent_name):
         return False
-    if transport == "stdio":
-        _log.warning("mcp.stdio_refused", name=name)
+    if server.transport == "stdio":
+        _log.warning("mcp.stdio_refused", name=server.name)
         return False
     return True
 
 
-def _maf_servers(rows: list[Any], is_authorized: Any) -> list[Any]:
-    """The ``http-sse`` rows that the run's authority allows, for MAF."""
+def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
+    """The ``http-sse`` servers that the run's authority allows, for MAF."""
     from orchestrator import _maf_mcp
 
     out: list[Any] = []
-    for name, transport, url, headers, _scope in rows:
-        if transport not in _MAF_HTTP_TRANSPORTS or not url:
-            _log.info("mcp.transport_skipped", name=name, transport=transport)
+    for srv in servers:
+        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+            _log.info("mcp.transport_skipped", name=srv.name, transport=srv.transport)
             continue
         if is_authorized is not None and not is_authorized(
-            _maf_mcp.mcp_service(str(name)),
+            _maf_mcp.mcp_service(str(srv.name)),
         ):
-            _log.info("mcp.not_authorized", name=name)
+            _log.info("mcp.not_authorized", name=srv.name)
             continue
         out.append(_maf_mcp.McpServer(
-            name=str(name), url=str(url), headers=_str_map(headers),
+            name=str(srv.name), url=str(srv.url), headers=_str_map(srv.headers),
         ))
     return out
 
