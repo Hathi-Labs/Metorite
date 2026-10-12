@@ -31,7 +31,7 @@ unmatched owner the engine stores the name from :attr:`Mapped.owner_name` in
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -420,11 +420,17 @@ def map_record(
     *,
     modified_at: datetime | None,
     owners: Mapping[str, str],
+    rules: Mapping[str, str] | None = None,
 ) -> Mapped:
     """Map one Zoho record of ``entity`` (a canonical entity name).
 
     ``owners`` maps a Zoho user id to its email, for a record whose ``Owner``
     has no email of its own.
+
+    ``rules`` holds the approved field rules of the entity (CRM-Q7a), as
+    ``{target_column: field_api_name}``. Each rule applies AFTER the fixed
+    rules, and only where the fixed map gives NULL (:func:`apply_field_rules`).
+    The value also stays in ``custom``.
     """
     if entity not in ENTITY_TABLES:
         raise ValueError(f"No Zoho mapping for the entity {entity!r}")
@@ -464,6 +470,8 @@ def map_record(
             if contact:
                 deal_contact = Link(contact, (("contact_id", "contact"),))
 
+    if rules:
+        apply_field_rules(entity, fields, values, rules)
     values["custom"] = custom_fields(entity, fields)
     values["ext_modified_at"] = instant(fields.get("Modified_Time")) or modified_at
     if entity not in _ACTIVITY_TYPES:
@@ -483,6 +491,271 @@ def map_record(
         pipeline=pipeline,
         derived=derived,
     )
+
+
+# ── Field rules (CRM-Q7a) ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RuleTarget:
+    """One column that a field rule may fill (``crm_platform.md`` §18.7).
+
+    ``standard_field`` is the Zoho field that the fixed map reads for the
+    column. It is ``None`` for a free column, which the fixed map never writes.
+    """
+
+    column: str
+    column_type: str
+    standard_field: str | None = None
+
+
+def _targets(*rows: tuple[str, str, str | None]) -> Mapping[str, RuleTarget]:
+    return {column: RuleTarget(column, kind, std) for column, kind, std in rows}
+
+
+#: The legal targets of a field rule: the free columns, then the fixed columns
+#: that an org can leave empty. Exactly the two tables of §18.7, no more. The
+#: column types are the types of migration 144.
+FIELD_RULE_TARGETS: Mapping[str, Mapping[str, RuleTarget]] = {
+    "company": _targets(
+        ("linkedin_url", "TEXT", None),
+        ("website", "TEXT", "Website"),
+        ("industry", "TEXT", "Industry"),
+        ("phone", "TEXT", "Phone"),
+        ("email", "TEXT", "Email"),
+        ("description", "TEXT", "Description"),
+        ("no_of_employees", "INT", "Employees"),
+        ("annual_revenue", "NUMERIC", "Annual_Revenue"),
+    ),
+    "contact": _targets(
+        ("linkedin_url", "TEXT", None),
+        ("email", "TEXT", "Email"),
+        ("phone", "TEXT", "Phone"),
+        ("mobile", "TEXT", "Mobile"),
+        ("title", "TEXT", "Title"),
+        ("description", "TEXT", "Description"),
+    ),
+    "lead": _targets(
+        ("lost_note", "TEXT", None),
+        ("website", "TEXT", "Website"),
+        ("industry", "TEXT", "Industry"),
+        ("email", "TEXT", "Email"),
+        ("phone", "TEXT", "Phone"),
+        ("mobile", "TEXT", "Mobile"),
+        ("lead_source", "TEXT", "Lead_Source"),
+        ("organization_name", "TEXT", "Company"),
+        ("description", "TEXT", "Description"),
+        ("no_of_employees", "INT", "No_of_Employees"),
+        ("annual_revenue", "NUMERIC", "Annual_Revenue"),
+    ),
+    "deal": _targets(
+        ("lost_note", "TEXT", None),
+        ("next_step", "TEXT", "Next_Step"),
+        ("description", "TEXT", "Description"),
+        ("expected_close_date", "DATE", "Closing_Date"),
+        ("probability", "SMALLINT", "Probability"),
+    ),
+}
+
+#: The ``crm_field_defs.type`` words, and the column types each may fill. A
+#: word that is not here (``multiselect``, ``lookup``, ``boolean``) targets
+#: no column.
+_RULE_COLUMN_TYPES: Mapping[str, frozenset[str]] = {
+    **dict.fromkeys(
+        ("text", "textarea", "email", "phone", "url", "select"), frozenset({"TEXT"}),
+    ),
+    **dict.fromkeys(("number", "currency"), frozenset({"NUMERIC", "INT", "SMALLINT"})),
+    "date": frozenset({"DATE"}),
+    "datetime": frozenset({"TIMESTAMPTZ"}),
+}
+
+#: Why a rule is not legal, or why an approved rule went stale.
+RULE_UNKNOWN_TARGET = "unknown_target"
+RULE_TYPE_MISMATCH = "type_mismatch"
+RULE_STANDARD_FIELD_USED = "standard_field_on_layout"
+RULE_LAYOUT_UNKNOWN = "layout_unknown"
+RULE_FIELD_GONE = "field_gone"
+
+
+def rule_target(entity: str, column: str | None) -> RuleTarget | None:
+    """The target ``column`` of ``entity``, or ``None`` when it is not legal."""
+    return (FIELD_RULE_TARGETS.get(entity) or {}).get(column or "")
+
+
+def types_agree(field_type: str | None, column_type: str) -> bool:
+    """True when a field of ``field_type`` may fill a column of ``column_type``."""
+    return column_type in _RULE_COLUMN_TYPES.get(field_type or "", frozenset())
+
+
+def coerce_rule_value(column_type: str, value: Any) -> Any:
+    """A field value as the column type, with the helpers of this module.
+
+    A value that does not coerce is ``None``, so the column gets NULL.
+    """
+    if column_type == "TEXT":
+        return text_value(value)
+    if column_type == "NUMERIC":
+        return number(value)
+    if column_type == "INT":
+        return integer(value)
+    if column_type == "SMALLINT":
+        return integer(value, _SMALLINT_CEILING)
+    if column_type == "DATE":
+        return day(value)
+    if column_type == "TIMESTAMPTZ":
+        return instant(value)
+    return None
+
+
+def apply_field_rules(
+    entity: str,
+    fields: Mapping[str, Any],
+    values: dict[str, Any],
+    rules: Mapping[str, str],
+) -> dict[str, Any]:
+    """Fill each rule's column from its field, only where the fixed map gave
+    NULL. ``rules`` is ``{target_column: field_api_name}``. A column that is
+    not a legal target is skipped. *values* changes in place."""
+    for column, field_api_name in rules.items():
+        target = rule_target(entity, column)
+        if target is None or values.get(column) is not None:
+            continue
+        values[column] = coerce_rule_value(target.column_type, fields.get(field_api_name))
+    return values
+
+
+def rule_problem(
+    entity: str,
+    field_type: str | None,
+    column: str | None,
+    layout: Collection[str] | None,
+) -> str | None:
+    """Why a rule from a field of ``field_type`` to ``column`` is not legal, or
+    ``None`` when it is (§18.7 "The legal targets").
+
+    ``layout`` holds the field API names on the active layouts of the entity
+    (:func:`entity_layout_fields`), or ``None`` when no layout was read. A
+    fixed column opens only when its standard field is off every layout, so an
+    unknown layout keeps it closed.
+    """
+    target = rule_target(entity, column)
+    if target is None:
+        return RULE_UNKNOWN_TARGET
+    if not types_agree(field_type, target.column_type):
+        return RULE_TYPE_MISMATCH
+    if target.standard_field is not None:
+        if layout is None:
+            return RULE_LAYOUT_UNKNOWN
+        if target.standard_field in layout:
+            return RULE_STANDARD_FIELD_USED
+    return None
+
+
+def rule_stale_reason(
+    entity: str,
+    field_api_name: str,
+    column: str | None,
+    field_types: Mapping[str, str] | None,
+    layout: Collection[str] | None,
+) -> str | None:
+    """Why an approved rule goes ``stale`` after a discovery, or ``None``.
+
+    ``field_types`` holds the type of each field of the entity, as the
+    discovery read it (:func:`discovered_field_types`), or ``None`` when the
+    discovery could not read the fields. ``layout`` is the same for the
+    layouts. A section that was not read never makes a rule stale.
+    """
+    target = rule_target(entity, column)
+    if target is None:
+        return RULE_UNKNOWN_TARGET
+    if field_types is not None:
+        if field_api_name not in field_types:
+            return RULE_FIELD_GONE
+        if not types_agree(field_types[field_api_name], target.column_type):
+            return RULE_TYPE_MISMATCH
+    if (
+        target.standard_field is not None and layout is not None
+        and target.standard_field in layout
+    ):
+        return RULE_STANDARD_FIELD_USED
+    return None
+
+
+def layout_fields(
+    layouts: Mapping[str, list[Mapping[str, Any]]],
+) -> dict[str, list[str]]:
+    """For each known entity, the field API names on at least one active layout.
+
+    *layouts* is the raw discovery read, keyed by module. A layout with no
+    ``status`` counts as active. An entity whose layouts were not read is
+    absent, so a caller cannot take "not read" for "not on a layout".
+    """
+    out: dict[str, list[str]] = {}
+    for module, rows in layouts.items():
+        entity = _MODULE_ENTITY.get(module)
+        if entity is None or not isinstance(rows, list):
+            continue
+        names: set[str] = set()
+        for layout in rows:
+            if not isinstance(layout, Mapping):
+                continue
+            if (text_value(layout.get("status")) or "active").lower() != "active":
+                continue
+            for section in layout.get("sections") or []:
+                if not isinstance(section, Mapping):
+                    continue
+                for item in section.get("fields") or []:
+                    name = text_value(item.get("api_name")) if isinstance(item, Mapping) else None
+                    if name:
+                        names.add(name)
+        out[entity] = sorted(names)
+    return dict(sorted(out.items()))
+
+
+def entity_layout_fields(
+    profile: Mapping[str, Any] | None, entity: str,
+) -> frozenset[str] | None:
+    """The ``layout_fields`` of one entity in a profile, or ``None`` when the
+    profile does not know them (no profile, a profile from before CRM-Q7a, or
+    a layout read that failed)."""
+    stored = (profile or {}).get("layout_fields")
+    if not isinstance(stored, Mapping) or entity not in stored:
+        return None
+    return frozenset(str(name) for name in stored.get(entity) or ())
+
+
+def discovered_field_types(raw: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """``{entity: {field_api_name: type}}`` of the fields that go to ``custom``,
+    from a raw discovery read (the profile's ``custom_field_types``).
+
+    The type is the ``crm_field_defs.type`` word. A field with a canonical
+    column and a ``$`` field are left out, as :func:`map_field_def` leaves
+    them out. An entity whose fields were not read is absent.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for module, rows in (raw.get("fields") or {}).items():
+        entity = _MODULE_ENTITY.get(module)
+        if entity is None or not isinstance(rows, list):
+            continue
+        out[entity] = dict(sorted(
+            (name, _FIELD_TYPES.get(text_value(d.get("data_type")) or "", "text"))
+            for d in rows
+            if isinstance(d, Mapping)
+            and (name := text_value(d.get("api_name")))
+            and not name.startswith("$") and name not in _CONSUMED[entity]
+        ))
+    return dict(sorted(out.items()))
+
+
+def entity_field_types(
+    profile: Mapping[str, Any] | None, entity: str,
+) -> dict[str, str] | None:
+    """The ``custom_field_types`` of one entity in a profile, or ``None`` when
+    the profile does not know them."""
+    stored = (profile or {}).get("custom_field_types")
+    if not isinstance(stored, Mapping) or not isinstance(stored.get(entity), Mapping):
+        return None
+    return {str(k): str(v) for k, v in stored[entity].items()}
 
 
 # ── Field definitions ───────────────────────────────────────────────────────
@@ -1071,6 +1344,20 @@ def build_profile(
         "layouts": pick("layouts", _layout_rows(raw.get("layouts") or {})),
         "fields": pick("fields", _field_counts(raw.get("fields") or {})),
         "pipelines": pick("pipelines", pipeline_rows(raw.get("pipelines") or [])),
+        # CRM-Q7a: for each known entity, the fields on an active layout. A
+        # failed layout read keeps the previous list, as ``pick`` does.
+        "layout_fields": (
+            old.get("layout_fields")
+            if "layouts" in failed and "layout_fields" in old
+            else layout_fields(raw.get("layouts") or {})
+        ),
+        # CRM-Q7a: the type of each field that goes to ``custom``, so a new
+        # profile version can make a field rule stale.
+        "custom_field_types": (
+            old.get("custom_field_types")
+            if "fields" in failed and "custom_field_types" in old
+            else discovered_field_types(raw)
+        ),
         # The sections the read could not get. A section named here is the
         # copy of the previous profile, or empty.
         "unreadable": sorted(failed),
@@ -1102,20 +1389,33 @@ __all__ = [
     "EDITIONS",
     "EDITION_CREDITS",
     "ENTITY_TABLES",
+    "FIELD_RULE_TARGETS",
     "GENERIC_MODULE_CAP",
     "GENERIC_STANDARD_MODULES",
     "MIRRORED_MODULES",
     "MODULE_ENTITY_PREFIX",
     "OWNER_NAME_KEY",
+    "RULE_FIELD_GONE",
+    "RULE_LAYOUT_UNKNOWN",
+    "RULE_STANDARD_FIELD_USED",
+    "RULE_TYPE_MISMATCH",
+    "RULE_UNKNOWN_TARGET",
     "Link",
     "Mapped",
+    "RuleTarget",
+    "apply_field_rules",
     "build_profile",
+    "coerce_rule_value",
     "custom_field_keys",
     "custom_fields",
     "daily_credits",
+    "discovered_field_types",
     "edition_of",
+    "entity_field_types",
+    "entity_layout_fields",
     "forecast_category_of",
     "generic_modules",
+    "layout_fields",
     "map_field_def",
     "map_module_field_def",
     "map_module_record",
@@ -1129,8 +1429,12 @@ __all__ = [
     "pipeline_rows",
     "pipeline_stages",
     "profile_tabs",
+    "rule_problem",
+    "rule_stale_reason",
+    "rule_target",
     "same_org",
     "scope_set_key",
     "stage_type_hint",
+    "types_agree",
     "with_module_fields",
 ]

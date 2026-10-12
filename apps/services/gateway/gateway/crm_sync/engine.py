@@ -91,7 +91,7 @@ from gateway.crm_sources.base import (
     UntrustedHost,
 )
 from gateway.crm_sources.registry import mapping_for, source_class
-from gateway.crm_sync import profiles, runs
+from gateway.crm_sync import field_rules, profiles, runs
 from gateway.crm_sync.runs import CursorRow, RunLost, SyncRunning
 from gateway.routes.crm import access as crm_access
 from gateway.routes.crm import flags
@@ -181,6 +181,11 @@ MODULE_COUNTS: tuple[str, ...] = (
 #: the estimate. A count is read again after :data:`DISCOVERY_EVERY`.
 MODULE_COUNTS_ROW = f"{PROVIDER}:module_counts"
 MODULE_TABLE = "crm_module_records"
+
+#: The cursor row of the field rules (CRM-Q7a). Its state holds the rules the
+#: sync applied, and the entities that wait for a full read because a rule on
+#: a fixed column was rejected or went stale.
+FIELD_RULES_ROW = f"{PROVIDER}:field_rules"
 #: After its first import, a generic module reads its changed list at most
 #: this often, the cadence of the deleted lists. A module with no change
 #: still costs one credit for each read, and ten idle modules on every run
@@ -570,6 +575,10 @@ class _Ctx:
         #: ``provider_meta`` of the connection, for the deep link.
         self.modules: dict[str, dict[str, Any]] = {}
         self.link_meta: dict[str, Any] = {}
+        #: The approved field rules (CRM-Q7a), ``{entity: {column: field}}``,
+        #: and the entities that a rejected or stale rule makes read in full.
+        self.rules: dict[str, dict[str, str]] = {}
+        self.rule_rereads: set[str] = set()
 
     # ── Provider calls ──────────────────────────────────────────────────────
 
@@ -918,6 +927,7 @@ async def _write_record(  # noqa: C901 - one record, one linear mapping to colum
     """Map and write one record. False when the record has no parent here."""
     mapped = ctx.mapping.map_record(
         entity, record.fields, modified_at=record.modified_at, owners=ctx.owners or {},
+        rules=ctx.rules.get(entity),
     )
     values = dict(mapped.values)
     custom = dict(values.get("custom") or {})
@@ -1178,13 +1188,21 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     rereading = generic and _module_reread(ctx, row)
     if generic and not rereading and _module_read_recently(ctx, row):
         return
+    # A rejected or stale field rule on a fixed column (CRM-Q7a): one full read
+    # writes the fixed map's value again. It stamps nothing and deletes
+    # nothing, like the CRM-Q5 lead read below.
+    rule_wanted = not generic and entity in ctx.rule_rereads
     if (
         row.initial_done_at is not None and saved.get("offset_paged") and not walking
-        and not rereading and not (generic and saved.get("in_progress"))
+        and not rereading and not rule_wanted
+        and not (generic and saved.get("in_progress"))
     ):
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
+    # A full read for a rule starts fresh, or goes on with its own mark. A
+    # read that was already under way when the rule changed does not count.
+    rule_reread = (rule_wanted and not resumed) or (resumed and bool(saved.get("rule_reread")))
     backfill = (
         entity == "lead" and row.initial_done_at is not None
         and not saved.get("converted_both") and not resumed
@@ -1211,7 +1229,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking or backfill or rereading else row.last_pulled_at
+        since = None if walking or backfill or rereading or rule_reread else row.last_pulled_at
         ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
@@ -1226,6 +1244,9 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         # Kept in the cursor while the full re-read runs, so a stop at the
         # reserve resumes it as a re-read (CRM-Q6a).
         marks["reread"] = True
+    # The mark of a full read for a field rule (CRM-Q7a). It is kept only while
+    # the read runs, so a stop resumes it as that read.
+    progress_marks: dict[str, Any] = {**marks, "rule_reread": True} if rule_reread else marks
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:
@@ -1276,7 +1297,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                         failed=failed_map,
                         retry_from=_iso(_pin(failed_map)),
                         prev_walk_start=_iso(prev_walk),
-                        **marks,
+                        **progress_marks,
                         **extra,
                     )
                     row = CursorRow(
@@ -1321,6 +1342,8 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                         else row.last_reconciled_at,
                     )
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
+                if last_page and rule_reread:
+                    await _rule_reread_done(ctx, db, entity)
             ctx.cursors[module] = row
             if last_page:
                 break
@@ -1982,6 +2005,8 @@ async def _discover(ctx: _Ctx) -> None:
     }
     async with ctx.page() as db:
         await profiles.store(db, ctx.org, ctx.handle.connection_id, profile)
+        # CRM-Q7a: an approved rule that the new profile breaks goes stale.
+        await field_rules.mark_stale(db, ctx.mapping, EXT_SOURCE, profile)
         await store.merge_provider_meta(db, ctx.org, ctx.handle.connection_id, meta)
         if "pipelines" not in (profile.get("unreadable") or []):
             await _mirror_pipelines(ctx, db, profile.get("pipelines") or [])
@@ -2045,6 +2070,8 @@ async def _execute(ctx: _Ctx) -> None:
             daily_budget(ctx.profile.profile if ctx.profile else None) - ctx.used_24h, 0,
         )
     await _stage_types_from_profile(ctx)
+    # CRM-Q7a: before the first provider call, so it costs no credit.
+    await _field_rules(ctx)
     if ctx.kind == runs.KIND_IMPORT:
         await _start_deleted_windows(ctx)
         if ctx.estimate is None:
@@ -2055,6 +2082,8 @@ async def _execute(ctx: _Ctx) -> None:
     # not list is appended and a listed one keeps its place. Before the records,
     # so a deal finds its pipeline.
     await _discover(ctx)
+    # After discovery, so a rule that went stale is not applied.
+    await _load_rules(ctx)
     for entity in ENTITY_ORDER:
         await _changed_pass(ctx, entity)
     if ctx.kind != runs.KIND_IMPORT:
@@ -2063,6 +2092,101 @@ async def _execute(ctx: _Ctx) -> None:
     await _relink_leads(ctx)
     await _deal_roles(ctx)
     await _module_records(ctx)
+
+
+# ── The field rules (CRM-Q7a) ───────────────────────────────────────────────
+
+
+def _rules_row(
+    ctx: _Ctx, applied: list[field_rules.Rule], reread: set[str],
+) -> CursorRow:
+    """The rules cursor row with a new state."""
+    old = _row(ctx, FIELD_RULES_ROW)
+    return CursorRow(
+        FIELD_RULES_ROW, old.last_pulled_at, field_rules.state_of(applied, reread),
+        old.initial_done_at or _now(), old.last_reconciled_at,
+    )
+
+
+async def _field_rules(ctx: _Ctx) -> None:
+    """Apply the decisions of the Field map (``crm_platform.md`` §18.7).
+
+    It runs before the run's first provider call and reads no provider data,
+    so it costs no credit. First it undoes each applied rule that is no longer
+    approved: a free column goes back to NULL, and a fixed column asks for one
+    full read of its entity. Then it backfills each approved rule that it has
+    not applied yet. Each batch is one ``tenant_session``. The cursor row
+    ``zoho:field_rules`` moves in the transaction of the batch that finishes
+    a rule, so a stop repeats only the unfinished rule, and a repeat writes
+    nothing new.
+    """
+    state = _row(ctx, FIELD_RULES_ROW).state or {}
+    applied = field_rules.applied_of(state)
+    reread = {str(e) for e in state.get("reread") or ()}
+    async with ctx.page() as db:
+        approved = await field_rules.approved_rules(db, EXT_SOURCE)
+    current = {rule.key for rule in approved}
+
+    for rule in [r for r in applied if r.key not in current]:
+        target = ctx.mapping.rule_target(rule.entity, rule.target_column)
+        free = target is not None and target.standard_field is None
+        if target is not None and not free:
+            reread.add(rule.entity)
+        applied = [r for r in applied if r.key != rule.key]
+        cleared = 0
+        while True:
+            async with ctx.page() as db:
+                written = (
+                    await field_rules.clear_batch(db, ctx.mapping, rule, EXT_SOURCE)
+                    if free else 0
+                )
+                cleared += written
+                finished = written < field_rules.BATCH
+                if finished:
+                    saved = _rules_row(ctx, applied, reread)
+                    await _save_cursor(ctx, db, saved, "ok")
+            if finished:
+                ctx.cursors[FIELD_RULES_ROW] = saved
+                break
+        _log.info("crm.sync.field_rule_undone rule=%s cleared=%s", rule.id, cleared)
+
+    done = {rule.key for rule in applied}
+    for rule in [r for r in approved if r.key not in done]:
+        after: str | None = None
+        filled = 0
+        while True:
+            async with ctx.page() as db:
+                after, seen, written = await field_rules.backfill_batch(
+                    db, ctx.mapping, rule, EXT_SOURCE, after,
+                )
+                filled += written
+                finished = seen < field_rules.BATCH
+                if finished:
+                    saved = _rules_row(ctx, [*applied, rule], reread)
+                    await _save_cursor(ctx, db, saved, "ok")
+            if finished:
+                applied = [*applied, rule]
+                ctx.cursors[FIELD_RULES_ROW] = saved
+                break
+        _log.info("crm.sync.field_rule_backfilled rule=%s written=%s", rule.id, filled)
+    ctx.rule_rereads = reread
+
+
+async def _load_rules(ctx: _Ctx) -> None:
+    """The approved rules that ``map_record`` applies in this run."""
+    async with ctx.page() as db:
+        ctx.rules = field_rules.by_entity(await field_rules.approved_rules(db, EXT_SOURCE))
+
+
+async def _rule_reread_done(ctx: _Ctx, db: Any, entity: str) -> None:
+    """The full read for a field rule of *entity* is done. It runs in the
+    transaction of the read's last page."""
+    state = _row(ctx, FIELD_RULES_ROW).state or {}
+    ctx.rule_rereads.discard(entity)
+    reread = {str(e) for e in state.get("reread") or ()} - {entity}
+    saved = _rules_row(ctx, field_rules.applied_of(state), reread)
+    await _save_cursor(ctx, db, saved, "ok")
+    ctx.cursors[FIELD_RULES_ROW] = saved
 
 
 # ── The generic record store (CRM-Q6a) ──────────────────────────────────────
