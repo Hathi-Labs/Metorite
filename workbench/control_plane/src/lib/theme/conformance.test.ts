@@ -473,12 +473,10 @@ describe("no raw Tailwind palette colours", () => {
     // 13 since WS-17 EM-T8f-3: the mark of the mailbox picker is text-primary.
     "components/AgentChat.tsx": 12,
     "components/AgentStatusBar.tsx": 4,
-    "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };
 

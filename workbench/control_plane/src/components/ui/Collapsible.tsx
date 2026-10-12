@@ -231,6 +231,12 @@ export interface CollapsibleCardHeaderProps {
    * the summary has that place.
    */
   aside?: React.ReactNode;
+  /**
+   * The icon slot, when the card draws its own icon (a generative-UI
+   * template names a Lucide icon of its own). It takes the place of the
+   * fold state's `icon`, after the chevron, so a card has one icon.
+   */
+  lead?: React.ReactNode;
 }
 
 /**
@@ -250,6 +256,7 @@ export function CollapsibleCardHeader({
   className = "text-[11px]",
   titleClassName = "font-medium text-foreground",
   aside,
+  lead,
 }: CollapsibleCardHeaderProps) {
   const fold = useCardFold();
   if (!fold) return null;
@@ -261,7 +268,13 @@ export function CollapsibleCardHeader({
   // one box, so a shut card's summary cuts after the count, never inside it.
   const words = (
     <>
-      {icon ? <Icon name={icon} size={13} className="shrink-0" /> : null}
+      {lead ? (
+        <span className="flex shrink-0" aria-hidden>
+          {lead}
+        </span>
+      ) : icon ? (
+        <Icon name={icon} size={13} className="shrink-0" />
+      ) : null}
       <span
         data-rollup-title=""
         className={`flex min-w-0 items-baseline gap-1 ${shut && summary ? "max-w-[60%] shrink-0" : ""}`}

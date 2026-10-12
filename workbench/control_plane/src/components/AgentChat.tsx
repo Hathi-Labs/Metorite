@@ -49,6 +49,13 @@ import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
+import {
+  ASK_USER_HEADER,
+  answerSummary,
+  blockingAnswer,
+  formattedAnswers,
+  userInputAnswer,
+} from "@/lib/elicitationAnswer";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import { PHONE_MAX_WIDTH, composerCap, composerHeight, offerExpand } from "@/lib/composerHeight";
@@ -912,6 +919,10 @@ export default function AgentChat({
   const [elicitation, setElicitation] = useState<{
     questions: ElicitationQuestion[];
     requestId?: string;
+    /** The member answered and the run took it: the one line the card
+     *  shows (`answerSummary`). The card waits no more. The run's end
+     *  clears it, as it clears a waiting card. */
+    answered?: string;
   } | null>(null);
 
   // ── Native ask_user state (Copilot SDK on_user_input_request) ────────
@@ -922,6 +933,8 @@ export default function AgentChat({
     question: string;
     choices: string[];
     allowFreeform: boolean;
+    /** As for `elicitation`: the answer, once the run took it. */
+    answered?: string;
   } | null>(null);
 
   // The words of each answer this session sent to a blocking generative-UI
@@ -1713,12 +1726,18 @@ export default function AgentChat({
   };
   const hasConfirmations = confirmations.cards.length > 0;
 
+  // A question card that the run took an answer for waits no more. It
+  // stays in view with its answer until the run ends (owner, 2026-10-13).
+  const elicitationWaits = !!elicitation && elicitation.answered === undefined;
+  const userInputWaits = !!userInput && userInput.answered === undefined;
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
     // while a card waits (`lib/askPin.ts`, spec §24 rule 1). It is a card of
     // the transcript too: its arrival rolls up the long cards above it, and
-    // it never rolls up itself (`components/RollupCard.tsx`).
+    // it never rolls up itself (`components/RollupCard.tsx`). The group
+    // draws no title row of its own. Each card in it draws its own, and an
+    // answered question card folds by itself (`ElicitationCard`).
     return (
       <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
       <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
@@ -1728,55 +1747,31 @@ export default function AgentChat({
 
         {elicitation && (
           <ElicitationCard
+            id={`ask:${elicitation.requestId ?? "questions"}`}
             questions={elicitation.questions}
+            answered={elicitation.answered}
             onSubmit={(answers: ElicitationAnswers) => {
               if (elicitation.requestId) {
-                const formatted = Object.entries(answers)
-                  .map(([header, ans]) => {
-                    const parts: string[] = [`[${header}]`];
-                    if (ans.selected && ans.selected.length > 0) {
-                      parts.push(`Selected: ${ans.selected.join(", ")}`);
-                    }
-                    if (ans.freeform) {
-                      parts.push(`Answer: ${ans.freeform}`);
-                    }
-                    return parts.join("\n");
-                  })
-                  .join("\n\n");
-                const single = elicitation.questions.length === 1;
-                const firstHeader = elicitation.questions[0]?.header ?? "Question";
-                const a = answers[firstHeader] ?? {};
-                const freeform = a.freeform?.trim();
-                const selectedJoined = (a.selected ?? []).join(", ");
-                const answer = single
-                  ? (freeform || selectedJoined || formatted)
-                  : formatted;
-                const wasFreeform = single && !!freeform && !selectedJoined;
+                // The wire shape is `lib/elicitationAnswer.ts`, unchanged.
+                const { answer, wasFreeform } = blockingAnswer(elicitation.questions, answers);
                 const card = elicitation;
                 const reqId = card.requestId!;
-                setElicitation(null);
+                setElicitation({ ...card, answered: answerSummary(card.questions, answers) || answer });
                 postRespondInput(
                   { request_id: reqId, answer, was_freeform: wasFreeform },
                   () => setElicitation(card),
                   // A 4xx says no question waits on this id (a stale card).
                   // The answer goes out as a message, as the genUI path
-                  // does, so it is never lost (2026-10-09).
-                  (outcome) => { if (outcome === "drop") submitText(answer); },
+                  // does, so it is never lost (2026-10-09). The message
+                  // carries the answer, so the card leaves.
+                  (outcome) => {
+                    if (outcome === "ok") return;
+                    setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
+                    if (outcome === "drop") submitText(answer);
+                  },
                 );
               } else {
-                const formatted = Object.entries(answers)
-                  .map(([header, ans]) => {
-                    const parts: string[] = [`[${header}]`];
-                    if (ans.selected && ans.selected.length > 0) {
-                      parts.push(`Selected: ${ans.selected.join(", ")}`);
-                    }
-                    if (ans.freeform) {
-                      parts.push(`Answer: ${ans.freeform}`);
-                    }
-                    return parts.join("\n");
-                  })
-                  .join("\n\n");
-                submitText(formatted);
+                submitText(formattedAnswers(answers));
                 setElicitation(null);
               }
             }}
@@ -1785,8 +1780,9 @@ export default function AgentChat({
 
         {userInput && (
           <ElicitationCard
+            id={`ask:${userInput.requestId}`}
             questions={[{
-              header: "Question",
+              header: ASK_USER_HEADER,
               question: userInput.question,
               multiSelect: false,
               allowFreeformInput: userInput.allowFreeform,
@@ -1794,18 +1790,19 @@ export default function AgentChat({
                 ? userInput.choices.map((c) => ({ label: c }))
                 : null,
             }]}
+            answered={userInput.answered}
             onSubmit={(answers: ElicitationAnswers) => {
-              const a = answers["Question"] ?? {};
-              const selected = a.selected?.[0];
-              const freeform = a.freeform?.trim();
-              const answer = freeform || selected || "";
-              const wasFreeform = !!freeform && !selected;
+              const { answer, wasFreeform } = userInputAnswer(answers);
               const card = userInput;
-              setUserInput(null);
+              setUserInput({ ...card, answered: answer });
               postRespondInput(
                 { request_id: card.requestId, answer, was_freeform: wasFreeform },
                 () => setUserInput(card),
-                (outcome) => { if (outcome === "drop" && answer) submitText(answer); },
+                (outcome) => {
+                  if (outcome === "ok") return;
+                  setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
+                  if (outcome === "drop" && answer) submitText(answer);
+                },
               );
             }}
           />
@@ -1820,8 +1817,8 @@ export default function AgentChat({
   // keeps none of its own.
   const askSources = {
     confirmations: confirmations.cards,
-    elicitation,
-    userInput,
+    elicitation: elicitationWaits ? elicitation : null,
+    userInput: userInputWaits ? userInput : null,
     messages,
     runActive: isRunActive,
     answered: answeredAsks,

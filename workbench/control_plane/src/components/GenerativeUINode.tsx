@@ -42,7 +42,7 @@ import SandboxedHtml from "@/components/SandboxedHtml";
 import Button from "@/components/ui/Button";
 import { CollapsibleCardBody, CollapsibleCardHeader, useCardFold } from "@/components/ui/Collapsible";
 import SandboxedReact from "@/components/SandboxedReact";
-import { renderTemplate } from "@/components/genUITemplates";
+import { OWN_HEAD_TEMPLATES, renderTemplate } from "@/components/genUITemplates";
 import GenUIFallback from "@/components/GenUIFallback";
 import { isEmptyNode } from "@/lib/genUiFallback";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
@@ -434,6 +434,22 @@ export function genUiRootIsCard(spec: unknown): boolean {
   const sp = spec as Record<string, unknown>;
   const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
   return !!root && typeof root === "object" && s(root.type) === "card";
+}
+
+/**
+ * Does the tree's root draw its own title row as the chat card's header?
+ * A `card` does, and so does a template that draws `TemplateHead`
+ * (`OWN_HEAD_TEMPLATES` in `genUITemplates.tsx`, owner report 2026-10-13).
+ * The chat card then passes `header="own"`, and the title draws once.
+ */
+export function genUiRootOwnsHead(spec: unknown): boolean {
+  if (genUiRootIsCard(spec)) return true;
+  if (!spec || typeof spec !== "object") return false;
+  const sp = spec as Record<string, unknown>;
+  const root = (sp.root ?? sp.view ?? sp) as GenUINode | null;
+  if (!root || typeof root !== "object" || s(root.type) !== "template") return false;
+  const props = (root.props ?? {}) as Record<string, unknown>;
+  return OWN_HEAD_TEMPLATES.has(s(props.name));
 }
 
 /**
