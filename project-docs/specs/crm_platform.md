@@ -1755,6 +1755,7 @@ means that the slice works in Mirror mode with no write-back (CRM-Z9).
 | **CRM-I1** Pipeline health and "Needs you" | A health strip: stale deals, slipped close dates, no next step, no touch in 14 days, closing this month. My stale deals reach "Needs you". An admin sets idle days for each stage in Mirror mode too (UX-Q5) | AGENT-SAFE in the app. A push or a mail waits for UX-Q4 | M | CRM-X3 | Y |
 | **CRM-X8** A board you can shape | Card fields, a choice of lane sum, "Load more" in a lane, a lane that folds, and one summary lane for won and lost deals | AGENT-SAFE | M | CRM-Q8 (built) | Y |
 | **CRM-U3 and CRM-U4** Fast, and one look | A revisit paints at once. Skeletons, empty states with a way out, the shared lane colours, a flash where a card lands, and undo after a Native move | AGENT-SAFE | M | Nothing | Y |
+| **CRM-X0** Setup, connection and start over (owner report, §19.11) | One setup hub. Reconnect keeps the records. A change that needs an empty CRM offers a download, then drops the records | AGENT-SAFE | M | CRM-Q6a | Y |
 | **CRM-I2** Targets and the forecast by month | A target for each member, the forecast by month against it, "₹X to go", and a Home card | AGENT-SAFE (UX-Q2 answered) | M to L | Nothing | Y |
 | **CRM-X6 and CRM-X7** Win moments and streaks | A calm toast and a flash when a deal is won. A private count of working days with a logged call, meeting or note | AGENT-SAFE (UX-Q1 answered) | S and M | CRM-I2 for "% of target". CRM-S1 or CRM-X5 for the counts | Y |
 | **CRM-I3** Deal brief | A "Brief" button that writes 4 to 6 lines about one deal and suggests the next step | OWNER-GATE: UX-Q3 | M | The AI meter (H-171) | Y |
@@ -2369,3 +2370,126 @@ to CRM-I1.
 
 **Order.** CRM-X1, CRM-X3 and CRM-X4 run in parallel. CRM-X2 follows CRM-X1.
 None of the four needs a migration.
+
+### 19.11 CRM-X0: Setup, connection and start over (owner report, 2026-10-12)
+
+**The report.** The owner connected Zoho, disconnected it, and then tried to
+sync again. The CRM showed "This CRM has records, so its setup cannot change.
+Remove the records first." The owner found no way forward. The owner asked
+for three things:
+
+1. A change of setup that needs an empty CRM drops all the CRM records
+   automatically.
+2. Before the drop, the CRM offers to save a copy of the records.
+3. The setup, connect, disconnect and reconnect workflows are easy to find
+   and easy to follow.
+
+**What production showed (Fracktal, 2026-10-12 09:40 UTC).** `crm_settings.mode`
+was still `mirror`. The Zoho connection was `disconnected`. The CRM held 547
+deals, and every record came from Zoho (`ext_source = 'zoho'`). A plain
+reconnect needs no reset, because the sync matches each record by its Zoho
+id. But the page put "Change setup" next to the disconnected connection, and
+that route (U5b) refuses a CRM with records.
+
+**Gate.** AGENT-SAFE. The owner asked for the drop in chat. The admin does
+each drop in the UI. An agent never drops the records of a live org.
+
+**Waits for.** CRM-Q6a (PR #900) merged, because both edit
+`routes/crm/settings.py` (`_RESET_DELETES`).
+
+**Scope.**
+
+1. **One setup hub.** The first card of CRM settings is "Setup". It shows
+   the mode, the connection status, the last sync, and the record counts.
+   It offers only the actions that fit the state:
+
+   | State | Main action | Other actions |
+   |---|---|---|
+   | No mode | Choose: Connect Zoho, or Use Metorite | None |
+   | Mirror, connected | Sync now | Disconnect. Switch to Metorite. Start over |
+   | Mirror, disconnected or needs a reconnect | Reconnect Zoho (keeps the records) | Switch to Metorite. Start over |
+   | Native | None | Connect Zoho. Start over |
+
+   The mirror banner and the title-bar line link to this card. No other
+   card offers "Change setup".
+
+2. **Reconnect keeps the records.** A reconnect to the SAME Zoho org resumes
+   the sync with the records in place. The callback compares the Zoho org id
+   of the new token with the one in the latest source profile.
+
+3. **A different Zoho org needs an empty CRM.** If the org id differs, the
+   callback stores the connection as `needs_reset` and does not sync. The
+   hub then opens the start-over dialog of item 5 for that change. Records of
+   two Zoho accounts never mix.
+
+4. **Download a copy.** `GET /crm/export/all.zip` returns one ZIP. It holds
+   one CSV for each entity. The entities are leads, contacts, companies,
+   deals, activities, and the generic module records of CRM-Q6a. It reuses the CSV writer of
+   `routes/crm/export.py`. It has no row cap. An admin calls it, and the CRM
+   access rule applies. It streams, so a large CRM does not fill memory.
+
+5. **The start-over dialog.** Each change that needs an empty CRM opens it.
+   These changes are Switch to Metorite, Connect Zoho from Native mode,
+   Start over, and a different Zoho org.
+   - Step 1 shows the counts for each entity, and says that the change
+     removes them.
+   - Step 2 offers "Download a copy" (item 4). The dialog marks it as done
+     when the download starts.
+   - Step 3 asks the admin to type `DELETE` to confirm. The button reads
+     "Remove N records and continue".
+   - The dialog uses `Modal` and the shared primitives.
+
+6. **The reset route.** `POST /crm/reset` with
+   `{"confirm": "DELETE", "then": "none" | "native" | "mirror"}`.
+   - Only an admin calls it. Any other `confirm` gives 422.
+   - In one transaction in the tenant session, it deletes every CRM record
+     of the org. That covers the record tables, `crm_deal_contacts`,
+     `crm_module_records`, `crm_field_defs`, the sync cursors, the pipelines
+     and their stages, the deal statuses, the lead statuses and the lost
+     reasons. It keeps `crm_settings` (the access rule), `crm_views`, and
+     `crm_sync_runs` (the history).
+   - It disconnects Zoho through the ONE disconnect logic
+     (`connection.disconnect_zoho`), so a revoke at Zoho also happens.
+   - It sets `mode` from `then`. `then = "native"` seeds the Native stages,
+     as the first-open choice does today. `then = "mirror"` leaves the mode
+     empty and starts the Zoho consent.
+   - The reset writes through a new fenced door,
+     `reset_crm_from_admin`, in `routes/crm/core.py`. Its name joins `NAMES`
+     in `tests/unit/test_crm_upsert_from_source_fence.py`, because it
+     bypasses the Mirror write guard. Only `routes/crm/settings.py` may call
+     it.
+   - It writes one audit line with the admin, the time and the counts.
+   - The sync of the org stops before the delete, and it does not start
+     again until a new connection.
+
+7. **Words.** The hub and the dialog say what each action does in one
+   sentence. "Disconnect" says that the records stay, and that they stop
+   updating. "Start over" says that every record goes.
+
+**Non-goals.**
+
+- Keeping Zoho records as Metorite records on a switch to Native mode. That
+  is a later slice, because it converts mirrored rows to native rows.
+- Undo of a reset. The download is the copy.
+
+**Done when.**
+
+1. An R8 test starts with a Mirror org that holds records. An admin calls
+   `POST /crm/reset`. The call removes every listed row of that org. It
+   leaves org B unchanged. It keeps `crm_settings` and the run history.
+2. A member who is not an admin gets 403. A wrong `confirm` gives 422.
+3. A reconnect to the same Zoho org keeps the 547-shaped record set and
+   resumes the sync. A reconnect to a different Zoho org gives
+   `needs_reset`, and writes no record.
+4. `GET /crm/export/all.zip` holds one CSV for each entity, with every row.
+   Org B's rows never appear.
+5. A vitest shows the hub's actions for each state in the table of item 1.
+   It also shows that only the hub offers a change of setup.
+6. A vitest walks the dialog: counts, download, typed confirm, then the
+   call.
+7. The fence test refuses a call to `reset_crm_from_admin` from any file
+   other than `routes/crm/settings.py`.
+
+**Fences.** `tests/unit/test_crm_reset_r8.py` (R8, `_DB_GATE`),
+`tests/unit/test_crm_upsert_from_source_fence.py`, and
+`src/app/crm/components/crmX0.test.ts`.
