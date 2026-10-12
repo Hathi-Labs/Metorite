@@ -11,7 +11,13 @@ the non-privileged role (``graph_on_promoted``). ⚠️ ``schema.generated.sql``
 still keys ``mcp_servers`` by name only, so a fake built from it would agree
 with the old SQL. That is why this is R8.
 
-* Orgs A and B register one name, and the table holds two rows.
+⚠️ **WS-54 IN-4 (2026-10-12).** The register writes the connection registry
+now, not ``mcp_servers``. Each server is one org row ``mcp:<name>``, and the
+headers sit in the encrypted blob. These fences read the rows as the admin
+and open the blob with the store, and they check that ``mcp_servers`` gets
+no row.
+
+* Orgs A and B register one name, and the registry holds two rows.
 * A registers the name again, and A's row changes. B's row does not.
 * A request with no tenant gets 403, and no row is written.
 * Plugin install: the same three facts, on ``plugins_org_name_key``. The
@@ -43,7 +49,10 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     promoted,
 )
-from tests.unit.test_mcp_servers_org_scope import graph_on_promoted  # noqa: F401
+from tests.unit.test_mcp_servers_org_scope import (  # noqa: F401
+    graph_on_promoted,
+    registry_on_promoted,
+)
 
 pytestmark = _DB_GATE
 
@@ -59,18 +68,26 @@ async def _as(org: str | None, call):
 
 
 def _mcp_rows(admin_engine, name: str) -> dict[str, tuple]:
+    """The registry rows of *name*, by org: url, decrypted headers, label."""
+    from gateway.connections import store
+
     with admin_engine.begin() as c:
         rows = c.execute(
-            text("SELECT organization_id::text, url, headers, label FROM mcp_servers "
-                 "WHERE name = :n"),
-            {"n": name},
+            text("SELECT organization_id::text, provider_meta ->> 'url', "
+                 "credentials_encrypted, provider_meta ->> 'label' "
+                 "FROM integration_connections WHERE provider = :p"),
+            {"p": f"mcp:{name}"},
         ).fetchall()
-    return {r[0]: (r[1], r[2], r[3]) for r in rows}
+        legacy = c.execute(
+            text("SELECT count(*) FROM mcp_servers WHERE name = :n"), {"n": name},
+        ).scalar_one()
+    assert legacy == 0, "a register wrote the old mcp_servers table (IN-4)"
+    return {r[0]: (r[1], store._unseal_headers(r[2]), r[3]) for r in rows}
 
 
 @pytest.fixture
-def name(graph_on_promoted, monkeypatch):  # noqa: F811
-    p = graph_on_promoted
+async def name(registry_on_promoted, monkeypatch):  # noqa: F811
+    p = registry_on_promoted
     # Review round 2: POST /mcp checks the URL with the guard. The test hosts
     # resolve to one public address, so the check passes with no network.
     monkeypatch.setattr(outbound_guard, "_resolve", lambda _h, _p: ["93.184.216.34"])
