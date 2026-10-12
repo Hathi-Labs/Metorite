@@ -961,3 +961,14 @@ def test_detail_fences_comments_always(gw: Recorder):
     assert out.startswith(core._UNTRUSTED_NOTE)
     assert "comment (bob@fracktal.in): «hi»" in out
     assert "its statuses: Triage (Triage), To do (To do), Done (Done)" in out
+
+
+@pytest.mark.parametrize("query", [
+    "invoice approval", "Parser parser PARSER fix", "to do", "v2 firmware",
+    " ".join(f"word{i}" for i in range(30)),
+])
+def test_the_word_rule_is_the_gateways(query: str):
+    """The skill's copy of `filters.query_words` (review of #941)."""
+    from gateway.routes.projects.filters import query_words
+
+    assert core._query_words(query) == [w.lower() for w in query_words(query)]

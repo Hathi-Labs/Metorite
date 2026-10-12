@@ -553,3 +553,17 @@ def test_a_short_description_is_the_whole_snippet() -> None:
 
 def test_an_empty_window_is_no_snippet() -> None:
     assert pm_search.snippet_of("  \n ", starts_inside=False, ends_inside=False) is None
+
+
+def test_a_window_that_starts_on_whitespace_keeps_its_first_word() -> None:
+    """Review of #941: indentation before the hit collapsed away, and the
+    half-word rule then dropped the word that matched."""
+    raw = " " * 50 + "approval of the invoice from finance"
+    out = pm_search.snippet_of(raw, starts_inside=True, ends_inside=False)
+    assert out == "…approval of the invoice from finance"
+
+
+def test_a_window_that_starts_inside_a_word_drops_the_half_word() -> None:
+    out = pm_search.snippet_of("ating the approval of it",
+                               starts_inside=True, ends_inside=False)
+    assert out == "…the approval of it"

@@ -664,6 +664,19 @@ _VIEW_QUERY: dict[str, dict[str, str]] = {
 }
 
 
+def _query_words(query: str) -> list[str]:
+    """The words a text query must each find, lowercased: the gateway's
+    ``filters.query_words`` rule, copied because a skill cannot import
+    gateway code. A word counts once, at most 8 count, and when no word has
+    3 characters the whole query is the one word.
+    ``test_skill_task_lens.py::test_the_word_rule_is_the_gateways`` holds
+    the two equal."""
+    seen = list(dict.fromkeys(query.lower().split()))[:8]
+    if not any(len(w) >= 3 for w in seen):
+        return [" ".join(query.lower().split())]
+    return seen
+
+
 @_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list(view: str = "inbox", query: str = "",
                    context: str = "") -> str:
@@ -692,7 +705,7 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
         # `/my/inbox` has no text filter, so the match runs here, by the
         # Projects search's rule (`filters.text_match_clause`, 2026-10-13):
         # every word, in the title or the description, in any order.
-        words = query.lower().split()
+        words = _query_words(query)
         items = [i for i in items
                  if all(w in str(i.get("title") or "").lower()
                         or w in str(i.get("description") or "").lower()

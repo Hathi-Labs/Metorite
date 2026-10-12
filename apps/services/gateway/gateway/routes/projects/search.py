@@ -175,8 +175,10 @@ SELECT h.id, h.title, h.task_number, h.project_id, h.status_id, h.due_at,
        h.completed_at, h.parent_task_id, h.project_name, h.status_name,
        h.category, h.rank,
        greatest(n.at - :snippet_lead, 1) AS snippet_from,
-       substr(h.description, greatest(n.at - :snippet_lead, 1),
-              :snippet_window) AS snippet_raw,
+       CASE WHEN n.at IS NOT NULL
+            THEN substr(h.description, greatest(n.at - :snippet_lead, 1),
+                        :snippet_window)
+       END AS snippet_raw,
        length(h.description) AS description_length
   FROM hits h
   LEFT JOIN LATERAL (
@@ -230,11 +232,18 @@ def snippet_of(
     ``starts_inside`` / ``ends_inside`` say the window was cut from the
     middle of the description. A cut drops the half word at that edge, when
     a space is close enough to cut at.
+
+    ⚠️ The front half word is dropped only when the window STARTS on a
+    non-space character, which is the only way it can start inside a word.
+    A window that starts on whitespace has no half word, and its first token
+    can be the hit itself: 50 spaces of indentation before "approval"
+    collapse to "approval …", and dropping the first token removed the very
+    word that matched (review of #941).
     """
     text_ = " ".join((raw or "").split())
     if not text_:
         return None
-    if starts_inside:
+    if starts_inside and not (raw or " ")[0].isspace():
         space = text_.find(" ")
         if 0 <= space < 20:
             text_ = text_[space + 1:]
