@@ -106,6 +106,25 @@ ZOHO_READ_SCOPES: tuple[str, ...] = (
     # CRM-Q5. A connection made before this scope existed must reconnect to
     # grant it. Until then the sync skips Tasks and reports them unavailable.
     "ZohoCRM.modules.tasks.READ",
+    # CRM-Q6a: the generic record store (crm_platform.md §18.7). One read scope
+    # for each standard module, and one for every custom module. Each name is
+    # on Zoho's published scope list for API v2 and v8, checked on 2026-10-12,
+    # because Zoho refuses the WHOLE consent for one unknown scope.
+    # `mapping.module_read_scope` gives the same names, and
+    # tests/unit/test_crm_module_records.py holds the two together. A
+    # connection made before this slice must reconnect to grant them. Until
+    # then the sync counts each module as unavailable and the run stays ok.
+    "ZohoCRM.modules.products.READ",
+    "ZohoCRM.modules.quotes.READ",
+    "ZohoCRM.modules.salesorders.READ",
+    "ZohoCRM.modules.purchaseorders.READ",
+    "ZohoCRM.modules.invoices.READ",
+    "ZohoCRM.modules.vendors.READ",
+    "ZohoCRM.modules.pricebooks.READ",
+    "ZohoCRM.modules.cases.READ",
+    "ZohoCRM.modules.solutions.READ",
+    "ZohoCRM.modules.campaigns.READ",
+    "ZohoCRM.modules.custom.READ",
     "ZohoCRM.settings.fields.READ",
     "ZohoCRM.settings.layouts.READ",
     "ZohoCRM.settings.pipeline.READ",

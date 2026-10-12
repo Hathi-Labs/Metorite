@@ -215,6 +215,17 @@ _OURS_TABLES: dict[str, str] = {
 }
 
 
+#: The count key of a generic module (CRM-Q6a). Mirrors ``engine._module``.
+MODULE_KEY_PREFIX = "module:"
+
+#: ``ours`` of each generic module, from the generic record store.
+_MODULE_OURS_SQL = (
+    "SELECT module, count(*) AS n FROM crm_module_records "
+    "WHERE organization_id = CAST(:org AS uuid) AND ext_source = :src "
+    "GROUP BY module"
+)
+
+
 def _run_model(row: Any) -> HealthRunModel:
     return HealthRunModel(
         kind=row.kind, status=row.status, started_at=row.started_at,
@@ -273,18 +284,26 @@ async def get_sync_health(
                 "WHERE organization_id = CAST(:org AS uuid) AND ext_source = :src"),
                 {"org": org, "src": engine.EXT_SOURCE})).first()
             ours[key] = int(row.n or 0)
+        # CRM-Q6a: each generic module counts its rows in the generic store,
+        # under the key the engine uses (``module:<ApiName>``).
+        for row in (await db.execute(text(_MODULE_OURS_SQL), {
+            "org": org, "src": engine.EXT_SOURCE,
+        })).fetchall():
+            ours[f"{MODULE_KEY_PREFIX}{row.module}"] = int(row.n or 0)
     body = profile.profile if profile is not None else None
     budget = engine.daily_budget(body)
     counts = latest.counts if latest is not None else {}
     estimate = (latest.estimate if latest is not None else None) or {}
+    module_ours = {k: v for k, v in ours.items() if k.startswith(MODULE_KEY_PREFIX)}
     entities = [
         HealthEntityModel(
             key=key,
             zoho_count=_int(estimate.get(key)),
-            ours=ours.get(key),
+            # A module with no row here has 0, not "no local table".
+            ours=ours.get(key, 0 if key.startswith(MODULE_KEY_PREFIX) else None),
             last_run=_last_run_counts(counts.get(key)),
         )
-        for key in _entity_keys(counts, estimate)
+        for key in _entity_keys(counts, {**module_ours, **estimate})
     ]
     modules = [
         HealthModuleModel(
