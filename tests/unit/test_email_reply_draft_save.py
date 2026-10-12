@@ -10,10 +10,12 @@ So EVERY first save of a reply answered 500, whatever value the composer
 sent. Box logs held 62 answers of 500 against 16 of 200 in three days. The
 error was ``operator does not exist: text = uuid``.
 
-**The fix.** The reply target matches by two typed parameters, as
-``transport/send.py`` ``_reply_target`` already does. A value that parses as
-a UUID matches ``id = CAST(:lid AS uuid)`` or ``provider_message_id = :rid``.
-Any other value matches ``provider_message_id = :rid`` only.
+**The fix.** The reply target matches by two typed parameters, through the
+one helper ``transport/send.py`` ``reply_row_match``, which ``_reply_target``
+uses too. A value that parses as a UUID matches ``id = CAST(:lid AS uuid)``
+or ``provider_message_id = :rid``. Any other value matches
+``provider_message_id = :rid`` only. A ``draft_id`` that is not a UUID
+answers 404 in ``PUT /email/drafts`` and ``POST /email/drafts/send``.
 
 **R8.** ``TestReplyDraftFirstSave`` runs the real route and the real SQL
 against the phase-4-promoted two-org catalog of
@@ -67,11 +69,41 @@ RAVI = "ravi@contoso-reply-save.test"
 
 # ── the source fence (runs everywhere, no database) ─────────────────────────
 
-#: One named parameter that meets ``id`` and ``provider_message_id``.
+#: The right side of one compare: ``:x``, ``:x::uuid`` or ``CAST(:x AS uuid)``.
+_PARAM = r"(?:CAST\(\s*)?:{name}\b(?:\s+AS\s+\w+\s*\)|::\w+)?"
+#: One named parameter that meets ``id`` and ``provider_message_id``, in
+#: either order. A cast on one side does not help, because the other side
+#: still compares the same parameter to the other type.
 _ONE_PARAM_TWO_TYPES = re.compile(
-    r"\bid\s*=\s*:(\w+)\b[^;]{0,400}?provider_message_id\s*=\s*:\1\b"
-    r"|provider_message_id\s*=\s*:(\w+)\b[^;]{0,400}?\bid\s*=\s*:\2\b",
+    r"\bid\s*=\s*" + _PARAM.format(name=r"(\w+)")
+    + r"[^;]{0,400}?provider_message_id\s*=\s*" + _PARAM.format(name=r"\1")
+    + r"|provider_message_id\s*=\s*" + _PARAM.format(name=r"(\w+)")
+    + r"[^;]{0,400}?\bid\s*=\s*" + _PARAM.format(name=r"\2"),
     re.DOTALL)
+
+
+@pytest.mark.parametrize("sql", [
+    "AND (id = :id OR provider_message_id = :id)",
+    '" AND (id = :id"\n                    " OR provider_message_id = :id)"',
+    "(em.id = CAST(:x AS uuid) OR em.provider_message_id = :x)",
+    "(em.id = CAST( :x AS uuid ) OR em.provider_message_id = CAST(:x AS text))",
+    "(id = :x::uuid OR provider_message_id = :x)",
+    "(provider_message_id = :x OR id = :x)",
+    "(provider_message_id = :x OR em.id = CAST(:x AS uuid))",
+])
+def test_the_fence_catches_each_shape_of_the_defect(sql):
+    assert _ONE_PARAM_TWO_TYPES.search(sql), sql
+
+
+@pytest.mark.parametrize("sql", [
+    "(em.id = CAST(:lid AS uuid) OR em.provider_message_id = :rid)",
+    "(id = :lid::uuid OR provider_message_id = :rid)",
+    "provider_message_id = :pmid AND id <> :id",
+    "thread_message_id = :x OR provider_message_id = :x",
+    "WHERE id = :id AND account_id = :aid",
+])
+def test_the_fence_passes_typed_params(sql):
+    assert not _ONE_PARAM_TWO_TYPES.search(sql), sql
 
 
 def test_no_email_sql_compares_one_param_to_a_uuid_and_a_text_column():
@@ -87,6 +119,42 @@ def test_no_email_sql_compares_one_param_to_a_uuid_and_a_text_column():
     assert hits == [], (
         "one SQL parameter meets both id (uuid) and provider_message_id "
         f"(text): {hits}")
+
+
+# ── a draft id that is not a UUID (hermetic) ────────────────────────────────
+
+
+@asynccontextmanager
+async def _no_session(*_a: Any, **_kw: Any) -> AsyncIterator[Any]:
+    raise AssertionError("the route opened a session for a bad draft id")
+    yield  # pragma: no cover
+
+
+_ME = UserContext(email="me@reply-save.test", role=UserRole.EMPLOYEE)
+
+
+async def test_a_save_with_a_draft_id_that_is_not_a_uuid_answers_404(
+        monkeypatch):
+    """``email_messages.id`` is a uuid. Postgres raised ``invalid input
+    syntax for type uuid`` on any other value, and the route answered 500.
+    It answers 404 now, before any database or provider call."""
+    monkeypatch.setattr(drafting, "_tenant_session", _no_session)
+    with pytest.raises(HTTPException) as exc:
+        await drafting.upsert_draft(drafting.DraftUpsertRequest(
+            account_id=str(uuid.uuid4()), draft_id="AAMk-not-a-row",
+            body="v1"), user=_ME)
+    assert (exc.value.status_code, exc.value.detail) == (404, "Draft not found")
+
+
+async def test_a_send_with_a_draft_id_that_is_not_a_uuid_answers_404(
+        monkeypatch):
+    monkeypatch.setattr(drafting, "_tenant_session", _no_session)
+    with pytest.raises(HTTPException) as exc:
+        await drafting.send_draft_endpoint(
+            drafting.DraftSendRequest(
+                account_id=str(uuid.uuid4()), draft_id="local-1"),
+            drafting.BackgroundTasks(), user=_ME)
+    assert (exc.value.status_code, exc.value.detail) == (404, "Draft not found")
 
 
 # ── R8: the real route on the real SQL ──────────────────────────────────────

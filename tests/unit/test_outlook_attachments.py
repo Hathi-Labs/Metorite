@@ -65,6 +65,9 @@ from tests.unit.test_gmail_send_and_drafts import (
 )
 
 PDF = "application/pdf"
+#: A local draft id: ``email_messages.id`` is a uuid, and the draft routes
+#: answer 404 for any other value (``email_app_master_plan.md`` §17.11).
+LOCAL_DRAFT_ID = "00000000-0000-4000-8000-0000000000d1"
 SMALL = b"%PDF-1.7 small quote"
 BIG = 5_000_000
 MIN_SIZE = "ErrorAttachmentSizeShouldNotBeLessThanMinimumSize"
@@ -556,7 +559,7 @@ async def test_a_failed_save_answers_502_and_writes_no_local_row(
     _route_patches(monkeypatch, db, _provider(client))
     req = drafting.DraftUpsertRequest(
         account_id="acc-1", to=["ravi@em-t9.test"], body="See the quote.",
-        draft_id="local-7" if branch == "update" else None,
+        draft_id=LOCAL_DRAFT_ID if branch == "update" else None,
         reply_to_message_id="local-1" if branch == "reply" else None,
         attachments=[SendAttachment(filename="quote.pdf", mime_type=PDF,
                                     content_b64=base64.b64encode(SMALL).decode())])
@@ -593,7 +596,7 @@ async def test_the_signed_send_adds_no_file(
     _route_patches(monkeypatch, _Rows(_draft_row("AAMk-1"), "Asha"), p)
 
     out = await drafting.send_draft_endpoint(
-        drafting.DraftSendRequest(account_id="acc-1", draft_id="local-1"),
+        drafting.DraftSendRequest(account_id="acc-1", draft_id=LOCAL_DRAFT_ID),
         BackgroundTasks(), user=_ME)
 
     assert out == {"sent": True}
