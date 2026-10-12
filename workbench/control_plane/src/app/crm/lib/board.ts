@@ -71,19 +71,72 @@ export function statusTone(status: Pick<Status, "color" | "type">): string {
   );
 }
 
+/** The group of a stage type on the board: open work, then won, then lost. */
+const LANE_GROUP: Record<StatusType, number> = {
+  open: 0,
+  ongoing: 0,
+  on_hold: 0,
+  won: 1,
+  lost: 2,
+};
+
+/** Two pipeline places. A missing place sorts after every stated place. */
+function comparePlaces(
+  a: number | null | undefined,
+  b: number | null | undefined
+): number {
+  const left = typeof a === "number" ? a : null;
+  const right = typeof b === "number" ? b : null;
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left - right;
+}
+
 /**
- * Lanes in `position` order, empty ones included.
+ * THE order of the Deals board columns, in both modes (owner report,
+ * 2026-10-12). This is the one place that decides it.
  *
- * The gateway already orders them; re-sorting here is not distrust, it is
- * that the board must not depend on a payload's ordering to be correct — and
- * an empty lane is kept because a kanban that hides its empty columns is a
- * list (the gateway's own words).
+ * 1. Open stages first, by `probability` from low to high. A tie goes to
+ *    the place in the chosen pipeline, then to the global `position`.
+ * 2. Then the won stages, by the same places.
+ * 3. Then the lost stages, at the far end, by the same places.
+ *
+ * A stage with no pipeline place (no pipeline chosen, or a stage that only
+ * holds deals) comes after the listed stages of its group. The stage editor in
+ * CRM settings keeps its own order.
+ */
+export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_position">>(
+  lanes: readonly T[]
+): T[] {
+  return [...lanes].sort((a, b) => {
+    const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
+    if (group !== 0) return group;
+    if (LANE_GROUP[a.status.type] === 0) {
+      const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
+      if (odds !== 0) return odds;
+    }
+    const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
+    if (inPipeline !== 0) return inPipeline;
+    const global = a.status.position - b.status.position;
+    if (global !== 0) return global;
+    return a.status.name.localeCompare(b.status.name);
+  });
+}
+
+/**
+ * Lanes in board order (`orderLanes`), empty ones included. The page decides
+ * which empty lanes to hide (`lib/emptyStages.ts`).
+ *
+ * The board must not depend on a payload's ordering to be correct, so it
+ * sorts here and does not trust the order of the payload.
  */
 export function toBoardLanes(pipeline: Pipeline | null): BoardLane[] {
   if (!pipeline) return [];
-  return [...pipeline.lanes]
-    .sort((a, b) => a.status.position - b.status.position)
-    .map((lane) => ({ ...lane, tone: statusTone(lane.status) }));
+  return orderLanes(pipeline.lanes).map((lane) => ({
+    ...lane,
+    tone: statusTone(lane.status),
+  }));
 }
 
 // ── The Leads board (CRM-Q3) ──────────────────────────────────────────────
@@ -197,18 +250,25 @@ export function weightedRows(
 }
 
 /** The board's own totals, for the header. Sums the LANE figures, which cover
- *  the whole lane — not the rows returned, which are one page of it. */
+ *  the whole lane — not the rows returned, which are one page of it.
+ *
+ *  The header says "open deals" and "in the pipeline", so only the lanes in
+ *  `WEIGHTED_TYPES` count. A won or a lost deal is closed, which is the rule
+ *  of the owner leaderboard's `open_deals` in `routes/crm/reports.py`. */
 export function boardTotals(lanes: BoardLane[]): {
   count: number;
   amount: number;
   weighted: number;
 } {
   return lanes.reduce(
-    (acc, lane) => ({
-      count: acc.count + lane.count,
-      amount: acc.amount + (lane.amount || 0),
-      weighted: acc.weighted + (lane.weighted || 0),
-    }),
+    (acc, lane) =>
+      WEIGHTED_TYPES.includes(lane.status.type)
+        ? {
+            count: acc.count + lane.count,
+            amount: acc.amount + (lane.amount || 0),
+            weighted: acc.weighted + (lane.weighted || 0),
+          }
+        : acc,
     { count: 0, amount: 0, weighted: 0 }
   );
 }

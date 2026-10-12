@@ -42,6 +42,7 @@ export default function KanbanBoard({
   onMove,
   onOpen,
   onCreate,
+  hiddenEmpty = 0,
 }: {
   /** Which record the cards are. Deals unless stated. */
   entity?: "deals" | "leads";
@@ -55,10 +56,26 @@ export default function KanbanBoard({
   onOpen: (id: string) => void;
   /** Omitted in Mirror mode, where a record is made in Zoho (CRM-Z7). */
   onCreate?: () => void;
+  /** How many empty stages the page hid (`lib/emptyStages.ts`). */
+  hiddenEmpty?: number;
 }) {
   const [dragging, setDragging] = useState<Card | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const isDeals = entity === "deals";
+
+  if (!loading && lanes.length === 0 && hiddenEmpty > 0) {
+    // Every stage is empty and hidden. Say so, and do not claim that no
+    // stage exists.
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-sm text-muted-foreground">No deals match this view.</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          {hiddenEmpty} empty {hiddenEmpty === 1 ? "stage is" : "stages are"} hidden. Use
+          &quot;Empty stages&quot; in the bar to show them.
+        </p>
+      </div>
+    );
+  }
 
   if (!loading && lanes.length === 0) {
     return (
