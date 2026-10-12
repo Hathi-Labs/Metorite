@@ -110,6 +110,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_AI_TIER_ROUTING",
       // WS-44 NS-6: the shell's one bell, and later its dock.
       "NEXT_PUBLIC_SHELL_DOCK",
+      // D99, NS-6 slice 6b: the chat bar and the one assistant.
+      "NEXT_PUBLIC_SHELL_CHAT",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

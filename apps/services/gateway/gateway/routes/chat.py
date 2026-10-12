@@ -85,6 +85,9 @@ class SessionPatchRequest(BaseModel):
     title: str | None = None
     last_preview: str | None = None
     message_count: int | None = None
+    #: D99 (migration 253). True archives the chat, False takes it back into
+    #: the list, None leaves it. An archive keeps its first time.
+    archived: bool | None = None
 
 
 class MessageRecord(BaseModel):
@@ -134,7 +137,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
                 "       s.user_id, COALESCE(s.visibility, 'private') AS visibility, "
                 "       (SELECT count(*) FROM chat_session_participant p "
                 "          WHERE p.session_id = s.id) AS participant_count, "
-                "       me.role AS my_role "
+                "       me.role AS my_role, s.archived_at "
                 "FROM chat_session s "
                 # One join on the participant key, so no query per row.
                 "LEFT JOIN chat_session_participant me "
@@ -171,6 +174,9 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
+            # D99 (migration 253): an archived chat stays in the list, and
+            # the assistant shows it under "Archived".
+            "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
         }
         for r in rows
     ]
@@ -421,12 +427,23 @@ def _patch_session(
     if req.message_count is not None:
         sets.append("message_count = :message_count")
         params["message_count"] = req.message_count
+    # D99: the archive is a column of the chat, so in a room it would hide
+    # the chat from every member. Only the member who may delete the chat
+    # may archive it (`_MAY_DELETE_SQL`). Anybody else gets the 404 of a chat
+    # they cannot see, and nothing of the request is written.
+    owner_only = ""
+    if req.archived is True:
+        sets.append("archived_at = COALESCE(s.archived_at, now())")
+        owner_only = " AND " + _MAY_DELETE_SQL
+    elif req.archived is False:
+        sets.append("archived_at = NULL")
+        owner_only = " AND " + _MAY_DELETE_SQL
 
     with tenant_session(organization_id) as s:
         result = s.execute(
             text(
                 f"UPDATE chat_session s SET {', '.join(sets)} "  # noqa: S608
-                "WHERE s.id = :id AND " + SESSION_VISIBLE_SQL
+                "WHERE s.id = :id AND " + SESSION_VISIBLE_SQL + owner_only
             ),
             params,
         )

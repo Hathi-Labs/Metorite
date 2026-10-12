@@ -15,6 +15,7 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -48,6 +49,11 @@ import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { AssistantWorkArea, PhoneChatBar } from "@/lib/shell/ChatBar";
+// D99: the one assistant, loaded on demand, so a shell with the flag off
+// never carries the chat in its bundle.
+const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
 import AppLauncher from "@/lib/shell/AppLauncher";
 import {
   ADD_APPS_HINT,
@@ -156,6 +162,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [navOn] = useState(() => shellNavOn());
   // NS-6: the one bell, behind its own flag. Read once, as above.
   const [dockOn] = useState(() => shellDockOn());
+  // D99: the chat bar and the one assistant, behind their own flag.
+  const [chatOn] = useState(() => shellChatOn());
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
@@ -227,10 +235,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <ShellFrame lead={<BarBrand />}>
             <div className="flex min-h-0 flex-1">
               <Sidebar />
-              <main className="min-h-0 min-w-0 flex-1 overflow-auto">
-                <AccountStateBanner />
-                <AccessGate>{children}</AccessGate>
-              </main>
+              {/* D99: with the chat flag on, the chat bar is a row under the
+                  page, and the assistant sits beside it or over it. Only
+                  this frame carries it: production runs both shell flags. */}
+              {chatOn ? (
+                <AssistantWorkArea assistant={<AssistantDock />}>
+                  <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                    <AccountStateBanner />
+                    <AccessGate>{children}</AccessGate>
+                  </main>
+                </AssistantWorkArea>
+              ) : (
+                <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                  <AccountStateBanner />
+                  <AccessGate>{children}</AccessGate>
+                </main>
+              )}
             </div>
           </ShellFrame>
         ) : (
@@ -327,7 +347,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* WS-51 S5: the same signals, and the agent pill above the bottom
             nav while a run goes on. */}
         <RunSignalsHost />
-        <AgentPill />
+        {/* D99: the chat bar takes the pill's place, and its activity
+            control carries the pill's count. */}
+        {chatOn ? <PhoneChatBar /> : <AgentPill />}
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
@@ -343,6 +365,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <RecordingDock />
         {/* Server-side "live now" presence (bot calls / other devices). */}
         <LiveDock />
+        {/* D99: the one assistant, as a full-screen sheet over the nav. */}
+        {chatOn ? <AssistantDock phone /> : null}
 
         {/* Unified drawer (slide-up panel for bottom-nav tab content) */}
         {drawerOpen && (
@@ -444,6 +468,8 @@ function MobileBottomNavInner({
   const [home] = useState(() => homePane());
   // NS-6: the one bell sits beside the activity control here, as on the bar.
   const [dockOn] = useState(() => shellDockOn());
+  // D99: the chat bar replaces each app's own assistant tab.
+  const [chatOn] = useState(() => shellChatOn());
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [launcherHint, setLauncherHint] = useState<string | undefined>(undefined);
   // The member's stars (owner, 2026-10-11), the same model as the desktop
@@ -727,10 +753,12 @@ function MobileBottomNavInner({
               <AppIcon name="Zap" size={20} />
               <span className="text-[10px] font-medium leading-none">Automation</span>
             </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-ai")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="MessageCircle" size={20} />
-              <span className="text-[10px] font-medium leading-none">AI Chat</span>
-            </Button>
+            {!chatOn && (
+              <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-ai")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
+                <AppIcon name="MessageCircle" size={20} />
+                <span className="text-[10px] font-medium leading-none">AI Chat</span>
+              </Button>
+            )}
           </>
         )}
         {isChatPage && (
@@ -770,11 +798,13 @@ function MobileBottomNavInner({
               label="Capture"
               accent
             />
-            <TaskTab
-              onClick={() => dispatchNav("tasks-assistant")}
-              icon={themedIcon("Sparkles")}
-              label="Assistant"
-            />
+            {!chatOn && (
+              <TaskTab
+                onClick={() => dispatchNav("tasks-assistant")}
+                icon={themedIcon("Sparkles")}
+                label="Assistant"
+              />
+            )}
           </>
         )}
         {isProjectsPage && (

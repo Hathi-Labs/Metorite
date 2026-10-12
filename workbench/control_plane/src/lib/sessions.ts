@@ -35,6 +35,11 @@ export interface ChatSession {
   isOwner?: boolean;
   /** >1 means somebody else is in here too. Drives the shared badge. */
   participantCount?: number;
+  /**
+   * D99 (migration 253): when the member archived the chat, or null. An
+   * archived chat stays, and the assistant lists it under "Archived".
+   */
+  archivedAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +75,7 @@ const NS_PREFIX = "cc-chat::";
  * they have not read, and `open` the heartbeat of the chats that show in a
  * visible tab (WS-51 S5, `lib/runSignals.ts`).
  */
-export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder" | "unread" | "open";
+export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder" | "unread" | "open" | "assistant";
 
 /**
  * The window event that says the unread map changed in THIS tab. Another tab
@@ -639,6 +644,57 @@ export function enrichSession(
   }).catch(() => {});
 }
 
+/** The longest name a member may give a chat. */
+export const SESSION_TITLE_MAX = 120;
+
+/**
+ * The member names a chat (D99). The name replaces the auto-title, and the
+ * server keeps it (`PATCH /chat/sessions/{id}` sets a title that is not null).
+ * Blank words change nothing. Returns whether the name changed.
+ */
+export function renameSession(id: string, title: string): boolean {
+  const clean = title.replace(/\s+/g, " ").trim().slice(0, SESSION_TITLE_MAX);
+  if (!clean) return false;
+  const sessions = getSessions();
+  const s = sessions.find((x) => x.id === id);
+  if (!s || s.title === clean) return false;
+  s.title = clean;
+  writeList(sessions);
+  _patchSessionInDb(id, { title: clean, lastPreview: s.lastPreview, messageCount: s.messageCount }).catch(() => {});
+  return true;
+}
+
+/**
+ * The member archives a chat, or takes it back (D99). The chat and its files
+ * stay. Only the member who may delete the chat may archive it, and the
+ * server answers 404 to anybody else (`routes/chat.py` `_patch_session`).
+ * Then the local mark goes back, so the list never shows what the server
+ * refused. Returns whether the mark changed here.
+ */
+export function setSessionArchived(id: string, archived: boolean): boolean {
+  const sessions = getSessions();
+  const s = sessions.find((x) => x.id === id);
+  if (!s || Boolean(s.archivedAt) === archived) return false;
+  const before = s.archivedAt ?? null;
+  s.archivedAt = archived ? new Date().toISOString() : null;
+  writeList(sessions);
+  void fetch(`/api/chat/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archived }),
+  })
+    .then((res) => {
+      if (res.ok) return;
+      const now = getSessions();
+      const row = now.find((x) => x.id === id);
+      if (!row) return;
+      row.archivedAt = before;
+      writeList(now);
+    })
+    .catch(() => {});
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Postgres API helpers (all async, all fire-and-forget safe)
 // ---------------------------------------------------------------------------
@@ -699,6 +755,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       visibility?: ChatSession["visibility"];
       isOwner?: boolean;
       participantCount?: number;
+      archivedAt?: string | null;
     }>;
 
     const local = readList(key);
@@ -714,6 +771,10 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       s.visibility = r.visibility;
       s.isOwner = r.isOwner;
       s.participantCount = r.participantCount;
+      // D99: an archive and a name made on another device reach this one.
+      // The server keeps both, so its answer wins here.
+      s.archivedAt = r.archivedAt ?? null;
+      if (r.title) s.title = r.title;
     }
 
     // Add any sessions from Postgres that aren't in localStorage.
@@ -742,6 +803,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
           visibility: r.visibility,
           isOwner: r.isOwner,
           participantCount: r.participantCount,
+          archivedAt: r.archivedAt ?? null,
         });
       }
     }

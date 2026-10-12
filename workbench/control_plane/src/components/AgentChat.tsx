@@ -259,6 +259,14 @@ interface AgentChatProps {
   pendingInput?: string;
   onPendingInputConsumed?: () => void;
   /**
+   * Words to SEND once, as the member's turn (D99: the shell's chat bar).
+   * Unlike `pendingInput`, the member already pressed Enter in the bar. It
+   * waits until the history has loaded, sends each `seq` once, and then
+   * calls `onAutoSendConsumed`.
+   */
+  autoSend?: { seq: number; text: string } | null;
+  onAutoSendConsumed?: (seq: number) => void;
+  /**
    * The server refused this SESSION on send (another org, or a room the member
    * is not in). Return true to take the turn: no error card is drawn, and the
    * parent opens a new chat. Pass it ONLY for a session restored from storage
@@ -294,6 +302,8 @@ export default function AgentChat({
   compact,
   pendingInput,
   onPendingInputConsumed,
+  autoSend,
+  onAutoSendConsumed,
   onSessionRefused,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
@@ -1497,6 +1507,19 @@ export default function AgentChat({
     },
     [isLoading, loadingHistory, sendMode, sendMessage, stopGeneration, enqueue, setMessages]
   );
+
+  // D99: the chat bar's words, sent once each, after the history loads. The
+  // ref holds the last seq sent, so a re-render or a remount of the same
+  // chat never sends it twice (the store also drops it, `consumeAsk`).
+  const autoSentRef = useRef(0);
+  useEffect(() => {
+    if (!autoSend || loadingHistory) return;
+    if (autoSend.seq <= autoSentRef.current) return;
+    autoSentRef.current = autoSend.seq;
+    submitText(autoSend.text);
+    onAutoSendConsumed?.(autoSend.seq);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSend?.seq, loadingHistory]);
 
   /** Explicit Stop — also clears the queue so steered/queued messages don't
    *  auto-send when the run halts (the drain effect fires on isLoading→false). */

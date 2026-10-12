@@ -332,6 +332,11 @@ the move, the actor filter removed twice, and no neutralising pass.
 
 ### S3 — the top-right activity control
 
+> ⚠️ **Amended 2026-10-12 by D99.** With `NEXT_PUBLIC_SHELL_CHAT` on, the control leaves the
+> shell bar and sits in the chat bar at the foot of the page, and a row opens its chat in the
+> one assistant. It is the same component, and it reads the same store.
+> `navigation_shell.md` §7.1 owns the place.
+
 **What.** One control in the shell bar's right side, beside the bell. It shows
 an agent icon with the count of live runs. An amber dot, the `warning` tone,
 shows when a run needs input.

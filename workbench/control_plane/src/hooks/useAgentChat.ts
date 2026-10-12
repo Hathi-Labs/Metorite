@@ -568,6 +568,13 @@ export function useAgentChat({
               case "tool_args":
               case "tool_partial":
                 upd((m) => applyStreamEvent(m, evt, fold));
+                // D99: the one assistant moves the page to the app whose
+                // specialist it calls (`lib/shell/assistant.ts`). Live loop
+                // ONLY: a reconnect replays old events, and a replay must not
+                // move the page again.
+                if (evt.type === "tool_start") {
+                  emitAgentEvent("onDelegate", { name: String(evt.name ?? ""), threadId });
+                }
                 break;
               // Nested delegation timeline — shared reducer (also used by the
               // reconnect loop, so a refresh mid-delegation replays it too).
@@ -576,6 +583,7 @@ export function useAgentChat({
               case "sub_agent_tool_end":
               case "sub_agent_error":
                 upd((m) => applySubAgentEvent(m, evt));
+                emitAgentEvent("onDelegate", { name: String(evt.agentName ?? ""), threadId });
                 break;
               case "done":
                 upd((m) => applyStreamEvent(m, evt, fold));

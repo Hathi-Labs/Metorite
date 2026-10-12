@@ -5072,6 +5072,57 @@ egress. H-299 stays: a tool that can change data waits for the member's card.
 **Fences:** the rows of `specs/integrations_console.md` §3.6.11. All are new and
 none exists yet.
 
+### D99 — A member talks to one assistant, and keeps sessions, not agents (2026-10-12)
+
+Owner decision, 2026-10-12, in chat. **Decided: owner, 2026-10-12.** Board:
+**WS-44**. Owning spec: **`specs/navigation_shell.md`** §7.1 (NS-6 slice 6b).
+
+**The question:** does the member talk to one assistant with specialists
+behind it, or to each specialist directly?
+
+**The answer, verbatim:** "We can basically need to keep track of multiple
+chat sessions rather than multiple agents. We can specialize sub-agents, but
+the user chats with one general agent always."
+
+1. **One assistant.** Every new chat goes to the general agent,
+   `orchestrator`, which the member sees as "Metorite". The member picks no
+   agent before the first answer.
+2. **Specialists are tools.** The general agent calls a specialist as a tool,
+   and control comes back to it (`multi_agent_orchestration.md` §5.1). A
+   specialist never takes over the chat. D25.4 stands: no handoff.
+3. **The member keeps sessions.** A member names, finds and reopens a chat.
+   A chat records its agent, so an old chat with a specialist still opens.
+4. **The chat leaves the sidebar.** A chat bar at the foot of every page
+   opens the assistant as a side panel or as a full view. `/chat` stays as
+   the address of the full view. Chat stays a live pane
+   (`launch_surface.md` §2). This decision changes where it opens, not
+   whether it is live.
+5. **The assistant knows where the member is.** Each turn carries the app
+   and what the app shows.
+6. **The activity control moves into the chat bar.** This amends the place
+   that WS-51 S3 gave it.
+7. **It ships dark,** behind `NEXT_PUBLIC_SHELL_CHAT`. Only the owner turns
+   it on in production (`navigation_shell.md` §13.1).
+
+**Why.** In a controlled study, users rated one agent above a team of
+agents for usability, with answers of almost equal quality (arXiv
+2401.07123). Custom GPTs took about 1.5% of ChatGPT visits in February 2024.
+People stay in the default box. ChatGPT, Claude, Gemini and Microsoft 365
+Copilot each give one box, and an orchestrator routes behind it.
+
+**The friction we accept.** The member sees less of which specialist
+answered. A misroute can occur. A routed turn costs one more model call.
+The chat shows each specialist step, and a routing test set is a later
+slice.
+
+**What it amends.** `navigation_shell.md` §7.1 ("the agent follows the
+app") and §13.2 Q7 (the dock toggle in the shell bar).
+`multi_agent_orchestration.md` §5.3 ("Users chat directly with
+specialists"). `chat_run_continuity.md` S3 (the place of the control).
+
+**Fences:** `src/lib/shell/seams.test.ts` (one dock),
+`src/lib/shell/assistant.test.ts` and `src/lib/shell/shellNav.test.ts`.
+
 ---
 
 ## 4. Single-owner registry (who owns duplicated work)

@@ -677,6 +677,27 @@ select optgroup {
 :root[data-agent-pill] .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3rem);
 }
+/* ── The chat bar (D99, `lib/shell/ChatBar.tsx`) ───────────────────────────
+   On a phone it sits on the fixed bottom nav, as the agent pill does, and
+   while it shows the page's last row and the toasts rise by its height
+   (2.75rem) and a gap. On the desktop it is a row of the frame, so only the
+   toasts, which are fixed, need to rise above it. `ChatBar` sets the
+   attribute only while the bar shows. Fence: assistant.test.ts. */
+.chat-bar-phone {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+}
+:root[data-chat-bar="phone"] .pb-nav {
+  padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.25rem);
+}
+:root[data-chat-bar="phone"] .toast-viewport-bottom {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.75rem);
+}
+@media (min-width: 640px) {
+  :root[data-chat-bar="desktop"] .toast-viewport-bottom {
+    bottom: 4.25rem;
+  }
+}
+
 /* The thin progress line. It slides only when the member allows motion. With
    reduced motion it is a still third of the line. */
 @keyframes agent-pill-progress {
