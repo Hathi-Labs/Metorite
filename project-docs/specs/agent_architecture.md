@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-12. §12.2 WS-8c adds the MCP confirmation card (H-299, items 13 to 17). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-10-12. §12.2 WS-8c adds the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -969,13 +969,17 @@ nothing.
 
 **The confirmation card (H-299, added 2026-10-12).** Item 8 approved every MCP tool, because
 `decide()` approves a name that it does not know as `unknown_allowed`. Items 13 to 17 close
-that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
+that gap, and items 18 to 21 harden them (review of PR #888). The first production flip of
+`MAF_MCP_ORGS` waits for them.
 
 13. **When the gate asks for a card.** `RunScopedMCPTool` keeps the `annotations` of each tool from
     `tools/list` (MCP 2025-03-26), because MAF drops them. `McpPermissionGate` gives the hints
-    to `decide()` as `mcp_tool` and `mcp_annotations`. `decide()` answers `mcp_read_only` only
-    when `readOnlyHint` is `true` and `destructiveHint` is not `true`. It answers `mcp_confirm`
-    for every other case: no hints, a hint that is not a JSON boolean, and a destructive tool.
+    to `decide()` as `mcp_tool` and `mcp_annotations` (`permission_policy.py:248-256`).
+    `decide()` answers `mcp_read_only` only when `readOnlyHint` is `true` and
+    `destructiveHint` is not `true`. It answers `mcp_confirm` for every other case: no hints, a
+    hint that is not `true` or `false`, and a destructive tool. ⚠️ The `mcp` types are pydantic
+    in lax mode, so a server that sends `"true"`, `"yes"` or `1` reaches `tool_hints` as
+    `true`. The non-boolean rule therefore guards the input of `decide()`, not the wire.
     The MCP rule runs before the platform annotations, so a server tool never borrows the hints
     of a platform tool of the same name. The gate shows a card for every code except
     `mcp_read_only`, so `gate_error` also needs the card. `decide()` stays the one gate.
@@ -1000,6 +1004,25 @@ that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
 17. **Channels.** A WhatsApp run refuses the tool. The WhatsApp profile parks only the acts of
     `whatsapp_acts.ALLOWED_ACTS`, and an MCP tool is not one. The gate reads the profile
     itself, so it never approves on WhatsApp.
+18. **Cards are opt-in for each stream.** `run_agent_stream` takes `shows_cards`, and the
+    default is `False`. A stream that does not draw cards runs inside
+    `ask_tools.refuse_cards_for_run`, as a WhatsApp run does. A card there answers "no" at
+    once, and an MCP tool that needs one is refused. The web chat (`routes/agent.py`)
+    declares `True`. The email chat (`routes/email/automation/chat.py`) declares `False`,
+    because its stream forwards no CUSTOM event. Before this item its card waited 3600 s, and
+    then the model read that the member said no. A fence fails when a new caller of
+    `run_agent_stream` does not declare `shows_cards`.
+19. **Names cannot spoof the card.** The card escapes each control, format and separator
+    character of the server name and the tool name, and caps each name at 64 characters. The
+    detail starts with the real hint line, and then names the server and the tool. The title
+    names the tool only.
+20. **Redaction keeps the target of a call.** A name is split on `_`, `-`, `.`, a space and
+    camelCase, and each whole part is compared. So `access_token` is hidden, and `max_tokens`
+    and `key` (as in `delete_object(bucket, key)`) stay. A value rule hides a value only when
+    the WHOLE value is a credential, so prose that holds the word "bearer" stays. A line under
+    the arguments names each hidden value, for example "2 values are hidden: password, api_key".
+21. **Unreadable arguments refuse.** When the gate cannot read the arguments of a call, it
+    refuses the call, so the card never shows less than what runs.
 
 **Known limit: nobody checks the hints.** The server writes its own hints, and a hostile server
 can mark a destructive tool read-only. Each attach logs `mcp.tool_annotations` with the
@@ -1047,8 +1070,12 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A14 | A run with no member, or with no card channel, refuses a tool that needs a card, and shows no card. | `test_maf_mcp_confirm.py` |
 | A15 | A WhatsApp run refuses, and parks nothing. | `test_maf_mcp_confirm.py` |
 | A16 | The card redacts sensitive arguments, shows every other argument whole, and labels the server's description. A call that the card cannot show whole is refused. | `test_maf_mcp_confirm.py` |
-| A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
 | A17 | Each attach logs `mcp.tool_annotations`. A destructive tool on the real `run_agent_stream` emits the card, and the server runs it only after Approve. | `test_maf_mcp_confirm.py` |
+| A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
+| A19 | A stream that does not declare `shows_cards=True` refuses each card, and every caller of `run_agent_stream` declares it. | `test_maf_mcp_confirm.py` |
+| A20 | A tool name cannot spoof the hint line. Names are escaped and capped at 64. | `test_maf_mcp_confirm.py` |
+| A21 | Redaction matches whole name parts and whole credential values, and the card names each value it hides. | `test_maf_mcp_confirm.py` |
+| A22 | Arguments of a shape the gate cannot read refuse the call. | `test_maf_mcp_confirm.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.
