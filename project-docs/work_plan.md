@@ -517,7 +517,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-52 | **How Metorite writes — one voice for every agent and every draft** *(minted 2026-10-10, owner directive)* | 🔨 **S1 BUILT 2026-10-10** (branch `agent-writing-voice`), no flag: `acb_llm.voice` holds the twelve-rule contract, six surface overlays and `voice_lint`. A sub-agent reads the core alone. `_tool_injection._apply_voice` gives every agent the voice once, after its own instructions, on the Copilot and the native MAF runtime. `evals/agent_voice/` holds thirteen cases, and its scripted run is in the unit job (PR #828). 🔨 **S2 BUILT 2026-10-10** (branch `agent-voice-drafting`, from the S1 branch), no flag: 26 direct drafting functions (of 66 that call a model) append `voice_prompt(<surface>)` to their system prompt, and `test_drafting_voice.py` sweeps every model call into a voice list or a machine list with a reason. S3 and S4 are spec only | **`specs/agent_writing_voice.md`** | **Next: the live baseline** (spec §7), then S4. AGENT-SAFE: S1, S2 and S4 to build. 🔴 OWNER-GATE: the S3 consent wording, and a scheduled S4 run that spends credits. The live baseline needs a model (spec §7). |
 | WS-55 | **External agent access — Metorite as an MCP server** *(minted 2026-10-10, owner directive)* | 🔨 **EA-1 and EA-2a BUILT, dark** (2026-10-11), on a branch and in review. D97 took the eight defaults of the spec. A member connects an outside agent with one URL and OAuth 2.1. The agent acts as that member, within the scopes the member chose. | **`specs/external_agent_access.md`** · D97 · member guide `docs/external_agents_connect.md` | AGENT-SAFE: EA-1 to EA-9 and EA-11, all dark. 🔴 OWNER-GATE: EA-10 (the DNS record, the Caddy block and header strip, the unit, the flag). **Next: EA-3, the `/mcp` read tools.** EA-2b and EA-4 follow. |
 | WS-56 | **External agent dispatch — start a session on the member's own AI account** *(minted 2026-10-11, owner directive)* | 📝 **SPECIFIED, no decision taken, nothing built** (2026-10-11). Outbound twin of WS-55. A task in Projects offers **Run with…** and Metorite starts Copilot, Jules or a GitHub-based agent as the member. A personal credential never becomes an organization credential. | **`specs/external_agent_dispatch.md`** · reuses the WS-54 registry | AGENT-SAFE: DX-1, DX-2, DX-4 after DX-0. The credentialed adapters (DX-5 to DX-9) wait for the WS-54 registry slice. 🔴 OWNER-GATE: DX-0 (decisions D-DX-1 to D-DX-8), and the GitHub App registration in DX-5. |
-| WS-57 | **My Day as a live feed — the chief of staff** *(minted 2026-10-13, owner directive)* | 📝 **PROPOSED, nothing built** (2026-10-13). My Day becomes one ranked column of cards. Code finds the signals and a template writes every card. `decide` makes the judgment calls as typed questions, and a text model writes only a gist or a prep list. The owner answered Q2 (the customer pays in AI credits) and Q3 (calendar clashes fold in when calendar sync lands) on 2026-10-13. A card has a life, and fixed rules bring it back when it matters again. It extends the one needs feed of WS-44 and adds no second feed | **`specs/my_day_feed.md`** · the page frame, the bell and the shell flags stay in `specs/navigation_shell.md` | AGENT-SAFE: MD-1 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-9 and MD-12, all dark. 🔴 OWNER-GATE: Q1 (acts that run in a card beyond done, mark read and snooze, MD-8), Q6 (`decide` residency for My Day, which D-EM-9 does not cover), turning on `NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_COMPOSE` or any `my_day.*` decide mode, and MD-10 (messages outside the app). MD-6c also waits on H-171 and H-69. Repair round 1 of PR #939 fixed 14 P1 and 5 P2 review findings on 2026-10-13. MD-11 (meeting overlaps) is BLOCKED on calendar P4 |
+| WS-57 | **My Day as a live feed — the chief of staff** *(minted 2026-10-13, owner directive)* | 📝 **SPECIFIED, nothing built** (2026-10-13). D99 and D100 taken the same day. My Day becomes one ranked column of cards. Code finds the signals and a template writes every card. `decide` makes the judgment calls as typed questions, and a text model writes only a gist or a prep list. The owner answered Q2 (the customer pays in AI credits) and Q3 (calendar clashes fold in when calendar sync lands) on 2026-10-13. A card has a life, and fixed rules bring it back when it matters again. It extends the one needs feed of WS-44 and adds no second feed | **`specs/my_day_feed.md`** · the page frame, the bell and the shell flags stay in `specs/navigation_shell.md` | AGENT-SAFE: MD-1 to MD-5, MD-6a to MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12, all dark. 🔴 OWNER-GATE: turning on `NEXT_PUBLIC_MY_DAY_FEED`, `MY_DAY_COMPOSE` or any `my_day.*` decide mode, and MD-10 (messages outside the app). MD-6c also waits on H-171 and H-69. Repair round 1 of PR #939 fixed 14 P1 and 5 P2 review findings on 2026-10-13. MD-11 (meeting overlaps) is BLOCKED on calendar P4 |
 
 ### Product — Centers (`department_centers.md` §3 · combined board record 2026-08-09 there)
 
@@ -5072,6 +5072,58 @@ egress. H-299 stays: a tool that can change data waits for the member's card.
 
 **Fences:** the rows of `specs/integrations_console.md` §3.6.11. All are new and
 none exists yet.
+
+---
+
+### D99 — `decide` may serve every app, not only email triage (2026-10-13)
+
+Owner decision, 2026-10-13, in chat. **Decided: owner, 2026-10-13.** Board:
+**WS-57**, and every later adopter of `decide`. Owning spec for its first
+non-email use: **`specs/my_day_feed.md`** §10.
+
+**The question:** D-EM-9 approves `decide` residency for email triage "and for
+no other app". My Day would send task titles, deal names, goal names and mail
+subjects as clipped facts. May it?
+
+**The answer:** the owner approved the use of `decide` across the whole
+product, in chat on 2026-10-13.
+
+1. **Residency for `decide` covers every app.** Tenant content may go to
+   TypeSafe and to AI/ML API for a `decide` call from any app. This widens
+   D-EM-9, which stays the record for email.
+2. **The adoption rule still binds each feature.** Every feature starts
+   `off`, then runs `shadow`, then `on` behind a gate (D75 item 7,
+   `customer_console.md` §6A.14). D99 answers residency, and nothing else.
+3. **The customer pays in AI credits** (`my_day_feed.md` §9.3, owner,
+   2026-10-13).
+
+**What it does not change.** `DECIDE_ENABLED` stays an owner act (H-166). A
+text model is not `decide`, so D99 says nothing about a text call.
+
+---
+
+### D100 — A My Day card may act in place, unless the act needs more context (2026-10-13)
+
+Owner decision, 2026-10-13, in chat. **Decided: owner, 2026-10-13.** Board:
+**WS-57**. Owning spec: **`specs/my_day_feed.md`** §11.
+
+**The answer, in the owner's words, in three parts:** "actions can happen
+inside cards, inside my day itself, unless the action needs more context".
+Then "the user can prefer to open it in the app itself". Then the owner asked
+the design to work out when to do which.
+
+1. **An act runs in the card.** An act on the member's own data is one tap. An
+   act that reaches another person expands in the card, shows its whole
+   effect, and waits 10 seconds with Undo.
+2. **"Needs more context" is a test in code** (`my_day_feed.md` §11.2). When
+   it is true, the act opens the owning app.
+3. **The member can always open the app instead,** and can make that the
+   default for a kind.
+4. **Class C never runs in a card:** delete, bulk acts, money, and the
+   approval of an agent's act.
+
+**What it amends.** `navigation_shell.md` §4.3 allowed My Day three one-click
+acts. D100 widens that for the feed of WS-57.
 
 ---
 

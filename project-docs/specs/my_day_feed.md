@@ -1,16 +1,19 @@
 # My Day as a live feed — the chief of staff
 
-**Status: PROPOSED, 2026-10-13.** Nothing in this file is built. The
+**Status: ACTIVE, 2026-10-13.** Nothing in this file is built. The
 AGENT-SAFE tickets are MD-1 to MD-5, MD-6a to MD-6c (the build only), MD-7,
-MD-9 and MD-12. Each ships dark.
+MD-8, MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
 credits. External calendars come later, and calendar clashes fold in then.
 
 The owner also asked the feed to use `decide` as much as it can. So §10 is
-now "Decide first". Q1 (acts in a card) and Q6 (residency for My Day) are
-still open.
+now "Decide first".
+
+**The owner answered Q1 and Q6 the same day.** D99: `decide` may serve every
+app, so residency is no longer a gate for My Day. D100: a card acts in place,
+unless the act needs more context. §11 is the design of when to do which.
 
 **Repair round 1, 2026-10-13.** The adversarial review of PR #939 found 14 P1
 and 5 P2 defects. This version fixes each one. These are the largest
@@ -336,9 +339,9 @@ that the kind needs beyond the common pass.
 judge the cards near the top (§10.3). So a row that says "None" still gets
 judged. It needs no detector and no text.
 
-**Acts marked A\* wait on Q1.** They are class A acts beyond done, mark read
-and snooze (§11). Until the owner answers Q1, each renders as a link that
-opens the owning app at the right place.
+**Acts marked A\* are class A acts beyond done, mark read and snooze.** D100
+lets them run in the card as a tap (§11). MD-8 builds them. Until MD-8 lands,
+each renders as a link that opens the owning app at the right place.
 
 ### 5.1 Calendar
 
@@ -954,30 +957,93 @@ as the day planner fences its task list (`calendar_ai_review.md` §2, item 1).
 
 ---
 
-## 11. Acts — what a card may do in place
+## 11. Acts — in the card, or in the app (D100)
 
-`navigation_shell.md` §4.3 allows My Day three one-click acts: done, approve
-and snooze. NS-3 built done and mark read. Cards A, B and C need more. This
-spec proposes three classes, **D-MD-1**, for the owner to take (§17 Q1).
+**Decided by the owner, 2026-10-13 (D100).** In the owner's words, actions
+"can happen inside cards, inside my day itself, unless the action needs more
+context". Then "the user can prefer to open it in the app itself". This
+amends the act rule of `navigation_shell.md` §4.3. The owner asked the design
+to decide when to do which, and this section is that design.
 
-| Class | What it is | Examples | In the card |
-|---|---|---|---|
-| **A** | It changes only the member's own data. Undo reverses it, except mark read, which has no unread route (`navigation_shell.md` §7.2) | Done, mark read, snooze. Beyond those three, marked A\* in §5: move my own block, move my own due date, block time, move to Someday | Done, mark read and snooze: one click today. **A\*: a link into the owning app until Q1.** If the owner takes D-MD-1, one click and the shared Undo toast |
-| **B** | It reaches another person | Send a drafted reply, move a meeting with attendees, nudge a colleague, share a report, ask to move a date | **Default today: it opens the owning app, filled in.** If the owner takes D-MD-1, one click with the full effect on the card and a 10 s Undo before it leaves |
-| **C** | It is destructive, moves money, or approves an agent's act | Delete, bulk acts, approve a pending action | Never from a card. It opens the owning app |
+### 11.1 Three ways an act runs
 
-**The class B rule, if the owner takes it.** All four conditions bind:
+Code gives every act one **way**, when it builds the card. The way is a field
+of the act: `tap`, `expand` or `open`.
 
-1. The card shows the **whole** effect. For a reply, that is the full draft
-   and every recipient. For a meeting, it is both times and every attendee.
-2. The act calls the owning app's own write route. My Day adds no write route
-   (`navigation_shell.md` NS-3).
-3. The send waits 10 s with "Sending… Undo" before it leaves.
-4. The act writes `meta.via = "my_day"`, the rule of D-PM-36.
+| Way | What the member sees | When code gives it |
+|---|---|---|
+| **Tap** | One click. The act runs, the card leaves or changes, and the shared Undo toast shows | The act changes only the member's own data, Undo reverses it, and the card already shows its whole effect. Done, snooze, mark read. Move my own block to the slot on the card. Move my own due date to the day on the card. Block the slot on the card |
+| **Expand** | The card opens a panel under its body, in place. The panel shows the whole effect and at most one small edit. One button names the effect, for example "Send to Dana Liu" | The act reaches another person, or it needs one small choice. Send the drafted reply. Nudge a colleague with a one-line note. Share a report with the team. Move a meeting with attendees. Pick another slot from up to 4 |
+| **Open** | A link that opens the owning app at the entity, filled in | The act needs more context (§11.2), or it is class C |
 
-**Fence (MD-1, MD-8).** `src/lib/shell/feedActs.test.ts` fails if an A\*, B
-or C act runs a write from a card before the owner's answer lets it. It also
-fails if a card act calls a route that its owning app does not own.
+**The member can always open the app instead.** Every card's menu holds
+"Open in <app>", whatever the way of its main act.
+
+### 11.2 "Needs more context" — the test, in code
+
+Code runs this test for each act of class A or B. If any line is true, the
+act's way is `open`:
+
+1. **The member has not seen what the act depends on.** The thread holds
+   more than one unread message, or the draft answers a message that the card
+   does not show.
+2. **The effect does not fit on the card.** The draft is longer than 1,200
+   characters, or carries more than 2 attachments. The act reaches more than 6
+   people. The choice has more than 4 options.
+3. **The act needs a form.** It needs more than one field the member types,
+   for example "Log a call" in the CRM.
+4. **The member chose the app for this kind.** "Always open <kind> in the
+   app" is set in `user_settings.my_day_prefs`. The member sets it from the
+   card menu. After the member picks "Open in <app>" over an in-card act three
+   times for one kind, the menu offers that setting.
+
+Three more rules sit above the test:
+
+- **Class C is always `open`.** Delete, bulk acts, money, and the approval of
+  an agent's act never run in a card.
+- **No write permission, no act.** A member who may read the entity and may
+  not change it gets "Open in <app>" only.
+- **A changed entity refuses the act.** The act sends the fingerprint the card
+  showed. When the entity changed since, the owning route refuses, the card
+  reloads, and it says "This changed. Look again."
+
+**`decide` can make an act more careful, never less.** `my_day.next_act` may
+pick the `open` act as the main act, for example for a sensitive customer
+thread. It can never turn an `open` act into `tap` or `expand`, because the
+test above runs in code after the answer.
+
+### 11.3 The expand panel
+
+- **It stays in the card.** It is not a dialog, and it moves no other card.
+  Escape or "Cancel" closes it. On a phone it takes the card's full width.
+- **It shows the whole effect.** For a reply: every recipient, the subject,
+  the full text and the attachments. For a meeting: both times and every
+  attendee. For a share: each recipient.
+- **One small edit at most.** The reply text is a plain text box. The nudge
+  is one line. Anything longer is "Edit in <app>", which opens the app with
+  the edit kept.
+- **Outward acts wait 10 seconds.** After "Send", the card says "Sending…
+  Undo" for 10 seconds. Then the owning app's route sends it. Undo in that
+  time sends nothing.
+- **The act calls the owning app's own write route.** My Day adds no write
+  route (`navigation_shell.md` NS-3). The write carries `meta.via = "my_day"`,
+  the rule of D-PM-36.
+
+### 11.4 Classes, for reference
+
+| Class | What it is | Its way |
+|---|---|---|
+| **A** | It changes only the member's own data | `tap`, or `open` when §11.2 says so |
+| **B** | It reaches another person | `expand`, or `open` when §11.2 says so |
+| **C** | It is destructive, moves money, or approves an agent's act | Always `open` |
+
+**Fence (MD-8).** `src/lib/shell/feedActs.test.ts` holds five rules:
+
+- A class B act is never `tap`.
+- A class C act is always `open`.
+- Each line of §11.2 turns a fixture act into `open`.
+- An act never calls a route that its owning app does not own.
+- A `decide` answer never turns an `open` act into another way.
 
 ---
 
@@ -999,7 +1065,7 @@ as they are.
 
 - **Calendar has no link to a day or a time.** MD-3 adds `/calendar?date=
   YYYY-MM-DD&at=HH:MM`. It opens the day view and scrolls to the time. The
-  A\* acts of §5.1 use it until Q1.
+  A\* acts of §5.1 use it until MD-8.
 - **Approvals opens only the queue.** MD-3 adds `/approvals?action=<id>`,
   which opens that one proposal.
 - **`EntityPill` has no email, event or deal kind.** MD-3 adds three kinds to
@@ -1155,8 +1221,9 @@ accent, and beside My Tasks.
 **The design mockup is `mockups/my_day_feed.html`** (2026-10-13). It draws the
 groups, ten sample cards, the menu, "Why am I seeing this", the Later and
 Handled groups, and the "2 new" pill. A switch shows the same cards with the
-judged answers and on the old path. It draws the A\* acts as they would run
-after a yes to Q1. Where the mockup and this spec disagree, this spec wins.
+judged answers and on the old path. It draws the A\* acts as taps, as D100
+allows. It does not draw the expand panel of §11.3 yet. Where the mockup and
+this spec disagree, this spec wins.
 
 ---
 
@@ -1199,8 +1266,8 @@ Done when:
 
 1. `TestOneRegistry` (§4.4) and `TestOneCardPerEntity` (§4.5) pass.
 2. The feed returns the MD-1 kinds of §5. Each has a template why line, a
-   group, a score and its acts. Done, mark read and snooze run in place.
-   Each A\* act is a link.
+   group, a score and its acts. Each act carries its way (§11.1). Done and
+   mark read run in place. Each A\* act is a link until MD-8.
 3. `block_overlap` and `day_overbooked` read the member's own blocks and
    `work_schedule`. Each has a negative test: another member's block never
    reaches the card.
@@ -1285,8 +1352,8 @@ Done when:
 5. A 402 starts the cool-down, and every card stays on its old path.
 6. The measure read of §10.6 item 4 exists.
 
-**Turning on `shadow` for a real organization waits on Q6.** Shadow mode
-sends tenant content too.
+**Turning on `shadow` for a real organization is the owner's flip** (§17.1),
+because it spends credits. Residency is answered (D99).
 
 ### MD-6b · `decide` on, with gates — AGENT-SAFE (build), OWNER-GATE (turn on)
 
@@ -1307,10 +1374,11 @@ before the flag goes on.**
 `brief`, `while_away` and `day_end`. `day_end` links to `EndOfDayReview` and
 copies nothing of it.
 
-### MD-8 · Acts in the card — OWNER-GATE until Q1
+### MD-8 · Acts in the card — AGENT-SAFE (D100)
 
-The A\* acts in place, and the class B acts with the four conditions of §11.
-Fence: `feedActs.test.ts`.
+The A\* acts as taps, and the class B acts in the expand panel of §11.3. The
+"needs more context" test of §11.2, and "Always open <kind> in the app".
+Fence: `feedActs.test.ts` (§11.4).
 
 ### MD-9 · Learning and the second wave of signals — AGENT-SAFE
 
@@ -1364,8 +1432,7 @@ late, because it costs the most and waits on H-171 and H-69.
 | Act | Why it is the owner's | Gate |
 |---|---|---|
 | Turn on `NEXT_PUBLIC_MY_DAY_FEED` in production | It changes the first page of every member in every organization at once | Owner only, as `navigation_shell.md` §13.1. The dev-phase window does not open it |
-| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits, and it sends tenant content to a model vendor | Owner only. CLAUDE.md §3a rule 3. `shadow` also waits on Q6 |
-| MD-8, an A\* or class B act that runs in place | It is the decision of Q1 | Owner only |
+| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits | Owner only. CLAUDE.md §3a rule 3. Residency is answered (D99) |
 | MD-10, a message outside the app | It reaches a real person through a third party | Owner only. CLAUDE.md §3a rule 3 |
 
 ⚠️ These bind by prose only. `plan-guard.mjs` names none of these flags (R7,
@@ -1375,12 +1442,12 @@ advisory), the same gap as `navigation_shell.md` §13.1.
 
 | # | Question | Default |
 |---|---|---|
-| Q1 | May a card run, in place, the A\* acts (move my own block or date, block time) and the class B acts (send a drafted reply, move a meeting with attendees)? This is D-MD-1 | No. Each opens the owning app, filled in. MD-8 waits |
+| Q1 | May a card run, in place, the A\* acts and the class B acts? | **Answered by the owner, 2026-10-13 (D100).** Yes, unless the act needs more context. §11 holds the rule |
 | Q2 | Who pays for the AI? | **Answered by the owner, 2026-10-13.** The customer pays for every AI call in AI credits, `decide` and text alike. The feed with no AI is free (§9.3) |
 | Q3 | Does external calendar sync move up, so card A can ship? | **Answered by the owner, 2026-10-13.** Metorite will read Google and Outlook calendars. Clashes fold in then (MD-11). Until then, the feed ships the overlaps it can see |
 | Q4 | Are nudges outside the app opt-in, with three a day at most? | Yes, opt-in, and off for everyone until MD-10 |
 | Q5 | The Projects report template T2 is also called "My day". Rename it? | Rename T2 to "My work today" in MD-4, so one name means one page |
-| Q6 | Does the `decide` residency answer cover My Day? D-EM-9 approves email triage "and for no other app". My Day's state sends task titles, deal names, goal names, mail subjects and sender names, as clipped facts. It sends no mail body to `decide` (§10.4) | No, until the owner says so. MD-6a builds, and every `my_day.*` mode stays `off` on a live box. Shadow sends content too |
+| Q6 | Does the `decide` residency answer cover My Day? | **Answered by the owner, 2026-10-13 (D99).** Yes, and every other app too. My Day's state sends titles, names and subjects as clipped facts, and no mail body (§10.4) |
 
 ---
 

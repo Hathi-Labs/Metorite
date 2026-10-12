@@ -738,9 +738,10 @@ each day offers that ritual. My Day does not copy it.
 
 **What goes into the feed lives in `my_day_feed.md` (WS-57, PROPOSED
 2026-10-13).** That spec owns the signals, the cards, the order, the life of
-a card and the AI that prepares one. Its §11 proposes acts beyond the three
-in the table above. Until the owner takes them, the table above binds. This
-spec keeps the page frame, the bell, the manifest and the flags.
+a card and the AI that prepares one. **D100 (owner, 2026-10-13) widens the
+acts in the table above for that feed:** a card acts in place, unless the act
+needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
+page frame, the bell, the manifest and the flags.
 
 ### 4.4 Cards
 
