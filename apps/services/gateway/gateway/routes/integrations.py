@@ -1802,20 +1802,21 @@ class McpServerRequest(BaseModel):
     enabled: bool = True
 
 
-#: The MCP list of one organization. It selects the KEYS of ``env_vars`` and
-#: ``headers`` and never a value (IN-0). A row whose JSON is not an object
-#: gives no names, and does not fail the whole list.
-_MCP_LIST_SQL = (
-    "SELECT name, label, description, transport, command, url, "
-    "CASE WHEN jsonb_typeof(env_vars) = 'object' "
-    "THEN ARRAY(SELECT jsonb_object_keys(env_vars) ORDER BY 1) "
-    "ELSE ARRAY[]::text[] END AS env_var_names, "
-    "CASE WHEN jsonb_typeof(headers) = 'object' "
-    "THEN ARRAY(SELECT jsonb_object_keys(headers) ORDER BY 1) "
-    "ELSE ARRAY[]::text[] END AS header_names, "
-    "agent_scope, enabled, created_at, updated_at "
-    "FROM mcp_servers WHERE organization_id = :org ORDER BY created_at"
-)
+def mcp_out(server: Any) -> dict[str, Any]:
+    """One server of the MCP list. Header NAMES only, never a value (IN-0).
+
+    The shape stays as it was before IN-4, so the console needs no change.
+    No stdio server is stored (D85), so ``command`` is ``None`` and no env
+    var name is listed.
+    """
+    return {
+        "name": server.name, "label": server.label, "description": server.description,
+        "transport": server.transport, "command": None, "url": server.url,
+        "env_var_names": [], "header_names": list(server.header_names),
+        "agent_scope": list(server.agent_scope) or ["*"], "enabled": server.enabled,
+        "created_at": str(server.created_at) if server.created_at else None,
+        "updated_at": str(server.updated_at) if server.updated_at else None,
+    }
 
 
 @router.get("/mcp", summary="List registered MCP servers")
@@ -1824,53 +1825,23 @@ async def list_mcp_servers(
 ) -> list[dict[str, Any]]:
     """Return the MCP servers of the caller's organization (enabled + disabled).
 
-    🔒 WS-54 IN-0. ``mcp_servers`` is exempt from RLS
-    (``scripts/gen_tenant_migration.py``), so a ``tenant_session`` would
-    filter nothing. The ``organization_id`` predicate here IS the boundary.
-    With no tenant bound, the answer is empty, and no row of any organization
-    is read. It returns the NAMES of the headers and env vars, never a value,
-    because a value is a credential.
+    🔒 WS-54 IN-4. The servers live in the connection registry. The read goes
+    through ``gateway.connections.mcp`` inside ``tenant_session(org)``, so row
+    level security binds the tenant. With no tenant bound, the answer is
+    empty, and no row of any organization is read. It returns the NAMES of
+    the headers, never a value, because a value is a credential (IN-0).
     """
     org = current_tenant()
     if not org:
         return []
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
-            rows = s.execute(
-                text(_MCP_LIST_SQL), {"org": org},
-            ).fetchall()
-        result: list[dict[str, Any]] = []
-        for r in rows:
-            result.append({
-                "name": r[0], "label": r[1], "description": r[2],
-                "transport": r[3], "command": r[4], "url": r[5],
-                "env_var_names": list(r[6] or []), "header_names": list(r[7] or []),
-                "agent_scope": r[8] or ["*"], "enabled": r[9],
-                "created_at": str(r[10]) if r[10] else None,
-                "updated_at": str(r[11]) if r[11] else None,
-            })
-        return result
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        return [mcp_out(s) for s in await mcp_registry.list_servers(org)]
     except Exception as exc:
-        _log.warning("mcp.list_failed", error=str(exc))
-        raise HTTPException(500, f"DB error: {exc}") from exc
-
-
-#: WS-8c (IN-D6): the upsert of ONE organization's row. Named binds, the org
-#: from the session, and the conflict key of migration 158.
-_MCP_REGISTER_SQL = (
-    "INSERT INTO mcp_servers (organization_id, name, label, description, "
-    "transport, command, url, env_vars, headers, agent_scope, enabled, "
-    "updated_at) VALUES (:org, :name, :label, :description, :transport, "
-    ":command, :url, CAST(:env_vars AS jsonb), CAST(:headers AS jsonb), "
-    "CAST(:agent_scope AS jsonb), :enabled, now()) "
-    "ON CONFLICT (organization_id, name) DO UPDATE SET "
-    "label = EXCLUDED.label, description = EXCLUDED.description, "
-    "transport = EXCLUDED.transport, command = EXCLUDED.command, "
-    "url = EXCLUDED.url, env_vars = EXCLUDED.env_vars, "
-    "headers = EXCLUDED.headers, agent_scope = EXCLUDED.agent_scope, "
-    "enabled = EXCLUDED.enabled, updated_at = now()"
-)
+        # The class of the error only: a DB message can echo a bound value.
+        _log.warning("mcp.list_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP servers could not be read.") from exc
 
 #: D85: an MCP server over stdio starts a process on the host.
 _MCP_STDIO_REFUSED = (
@@ -1888,18 +1859,18 @@ async def register_mcp_server(
 ) -> dict[str, Any]:
     """Add or update an MCP server of the caller's organization.
 
-    WS-8c (IN-D6). ``mcp_servers`` is exempt from RLS and keyed
-    ``(organization_id, name)`` by migration 158 (``mcp_servers_org_name_pkey``).
-    So the INSERT writes ``organization_id = current_tenant()``, and the
-    conflict key is that pair. Two orgs can hold one name, and a second
-    register of a name updates the row of the caller's org only. With no
-    tenant bound, it is 403 and nothing is written. ⚠️
-    ``schema.generated.sql`` still keys this table by name only. Do not copy
-    it.
+    WS-54 IN-4. The server is one org row of the connection registry, keyed
+    ``mcp:<name>``. It is written through ``gateway.connections.mcp`` inside
+    ``tenant_session(org)``, and the headers go into the encrypted blob only.
+    Two orgs can hold one name, and a second register of a name updates the
+    row of the caller's org only. With no tenant bound, it is 403 and nothing
+    is written. Nothing goes to ``mcp_servers`` any more (R6 expand).
 
     A stdio server starts a process on the host, so it is 422 (D85).
     """
-    if not re.match(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$", req.name):
+    from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+    if not mcp_registry.NAME_RE.match(req.name):
         raise HTTPException(
             422,
             "MCP server name must be 2-50 lowercase letters, digits, "
@@ -1907,7 +1878,9 @@ async def register_mcp_server(
         )
     if req.transport == "stdio":
         raise HTTPException(422, _MCP_STDIO_REFUSED)
-    if req.transport == "http-sse" and not req.url:
+    if req.transport not in ("http-sse", "http"):
+        raise HTTPException(422, "MCP transport must be 'http-sse'.")
+    if not req.url:
         raise HTTPException(422, "http-sse transport requires a 'url'.")
     org = current_tenant()
     if not org:
@@ -1930,21 +1903,12 @@ async def register_mcp_server(
             ) from None
 
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
-            s.execute(
-                text(_MCP_REGISTER_SQL),
-                {
-                    "org": org, "name": req.name, "label": req.label or req.name,
-                    "description": req.description, "transport": req.transport,
-                    "command": req.command, "url": req.url,
-                    "env_vars": json.dumps(req.env_vars),
-                    "headers": json.dumps(req.headers),
-                    "agent_scope": json.dumps(req.agent_scope),
-                    "enabled": req.enabled,
-                },
-            )
-            s.commit()
+        await mcp_registry.save(
+            org, name=req.name, url=req.url or "", headers=req.headers,
+            connected_by=user.email, label=req.label or req.name,
+            description=req.description, transport=req.transport,
+            agent_scope=req.agent_scope or ["*"], enabled=req.enabled,
+        )
         _log.info("mcp.registered", name=req.name, actor=user.email)
         return {"ok": True, "name": req.name}
     except Exception as exc:
@@ -1962,33 +1926,26 @@ async def remove_mcp_server(
 ) -> dict[str, Any]:
     """Delete an MCP server of the caller's organization from the registry.
 
-    🔒 WS-54 IN-0. The ``organization_id`` predicate is the boundary, because
-    ``mcp_servers`` is exempt from RLS. A name that another organization
-    holds is 404 here, and its row stays. With no tenant bound, it is 404
-    and nothing is deleted.
+    🔒 WS-54 IN-4. The delete runs inside ``tenant_session(org)``, so a name
+    that another organization holds is 404 here, and its row stays. The old
+    ``mcp_servers`` row of the caller's org goes too, or the next read would
+    move it back. With no tenant bound, it is 404 and nothing is deleted.
     """
     org = current_tenant()
     if not org:
         raise HTTPException(404, f"MCP server '{name}' not found.")
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
-            result = s.execute(
-                text(
-                    "DELETE FROM mcp_servers "
-                    "WHERE organization_id = :org AND name = :name"
-                ),
-                {"org": org, "name": name},
-            )
-            s.commit()
-            if result.rowcount == 0:
-                raise HTTPException(404, f"MCP server '{name}' not found.")
-        _log.info("mcp.removed", name=name, actor=user.email)
-        return {"ok": True, "deleted": name}
-    except HTTPException:
-        raise
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        removed = await mcp_registry.remove(org, name)
     except Exception as exc:
-        raise HTTPException(500, f"DB error: {exc}") from exc
+        # The class of the error only: a DB message can echo a bound value.
+        _log.warning("mcp.remove_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be removed.") from exc
+    if not removed:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    _log.info("mcp.removed", name=name, actor=user.email)
+    return {"ok": True, "deleted": name}
 
 
 @router.post(

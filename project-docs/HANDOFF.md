@@ -5193,11 +5193,37 @@ line — never reclaim a number by deleting the other entry.
   an admin audit the hints. It does not stop the call.
 - **Do:** decide if an admin may set "always confirm" on one MCP server, so
   that every tool of that server needs the card, whatever its hints say. If
-  yes, add a column to `mcp_servers`, default `true` for a new row, and pass
-  it to `McpPermissionGate`. Do not build it before the owner decides.
+  yes, store `provider_meta.always_confirm` on the registry row of the
+  server, because IN-4 moved the MCP rows into `integration_connections`.
+  Give a new row `true`, and pass the key to `McpPermissionGate`. Do not
+  build it before the owner decides.
 - **When:** before the first org outside Fracktal gets `MAF_MCP_ORGS`.
 - **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (the known limit)
 - **Added:** 2026-10-12 · H-299
+
+### H-301 · Drop `mcp_servers` one release after IN-4 · [AGENT]
+- **Check:** `grep -c "FROM mcp_servers" apps/services/gateway/gateway/connections/mcp.py`
+  → a count above `0` means this is open.
+- **Why:** IN-4 (WS-54) moved the org MCP servers into
+  `integration_connections`, with the headers in the encrypted blob. For one
+  release `mcp_servers` stays readable (R6 expand), and an old row there still
+  holds its headers as plain JSONB. `connections/mcp.py` moves an old row on
+  the first read of its org, and leaves the old row.
+- **Do:** the contract step, after one release on production.
+  1. Count the rows of `mcp_servers` on production again. On 2026-10-12 it
+     held 0 rows.
+  2. Remove `_LEGACY_SQL`, `_LEGACY_DELETE_SQL`, `migrate_legacy` and the
+     old-row delete in `remove` from `connections/mcp.py`.
+  3. Add a migration that drops `mcp_servers`. Take its number at build time,
+     and check it again at merge (R1).
+  4. In the same PR, remove `mcp_servers` from the `EXEMPT` list of
+     `scripts/gen_tenant_migration.py` (:105).
+  5. Update the suites that seed an old row: the F tests of
+     `test_mcp_registry_r8.py` and the seed of
+     `test_integrations_connections_r8.py`.
+- **When:** one release after IN-4 merges.
+- **Authority:** `specs/integrations_console.md` §7.2 (IN-4) · R6
+- **Added:** 2026-10-12 · IN-4
 
 # DONE — deleted, not archived
 
