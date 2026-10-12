@@ -28,6 +28,9 @@ REPO = Path(__file__).resolve().parents[2]
 #: Every spelling, in any case. A space is English, not a name.
 NAME_RE = re.compile(r"sales[-_]assistant", re.IGNORECASE)
 
+#: The file names of this fence. A doc that cites the fence is not a caller.
+FENCE_NAME_RE = re.compile(r"test_no_sales_assistant(?:_r8)?", re.IGNORECASE)
+
 #: The places that may hold the name, as path prefixes.
 EXEMPT_PREFIXES: tuple[str, ...] = (
     "project-docs/",
@@ -43,14 +46,14 @@ _NUL = bytes([0])
 
 
 def offenders(files: dict[str, str]) -> list[str]:
-    """``path:line`` for each line outside the exempt places that names it."""
+    """``path: text`` for each line outside the exempt places that names it."""
     out: list[str] = []
     for path, text in files.items():
         if path.startswith(EXEMPT_PREFIXES):
             continue
-        for number, line in enumerate(text.splitlines(), 1):
-            if NAME_RE.search(line):
-                out.append(f"{path}:{number}")
+        for line in text.splitlines():
+            if NAME_RE.search(FENCE_NAME_RE.sub("", line)):
+                out.append(f"{path}: {line.strip()[:120]}")
     return out
 
 
@@ -106,5 +109,7 @@ def test_the_fence_sees_each_spelling() -> None:
                      "Sales-Assistant", "SALES_ASSISTANT", "@sales-assistant hi"):
         assert offenders({"apps/x.py": f"name = '{spelling}'"}), spelling
     assert offenders({"apps/x.py": "You are a sales assistant."}) == []
+    assert offenders({"infra/AGENTS.md": "Fence: test_no_sales_assistant_r8.py"}) == []
+    assert offenders({"infra/AGENTS.md": "test_no_sales_assistant.py, agent-sales-assistant"})
     for exempt in ("project-docs/a.md", "docs/b.md", "infra/postgres/15_x.sql"):
         assert offenders({exempt: "agent-sales-assistant"}) == []
