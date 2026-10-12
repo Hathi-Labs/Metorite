@@ -25,9 +25,10 @@ No database: the stub serves the API, and P3 changes no SQL.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -86,14 +87,23 @@ def test_the_stub_lists_the_overdue_tasks_of_the_dataset() -> None:
     assert [t.number for t in D.overdue(DS)] == [2, 3, 5, 8]
 
 
-def test_a_bulk_write_changes_each_task_and_records_the_body() -> None:
-    stub = stub_api.OpsStub(DS)
-    ids = [DS.task(2).id, DS.task(3).id]
+@pytest.mark.parametrize("data", [
+    DS,
+    # The day a literal "2026-10-12" was #3's own due date (today - 1), so
+    # the stub skipped #3 as unchanged and this test failed all day.
+    D.load(date(2026, 10, 13)),
+], ids=["today", "2026-10-13"])
+def test_a_bulk_write_changes_each_task_and_records_the_body(data: D.Dataset) -> None:
+    stub = stub_api.OpsStub(data)
+    ids = [data.task(2).id, data.task(3).id]
+    # A date that no task of the dataset is due on, on any day.
+    due = (data.today + timedelta(days=30)).isoformat()
+    assert due not in {t.due.isoformat() for t in data.tasks if t.due}
     status, body = stub.handle("POST", "/projects/tasks/bulk", T.MEMBER,
-                               {"task_ids": ids, "patch": {"due_at": "2026-10-12"}})
+                               {"task_ids": ids, "patch": {"due_at": due}})
     assert status == 200 and body["applied"] == 2
-    assert stub.tasks[ids[0]]["due_at"] == "2026-10-12"
-    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": "2026-10-12"}}
+    assert stub.tasks[ids[0]]["due_at"] == due
+    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": due}}
 
 
 @pytest.mark.parametrize("today, monday", [
@@ -127,26 +137,37 @@ def test_the_task_selector() -> None:
 # ── 2. the scripted sweep, through the REAL executor ────────────────────────
 
 
-@pytest.fixture
-def harness(tmp_path: Path):
+@contextlib.contextmanager
+def _harness(tmp_path: Path, *, covered: bool, data: D.Dataset | None = None):
+    """A scripted harness over *data*, which is :data:`DS` unless a test names
+    another.
+
+    It is never a second ``D.load()``. The 2026-10-12 deploys collected this
+    file at 18:18 UTC, which is 23:48 in India, and ran PO-2 at 18:35 UTC,
+    which is 00:05 the next day. ``DS`` was Monday and a fresh load was
+    Tuesday, so the test's "another day" was the stub's today, and PO-2
+    passed the wrong answer. The fence:
+    ``test_the_harness_keeps_the_module_day_after_the_member_midnight``.
+    """
     from orchestrator import executor
 
-    with R.make_harness(D.load(), DS.organization_id, tmp_path / "state",
-                        tier="tier-balanced", scripted_mode=True, covered=False) as h:
+    with R.make_harness(data or DS, DS.organization_id, tmp_path / "state",
+                        tier="tier-balanced", scripted_mode=True, covered=covered) as h:
         yield h
     executor._RUN_QUEUES.clear()
     executor._pending_user_input.clear()
+
+
+@pytest.fixture
+def harness(tmp_path: Path):
+    with _harness(tmp_path, covered=False) as h:
+        yield h
 
 
 @pytest.fixture
 def covered_harness(tmp_path: Path):
-    from orchestrator import executor
-
-    with R.make_harness(D.load(), DS.organization_id, tmp_path / "state",
-                        tier="tier-balanced", scripted_mode=True, covered=True) as h:
+    with _harness(tmp_path, covered=True) as h:
         yield h
-    executor._RUN_QUEUES.clear()
-    executor._pending_user_input.clear()
 
 
 def _run(h: R.OpsHarness, task_id: str, steps: list[Any] | None = None,
@@ -244,6 +265,71 @@ def test_po2_an_answer_that_names_another_day_fails(harness: R.OpsHarness) -> No
     other = D.weekday_name(DS.today + timedelta(days=1))
     steps = [*S.steps_for("PO-2", DS)[:-1], ("text", f"It repeats every week on {other}.")]
     assert _failed(_run(harness, "PO-2", steps)) == {"answer_names_the_day"}
+
+
+# ── the clock: the member's midnight is 18:30 UTC ───────────────────────────
+
+
+def _freeze(monkeypatch: pytest.MonkeyPatch, instant: datetime) -> None:
+    """Every clock the PO path reads answers *instant*.
+
+    The dataset's own (``D.load``, India), the skill's UTC fallback and the
+    stub's. A naive ``now()`` reads the UTC wall time, as on the CI runner.
+    """
+    from skill_projects import reads, writes
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+    for module in (D, stub_api, R, reads, writes):
+        monkeypatch.setattr(module, "datetime", Frozen)
+
+
+def _other_day(h: R.OpsHarness) -> set[str]:
+    other = D.weekday_name(h.dataset.today + timedelta(days=1))
+    steps = [*S.steps_for("PO-2", h.dataset)[:-1], ("text", f"It repeats every week on {other}.")]
+    return _failed(_run(h, "PO-2", steps))
+
+
+@pytest.mark.parametrize("instant, today", [
+    # 00:05 the next day in India: the instant the deploys of #922 and #925 failed.
+    (datetime(2026, 10, 12, 18, 35, tzinfo=UTC), date(2026, 10, 13)),
+    # 11:30 in India: the same day on both clocks.
+    (datetime(2026, 10, 12, 6, 0, tzinfo=UTC), date(2026, 10, 12)),
+], ids=["18:35Z", "06:00Z"])
+def test_the_eval_passes_on_either_side_of_the_member_midnight(
+    instant: datetime, today: date, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every task passes, and PO-2 fails the wrong day, at either instant.
+
+    A PO path that took its day from the UTC clock, and not from the
+    member's ``/projects/my/today``, fails the 18:35Z case.
+    """
+    _freeze(monkeypatch, instant)
+    data = D.load()
+    assert data.today == today
+    with _harness(tmp_path, covered=False, data=data) as h:
+        records = _sweep(h, tmp_path / "out")
+        for record in records:
+            want = "xfail" if record["task"] == "PO-3" else "pass"
+            assert record["status"] == want, (record["task"], record["failure"])
+        assert _other_day(h) == {"answer_names_the_day"}
+
+
+def test_the_harness_keeps_the_module_day_after_the_member_midnight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clock passes the member's midnight between the import of this
+    file and a test. The harness still serves :data:`DS`, so the test and the
+    stub agree on today."""
+    _freeze(monkeypatch, datetime.combine(DS.today + timedelta(days=1), datetime.min.time(),
+                                          tzinfo=D.ZoneInfo(D.TIMEZONE)))
+    assert D.load().today == DS.today + timedelta(days=1)
+    with _harness(tmp_path, covered=False) as h:
+        assert h.dataset.today == DS.today
+        assert _other_day(h) == {"answer_names_the_day"}
 
 
 def _po4(ids: list[str], due: str, answer: str = "Moved.") -> list[Any]:
