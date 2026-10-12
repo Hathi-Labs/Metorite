@@ -333,6 +333,12 @@ async def test_a_member_who_is_not_an_admin_gets_403(fr, monkeypatch) -> None:
     made = await _post(p.org_a, "Custom_Industry", "industry")
     rule_id = made.json()["id"]
     member = _member_of(p.org_a)
+    # Every member may open this CRM, so the 403 below comes from the admin
+    # guard of the Field map and not from the access rule of the router.
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_settings SET access = 'everyone' "
+                       "WHERE organization_id = CAST(:o AS uuid)"), {"o": p.org_a})
+    assert (await _req(member, "GET", "/crm/fields/leads")).status_code == 200
     assert (await _req(member, "GET", "/crm/field-rules?entity=leads")).status_code == 403
     assert (await _req(member, "POST", "/crm/field-rules", {
         "entity": "leads", "field_api_name": "Why_Lost", "target_column": "lost_note",
