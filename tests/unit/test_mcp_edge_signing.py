@@ -890,6 +890,11 @@ def _role_read(monkeypatch, error: BaseException | None):
         return result
 
     access.invalidate()
+    # `access._tables_missing` is a process-wide latch. An earlier suite that
+    # reached a database with no access tables sets it, and `resolve_access`
+    # then degrades before it reads anything. Pin it False for this test and
+    # restore it after, as `test_mcp_edge_authority.py` does.
+    monkeypatch.setattr(access, "_tables_missing", False)
     monkeypatch.setattr(access, "_get_session_factory", _factory)
     monkeypatch.setattr(deps, "resolve_access", _probe)
     return reads, flags

@@ -115,7 +115,9 @@ class _Monitor:
     def armed(self, value: bool) -> None:
         monitoring = sys.monitoring
         if value and self.tool is None:
-            for tool in (3, 4, 5):
+            # Tool ids 3 and 4 only: Python reserves 5 for the optimizer
+            # (sys.monitoring.OPTIMIZER_ID). It never falls back to another id.
+            for tool in (3, 4):
                 if monitoring.get_tool(tool) is None:
                     monitoring.use_tool_id(tool, "branch_zero_tripwire")
                     monitoring.register_callback(
@@ -123,7 +125,9 @@ class _Monitor:
                     monitoring.set_events(tool, monitoring.events.RAISE)
                     self.tool = tool
                     return
-            raise RuntimeError("no free sys.monitoring tool id")
+            raise RuntimeError(
+                "the branch-0 tripwire cannot arm: sys.monitoring tool ids 3 "
+                "and 4 are both taken. Free one of them for the test.")
         if not value and self.tool is not None:
             monitoring.set_events(self.tool, 0)
             monitoring.register_callback(self.tool, monitoring.events.RAISE, None)

@@ -312,6 +312,9 @@ _ALLOWED_GETATTR: dict[tuple[str, str], str] = {
 #: frame, or a closure cell.
 _REFUSED_ATTR_PREFIXES = ("__", "tb_", "f_", "gi_", "cr_")
 _REFUSED_ATTRS = frozenset({"cell_contents"})
+#: Round 5: a format string reaches attributes and items by name, past the
+#: attribute rules. Any attribute with one of these names is refused.
+_FORMAT_ATTRS = frozenset({"format", "format_map"})
 _ALLOWED_ATTRS: dict[str, str] = {}
 
 #: RULE 2d: the ONLY stores of these names in ``_effective_template``, as
@@ -550,6 +553,14 @@ class _InvertedScan:
             self.flag(node, f"reads the attribute {node.attr}")
         if isinstance(node, ast.Attribute) and node.attr in _REFUSED_NAMES:
             self.flag(node, f"reaches {node.attr}")
+        # Round 5: a format string walks attributes and items by name, so
+        # `'{0.__traceback__...}'.format(e)` reads a frame with no attribute
+        # node the scan could see. No scanned function formats a string.
+        if isinstance(node, ast.Attribute) and node.attr in _FORMAT_ATTRS:
+            self.flag(node, f"calls {node.attr}")
+        # Round 5: no name that starts with "__", so no `__builtins__`.
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            self.flag(node, f"names the dunder {node.id}")
         if isinstance(node, ast.Name) and node.id in _REFUSED_NAMES and (
                 id(node) not in self.annotations) and not self._allowed_getattr(node):
             self.flag(node, f"names {node.id}")
@@ -1034,9 +1045,13 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 # ── RULE 5: the digest fence of the process control (R7) ────────────────────
 
 #: SHA-256 of the normalised AST of every scanned function, of
-#: ``agent_signing.py`` and of ``_branch_zero_tripwire.py``. Update it ONLY in
-#: the commit that carries the review and the verification of §10.1.
-_BRANCH_ZERO_DIGEST = "ca1e0849360b05293f045e8d778d1806b71089f7ca55512bb6ebdb84e83b3ca9"
+#: ``agent_signing.py`` and of ``_branch_zero_tripwire.py``, keyed by the Python
+#: minor version, because ``ast.dump`` differs between versions. Update it
+#: ONLY in the commit that carries the review and the verification of §10.1.
+_BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
+    (3, 12): "1eded904eb5cec2ba4f4bb0db9ad0819c16d4950ab8ac03d83a2bcad6adb93e0",
+    (3, 13): "2ac62c160612d156f99f29d44c97429eb9607238b53374a9a4cfaa8c15a40f22",
+}
 
 
 def _branch_zero_digest() -> str:
@@ -1059,10 +1074,37 @@ def _branch_zero_digest() -> str:
 
 
 def test_branch_zero_digest_is_pinned():
-    assert _branch_zero_digest() == _BRANCH_ZERO_DIGEST, (
+    import sys
+
+    version = sys.version_info[:2]
+    assert version in _BRANCH_ZERO_DIGESTS, (
+        f"No digest is pinned for Python {version[0]}.{version[1]}. "
+        "Add one after review."
+    )
+    assert _branch_zero_digest() == _BRANCH_ZERO_DIGESTS[version], (
         "branch 0 changed. Get a diff-reviewer review and an independent "
         "verification, then update this digest in the same commit."
     )
+
+
+def test_the_monitor_never_takes_the_optimizer_tool_id(monkeypatch):
+    """Round 5. The RAISE hook uses tool id 3 or 4 only. Python reserves 5
+    for the optimizer. With 3 and 4 both taken, arming fails loudly."""
+    import sys
+
+    from tests.unit import _branch_zero_tripwire as tripwire
+
+    monitoring = sys.monitoring
+    taken = [t for t in (3, 4) if monitoring.get_tool(t) is None]
+    for tool in taken:
+        monitoring.use_tool_id(tool, "test_occupies")
+    try:
+        with pytest.raises(RuntimeError, match="tool ids 3 and 4 are both taken"):
+            monkeypatch.setattr(tripwire.MONITOR, "armed", True)
+        assert tripwire.MONITOR.tool is None
+    finally:
+        for tool in taken:
+            monitoring.free_tool_id(tool)
 
 
 #: Each bypass: the function it goes into, the anchor line it goes BEFORE (at
@@ -1219,6 +1261,16 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B68 a bare nested def": ("_agent_user", _A_AGENT, ["def _f():", "    pass"], {}),
     "B69 a bare nested class": ("_agent_user", _A_AGENT, ["class _C:", "    pass"], {}),
     "B70 a bare chained comparison": ("_agent_user", _A_AGENT, ["_ok = 1 < _x < 3"], {}),
+    # ── fix round 5: format strings and dunder names ──
+    "B71 a format string walks a traceback in an except clause": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    raise ValueError", "except ValueError as _e:",
+         "    _h = '{0.__traceback__.tb_frame.f_locals[request].url.hostname}'.format(_e)"],
+        {}),
+    "B72 a format string reads __class__.__mro__": (
+        "_agent_user", _A_AGENT, ["_h = '{0.__class__.__mro__}'.format(_x)"], {}),
+    "B73 __builtins__['getattr']": (
+        "_agent_user", _A_AGENT, ["_g = __builtins__['getattr']"], {}),
 }
 
 
@@ -1251,7 +1303,7 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    assert len(_BYPASSES) == 74
+    assert len(_BYPASSES) == 77
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
