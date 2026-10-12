@@ -1495,12 +1495,17 @@ async def test_the_join_wraps_the_page_rather_than_the_table(
     assert joined[0].rstrip().endswith("base.id DESC")
 
 
-def test_only_deals_declare_a_projection() -> None:
-    """The other three statements stay byte-identical to the un-joined form —
-    a projection nobody asked for is a join on every list in the app."""
-    for slug in ("leads", "contacts", "organizations"):
+def test_only_deals_and_leads_declare_a_projection() -> None:
+    """Contacts and companies stay byte-identical to the un-joined form — a
+    projection nobody asked for is a join on every list in the app. Deals and
+    leads project exactly what a list draws: the company name and the stage
+    or status name (WS-53 CRM-X1, ``crm_platform.md`` §19.5)."""
+    for slug in ("contacts", "organizations"):
         assert not ENTITIES[slug].joined_columns, f"{slug} grew a join"
-    assert DEALS.joined_columns == (("organization_name", "org.name"),)
+    assert DEALS.joined_columns == (
+        ("organization_name", "org.name"), ("status_name", "st.name"),
+    )
+    assert ENTITIES["leads"].joined_columns == (("status_name", "st.name"),)
 
 
 # ── WS-26c · deal contacts (done-when 2) ────────────────────────────────────
