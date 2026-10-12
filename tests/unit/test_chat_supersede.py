@@ -355,3 +355,102 @@ def test_a_live_run_of_another_member_still_refuses_the_edit(liveness):
         _run(settle_active_run(tid, _ME))
     assert err.value.code == "run_in_progress"
     assert liveness.store.get(f"cc:active:{tid}") == "1"
+
+
+# ── The note keeps its steps when steers are quoted (review of #920, round 3) ─
+#
+# The added messages used to go into the block BEFORE the step budget. A few
+# of them left no room for the steps that already ran, and the note then said
+# "the steps quoted above already ran" over a block that quoted none. The
+# model could send the email twice. Now the steps have first claim, the
+# closing instruction is always whole, and the added messages fit into what
+# is left, each cut at 120 characters, with a count of the rest.
+
+import hashlib  # noqa: E402
+
+_SEND = Step(name="send_email", status="done",
+             result="Email sent to finance@acme.example with the Q3 report attached")
+_TASK = Step(name="create_task", status="done", result="Task T-114 created in project Finance")
+_TAIL = "The steps quoted above already ran."
+_CHANGED_NOTHING = "The earlier reply changed nothing, so answer only the message below."
+
+
+def _note(old: int, steer: int, count: int, steps: list[Step]) -> str:
+    return compose_supersede_note(SupersedePlan(
+        old_text="x" * old, removed_ids=["a"], steps=steps, steers=["y" * steer] * count,
+    ))
+
+
+def _block(note: str) -> str:
+    return note.split(QUOTE_OPEN)[-1].split(QUOTE_CLOSE)[0]
+
+
+@pytest.mark.parametrize("old, steer, count", [
+    # note_probe2: two steps.
+    (150, 80, 1), (200, 120, 1), (250, 150, 1), (300, 300, 1), (200, 100, 2),
+])
+def test_the_reviewers_two_step_cases_keep_both_steps(old, steer, count):
+    note = _note(old, steer, count, [_SEND, _TASK])
+    assert len(note) <= SUPERSEDE_NOTE_MAX_CHARS
+    assert '"send_email"' in _block(note) and '"create_task"' in _block(note)
+    assert note.rstrip().endswith("or ask the member.")
+
+
+@pytest.mark.parametrize("old, steer, count", [
+    # note_probe3: one side-effect step.
+    (300, 200, 1), (250, 250, 1), (300, 0, 0), (120, 120, 3), (150, 150, 3), (100, 100, 5),
+])
+def test_the_reviewers_one_step_cases_keep_the_step(old, steer, count):
+    note = _note(old, steer, count, [_SEND])
+    assert len(note) <= SUPERSEDE_NOTE_MAX_CHARS
+    assert '"send_email"' in _block(note)
+    assert _TAIL in note and note.rstrip().endswith("or ask the member.")
+
+
+def test_three_steers_and_a_side_effect_step_keep_the_step_and_the_closing_line():
+    note = _note(300, 120, 3, [_SEND])
+    assert '"send_email"' in _block(note)
+    assert note.endswith(
+        "The steps quoted above already ran. They are real and nobody undid "
+        "them. Do not do these steps again. Make the answer agree with them: "
+        "change or undo a step only when the member asks for it, or ask the "
+        "member."
+    )
+
+
+def test_five_long_steers_stay_in_the_cap_with_the_step_the_closing_and_a_count():
+    note = _note(300, 400, 5, [_SEND])
+    assert len(note) <= SUPERSEDE_NOTE_MAX_CHARS
+    assert '"send_email"' in _block(note)
+    assert note.rstrip().endswith("or ask the member.")
+    assert "more messages were added while it ran." in note
+    # Each added message is cut at 120 characters.
+    for line in _block(note).splitlines():
+        if line.startswith("added_while_running:"):
+            assert len(line) <= len('added_while_running: ""') + 120
+
+
+def test_steers_with_no_step_keep_the_closing_line_and_the_cap():
+    note = _note(300, 400, 8, [])
+    assert len(note) <= SUPERSEDE_NOTE_MAX_CHARS
+    assert note.endswith(_CHANGED_NOTHING)
+    assert "more messages were added while it ran." in note
+
+
+@pytest.mark.parametrize("plan, length, digest", [
+    (SupersedePlan(old_text="Plan the release for Friday", removed_ids=["u"]),
+     344, "8352c0055329e6a48324b2e91e3e2a7242c2c6460c3e9ef86f7999c908576a22"),
+    (SupersedePlan(old_text="Create 3 tasks", removed_ids=["u"], steps=[
+        Step(name="create_task", status="done", result='Created "Review" (#41)'),
+        Step(name="assign_task", status="running", result="")]),
+     609, "a0b358e14618b626b24f0d9cd69471201d087d624219d7be57dcb6d784711051"),
+    (SupersedePlan(old_text="x" * 900, removed_ids=["u"], steps=[
+        Step(name=f"send_email_{i}", status="done", result="y" * 150) for i in range(12)]),
+     1051, "a5e9fc90085f49a441cf5613b852bb5dc3f11c8c32fd33e198332cb939bb6a05"),
+], ids=["no_steps", "two_steps", "many_steps_long_text"])
+def test_a_note_with_no_steer_is_byte_identical_to_main(plan, length, digest):
+    """The golden values are the output of origin/main's own
+    ``chat_supersede.py``, measured on 2026-10-12 before the round-3 change."""
+    note = compose_supersede_note(plan)
+    assert len(note) == length
+    assert hashlib.sha256(note.encode("utf-8")).hexdigest() == digest

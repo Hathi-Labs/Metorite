@@ -845,6 +845,16 @@ end gives its unread steers back, maybe later and on another worker. Then:
   steer rows. The note quotes them as `added_while_running`. Another
   member's steer still refuses the edit.
 
+**Round 3 of the review.** The edit note keeps the steps that already ran.
+The steer quotes once came before the step budget, so a few of them pushed
+the steps out, and the model could repeat a side effect. Now:
+
+- The completed steps have first claim on the budget, as before #920.
+- The added messages fit into what is left. Each is cut at 120 characters,
+  and one line counts the rest.
+- The closing instruction is always whole (`_cap_keeping`).
+- A note with no added message is byte for byte the note of `main`.
+
 **The fallbacks.**
 
 | The server answers | The client does |
