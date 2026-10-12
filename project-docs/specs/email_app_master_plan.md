@@ -16822,6 +16822,8 @@ EM-T17 or of #894.
 
 - `tests/unit/test_email_inline_images.py`: the Outlook and Gmail reads, the sniff, the
   route, and the owner check on a real database (R8).
+- `tests/unit/test_email_owner_scope_fence.py` reads the owner predicate in the body of
+  `get_inline_image`. So the owner SQL stays in that body, not in a module constant.
 - `src/app/email/lib/inlineImages.test.ts`: the rewrite, the relative URL and the CSP.
 - `e2e/email-inline-images.spec.ts`: a real PNG loads in a real frame, with
   `naturalWidth` above 0, in the tokens, invert and original looks, and after "Show images".
