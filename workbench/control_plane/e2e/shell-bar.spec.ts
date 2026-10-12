@@ -74,6 +74,24 @@ const commandBar = (page: Page) => page.getByRole("dialog", { name: "Search or a
 const field = (page: Page) => commandBar(page).getByRole("combobox", { name: "Search or ask anything" });
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 
+/** The root font size each density gives, as `globals.css` computes it. */
+const ROOT_PX: Record<string, string> = { "0.875": "14px", "1": "16px", "1.125": "18px" };
+const rootPx = (page: Page) => page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+
+/**
+ * Set the density AFTER the page loads. ⚠️ An `addInitScript` value does not
+ * hold: the appearance store writes `--ui-scale` again when it hydrates
+ * (`lib/theme/store.ts`). So the first version of the folded-rail loop below
+ * ran all three of its scales at scale 1 (2026-10-12). The poll proves the
+ * scale took. `e2e/shell-account.spec.ts` keeps the same helper.
+ */
+async function setScale(page: Page, scale: string) {
+  await page.evaluate((v) => document.documentElement.style.setProperty("--ui-scale", v), scale);
+  await expect.poll(() => rootPx(page)).toBe(ROOT_PX[scale]);
+  // Let the layout settle at the new size.
+  await page.waitForTimeout(150);
+}
+
 test.describe("desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -457,17 +475,18 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
   for (const density of ["1", "0.875", "1.125"]) {
     test(`both flags: the menu control is centred over the folded rail's icons (scale ${density})`, async ({ page }) => {
       await shellOn(page);
-      await page.addInitScript((d) => {
+      await page.addInitScript(() => {
         localStorage.setItem("cc-shell-nav", "1");
         localStorage.setItem("cc-sidebar-collapsed", "1");
-        document.documentElement.style.setProperty("--ui-scale", d);
-      }, density);
+      });
       await stub(page);
       await page.goto("/settings/appearance");
       await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
       // The rail draws its skeleton until the layout read answers (the star
       // model, 2026-10-11), so wait for the real rows.
       await expect(aside(page).locator("nav a").first()).toBeVisible();
+      // After the load, never in `addInitScript` (`setScale` says why).
+      await setScale(page, density);
       const brand = bar(page).locator("[data-shell-brand]");
       const fold = await box(brand.getByRole("button", { name: "Expand sidebar" }));
       const foldCentre = fold.x + fold.width / 2;
@@ -519,8 +538,7 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     // cap was 76px, so a 90px logo proves the reserve is gone.
     expect(Math.round((await box(img)).width)).toBe(90);
     for (const scale of ["0.875", "1", "1.125"]) {
-      await page.evaluate((s) => document.documentElement.style.setProperty("--ui-scale", s), scale);
-      await page.waitForTimeout(200);
+      await setScale(page, scale);
       const zone = await box(brand);
       const l = await box(img);
       expect(l.x + l.width, `the logo stays in the zone at ${scale}`).toBeLessThanOrEqual(zone.x + zone.width);
