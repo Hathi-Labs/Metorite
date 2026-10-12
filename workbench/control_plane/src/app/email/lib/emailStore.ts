@@ -13,6 +13,7 @@ import { splitQuotedText } from "./quoting";
 import type { DraftHandOver } from "./draftAutosave";
 import { disconnectFailureText, type DisconnectOutcome, type ProviderAvailability } from "./connect";
 import { nextDefaultAfter } from "./mailboxSettings";
+import { isHtmlUnavailable } from "./draftSave";
 import {
   hasAllInboxes,
   isSeparate,
@@ -557,10 +558,12 @@ interface EmailState {
   snoozeEmail: (id: string, until: string | null) => Promise<void>;
   sendEmail: (params: api.SendEmailParams) => Promise<void>;
   undoSend: () => void;
-  /** Create or update a draft (provider + local mirror); returns the saved draft. */
-  saveDraft: (params: api.SaveDraftParams) => Promise<Email>;
-  /** Send an existing draft natively (Drafts → Sent) and drop it from the list. */
-  sendDraft: (accountId: string, draftId: string) => Promise<void>;
+  /** Create or update a draft (provider + local mirror); returns the saved
+   *  draft, with the `html` answer of a Gmail save (EM-G3a-f7). */
+  saveDraft: (params: api.SaveDraftParams) => Promise<api.SavedDraft>;
+  /** Send an existing draft natively (Drafts → Sent) and drop it from the list.
+   *  `allowTextOnly` goes to `api.sendDraft` (EM-G3a-f7, D-G3a-f7-11a). */
+  sendDraft: (accountId: string, draftId: string, allowTextOnly?: boolean) => Promise<void>;
   /** Queue a prompt for the AI chat panel (used by the Assistant "Fix" flow). */
   setPendingChatPrompt: (prompt: string | null) => void;
   /** Run rules on one message (Test = dry-run, Apply = execute) and store result. */
@@ -2006,7 +2009,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   saveDraft: async (params) => {
     // Reverse-sync write: create/update the provider draft + local mirror.
-    const draft = await api.saveDraft(params);
+    const saved = await api.saveDraft(params);
+    // The `html` answer goes back to the card and never into a row of the list.
+    const draft = { ...saved };
+    delete draft.html;
     set((s) => {
       const exists = s.emails.some((e) => e.id === draft.id);
       if (exists) {
@@ -2024,10 +2030,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       }
       return {};
     });
-    return draft;
+    return saved;
   },
 
-  sendDraft: async (accountId, draftId) => {
+  sendDraft: async (accountId, draftId, allowTextOnly) => {
     const prev = get().emails;
     // Optimistically remove the draft — it's leaving Drafts for Sent.
     set({
@@ -2035,10 +2041,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       emailsTotal: Math.max(0, get().emailsTotal - 1),
     });
     try {
-      await api.sendDraft(accountId, draftId);
+      // With no `allowTextOnly`, `api.sendDraft` sends the body of main.
+      await api.sendDraft(accountId, draftId, allowTextOnly);
       if (get().selectedEmailId === draftId) set({ selectedEmailId: null });
     } catch (err: any) {
-      set({ emails: prev, error: err.message || "Failed to send draft" });
+      // The 409 of a Gmail send that could not read its HTML is no banner:
+      // the DraftCard shows its notice, and the next press sends (EM-G3a-f7).
+      set(isHtmlUnavailable(err)
+        ? { emails: prev }
+        : { emails: prev, error: err.message || "Failed to send draft" });
       throw err;
     }
   },
