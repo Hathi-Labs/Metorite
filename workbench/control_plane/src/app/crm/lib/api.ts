@@ -14,6 +14,7 @@ import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
+import type { FieldMap, FieldRule } from "./fieldMap";
 import type { CrmOwner } from "./filterBar";
 import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth } from "./syncHealth";
@@ -513,6 +514,37 @@ export function convertLead(
 }
 
 export type { Contact, Deal, Lead, Organization };
+
+// ── The Field map (WS-53 CRM-Q7a) ─────────────────────────────────────────
+
+/** Admin only, Mirror mode only. The fields that go to custom, the rules and the targets. */
+export function getFieldMap(entity: EntitySlug): Promise<FieldMap> {
+  return call<FieldMap>(`/field-rules?entity=${encodeURIComponent(entity)}`);
+}
+
+/**
+ * Admin only. Pick a target by hand: the rule is approved at once. A rule the
+ * server refuses is a 422 with a sentence, and a column that another approved
+ * rule fills is a 409 (`rule_taken`).
+ */
+export function createFieldRule(body: {
+  entity: EntitySlug;
+  field_api_name: string;
+  target_column: string;
+}): Promise<FieldRule> {
+  return call<FieldRule>("/field-rules", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Admin only. Approve or reject one rule. The next sync applies it. */
+export function decideFieldRule(
+  id: string,
+  status: "approved" | "rejected",
+): Promise<FieldRule> {
+  return call<FieldRule>(`/field-rules/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
 
 // ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────
 
