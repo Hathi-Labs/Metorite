@@ -886,14 +886,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           tab={view.recordTab ?? "overview"}
           // A tab replaces the URL, so Back still closes the sheet.
           onTab={(tab) =>
-            router.replace(viewHref(selectRecordTab(view, tab)), { scroll: false })
+            replaceView(viewHref(selectRecordTab(view, tab)))
           }
           // No step while a dialog is open over the sheet.
           order={converting || pendingMove ? null : recordOrder()}
           // The step replaces the URL too: Back closes the sheet, and does not
           // walk back through every record the keys passed.
           onStep={(id) =>
-            router.replace(viewHref(openRecord(view, view.record!.param, id)), { scroll: false })
+            replaceView(viewHref(openRecord(view, view.record!.param, id)))
           }
           onPatch={(body) =>
             store.patchRecord(view.record!.entity, view.record!.id, body)

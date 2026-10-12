@@ -30,13 +30,67 @@ const ADMIN = {
   organization: { id: "org1", slug: "acme", display_name: "Acme Works" },
 };
 
+const STAGE = { id: "st1", name: "Qualified", type: "open", color: "blue", position: 1, probability: 40 };
+
+/**
+ * The CRM's reads, by path under `/api/crm/`, in the shapes the gateway
+ * sends (`lib/types.ts`). ⚠️ A report in the wrong shape throws inside the
+ * view, and the spec would then pass against the CRM error boundary. The
+ * test below checks that the boundary is NOT on screen.
+ */
 const CRM: Record<string, unknown> = {
-  "statuses/deal": [],
+  "statuses/deal": [STAGE],
   "statuses/lead": [],
   "lost-reasons": [],
   pipelines: [],
   connection: null,
   settings: { mode: "native" },
+  "reports/pipeline": {
+    stages: [{ status: STAGE, count: 2, amount: 500000, weighted: 200000 }],
+    count: 2,
+    amount: 500000,
+    weighted: 200000,
+  },
+  "reports/funnel": {
+    stages: [
+      {
+        status: STAGE,
+        entered: 2,
+        advanced: 1,
+        conversion_forward: 50,
+        median_dwell_days: 4,
+        dwell_samples: 1,
+      },
+    ],
+    deals: 2,
+    transitions: 3,
+    unmatched: [],
+  },
+  "reports/win-loss": {
+    window_days: 90,
+    since: "2026-07-14T00:00:00Z",
+    won: 1,
+    lost: 1,
+    win_rate: 50,
+    won_amount: 250000,
+    lost_amount: 100000,
+    average_cycle_days: 21,
+    closed_without_date: 0,
+    lost_reasons: [],
+  },
+  "reports/owners": {
+    owners: [{ owner_email: "admin@example.com", open_deals: 2, weighted: 200000, won_amount: 250000 }],
+    window_days: 90,
+    omitted: 0,
+  },
+  contacts: {
+    rows: [{ id: "c1", first_name: "Priya Contact", email: "priya@acme.example" }],
+    total: 1,
+  },
+  leads: {
+    rows: [{ id: "l1", lead_name: "Ravi Lead", email: "ravi@acme.example" }],
+    total: 1,
+  },
 };
 
 async function setup(page: Page): Promise<Route[]> {
@@ -68,24 +122,37 @@ test("a rail click changes the CRM view while the server holds the request", asy
   await page.goto("/crm?tab=contacts");
   const rail = page.getByRole("navigation", { name: "CRM views" });
   await expect(rail.getByRole("button", { name: "Leads", exact: true })).toBeVisible({ timeout: 30_000 });
-  // The Reports line is the subtitle of one view only, so it says which
-  // view is on screen.
-  const reportsLine = page.getByText(/Forecast, funnel, win rate/);
-  await expect(reportsLine).toHaveCount(0);
+
+  // The CRM error boundary (`CrmBoundary`) and the app's own error screen.
+  // Neither may show at any step: a view that throws is not a view that
+  // changed.
+  const boundary = page.getByText(/Something went wrong on this page|This page did not load/);
+  // Each view's own content, so the test knows which view is on screen.
+  const contactsRow = page.getByText("Priya Contact");
+  const forecast = page.getByRole("heading", { name: "Forecast by stage" });
+  const leadsRow = page.getByText("Ravi Lead");
+
+  await expect(contactsRow).toBeVisible({ timeout: 10_000 });
+  await expect(boundary).toHaveCount(0);
 
   await rail.getByRole("button", { name: "Reports", exact: true }).click();
   await expect(page).toHaveURL(/[?&]tab=reports\b/, { timeout: 3_000 });
-  await expect(reportsLine).toBeVisible({ timeout: 3_000 });
+  await expect(forecast).toBeVisible({ timeout: 3_000 });
+  await expect(contactsRow).toHaveCount(0);
+  await expect(boundary).toHaveCount(0);
 
   // A second click answers too. Before the fix it waited like the first.
   await rail.getByRole("button", { name: "Leads", exact: true }).click();
   await expect(page).toHaveURL(/[?&]tab=leads\b/, { timeout: 3_000 });
-  await expect(reportsLine).toHaveCount(0);
+  await expect(leadsRow).toBeVisible({ timeout: 3_000 });
+  await expect(forecast).toHaveCount(0);
+  await expect(boundary).toHaveCount(0);
 
   // Back returns to the previous view, as it did with the router.
   await page.goBack();
   await expect(page).toHaveURL(/[?&]tab=reports\b/, { timeout: 3_000 });
-  await expect(reportsLine).toBeVisible({ timeout: 3_000 });
+  await expect(forecast).toBeVisible({ timeout: 3_000 });
+  await expect(boundary).toHaveCount(0);
 
   // No view change needed the server.
   expect(held.length).toBe(0);
