@@ -5029,6 +5029,50 @@ spec §15. All are new and none exists yet.
 
 ---
 
+### D98 — An org MCP connection over OAuth acts as the admin who connected it, and says so (2026-10-12)
+
+Owner decision, 2026-10-12, in chat. **Decided: owner, 2026-10-12.** Board:
+**WS-54**. Owning spec: **`specs/integrations_console.md`** §3.6 (IN-8).
+
+**The question, verbatim:** "Notion, Linear and Atlassian issue tokens per user,
+so an org-wide connection acts as one admin. How should org-wide OAuth
+connections work?"
+
+**The answer, verbatim:** "Allow, clearly labelled."
+
+1. **The owner allows org connections over OAuth.** An admin connects an MCP server
+   that needs an OAuth consent, and the connection serves the agents of every
+   member of the org.
+2. **The label.** The console and each confirmation card show "acts as <admin>
+   at <provider>". The admin is the member who connected it (`connected_by`).
+3. **What a member can reach.** A read-only tool runs with no card (H-299). So
+   a member can read, through an agent, what the admin can read at that
+   provider. The Connect dialog says this before the consent.
+4. **It ships dark,** behind `MCP_OAUTH_ENABLED`, default off. The flip is gate
+   `enforcement-flip`. It waits for the owner's real consent test against a
+   third-party account (CLAUDE.md §3a rule 3).
+5. **Org scope only, for now.** The owner said the same day: "get the
+   organization-wide connectors done, and later on we can start working on the
+   personal connectors." A member connection over OAuth is out of scope.
+
+**Recorded the same day, not a decision of its own.** H-300 asked: "should
+admins get a per-server 'always confirm' switch, now that MCP is on for all
+orgs?" The owner answered: "Build it now, keep MCP on." `MAF_MCP_ORGS=*` stays
+on production. The switch is `provider_meta.always_confirm` on the registry row,
+read by `McpPermissionGate`, and it comes right after IN-4 (HANDOFF H-300).
+
+**What it extends.** D96.4: an MCP server is a connection. D98 adds the
+connections that need an OAuth consent.
+
+**What it does not change.** D56 keeps operator keys in the operator plane, and
+a pre-registered OAuth client is one of them. H-236 stays: every MCP tool is
+egress. H-299 stays: a tool that can change data waits for the member's card.
+
+**Fences:** the rows of `specs/integrations_console.md` §3.6.11. All are new and
+none exists yet.
+
+---
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |
