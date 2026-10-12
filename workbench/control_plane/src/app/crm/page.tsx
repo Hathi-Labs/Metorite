@@ -36,6 +36,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
 import { NEW_LEAD_MIRROR, refusalOf } from "./lib/access";
+import { CrmModeContext } from "./lib/modeContext";
 import { hasCapability } from "@/lib/access";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { AccessSection } from "./components/AccessPanel";
@@ -693,6 +694,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   );
 
   return (
+    // CRM-C2: the list, the reports and the status pill read the mode here.
+    <CrmModeContext.Provider value={ctx.mode}>
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {/* ═══ The app's title bar (AGENTS.md rule 11, CRM-U1) ═══
           The rail toggle, the name and the scope, the New verb, then the
@@ -1073,6 +1076,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         />
       )}
     </div>
+    </CrmModeContext.Provider>
   );
 }
 

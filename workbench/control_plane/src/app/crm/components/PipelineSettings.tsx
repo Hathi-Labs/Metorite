@@ -40,6 +40,7 @@ import {
   REQUIREABLE_FIELDS,
   stageAccent,
 } from "../lib/board";
+import { useCrmModeValue } from "../lib/modeContext";
 import { showPicker } from "../lib/pipelines";
 import {
   changedFields,
@@ -358,6 +359,8 @@ function StatusRow({
 }) {
   const [draft, setDraft] = useState(status);
   const [served, setServed] = useState(status);
+  // CRM-C2: the dot shows the colour the board shows, so it reads the mode.
+  const mode = useCrmModeValue();
   const [invalid, setInvalid] = useState<string | null>(null);
   // A re-read replaces the draft: every write here re-reads the vocabulary,
   // and a row that kept showing what was typed after the server answered
@@ -404,7 +407,7 @@ function StatusRow({
       >
         <Icon name="GripVertical" className="w-4 h-4" />
       </span>
-      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, null).dot}`} />
+      <span className={`w-2 h-2 shrink-0 rounded-full ${stageAccent(draft, mode).dot}`} />
 
       <Input
         inputSize="sm"

@@ -34,6 +34,8 @@ import {
 } from "../lib/fields";
 import FieldValue from "./FieldValue";
 import { stageAccent } from "../lib/board";
+import type { CrmMode } from "../lib/connect";
+import { useCrmModeValue } from "../lib/modeContext";
 import { COLUMNS } from "../lib/columns";
 import { SORTS } from "../lib/filters";
 import { money, shortDate, shortEmail } from "../lib/format";
@@ -42,7 +44,7 @@ import type { EntitySlug, Status } from "../lib/types";
 type Row = Record<string, unknown>;
 
 /** What a renderer may read beside its row. */
-type CellContext = { statuses: ReadonlyArray<Status> };
+type CellContext = { statuses: ReadonlyArray<Status>; mode: CrmMode };
 
 function text(row: Row, key: string): string {
   const value = row[key];
@@ -68,15 +70,15 @@ const RENDERERS: Record<string, (row: Row, ctx: CellContext) => React.ReactNode>
   first_name: (r) => `${text(r, "first_name")} ${r.last_name ?? ""}`.trim(),
   // CRM-X1: the stage by name, with the dot of `stageAccent`, the one stage
   // colour of the CRM. A stage the vocabulary does not hold draws a muted dot.
-  // The list does not know the mode, so it passes null and reads the stored
-  // colour (CRM-C2).
+  // The mode comes from the page (`lib/modeContext.ts`, CRM-C2), so a mirrored
+  // won stage draws the same green dot here as on the board.
   status_name: (r, ctx) => {
     if (!r.status_name) return "—";
     const status = ctx.statuses.find((s) => s.id === r.status_id);
     return (
       <span className="inline-flex items-center gap-1.5">
         <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${status ? stageAccent(status, null).dot : "bg-muted-foreground"}`}
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${status ? stageAccent(status, ctx.mode).dot : "bg-muted-foreground"}`}
         />
         {String(r.status_name)}
       </span>
@@ -145,6 +147,8 @@ export default function RecordList({
   /** False once a page came back short or empty: the list has ended. */
   hasMore?: boolean;
 }) {
+  // CRM-C2: the Stage dot reads the mode, so it agrees with the board.
+  const mode = useCrmModeValue();
   const columns = columnsProp ?? COLUMNS[entity as EntitySlug];
   // The choice is per entity and lives in this browser. The state re-seats
   // while rendering when the entity changes, so no frame shows the old list's choice.
@@ -236,7 +240,7 @@ export default function RecordList({
                     key={column.key}
                     className={`px-4 py-2 text-muted-foreground ${column.className ?? ""}`}
                   >
-                    {cell(column.key, row, { statuses })}
+                    {cell(column.key, row, { statuses, mode })}
                   </td>
                 ))}
                 {extra.map((def) => (
