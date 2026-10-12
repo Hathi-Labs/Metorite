@@ -19,6 +19,7 @@ import { LIST_PAGE_SIZE, type ListQuery } from "./filters";
 import { dateTime, shortDate } from "./format";
 import type { CrmColumn } from "./columns";
 import type { EntitySlug } from "./types";
+import { MODULE_NAME, isModuleName } from "./urlState";
 
 type Row = Record<string, unknown>;
 
@@ -74,12 +75,9 @@ export type ModuleRecordPage = {
   links: Record<string, ModuleLink>;
 };
 
-/** A provider module API name. The gateway checks it against the profile too. */
-export const MODULE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,99}$/;
-
-export function isModuleName(value: string | null | undefined): value is string {
-  return typeof value === "string" && MODULE_NAME.test(value);
-}
+// The name check lives in the URL grammar (`urlState.ts`), which reads it
+// first. It is re-exported here for the callers of this file.
+export { MODULE_NAME, isModuleName };
 
 // ── The rail ───────────────────────────────────────────────────────────────
 

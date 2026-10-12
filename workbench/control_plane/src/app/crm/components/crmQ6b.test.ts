@@ -5,6 +5,7 @@
 // The fence of "Done when" item 2: the rail rows follow the profile. The
 // gateway returns the mirrored modules in the profile order, and the rail
 // draws one row for each, under the known views and before Reports.
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -163,6 +164,20 @@ describe("the URL of a module list and a generic record", () => {
     const quotes = selectModule({ ...products, sort: "name" }, "Quotes");
     expect(quotes).toMatchObject({ module: "Quotes", sort: null });
     expect(selectTab(quotes, "deals").module).toBeNull();
+  });
+});
+
+describe("the URL grammar imports no CRM module that imports it back", () => {
+  it("keeps urlState.ts free of a value import from modules.ts or filters.ts", () => {
+    // filters.ts imports urlState.ts, and modules.ts imports filters.ts. A value
+    // import back into urlState.ts closes a cycle, and the browser then reads
+    // `LIST_PAGE_SIZE` before it is set (found by the CRM-Q6b visual rig).
+    const src = readFileSync(new URL("../lib/urlState.ts", import.meta.url), "utf8");
+    const values = src
+      .split(/\r?\n/)
+      .filter((line) => /^import (?!type )/.test(line))
+      .join(" ");
+    expect(values).not.toMatch(/from "\.\/(modules|filters)"/);
   });
 });
 

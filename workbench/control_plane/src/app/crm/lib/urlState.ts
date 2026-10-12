@@ -9,8 +9,19 @@
 // All of it is parse/serialize over URLSearchParams, so it is pure and the
 // deep-link behaviour is testable without a browser.
 
-import { isModuleName } from "./modules";
 import { ENTITIES, type EntitySlug } from "./types";
+
+/**
+ * A provider module API name (WS-53 CRM-Q6b), for `?module=` and `?mrec=`.
+ * The gateway checks the name against the profile too. It lives here, and not
+ * in `modules.ts`, because `modules.ts` imports `filters.ts`, which imports
+ * this file. An import back would close a cycle (fence: `crmQ6b.test.ts`).
+ */
+export const MODULE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,99}$/;
+
+export function isModuleName(value: string | null | undefined): value is string {
+  return typeof value === "string" && MODULE_NAME.test(value);
+}
 
 /** The four sheet parameters, in the order a conflict resolves. */
 export const SHEET_PARAMS = ["deal", "lead", "contact", "organization"] as const;
