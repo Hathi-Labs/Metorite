@@ -514,25 +514,31 @@ async def _agent_user(request: Request) -> UserContext:
         "transfer-encoding" in request.headers
     ):
         return _refuse_agent("body")
+    # The path and the query come from the ASGI scope, never from `request.url`.
+    # `request.url` is built with the Host header, and this branch reads no
+    # host input (fence: `test_tenant_request_binding.py`).
     canonical = agent_signing.canonical_string(
         timestamp=timestamp,
         organization_id=organization_id,
         connection_id=connection_id,
         actor_via=actor_via,
         method=request.method,
-        path=request.url.path,
-        query=request.url.query,
+        path=str(request.scope.get("path") or ""),
+        query=bytes(request.scope.get("query_string") or b"").decode("latin-1"),
     )
     if not agent_signing.verify(signature, canonical, keys):
         return _refuse_agent("signature")
     if not agent_signing.timestamp_is_fresh(timestamp):
         return _refuse_agent("timestamp")
 
-    # 3. GET only, and the matched route template is in MCP_ROUTES.
-    if request.method.upper() != "GET":
+    # 3. GET only, and the matched route template is in MCP_ROUTES. A missing
+    # route is refused BEFORE `_route_template` runs, so its URL fallback is
+    # never reached from here.
+    method = request.method.upper()
+    if method != "GET":
         return _refuse_agent("method")
     if request.scope.get("route") is None or (
-        "GET", _route_template(request)
+        method, _route_template(request)
     ) not in agent_oauth.MCP_ROUTES:
         return _refuse_agent("route")
 
@@ -548,6 +554,10 @@ async def _agent_user(request: Request) -> UserContext:
     if connection is None or not connection.member_email:
         return _refuse_agent("connection")
     ids = {"connection_id": connection.connection_id}
+    # The organization is the ROW's. The signed one must equal it. The read
+    # already filters on it, and this check holds if a read ever does not.
+    if connection.organization_id != organization_id:
+        return _refuse_agent("connection_org", **ids)
 
     # 7 (checked before the resolve, so a bad stamp binds no tenant). The stamp
     # is the one the connection's origin gives, and it has the stamp's shape.
