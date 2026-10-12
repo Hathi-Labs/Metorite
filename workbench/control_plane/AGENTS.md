@@ -365,14 +365,20 @@ Seven rules on top of the three above. Each one exists because it was broken:
    opens with `AppTopBar`, its one title bar: rail toggle, name, subtitle,
    actions, tools.** *(Owner direction, 2026-10-10.)* The owner said: "I
    don't want to have any of the individual apps' UI/UX elements be on the
-   top bar." The shell bar holds the fold control, the logo, the command bar
-   and the activity control, and nothing else.
-   **Amended by the owner, 2026-10-11:** our Metorite comet signs the right
-   end, as the last item after a thin divider (`BarSignature` in
-   `src/lib/shell/ShellBar.tsx`). It is a signature, not a control, and it
-   shows from `xl` up. With no logo it hides, because the logo slot already
-   shows our comet. Do not remove it. `src/lib/shell/shellSignature.test.ts`
-   and `e2e/shell-signature.spec.ts` fence it.
+   top bar." The shell bar holds the fold control, the logo, the command bar,
+   the activity control and the account, and nothing else.
+   ~~**Amended by the owner, 2026-10-11:** our Metorite comet signs the right
+   end (`BarSignature`).~~ **Superseded by the owner, 2026-10-12.**
+   **Amended by the owner, 2026-10-12:** the account is the right end's last
+   item (`BarAccount` in `src/components/AccountSwitcher.tsx`). It is an
+   avatar, and the email from 1400px up. Its menu holds account acts only:
+   switch, add, sign out. The right group has no `min-w-0`, so it never
+   spills over the command bar. Our comet and the word "Metorite" moved to
+   the sidebar's foot (`MetoriteFoot.tsx`). The foot opens the member's
+   pages and settings, from ONE list (`metoriteMenu` in `shellNav.ts`). Add
+   a new option there, in one line. The classic frame and the phone keep
+   their account surfaces. Fences: `src/lib/shell/shellAccount.test.ts` and
+   `e2e/shell-account.spec.ts`.
    **Amended by the owner, 2026-10-10:** the shell's one bell and its one
    assistant toggle sit at the bar's right end. The owner said
    "they belong to the whole product, not to an app." The bell shows only while

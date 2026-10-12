@@ -3,9 +3,10 @@
  *
  * A customer uploads their logo in Settings → Organization and it replaces our
  * mark in the top-left of the shell. Since 2026-10-11 nothing of ours sits
- * beside it: our comet signs the bar's right end (owner decision,
- * `BarSignature`). This module owns the parts of that with a right and a
- * wrong answer, so they can be tested without a browser or a gateway.
+ * beside it. Since 2026-10-12 our comet signs the sidebar's foot, as the
+ * Metorite menu (owner decision, `MetoriteFoot.tsx`). This module owns the
+ * parts of that with a right and a wrong answer, so they can be tested
+ * without a browser or a gateway.
  *
  * ⚠️ **Nothing here is a security boundary.** The limits below are duplicated
  * from `apps/services/gateway/gateway/routes/settings.py`, which is the
@@ -136,18 +137,8 @@ export function lockup(
     // Not "logo" alone: a screen reader reaching the top of the app should
     // hear whose product this is, and the link it sits in is the way home.
     alt: "Your organization's logo",
-    // No caption (owner, 2026-10-11). Our comet signs the bar's right end.
+    // No caption (owner, 2026-10-11). Our comet signs the sidebar's foot.
   };
-}
-
-/**
- * Does the lockup at the left end of the shell draw OUR comet? It does when
- * the organization has no logo, and while no answer has come yet. Then the
- * bar's right end draws no second comet (`BarSignature`, owner 2026-10-11),
- * because one bar that signs itself twice reads as a defect.
- */
-export function ourMarkLeads(branding: OrgBranding | null | undefined): boolean {
-  return lockup(branding, "").kind === "default";
 }
 
 /**
