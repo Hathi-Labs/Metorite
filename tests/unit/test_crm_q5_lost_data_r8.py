@@ -453,6 +453,22 @@ async def test_any_failure_to_read_tasks_skips_it_and_the_plan_leaves_import(
     assert _count(ns, "crm_contacts", ns.org_a, "ext_id = 'c2'") == 0, "deletes still run"
 
 
+async def test_a_plain_401_on_tasks_fails_the_run_and_is_not_read_as_unavailable(
+    ns, zoho,
+) -> None:
+    """A stale token is not a missing module. It must not hide for an hour."""
+    from gateway.crm_sync import engine
+
+    a, _b = zoho
+    _seed(a)
+    a.faults["Tasks"] = (401, {"code": "INVALID_TOKEN", "message": "invalid oauth token"})
+    await _connect(ns, ns.org_a, a)
+
+    run = await engine.run_org(ns.org_a)
+    assert (run.status, run.error) == ("failed", "source_error")
+    assert run.counts["tasks"].get("unavailable", 0) == 0
+
+
 async def test_a_lead_with_no_deal_is_hidden_by_default_and_shown_on_request(ns, zoho) -> None:
     from gateway.crm_sync import engine
 

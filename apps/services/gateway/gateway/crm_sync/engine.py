@@ -385,6 +385,18 @@ def _fatal(exc: BaseException) -> bool:
     return isinstance(exc, NeedsReconnect | BudgetExhausted | RateLimited)
 
 
+def _skip_optional(entity: str, exc: BaseException) -> bool:
+    """True when an optional module's read failure means "not available here".
+
+    A plain HTTP 401 is a token that went stale mid-run, not a missing module,
+    so it fails the run like any other module would. A 401 that names a scope
+    arrives as ``SourceScopeError`` and is still skipped.
+    """
+    if entity not in OPTIONAL_ENTITIES or _fatal(exc) or isinstance(exc, UntrustedHost):
+        return False
+    return isinstance(exc, SourceScopeError) or "HTTP 401" not in str(exc)
+
+
 # ── The run ─────────────────────────────────────────────────────────────────
 
 
@@ -1080,9 +1092,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             except (SourceScopeError, SourceError) as exc:
                 # An optional module that cannot be read for ANY reason that is
                 # not a dead token, a spent budget or a throttle is skipped.
-                if entity not in OPTIONAL_ENTITIES or _fatal(exc) or isinstance(
-                    exc, UntrustedHost,
-                ):
+                if not _skip_optional(entity, exc):
                     raise
                 await _mark_unavailable(ctx, entity, row)
                 return
@@ -1289,9 +1299,7 @@ async def _deleted_pass(ctx: _Ctx, entity: str) -> None:
         try:
             page = await ctx.call(lambda s, c=cursor: s.list_deleted(entity, c))
         except SourceError as exc:
-            if entity not in OPTIONAL_ENTITIES or _fatal(exc) or isinstance(
-                exc, UntrustedHost,
-            ):
+            if not _skip_optional(entity, exc):
                 raise
             _log.warning("crm.sync.module_unavailable entity=%s reason=deleted", entity)
             return
