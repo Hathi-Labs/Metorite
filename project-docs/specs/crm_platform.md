@@ -1269,7 +1269,7 @@ section is that contract. It splits the two tickets into four slices.
 | Slice | Gate | Builds | Waits for |
 |---|---|---|---|
 | **CRM-Q6a** ✅ built 2026-10-12 | AGENT-SAFE | The generic record store, its door, discovery of the other modules, the new scopes, and the sync. No UI and no new route | CRM-Q5 merged |
-| **CRM-Q6b** | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a merged. Start it after CRM-Q8 merges too, because both edit `CrmRail.tsx` and `page.tsx`. That is a merge order, not a contract |
+| **CRM-Q6b** ✅ built 2026-10-12 | AGENT-SAFE | The read-only routes, the rail rows and the generic record page | CRM-Q6a merged. Start it after CRM-Q8 merges too, because both edit `CrmRail.tsx` and `page.tsx`. That is a merge order, not a contract |
 | **CRM-Q7a** | AGENT-SAFE | The rule table, the Field map card, approve and reject, and the sync that applies approved rules. No model call | CRM-Q6a merged |
 | **CRM-Q7b** | AGENT-SAFE | The proposer: one routed model call over metadata | CRM-Q7a merged |
 
@@ -1429,7 +1429,7 @@ each of these on a real database:
   `tests/unit/test_crm_upsert_from_source_fence.py` and
   `tests/unit/test_crm_mirror_readonly.py`.
 
-#### CRM-Q6b: the views
+#### CRM-Q6b: the views (✅ built 2026-10-12)
 
 - `GET /crm/modules` returns the mirrored generic modules of the latest
   profile: `api_name`, the plural label, and the row count. A Native org gets
@@ -1456,6 +1456,38 @@ each of these on a real database:
 - A vitest file shows that the rail rows follow the profile.
 - The look gate of CLAUDE.md §4 passes: light mode, compact density, a changed
   accent, and the neighbouring Deals list.
+
+**Built as (2026-10-12).**
+
+- `routes/crm/modules.py` holds the three routes on the CRM router. They read
+  only, and the slice adds no migration.
+- `mirrored_modules` reads the latest profile in the bound tenant. It keeps
+  each module with `generic` and `mirrored` true, in the order of
+  `generic_modules`. Native mode or no profile gives an empty list.
+- Each route checks the module name against that set before it reads a
+  record. An unknown name gives 404 `unknown_module`. The name reaches SQL only
+  as a bound parameter.
+- The list uses `core.list_contract`, with `q` on `name`. The sorts are `name`,
+  `owner_email`, `ext_modified_at` and `ext_created_at`. The list also returns
+  `field_defs`, so the Columns control can offer the fields of the module.
+- The record route returns the record, its field definitions and `links`. A
+  lookup links to a known record or to a mirrored generic record, through
+  `ext_id`. Any other lookup gets no link, and the page shows it as text.
+- The rail shows one row for each module after Deals and before Reports, with
+  its count. An org with no module gets no row.
+- `?tab=module&module=<ApiName>` opens a list, and `?mrec=<ApiName>:<id>` opens
+  a record with its `?rtab=`. A known record and a generic record never open
+  together.
+- The list is `RecordList` with `MODULE_COLUMNS`. Its search box and its "Load
+  more" button are local to `ModuleList.tsx`, with the names of the CRM-X1
+  store. They move onto the CRM-X1 parts after CRM-X1 merges.
+- `RecordShell.tsx` holds the drawer, the header facts and the tab bar.
+  `RecordSheet` and `ModuleRecordSheet` both use it, so the two record pages
+  have one look.
+- Fences: `tests/unit/test_crm_modules_routes_r8.py` and
+  `src/app/crm/components/crmQ6b.test.ts`, red first. A visual check passed
+  in light mode, at compact density, under a violet accent and at 390 px,
+  beside the Deals list.
 
 #### CRM-Q7a: the rule table and the Field map
 
