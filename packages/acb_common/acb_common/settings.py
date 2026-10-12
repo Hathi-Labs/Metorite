@@ -870,7 +870,7 @@ class Settings(BaseSettings):
     # `MAF_MCP_ORGS` lists the organization ids whose native MAF agents get
     # the MCP servers of their org, with a comma between ids. `*` allows each
     # organization. An empty list, the default, allows none, and then a native
-    # agent reads no `mcp_servers` row. The Copilot path does not read it. The
+    # agent reads no MCP server of the registry (WS-54 IN-4). The
     # one reader is `orchestrator._maf_mcp.maf_mcp_org_allowed`, and the org it
     # checks is the run binding, never request input. `env_guard` refuses each
     # `MAF_*` name on each Integrations write. Restart the gateway after a

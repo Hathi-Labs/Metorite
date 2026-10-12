@@ -9,6 +9,10 @@ that this module decrypts. The fence is ``tests/unit/test_crm_connection.py``:
 an AST scan that fails when another file under ``apps/`` or ``packages/`` names
 the column.
 
+* **Two sealed shapes.** A token connection (Zoho, GitHub) seals a
+  :class:`SourceCredential`. A static-header connection (an MCP server, WS-54
+  IN-4) seals ``{"headers": {...}}``: :func:`save_headers` and
+  :func:`load_headers_by_prefix`. Each reader opens only its own shape.
 * **The key.** The blob uses the Fernet key of ``acb_llm.key_store``
   (``ACB_MASTER_KEY``). This module makes no second key.
 * **The session.** Each function takes the ``db`` that ``tenant_session`` gave
@@ -152,6 +156,55 @@ _DISCONNECT_SQL = (
     f"RETURNING {_PUBLIC_COLUMNS}"
 )
 
+# ── The static-header shape (WS-54 IN-4, MCP servers) ──────────────────────
+#
+# A provider such as an MCP server has no token to refresh. It has a map of
+# static HTTP headers, and a header value is a credential. So the blob holds
+# ``{"headers": {...}}``. One family of connections shares a provider prefix
+# (``mcp:<name>``), because the unique index includes the provider.
+
+#: Each row of one provider family. ``left()`` and not ``LIKE``, so a ``_`` or
+#: a ``%`` in the prefix is never a wildcard.
+_LIST_PREFIX_SQL = (
+    f"SELECT {_PUBLIC_COLUMNS} FROM integration_connections "
+    "WHERE organization_id = CAST(:org AS uuid) AND owning_app = :owning_app "
+    "AND scope_kind = :scope_kind AND COALESCE(member_email, '') = :member "
+    "AND left(provider, length(CAST(:prefix AS text))) = CAST(:prefix AS text) "
+    "ORDER BY created_at, provider"
+)
+
+#: The blob of each row of one provider family, by provider. Any status: a
+#: disabled MCP server keeps its headers, so a test of it still sends them.
+_BLOBS_PREFIX_SQL = (
+    "SELECT provider, credentials_encrypted FROM integration_connections "
+    "WHERE organization_id = CAST(:org AS uuid) AND owning_app = :owning_app "
+    "AND scope_kind = :scope_kind AND COALESCE(member_email, '') = :member "
+    "AND left(provider, length(CAST(:prefix AS text))) = CAST(:prefix AS text)"
+)
+
+_UPSERT_HEADERS_SQL = (
+    "INSERT INTO integration_connections (organization_id, provider, "
+    "owning_app, scope_kind, member_email, status, provider_meta, "
+    "credentials_encrypted, connected_by, last_error, created_at, updated_at) "
+    "VALUES (CAST(:org AS uuid), :provider, :owning_app, :scope_kind, "
+    ":member_email, :status, CAST(:provider_meta AS jsonb), :blob, "
+    ":connected_by, NULL, now(), now()) "
+    "ON CONFLICT (organization_id, provider, owning_app, scope_kind, "
+    "(COALESCE(member_email, ''))) DO {conflict} "
+    f"RETURNING {_PUBLIC_COLUMNS}"
+)
+
+_HEADERS_REPLACE = (
+    "UPDATE SET status = EXCLUDED.status, "
+    "provider_meta = EXCLUDED.provider_meta, "
+    "credentials_encrypted = EXCLUDED.credentials_encrypted, "
+    "connected_by = EXCLUDED.connected_by, last_error = NULL, updated_at = now()"
+)
+
+_DELETE_SQL = (
+    f"DELETE FROM integration_connections WHERE {_KEY_WHERE} RETURNING id"
+)
+
 
 @dataclass(frozen=True)
 class Connection:
@@ -267,6 +320,37 @@ def _unseal(blob: str) -> SourceCredential:
             },
         )
     # ValueError covers binascii.Error, UnicodeDecodeError and a bad JSON.
+    except (InvalidToken, ValueError, KeyError, TypeError) as exc:
+        raise Undecryptable(type(exc).__name__) from None
+
+
+def _clean_headers(headers: dict[str, Any] | None) -> dict[str, str]:
+    return {str(k): str(v) for k, v in (headers or {}).items()}
+
+
+def _seal_headers(headers: dict[str, Any] | None) -> str:
+    """The second sealed shape: a static header map, ``{"headers": {...}}``.
+
+    An empty map is sealed too, so every row of the family holds a blob and
+    the plain columns never say how many headers a server has.
+    """
+    plain = json.dumps({"headers": _clean_headers(headers)}, separators=(",", ":"))
+    return _keys().encrypt(plain)
+
+
+def _unseal_headers(blob: str) -> dict[str, str]:
+    """Open a header blob, or raise :class:`Undecryptable` with no cause.
+
+    The key store is fetched outside the ``try``, for the reason that
+    :func:`_unseal` gives. A token blob is not a header blob: it is refused.
+    """
+    keys = _keys()
+    try:
+        data = json.loads(keys.decrypt(blob))
+        headers = data["headers"]
+        if not isinstance(headers, dict):
+            raise TypeError("headers")
+        return _clean_headers(headers)
     except (InvalidToken, ValueError, KeyError, TypeError) as exc:
         raise Undecryptable(type(exc).__name__) from None
 
@@ -451,3 +535,114 @@ async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None
 async def mark_synced(db: Any, org: str, connection_id: str) -> None:
     """Set ``last_sync_at`` to now. The sync engine calls it after a good run."""
     await db.execute(text(_MARK_SYNCED_SQL), {"id": str(connection_id), "org": str(org)})
+
+
+# ── The static-header family (WS-54 IN-4) ───────────────────────────────────
+
+
+async def list_by_prefix(
+    db: Any,
+    org: str,
+    prefix: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> list[Connection]:
+    """Every row of *org* whose provider starts with *prefix*. No blob."""
+    if not prefix:
+        raise ValueError("a provider prefix is not empty")
+    params = _key(org, prefix, owning_app, scope_kind, member_email)
+    params["prefix"] = params.pop("provider")
+    rows = (await db.execute(text(_LIST_PREFIX_SQL), params)).fetchall()
+    return [_connection(r) for r in rows]
+
+
+async def load_headers_by_prefix(
+    db: Any,
+    org: str,
+    prefix: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> dict[str, dict[str, str] | None]:
+    """The decrypted header map of each row of the family, by provider.
+
+    A row with no blob maps to ``{}``. A blob that does not open maps to
+    ``None``, so the caller can leave that server out: a server with its auth
+    header missing is a broken server, not a public one.
+    """
+    if not prefix:
+        raise ValueError("a provider prefix is not empty")
+    params = _key(org, prefix, owning_app, scope_kind, member_email)
+    params["prefix"] = params.pop("provider")
+    rows = (await db.execute(text(_BLOBS_PREFIX_SQL), params)).fetchall()
+    out: dict[str, dict[str, str] | None] = {}
+    for row in rows:
+        if not row.credentials_encrypted:
+            out[row.provider] = {}
+            continue
+        try:
+            out[row.provider] = _unseal_headers(row.credentials_encrypted)
+        except Undecryptable as exc:
+            _log.warning("connection header blob does not open (%s)", exc)
+            out[row.provider] = None
+    return out
+
+
+async def save_headers(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    headers: dict[str, Any] | None,
+    *,
+    provider_meta: dict[str, Any],
+    connected_by: str,
+    enabled: bool = True,
+    only_if_absent: bool = False,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> Connection | None:
+    """Insert a static-header connection, or replace the one that exists.
+
+    The headers go into the blob only. *provider_meta* must hold no secret.
+    *enabled* is the status: ``connected`` or ``disconnected``. A disabled row
+    keeps its blob, because the admin may test it or enable it again.
+
+    With *only_if_absent*, a row that exists stays as it is, and the answer is
+    ``None``. The move of an old row uses it, so it never replaces a newer
+    registration.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    params["member_email"] = params.pop("member") or None
+    params.update(
+        status=STATUS_CONNECTED if enabled else STATUS_DISCONNECTED,
+        provider_meta=json.dumps(dict(provider_meta)),
+        blob=_seal_headers(headers),
+        connected_by=(connected_by or "").strip().lower() or None,
+    )
+    sql = _UPSERT_HEADERS_SQL.format(
+        conflict="NOTHING" if only_if_absent else _HEADERS_REPLACE,
+    )
+    row = (await db.execute(text(sql), params)).first()
+    return _connection(row) if row is not None else None
+
+
+async def delete(
+    db: Any,
+    org: str,
+    provider: str,
+    owning_app: str,
+    *,
+    scope_kind: str = SCOPE_ORG,
+    member_email: str | None = None,
+) -> bool:
+    """Delete the row and its blob. ``True`` when a row was deleted.
+
+    For a family such as MCP, where the admin removes the server. A provider
+    with a sync keeps its row as a record, so it uses :func:`disconnect`.
+    """
+    params = _key(org, provider, owning_app, scope_kind, member_email)
+    return (await db.execute(text(_DELETE_SQL), params)).first() is not None
