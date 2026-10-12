@@ -31,11 +31,19 @@ import AgentChat from "@/components/AgentChat";
 import ChatSendButton from "@/components/ChatSendButton";
 import MessageBubble from "@/components/MessageBubble";
 import { getSessionState, setSessionState, type ChatMessage } from "@/lib/chatStore";
+import { editableLastUserId, lastUserMessageId, supersededIds } from "@/lib/chatEdit";
 import {
   STEERED,
+  STEER_WAITING,
   FOLLOW_UP_TRIES,
+  cancelFollowUp,
   followUpDue,
   followUpRetryDelay,
+  followUpRetryState,
+  owedAfterSteer,
+  scheduleFollowUpRetry,
+  sendShortcut,
+  settleFollowUpAnswer,
   isSteered,
   lastNonSteer,
   primaryAction,
@@ -280,9 +288,8 @@ describe("the hook", () => {
 
   it("any steer owes a follow-up, and one that met a live run asks again (review of #920)", () => {
     // A plain send that the gateway steered: another member's run in a room.
-    expect(hook).toMatch(/if \(outcome\.steered\) \{\s*followUpTries\.current\.delete\(threadId\);\s*setSessionState\(threadId, \(prev\) => \(\{ \.\.\.prev, steerOwed: true \}\)\);/);
-    expect(hook).toMatch(/else if \(followUp && outcome\.reason === "run_in_flight"\)/);
-    expect(hook).toContain("const wait = followUpRetryDelay(tries);");
+    expect(hook).toContain("if (outcome.steered) owedAfterSteer(threadId, stopEpochAtSend);");
+    expect(hook).toContain("else if (followUp) settleFollowUpAnswer(threadId, outcome.reason);");
     expect(followUpRetryDelay(1)).toBe(2000);
     expect(followUpRetryDelay(2)).toBe(4000);
     expect(followUpRetryDelay(6)).toBe(30_000);
@@ -365,5 +372,130 @@ describe("an old queue goes into the box once", () => {
     const src = code(read("../components/AgentChat.tsx"));
     expect(src).toMatch(/const left = takeLeftoverQueue\(sessionId\);\s*if \(!left\) return;\s*setInput\(\(prev\) => mergeCappedText\(prev, left\)\);/);
     expect(src).not.toMatch(/sendMessage\(next\)/);
+  });
+});
+
+
+describe("a Stop asks for no follow-up (round 2 of the review of #920)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const stop = (threadId: string) => setSessionState(threadId, (prev) => ({
+    ...prev, steerOwed: false, stopEpoch: (prev.stopEpoch ?? 0) + 1,
+  }));
+
+  it("(a) a steer that ends in a bare stop owes nothing, and a waiting retry goes", async () => {
+    const { threadId } = liveThread();
+    scheduleFollowUpRetry(threadId);
+    const fetchMock = vi.fn().mockResolvedValue(json(202, { steered: false, aborted: true }));
+    expect((await sendSteer({ threadId, text: "stop", buildBody: body, fetchImpl: fetchMock as typeof fetch })).kind)
+      .toBe("stopped");
+    expect(followUpRetryState(threadId)).toBeUndefined();
+    vi.advanceTimersByTime(60_000);
+    expect(getSessionState(threadId).steerOwed).toBeFalsy();
+  });
+
+  it("(b) a steer 202 that lands after a Stop owes no follow-up", async () => {
+    const { threadId } = liveThread();
+    let answer: (r: Response) => void = () => {};
+    const fetchMock = vi.fn().mockReturnValue(new Promise<Response>((r) => { answer = r; }));
+    const pending = sendSteer({ threadId, text: "add a due date", buildBody: body, fetchImpl: fetchMock as typeof fetch });
+    stop(threadId); // the member presses Stop while the steer is on its way
+    answer(json(202, { steered: true }));
+    expect((await pending).kind).toBe("folded");
+    expect(getSessionState(threadId).steerOwed).toBeFalsy();
+    // The same rule on the plain-send path.
+    owedAfterSteer(threadId, 0);
+    expect(getSessionState(threadId).steerOwed).toBeFalsy();
+  });
+
+  it("(c) a retry waiting when the Stop comes never fires, and 'stopped' settles it", () => {
+    const { threadId } = liveThread();
+    expect(scheduleFollowUpRetry(threadId)).toBe("scheduled");
+    cancelFollowUp(threadId); // what stopGeneration calls
+    vi.advanceTimersByTime(60_000);
+    expect(getSessionState(threadId).steerOwed).toBeFalsy();
+    // Another tab's follow-up meets the server's "stopped".
+    settleFollowUpAnswer(threadId, "run_in_flight");
+    expect(followUpRetryState(threadId)).toEqual({ tries: 1, waiting: true });
+    settleFollowUpAnswer(threadId, "stopped");
+    expect(followUpRetryState(threadId)).toBeUndefined();
+    vi.advanceTimersByTime(60_000);
+    expect(getSessionState(threadId).steerOwed).toBeFalsy();
+  });
+
+  it("the hook's Stop cancels the follow-up and moves the stop count", () => {
+    const hook = code(read("../hooks/useAgentChat.ts"));
+    expect(hook).toMatch(/steerOwed: false,\s*stopEpoch: \(prev\.stopEpoch \?\? 0\) \+ 1,\s*\}\)\);\s*cancelFollowUp\(threadId\);/);
+  });
+});
+
+describe("a refused follow-up (round 2 of the review of #920)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("draws no card for a 409 or a 429, and asks again with the same wait", () => {
+    const hook = code(read("../hooks/useAgentChat.ts"));
+    const start = hook.indexOf("if (followUp && failedStatus !== null) {");
+    expect(start).toBeGreaterThan(0);
+    // It returns before the one failure seam, so no card and no cap notice.
+    expect(start).toBeLessThan(hook.indexOf("const outcome = settleFailedTurn({"));
+    expect(hook.slice(start, start + 600)).toContain(
+      "if (failedStatus === 409 || failedStatus === 429) scheduleFollowUpRetry(threadId);",
+    );
+  });
+
+  it("asks again until the tries run out, then the steer says it waits", () => {
+    const { threadId } = liveThread();
+    setSessionState(threadId, (prev) => ({
+      ...prev,
+      messages: [...prev.messages, {
+        id: "s1", role: "user", content: "add a due date", timestamp: 3,
+        customEvents: [{ name: STEERED, value: {} }], steerAck: "added",
+      }],
+    }));
+    for (let i = 1; i <= FOLLOW_UP_TRIES; i++) {
+      expect(scheduleFollowUpRetry(threadId)).toBe("scheduled");
+      vi.advanceTimersByTime(followUpRetryDelay(i)!);
+      expect(getSessionState(threadId).steerOwed).toBe(true);
+      setSessionState(threadId, (prev) => ({ ...prev, steerOwed: false }));
+    }
+    expect(scheduleFollowUpRetry(threadId)).toBe("exhausted");
+    const bubble = getSessionState(threadId).messages.find((m) => m.id === "s1")!;
+    expect(bubble.steerWaiting).toBe(true);
+    const html = renderToStaticMarkup(createElement(MessageBubble, { message: bubble, sessionId: "s" }));
+    expect(html).toContain(STEER_WAITING);
+    expect(STEER_WAITING).toBe("Your added message waits for the next reply.");
+  });
+});
+
+describe("Edit after a steer (round 2 of the review of #920)", () => {
+  it("offers Edit on the prompt, not on the steer row of its turn", () => {
+    const msgs: ChatMessage[] = [
+      { id: "u1", role: "user", content: "Plan the release", timestamp: 1 },
+      { id: "a1", role: "assistant", content: "Here it is.", timestamp: 2 },
+      { id: "s1", role: "user", content: "add a due date", timestamp: 3, customEvents: [{ name: STEERED, value: {} }] },
+    ];
+    expect(lastUserMessageId(msgs)).toBe("u1");
+    expect(editableLastUserId(msgs, undefined, false)).toBe("u1");
+    // The edit drops the steer row with its turn, as the gateway does.
+    expect(supersededIds(msgs, "u1")).toEqual(["u1", "a1", "s1"]);
+  });
+});
+
+describe("the send keys", () => {
+  it("say Cmd on a Mac and Ctrl elsewhere", () => {
+    expect(sendShortcut("MacIntel")).toBe("⌘ ⏎");
+    expect(sendShortcut("macOS")).toBe("⌘ ⏎");
+    expect(sendShortcut("iPhone")).toBe("⌘ ⏎");
+    expect(sendShortcut("Win32")).toBe("Ctrl ⏎");
+    expect(sendShortcut("")).toBe("Ctrl ⏎");
+  });
+
+  it("the composer bar gives the free width to the spacer, not the controls", () => {
+    const src = read("../components/AgentChat.tsx");
+    expect(src).toContain("sm:basis-auto sm:flex-initial");
+    expect(src).not.toMatch(/sm:basis-0 sm:flex-1 sm:self-center/);
+    expect(src).toContain('<span className="flex-1" aria-hidden="true" />');
   });
 });

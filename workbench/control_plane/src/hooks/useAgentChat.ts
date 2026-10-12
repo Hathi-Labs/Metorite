@@ -49,7 +49,10 @@ import {
   type SendOptions,
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
-import { followUpDue, followUpRetryDelay, sendSteer, type SteerOutcome } from "@/lib/chatSteer";
+import {
+  cancelFollowUp, followUpDue, owedAfterSteer, scheduleFollowUpRetry, sendSteer,
+  settleFollowUpAnswer, type SteerOutcome,
+} from "@/lib/chatSteer";
 import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
@@ -207,8 +210,6 @@ export function useAgentChat({
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
   const onRunCappedRef = useRef(onRunCapped);
-  // The follow-up tries that met a run still going, per thread.
-  const followUpTries = useRef(new Map<string, number>());
   useEffect(() => { onRunCappedRef.current = onRunCapped; }, [onRunCapped]);
 
   // Keep latest values in refs so sendMessage always uses current values
@@ -286,6 +287,8 @@ export function useAgentChat({
         return;
       }
       const before = getSessionState(threadId);
+      // A Stop after this send starts means a steer answer owes nothing.
+      const stopEpochAtSend = before.stopEpoch ?? 0;
       const held = opts?.heldId
         ? before.messages.find((m) => m.id === opts.heldId && m.role === "user")
         : undefined;
@@ -552,21 +555,10 @@ export function useAgentChat({
           // send because it saw no run: another member's run in a room, or a
           // second tab. A follow-up that met a run still going asks again,
           // with a growing wait (review of #920, `lib/chatSteer.ts`).
-          if (outcome.steered) {
-            followUpTries.current.delete(threadId);
-            setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
-          } else if (followUp && outcome.reason === "run_in_flight") {
-            const tries = (followUpTries.current.get(threadId) ?? 0) + 1;
-            followUpTries.current.set(threadId, tries);
-            const wait = followUpRetryDelay(tries);
-            if (wait !== null) {
-              setTimeout(() => {
-                setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
-              }, wait);
-            }
-          } else if (followUp) {
-            followUpTries.current.delete(threadId);
-          }
+          // A follow-up's answer settles it: wait and ask again for a run
+          // still going, or stop for "stopped" and "nothing_pending".
+          if (outcome.steered) owedAfterSteer(threadId, stopEpochAtSend);
+          else if (followUp) settleFollowUpAnswer(threadId, outcome.reason);
           // No stream comes for this send, so our placeholder goes. A steer
           // keeps the user's message, attributed. A steer the run has not
           // taken yet marks the turn pending, so a repeat of the same words
@@ -713,6 +705,19 @@ export function useAgentChat({
             userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
           });
           heldAgain = true;
+          return;
+        }
+        // A follow-up is not a turn the member sent. A refusal of it draws
+        // no card and no run-cap notice. A 409 or 429 asks again later, with
+        // the same growing wait (round 2 of the review of #920).
+        if (followUp && failedStatus !== null) {
+          setSessionState(threadId, (prev) => ({
+            ...prev,
+            error: null,
+            messages: prev.messages.filter((m) => m.id !== assistantId),
+          }));
+          if (failedStatus === 409 || failedStatus === 429) scheduleFollowUpRetry(threadId);
+          else cancelFollowUp(threadId);
           return;
         }
         const lc = rawErr.toLowerCase();
@@ -1215,10 +1220,12 @@ export function useAgentChat({
       isLoading: false,
       recovering: false,
       runStatus: "idle",
-      // A Stop asks for no follow-up. A steer the run never read stays in
-      // the server's store, and the next message replays it.
+      // A Stop asks for no follow-up, and a steer answer still on its way
+      // owes none (`stopEpoch`). The server answers every tab "stopped".
       steerOwed: false,
+      stopEpoch: (prev.stopEpoch ?? 0) + 1,
     }));
+    cancelFollowUp(threadId);
     return settled;
   }, [threadId]);
 

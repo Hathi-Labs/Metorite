@@ -228,6 +228,69 @@ def _steer_key(thread_id: str) -> str:
     return f"{STEER_PREFIX}:{thread_id}"
 
 
+#: A run that a member STOPPED (round 2 of the review of #920). The mark is
+#: per thread, so every tab and every member of a room reads one answer: a
+#: Stop asks for no follow-up. It lives as long as a stored steer, and the
+#: next run start clears it (:func:`clear_stopped`).
+STOPPED_PREFIX = "cc:steer-stopped"
+
+
+def _stopped_key(thread_id: str) -> str:
+    return f"{STOPPED_PREFIX}:{thread_id}"
+
+
+async def mark_stopped(thread_id: str) -> None:
+    """Record that a member stopped the run of *thread_id*. Never raises."""
+    if not thread_id:
+        return
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        await r.set(_stopped_key(thread_id), "1", ex=STEER_TTL_SECONDS)
+    except Exception:  # noqa: BLE001
+        _log.warning("steer.mark_stopped_failed", thread_id=thread_id[:12])
+
+
+async def was_stopped(thread_id: str) -> bool:
+    """True when the last run of *thread_id* ended by a Stop. False on error."""
+    if not thread_id:
+        return False
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        return bool(await r.get(_stopped_key(thread_id)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def clear_stopped(thread_id: str) -> None:
+    """Forget the Stop mark: a new run starts on the thread. Never raises."""
+    if not thread_id:
+        return
+    try:
+        from orchestrator.stream_relay import _get_client  # noqa: PLC0415
+
+        r = await _get_client()
+        await r.delete(_stopped_key(thread_id))
+    except Exception:  # noqa: BLE001
+        _log.debug("steer.clear_stopped_failed", thread_id=thread_id[:12])
+
+
+async def discard_pending(thread_id: str) -> int:
+    """Take every stored steer of *thread_id* and drop it. Returns the count.
+
+    A Stop asks for no follow-up, and the stopped run's steers are not
+    replayed either. Their words stay in the transcript and in the saved
+    row, so the next message's history still carries them.
+    """
+    taken = await take_pending_steers(thread_id)
+    if taken:
+        _log.info("steer.discarded_after_stop", thread_id=thread_id[:12], count=len(taken))
+    return len(taken)
+
+
 def make_signal(
     *, thread_id: str, author: str, text: str, run_id: str | None = None,
 ) -> dict[str, Any]:
@@ -398,10 +461,42 @@ def buffer_guidance(
     buf = _PENDING_GUIDANCE.setdefault(thread_id, [])
     if len(buf) >= MAX_PENDING_STEERS:
         buf.pop(0)
-    buf.append({
+    entry: dict[str, Any] = {
         "note": note, "id": signal_id, "author": who, "text": text.strip(),
-    })
+    }
+    # The loop of the owner, so a drain on a worker thread can still drop
+    # the durable copy (:func:`decorate_tool_result`).
+    try:
+        import asyncio  # noqa: PLC0415
+
+        entry["loop"] = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    buf.append(entry)
     return True
+
+
+def _forget_durable(thread_id: str, entries: list[dict[str, Any]]) -> None:
+    """Drop the durable copy of each note the model has now READ.
+
+    Round 2 of the review of #920: the applier used to drop it when it
+    BUFFERED the note. A note in the buffer then died with the process (a
+    deploy restart), because the store no longer held it. Now the store
+    holds each steer until a tool result carries it to the model. Best
+    effort: a miss costs one duplicate, which ``take_pending_steers`` drops
+    by id.
+    """
+    for e in entries:
+        sid = str(e.get("id") or "")
+        loop = e.get("loop")
+        if not sid or loop is None:
+            continue
+        try:
+            loop.call_soon_threadsafe(
+                lambda sid=sid, loop=loop: loop.create_task(discard_signal(thread_id, sid)),
+            )
+        except Exception:  # noqa: BLE001 — a closed loop, never a failed tool
+            continue
 
 
 def drain_guidance(thread_id: str) -> list[str]:
@@ -524,9 +619,11 @@ def decorate_tool_result(result: Any, thread_id: str | None = None) -> Any:
             tid = resolve_relay_thread_id()
         if not tid or not has_guidance(tid):
             return result
-        notes = drain_guidance(tid)
+        entries = _PENDING_GUIDANCE.pop(tid, [])
+        notes = [e["note"] for e in entries]
         if not notes:
             return result
+        _forget_durable(tid, entries)
         block = (
             "\n\n[The following arrived from a participant while you were "
             "working. Treat it as instruction from the user, and adjust what "

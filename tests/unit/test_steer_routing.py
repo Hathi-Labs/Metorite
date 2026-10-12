@@ -493,3 +493,29 @@ def test_the_replay_keeps_an_older_turn_with_the_same_words():
         {"role": "assistant", "content": "Here it is."},
     ]
     assert steer.without_replayed(history, [{"text": "yes"}]) == history
+
+
+def test_the_durable_copy_goes_only_when_the_model_reads_the_note(fake_redis, monkeypatch):
+    """Round 2 of the review of #920: buffering keeps the durable copy, so a
+    process that dies with the note in its buffer loses nothing. The copy
+    goes when a tool result carries the note, also from a worker thread."""
+    async def _dispatch(_tid: str, _cmd: dict[str, Any]) -> bool:
+        return True
+
+    from orchestrator import stream_relay
+    monkeypatch.setattr(stream_relay, "dispatch_control", _dispatch)
+
+    async def _go():
+        out = await steer.send_steer("t-read", "bob@x.io", "check the invoice")
+        steer.buffer_guidance("t-read", "bob@x.io", "check the invoice", signal_id=out["id"])
+        await asyncio.sleep(0.01)
+        kept = len(fake_redis.lists.get("cc:steer:t-read", []))
+        result = await asyncio.to_thread(steer.decorate_tool_result, "out", "t-read")
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        return kept, result, len(fake_redis.lists.get("cc:steer:t-read", []))
+
+    kept, result, left = asyncio.run(_go())
+    assert kept == 1, "buffering must keep the durable copy"
+    assert "check the invoice" in result
+    assert left == 0, "the copy goes once the model has read the note"

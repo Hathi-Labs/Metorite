@@ -804,8 +804,22 @@ cleared the buffer. Now three steps answer it:
    stored. Otherwise the ENGAGE seam takes the stored steers, makes them the
    run's message, and drops their copy from the history (`without_replayed`).
 
-A Stop asks for no follow-up. A steer that the stopped run never read stays
-in the store, and the next message replays it through ENGAGE.
+**A Stop asks for no follow-up, from any tab or member.** `cancel_run`
+records the Stop for the thread (`cc:steer-stopped:`, through the same
+prefixed Redis client). It does this first, because the cancelled run's own
+end gives its unread steers back, maybe later and on another worker. Then:
+
+- The gate answers `202 stopped` to every follow-up, and drops the stored
+  steers.
+- The member's next real message drops them too, and it does not replay
+  them. The next run start clears the mark.
+- We DROP the stopped run's steers, and we do not keep them for a replay.
+  The member said stop after the steer. A replay would make the agent act on
+  the steer again. The words are not lost: the transcript and the saved row
+  keep them, and the next message's history carries them.
+- The client clears the owed follow-up on Stop and on a `stopped` answer. It
+  cancels a waiting retry, and it ignores a steer answer that lands after a
+  Stop (`stopEpoch`).
 
 **Review of #920.** Four rules close the gaps the review found:
 
@@ -817,6 +831,19 @@ in the store, and the next message replays it through ENGAGE.
   taken steers back to the store (`steer.give_back`).
 - `without_replayed` drops only user turns after the last assistant turn. An
   older turn with the same short words stays.
+
+**Round 2 of the review.**
+
+- The durable copy of a steer goes when a tool result carries it to the
+  model, not when the owner buffers it. A steer in the buffer then survives
+  the owner process dying, for example in a deploy restart.
+- A follow-up that gets 409 or 429 draws no card and no run-cap notice. It
+  asks again with the same wait. After the last try, the steer says "Your
+  added message waits for the next reply."
+- Edit after a steer works. A steer row is part of the turn it joined. Edit
+  offers the prompt, and `plan_supersede` removes the turn with its own
+  steer rows. The note quotes them as `added_while_running`. Another
+  member's steer still refuses the edit.
 
 **The fallbacks.**
 
@@ -838,7 +865,11 @@ in the store, and the next message replays it through ENGAGE.
 | `tests/unit/test_chat_prompt_saved_at_start.py` | R8: the steered row carries the `steered` mark in Postgres |
 | `e2e/chat-steer.spec.ts` | The browser: the stream goes on, the words show as added, the follow-up answer draws below the steer, and Stop and Esc halt the run |
 
-**Mutation record (2026-10-12).** Eleven mutants, eleven killed: the client
+**Mutation record (2026-10-12).** Round 2 adds seven, all killed: no Stop
+mark, a gate that ignores the mark, a mark that is never cleared, a client
+that keeps the owed follow-up after a Stop, a late steer answer that owes
+again, a drop of the durable copy at buffer time, and a steer row that
+refuses the edit. Round 1 had eleven mutants, eleven killed: the client
 stops on send, the client enqueues, the button ignores the box, no give-back
 at the terminal event, a give-back that saves nothing, no follow-up gate, a
 replay that keeps the history copy, no follow-up from the hook, a steered

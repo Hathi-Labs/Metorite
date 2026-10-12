@@ -34,7 +34,7 @@ import { pillsForTurn } from "@/lib/projectsAgent";
 import AnswerDetails from "@/components/AnswerDetails";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
-import { isSteered } from "@/lib/chatSteer";
+import { STEER_WAITING, isSteered } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
 import Button from "@/components/ui/Button";
 
@@ -511,6 +511,8 @@ function MessageBubble({
                   <Icon name="Loader2" size={10} className="animate-spin shrink-0" />
                   <span>Adding to the reply…</span>
                 </>
+              ) : message.steerWaiting ? (
+                <span data-steer-waiting>{STEER_WAITING}</span>
               ) : (
                 <>
                   <Icon name="Check" size={10} className="shrink-0 text-success" />

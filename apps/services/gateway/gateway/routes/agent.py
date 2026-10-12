@@ -276,6 +276,13 @@ async def _steer_followup_gate(thread_id: str) -> Response | None:
 
         if await is_active(thread_id):
             return _followup_refused(thread_id, "run_in_flight")
+        # A Stop asks for no follow-up: the stopped run's steers go, for
+        # every tab and every member (review of #920, round 2).
+        from orchestrator.steer import discard_pending, was_stopped  # noqa: PLC0415
+
+        if await was_stopped(thread_id):
+            await discard_pending(thread_id)
+            return _followup_refused(thread_id, "stopped")
         if not await has_pending_steers(thread_id):
             return _followup_refused(thread_id, "nothing_pending")
     except Exception:  # noqa: BLE001
@@ -380,6 +387,15 @@ async def _apply_turn_decision(
 
     if decision.route is Route.ENGAGE:
         if thread_id:
+            from orchestrator.steer import (  # noqa: PLC0415
+                clear_stopped, discard_pending, was_stopped,
+            )
+            # The member stopped the last run: its steers are not replayed.
+            # Their words stay in the transcript, so the history carries
+            # them. This run starts clean (review of #920, round 2).
+            if await was_stopped(thread_id):
+                await discard_pending(thread_id)
+                await clear_stopped(thread_id)
             pending = await take_pending_steers(thread_id)
             _taken = _TAKEN_STEERS.get()
             if _taken is not None:

@@ -51,6 +51,7 @@ class _FakeRedis:
 
     def __init__(self) -> None:
         self.lists: dict[str, list[str]] = {}
+        self.kv: dict[str, str] = {}
 
     async def rpush(self, key: str, val: str) -> int:
         self.lists.setdefault(key, []).append(val)
@@ -81,13 +82,20 @@ class _FakeRedis:
     async def delete(self, *keys: str) -> None:
         for k in keys:
             self.lists.pop(k, None)
+            self.kv.pop(k, None)
 
     async def xadd(self, key: str, fields: dict, **_k: Any) -> str:
         self.lists.setdefault(key, []).append(json.dumps(fields))
         return f"{len(self.lists[key])}-0"
 
-    async def set(self, *_a: Any, **_k: Any) -> bool:
+    async def set(self, key: str, val: Any, *_a: Any, xx: bool = False, **_k: Any) -> bool:
+        if xx and key not in self.kv:
+            return False
+        self.kv[key] = str(val)
         return True
+
+    async def get(self, key: str) -> str | None:
+        return self.kv.get(key)
 
 
 class _World:
@@ -232,11 +240,10 @@ def test_a_steer_after_the_last_tool_call_still_gets_an_answer(world):
     world.active = True
     code, body = _post(_body("t-late", "Also add a due date"))
     assert code == 202 and body["steered"]
-    # The owner's applier buffers it and discards the durable copy.
+    # The owner's applier buffers it. Since round 2 of the review the
+    # durable copy stays until a tool result carries the note.
     sid = body["signalId"]
     assert steer.buffer_guidance("t-late", _ALICE, "Also add a due date", signal_id=sid)
-    asyncio.run(steer.discard_signal("t-late", sid))
-    assert asyncio.run(steer.has_pending_steers("t-late")) is False
 
     # The model writes its final answer with no tool call, and the run ends.
     asyncio.run(stream_relay.push_event("t-late", {"type": "RUN_FINISHED"}))
@@ -304,3 +311,126 @@ def test_a_refusal_after_engage_gives_the_steers_back(world, monkeypatch):
     assert world.calls.count("run") == 0
     pending = asyncio.run(steer.take_pending_steers("t-race"))
     assert [p["text"] for p in pending] == ["and the owner"], "the steer must not be lost"
+
+
+# ---------------------------------------------------------------------------
+# Round 2 of the review of #920: a Stop asks for no follow-up, from any tab
+# ---------------------------------------------------------------------------
+#
+# The cancelled run's own end gives its unread steer back (``end_of_run``).
+# Before round 2 the gate then ENGAGEd a new run, so the agent went on after
+# the member stopped it. ``cancel_run`` now records the Stop for the thread,
+# and the gate answers 202 ``stopped`` to every tab and every member.
+
+def _steer_then_buffer(world, thread: str, words: str = "Also add a due date") -> str:
+    world.active = True
+    code, body = _post(_body(thread, words))
+    assert code == 202 and body["steered"]
+    sid = body["signalId"]
+    assert steer.buffer_guidance(thread, _ALICE, words, signal_id=sid)
+    return sid
+
+
+def _owner_ends_the_cancelled_run(world, thread: str) -> None:
+    """The owner's drain finally: it gives the unread steer back."""
+    asyncio.run(steer.end_of_run(thread))
+    world.active = False
+
+
+def test_review_a_steer_then_a_bare_stop_asks_for_no_follow_up(world):
+    """(a) The member steers, then types "stop". The route ABORTs."""
+    _steer_then_buffer(world, "t-stop-a")
+    code, body = _post(_body("t-stop-a", "stop"))
+    assert code == 202 and body["aborted"] is True
+    _owner_ends_the_cancelled_run(world, "t-stop-a")
+    code, body = _post(_body("t-stop-a", "", followup=True))
+    assert code == 202 and body["reason"] == "stopped"
+    assert world.calls.count("run") == 0, "the agent must not go on after a Stop"
+    assert asyncio.run(steer.has_pending_steers("t-stop-a")) is False
+
+
+def test_review_a_steer_then_the_stop_button_asks_for_no_follow_up(world):
+    """(b) The member steers, then presses Stop at once. The steer's 202
+    reaches the tab after the Stop, so the tab still asks."""
+    _steer_then_buffer(world, "t-stop-b")
+    assert asyncio.run(stream_relay.cancel_run("t-stop-b")) is True
+    _owner_ends_the_cancelled_run(world, "t-stop-b")
+    code, body = _post(_body("t-stop-b", "", followup=True))
+    assert code == 202 and body["reason"] == "stopped"
+    assert world.calls.count("run") == 0
+
+
+def test_review_another_tabs_retry_after_a_stop_starts_nothing(world):
+    """(c) A second tab or another member has a follow-up retry going. Each
+    try after the Stop answers ``stopped``, and the next real message runs
+    clean: no replay, and the mark is gone."""
+    _steer_then_buffer(world, "t-stop-c")
+    asyncio.run(stream_relay.cancel_run("t-stop-c"))
+    _owner_ends_the_cancelled_run(world, "t-stop-c")
+    for _ in range(3):
+        code, body = _post(_body("t-stop-c", "", followup=True))
+        assert code == 202 and body["reason"] == "stopped"
+    assert world.calls.count("run") == 0
+    # The member's next real message: one run, with no replayed steer.
+    with _client().stream("POST", "/agent/run/stream", json=_body("t-stop-c", "Now the budget")) as r:
+        assert r.status_code == 200
+        r.read()
+    assert world.calls.count("run") == 1
+    assert world.payloads[-1]["message"] == "Now the budget"
+    # The mark does not leak into the next run.
+    assert asyncio.run(steer.was_stopped("t-stop-c")) is False
+
+
+def test_a_new_run_start_clears_the_stop_mark(monkeypatch):
+    """``run_detached`` clears the mark before the run, so a later follow-up
+    of THAT run is answered normally."""
+    fake = _FakeRedis()
+
+    async def _get_client():
+        return fake
+
+    async def _noop(*_a, **_k):
+        return None
+
+    from orchestrator import run_liveness
+    monkeypatch.setattr(stream_relay, "_get_client", _get_client)
+    for name in ("mark_active", "register_live_run", "mark_inactive",
+                 "unregister_live_run", "_stop_control_listener_wait"):
+        monkeypatch.setattr(stream_relay, name, _noop)
+    monkeypatch.setattr(stream_relay, "_start_control_listener", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_liveness, "record_instance_run", _noop)
+    monkeypatch.setattr(run_liveness, "forget_instance_run", _noop)
+
+    async def _no_events(*_a, **_k):
+        if False:
+            yield {}
+
+    monkeypatch.setattr(stream_relay, "subscribe_events", _no_events)
+
+    async def _gen():
+        if False:
+            yield ""
+
+    async def _go():
+        await steer.mark_stopped("t-new")
+        assert await steer.was_stopped("t-new") is True
+        async for _ in stream_relay.run_detached("t-new", _gen()):
+            pass
+        return await steer.was_stopped("t-new")
+
+    assert asyncio.run(_go()) is False
+
+
+def test_a_buffered_steer_survives_the_owner_dying(world):
+    """Round 2, P2: a deploy restarts the owner while a steer sits in its
+    buffer. ``interrupt_run`` ends the run from another process, whose buffer
+    is empty. The durable copy still holds the steer, so the follow-up
+    answers it."""
+    _steer_then_buffer(world, "t-crash", "and the owner")
+    # The owner process dies: its buffer is gone, nothing gave it back.
+    steer._PENDING_GUIDANCE.clear()
+    world.active = False
+    asyncio.run(stream_relay.push_event("t-crash", {"type": "RUN_FINISHED", "interrupted": True}))
+    code, _ = _post(_body("t-crash", "", followup=True))
+    assert code == 200
+    assert world.payloads[-1]["message"] == f"[steer from {_ALICE}] and the owner"

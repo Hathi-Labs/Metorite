@@ -1365,8 +1365,10 @@ async def run_detached(
     # into the next one; the durable store (cc:steer:) is what carries anything
     # still owed forward, and the route replays it into the run's input.
     try:
-        from orchestrator.steer import clear_guidance  # noqa: PLC0415
+        from orchestrator.steer import clear_guidance, clear_stopped  # noqa: PLC0415
         clear_guidance(thread_id)
+        # A Stop of an earlier run says nothing about this one.
+        await clear_stopped(thread_id)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1517,9 +1519,7 @@ async def run_detached(
         author = str(command.get("author") or "someone")
         sid = str(command.get("signal_id") or "")
         try:
-            from orchestrator.steer import (  # noqa: PLC0415
-                buffer_guidance, discard_signal,
-            )
+            from orchestrator.steer import buffer_guidance  # noqa: PLC0415
             buffered = buffer_guidance(thread_id, author, text, signal_id=sid)
         except Exception:  # noqa: BLE001
             return False
@@ -1539,9 +1539,9 @@ async def run_detached(
         #     run-event type is a two-sided change. A steer is a room fact, not
         #     a turn fact — §4.4 puts ``STEER_INJECTED`` on the room stream for
         #     exactly this reason.
-        if sid:
-            with contextlib.suppress(Exception):
-                asyncio.create_task(discard_signal(thread_id, sid))
+        # The durable copy stays until a tool result carries the note to
+        # the model (``steer._forget_durable``, round 2 of the review of
+        # #920). A note in this buffer must survive this process dying.
         return True
 
     register_control_command(thread_id, "steer", _steer_apply)
@@ -1565,6 +1565,13 @@ async def cancel_run(thread_id: str) -> bool:
     active (idempotent) — it still marks the thread inactive and emits the
     terminal event so a stuck UI recovers.
     """
+    # A Stop asks for no follow-up, from any tab or member. Recorded FIRST:
+    # the cancelled run's own end gives its unread steers back, maybe on
+    # another worker and later than this (review of #920, round 2).
+    with contextlib.suppress(Exception):
+        from orchestrator.steer import mark_stopped  # noqa: PLC0415
+
+        await mark_stopped(thread_id)
     task = _DETACHED_TASKS.get(thread_id)
     found = task is not None and not task.done()
 

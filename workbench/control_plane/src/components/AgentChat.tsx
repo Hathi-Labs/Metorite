@@ -63,6 +63,7 @@ import {
   lastNonSteer,
   primaryAction,
   sendRoute,
+  sendShortcut,
   takeLeftoverQueue,
 } from "@/lib/chatSteer";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
@@ -661,6 +662,14 @@ export default function AgentChat({
   // One plain note under the box: a steer the server refused, or a model
   // that cannot take one. The words are back in the box when it shows.
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
+  // The send keys in the member's keyboard words: "⌘ ⏎" on a Mac. Read after
+  // mount, so the server's markup and the first client paint agree.
+  const [sendKeys, setSendKeys] = useState("Ctrl ⏎");
+  useEffect(() => {
+    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- read once from the browser
+    setSendKeys(sendShortcut(nav.userAgentData?.platform || nav.platform || ""));
+  }, []);
 
   // A run is "active" whenever the agent is streaming, recovering after a page
   // reload, or the server run is still going.  The Stop control must appear in
@@ -2133,7 +2142,7 @@ export default function AgentChat({
               </span>
             ) : !compact ? (
               <span className="hidden sm:inline text-[10px]">
-                <kbd className="text-muted-foreground">Ctrl ⏎</kbd> send · <kbd className="text-muted-foreground">⏎</kbd> new line
+                <kbd className="text-muted-foreground">{sendKeys}</kbd> send · <kbd className="text-muted-foreground">⏎</kbd> new line
               </span>
             ) : null}
           </div>
@@ -2246,7 +2255,7 @@ export default function AgentChat({
                 }}
                 className="shrink-0 flex h-8 w-8 items-center justify-center" />
             {hasComposerControls && (
-            <div className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-0 sm:flex-1 sm:self-center" ref={modelMenuRef}>
+            <div className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}

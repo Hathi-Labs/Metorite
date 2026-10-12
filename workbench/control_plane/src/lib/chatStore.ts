@@ -103,6 +103,9 @@ export interface ChatMessage {
    *  then "added" once the server folded it into the run. Never saved: the
    *  saved row carries the `steered` custom event instead. */
   steerAck?: "sending" | "added";
+  /** The follow-up for this steer ran out of tries (`lib/chatSteer.ts`).
+   *  The bubble says the words wait for the next reply. Never saved. */
+  steerWaiting?: boolean;
 }
 
 // ── Session state ────────────────────────────────────────────────────────────
@@ -139,6 +142,9 @@ export interface SessionStreamState {
    *  server once for a follow-up turn, which answers any steer the run never
    *  read (`lib/chatSteer.ts`). A Stop clears it. */
   steerOwed?: boolean;
+  /** Counts the Stops of this thread. A steer answer that comes back after a
+   *  Stop owes no follow-up (round 2 of the review of #920). */
+  stopEpoch?: number;
 }
 
 function _defaultState(): SessionStreamState {

@@ -169,6 +169,8 @@ export async function sendSteer(args: {
   const text = args.text.trim();
   if (!text) return { kind: "empty" };
   const before = getSessionState(threadId);
+  // A Stop while this steer is on its way means its 202 owes nothing.
+  const epoch = before.stopEpoch ?? 0;
   // A double press of the same words while the first is on its way is one
   // steer, not two.
   if (before.messages.some((m) => m.steerAck === "sending" && m.content === text)) {
@@ -214,11 +216,14 @@ export async function sendSteer(args: {
         delete next.awaitingServer;
         return next;
       });
-      setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
+      owedAfterSteer(threadId, epoch);
       return { kind: "folded", pendingReplay: !!out.pendingReplay };
     }
     if (out.aborted || out.dropped) {
       dropBubble(threadId, bubble.id);
+      // A bare "stop" ended the run: nothing is owed, from this tab or a
+      // retry already waiting (round 2 of the review of #920).
+      cancelFollowUp(threadId);
       return { kind: "stopped" };
     }
     dropBubble(threadId, bubble.id);
@@ -255,6 +260,97 @@ export const FOLLOW_UP_TRIES = 20;
 export function followUpRetryDelay(attempt: number): number | null {
   if (attempt < 1 || attempt > FOLLOW_UP_TRIES) return null;
   return Math.min(2000 * 2 ** (attempt - 1), 30_000);
+}
+
+// -- The follow-up's retries (round 2 of the review of #920) --------------
+//
+// Module level, beside the session store, so a Stop in any component and a
+// remount see the same timer. The server answers every tab the same way, and
+// these only decide when this tab asks.
+
+const _retries = new Map<string, { tries: number; timer: ReturnType<typeof setTimeout> | null }>();
+
+/** The line under a steer whose follow-up ran out of tries. */
+export const STEER_WAITING = "Your added message waits for the next reply.";
+
+/** A steer that the server folded in owes a follow-up, unless a Stop came
+ *  since the send started. */
+export function owedAfterSteer(threadId: string, epochAtSend: number): void {
+  const st = getSessionState(threadId);
+  if ((st.stopEpoch ?? 0) !== epochAtSend) return;
+  const r = _retries.get(threadId);
+  if (r?.timer) clearTimeout(r.timer);
+  _retries.delete(threadId);
+  setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
+}
+
+/** Stop: no follow-up is owed, and no retry is waiting. */
+export function cancelFollowUp(threadId: string): void {
+  const r = _retries.get(threadId);
+  if (r?.timer) clearTimeout(r.timer);
+  _retries.delete(threadId);
+  if (getSessionState(threadId).steerOwed) {
+    setSessionState(threadId, (prev) => ({ ...prev, steerOwed: false }));
+  }
+}
+
+/** Mark the newest steer bubble: its words wait for the next reply. */
+function markSteerWaiting(threadId: string): void {
+  setSessionState(threadId, (prev) => {
+    const i = [...prev.messages].reverse().findIndex((m) => isSteered(m));
+    if (i < 0) return prev;
+    const at = prev.messages.length - 1 - i;
+    return {
+      ...prev,
+      messages: prev.messages.map((m, j) => (j === at ? { ...m, steerWaiting: true } : m)),
+    };
+  });
+}
+
+/**
+ * Ask again later: a run still going, or a refusal (409, 429) of the
+ * follow-up. Each try waits longer (`followUpRetryDelay`). When the tries run
+ * out, the newest steer says its words wait for the next reply, which
+ * replays them. Returns what it did.
+ */
+export function scheduleFollowUpRetry(threadId: string): "scheduled" | "exhausted" {
+  const r = _retries.get(threadId) ?? { tries: 0, timer: null };
+  if (r.timer) clearTimeout(r.timer);
+  r.tries += 1;
+  const wait = followUpRetryDelay(r.tries);
+  if (wait === null) {
+    _retries.delete(threadId);
+    markSteerWaiting(threadId);
+    return "exhausted";
+  }
+  r.timer = setTimeout(() => {
+    r.timer = null;
+    setSessionState(threadId, (prev) => ({ ...prev, steerOwed: true }));
+  }, wait);
+  _retries.set(threadId, r);
+  return "scheduled";
+}
+
+/** The follow-up's own 202: wait and ask again, stop, or settle. */
+export function settleFollowUpAnswer(threadId: string, reason: string | undefined): void {
+  if (reason === "run_in_flight") {
+    scheduleFollowUpRetry(threadId);
+    return;
+  }
+  // "stopped": a member stopped the run, on any tab. "nothing_pending": the
+  // run read every steer. Either way nothing more is owed.
+  cancelFollowUp(threadId);
+}
+
+/** Tests only: the retry state of a thread. */
+export function followUpRetryState(threadId: string): { tries: number; waiting: boolean } | undefined {
+  const r = _retries.get(threadId);
+  return r ? { tries: r.tries, waiting: r.timer !== null } : undefined;
+}
+
+/** The keys that send, in the member's own keyboard words. */
+export function sendShortcut(platform: string): string {
+  return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘ ⏎" : "Ctrl ⏎";
 }
 
 /**

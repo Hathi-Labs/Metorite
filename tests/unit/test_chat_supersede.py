@@ -200,6 +200,54 @@ def test_a_later_message_by_someone_else_also_blocks_the_edit():
     assert err.value.code == "not_last"
 
 
+# ── A steer row is part of its turn (review of #920, round 2) ───────────────
+
+_STEER = [{"name": "steered", "value": {}}]
+
+
+def _steered(rows: list[dict], *, by: str = _ME, ts: int = 12) -> list[dict]:
+    """The rows, with the member's steer saved after the reply it joined."""
+    return [*rows, {"id": "s1", "role": "user", "content": "also add a due date",
+                    "author_email": by, "author_kind": "human", "timestamp_ms": ts,
+                    "custom_events": _STEER}]
+
+
+def test_an_edit_supersedes_the_turn_and_its_own_steer():
+    plan = plan_supersede(_steered(_rows()), "u2", actor=_ME)
+    assert plan.removed_ids == ["u2", "a2", "s1"]
+    assert plan.steers == ["also add a due date"]
+    note = compose_supersede_note(plan)
+    assert "what they added to it while it ran" in note
+    body = note.split(QUOTE_OPEN)[-1].split(QUOTE_CLOSE)[0]  # the block, not the intro
+    assert 'added_while_running: "also add a due date"' in body
+
+
+def test_a_steer_saved_as_a_json_string_counts_too():
+    rows = _steered(_rows())
+    rows[-1]["custom_events"] = '[{"name": "steered", "value": {}}]'
+    assert plan_supersede(rows, "u2", actor=_ME).steers == ["also add a due date"]
+
+
+def test_another_members_steer_still_blocks_the_edit():
+    with pytest.raises(SupersedeRefused) as err:
+        plan_supersede(_steered(_rows(), by="bob@example.test"), "u2", actor=_ME, shared=True)
+    assert err.value.code == "not_last"
+
+
+def test_a_plain_turn_after_a_steer_still_blocks_the_edit():
+    rows = [*_steered(_rows()), {"id": "u3", "role": "user", "content": "next",
+            "author_email": _ME, "author_kind": "human", "timestamp_ms": 30}]
+    with pytest.raises(SupersedeRefused) as err:
+        plan_supersede(rows, "u2", actor=_ME)
+    assert err.value.code == "not_last"
+
+
+def test_an_edit_with_no_steer_reads_as_before():
+    note = compose_supersede_note(plan_supersede(_rows(), "u2", actor=_ME))
+    assert "added_while_running" not in note
+    assert "while it ran" not in note
+
+
 def test_only_the_author_may_supersede():
     with pytest.raises(SupersedeRefused) as err:
         plan_supersede(_rows(), "u2", actor="bob@example.test")
