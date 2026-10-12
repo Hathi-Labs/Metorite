@@ -25,6 +25,10 @@ import {
   ME,
   SEARCH_DELAY_MS,
   ownerOptions,
+  searchBoxStart,
+  searchBoxSync,
+  searchBoxWrote,
+  searchChanges,
   searchCommitter,
   type CrmOwner,
 } from "../lib/filterBar";
@@ -349,6 +353,46 @@ describe("the search box (done-when 9, scope item 1)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("the search box keeps its text (visual review, 2026-10-12)", () => {
+  // Measured in the browser: "printer ", a pause, then "order" gave
+  // "printerorder". The URL holds the trimmed query (`serializeView`), so the
+  // box took its own write for a write from outside and dropped the space.
+  it("keeps a trailing space after its own write comes back trimmed", () => {
+    let state = searchBoxStart("");
+    state = { ...state, draft: "printer " };
+    state = searchBoxWrote(state, "printer ");
+    state = searchBoxSync(state, "printer");
+    expect(state.draft).toBe("printer ");
+  });
+
+  it("writes nothing new for a pause after a space", () => {
+    expect(searchChanges("printer ", "printer")).toBe(false);
+    expect(searchChanges("printer o", "printer")).toBe(true);
+  });
+
+  it("takes a query it did not write: Back, or Clear", () => {
+    let state = searchBoxStart("zephyr");
+    state = { ...state, draft: "bosch" };
+    state = searchBoxWrote(state, "bosch");
+    state = searchBoxSync(state, "bosch");
+    expect(state.draft).toBe("bosch");
+    // Back.
+    state = searchBoxSync(state, "zephyr");
+    expect(state.draft).toBe("zephyr");
+    // Clear.
+    state = searchBoxSync(state, "");
+    expect(state.draft).toBe("");
+  });
+
+  it("keeps a key typed while its own write was on the way", () => {
+    let state = searchBoxStart("");
+    state = searchBoxWrote({ ...state, draft: "ab" }, "ab");
+    state = { ...state, draft: "abc" };
+    state = searchBoxSync(state, "ab");
+    expect(state.draft).toBe("abc");
   });
 });
 

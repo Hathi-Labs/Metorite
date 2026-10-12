@@ -70,6 +70,42 @@ export function ownerOptions(
   return [{ value: ANY, label: "Anyone" }, { value: ME, label: "Me" }, ...out];
 }
 
+/**
+ * The search box's text, and what it knows about the URL (CRM-X1).
+ *
+ * `seen` is the last `?q=` the box reconciled. `mine` is the last query the
+ * box wrote itself, as the URL holds it, or null.
+ */
+export type SearchBoxState = { draft: string; seen: string; mine: string | null };
+
+export function searchBoxStart(value: string): SearchBoxState {
+  return { draft: value, seen: value, mine: null };
+}
+
+/**
+ * The URL's `?q=` is now `value`. A value that the box did not write (Back,
+ * Clear, a saved view) replaces the text. The box's own write does not, so a
+ * key typed while the URL catches up is never lost.
+ */
+export function searchBoxSync(state: SearchBoxState, value: string): SearchBoxState {
+  if (value === state.seen) return state;
+  return { draft: value === state.mine ? state.draft : value, seen: value, mine: null };
+}
+
+/**
+ * The box wrote `q`. It remembers the write trimmed, because the URL holds it
+ * trimmed (`serializeView`). Untrimmed, a pause after a space read as a write
+ * from outside and ate the space: "printer order" became "printerorder".
+ */
+export function searchBoxWrote(state: SearchBoxState, q: string): SearchBoxState {
+  return { ...state, mine: q.trim() };
+}
+
+/** Does writing `q` change the URL, which holds `current`? */
+export function searchChanges(q: string, current: string): boolean {
+  return q.trim() !== current.trim();
+}
+
 /** How long the search box waits after the last key before it writes `?q=`. */
 export const SEARCH_DELAY_MS = 300;
 

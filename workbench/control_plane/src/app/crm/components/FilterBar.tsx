@@ -30,6 +30,10 @@ import {
   optionsOf,
   ownerOptions,
   picklistDefs,
+  searchBoxStart,
+  searchBoxSync,
+  searchBoxWrote,
+  searchChanges,
   searchCommitter,
   setCustom,
   setRange,
@@ -116,7 +120,7 @@ export default function FilterBar({
             label={viewLabel(entity).toLowerCase()}
             value={view.q}
             onCommit={(q) => {
-              if (q !== view.q) onChange({ ...view, q });
+              if (searchChanges(q, view.q)) onChange({ ...view, q });
             }}
           />
         ) : null}
@@ -271,9 +275,9 @@ export default function FilterBar({
  * key, through the page's `go`, so each search is one history entry and Back
  * gives the last query back.
  *
- * The text is local while the member types. A `?q=` that this box did not
- * write (Back, Clear, a saved view) replaces the text. Its own write does not,
- * so a key typed while the URL catches up is never lost.
+ * The text is local while the member types. The rules of when a `?q=` from
+ * the URL replaces it are pure, in `lib/filterBar.ts` (`searchBoxSync`), so
+ * the vitest setup tests them.
  *
  * `data-page-filter` lets the shell reach it: `/` focuses it, and "Show all in
  * …" fills it (`src/lib/shell/pageFilter.ts`).
@@ -287,14 +291,9 @@ function SearchBox({
   value: string;
   onCommit: (q: string) => void;
 }) {
-  const [draft, setDraft] = useState(value);
-  const [seen, setSeen] = useState(value);
-  const [mine, setMine] = useState<string | null>(null);
-  if (value !== seen) {
-    setSeen(value);
-    if (value !== mine) setDraft(value);
-    setMine(null);
-  }
+  const [state, setState] = useState(() => searchBoxStart(value));
+  const synced = searchBoxSync(state, value);
+  if (synced !== state) setState(synced);
   const commit = useRef(onCommit);
   useEffect(() => {
     commit.current = onCommit;
@@ -310,11 +309,12 @@ function SearchBox({
       icon="Search"
       inputSize="sm"
       className="w-56"
-      value={draft}
+      value={synced.draft}
       onChange={(e) => {
-        setDraft(e.target.value);
+        const text = e.target.value;
+        setState((s) => ({ ...s, draft: text }));
         box.current ??= searchCommitter((q) => {
-          setMine(q);
+          setState((s) => searchBoxWrote(s, q));
           commit.current(q);
         });
         box.current.type(e.target.value);
