@@ -783,10 +783,12 @@ def _listed(*addresses: str) -> list[dict[str, str]]:
 def _draft_row(pmid: str, *, to: tuple[str, ...] = (RAVI,),
                cc: tuple[str, ...] = (), bcc: tuple[str, ...] = ()
                ) -> SimpleNamespace:
+    # ``body_html`` answers the read of the HTML of a signed Gmail send
+    # (EM-G3a-f7 PR-C1b). None sends the read on to Gmail.
     return SimpleNamespace(
         provider_message_id=pmid, subject="Re: Quote", body_text="Thanks",
         to_addresses=_listed(*to), cc_addresses=_listed(*cc),
-        bcc_addresses=_listed(*bcc), thread_id="t-1")
+        bcc_addresses=_listed(*bcc), thread_id="t-1", body_html=None)
 
 
 async def test_a_signed_send_sends_the_id_that_the_update_returns(
