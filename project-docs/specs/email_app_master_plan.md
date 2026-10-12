@@ -16017,6 +16017,9 @@ with the bound and the step, and no tenant text.
 - **No session across the model.** PR-A1 takes this from EM-T4a-4 (§10.4.6 item 6).
   `_compose_assist_run` closes its session before the model call, and opens a short new one
   for `_store_ai_draft`. Its docstring (`drafting.py:1835-1836`) changes to say so.
+- **A failed draft store does not stop the draft.** PR-A1 makes this choice on purpose. When the new block of
+  `_store_ai_draft` fails, the run logs `email.store_ai_draft_failed` and still returns the
+  draft. The member gets the draft, and only the learning from a later edit is lost.
 - **The rule path gets two of the bounds.** The rule draft also calls `_orchestrate_draft`.
   So the `SIDE_STEP_BOUND_S` bounds of the Mem0 recall and the consult plan apply there too.
 - **The rule draft keeps its place in Block W.** EM-T4a-3 item 1 owns that move.

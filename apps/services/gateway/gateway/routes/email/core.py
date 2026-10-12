@@ -489,13 +489,18 @@ class BodyFetch:
     @classmethod
     async def load(cls, db: Any, message_id: str, user_email: str) -> BodyFetch | None:
         """Step 1, in a block. A 404 of the owner check raises, as the
-        hydrate does. Any other failure logs and fetches nothing."""
-        row = await _hydrate_row(db, message_id)
-        if row is None or (row.body_text or "").strip():
-            return None
+        hydrate does. Any other failure logs and fetches nothing.
+
+        The reads run in a savepoint, as the hydrate's provider step does. A
+        failed statement (a lock or statement timeout) then rolls back only
+        the savepoint, and the caller's block goes on."""
         try:
-            provider, pmid, account_id, store = await _provider_for_message(
-                db, message_id, user_email)
+            async with _savepoint(db):
+                row = await _hydrate_row(db, message_id)
+                if row is None or (row.body_text or "").strip():
+                    return None
+                provider, pmid, account_id, store = await _provider_for_message(
+                    db, message_id, user_email)
         except HTTPException:
             raise
         except Exception as exc:  # a draft goes on without it
@@ -506,31 +511,31 @@ class BodyFetch:
                    provider_message_id=pmid, account_id=account_id,
                    store_handle=store)
 
-    async def fetch(self, *, bound_s: float) -> str | None:
-        """Step 2, with NO session open. Returns the body, or None past the
-        bound or on a failure. A token that ``authenticate()`` refreshed stays
-        on the provider, and :meth:`store` writes it."""
+    async def fetch(self, *, bound_s: float) -> None:
+        """Step 2, with NO session open. It sets :attr:`body_text` and
+        :attr:`body_html`, and leaves them None past the bound or on a
+        failure. A token that ``authenticate()`` refreshed stays on the
+        provider, and :meth:`store` writes it."""
         started = time.monotonic()
         try:
             async with asyncio.timeout(bound_s):
                 if not await self.provider.authenticate():
-                    return None
+                    return
                 # The body only, never `get_message` (EM-T17 PR-A).
                 full = await self.provider.get_message_body(
                     self.provider_message_id)
         except TimeoutError:
             _log.warning("hydrate_message_body.timeout",
                          message_id=self.message_id, bound_s=bound_s)
-            return None
+            return
         except Exception as exc:  # never break the draft
             _log.warning("hydrate_message_body.failed",
                          message_id=self.message_id, error=str(exc)[:200])
-            return None
+            return
         finally:
             _note_body_fetch(started)
         self.body_text, self.body_html = _hydrated_columns(
             full, getattr(self.row, "received_at", None))
-        return self.body_text
 
     def needs_store(self) -> bool:
         """True when step 3 has a body or a rotated token to write."""

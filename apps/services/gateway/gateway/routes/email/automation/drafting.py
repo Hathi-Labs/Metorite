@@ -219,11 +219,7 @@ async def _fetch_sent_fewshot(
     It is the embed (:func:`_embed_for_fewshot`) and then the read
     (:func:`_read_sent_fewshot`). Compose-assist runs the embed with no
     session and the read in its block 2 (EM-T17 PR-A1, §17.3.7)."""
-    try:
-        qvec = await _embed_for_fewshot(subject, body)
-    except Exception as exc:
-        _log.warning("email.sent_fewshot_failed", error=str(exc)[:160])
-        return ""
+    qvec = await _embed_for_fewshot(subject, body)
     return await _read_sent_fewshot(
         db, account_id, qvec, exclude_thread_id=exclude_thread_id, limit=limit)
 
@@ -232,12 +228,17 @@ async def _embed_for_fewshot(
     subject: str | None, body: str | None,
 ) -> list[float] | None:
     """The embedding of the mail a reply answers. None when semantic search
-    is off. It reads no table, so a caller can run it with no session."""
+    is off, and None on a failure, which it logs. It reads no table, so a
+    caller can run it with no session."""
     from email_ingestion.email_embeddings import (  # noqa: PLC0415
         _embed_text,
         embed_query,
     )
-    return await embed_query(_embed_text(subject, body))
+    try:
+        return await embed_query(_embed_text(subject, body))
+    except Exception as exc:
+        _log.warning("email.sent_fewshot_failed", error=str(exc)[:160])
+        return None
 
 
 async def _read_sent_fewshot(
@@ -1766,14 +1767,8 @@ class _PhasedReply:
             await self.fetch.fetch(bound_s=SIDE_STEP_BOUND_S)
         self.email["body"] = self.body()
         self.qvec = await _side_step(
-            self._embed(), step="embed", default=None)
-
-    async def _embed(self) -> list[float] | None:
-        try:
-            return await _embed_for_fewshot(self.row.subject, self.email["body"])
-        except Exception as exc:
-            _log.warning("email.sent_fewshot_failed", error=str(exc)[:160])
-            return None
+            _embed_for_fewshot(self.row.subject, self.email["body"]),
+            step="embed", default=None)
 
     async def read_side(self, db: Any) -> None:
         """Step 4, in block 2b."""
@@ -1837,27 +1832,30 @@ async def _build_reply_context(
     # (Outlook/Graph sync) store an empty body_text + a ~200-char snippet; without
     # this the drafter sees the message cut off. Hydrate, then fall back to snippet.
     # The phased form loads the provider here and fetches with no session.
-    if phased is None:
-        from gateway.routes.email.core import hydrate_message_body  # noqa: PLC0415
-        hydrated = await hydrate_message_body(db, str(row.id), user_email)
-        body = (hydrated or "").strip() or row.body_text or row.snippet or ""
-        email: dict[str, Any] = {}
-    else:
-        phased.row = row
-        phased.fetch = await BodyFetch.load(db, str(row.id), user_email)
-        body = phased.body()
-        email = phased.email
-    # Each key has a value before the first read, so an expiry of the phased
-    # form leaves a whole context (§17.3.7).
+    #
+    # Each key has a value BEFORE the next await, so an expiry of the phased
+    # form at any later point leaves a whole context (§17.3.7). The body is
+    # the stored one until the hydrate or the fetch replaces it.
+    email: dict[str, Any] = phased.email if phased is not None else {}
     email.update({
         "subject": row.subject or "", "from": frm.get("email", ""),
         "from_name": frm.get("name", "") or "",
         "self": "", "self_label": "", "sender_scope": "",
         "to": _fmt_addr_list(row.to_addresses),
         "cc": _fmt_addr_list(row.cc_addresses),
-        "attachments": "", "body": body, "thread_id": row.thread_id or "",
+        "attachments": "",
+        "body": (row.body_text or "").strip() or row.snippet or "",
+        "thread_id": row.thread_id or "",
         "thread": "", "sender_examples": "",
     })
+    if phased is None:
+        from gateway.routes.email.core import hydrate_message_body  # noqa: PLC0415
+        hydrated = await hydrate_message_body(db, str(row.id), user_email)
+        email["body"] = (hydrated or "").strip() or row.body_text or row.snippet or ""
+    else:
+        phased.row = row
+        phased.fetch = await BodyFetch.load(db, str(row.id), user_email)
+        email["body"] = phased.body()
     # The sending mailbox's address + label, and each mailbox of the member,
     # in one read → direction (self/internal/external) and recipient role.
     me = await resolve_self(db, account_id)
@@ -2038,11 +2036,6 @@ class _ComposeStep:
             # carries it, and new mail reads it here.
             self.me = await resolve_self(db, req.account_id)
 
-    async def fetch_and_embed(self) -> None:
-        """With NO session open: the body fetch and the embed."""
-        if self.phased is not None:
-            await self.phased.fetch_and_embed()
-
     def expire(self, bound: asyncio.Timeout, *, stage: str) -> bool:
         """True when ``CONTEXT_STEP_BOUND_S`` ended the step and the draft
         may go on. False for any other ``TimeoutError``, and False before
@@ -2119,7 +2112,9 @@ async def _compose_assist_run(
         async with phase_a:
             async with _tenant_session() as db:
                 await step.block_1(db, req, user_email, on_activity)
-            await step.fetch_and_embed()
+            # No session: the body fetch and the embed.
+            if step.phased is not None:
+                await step.phased.fetch_and_embed()
     except TimeoutError:
         if not step.expire(phase_a, stage="block_1"):
             raise

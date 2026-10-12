@@ -650,9 +650,10 @@ _FULL = "FULL BODY: can we meet on Tuesday?"
 
 
 def _phased_world(monkeypatch, *, hang: str = "", stored_body: str = "",
-                  dirty: bool = False) -> SimpleNamespace:
+                  dirty: bool = False, full: Any = None) -> SimpleNamespace:
     """The real phased ``_compose_assist_run`` over fakes of each read. The
-    step named ``hang`` never returns."""
+    step named ``hang`` never returns. ``full`` is what the provider fetch
+    gives, by default the body ``_FULL``."""
     w = _Blocks()
     seen: dict[str, Any] = {}
 
@@ -663,7 +664,7 @@ def _phased_world(monkeypatch, *, hang: str = "", stored_body: str = "",
         w.trace.append(("fetch", w.current))
         if hang == "fetch":
             await asyncio.Event().wait()
-        return SimpleNamespace(body_text=_FULL, body_html=None)
+        return full or SimpleNamespace(body_text=_FULL, body_html=None)
 
     provider = MagicMock()
     provider.authenticate = step("authenticate", True)
@@ -916,6 +917,67 @@ async def test_an_expiry_before_the_thread_read_gives_no_thread(monkeypatch) -> 
     assert ctx["body"] == "STORED BODY"
     assert ctx["thread"] == ""
     assert all(ctx[k] == "" for k in _SIDE), ctx
+
+
+@pytest.mark.parametrize("hang", ["hydrate_row", "load_provider"])
+async def test_an_expiry_inside_the_provider_load_keeps_a_whole_context(
+    monkeypatch, hang: str,
+) -> None:
+    """Fix round 1, P2. Block 1 has the target row, so the draft goes on.
+    The keys that come from the row are set before the load, so the context
+    still names the sender, the subject, the mailbox and the thread."""
+    monkeypatch.setattr(drafting, "CONTEXT_STEP_BOUND_S", 0.1)
+    world = _phased_world(monkeypatch, hang=hang)
+    out = await asyncio.wait_for(
+        drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert out["draft"].startswith("Hello Ravi")
+    ctx = world.seen["ctx"]
+    assert ctx["from"] == "ravi@ext.test" and ctx["from_name"] == "Ravi"
+    assert ctx["subject"] == _TARGET.subject
+    assert ctx["thread_id"] == "t-1"
+    assert ctx["self"] == "" and ctx["sender_scope"] == ""
+    for key in ("to", "cc", "attachments", "thread"):
+        assert key in ctx, key
+    assert ctx["body"] == _TARGET.snippet
+    assert all(ctx[k] == "" for k in _SIDE), ctx
+    assert world.blocks.block_of("model") is None
+
+
+# ── The fetch keeps the write rules of the hydrate (fix round 1, P3) ──────
+
+
+def _capture_write(monkeypatch) -> dict[str, Any]:
+    wrote: dict[str, Any] = {}
+
+    async def write(_db, message_id, body_text, body_html, *, stored_bytes):
+        wrote.update(message_id=message_id, body_text=body_text,
+                     body_html=body_html)
+
+    monkeypatch.setattr(core, "_store_hydrated_body", write)
+    return wrote
+
+
+async def test_the_fetch_fills_the_text_of_a_cold_html_only_mail(monkeypatch) -> None:
+    """``BodyFetch`` shapes the body through ``_hydrated_columns``. A cold
+    HTML-only mail gets a text made from its HTML, and stores no HTML."""
+    html = "<p>HTMLWORD71 can we meet?</p>"
+    world = _phased_world(monkeypatch, full=SimpleNamespace(body_text="", body_html=html))
+    monkeypatch.setattr(core.html_tier, "drops_html", lambda _received: True)
+    wrote = _capture_write(monkeypatch)
+    await asyncio.wait_for(drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert "HTMLWORD71" in wrote["body_text"], wrote
+    assert "<p>" not in wrote["body_text"]
+    assert "HTMLWORD71" in world.seen["ctx"]["body"]
+
+
+async def test_the_fetch_caps_an_oversize_body(monkeypatch) -> None:
+    big = "x" * (core.MAX_BODY_TEXT_BYTES + 5000)
+    world = _phased_world(monkeypatch, full=SimpleNamespace(body_text=big, body_html=None))
+    wrote = _capture_write(monkeypatch)
+    await asyncio.wait_for(drafting._compose_assist_run(_reply_req(), _USER), 2.0)
+    assert len(wrote["body_text"].encode()) <= core.MAX_BODY_TEXT_BYTES
+    assert wrote["body_text"].endswith("[truncated]")
+    assert world.seen["ctx"]["body"] == wrote["body_text"]
 
 
 async def test_an_expiry_in_block_2_empties_each_side_block(monkeypatch) -> None:
