@@ -308,6 +308,20 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    digest. When the unit's dirs are absent, both callers refuse. Neither
    falls back to the venv. Fence: tests/unit/test_agent_deps_target.py
    (BH-F6).
+5l. crm_tools.py -- the 12 CRM read tools (WS-53 CRM-C7, spec
+   `project-docs/specs/crm_platform.md` §20.10). It is the ONE copy:
+   `crm-assistant` imports them, and the injection chain offers them as the
+   `crm` skill family. Each tool reads a `/crm` route as the run's member,
+   with the internal bearer and `X-User-Email`. With no member, it refuses.
+   It opens no database session and takes no SQL. A 404 from the kill switch
+   and a 403 from the access rule each come back as a sentence. An answer
+   holds 50 rows at most and names the next page. Each path segment goes
+   through a validator, and the result goes into the path as `slug`,
+   `record`, `mod`, `report` or `vocab`. The risk of each tool is in
+   `tool_annotations.TOOL_ANNOTATIONS` (`open_world=False`), and the risk
+   block does not list them. `crm_mode()` is not a tool: the orchestrator
+   reads it to drop the record writes in Mirror mode. Fences:
+   `tests/unit/test_crm_agent.py` and `tests/unit/test_skills_registry.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The

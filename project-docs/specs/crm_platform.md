@@ -3432,6 +3432,41 @@ uv run pytest tests/unit/test_crm_agent.py tests/unit/test_crm_agent_write.py te
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/assistantCheckpoint.test.ts
 ```
 
+**Built as (2026-10-13, branch `crm-c7`).** 🔨 BUILT, not merged. The
+build follows the resolutions D1 to D11 of the dispatch.
+
+- **The tools.** `packages/acb_skills/acb_skills/crm_tools.py` holds the 12
+  read tools. An answer holds 50 rows at most, and `page_size` goes up to 50
+  (D1). `search_crm` caps at 50. A 404 from the kill switch and a 403 from
+  the access rule each come back as a sentence (D3). A missing record is
+  still an error.
+- **The family.** `crm` is `scope_governed` and in `DEFAULT_PROFILE` (D2).
+  The `tool_scope` of the orchestrator and the `own_tool_scope` of
+  `crm-assistant` name the 12 tools. `tool_annotations.TOOL_ANNOTATIONS`
+  holds their risk, and the risk block does not list them.
+- **The routes.** `routes/crm/aggregate.py`. The month groups are
+  `created_month`, `updated_month` and `close_month`. In Mirror mode
+  `created_month` is a 422, as the Q8 created filter is. The aggregate builds
+  its filters through `records.list_query`, the one list builder (D10).
+  Weighted reuses `core.WEIGHTED_SQL`, one lane at a time. Stage dwell takes
+  `days`, `page` and `page_size`. In Mirror mode it gives an empty result
+  with a `reason` (D9). `GET /crm/mode` is in `settings.py`.
+- **The Mirror filter.** `_tool_injection._drop_mirror_record_writes` runs
+  after `_apply_own_tool_scope` at the three sites. A `no_egress` run reads
+  nothing, because the egress control drops the three writes there anyway.
+- **The removal.** The migration is **256**, not 254. The open PR #938 holds
+  254, and the CRM-C3 worktree holds 255. ⚠️ `dynamic_agents` has FORCE row
+  level security in production (`generated/04_policies.sql`). So the
+  migration binds each tenant in turn, as 221 does. Two callers need CRM
+  data, so they name `crm-assistant`: the notes consults and the email draft
+  consult. WS43-G11 is moot.
+- **The fences.** `test_crm_aggregate_r8.py`, `test_crm_aggregate.py`,
+  `test_crm_agent.py`, `test_crm_mirror_run_tools.py`,
+  `test_skills_registry.py`, `test_no_sales_assistant.py`,
+  `test_no_sales_assistant_r8.py` and `test_agent_config_runtime.py`.
+- **Open.** Done-when 6 waits for the deploy: the ledger shows 256, and a
+  count of the row in `dynamic_agents` gives 0.
+
 ### 20.11 What the CRM still lacks against Zoho
 
 This list reads §6, §9, §13.7, §18.5, §19.2 and §19.3. It names what stays
