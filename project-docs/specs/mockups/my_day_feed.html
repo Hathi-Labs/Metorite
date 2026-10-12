@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>My Day Feed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+html, body { margin: 0; }
+/* Layout: Metorite shell bar, then a 720px feed column with the Today rail at wide widths. House tokens from globals.css. */
+:root {
+  --bg: hsl(214 32% 97%);
+  --card: hsl(0 0% 100%);
+  --fg: hsl(222 47% 9%);
+  --muted: hsl(210 40% 95%);
+  --muted-fg: hsl(215 16% 44%);
+  --border: hsl(214 32% 89%);
+  --primary: hsl(198 89% 35%);
+  --primary-fg: hsl(0 0% 100%);
+  --primary-soft: hsl(198 89% 35% / 0.10);
+  --danger: hsl(0 72% 45%);
+  --danger-soft: hsl(0 72% 45% / 0.10);
+  --warn: hsl(36 92% 29%);
+  --ok: hsl(142 72% 28%);
+  --ok-soft: hsl(142 72% 28% / 0.10);
+  --block: hsl(214 25% 90%);
+  --annot: hsl(27 96% 42%);
+  --annot-soft: hsl(27 96% 61% / 0.12);
+  --shadow: 0 1px 2px hsl(220 30% 20% / 0.06), 0 4px 16px hsl(220 30% 20% / 0.05);
+  --radius: 0.75rem;
+  --font: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: hsl(220 13% 8%); --card: hsl(220 13% 11%); --fg: hsl(210 40% 98%);
+    --muted: hsl(220 13% 15%); --muted-fg: hsl(215 20% 65%); --border: hsl(220 13% 18%);
+    --primary: hsl(198 89% 50%); --primary-fg: hsl(220 13% 8%); --primary-soft: hsl(198 89% 50% / 0.14);
+    --danger: hsl(0 72% 66%); --danger-soft: hsl(0 72% 66% / 0.14); --warn: hsl(47 96% 53%);
+    --ok: hsl(142 76% 47%); --ok-soft: hsl(142 76% 47% / 0.12); --block: hsl(220 13% 20%);
+    --annot: hsl(27 96% 61%); --annot-soft: hsl(27 96% 61% / 0.12);
+    --shadow: 0 1px 2px hsl(0 0% 0% / 0.3); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: hsl(220 13% 8%); --card: hsl(220 13% 11%); --fg: hsl(210 40% 98%);
+  --muted: hsl(220 13% 15%); --muted-fg: hsl(215 20% 65%); --border: hsl(220 13% 18%);
+  --primary: hsl(198 89% 50%); --primary-fg: hsl(220 13% 8%); --primary-soft: hsl(198 89% 50% / 0.14);
+  --danger: hsl(0 72% 66%); --danger-soft: hsl(0 72% 66% / 0.14); --warn: hsl(47 96% 53%);
+  --ok: hsl(142 76% 47%); --ok-soft: hsl(142 76% 47% / 0.12); --block: hsl(220 13% 20%);
+  --annot: hsl(27 96% 61%); --annot-soft: hsl(27 96% 61% / 0.12);
+  --shadow: 0 1px 2px hsl(0 0% 0% / 0.3); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Shell bar */
+.shell { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--card); border-bottom: 1px solid var(--border); }
+.shell-in { display: flex; align-items: center; gap: 12px; padding-block: 8px; padding-inline: 16px; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 600; white-space: nowrap; }
+.logo-mark { width: 22px; height: 22px; border-radius: 6px; background: var(--primary); color: var(--primary-fg); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.cmd { flex: 1; max-width: 520px; margin-inline: auto; display: flex; align-items: center; gap: 8px; height: 32px; padding-inline: 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted-fg); background: var(--bg); min-width: 0; }
+.cmd span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kbd { margin-left: auto; font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.bell { position: relative; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; border: 0; background: none; color: var(--muted-fg); }
+.bell b { position: absolute; top: 2px; right: 0; font-size: 10px; min-width: 16px; height: 16px; border-radius: 8px; background: var(--primary); color: var(--primary-fg); display: grid; place-items: center; padding-inline: 4px; }
+
+/* Design annotation strip */
+.annot { background: var(--annot-soft); border-bottom: 1px solid var(--border); }
+.annot-in { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding-block: 8px; padding-inline: 16px; max-width: 1160px; margin-inline: auto; font-size: 12px; color: var(--fg); }
+.annot-tag { font-weight: 600; color: var(--annot); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--card); }
+.seg button { border: 0; background: none; padding: 4px 10px; font-size: 12px; color: var(--muted-fg); }
+.seg button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+
+/* Page */
+.wrap { max-width: 1160px; margin-inline: auto; padding-inline: 16px; padding-block: 24px 64px; display: grid; grid-template-columns: minmax(0, 720px) 300px; gap: 32px; justify-content: center; }
+@media (max-width: 1080px) { .wrap { grid-template-columns: minmax(0, 720px); } .rail { display: none; } }
+.date { font-size: 13px; color: var(--muted-fg); font-weight: 500; }
+h1 { font-size: 30px; line-height: 1.2; letter-spacing: -0.02em; margin: 4px 0 6px; text-wrap: balance; }
+.summary { color: var(--muted-fg); font-size: 15px; margin: 0; }
+.summary strong { color: var(--fg); font-weight: 600; }
+.lead { margin-top: 12px; display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted-fg); }
+.newpill { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 60px); z-index: 10; display: flex; justify-content: center; height: 0; }
+.newpill button { transform: translateY(-4px); border: 0; border-radius: 999px; background: var(--primary); color: var(--primary-fg); font-size: 12px; font-weight: 600; padding: 5px 12px; box-shadow: var(--shadow); }
+
+/* Groups */
+.group { margin-top: 28px; }
+.group-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.group-h h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-fg); margin: 0; font-weight: 600; }
+.group-h .n { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); }
+.group-h .hint { margin-left: auto; font-size: 12px; color: var(--muted-fg); }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+details.fold { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 14px; }
+details.fold summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-fg); font-weight: 600; }
+details.fold summary::-webkit-details-marker { display: none; }
+details.fold summary .chev { transition: transform .15s; }
+details.fold[open] summary .chev { transform: rotate(90deg); }
+.fold-body { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--border); font-size: 13px; min-width: 0; }
+.row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .by { color: var(--muted-fg); font-size: 12px; white-space: nowrap; }
+.row .ok { color: var(--ok); }
+.end { margin-top: 32px; text-align: center; color: var(--muted-fg); font-size: 13px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.end .tick { width: 32px; height: 32px; border-radius: 50%; background: var(--ok-soft); color: var(--ok); display: grid; place-items: center; }
+
+/* Card */
+.card { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; min-width: 0; transition: opacity .2s, transform .2s; }
+.card.leaving { opacity: 0; transform: translateY(-6px); }
+.src { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted-fg); font-weight: 600; }
+.src .ico { width: 26px; height: 26px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; }
+.src .ico svg.i { width: 14px; height: 14px; }
+.src .state.hot { color: var(--danger); }
+.src .time { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; font-family: var(--mono); font-size: 11px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); display: inline-block; }
+.menu-btn { border: 0; background: none; width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--muted-fg); margin-right: -6px; }
+.menu-btn:hover { background: var(--muted); }
+.card h3 { font-size: 17px; line-height: 1.35; margin: 10px 0 4px; font-weight: 600; text-wrap: balance; }
+.card h3 a { color: inherit; text-decoration: none; }
+.card h3 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.why { display: flex; gap: 8px; color: var(--muted-fg); font-size: 13.5px; margin: 0; }
+.why svg.i { margin-top: 2px; width: 15px; height: 15px; }
+.body { margin-top: 14px; }
+.acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
+.btn { height: 32px; padding-inline: 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); font-weight: 500; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+.btn:hover { background: var(--muted); }
+.btn.main { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+.btn.main:hover { filter: brightness(1.06); background: var(--primary); }
+.opens { font-size: 11px; color: var(--muted-fg); }
+.judged { margin-left: auto; font-size: 11px; color: var(--muted-fg); display: inline-flex; gap: 4px; align-items: center; }
+.judged svg.i { width: 12px; height: 12px; color: var(--primary); }
+
+/* Card menu */
+.menu { position: absolute; right: 12px; top: 44px; z-index: 5; width: 220px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; }
+.menu button { border: 0; background: none; text-align: left; padding: 7px 10px; border-radius: 6px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.menu button:hover { background: var(--muted); }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; width: 100%; }
+.menu .sub { font-size: 11px; color: var(--muted-fg); padding: 4px 10px 2px; text-transform: uppercase; letter-spacing: .06em; }
+.whybox { margin-top: 12px; border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; background: var(--bg); }
+.whybox dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.whybox dt { color: var(--muted-fg); }
+.whybox dd { margin: 0; }
+.whybox .num { font-family: var(--mono); font-size: 11.5px; color: var(--muted-fg); }
+.tell { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.tell input { flex: 1; min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 8px; padding-inline: 10px; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; }
+
+/* Bodies */
+.strip { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px 12px; background: var(--bg); overflow-x: auto; }
+.strip-grid { position: relative; min-width: 420px; height: 128px; margin-left: 44px; }
+.strip-grid .hr { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border); }
+.strip-grid .lab { position: absolute; left: -44px; font-size: 11px; color: var(--muted-fg); transform: translateY(-50%); font-family: var(--mono); }
+.blk { position: absolute; border-radius: 6px; font-size: 11.5px; padding: 4px 8px; overflow: hidden; }
+.blk.meet { background: var(--block); color: var(--fg); }
+.blk.task { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); font-weight: 500; }
+.blk.prop { border: 1.5px dashed var(--primary); color: var(--primary); background: var(--primary-soft); font-weight: 500; }
+.draft { border-radius: 10px; background: var(--bg); border: 1px solid var(--border); padding: 12px 14px; font-size: 13.5px; }
+.draft .to { display: grid; grid-template-columns: 40px 1fr; gap: 2px 8px; font-size: 12.5px; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.draft .to span:nth-child(odd) { color: var(--muted-fg); }
+.draft p { margin: 0 0 8px; }
+.att { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; }
+.att .ft { font-family: var(--mono); font-size: 10px; font-weight: 600; background: var(--danger); color: var(--card); border-radius: 3px; padding: 1px 4px; }
+.kpi { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: end; }
+.kpi .big { font-size: 40px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.kpi .delta { color: var(--ok); font-weight: 600; font-size: 13px; margin-top: 6px; }
+.kpi .note { color: var(--muted-fg); font-size: 12.5px; margin-top: 4px; }
+.bars { display: flex; gap: 10px; align-items: flex-end; height: 88px; }
+.bars div { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; color: var(--muted-fg); font-family: var(--mono); }
+.bars i { display: block; width: 30px; border-radius: 5px 5px 2px 2px; background: var(--primary-soft); }
+.bars div:last-child i { background: var(--primary); }
+.slot { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); font-size: 13px; flex-wrap: wrap; }
+.slot .when { font-family: var(--mono); font-size: 12px; color: var(--primary); font-weight: 500; }
+.slot .meter { flex: 1; min-width: 120px; height: 6px; border-radius: 3px; background: var(--block); overflow: hidden; }
+.slot .meter i { display: block; height: 100%; width: 89%; background: var(--primary); }
+.quote { border-left: 2px solid var(--border); padding-left: 10px; color: var(--muted-fg); font-size: 13px; margin: 0; }
+
+/* Rail */
+.rail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 72px); align-self: start; display: flex; flex-direction: column; gap: 16px; }
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.panel h4 { margin: 0 0 10px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.panel h4 a { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--primary); text-decoration: none; }
+.tl { display: flex; flex-direction: column; gap: 2px; }
+.tl div { display: grid; grid-template-columns: 52px 1fr; gap: 8px; font-size: 12.5px; padding: 5px 0; border-top: 1px solid var(--border); }
+.tl div:first-child { border-top: 0; }
+.tl .h { font-family: var(--mono); font-size: 11.5px; color: var(--muted-fg); }
+.tl .now { color: var(--primary); font-weight: 600; }
+.tl .clash { color: var(--danger); }
+.one { font-size: 13px; }
+.one small { display: block; color: var(--muted-fg); font-size: 11.5px; margin-bottom: 2px; text-transform: uppercase; letter-spacing: .06em; }
+
+/* Toast */
+.toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); border-radius: 10px; padding: 9px 14px; font-size: 13px; display: flex; gap: 14px; align-items: center; box-shadow: var(--shadow); z-index: 30; max-width: calc(100vw - 32px); }
+.toast button { border: 0; background: none; color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+
+.foot { grid-column: 1 / -1; color: var(--muted-fg); font-size: 12px; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 8px; }
+@media (max-width: 560px) {
+  h1 { font-size: 24px; }
+  .card { padding: 14px; }
+  .kpi { grid-template-columns: 1fr; }
+  .cmd span { display: none; }
+  .judged { margin-left: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { .card, details.fold summary .chev { transition: none; } }
+</style>
+</head>
+<body>
+
+<header class="shell">
+  <div class="shell-in">
+    <div class="logo"><span class="logo-mark">M</span>Metorite</div>
+    <div class="cmd" role="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Search or ask anything</span><span class="kbd">Ctrl K</span></div>
+    <button class="bell" type="button" aria-label="Needs you, 6 items"><svg class="i" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><b id="bellN">6</b></button>
+  </div>
+</header>
+
+<div class="annot">
+  <div class="annot-in">
+    <span class="annot-tag">Design mockup · WS-57</span>
+    <span>Sample data. This strip is not part of the product.</span>
+    <span style="display:inline-flex;gap:8px;align-items:center">Judgment
+      <span class="seg" role="group" aria-label="Judgment source">
+        <button type="button" id="modeDecide" aria-pressed="true">decide on</button>
+        <button type="button" id="modeOld" aria-pressed="false">Old path</button>
+      </span>
+    </span>
+  </div>
+</div>
+
+<main class="wrap">
+  <section style="min-width:0">
+    <div class="date">Tuesday, 14 October</div>
+    <h1>Good morning, Vijay</h1>
+    <p class="summary" id="summary"></p>
+    <div class="lead" id="lead"></div>
+
+    <div class="newpill" id="newpill"><button type="button" id="newBtn">2 new</button></div>
+    <div id="feed"></div>
+
+    <details class="fold" id="laterFold">
+      <summary><svg class="i chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>Later <span class="n" id="laterN"></span></summary>
+      <div class="fold-body" id="laterBody"></div>
+    </details>
+    <details class="fold" id="handledFold">
+      <summary><svg class="i chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>Handled today <span class="n" id="handledN"></span></summary>
+      <div class="fold-body" id="handledBody"></div>
+    </details>
+    <div class="end"><span class="tick"><svg class="i" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>You are caught up</div>
+  </section>
+
+  <aside class="rail" aria-label="Today">
+    <div class="panel">
+      <h4><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>Today<a href="#">Plan my day</a></h4>
+      <div class="tl">
+        <div><span class="h">09:30</span><span>Stand-up, Hardware</span></div>
+        <div><span class="h now">10:12</span><span class="now">Now</span></div>
+        <div><span class="h">11:00</span><span>Free, 90 min</span></div>
+        <div><span class="h">14:00</span><span class="clash">Design review, enclosure v3</span></div>
+        <div><span class="h">14:00</span><span class="clash">Ship Julia firmware 2.4</span></div>
+        <div><span class="h">15:30</span><span>Sync with Ananya (out today)</span></div>
+        <div><span class="h">17:00</span><span>Q3 BOM due</span></div>
+      </div>
+    </div>
+    <div class="panel one"><small>Your One Thing today</small>Ship Julia firmware 2.4 to the beta printers</div>
+  </aside>
+
+  <p class="foot">Mockup of <code>project-docs/specs/my_day_feed.md</code>. Cards follow §4.2, groups §4.3, the life of a card §6, and the order §7. "decide on" shows the order, the groups and the reasons that typed <code>decide</code> answers pick (§10). "Old path" shows the same cards when no answer is available, for example when credits run out. The acts that reach another person open their app, the default of §17 Q1. The moves of your own blocks and dates (Move, Block) run in the card here, as they would after a yes to Q1. Until then each one opens Calendar or My Tasks.</p>
+</main>
+
+<div class="toast" id="toast" hidden><span id="toastMsg"></span><button type="button" id="toastUndo">Undo</button></div>
+
+<script>
+(function () {
+  "use strict";
+  var I = {
+    cal: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+    mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
+    task: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 12 2 2 4-4"/>',
+    chart: '<path d="M3 3v18h18"/><path d="M7 16v-5M12 16V8M17 16v-8"/>',
+    crm: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>',
+    people: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+    shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>',
+    proj: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    bulb: '<path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"/>',
+    more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+    spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    x: '<path d="M18 6 6 18M6 6l12 12"/>',
+    thumb: '<path d="M17 14V2M9 18.1 10 14H4.2a2 2 0 0 1-2-2.4l1.4-7A2 2 0 0 1 5.5 3H17v11l-4 8a2 2 0 0 1-2.6-.7z"/>',
+    q: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>'
+  };
+  function ic(n) { return '<svg class="i" viewBox="0 0 24 24" aria-hidden="true">' + I[n] + '</svg>'; }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  var bodies = {
+    strip: function () {
+      var h = '<div class="strip"><div class="strip-grid">';
+      [["13:00", 0], ["14:00", 43], ["15:00", 86], ["16:00", 128]].forEach(function (r) { h += '<div class="hr" style="top:' + r[1] + 'px"></div><span class="lab" style="top:' + r[1] + 'px">' + r[0] + '</span>'; });
+      h += '<div class="blk meet" style="top:43px;height:43px;left:0;width:46%">Design review, enclosure v3</div>';
+      h += '<div class="blk task" style="top:43px;height:43px;left:40%;width:40%">Ship Julia firmware 2.4</div>';
+      h += '<div class="blk prop" style="top:106px;height:22px;left:40%;width:40%">Proposed 16:00 to 17:00</div>';
+      return h + '</div></div>';
+    },
+    draft: function () {
+      return '<div class="draft"><div class="to"><span>To</span><span><strong>Dana Liu</strong> · Contoso Labs</span><span>Re</span><span>Q3 proposal</span></div><p>Hi Dana, here is the Q3 proposal we discussed. Pricing is on slide 6, and I can walk you through it on Thursday.</p><p>Best, Vijay</p><span class="att"><span class="ft">PPT</span>Contoso Q3 Proposal.pptx · 4.2 MB</span></div>';
+    },
+    kpi: function () {
+      return '<div class="kpi"><div><div class="big">34</div><div class="delta">+12% vs last week</div><div class="note">Ravi closed 11 · 2 people need help</div></div><div class="bars" aria-label="Tasks closed, last three weeks: 26, 30, 34"><div><i style="height:52px"></i>W40</div><div><i style="height:60px"></i>W41</div><div><i style="height:68px"></i>W42</div></div></div>';
+    },
+    slot: function () {
+      return '<div class="slot"><span class="when">11:00 to 12:30</span><span>90 min free</span><span class="meter" aria-label="The task fills 80 of 90 minutes"><i></i></span><span class="opens">needs about 80 min</span></div>';
+    },
+    quote: function () {
+      return '<p class="quote">"Hi Vijay, any update on the drawings for the v3 enclosure? We need them before the tooling call."</p>';
+    }
+  };
+
+  // Each card: decide values first, old-path values second.
+  var CARDS = [
+    { id: "c1", app: "Calendar", icon: "cal", state: "Needs you", hot: true, time: "08:02", group: ["now", "needs_you"], w: [96, 70],
+      title: "Your 14:00 design review overlaps the firmware block",
+      why: ["The firmware ship is your One Thing today. 16:00 to 17:00 is free.", "Both are set for 14:00 today."],
+      body: "strip", acts: [["Move firmware to 16:00", "A"], ["Open the day", "link"]], judged: "Now · weight critical · 0.93",
+      terms: [["Group", "Now, judged by decide (0.93)"], ["Weight", "Critical: it blocks your One Thing"], ["Urgency", "Starts in 3 h 48 min (+40)"], ["Slot", "16:00, picked from 3 free slots"]] },
+    { id: "c2", app: "My Tasks", icon: "task", state: "Due today", time: "17:00", group: ["now", "needs_you"], w: [88, 66],
+      title: "Send the Q3 BOM to purchase",
+      why: ["Purchase waits on it to raise the PO for the nozzle batch.", "Due today at 17:00."],
+      acts: [["Done", "A"], ["Block 30 min", "A"]], judged: "Now · weight high · 0.88",
+      terms: [["Group", "Now, judged by decide (0.88)"], ["Weight", "High: purchase is blocked on it"], ["Urgency", "Due in 6 h 48 min (+20)"], ["Habit", "You act on most due-today cards (+9)"]] },
+    { id: "c3", app: "Email", icon: "mail", state: "Reply drafted", time: "07:48", group: ["needs_you", "needs_you"], w: [84, 60],
+      title: "Dana Liu is waiting on the Q3 proposal",
+      why: ["She asked yesterday at 16:12. You said you would send it by Friday.", "Asked yesterday at 16:12."],
+      body: "draft", acts: [["Review and send", "B"], ["Edit draft", "B"]], judged: "Needs you · weight high · 0.86",
+      terms: [["Group", "Needs you, judged by decide (0.86)"], ["Weight", "High: a customer, and a promise you made"], ["Reason", "Picked “promise” from 4 reason templates"], ["Draft", "From your email app. My Day wrote none of it"]] },
+    { id: "c4", app: "CRM", icon: "crm", state: "Deal quiet", time: "Yesterday", group: ["needs_you", "fyi"], w: [74, 30],
+      title: "Acme Additive: no activity for 12 days in Proposal",
+      why: ["The close date is 31 Oct, and the deal is worth ₹18.4 L.", "No activity for 12 days in Proposal."],
+      acts: [["Log a call", "link"], ["Snooze to Monday", "A"]], judged: "Needs you · weight high · 0.79",
+      terms: [["Group", "Needs you, judged by decide (0.79)"], ["Weight", "High: the largest open deal you own"], ["Rot", "Past the 10-day limit of the Proposal stage"]] },
+    { id: "c5", app: "Projects", icon: "proj", state: "Waiting", time: "6 days", group: ["needs_you", "fyi"], w: [62, 28],
+      title: "You have waited 6 days on Ravi for the enclosure drawings",
+      why: ["The design review at 14:00 needs them.", "No activity on the task for 6 working days."],
+      body: "quote", acts: [["Nudge Ravi", "B"], ["Snooze", "menu"]], judged: "Needs you · weight some · 0.71",
+      terms: [["Group", "Needs you, judged by decide (0.71)"], ["Weight", "Some: today's review depends on it"], ["Next act", "Picked “nudge” over “move the date”"]] },
+    { id: "c6", app: "Approvals", icon: "shield", state: "Waiting for you", time: "09:14", group: ["needs_you", "needs_you"], w: [55, 64],
+      title: "Change a record in Zoho CRM",
+      why: ["Proposed by the email assistant agent.", "Proposed by the email assistant agent."],
+      acts: [["Review in Approvals", "B"]], judged: "Needs you · weight some · 0.64",
+      terms: [["Group", "Needs you. An approval is never one click"], ["Weight", "Some"]] },
+    { id: "c7", app: "Calendar", icon: "cal", state: "Ready for you", time: "11:00", group: ["ready", "ready"], w: [70, 50],
+      title: "You have 90 min free at 11:00",
+      why: ["“Update the slicer profile docs” is 2 days late and fits in it.", "You have 90 min free at 11:00."],
+      body: "slot", acts: [["Block 11:00 to 12:30", "A"], ["Pick another task", "link"]], judged: "Ready · weight some · 0.77",
+      terms: [["Group", "Ready for you, judged by decide (0.77)"], ["Task", "Overdue, 80 min estimate, fits the slot"], ["Slot", "Picked from 2 free slots"]] },
+    { id: "c8", app: "Reports", icon: "chart", state: "Summary ready", time: "06:30", group: ["ready", "fyi"], w: [58, 24],
+      title: "Team pulse for Hardware is ready",
+      why: ["Wednesday's planning review is on your calendar.", "A new run of a report you receive."],
+      body: "kpi", acts: [["Open report", "link"], ["Share with team", "B"]], judged: "Ready · weight some · 0.69",
+      terms: [["Group", "Ready for you, judged by decide (0.69)"], ["Numbers", "From the report itself. My Day computes none"]] },
+    { id: "c9", app: "People", icon: "people", state: "For your information", time: "Today", group: ["fyi", "fyi"], w: [40, 20],
+      title: "Ananya is out today",
+      why: ["You have the 15:30 sync with her. Move it, or hold it without her.", "Ananya is out today."],
+      acts: [["Open the day", "link"]], judged: "FYI · weight low · 0.82",
+      terms: [["Group", "For your information, judged by decide (0.82)"]] },
+    { id: "c10", app: "Projects", icon: "proj", state: "Unblocked", time: "09:40", group: ["fyi", "now"], w: [36, 52],
+      title: "Your task “Rate limits for the print API” is unblocked",
+      why: ["Ravi closed the auth task you waited on.", "Ravi closed the auth task you waited on."],
+      acts: [["Open task", "link"]], judged: "FYI · weight low · 0.74",
+      terms: [["Group", "For your information, judged by decide (0.74)"], ["Old path", "Would put it in Now, above the BOM"]] }
+  ];
+  var NEW = [
+    { id: "n1", app: "Projects", icon: "proj", state: "Mention", time: "10:12", group: ["needs_you", "needs_you"], w: [80, 58], fresh: true,
+      title: "Priya mentioned you in “Enclosure v3 tooling”",
+      why: ["She asks if the 14:00 review can approve the draft angles.", "Priya mentioned you."],
+      acts: [["Mark read", "A"], ["Open task", "link"]], judged: "Needs you · weight high · 0.81",
+      terms: [["Group", "Needs you, judged by decide (0.81)"]] },
+    { id: "n2", app: "Email", icon: "mail", state: "Needs reply", time: "10:09", group: ["fyi", "needs_you"], w: [30, 56], fresh: true,
+      title: "Shipping update from BlueDart",
+      why: ["Delivery on Thursday. Nothing to answer.", "Arrived at 10:09."],
+      acts: [["Open thread", "link"]], judged: "FYI · weight none · 0.90",
+      terms: [["Group", "For your information, judged by decide (0.90)"], ["Weight", "None: a notice, not a question"]] }
+  ];
+  var LATER = ["Tidy the label taxonomy in Projects", "Read the Q2 retro notes"];
+  var HANDLED = [
+    ["Filed 14 newsletters", "Email rules"],
+    ["Matched 3 invoices to the Finance rule", "Email rules"],
+    ["Closed “Auth for the print API”", "Ravi"],
+    ["Rolled 2 blocks from yesterday", "Calendar"]
+  ];
+  var GROUPS = [["now", "Now", "Due soon, or starting soon"], ["needs_you", "Needs you", ""], ["ready", "Ready for you", "Prepared for you"], ["fyi", "For your information", ""]];
+
+  var mode = 0; // 0 decide, 1 old path
+  var gone = {}; var shown = CARDS.slice(); var openMenu = null; var openWhy = {}; var lastUndo = null;
+  var feed = document.getElementById("feed");
+
+  function cardHtml(c) {
+    var g = c.group[mode];
+    var h = '<article class="card" id="' + c.id + '" aria-labelledby="' + c.id + 't">';
+    h += '<div class="src"><span class="ico">' + ic(c.icon) + '</span>' + esc(c.app) + ' · <span class="state' + (c.hot ? " hot" : "") + '">' + esc(c.state) + '</span>';
+    if (c.fresh) h += ' <span class="dot" aria-label="New"></span>';
+    h += '<span class="time">' + esc(c.time) + '</span><button class="menu-btn" type="button" data-menu="' + c.id + '" aria-label="More for this card" aria-expanded="' + (openMenu === c.id) + '">' + ic("more") + '</button></div>';
+    h += '<h3 id="' + c.id + 't"><a href="#">' + esc(c.title) + '</a></h3>';
+    h += '<p class="why">' + ic("bulb") + '<span>' + esc(c.why[mode]) + '</span></p>';
+    if (c.body) h += '<div class="body">' + bodies[c.body]() + '</div>';
+    h += '<div class="acts">';
+    c.acts.forEach(function (a, i) {
+      if (a[1] === "menu") { h += '<button class="btn" type="button" data-menu="' + c.id + '">' + esc(a[0]) + '</button>'; return; }
+      h += '<button class="btn' + (i === 0 ? " main" : "") + '" type="button" data-act="' + c.id + '" data-kind="' + a[1] + '" data-label="' + esc(a[0]) + '">' + esc(a[0]) + '</button>';
+    });
+    if (c.acts.some(function (a) { return a[1] === "B"; })) h += '<span class="opens">Opens ' + esc(c.app === "Approvals" ? "Approvals" : c.app) + '</span>';
+    if (mode === 0) h += '<span class="judged">' + ic("spark") + esc(c.judged) + '</span>';
+    h += '</div>';
+    if (openWhy[c.id]) {
+      h += '<div class="whybox"><dl>';
+      c.terms.forEach(function (t) { h += '<dt>' + esc(t[0]) + '</dt><dd>' + esc(mode === 0 ? t[1] : (t[0] === "Group" ? "From the group table, no judged answer" : t[1])) + '</dd>'; });
+      h += '<dt>Score</dt><dd class="num">' + c.w[mode] + '</dd></dl></div>';
+    }
+    if (openWhy[c.id + ":tell"]) {
+      h += '<div class="tell"><input id="tell-' + c.id + '" type="text" placeholder="Tell My Day why, for example “Shipping notices never need me”" aria-label="Tell My Day why"><button class="btn" type="button" data-tell="' + c.id + '">Save</button></div>';
+    }
+    if (openMenu === c.id) {
+      h += '<div class="menu" role="menu"><span class="sub">Snooze</span>';
+      [["Later today", "until 16:00"], ["Tomorrow", "until 09:00"], ["Next week", "until Monday"], ["Until it changes", "until something new"]].forEach(function (s) {
+        h += '<button type="button" role="menuitem" data-snooze="' + c.id + '" data-until="' + s[1] + '">' + ic("clock") + esc(s[0]) + '</button>';
+      });
+      h += '<hr><button type="button" role="menuitem" data-dismiss="' + c.id + '">' + ic("x") + 'Dismiss</button>';
+      h += '<button type="button" role="menuitem" data-notuseful="' + c.id + '">' + ic("thumb") + 'Not useful</button>';
+      h += '<button type="button" role="menuitem" data-why="' + c.id + '">' + ic("q") + 'Why am I seeing this</button></div>';
+    }
+    return h + '</article>';
+  }
+
+  function render() {
+    var live = shown.filter(function (c) { return !gone[c.id]; });
+    var html = "";
+    GROUPS.forEach(function (g) {
+      var list = live.filter(function (c) { return c.group[mode] === g[0]; }).sort(function (a, b) { return b.w[mode] - a.w[mode]; });
+      if (!list.length) return;
+      html += '<section class="group" aria-label="' + g[1] + '"><div class="group-h"><h2>' + g[1] + '</h2><span class="n">' + list.length + '</span>' + (g[2] ? '<span class="hint">' + g[2] + '</span>' : "") + '</div><div class="stack">';
+      list.forEach(function (c) { html += cardHtml(c); });
+      html += '</div></section>';
+    });
+    feed.innerHTML = html;
+    var needs = live.filter(function (c) { var g = c.group[mode]; return g === "now" || g === "needs_you"; }).length;
+    var handled = HANDLED.length;
+    document.getElementById("summary").innerHTML = '<strong>' + needs + ' things need you.</strong> ' + (handled ? 'The rest is handled.' : '');
+    var top = live.filter(function (c) { return c.group[mode] === "now"; }).sort(function (a, b) { return b.w[mode] - a.w[mode]; })[0];
+    document.getElementById("lead").innerHTML = top ? (mode === 0 ? ic("spark") + '<span>First: ' + esc(top.title) + '</span>' : '<span>First: ' + esc(top.title) + '</span>') : "";
+    document.getElementById("bellN").textContent = String(needs);
+    document.getElementById("laterN").textContent = String(LATER.length);
+    document.getElementById("laterBody").innerHTML = LATER.map(function (t) { return '<div class="row">' + ic("clock") + '<span class="t">' + esc(t) + '</span><span class="by">Seen 3 times</span></div>'; }).join("");
+    document.getElementById("handledN").textContent = String(HANDLED.length);
+    document.getElementById("handledBody").innerHTML = HANDLED.map(function (r) { return '<div class="row"><span class="ok">' + ic("check") + '</span><span class="t">' + esc(r[0]) + '</span><span class="by">' + esc(r[1]) + '</span></div>'; }).join("");
+  }
+
+  var toastT = null;
+  function toast(msg, undo) {
+    var t = document.getElementById("toast");
+    document.getElementById("toastMsg").textContent = msg;
+    document.getElementById("toastUndo").hidden = !undo;
+    lastUndo = undo || null; t.hidden = false;
+    clearTimeout(toastT); toastT = setTimeout(function () { t.hidden = true; }, 5000);
+  }
+  document.getElementById("toastUndo").addEventListener("click", function () { if (lastUndo) lastUndo(); document.getElementById("toast").hidden = true; });
+
+  function leave(id, then) {
+    var el = document.getElementById(id);
+    if (el) el.classList.add("leaving");
+    setTimeout(function () { gone[id] = true; openMenu = null; render(); if (then) then(); }, 180);
+  }
+  function findCard(id) { return shown.filter(function (c) { return c.id === id; })[0]; }
+
+  feed.addEventListener("click", function (e) {
+    var b = e.target.closest("button, a"); if (!b) return;
+    if (b.tagName === "A") { e.preventDefault(); return; }
+    var d = b.dataset;
+    if (d.menu) { openMenu = openMenu === d.menu ? null : d.menu; render(); return; }
+    if (d.act) {
+      var c = findCard(d.act);
+      if (d.kind === "A") {
+        leave(d.act, function () {
+          HANDLED.unshift([c.title, "You"]); render();
+          toast(d.label + " · done", function () { HANDLED.shift(); delete gone[d.act]; render(); });
+        });
+      } else if (d.kind === "B") {
+        toast("Opens " + c.app + " with this filled in. Nothing is sent from the card.");
+      } else { toast("Opens " + c.app + "."); }
+      return;
+    }
+    if (d.snooze) { var id = d.snooze; leave(id, function () { toast("Snoozed " + d.until, function () { delete gone[id]; render(); }); }); return; }
+    if (d.dismiss) { var id2 = d.dismiss; leave(id2, function () { toast("Dismissed until it changes", function () { delete gone[id2]; render(); }); }); return; }
+    if (d.notuseful) { openMenu = null; openWhy[d.notuseful + ":tell"] = true; render(); var inp = document.getElementById("tell-" + d.notuseful); if (inp) inp.focus(); return; }
+    if (d.tell) { var id3 = d.tell; delete openWhy[id3 + ":tell"]; leave(id3, function () { toast("Thanks. My Day reads this on its next pass.", function () { delete gone[id3]; render(); }); }); return; }
+    if (d.why) { openMenu = null; openWhy[d.why] = !openWhy[d.why]; render(); return; }
+  });
+  document.addEventListener("click", function (e) {
+    if (openMenu && !e.target.closest(".menu") && !e.target.closest("[data-menu]")) { openMenu = null; render(); }
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && openMenu) { openMenu = null; render(); } });
+
+  document.getElementById("newBtn").addEventListener("click", function () {
+    shown = shown.concat(NEW); document.getElementById("newpill").hidden = true; render();
+  });
+  function setMode(m) {
+    mode = m;
+    document.getElementById("modeDecide").setAttribute("aria-pressed", String(m === 0));
+    document.getElementById("modeOld").setAttribute("aria-pressed", String(m === 1));
+    render();
+  }
+  document.getElementById("modeDecide").addEventListener("click", function () { setMode(0); });
+  document.getElementById("modeOld").addEventListener("click", function () { setMode(1); });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1205,6 +1205,11 @@ display order stays as below.
 - `total` is unchanged. It counts the rows before the cut, so the bell's
   number is still a floor of 60 at most.
 
+**The My Day feed reads the same providers (WS-57, PROPOSED 2026-10-13).**
+`my_day_feed.md` §4.4 owns the feed. This contract keeps its five kinds. A
+new kind joins it only by an amendment of this section, in the PR that adds
+the kind.
+
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent
 waits on it. Then rows due today, then notifications with the newest first. Then needs-reply rows, with the

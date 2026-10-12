@@ -1,14 +1,26 @@
 # My Day as a live feed — the chief of staff
 
-**Status: PROPOSED, 2026-10-13.** Nothing in this file is built. MD-1 to
-MD-5 are AGENT-SAFE and can start now, dark.
+**Status: PROPOSED, 2026-10-13.** Nothing in this file is built. The
+AGENT-SAFE tickets are MD-1 to MD-5, MD-6a to MD-6c (the build only), MD-7,
+MD-9 and MD-12. Each ships dark.
 
 **Revised 2026-10-13, same day, after the owner's answers.** The owner
 answered Q2 and Q3 (§17.2). The customer pays for every AI call with AI
 credits. External calendars come later, and calendar clashes fold in then.
 
 The owner also asked the feed to use `decide` as much as it can. So §10 is
-now "Decide first". Q1 and the new Q6 (residency for My Day) are still open.
+now "Decide first". Q1 (acts in a card) and Q6 (residency for My Day) are
+still open.
+
+**Repair round 1, 2026-10-13.** The adversarial review of PR #939 found 14 P1
+and 5 P2 defects. This version fixes each one. These are the largest
+changes:
+
+- The read cache knows the next time edge (§8.1).
+- The loop builds the member's real access (§8.3).
+- Handled reads app history, and never infers it (§6.7).
+- One entity gives one card (§4.5).
+- My Day adds no commitment detector of its own (§5.3).
 
 **Verified against code on 2026-10-13** at `origin/main` `1ba914c1c`. Each
 anchor carries a file and a line. Check them again at dispatch, because this
@@ -16,26 +28,29 @@ tree moves every day.
 
 **Board row:** **WS-57**, minted by this spec (`work_plan.md` §2).
 **Owning spec:** this file. **Owner:** vjvarada.
+**Design mockup:** `mockups/my_day_feed.html` (§14.4).
 
 **Owner directive, 2026-10-13.** The owner wants My Day to stop being a set of
 static views of email and the calendar. It must change with "the context of my
-current system". The owner asked for a
-live feed that acts as a chief of staff. It must notice, prepare and nudge,
-and it must not cost too much to run. The owner gave four reference cards,
-which §1.1 describes.
+current system". The owner asked for a live feed that acts as a chief of
+staff. It must notice, prepare and nudge, and it must not cost too much to
+run. The owner gave four reference cards, which §1.1 describes.
 
 **Single owner, and the line with WS-44.** `navigation_shell.md` (WS-44) keeps
-owning the page frame of My Day, the three altitudes, the bell, the manifest
-and the shell flags. This file owns what goes **into** the feed. That is the
-signals, the card shapes, the order and the life of a card. It is also the AI
-that prepares a card, and its cost. `navigation_shell.md` §4.3 and §7.2 link here, and add nothing.
+owning the page frame of My Day, the three altitudes and the bell. It also
+keeps the needs contract of its §7.2, the manifest and the shell flags.
+
+This file owns what
+goes **into** the feed. That is the signals, the card shapes, the order and
+the life of a card. It is also the AI that judges a card, and its cost.
+`navigation_shell.md` §4.3 and §7.2 link here, and add nothing.
 
 ---
 
 ## 0. The answer in one screen
 
 My Day becomes one ranked column of cards that a member can scroll. Each card
-says what needs the member, why now, and offers the next act in one click.
+says what needs the member, why now, and offers the next act.
 
 1. **Four layers. The two at the bottom are free, and the third is cheap.**
    - **Signals** are facts that code finds: a task is overdue, two blocks
@@ -47,25 +62,27 @@ says what needs the member, why now, and offers the next act in one click.
      as typed questions. Where does this card go? How much does it matter to
      what the member must get done? Which reason, which act, which slot? Each
      answer is a key from a list that code wrote (§10).
-   - **Compositions** are the few words that only a text model can write: the
-     gist of a long thread, a meeting prep list. A `decide` question gates
-     each one, so a composition runs only when it saves the member time.
-2. **One feed, not two.** `GET /shell/needs` already merges four providers
-   with no model. The feed extends that provider registry. The bell and the
-   sidebar counts keep reading the needs view of the same signals.
-3. **A card has a life.** It is new, then seen, then acted, snoozed,
-   dismissed, resolved or expired. Clear rules bring a card back when it
-   matters again (§6). Nothing that needs the member drops away in silence.
-4. **Decide picks, templates speak, and code acts.** A `decide` answer is a
+   - **Compositions** are the few words that only a text model can write:
+     the gist of a long thread. A `decide` question gates each one, so a
+     composition runs only when it saves the member time.
+2. **One feed, not two.** The feed extends the provider registry of
+   `GET /shell/needs`. The needs view keeps its five kinds, so the bell and
+   the sidebar counts do not change (§4.4).
+3. **One entity, one card.** A thread, a task or a deal gets one card. Its
+   other signals become facts, a body or an act on that card (§4.5).
+4. **A card has a life.** It is new, seen, later, acted, snoozed, dismissed
+   or expired. Fixed rules, in a fixed order, bring a card back when it
+   matters again (§6).
+5. **Decide picks, templates speak, and code acts.** A `decide` answer is a
    key from options that code built. So no model output can invent a target,
-   a time, a recipient or a link (§10).
-5. **The feed ends.** Below the last open card, a "Handled" group lists what
-   closed today. Then the feed says "You are caught up".
-6. **Cost stays small by design.** No model runs in the read path. Each
-   answer is cached by content, so the same facts never pay twice. A dormant
-   member costs nothing. `decide` costs USD 0.042 for each million input
-   tokens, and its output is free. §9 estimates about 20 calls for each
-   active member each working day. The customer pays in AI credits.
+   a time, a recipient or a link (§10.2).
+6. **The feed ends.** Below the last open card, a "Handled" group lists what
+   the apps record as closed today. Then the feed says "You are caught up".
+7. **Cost stays small by design.** No model runs in the read path. Each
+   answer is cached by content. A dormant member costs nothing. `decide`
+   costs USD 0.042 for each million input tokens, and its output is free. §9
+   estimates about 40 calls for each active member each working day. The
+   customer pays in AI credits.
 
 ---
 
@@ -79,7 +96,7 @@ and this spec takes that anatomy as the card contract (§4.2).
 | Card | Source and state | Headline | Why line | Body | Acts |
 |---|---|---|---|---|---|
 | A | Calendar · Needs you | "Your 2:00 PM with Priya overlaps the Contoso visit" | "Contoso moved their site visit to 1:30 PM. Priya is free Thursday at 2:00." | A two-day strip that shows the overlap and the proposed slot | "Move to Thu 2:00 PM", "See options" |
-| B | Email · Reply drafted | "Dana Liu is waiting on the Q3 proposal" | "She asked yesterday at 4:12 PM. You said you'd send it by Friday." | The full draft, the recipient and the attachment | "Send", "Edit draft" |
+| B | Email · Reply drafted | "Dana Liu is waiting on the Q3 proposal" | "She asked yesterday at 4:12 PM. You said you would send it by Friday." | The full draft, the recipient and the attachment | "Send", "Edit draft" |
 | C | Reports · Summary ready | "Q3 West region results are in" | "Monday's sales review is on your calendar. Final numbers landed overnight." | One large number, the change, and three bars | "Share with team", "Open report" |
 | D | (header) | "Good morning, Megan" | "3 things need you. The rest is handled." | — | — |
 
@@ -107,33 +124,36 @@ owner's list. §15 adds eight ideas that are not cards.
 ### 2.1 In scope
 
 - The signal contract, and the providers that each app adds (§4.1, §5).
-- The card contract and the feed groups (§4.2, §4.3).
-- The life of a card: seen, snooze, dismiss, resolve, and the rules that
-  bring a card back (§6).
+- The card contract, the feed groups and the one-card rule (§4.2 to §4.5).
+- The life of a card, and the rules that bring a card back (§6).
 - The order of the feed (§7).
 - When work runs, and what it costs (§8, §9).
 - The `decide` questions, the state they read, and the rules that keep them
   safe (§10).
 - The acts a card may run in place (§11).
 - The deep links each card needs (§12).
-- One new table, and the cache keys (§13).
+- Two new tables, one new column, and the cache keys (§13).
 - The frontend shape of the feed (§14).
 
 ### 2.2 Non-goals — named so nobody builds them from this file
 
 - **No second task store.** The feed reads the one lens (D53).
-- **No second feed.** `GET /shell/needs` stays, as a view of the same
-  providers (§4.4).
+- **No second feed.** `GET /shell/needs` stays, as the needs view of the
+  same providers (§4.4).
 - **No second ritual.** Calendar owns `StartupRitual` and `EndOfDayReview`.
   The feed links to them and never copies them (`navigation_shell.md` §4.3).
 - **No second planner.** "Plan my day" stays in Calendar. A feed card may
   offer it as a link.
 - **No second drafter.** A draft reply comes from the email app's own drafts
-  (`email_ai_drafts`). My Day never drafts a reply of its own (§9.1).
+  (`email_ai_drafts`). My Day never drafts a reply of its own.
+- **No second commitment detector.** A promise in sent mail comes from the
+  email app's own detector (§5.3).
 - **No second arithmetic.** A report card draws a number that a report or an
   analytics read already computes (`navigation_shell.md` §4.5).
 - **No external calendar sync.** Card A needs it, and calendar P4 owns it
   (`calendar_timeboxing.md` §8). §5.1 says what the feed can do without it.
+- **No card for a `preview` app.** A card from Notes, for example, waits
+  until the owner promotes the app (H-21, `navigation_shell.md` §4.5).
 - **No model picker, and no price on a card** (D32.7, D88).
 - **No team feed in phase 1.** The team altitude follows NS-5 (MD-12).
 
@@ -144,24 +164,31 @@ owner's list. §15 adds eight ideas that are not cards.
 | Part | Today | Anchor |
 |---|---|---|
 | The page | My Day at `/`, ON in production since 2026-10-10. A greeting, one summary line, and three cards: Needs you, Today, Next actions | `workbench/control_plane/src/lib/shell/MyDayPage.tsx` · `src/app/page.tsx:20-33` · flag `myDayFlag.ts` |
-| The page rules | `greetingLine`, `summaryLine`, `KIND_LABELS`, `NEEDS_SHOWN = 7`, `cardsFor` | `src/lib/shell/myDay.ts` |
+| The page rules | `greetingLine`, `summaryLine`, `KIND_LABELS`, `NEEDS_SHOWN = 7`, `cardsFor` | `src/lib/shell/myDay.ts` (`KIND_LABELS` at `:94`) |
 | The card frame | `HomeCard`: title, icon, source, link, footer. `CardError` with Retry | `src/lib/shell/HomeCard.tsx` |
 | The feed | `GET /shell/needs`. Four providers run in turn: `tasks`, `projects`, `email`, `approvals`. 2 s for each provider, 4 s in all, 15 rows for each app. **No model** | `apps/services/gateway/gateway/routes/shell/needs.py:136`, `:456`, `:482` |
+| The five needs kinds | `KIND_ORDER`: overdue, approval, due_today, notification, needs_reply. The sort indexes it, so an unknown kind raises | `needs.py:159`, `:474` |
 | The item shape | `{id, app, kind, title, detail, href, at, act, act_ref}`, plus `sources`, `totals` and `capped` | `navigation_shell.md` §7.2 |
-| The acts | `done` and `read` only, through the owning app's code. An email row and an approval row have no act | `src/lib/shell/needs.ts` · `app/tasks/lib/completeFromHome.ts` |
-| The poll | One shared 60 s poll while the tab shows (the bell) | `src/lib/shell/ShellBell.tsx` |
+| The acts | `done` and `read` only, through the owning app's code. An email row and an approval row have no act. Mark read has no Undo | `src/lib/shell/needs.ts` · `app/tasks/lib/completeFromHome.ts` |
+| The poll | One shared 60 s poll. Its tick calls the **first** poller only | `src/lib/shell/ShellBell.tsx:239` |
 | Act marks | A client store that hides a row for 30 s after an act. Nothing on the server | `src/lib/shell/needsActs.ts` |
-| Order and presets | Per member, in `user_settings.shell_prefs` | `infra/postgres/240_user_settings_shell_prefs.sql:29` |
+| Layout preferences | `user_settings.shell_prefs`. `PUT /auth/me/shell` writes the whole blob, and the model refuses an unknown key | `infra/postgres/240_user_settings_shell_prefs.sql:29` · `routes/admin/me.py:329`, `:372`, `:459` |
 | The member's day | `day_start_hour` and `day_end_hour` | `infra/postgres/77_gtd_calendar_prefs.sql:18` |
 | Calendar events | **Only task time blocks.** External sync answers 501 | `routes/tasks/calendar.py:53-75` |
 | Clash detection | Visual only, in the grid. No server read | `app/calendar/components/shared.ts:218-220` |
-| Work conflicts | Seven kinds, among them `absent_on_due` and `overcommitted` | `routes/projects/analytics_conflicts.py` |
-| Needs reply | `needs_reply_threads`, and the `_LIVE_THREAD` rule | `routes/email/digest.py:137`, `:238` |
+| Work conflicts | Seven kinds. The HR kinds, `absent_on_due` among them, need `admin:members:read` | `routes/projects/analytics_conflicts.py` · `gateway/conflicts.py:46-48` |
+| My own absences | No HR gate | `routes/people/selfservice.py:272` |
+| Who may read HR fields | `can_read_hr_fields` | `routes/tasks/core.py:75` |
+| Needs reply | `needs_reply_threads`, and the `_LIVE_THREAD` rule it reads | `routes/email/digest.py:238`, `:137` |
+| Promises in sent mail | The email app detects a promise and files it as a task. The digest reads the open ones | `routes/tasks/capture_email.py:1007`, `:1176` · `routes/email/digest.py:293` |
 | Drafts | One draft for each thread. Drafting is OFF by default (EM-T7) | `email_ai_drafts` · `routes/email/automation/drafting.py` |
 | A cached AI line | The email morning brief. `tier-fast`, a Redis key of mailbox, day and sha256 of model, prompt and input, 26 h TTL | `routes/email/digest.py:542-621` |
+| `decide` | ON in production since 2026-10-02. Email asks it for the rule match and the thread status | HANDOFF H-166 · `packages/acb_llm/acb_llm/decide.py` |
+| The `decide` mode registry | `off`, `shadow`, `on` for each feature. `on` only for a feature in `ON_FEATURES`. `shadow` logs one comparison for each call | `apps/services/gateway/gateway/decide_features.py:105`, `:122`, `:716-801` |
 | Background loops | `asyncio` loops in the gateway lifespan. Each loop holds its own kill switch | `gateway/main.py:40-48` |
 | The best loop to copy | CRM mirror sync: a 60 s tick, `is_due`, three at once, a run lock in a table | `gateway/crm_sync/scheduler.py:49`, `:71`, `:104` |
-| Change events | An in-process bus. Projects emits `pm.*`, and two sinks listen | `apps/services/ingestion/ingestion/event_hooks.py:32`, `:43` · `gateway/main.py:1612-1621` |
+| A member's access outside a request | `member_context(email)` resolves the same context a signed-in request gets. The WhatsApp channel calls it, and refuses a context in another org | `packages/acb_auth/acb_auth/deps.py:388` · `routes/whatsapp_channel/views.py:142-155` |
+| Change events | An in-process bus. Projects emits `pm.*` and awaits it inline, and two sinks listen | `apps/services/ingestion/ingestion/event_hooks.py:32`, `:43` · `gateway/main.py:1612-1621` |
 | A job that calls a model as a member | `as_mailbox_owner` binds the member, so the Router bills the right one | `routes/email/scheduler_hooks.py:53` |
 | Out-of-app delivery | WhatsApp templates are spec only (WAC-7). Web push is spec only (D-2) | `whatsapp_assistant_channel.md` §5.8 · `chat_run_continuity.md` |
 | Deep links | Task, project, report, email and CRM have one. **Calendar has none.** Approvals opens the queue only | §12 |
@@ -175,14 +202,14 @@ seconds after an act.
 ## 4. The model — signals, cards and the feed
 
 ```
- apps                     signals (free)          cards (mostly free)        feed (per member)
- ─────────────────        ──────────────          ───────────────────        ─────────────────
+ apps                     signals (free)          cards (free)               feed (per member)
+ ─────────────────        ──────────────          ────────────               ─────────────────
  My Tasks  ──provider──▶  overdue, due_today  ─┐
- Calendar  ──provider──▶  overlap, overbooked ─┤   template words          rank (§7)
- Email     ──provider──▶  needs_reply, quiet  ─┼─▶ + small view       ─▶   + state (§6)   ─▶ GET /shell/feed
- Reports   ──provider──▶  run_ready, moved    ─┤   + acts (code)           + groups (§4.3)
- CRM       ──provider──▶  deal_quiet, due     ─┘   + composition (AI,
- Approvals ──provider──▶  approval                   top cards only)       GET /shell/needs = the needs view
+ Calendar  ──provider──▶  overlap, overbooked ─┤   one card per entity     group + weight (decide, §10)
+ Email     ──provider──▶  needs_reply, quiet  ─┼─▶ template words     ─▶   + urgency (code, §7)  ─▶ GET /shell/feed
+ Reports   ──provider──▶  run_ready, moved    ─┤   small view              + state (§6)
+ CRM       ──provider──▶  deal_quiet, due     ─┤   acts (code)
+ Approvals ──provider──▶  approval            ─┘                           needs view, 5 kinds ─▶ GET /shell/needs
 ```
 
 ### 4.1 A signal
@@ -192,33 +219,33 @@ query. It holds no prose that a model wrote.
 
 | Field | Meaning |
 |---|---|
-| `signal_id` | `<app>:<kind>:<entity id>`. The same id across reads. Today's needs ids keep their form, for example `tasks:<task id>` |
-| `app`, `kind` | The source app and the kind from §5 |
+| `signal_id` | **The identity of the entity, never of the kind.** `<app>:<entity ref>`, the grammar of today's needs ids: `tasks:<task id>`, `email:<account id>:<thread id>`, `approvals:<id>`. A reader splits on the first colon only. So a task that moves from due today to overdue keeps its id, and keeps its snooze |
+| `app`, `kind` | The source app and the kind from §5. The kind is a field, and it may change |
 | `entity` | `{type, id, label}`. The thing the card is about |
-| `facts` | A small dict of typed values, for example `{due_at, priority, waited_hours}`. The template and the composer read only this |
+| `facts` | A small dict of typed values, for example `{due_at, priority, waited_hours}`. The templates and the `decide` state read only this |
 | `fingerprint` | A short hash of the facts that matter. A change in it means the signal changed in substance (§6.3) |
 | `urgent_at` | The time after which the signal is urgent, or null |
 | `expires_at` | The time after which the signal is no longer true, or null. A meeting that ended expires |
-| `needs` | `true` when the signal asks the member to act. The needs view reads only these |
 | `href` | The deep link (§12). Code builds it, never a model |
 | `acts` | The acts code offers, each with its class from §11 |
 
 **A provider follows the rules of `navigation_shell.md` §5.2.** It runs on
-the request's session at the `get_db()` seam. It calls its app's own
-authorized read, and it never writes a visibility rule of its own. It gives
-15 signals at most.
+the session at the `get_db()` seam. It calls its app's own authorized read
+with the member's `UserContext`, and it never writes a visibility rule of its
+own. It gives 15 signals at most, and it says when it stopped at the cap.
 
 ### 4.2 A card
 
-A card is a signal drawn for the member. The four reference cards set its
+A card is one entity drawn for the member. The four reference cards set its
 anatomy:
 
 1. **The source line.** The app's name, a dot, and the state of the card, for
    example "Email · Reply drafted". The time at the right.
 2. **The headline.** One sentence that states the fact about a person or a
    thing. It never states a feeling.
-3. **The why line.** One sentence on why it is here now. It starts with a
-   light-bulb icon. A template writes it from `facts` for most kinds (§5).
+3. **The why line.** One sentence on why it is here now, after a light-bulb
+   icon. A template writes it from `facts`. `decide` may pick which template
+   (§10.3).
 4. **The body.** A small view that the source app exports: a day strip, a
    draft, a number with bars, task rows. A card may have no body.
 5. **The acts.** One main act, filled, and one second act, outlined. Each
@@ -228,8 +255,8 @@ anatomy:
 
 The frame is `HomeCard` (`src/lib/shell/HomeCard.tsx`), widened by a
 `FeedCard` that adds the source line, the why line and the menu. The body is
-the app's component, found by kind in the manifest (§14.2). The design rules
-of `DESIGN_SYSTEM.md` bind every part. The source line uses the app's icon
+the app's component, found by kind (§14.2). The design rules of
+`DESIGN_SYSTEM.md` bind every part. The source line uses the app's icon
 through `<Icon name>`, never an app-local colour.
 
 ### 4.3 The feed groups
@@ -242,27 +269,59 @@ are when they scroll.
 | **Now** | Due within 2 hours, a block that starts within 30 minutes, an overlap today | Always open. Hidden when empty |
 | **Needs you** | Decisions and replies: overdue, approvals, needs reply, an overlap later this week | Always open |
 | **Ready for you** | Work that something prepared: a draft, a plan proposal, a report run, a free slot for an overdue task | Open |
-| **For your information** | Facts with no act due: a report moved, a colleague is out, a deal changed stage | Open, at most 10, then "Show more" |
-| **Later** | Cards the member saw three times with no act (§6.5) | Folded |
-| **Handled** | What closed today, by the member, by a colleague, by a rule or by an agent | Folded. Its count feeds the summary line |
+| **For your information** | Facts with no act due: a report moved, a deal changed stage | Open, at most 10, then "Show more" |
+| **Later** | Cards in the state `later` (§6.5) | Folded |
+| **Handled** | What the apps record as closed today (§6.7) | Folded. Its count feeds the summary line |
 
 Then the feed ends with "You are caught up". The feed never fills itself with
 filler to keep a member scrolling.
 
-### 4.4 One feed, two views
+### 4.4 One registry, and the needs view stays five kinds
 
 The needs feed of `navigation_shell.md` §7.2 stays the contract for the bell
-and the sidebar counts. It becomes a **view** of the signal registry:
+and the sidebar counts.
 
-- One registry of providers serves both routes. A provider registers once.
-- `GET /shell/needs` returns the signals with `needs = true`, in today's
-  shape, today's order and today's caps. Nothing in the bell changes.
-- `GET /shell/feed` returns every signal, with its card fields, its state and
-  its group.
+- **One registry.** A provider registers once, and serves the feed. The four
+  providers of today serve the needs view too.
+- **The needs view keeps its five kinds**: overdue, approval, due_today,
+  notification and needs_reply (`KIND_ORDER`, `needs.py:159`). Its shape,
+  order and caps do not change. Nothing in the bell changes.
+- **A new kind joins the needs view only by an amendment** of
+  `navigation_shell.md` §7.2. The ticket that adds the kind names the
+  amendment, and adds the kind to `KIND_ORDER`, to `NeedsKind` and to
+  `KIND_LABELS` in one PR. Until then, a kind such as `crm_followup_due` or
+  `agent_asks` shows in the feed only.
+- **`GET /shell/feed`** returns every card, with its group, its state and the
+  needs view of the same provider run (§14.1).
 
 **Fence (MD-1).** `tests/unit/test_shell_feed.py::TestOneRegistry` fails if a
-provider serves one route and not the other. It also fails if the needs view
-of a fixed seed differs from today's `GET /shell/needs` answer.
+provider registers twice. It fails if the needs view of a fixed seed differs
+from today's `GET /shell/needs` answer. It also fails if a kind outside
+`KIND_ORDER` reaches `GET /shell/needs`.
+
+### 4.5 One entity, one card
+
+`navigation_shell.md` §4.5 holds the rule for the needs card: "One thread in
+two cards teaches the eye to skip both cards." The feed keeps it for every
+entity.
+
+- **The entity key is the `signal_id`.** One key gives one card.
+- **The main kind wins.** When one entity gives several kinds, the kind with
+  the highest `base(kind)` (§7) is the card's kind.
+- **Every other kind becomes part of that card.** It is a fact in the why
+  line, a body, or an act. Three examples:
+  - A thread with a draft and many messages is one `reply_drafted` card. The
+    gist of the thread is part of its body.
+  - An overdue task with a free slot today is one `overdue` card. "Block
+    11:00" is one of its acts.
+  - An overdue task that falls on my absence is one `overdue` card. The
+    absence is a fact in its why line.
+- **The NS-3 rule stays.** Next actions leaves out each task that a feed card
+  already shows (`myDay.test.ts`).
+
+**Fence (MD-1).** `tests/unit/test_shell_feed.py::TestOneCardPerEntity`
+seeds one task that gives three kinds. It asserts one card, with the other
+two kinds folded into it.
 
 ---
 
@@ -272,59 +331,68 @@ Each row is one signal kind. **Phase** says when it can ship. "Template"
 means a fixed sentence with values from `facts`. **AI** names the model work
 that the kind needs beyond the common pass.
 
-**The common pass applies to every kind.** `my_day.triage` and
-`my_day.weight` judge each new card, and `my_day.reason` and
-`my_day.next_act` judge each card in the top 10 (§10.3). So a row that says
-"None" still gets judged. It needs no detector and no text.
+**The common pass applies to every card.** `my_day.triage` and
+`my_day.weight` judge each new card. `my_day.reason` and `my_day.next_act`
+judge the cards near the top (§10.3). So a row that says "None" still gets
+judged. It needs no detector and no text.
+
+**Acts marked A\* wait on Q1.** They are class A acts beyond done, mark read
+and snooze (§11). Until the owner answers Q1, each renders as a link that
+opens the owning app at the right place.
 
 ### 5.1 Calendar
 
 | Kind | Signal | Why line | Body | Acts | AI | Phase |
 |---|---|---|---|---|---|---|
-| `block_overlap` | Two of my scheduled blocks overlap today or this week | Template: "Both are set for 2:00 PM on Tuesday." | A day strip of the two blocks | "Move X to <slot>" (class A), "Open the day" | None | MD-1 |
+| `block_overlap` | Two of my scheduled blocks overlap today or this week | Template: "Both are set for 2:00 PM on Tuesday." | A day strip of the two blocks | "Move X to <slot>" (A\*), "Open the day" | `my_day.slot` picks the slot | MD-1 |
 | `day_overbooked` | Planned hours exceed the working hours of the day | Template: "7 h planned in a 5 h day." | A bar of planned against free time | "Fit what's left" (opens Calendar's replan) | None | MD-1 |
 | `no_plan_yet` | It is past the day start and nothing is scheduled today | Template | — | "Plan my day" (link to Calendar) | None | MD-1 |
-| `free_slot_for_overdue` | A free slot of 30 minutes or more today, and an overdue task that fits it | Template: "You have 90 min free at 3:00 PM." | The slot and the task | "Block it" (class A) | None | MD-4 |
+| `free_slot_for_overdue` | A free slot of 30 minutes or more today, and an overdue task that fits it | Template: "You have 90 min free at 3:00 PM." | The slot and the task | "Block it" (A\*) | `my_day.slot` | MD-4. When the task has its own card, this folds into it (§4.5) |
 | `block_soon` | A block starts within 30 minutes | Template | The block and its task | "Open task" | None | MD-1 |
-| `meeting_prep` | A Notes meeting starts within 60 minutes | Composition: the open tasks, last thread and last notes with the attendees | A short prep list | "Open notes" | Text, after `my_day.compose` says yes | MD-6c |
-| `meeting_overlap` | A meeting overlaps a meeting or a block (card A) | Template from the two events | The two-day strip of card A | "Move to <slot>" (class B), "See options" | None | **MD-11, waits on calendar P4** |
+| `meeting_overlap` | A meeting overlaps a meeting or a block (card A) | Template from the two events | The two-day strip of card A | "Move to <slot>" (class B), "See options" | `my_day.slot` | **MD-11, waits on calendar P4** |
 
 ⚠️ **Card A needs external calendar events, and Metorite has none today.**
 `POST /calendar/sync` answers 501 (`routes/tasks/calendar.py:62-75`). Until
-calendar P4 lands, the feed can see an overlap of the member's own blocks, and
-of a block with a Notes meeting. It cannot see a client's site visit. §17 Q3
-asks the owner to rank P4.
+calendar sync lands, the feed sees an overlap of the member's own blocks
+only. The owner confirmed on 2026-10-13 that Metorite will read Google and
+Outlook calendars, and clashes fold in then (§17 Q3).
+
+**Meeting prep waits on Notes.** A prep card for a Notes meeting needs the
+Notes app, which is `preview` (`src/lib/nav.ts`, WS-19). It joins the
+catalogue in the PR that promotes Notes (H-21). Its link is
+`/notes/meeting/<id>` (`app/notes/meeting/[id]/page.tsx`).
 
 ### 5.2 My Tasks and Projects
 
 | Kind | Signal | Why line | Acts | AI | Phase |
 |---|---|---|---|---|---|
-| `overdue` | Today's provider | Template: "Due Monday. 2 days late." | Done (A), Snooze (A), "Move to tomorrow" (A) | None | MD-1 |
-| `due_today` | Today's provider | Template | Done (A), "Block time" (A) | None | MD-1 |
+| `overdue` | Today's provider | Template: "Due Monday. 2 days late." | Done (A), Snooze (A), "Move to tomorrow" (A\*) | None | MD-1 |
+| `due_today` | Today's provider | Template | Done (A), "Block time" (A\*) | None | MD-1 |
 | `notification` | Today's provider: assigned, mention, comment, nudge | Template from the actor and the excerpt | Mark read (A), Open | None | MD-1 |
 | `unblocked` | A task I own was blocked, and its blocker closed | Template: "Ravi closed the API task you waited on." | Open | None | MD-3 |
-| `waiting_quiet` | A Waiting task with no activity for 5 working days | Template: "You have waited 6 days on Ravi." | "Nudge Ravi" (B, it uses the Projects nudge), Snooze | None | MD-3 |
-| `stale_next` | A Next task with no change for 14 days | Template | "Move to Someday" (A), Open | None | MD-3 |
+| `waiting_quiet` | A Waiting task with no activity for 5 working days | Template: "You have waited 6 days on Ravi." | "Nudge Ravi" (B), Snooze | None | MD-3 |
+| `stale_next` | A Next task with no change for 14 days | Template | "Move to Someday" (A\*), Open | None | MD-3 |
 | `due_at_risk` | The outlook read says a deadline will slip at the current load | Template from the outlook facts | Open, "Ask to move the date" (B) | None | MD-3 |
-| `absent_on_due` | A due date falls on a day I am absent | Template from the conflicts read | "Move to <day>" (A) | None | MD-3 |
-| `assigned_to_me` | A colleague gave me a task today | Template | Accept (A), Open | None | MD-1 |
+| `absent_on_due` | A due date of my task falls on a day **I** am absent | Template: "Due Friday. You are on leave that day." | "Move to <day>" (A\*) | None | MD-3. It reads **my own** absences, `GET /people/me/absences` (`routes/people/selfservice.py:272`), never the HR conflicts read |
+| `assigned_to_me` | A colleague gave me a task today | Template | Open | None | MD-1 |
 
 ### 5.3 Email
 
 | Kind | Signal | Why line | Body | Acts | AI | Phase |
 |---|---|---|---|---|---|---|
 | `needs_reply` | Today's provider | Template: "Asked yesterday at 4:12 PM." | The last message, 3 lines | Open thread, Snooze | None | MD-1 |
-| `reply_drafted` | `needs_reply` and a draft in `email_ai_drafts` (card B) | Template plus a promise, if the email app found one | The full draft and its attachments | "Send" (B), "Edit draft" | **Reuses** the email app's draft. My Day pays nothing | MD-4, send in MD-8 |
-| `promise_due` | A promise in the member's sent mail falls due ("I will send it by Friday") | Template from the promise | — | "Add a task" (A), Open | `my_day.commitment` reads each sent message once. It reuses email insights and `wa_commitments` where they already hold the promise | MD-6b |
-| `no_answer` | A mail I sent that asked a question had no answer for 3 working days | Template | — | "Follow up" (opens a draft), Snooze | None. The email app's follow-up scan finds it | MD-3 |
-| `long_thread` | A needs-reply thread with 6 messages or more | **Composition**: the gist in two sentences | The gist | Open thread | Text, after `my_day.compose` says yes | MD-6c |
-| `handled_by_rules` | The email rules filed mail today | — | Count only, in the Handled group | Open the rules history | None | MD-7 |
+| `reply_drafted` | `needs_reply` and a draft in `email_ai_drafts` (card B) | Template, plus the promise when the email app holds one for the thread | The full draft and its attachments. For a thread of 6 messages or more, the gist above it | "Review and send" (B), "Edit draft" | The draft is the email app's. The gist is a text composition (MD-6c) | MD-4 |
+| `promise_due` | A promise I made in sent mail falls due (card B's "You said you would send it by Friday") | Template from the promise | — | Done (A), Open | **None in My Day.** The email app's own detector found the promise and filed it as a task (`capture_email.py:1007`, `:1176`). The provider reads the open ones through `_digest_commitments` (`digest.py:293`) | MD-3 |
+| `no_answer` | A mail I sent has waited 3 working days for the other side | Template | — | "Follow up" (opens a draft), Snooze | None. It reads the email app's AWAITING threads (`digest.py`, the read above `:293`) | MD-3 |
+
+**The gist of a long thread is not a card.** It is part of the body of the
+thread's one card (§4.5).
 
 ### 5.4 Reports and analytics
 
 | Kind | Signal | Why line | Body | Acts | AI | Phase |
 |---|---|---|---|---|---|---|
-| `report_ready` | A report I receive has a new run (card C) | Template: names the meeting on my calendar that the report feeds, when one exists | One `Stat` tile and its bars, from the report's own panel | "Share with team" (B), "Open report" | The report's own AI summary, when one exists. My Day writes none | MD-4 |
+| `report_ready` | A report I receive has a new run (card C) | Template: names the meeting on my calendar that the report feeds, when one exists | One `Stat` tile and its bars, from the report's own panel | "Open report", "Share with team" (B) | The report's own AI summary, when one exists. My Day writes none | MD-4 |
 | `metric_moved` | A number in a report I receive moved more than its threshold | Template: "Throughput fell 30% this week." | The tile | Open report | None | MD-9 |
 | `team_pulse` | (lead only) The morning Team pulse | Template from `pulse` | The pulse panel | Open report | None | MD-12 |
 
@@ -336,7 +404,7 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 
 | Kind | Signal | Why line | Acts | AI | Phase |
 |---|---|---|---|---|---|
-| `crm_followup_due` | An activity I own has `due_at` today or earlier | Template | Done (A), Open deal | None | MD-3. It needs a new "my due activities" read in `routes/crm/activities.py` |
+| `crm_followup_due` | An activity I own has `due_at` today or earlier | Template | Open deal | None | MD-3. It needs a new "my due activities" read in `routes/crm/activities.py`. Feed only, until a §7.2 amendment |
 | `deal_quiet` | A deal I own passed its stage's `max_dwell_days` | Template: "No activity for 12 days in Proposal." | "Log a call" (opens the CRM form), Snooze | None | MD-3 |
 | `deal_close_passed` | A deal I own passed its close date and is open | Template | "Move the date" (opens the CRM form) | None | MD-3 |
 | `lead_replied` | A lead I own replied by mail | Template | Open thread | None | MD-9 |
@@ -346,9 +414,9 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | Kind | Signal | Why line | Acts | AI | Phase |
 |---|---|---|---|---|---|
 | `approval` | Today's provider, org admin only | Template from the action name | Open Approvals | None | MD-1 |
-| `colleague_out` | A person I have a block or a meeting with today is absent | Template from `people_absences` | Open the day | None | MD-3 |
+| `colleague_out` | A person I have a block with today is absent | Template | Open the day | None | MD-3, **only for a member who passes `can_read_hr_fields`** (`routes/tasks/core.py:75`). The provider calls the People app's own gated read. A plain member gets no row, and a negative test proves it |
 | `agent_done` | A chat run that I started finished while I was away | Template from the run | Open chat | None | MD-3. It reads WS-51's run state |
-| `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3 |
+| `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3. Feed only, until a §7.2 amendment |
 | `whatsapp_waiting` | A WhatsApp thread waits for me | Template | Open thread | None | MD-9 |
 
 ### 5.7 The cards about the day itself
@@ -364,23 +432,33 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 ## 6. The life of a card — how it leaves and how it comes back
 
 The owner asked what happens when a member does not scroll far enough, or
-misses a card. This section is the answer. Every rule here is deterministic.
+misses a card. This section is the answer. Every rule here is deterministic,
+except `my_day.resurface`, which can only bring a card back.
 
 ### 6.1 States
 
 | State | Meaning | Visible |
 |---|---|---|
-| `new` | The member has not seen it | Yes, with a dot |
+| `new` | No state row, or the fingerprint changed since the last row | Yes, with a dot |
 | `seen` | The member saw it and did not act | Yes |
-| `acted` | The member ran an act from the card | No. It goes to Handled when the signal resolves |
+| `later` | The member saw it on three visits and did not act (§6.5) | In the folded Later group |
+| `acted` | The member ran an act from the card | No |
 | `snoozed` | Hidden until a time or a change | No |
-| `dismissed` | Hidden until its fingerprint changes | No |
-| `resolved` | The signal is no longer true, by any route | No. It goes to Handled |
+| `dismissed` | Hidden until its fingerprint changes. `dismiss_reason` is `dismiss` or `not_useful` | No |
 | `expired` | Its `expires_at` passed | No |
 
-**`resolved` needs no write.** A provider that no longer returns a signal
-resolves it. A task done in Projects leaves the feed with no extra work. This
-is the "no sync" rule of D52, applied to the feed.
+**A card leaves the feed when its source stops returning it, and only from a
+sound answer.** A signal that a provider no longer returns has left the
+feed only when that source answered `ok` and was not capped. Two other cases
+keep the card:
+
+- **The source failed.** The client keeps that source's cards from the last
+  answer, and the caveat line of NS-3 names the gap.
+- **The source stopped at its cap.** A signal past the cap is unknown, not
+  closed. The group shows "Show all in My Tasks", for example.
+
+Leaving the feed never writes a state row, and it never puts a card in
+Handled (§6.7).
 
 ### 6.2 Seen
 
@@ -389,21 +467,38 @@ is the "no sync" rule of D52, applied to the feed.
   and on `pagehide`.
 - A card in the bell panel is not seen by this rule. The bell is a glance.
 - Each seen write counts a **visit**: two sightings within 30 minutes are one
-  visit.
+  visit. `visits` counts since the card last came back.
 
-### 6.3 What brings a card back
+### 6.3 The order of the rules
 
-A card that left comes back on the first of these:
+The feed applies these rules in this order. The first rule that matches
+decides.
 
-1. **Its fingerprint changed.** A new message in a dismissed thread, a new due
-   date, a new run of a report. The card returns as `new`, with "Updated" in
-   its source line.
-2. **It crossed its `urgent_at`.** The member saw a task at 9:00, and it is
-   due at 15:00. It comes back at 13:00, in the Now group, with "Still open".
-3. **A new day started.** At the member's `day_start_hour`, every `seen`
-   card that is still true returns to the ranking, with its visit count kept.
-   A dismissed card stays dismissed.
-4. **Its snooze ended.** See §6.4.
+1. **Snooze holds.** A `snoozed` card stays hidden until its time, or until
+   its fingerprint changes for "until it changes".
+2. **Dismiss holds.** A `dismissed` card stays hidden until its fingerprint
+   changes.
+3. **A changed fingerprint returns a card as `new`.** A new message in the
+   thread, a new due date, a new run of a report. The source line says
+   "Updated". `visits` goes back to 0.
+4. **Urgency lifts.** A `seen` or `later` card that crosses its `urgent_at`
+   goes to Now, with "Still open". The member saw a task at 9:00, and it is
+   due at 15:00. It comes back at 13:00.
+5. **The fixed daily return.** At the member's `day_start_hour`, some
+   `later` cards return to Needs you once that day. They are each `overdue`
+   card, and each `needs_reply` older than 48 h. `visits` goes back to 0. `decide` cannot stop
+   this rule (§7 rule 2).
+6. **The judged return.** At day start, `my_day.resurface` asks about each
+   other `later` card. A yes returns it, with `visits` at 0. With no answer,
+   the card stays in Later.
+7. **Seen cards start the day fresh.** At day start, each `seen` card returns
+   to the ranking with `visits` at 0.
+8. **Three visits fold a card.** A `seen` card with 3 visits and no act
+   becomes `later`.
+
+**Snooze and dismiss beat urgency in the feed, and never in the bell.** The
+member chose to hide the card. A needs kind still counts in the bell and the
+sidebar, so nothing that needs the member drops away in silence.
 
 ### 6.4 Snooze
 
@@ -419,17 +514,7 @@ Snooze offers four choices:
 A snooze of an `overdue` task does not change its due date. That needs the
 "Move to tomorrow" act, which writes the date through the lens.
 
-### 6.5 The scroll-past rule — "Later"
-
-A member who scrolls past a card three times on three visits, and never acts,
-tells us something. The card moves to the folded **Later** group. Two
-things still lift it out:
-
-- It crosses `urgent_at` (§6.3 rule 2).
-- A new day starts, and the card is `overdue` or `needs_reply` older than
-  48 h. Those return to Needs you once each day, never more.
-
-### 6.6 Missed — the escalation ladder
+### 6.5 Missed — the escalation ladder
 
 A card that matters and stays `new` climbs one step at a time. Each step is
 quieter than a red badge storm (`navigation_shell.md` §3.2c).
@@ -437,32 +522,41 @@ quieter than a red badge storm (`navigation_shell.md` §3.2c).
 | Step | When | What happens | Built |
 |---|---|---|---|
 | 1 | Always | The card sits at the top of its group, with a dot | MD-2 |
-| 2 | Always | The bell badge and the sidebar row count include it | Yes, today |
-| 3 | `urgent_at` passed, and the card is still `new` | The card moves to Now, and the bell row moves first | MD-2 |
-| 4 | Step 3 for 60 minutes, inside working hours, and the member opted in | One message on the member's channel: WhatsApp or web push | **MD-10, owner gate** |
+| 2 | Always, for a needs kind | The bell badge and the sidebar row count include it | Yes, today |
+| 3 | `urgent_at` passed, and the card is still `new` | The card moves to Now | MD-2 |
+| 4 | Step 3 for 60 minutes, inside working hours, the member opted in, and `my_day.nudge` says yes | One message on the member's channel: WhatsApp or web push | **MD-10, owner gate** |
 
 **The caps on step 4.** Three messages each day at most. None outside the
 working hours of `work_schedule`. One message holds every card that reached
 step 4 in the same hour. The channel changes the delivery and never the
 function (`whatsapp_assistant_channel.md`).
 
-### 6.7 Dismiss and "Not useful"
+### 6.6 Dismiss and "Not useful"
 
 - **Dismiss** hides this card until its fingerprint changes.
-- **Not useful** hides the card, and counts against its kind for this member
-  (§7). After three "Not useful" on one kind in 30 days, the menu offers
-  "Stop showing <kind>". That mute goes into `user_settings.shell_prefs`.
-- **A mute never hides a `needs` kind from the bell.** Overdue tasks and
-  approvals stay visible somewhere. A mute changes the feed only.
+- **Not useful** does the same, and counts against its kind for this member
+  (§7). It also offers one line, "Tell My Day why" (§10.5).
+- After three "Not useful" on one kind in 30 days, the menu offers "Stop
+  showing <kind>". The mute goes into `user_settings.my_day_prefs` (§13.3).
+- **A mute never hides a needs kind from the bell.** A mute changes the feed
+  only.
 
-### 6.8 Handled, and the honest summary
+### 6.7 Handled, and the honest summary
 
-- **Handled** lists the signals that resolved since the day start. The
-  member, a colleague, an email rule or an agent closed each one. Each row
-  names who closed it.
+- **Handled reads app history. It never infers anything from a missing
+  signal.** Each provider may give a `handled(member, since)` read, bounded at
+  15 rows, through its app's own authorized read:
+  - My Tasks and Projects: the member's tasks completed since the day start,
+    with the actor from the task's activity.
+  - Email: the rules applied today on the member's mailboxes
+    (`email_executed_rules`, status `APPLIED`).
+  - Approvals: the actions an admin decided today.
+  - My Day: the member's own acts today (`my_day_card_state.acted_at`).
+- **Each row names who closed it**: "You", a colleague, "Email rules", or the
+  agent's name.
 - **The summary line counts real rows.** "3 things need you" is the count of
-  open cards in Now and Needs you. "The rest is handled" shows only when the
-  Handled group is not empty and every source answered.
+  open cards in Now and Needs you. "The rest is handled" shows only when
+  Handled is not empty, and every source answered `ok` with no cap.
 - **A failed source silences the claim.** The rule of NS-3 stays: when a
   source failed, the summary says nothing about needs, and the card names the
   gap.
@@ -481,8 +575,8 @@ score = base(kind) + urgency + weight + affinity − fatigue
 |---|---|---|
 | `base(kind)` | Code | A fixed number for each kind, in one table in `gateway/routes/shell/feed_rank.py`. Needs kinds start above information kinds |
 | `urgency` | Code | Grows as `urgent_at` comes near: +40 inside 2 h, +60 when passed. Overdue adds 2 for each day late, to 20 at most. A model never does date arithmetic |
-| `weight` | **`decide`**, `my_day.weight` (§10.3) | The level from 0 to 4, times 6. With no answer, or an answer under its confidence gate, the old path sets it: the task's priority from the D78 matrix, +15 for a CRM customer, +10 for a promise |
-| `affinity` | Code | From the member's own acts on this kind over 30 days: `(acted − not_useful) / shown × 20`, between −20 and +20 |
+| `weight` | **`decide`**, `my_day.weight` (§10.3) | The level from 0 to 4, times 6. With no answer, or an answer under its gate, the old path sets it: the task's priority from the D78 matrix, +15 for a CRM customer, +10 for a promise |
+| `affinity` | Code | From the member's own acts on this kind over 30 days: `(acted − not_useful) / shown × 20`, between −20 and +20. It is computed once each day, at day start |
 | `fatigue` | Code | −8 for each visit with no act, to −24 at most |
 
 **The group comes from `decide` too.** `my_day.triage` (§10.3) puts each card
@@ -494,9 +588,9 @@ Four rules sit on top of the score:
 1. **The group comes first.** The score orders cards inside a group.
 2. **`decide` may demote a needs card, and it may never hide one.** An
    overdue task, an approval or a needs-reply thread goes at worst to Later.
-   Only a card that is not a needs kind may leave the feed on a `drop`
-   answer.
-3. **Today's rules stay.** 15 signals for each app at most. An approval takes
+   §6.3 rule 5 still brings it back each day. Only a card that is not a
+   needs kind may leave the feed on a `drop` answer.
+3. **Today's caps stay.** 15 signals for each app at most. An approval takes
    only the room that the member's own work leaves (`YIELDING_KINDS`,
    `needs.py:163`).
 4. **The order holds while the member reads.** The client keeps the order of
@@ -518,49 +612,90 @@ work, and each has its own cost.
 
 | Trigger | What runs | What it costs | Ticket |
 |---|---|---|---|
-| **A read** | The providers, the rank and the state join. Bounded SQL. The read uses the cached `decide` answers, and never waits for a new one | No model. One read each 60 s while the tab shows, shared with the bell | MD-1 |
-| **A change** | An event marks the member's feed **dirty**: a `pm.*` event, an email sync cycle, a report run, a chat run end | A Redis write. No model | MD-5 |
-| **A clock** | One gateway loop, `my_day`, with a 60 s tick. It asks `decide` about the cards that are new or changed, makes the morning pass, handles the `urgent_at` crossings and the day end, and sweeps old rows | `decide` calls for active members only, in batches (§10.4) | MD-5, MD-6a |
+| **A read** | The providers, the one-card fold, the rank and the state join. Bounded SQL. The read uses the cached `decide` answers, and never waits for a new one | No model. At most one provider run for each time edge or change (§8.1) | MD-1, MD-5 |
+| **A change** | An event marks the member's feed **dirty**: a `pm.*` event, an email sync cycle, a report run, a chat run end | One Redis write. No model, and no database query | MD-5 |
+| **A clock** | One gateway loop, `my_day`, with a 60 s tick. It asks `decide` about new or changed cards, makes the morning pass, handles the day start rules of §6.3, and sweeps old rows | `decide` calls for active members only, in batches (§9.1 rule 6) | MD-5, MD-6a |
 
-### 8.1 The read cache
+### 8.1 The read cache, and the next time edge
 
-- The server keeps the last answer for each member for 30 s, under a key that
-  holds the member and a **feed version**. A change event bumps the version.
-  So a quiet member's poll costs one Redis read, and a busy member's poll
-  recomputes at once.
-- The key goes through the tenant-prefix wrapper, `acb_common.tenant_redis`
-  (R5c). The key holds the member, because two members hold different grants.
-- The client sends the version it holds. An unchanged version answers 304.
+Some cards come from the clock, not from an event: `block_soon`, the 2-hour
+edge of Now, `no_plan_yet`, `day_end` and every `expires_at`. So the cache
+must know when the clock will change the answer.
+
+- **Each answer carries its next time edge.** The server takes the earliest
+  of these times, over the member's signals:
+  - each block start, minus 30 minutes
+  - each `urgent_at` and each `expires_at`
+  - each due time, minus 2 hours
+  - the next `day_start_hour`, and `day_end_hour` minus 60 minutes
+- **An answer stays valid until the first of three things:** the feed version
+  changes, the next time edge passes, or 10 minutes pass. The 10 minutes
+  bound a missed event.
+- **The key holds the member**, because two members hold different grants.
+  It goes through the tenant-prefix wrapper, `acb_common.tenant_redis` (R5c).
+- **The client sends an ETag** of the version and the edge. A valid answer
+  with the same ETag answers 304.
+
+So a quiet member's poll costs one Redis read until the next time edge. Then
+one provider run makes the time-derived cards appear on time.
 
 ### 8.2 The change sink
 
 The gateway registers a third sink on the in-process bus, beside the two at
-`gateway/main.py:1612-1621`. It maps an event to the members it touches, and
-bumps their feed version. It never computes a card. The email app bumps the
-version from its post-sync hooks (`routes/email/scheduler_hooks.py`).
+`gateway/main.py:1612-1621`.
+
+- **It reads the members from the event's payload only**, for example the
+  assignee and the actor of a `pm.*` event. It bumps their feed version with
+  one Redis increment.
+- **It never queries the database.** Projects awaits `emit` inline in each
+  write, so a query here would slow every task edit. An event that names no
+  member bumps nothing, and §8.1's 10 minutes bound the gap.
+- The email app bumps the version from its post-sync hooks
+  (`routes/email/scheduler_hooks.py`).
 
 ⚠️ **The bus is in-process.** An event emitted in one gateway process does not
 reach another. Today the gateway runs one process. A second process would
-need Redis pub-sub through `TenantRedis.publish`. MD-5 names this as a limit,
-and the 30 s cache bounds the damage: a missed event costs at most 30 s.
+need Redis pub-sub through `TenantRedis.publish`. MD-5 names this as a limit.
 
-### 8.3 The loop
+### 8.3 The loop, and whose access it uses
 
 The `my_day` loop copies the CRM mirror loop, `gateway/crm_sync/scheduler.py`:
+a 60 s tick, an `is_due(member)` test, and three members at once at most. The
+kill switch lives inside the start function (`gateway/main.py:40-48`).
 
-- A 60 s tick. An `is_due(member)` test. Three members at once at most.
-- The kill switch lives inside the start function (`gateway/main.py:40-48`).
-- It enumerates organizations on the RLS-exempt table, then binds each with
-  `tenant_session`. That read is a tenant-discovery site, registered in
-  `tests/unit/test_db_engine_seam.py`.
-- A member is **active** when they opened My Day in the last 3 days. The loop
-  skips every member who is not active. A dormant seat costs no model call.
-- **A member is due** when their feed is dirty and the last pass was 2
-  minutes ago or more, or when their `day_start_hour` arrives. So a burst of
-  20 task edits makes one pass, not 20.
-- **The morning pass** runs 15 minutes before `day_start_hour`. So the first
-  visit of the day already has the judged order, and the order does not jump
-  under the member's eyes.
+**Which members.** Each feed read adds the signed-in member to a sorted set
+of the organization, `my_day:active`, with the time as its score. The key
+goes through the tenant-prefix wrapper. The loop reads members from that set
+only. So each email it holds came from a session identity, never from
+request input. A member with no read in 3 days is not active, and costs no
+model call.
+
+**Whose access.** The loop has no request. For each member it:
+
+1. Binds the organization with `tenant_session`. The organization list comes
+   from the RLS-exempt table, a tenant-discovery site registered in
+   `tests/unit/test_db_engine_seam.py`.
+2. Builds the member's context with `acb_auth.deps.member_context(email)`
+   (`deps.py:388`). That is the request path's own resolve, so the features,
+   the admin test and the visibility match a web request.
+3. Refuses a context whose organization is not the bound one, the check of
+   `routes/whatsapp_channel/views.py:142-155`. A member who left the
+   organization is skipped, and the loop removes them from the set.
+4. Runs the providers with that context, and judges what is new.
+
+**Fence (MD-5).** `tests/unit/test_my_day_loop.py` holds four cases. A member
+whose context resolves to another org is skipped. A member without
+`feature:email` gets no email signal from the loop. The loop never reads a
+member from anywhere but the active set. And the active set is written only
+from the session's identity.
+
+**When a member is due.**
+
+- Their feed is dirty, and the last pass was 2 minutes ago or more. So a
+  burst of 20 task edits makes one pass, not 20.
+- 15 minutes before `day_start_hour`: **the morning pass**. So the first visit
+  of the day already has the judged order, and the order does not jump under
+  the member's eyes.
 
 ---
 
@@ -572,28 +707,33 @@ The `my_day` loop copies the CRM mirror loop, `gateway/crm_sync/scheduler.py`:
    with no answer yet shows its old-path group, weight and template. The
    judged values fill in on a later read.
 2. **`decide` first, text last.** Every judgment is a typed question (§10.3).
-   A text model runs only for a gist or a prep list, and only after
+   A text model runs only for the gist of a long thread, and only after
    `my_day.compose` says yes.
 3. **Reuse what an app already paid for.** Email's own `decide` answers say
-   which thread needs a reply (`email.thread_status`). A draft reply is the
-   email app's draft. A report sentence is the report's own AI summary. My
-   Day asks only what no app has asked.
+   which thread needs a reply (`email.thread_status`). The draft reply and
+   the promise are the email app's. A report sentence is the report's own AI
+   summary. My Day asks only what no app has asked.
 4. **Once for each fingerprint.** The loop caches each answer. The key holds
-   the member, the signal and the card's fingerprint. It also holds the hash
-   of the member's day context, and the question version. The same facts never pay
-   twice. This is the email brief pattern (`routes/email/digest.py:553-621`).
+   the member, the signal and the card's fingerprint. It also holds the
+   context hash of §10.4, and the question version.
 5. **Only what changed.** A pass asks about the cards that are new, or whose
-   fingerprint changed. A pass with nothing new makes no call.
+   fingerprint changed. A pass with nothing new makes no call. A change of
+   the context hash judges the open cards again, at most once each hour.
 6. **Sixteen questions in one request.** One request carries up to 16
    questions over one shared state (`MAX_QUESTIONS`,
    `customer_console/decide.py:52`). The charge for each call has a floor
    (H-42), so the loop packs questions and counts calls, not only tokens.
-7. **Only near the top.** A text composition runs for the top 5 open cards of
-   an active member. It also runs when the member scrolls to a card. Never
-   before.
+7. **One round for each pass.** The cards near the top get their reason and
+   next-act questions in the same round as triage and weight. "Near the top"
+   means the top 6 by the old path, so the pass needs no second round. A card
+   that the judged order lifts into the top 6 gets them on the next pass.
 8. **A cap for each member and each organization.** 60 `decide` calls and
-   10 compositions for each member each day. The operator sets a ceiling
-   for each organization. Past a cap, cards keep their old-path values.
+   10 compositions for each member each day. The operator sets a ceiling for
+   each organization. Past a cap, cards keep their old-path values. The
+   counters are Redis keys through the tenant wrapper:
+   `my_day:calls:<member>:<local date>` and `my_day:calls:org:<date>`, with a
+   26 h TTL. `gateway/routes/shell/feed_decide.py` checks them before each
+   request. Fence: `tests/unit/test_feed_decide.py::TestCaps`.
 9. **The balance gate stops it, and the feed keeps working.** A 402 or a 403
    starts the 15-minute cool-down of `decide_features.py`
    (`REFUSAL_COOLDOWN_S`). The feed then runs on the old path. That is D88's
@@ -604,34 +744,34 @@ The `my_day` loop copies the CRM mirror loop, `gateway/crm_sync/scheduler.py`:
 
 ### 9.2 The estimate
 
-For one active member on one working day:
+For one active member on one working day, with about 30 open cards:
 
-| Call | Calls | Input tokens each | Input tokens |
-|---|---|---|---|
-| Morning pass: triage and weight for about 30 cards, 2 questions each, 8 cards in a request | 4 | 6,000 | 24,000 |
-| Passes on a change: about 8 new cards each time | 10 | 5,000 | 50,000 |
-| Reason, next act and slot, packed into the same passes | 0 | — | — |
-| Day start: resurface the seen cards | 1 | 5,000 | 5,000 |
-| Commitments in sent mail, one request for each sync cycle that sent mail | 4 | 1,500 | 6,000 |
-| **`decide`, total** | **19** | | **85,000** |
-| Text: thread gist and meeting prep, when `my_day.compose` says yes | 4 | 2,500 | 10,000 |
+| Pass | Questions | Requests | Input tokens each | Input tokens |
+|---|---|---|---|---|
+| Morning: triage and weight for 30 cards (60), reason and next act for the top 6 (12), slot for 2 (2) | 74 | 5 | 6,000 | 30,000 |
+| On a change, 10 each day: about 8 new cards (16), and about 2 of them near the top (4) | 20 | 2 | 5,000 | 100,000 (10 passes) |
+| A context change, 2 each day: the open cards again | 74 | 5 | 6,000 | 60,000 (2 changes) |
+| Day start: resurface about 5 cards in Later | 5 | 1 | 5,000 | 5,000 |
+| **`decide`, total** | | **36** | | **195,000** |
+| Text: the gist of a long thread, when `my_day.compose` says yes | | 4 | 2,500 | 10,000 |
 
-**The vendor cost of `decide` is close to nothing.** At USD 0.042 for each
-million input tokens, with free output, 85,000 tokens cost about USD 0.004
-each day. That is about USD 0.08, or ₹7, each month of 22 working days.
+**The vendor cost of `decide` is small.** At USD 0.042 for each million input
+tokens, with free output, 195,000 tokens cost about USD 0.008 each day. That
+is about USD 0.18, or ₹15, each month of 22 working days.
 
-**The text model is the larger cost.** Assume a price near US$0.60 for each
+**The text model is the other half.** Assume a price near US$0.60 for each
 million input tokens, the range of the default `tier-fast` model. Then the 4
 compositions cost about USD 0.13 each month, or ₹11.
 
 **The customer's charge is not this number.** The customer pays in AI
 credits, at the rate card of H-42, and the floor on each call sets most of
-a `decide` charge. So the design counts calls: about 23 calls for each active
-member each day, 19 of them `decide`.
+a `decide` charge. So the design counts calls: about 40 for each active
+member each day, 36 of them `decide`. The member cap of 60 leaves room for a
+busy day.
 
-**The real cost risk is the database, not the model.** One poll each 60 s from
-each open tab runs four providers. §8.1's cache keeps that flat, and MD-5
-must measure it.
+**The database is the other risk.** §8.1 bounds the provider runs to one for
+each change or time edge. On My Day, one run serves both the feed and the
+needs view (§14.1). MD-5 measures it.
 
 ### 9.3 Who pays — answered by the owner, 2026-10-13
 
@@ -642,14 +782,14 @@ shows no price (D32.7, D88).
 
 **A customer with no credit keeps a working feed.** The CP-6 balance gate
 refuses, the cool-down starts, and every card falls back to its old path. The
-feed shows one line in the header: "AI suggestions are paused. Ask an admin
-to add credits." It is the command bar's line (`navigation_shell.md` §6.5).
+header shows one line: "AI suggestions are paused. Ask an admin to add
+credits." It is the command bar's line (`navigation_shell.md` §6.5).
 
 ⚠️ **The text half waits on two things outside this spec**, as NS-4b does.
 The first is **H-171**: the product's own text AI is not metered today. The
 second is **H-69**: `ROUTER_SERVING_ENABLED` is an owner flip. The `decide`
 half does not wait on them. `decide` already bills through the Console, and
-its first call is a `usage_event` row (`acb_llm/decide.py`, `request_id`).
+each call has a `request_id` that joins it to its `usage_event` row.
 
 ---
 
@@ -658,9 +798,9 @@ its first call is a `usage_event` row (`acb_llm/decide.py`, `request_id`).
 ### 10.1 Why `decide` fits this feed
 
 A chief of staff makes many small calls on each item. Does this matter today?
-Is it urgent or only loud? Is it the member's to do, or a colleague's? Which
-reason will make the member act? Each call is a choice from a short list,
-not an essay. That is the shape of `decide` (D75).
+Is it urgent or only loud? Which reason will make the member act? Each call
+is a choice from a short list, not an essay. That is the shape of `decide`
+(D75).
 
 - **It is cheap.** USD 0.042 for each million input tokens, and the output
   is free (D75).
@@ -676,28 +816,29 @@ not an essay. That is the shape of `decide` (D75).
 
 ### 10.2 The rule: decide picks, templates speak, code acts
 
-- **Code builds every option.** The list of groups, the reason templates, the
-  acts and the slots all come from code, out of `facts`. `decide` answers
-  with one of their keys.
+- **Code builds every option.** The groups, the reason templates, the acts
+  and the slots all come from code, out of `facts`. `decide` answers with one
+  of their keys.
 - **A template writes every sentence on a card.** The why line is the
   template that `decide` picked, filled with values from `facts`. A judged
   card holds no word that a model wrote.
 - **Code runs every act.** An act's target, time and recipient come from the
-  option that code built, and `decide` only chose its key.
-- **An answer that is not one of our keys is no answer.** The feed reads it
-  as missing and takes the old path. `compare_choice` already logs such an
-  answer as `"unknown"` (`gateway/decide_features.py:416-446`).
+  option that code built. `decide` only chose its key.
+- **An answer that is not one of our keys is no answer.** The feed takes the
+  old path. `compare_choice` already logs such an answer as `"unknown"`
+  (`gateway/decide_features.py:416-446`).
 
 **Fence (MD-6a).** `tests/unit/test_feed_decide.py::TestKeysOnly` answers
 each question with a key that is not in its options, and with a valid key.
-It asserts that the card's `href`, `acts`, `act_ref` and why line are
-byte-equal to an old-path card in the first case. In the second case, they
-must come from the chosen option.
+In the first case, the card's `href`, `acts`, `act_ref` and why line must be
+byte-equal to an old-path card. In the second case, they must come from the
+chosen option.
 
 ### 10.3 The questions
 
 Each row is one feature in the one mode registry,
-`gateway/decide_features.py` (§10.6).
+`gateway/decide_features.py` (§10.6). Every feature goes through `shadow`
+before `on`. None claims an exemption from the adoption rule.
 
 | Feature | Type | The question, in short | Options or levels | What code does with the answer | Old path |
 |---|---|---|---|---|---|
@@ -706,39 +847,50 @@ Each row is one feature in the one mode registry,
 | `my_day.reason` | choice | "Which fact best explains why this matters now?" | 2 to 6 reason templates of the kind, each shown filled | Picks the why line | The first template of the kind |
 | `my_day.next_act` | choice | "Which next step fits best?" | The acts that code built for this card | Picks the main act. The rest go to the menu | The kind's default act |
 | `my_day.slot` | choice | "Which slot suits this work best?" | Up to 8 free slots that the calendar packer found | Fills "Block it" or "Move to" | The earliest slot |
-| `my_day.resurface` | boolean | "Should this seen item come back to the member today?" | — | Back in its group when the probability is 0.6 or more, else Later | §6.3 and §6.5 alone |
-| `my_day.commitment` | boolean, then choice | "Does this sent message promise a deliverable?" then "By when?" | `today`, `tomorrow`, `this_week`, `next_week`, `none` | Makes a `promise_due` signal (§5.3) | No signal |
-| `my_day.compose` | boolean | "Would a short summary save the member time here?" | — | A text composition runs only on yes | No composition |
-| `my_day.nudge` | boolean | "Is this worth a message outside the app now?" | — | Step 4 of §6.6, at 0.8 or more, inside the caps | No message |
-
-**One pass asks several questions about one card.** Triage and weight go
-together for every new card. Reason, next act and slot join them only for a
-card that reaches the top 10. So the loop spends the most on the cards the
-member will see.
+| `my_day.resurface` | boolean | "Should this item in Later come back to the member today?" | — | §6.3 rule 6, at a probability of 0.6 or more | The card stays in Later |
+| `my_day.compose` | boolean | "Would a short summary save the member time here?" | — | The gist runs only on yes | No gist |
+| `my_day.nudge` | boolean | "Is this worth a message outside the app now?" | — | Step 4 of §6.5, at 0.8 or more, inside the caps | No message |
 
 ### 10.4 The state — what the chief of staff knows
 
 One request carries one state. Code builds it, and clips every text with
-`clip_fact` (`gateway/decide_features.py:224`). It holds no mail body.
+`clip_fact` (`gateway/decide_features.py:224`).
 
 - **The member.** The role preset, the local time, the working hours of
   today, and today's One Thing (`calendar_day_state`).
 - **What the member must get done.** The active goals and areas
   (`my_tasks_horizons`), the projects the member owns or leads, and the
   deadlines of the next 7 days. At most 10 of each.
-- **The day.** Today's blocks and meetings, with their titles and times.
+- **The day.** Today's blocks, with their titles and times.
 - **The member's habits.** For each kind, how often the member acted and how
-  often they said "Not useful", over 30 days. Counts only.
+  often they said "Not useful", over 30 days. Counts only, computed at day
+  start.
+- **The corrections** of §10.5.
 - **The cards.** Up to 8 cards, each as `{id, app, kind, facts}`. A mail
-  subject or a task title is a clipped fact. A body never goes in.
+  subject, a task title or a deal name is a clipped fact.
+
+**The state holds no mail body.** The `facts` of an email card hold the
+subject, the sender's name and the times. The gist of a long thread is the
+one place a body goes to a model. It takes the text path of §9.1 rule 2, as
+the email brief does (`digest.py:542-621`). It never goes to `decide`.
 
 This state is how the feed follows what the member must get done across
 projects and email (owner, 2026-10-13). The same overdue task weighs more on
 the day its project is the One Thing.
 
-**The day's part is cached.** The member, the goals and the day change a few
-times each day. Their hash is part of each cache key (§9.1 rule 4). So a
-change to the One Thing judges the open cards again, once.
+**The context hash names its fields.** It holds these, and no others:
+
+- the local date and the role preset
+- the One Thing
+- the active goal ids
+- the ids of the projects the member owns or leads
+- the corrections
+
+It holds **no** clock, no blocks, no deadlines and no habit counts. Those
+ride in the state, so a judgment can use them. A change to them never voids a
+cached answer. A change to a
+hashed field judges the open cards again, at most once each hour (§9.1
+rule 5).
 
 ### 10.5 The member's corrections
 
@@ -747,8 +899,8 @@ under each question (`gateway/decide_features.py:254-272`). Email uses it for
 the rule match. My Day uses it the same way:
 
 - "Not useful" on a card offers an optional line: "Tell My Day why".
-- The line goes into `user_settings.shell_prefs`, newest first, clipped to
-  1,500 characters (`CORRECTIONS_CLIP`).
+- The line goes into `user_settings.my_day_prefs` (§13.3), newest first,
+  clipped to 1,500 characters (`CORRECTIONS_CLIP`).
 - It rides under `my_day.triage` and `my_day.weight` on every later pass.
 
 So "Newsletters from Acme never need me" changes the next morning's feed
@@ -757,38 +909,39 @@ with no training, no rule editor and no setting screen.
 ### 10.6 Adoption — off, shadow, on
 
 The feed follows the adoption rule of D75 item 7 and `customer_console.md`
-§6A.14.
+§6A.14, with all four of its rules.
 
-1. **Register.** MD-6a adds the `my_day.*` features to `FEATURES` in
-   `gateway/decide_features.py`. Every default is `off`. It adds no second
-   registry, and no second helper. H-44 absorbs the registry later.
-2. **Widen `ask`, do not copy it.** `ask` names its log ids `account_id` and
-   `message_id`, and its `module_slug` falls back to `email`. MD-6a gives it
-   one generic map of ids, and keeps the two email keywords working. My Day
-   passes `module_slug="my_day"`.
-3. **Shadow.** In `shadow`, the feed always shows the old path, asks `decide`
-   beside it, and logs both answers with `request_id`. The log holds keys and
-   numbers only, never tenant text.
-4. **Measure.** For each feature, the owner sees how often the two paths
-   agree. The owner also sees how often the member acted on the top 5 cards
-   of each path. MD-6a writes the read for it.
+1. **Register.** MD-6a adds the eight `my_day.*` features to `FEATURES` in
+   `gateway/decide_features.py`. Every default is `off`. MD-6b adds them to
+   `ON_FEATURES`, or `on` resolves to `off` and logs `decide.mode_refused`
+   (`decide_features.py:312-324`). No second registry, and no second helper.
+2. **Widen the helpers, do not copy them.** Four changes, in MD-6a:
+   - `ask` and `shadow` take one generic map of log ids, and keep the email
+     keywords working. My Day passes `module_slug="my_day"`.
+   - A packed request may mix features. The builder adds the questions of a
+     feature only when that feature's own mode is `shadow` or `on`.
+   - `shadow` logs one comparison for each card and feature in a packed
+     request, not one for the call.
+   - A new `compare_score` compares a score answer with the old-path level.
+3. **Shadow.** In `shadow`, the feed shows the old path, and asks `decide`
+   beside it. Each comparison goes to the table `my_day_judgments` (§13.2):
+   keys, levels and numbers, never tenant text.
+4. **Measure.** The measure read joins `my_day_judgments` with
+   `my_day_card_state`. For each feature, the owner sees how often the two
+   paths agree. The owner also sees how often the member acted on the top 5
+   cards of each path.
 5. **On, with a gate.** In `on`, the judged answer sets the value when its
    confidence or probability passes the feature's gate. The gate comes from
    the shadow data. Below it, the old path sets the value.
 
-⚠️ **`on` does not need `shadow` first for a feature with no old answer.**
-`my_day.commitment`, `my_day.compose` and `my_day.nudge` decide something
-that the old path never decides. `email.insights_screen` set this precedent
-(`decide_features.py:102-104`).
-
 ### 10.7 Whose call it is
 
-A `decide` call names the member it serves. In the loop, the member is bound
+A `decide` call names the member it serves. The loop binds the member
 through `job_member_scope`, the way `as_mailbox_owner` binds a mailbox owner
-(`routes/email/scheduler_hooks.py:53`). The member is a stored fact, so the
-call passes `member_proven=True`, as `ask` does for email. So the Router
-bills the right member, RLS binds the right tenant, and the state holds only
-what the member may read.
+(`routes/email/scheduler_hooks.py:53`). `run_attribution` then passes
+`member_proven=True` (`acb_llm/routed.py:191`). So the Router bills the right
+member and RLS binds the right tenant. The state holds only what the member
+may read, because the providers ran with the member's own context (§8.3).
 
 ### 10.8 Mail is data
 
@@ -804,12 +957,12 @@ as the day planner fences its task list (`calendar_ai_review.md` §2, item 1).
 ## 11. Acts — what a card may do in place
 
 `navigation_shell.md` §4.3 allows My Day three one-click acts: done, approve
-and snooze. Cards A, B and C need more. This spec proposes three classes,
-**D-MD-1**, for the owner to take (§17 Q1).
+and snooze. NS-3 built done and mark read. Cards A, B and C need more. This
+spec proposes three classes, **D-MD-1**, for the owner to take (§17 Q1).
 
 | Class | What it is | Examples | In the card |
 |---|---|---|---|
-| **A** | It changes only the member's own data, and Undo reverses it | Done, snooze, mark read, move my own block, move my own due date, block time, accept a plan proposal | One click, then the shared Undo toast |
+| **A** | It changes only the member's own data. Undo reverses it, except mark read, which has no unread route (`navigation_shell.md` §7.2) | Done, mark read, snooze. Beyond those three, marked A\* in §5: move my own block, move my own due date, block time, move to Someday | Done, mark read and snooze: one click today. **A\*: a link into the owning app until Q1.** If the owner takes D-MD-1, one click and the shared Undo toast |
 | **B** | It reaches another person | Send a drafted reply, move a meeting with attendees, nudge a colleague, share a report, ask to move a date | **Default today: it opens the owning app, filled in.** If the owner takes D-MD-1, one click with the full effect on the card and a 10 s Undo before it leaves |
 | **C** | It is destructive, moves money, or approves an agent's act | Delete, bulk acts, approve a pending action | Never from a card. It opens the owning app |
 
@@ -822,9 +975,9 @@ and snooze. Cards A, B and C need more. This spec proposes three classes,
 3. The send waits 10 s with "Sending… Undo" before it leaves.
 4. The act writes `meta.via = "my_day"`, the rule of D-PM-36.
 
-**Fence (MD-8).** `src/lib/shell/feedActs.test.ts` fails if an act of class B
-or C runs from a card with no confirm step. It also fails if a card act calls
-a route that its owning app does not own.
+**Fence (MD-1, MD-8).** `src/lib/shell/feedActs.test.ts` fails if an A\*, B
+or C act runs a write from a card before the owner's answer lets it. It also
+fails if a card act calls a route that its owning app does not own.
 
 ---
 
@@ -840,13 +993,13 @@ as they are.
 | Report | `/projects?app=reports&template=…&subject=…` | `app/projects/lib/reportBuilder.ts:759-765` |
 | Email | `/email?email=<message id>&account=<account id>` | `app/email/lib/emailLink.ts:35-42` |
 | CRM | `/crm?deal=<id>` (or `lead`, `contact`, `organization`) | `app/crm/lib/urlState.ts:27` |
-| Meeting notes | `/notes/meeting/<id>` | `app/notes/` |
 | Chat | the session link of `/chat` | WS-51 |
 
 **Three gaps, and MD-3 closes them:**
 
 - **Calendar has no link to a day or a time.** MD-3 adds `/calendar?date=
-  YYYY-MM-DD&at=HH:MM`. It opens the day view and scrolls to the time.
+  YYYY-MM-DD&at=HH:MM`. It opens the day view and scrolls to the time. The
+  A\* acts of §5.1 use it until Q1.
 - **Approvals opens only the queue.** MD-3 adds `/approvals?action=<id>`,
   which opens that one proposal.
 - **`EntityPill` has no email, event or deal kind.** MD-3 adds three kinds to
@@ -856,53 +1009,95 @@ as they are.
 
 ## 13. Data
 
-### 13.1 One new table
+Every new table follows R5: tenant-scoped, FORCE ROW LEVEL SECURITY, and the
+member from the session, never from the request body. The template is
+`infra/postgres/250_crm_views.sql:36-77`, with its
+`organization_id UUID NOT NULL DEFAULT current_setting('app.tenant_id',
+true)::uuid REFERENCES organization (id) ON DELETE CASCADE`. Each table must
+pass `tests/unit/test_tenant_coverage.py`. Each migration takes the next free
+number at build time (R1). Today that is 253, so check it again at merge.
 
-`my_day_card_state` holds the state of a card for one member. It holds a row
-only for a signal the member saw or touched. The signals themselves are never
-stored, because the providers recompute them.
+### 13.1 `my_day_card_state`
+
+The state of a card for one member. It holds a row only for a signal the
+member saw or touched. The signals themselves are never stored, because the
+providers recompute them.
 
 | Column | Type | Note |
 |---|---|---|
-| `organization_id` | `UUID NOT NULL DEFAULT current_setting('app.tenant_id', true)::uuid` | The tenant key |
-| `member_email` | `TEXT NOT NULL` | From the session, never from the request body |
-| `signal_id` | `TEXT NOT NULL` | §4.1 |
-| `kind` | `TEXT NOT NULL` | For affinity (§7) |
-| `state` | `TEXT NOT NULL` | `seen`, `acted`, `snoozed`, `dismissed`, `not_useful` |
+| `organization_id` | the template's tenant key | |
+| `member_email` | `TEXT NOT NULL` | From the session |
+| `signal_id` | `TEXT NOT NULL` | The entity identity of §4.1 |
+| `kind` | `TEXT NOT NULL` | The main kind when the row last changed. For affinity (§7) |
+| `state` | `TEXT NOT NULL` | `seen`, `later`, `acted`, `snoozed`, `dismissed` |
+| `dismiss_reason` | `TEXT` | `dismiss` or `not_useful` |
 | `fingerprint` | `TEXT` | The fingerprint at the last state change |
-| `visits` | `INT NOT NULL DEFAULT 0` | §6.2 |
+| `visits` | `INT NOT NULL DEFAULT 0` | Since the card last came back (§6.2) |
 | `first_seen_at`, `last_seen_at`, `acted_at` | `TIMESTAMPTZ` | |
 | `snoozed_until` | `TIMESTAMPTZ` | Null with `snooze_on_change` true means "until it changes" |
 | `snooze_on_change` | `BOOLEAN NOT NULL DEFAULT false` | |
 | `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 
-- Primary key `(organization_id, member_email, signal_id)`.
-- ENABLE and FORCE ROW LEVEL SECURITY, with one policy that holds USING and
-  WITH CHECK. The template is `infra/postgres/250_crm_views.sql:36-77`.
-- **R5a.** It must pass `tests/unit/test_tenant_coverage.py`.
-- **R1.** The migration takes the next free number at build time. Today that
-  is 253. Check it again at merge.
-- **R6.** A new table is additive. Nothing reads it before MD-2 ships.
-- **Retention.** The `my_day` loop deletes rows with no change for 30 days.
+Primary key `(organization_id, member_email, signal_id)`. The `my_day` loop
+deletes rows with no change for 30 days.
 
-### 13.2 No other table
+### 13.2 `my_day_judgments`
 
-- **Mutes and feed preferences** go into `user_settings.shell_prefs`, the
-  JSONB column of migration 240. No new column.
-- **`decide` answers and text compositions** live in Redis, with a 26 h TTL,
-  the email brief pattern. A lost key costs one new call, and it never loses
-  state.
-- **The member's corrections** (§10.5) go into `user_settings.shell_prefs`,
-  beside the mutes.
-- **The feed version** lives in Redis, under the tenant-prefix wrapper.
-- **The memory service is not the state store.** Mem0 has no organization key
-  and is off by default (`packages/acb_memory`).
+One row for each card, feature and pass, in `shadow` and in `on`. It feeds
+the measure read of §10.6. It holds **no tenant text**: keys, levels and
+numbers only.
+
+| Column | Type | Note |
+|---|---|---|
+| `organization_id` | the template's tenant key | |
+| `member_email` | `TEXT NOT NULL` | From the loop's active set (§8.3) |
+| `signal_id` | `TEXT NOT NULL` | |
+| `fingerprint` | `TEXT NOT NULL` | |
+| `feature` | `TEXT NOT NULL` | For example `my_day.triage` |
+| `mode` | `TEXT NOT NULL` | `shadow` or `on` |
+| `old_value`, `judged_value` | `TEXT` | Option keys or levels only |
+| `confidence` | `REAL` | The probability or confidence |
+| `used` | `BOOLEAN NOT NULL` | Whether the judged value set the card |
+| `request_id` | `TEXT` | Joins the call to its `usage_event` row |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+
+The loop deletes rows older than 30 days. A fence asserts that no column
+holds a title, a subject or a name: `test_feed_decide.py::TestNoTenantText`.
+
+### 13.3 `user_settings.my_day_prefs`
+
+A new nullable `JSONB` column on `user_settings`, beside `shell_prefs`. It
+holds the mutes of §6.6 and the corrections of §10.5.
+
+- **Not inside `shell_prefs`.** `PUT /auth/me/shell` writes the whole
+  `shell_prefs` blob, and its model refuses an unknown key
+  (`routes/admin/me.py:329`, `:459`). So a layout save would delete every
+  mute and correction.
+- **Its own route.** `PUT /shell/feed/prefs` merges one key at a time on the
+  server, with `jsonb_set`. It never replaces the column.
+- **R6.** A nullable column with no default. Nothing reads it before MD-2.
+- **Fence (MD-2).** `tests/unit/test_my_day_prefs.py` saves a correction,
+  then saves a layout through `PUT /auth/me/shell`, and asserts that the
+  correction is still there. It also asserts the other way round.
+
+### 13.4 What lives in Redis
+
+All keys go through the tenant-prefix wrapper (R5c):
+
+- `decide` answers and text compositions, with a 26 h TTL, the email brief
+  pattern. A lost key costs one new call, and it never loses state.
+- The feed version, the cached answer and its next time edge (§8.1).
+- The active set, `my_day:active` (§8.3).
+- The call counters of §9.1 rule 8.
+
+**The memory service is not the state store.** Mem0 has no organization key
+and is off by default (`packages/acb_memory`).
 
 ---
 
 ## 14. The frontend
 
-### 14.1 The page
+### 14.1 The page, and one poll
 
 - `/` stays `MyDayPage`, behind a second flag, `NEXT_PUBLIC_MY_DAY_FEED`.
   With it off, the page is today's page.
@@ -910,20 +1105,29 @@ stored, because the providers recompute them.
   `xl` the right rail keeps `TodayCard`, so the day's timeline stays in view
   while the member scrolls. Next actions becomes the `due_today` and
   `stale_next` cards, so it leaves the grid.
-- The header keeps `greetingLine` and `summaryLine`, with §6.8's honest
+- The header keeps `greetingLine` and `summaryLine`, with §6.7's honest
   counts.
 - The feed reads `GET /api/shell/feed` through `useCachedResource`. A true
   miss shows `Skeleton` rows. A revisit never blanks (`AGENTS.md` rule 9).
-- **One poll.** The feed and the bell share the 60 s poll of `ShellBell.tsx`.
-  The feed adds no second timer.
+- **One provider run for each poll on My Day.** The feed answer carries the
+  needs view. The client writes it into the needs cache key, so the bell and
+  the sidebar counts read it with no second request.
+- **The shared poll calls each key.** Today its tick calls the first poller
+  only (`ShellBell.tsx:239`). MD-1 changes the tick to call one refresh for
+  each distinct key. On My Day the feed's refresh owns the needs key, so the
+  needs poller does not run beside it. Fence: `shellBell.test.ts`, with two
+  keys that both refresh, and a third poller of the needs key that stays
+  quiet on My Day.
 - The first 20 cards load first. Scrolling loads the next 20, to the end of
   the feed.
 
 ### 14.2 The card registry
 
-- An app declares its kinds in its manifest, in a new `feedKinds` field of
-  `NavPane` (`src/lib/nav.ts`): `{ kind, body }`. `navigation_shell.md` §5.1
-  adds one row for it.
+- MD-4 adds a `feedKinds` field to `NavPane` (`src/lib/nav.ts`):
+  `{ kind, body }`. The same PR adds its row to `navigation_shell.md` §5.1.
+- **Why not the `cards` field.** A card of `cards` is a Home card for an
+  altitude, and it reads its own route. A feed kind is a body for one signal,
+  and it reads nothing. It draws the `facts` it gets.
 - `FeedCard` in `src/lib/shell/` draws the frame. It finds the body by kind.
   A kind with no body draws the frame alone.
 - The first bodies:
@@ -934,9 +1138,9 @@ stored, because the providers recompute them.
 
 ### 14.3 Keys and the phone
 
-- `j` and `k` move between cards. `e` runs the main act if it is class A.
-  `s` opens snooze. `Enter` opens the entity. The keys never collide with the
-  one `⌘K` listener.
+- `j` and `k` move between cards. `e` runs the main act if it is a class A
+  act that runs in place. `s` opens snooze. `Enter` opens the entity. The keys
+  never collide with the one `⌘K` listener.
 - On a phone the feed is the page. The acts sit at the foot of each card, in
   reach of a thumb. The right rail goes away, and the Now group shows the
   next block instead.
@@ -948,6 +1152,12 @@ reference screenshots set the anatomy, never the colours. The `visual-review`
 skill checks the feed in light mode, at compact density, under a changed
 accent, and beside My Tasks.
 
+**The design mockup is `mockups/my_day_feed.html`** (2026-10-13). It draws the
+groups, ten sample cards, the menu, "Why am I seeing this", the Later and
+Handled groups, and the "2 new" pill. A switch shows the same cards with the
+judged answers and on the old path. It draws the A\* acts as they would run
+after a yes to Q1. Where the mockup and this spec disagree, this spec wins.
+
 ---
 
 ## 15. Eight ideas beyond the cards
@@ -957,18 +1167,16 @@ accent, and beside My Tasks.
    is the first thing a member asks of a chief of staff.
 2. **Ask about this card.** One menu row opens the assistant dock with the
    card as context. The dock owns the talk (`navigation_shell.md` §7.1).
-3. **Teach My Day.** "Not useful" and mutes are the training. No survey and
-   no setting screen.
+3. **Teach My Day.** "Not useful" and its one line are the training. No
+   survey and no setting screen.
 4. **Delegate from a card.** "Give this to…" on a task card opens the assign
    form of Projects. The People rebalance read fills in a suggestion.
 5. **Focus.** During a focus block in Calendar, the feed shows only Now. The
    rest waits until the block ends.
 6. **The week ahead.** On the last working day, a card lists next week's
-   deadlines, absences and heavy days. It reads the outlook section of
-   reports.
+   deadlines and heavy days. It reads the outlook section of reports.
 7. **What agents did.** The Handled group names each agent and each email
-   rule that closed something, with a link to its history. A member sees the
-   work that was done for them.
+   rule that closed something, with a link to its history.
 8. **The lead's morning.** At the team altitude, a lead's feed adds Team
    pulse, at-risk work and a person who is overloaded. This is MD-12, after
    NS-5.
@@ -979,30 +1187,34 @@ accent, and beside My Tasks.
 
 Every ticket ships dark. MD-1 to MD-5 call no model.
 
-### MD-1 · The signal registry and `GET /shell/feed`, with no AI — AGENT-SAFE (build), OWNER-GATE (turn on)
+### MD-1 · The registry, `GET /shell/feed` and the one poll — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 Files: `gateway/routes/shell/needs.py` (split into a registry),
 `gateway/routes/shell/feed.py`, `gateway/routes/shell/feed_rank.py`,
 `src/app/api/shell/feed/route.ts`, `src/lib/shell/FeedCard.tsx`,
-`src/lib/shell/MyDayPage.tsx`. Flag `NEXT_PUBLIC_MY_DAY_FEED`.
+`src/lib/shell/MyDayPage.tsx`, `src/lib/shell/ShellBell.tsx`. Flag
+`NEXT_PUBLIC_MY_DAY_FEED`.
 
 Done when:
 
-1. One provider registry serves `/shell/needs` and `/shell/feed`. The needs
-   answer for a fixed seed is unchanged.
+1. `TestOneRegistry` (§4.4) and `TestOneCardPerEntity` (§4.5) pass.
 2. The feed returns the MD-1 kinds of §5. Each has a template why line, a
-   group, a score and its acts.
+   group, a score and its acts. Done, mark read and snooze run in place.
+   Each A\* act is a link.
 3. `block_overlap` and `day_overbooked` read the member's own blocks and
    `work_schedule`. Each has a negative test: another member's block never
    reaches the card.
-4. With the flag on, `/` renders the feed column. With it off, `/` renders
+4. The feed answer carries the needs view, and the shared poll calls each
+   key (§14.1).
+5. With the flag on, `/` renders the feed column. With it off, `/` renders
    today's page.
-5. The feed SQL ran against a real Postgres (R8), and the run is in the PR.
+6. The feed SQL ran against a real Postgres (R8), and the run is in the PR.
 
 ### MD-2 · The life of a card — AGENT-SAFE
 
-Files: migration `<next free>_my_day_card_state.sql`, `POST /shell/feed/state`,
-the seen observer in `src/lib/shell/`.
+Files: migration `<next free>_my_day_card_state.sql`, the `my_day_prefs`
+column, `POST /shell/feed/state`, `PUT /shell/feed/prefs`, and the seen
+observer in `src/lib/shell/`.
 
 Done when:
 
@@ -1010,82 +1222,95 @@ Done when:
    invisible under FORCE RLS (R8).
 2. Seen, snooze (four choices), dismiss and "Not useful" write the table, and
    the feed honours each.
-3. Each return rule of §6.3, and the Later rule of §6.5, has its own test.
-   The test fails when someone removes its rule.
-4. The client keeps the order during a visit, and shows the "N new" pill.
-5. The Handled group and the honest summary line of §6.8 render, and a failed
-   source silences "The rest is handled".
+3. Each of the eight rules of §6.3 has its own test, and one test holds their
+   order. Each test fails when someone removes its rule.
+4. A failed source and a capped source each keep their cards (§6.1).
+5. Handled reads the `handled` reads of §6.7, and a missing signal never
+   reaches it.
+6. `test_my_day_prefs.py` (§13.3) passes.
+7. The client keeps the order during a visit, and shows the "N new" pill.
 
 ### MD-3 · More signals, and the three link gaps — AGENT-SAFE
 
 The MD-3 kinds of §5, the CRM "my due activities" read, `/calendar?date=&at=`,
 `/approvals?action=`, and three `EntityPill` kinds. Each provider has its own
-negative test, as NS-3 done-when 3 has.
+negative test, as NS-3 done-when 3 has. Two more:
+
+- `absent_on_due` reads the member's own absences only.
+- `colleague_out` gives no row to a member who fails `can_read_hr_fields`.
 
 ### MD-4 · Card bodies — AGENT-SAFE
 
 `CalendarStrip`, `DraftPreview` (read only, from `email_ai_drafts`),
-`ReportTile` and `TaskRows`, and the `feedKinds` manifest field. Done when each
-body renders in the `visual-review` contexts, and `conformance.test.ts` passes
-with no new budget.
+`ReportTile` and `TaskRows`, the `feedKinds` field and its row in
+`navigation_shell.md` §5.1. Done when each body renders in the `visual-review`
+contexts, and `conformance.test.ts` passes with no new budget.
 
 ### MD-5 · The loop, the change sink and the read cache — AGENT-SAFE
 
-The `my_day` loop with its kill switch, the third event sink, the feed version
-and the 304 path. Done when a measured run shows that a quiet member's poll
-makes no provider query, and the run is in the PR.
+The `my_day` loop with its kill switch, the active set, and the member's
+context of §8.3. The third event sink, the feed version, the next time edge
+and the 304 path.
+
+Done when:
+
+1. `test_my_day_loop.py` (§8.3) passes.
+2. A measured run shows no provider query from a quiet member's poll
+   before its next time edge. The run is in the PR.
+3. A test shows that a `block_soon` card appears 30 minutes before its block
+   with no event in between.
+4. The sink makes no database query. A test counts the queries of one task
+   edit with the sink on and off.
 
 ### MD-6a · The `decide` pass, in shadow — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 Files:
 
-- `gateway/decide_features.py`: the `my_day.*` features, and `ask` with a
-  generic map of ids.
-- `gateway/routes/shell/feed_decide.py`: the questions, the state builder and
-  the reader.
+- `gateway/decide_features.py`: the eight `my_day.*` features and the four
+  helper changes of §10.6 item 2.
+- `gateway/routes/shell/feed_decide.py`: the questions, the state builder,
+  the reader and the caps.
+- Migration `<next free>_my_day_judgments.sql`.
 - The `my_day` loop of MD-5.
 
 Done when:
 
-1. The six judgment features of §10.3 (`triage`, `weight`, `reason`,
-   `next_act`, `slot`, `resurface`) are in the one registry, `off` by
-   default. No second registry and no second helper exist.
-2. In `shadow`, the feed shows the old path, and logs both answers with keys,
-   numbers and `request_id` only. A test asserts that no log line holds a
-   title, a subject or a name.
-3. `TestKeysOnly` (§10.2) passes, and so does the §7 rule 2 test.
+1. The eight features are in the one registry, `off` by default. No second
+   registry and no second helper exist.
+2. In `shadow`, the feed shows the old path, and each comparison writes one
+   `my_day_judgments` row. `TestNoTenantText` passes.
+3. `TestKeysOnly` (§10.2), `TestCaps` (§9.1) and the §7 rule 2 test pass.
 4. A pass with no new card makes no call. A repeat of the same facts makes
-   no call. A test counts the calls.
+   no call. A change to an unhashed field makes no call. A test counts them.
 5. A 402 starts the cool-down, and every card stays on its old path.
-6. The read for §10.6 item 4 exists: agreement and act rate, for each
-   feature.
+6. The measure read of §10.6 item 4 exists.
 
 **Turning on `shadow` for a real organization waits on Q6.** Shadow mode
 sends tenant content too.
 
-### MD-6b · `decide` on, with gates, and the commitment detector — AGENT-SAFE (build), OWNER-GATE (turn on)
+### MD-6b · `decide` on, with gates — AGENT-SAFE (build), OWNER-GATE (turn on)
 
-`on` for each judgment feature, at the gate the shadow data sets.
-`my_day.commitment` in the email post-sync hook, and the corrections of
-§10.5. Done when a judged answer under its gate leaves the old-path value, and
-a test proves it for each feature.
+The `my_day.*` features join `ON_FEATURES`. `on` for each feature at the gate
+the shadow data sets, and the corrections of §10.5. Done when a judged answer
+under its gate leaves the old-path value, and a test proves it for each
+feature.
 
-### MD-6c · Text compositions — AGENT-SAFE (build), OWNER-GATE (turn on)
+### MD-6c · The thread gist — AGENT-SAFE (build), OWNER-GATE (turn on)
 
-The thread gist and the meeting prep, behind `my_day.compose` and the flag
-`MY_DAY_COMPOSE`. Done when a composition runs only after a yes, a repeat
-makes no call, and the gist fences the thread as DATA. **Waits on H-171 and
-H-69 before the flag goes on.**
+The gist of a long thread, behind `my_day.compose` and the flag
+`MY_DAY_COMPOSE`. Done when a gist runs only after a yes, a repeat makes no
+call, and the gist fences the thread as DATA. **Waits on H-171 and H-69
+before the flag goes on.**
 
 ### MD-7 · The day cards — AGENT-SAFE
 
 `brief`, `while_away` and `day_end`. `day_end` links to `EndOfDayReview` and
 copies nothing of it.
 
-### MD-8 · Class B acts in the card — OWNER-GATE until Q1
+### MD-8 · Acts in the card — OWNER-GATE until Q1
 
-Send a drafted reply, move a meeting with attendees, nudge, share a report.
-The four conditions of §11 and the `feedActs.test.ts` fence.
+The A\* acts in place, and the class B acts with the four conditions of §11.
+Fence: `feedActs.test.ts`.
 
 ### MD-9 · Learning and the second wave of signals — AGENT-SAFE
 
@@ -1095,11 +1320,11 @@ in words, for example "Judged high: it moves the Q3 launch".
 
 ### MD-10 · Nudges outside the app — OWNER-GATE
 
-Step 4 of §6.6, on WhatsApp templates (WAC-7) or web push (D-2). Opt-in for
+Step 4 of §6.5, on WhatsApp templates (WAC-7) or web push (D-2). Opt-in for
 each member. It sends a message to a real person through a third party, so
 CLAUDE.md §3a rule 3 binds.
 
-### MD-11 · Meeting overlaps — BLOCKED on calendar P4
+### MD-11 · Meeting overlaps — BLOCKED on calendar sync
 
 Card A in full. It waits on external calendar sync, which
 `calendar_timeboxing.md` §8 owns and whose OAuth credentials are an owner gate.
@@ -1139,7 +1364,8 @@ late, because it costs the most and waits on H-171 and H-69.
 | Act | Why it is the owner's | Gate |
 |---|---|---|
 | Turn on `NEXT_PUBLIC_MY_DAY_FEED` in production | It changes the first page of every member in every organization at once | Owner only, as `navigation_shell.md` §13.1. The dev-phase window does not open it |
-| Turn on `MY_DAY_COMPOSE`, or any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits, and it sends tenant content to a model vendor | Owner only. CLAUDE.md §3a rule 3. `shadow` also waits on Q6 |
+| Turn on `MY_DAY_COMPOSE`, or set any `my_day.*` mode other than `off` in `DECIDE_FEATURE_MODES` | It spends customer credits, and it sends tenant content to a model vendor | Owner only. CLAUDE.md §3a rule 3. `shadow` also waits on Q6 |
+| MD-8, an A\* or class B act that runs in place | It is the decision of Q1 | Owner only |
 | MD-10, a message outside the app | It reaches a real person through a third party | Owner only. CLAUDE.md §3a rule 3 |
 
 ⚠️ These bind by prose only. `plan-guard.mjs` names none of these flags (R7,
@@ -1149,12 +1375,12 @@ advisory), the same gap as `navigation_shell.md` §13.1.
 
 | # | Question | Default |
 |---|---|---|
-| Q1 | May a card send a drafted reply, or move a meeting with attendees, in one click (class B, D-MD-1)? | No. Class B opens the owning app, filled in. MD-8 waits |
+| Q1 | May a card run, in place, the A\* acts (move my own block or date, block time) and the class B acts (send a drafted reply, move a meeting with attendees)? This is D-MD-1 | No. Each opens the owning app, filled in. MD-8 waits |
 | Q2 | Who pays for the AI? | **Answered by the owner, 2026-10-13.** The customer pays for every AI call in AI credits, `decide` and text alike. The feed with no AI is free (§9.3) |
 | Q3 | Does external calendar sync move up, so card A can ship? | **Answered by the owner, 2026-10-13.** Metorite will read Google and Outlook calendars. Clashes fold in then (MD-11). Until then, the feed ships the overlaps it can see |
 | Q4 | Are nudges outside the app opt-in, with three a day at most? | Yes, opt-in, and off for everyone until MD-10 |
 | Q5 | The Projects report template T2 is also called "My day". Rename it? | Rename T2 to "My work today" in MD-4, so one name means one page |
-| Q6 | Does the `decide` residency answer cover My Day? D-EM-9 approves email triage "and for no other app". My Day sends task titles, deal names and mail subjects as clipped facts. It never sends a mail body | No, until the owner says so. MD-6a builds, and every `my_day.*` mode stays `off` on a live box. Shadow sends content too |
+| Q6 | Does the `decide` residency answer cover My Day? D-EM-9 approves email triage "and for no other app". My Day's state sends task titles, deal names, goal names, mail subjects and sender names, as clipped facts. It sends no mail body to `decide` (§10.4) | No, until the owner says so. MD-6a builds, and every `my_day.*` mode stays `off` on a live box. Shadow sends content too |
 
 ---
 
@@ -1169,7 +1395,8 @@ npx vitest run src/lib/shell/ src/lib/theme/ src/lib/nav.test.ts
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py tests/unit/test_feed_decide.py tests/unit/test_feed_compose.py -q
+uv run pytest tests/unit/test_shell_needs.py tests/unit/test_shell_needs_r8.py tests/unit/test_shell_feed.py tests/unit/test_feed_rank.py -q
+uv run pytest tests/unit/test_my_day_loop.py tests/unit/test_my_day_prefs.py tests/unit/test_feed_decide.py -q
 uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py -q
 
@@ -1188,5 +1415,7 @@ Each document below links here, and adds nothing of its own.
 
 - `work_plan.md` §2, row **WS-57**.
 - `INDEX.md`, ACTIVE.
-- `navigation_shell.md` §4.3, §4.5 and §7.2: the feed's content, order and
-  life live here. The page frame, the bell and the flags stay there.
+- `navigation_shell.md` §4.3 and §7.2: the feed's content, order and life
+  live here. The page frame, the bell, the needs contract and the flags stay
+  there.
+- `navigation_shell.md` §5.1 gets its `feedKinds` row in MD-4, not before.
