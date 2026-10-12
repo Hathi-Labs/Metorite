@@ -877,7 +877,9 @@ def with_module_fields(
             continue
         api_name = row["api_name"]
         before = previous_rows.get(api_name) or {}
-        read_before = "display_field" in before and not before.get("fields_pending")
+        # An unmirrored row (no scope yet) also carries `display_field: None`,
+        # so only a module that was mirrored had its fields read.
+        read_before = bool(before.get("mirrored")) and not before.get("fields_pending")
         row["fields_pending"] = api_name in pending and not read_before
         if api_name in fields:
             row["display_field"] = next(

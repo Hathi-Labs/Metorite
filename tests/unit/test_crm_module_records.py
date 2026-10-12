@@ -143,6 +143,18 @@ def test_the_display_field_comes_from_the_fields_or_the_previous_profile() -> No
     assert out["Quotes"]["display_field"] == "Subject", "a failed read keeps the old one"
 
 
+def test_a_module_that_was_never_mirrored_waits_for_its_fields() -> None:
+    """Before a reconnect, an unmirrored row also carries ``display_field: None``.
+    If the reconnect's discovery stops at the reserve, the module must wait for
+    its fields, or its records land with a NULL name and stay so."""
+    profile = zm.build_profile({"modules": [_module("Products")]}, None, ALL_SCOPES)
+    previous = {"modules": [
+        {"api_name": "Products", "mirrored": False, "display_field": None},
+    ]}
+    out = zm.with_module_fields(profile, {}, previous, pending={"Products"})
+    assert out["modules"][0]["fields_pending"] is True
+
+
 # ── One record ───────────────────────────────────────────────────────────────
 
 

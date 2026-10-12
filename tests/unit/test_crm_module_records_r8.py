@@ -690,6 +690,37 @@ async def test_a_module_that_hides_modified_time_is_read_again_after_the_interva
     assert again.counts["module:Install_Base"]["upserted"] == 1
 
 
+async def test_a_first_import_over_two_runs_counts_as_the_full_read(
+    mz, monkeypatch,
+) -> None:
+    """A hidden-``Modified_Time`` module whose first import stops at the
+    reserve finishes on the next run. That finish is a full read, so the run
+    after it must not read every page again at once."""
+    from gateway.crm_sync import engine
+
+    p, a, _b = mz
+    _seed(a)
+    a.hide.add("Install_Base")
+    for i in range(2, 5):  # i1 from the seed plus three more: two pages of 2
+        a.add("Install_Base", f"i{i}", 30 + i, Name=f"A-Install {i}")
+    await _connect_all(p, p.org_a, a)
+
+    def low_after_first_page(_reads: int) -> None:
+        monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)
+        a.on_read.pop("Install_Base", None)
+
+    a.on_read["Install_Base"] = low_after_first_page
+    assert (await _run(p.org_a)).status == "ok"
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
+    assert (await _run(p.org_a)).status == "ok"
+    assert _count(p, "crm_module_records", p.org_a, "module = 'Install_Base'") == 4
+    done = _q(p, "SELECT initial_done_at, last_reconciled_at FROM crm_sync_cursors "
+                 "WHERE organization_id = CAST(:o AS uuid) "
+                 "AND module = 'zoho:module:Install_Base'", o=p.org_a)
+    assert done and done[0][0] is not None
+    assert done[0][1] is not None, "the finished first import is the full read"
+
+
 async def test_a_failed_module_count_is_not_asked_again_on_every_run(mz) -> None:
     p, a, _b = mz
     _seed(a)

@@ -1262,7 +1262,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             **({"checked_at": _iso(ctx.started)} if generic else {}),
                         },
                         row.initial_done_at or complete_at,
-                        complete_at if (walking or first_pass or rereading)
+                        # A generic first import that ran over several runs is
+                        # still a full read, so it counts as the re-read too.
+                        complete_at if (
+                            walking or first_pass or rereading
+                            or (generic and row.initial_done_at is None)
+                        )
                         else row.last_reconciled_at,
                     )
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")

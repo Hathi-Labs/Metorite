@@ -1371,9 +1371,21 @@ each of these on a real database:
   starts before its first read.
 - The reconcile never walks a generic module, because the table has no
   `ext_seen_at`. Its deletes come from the deleted list only.
+- A module that hides `Modified_Time` is read again in full once in each
+  `RECONCILE_EVERY`. The door skips an unchanged record, so that read writes
+  nothing.
+- After its first import, a module reads its changed list at most once an hour
+  (`MODULE_READ_EVERY`), the same cadence as the deleted lists. During its first
+  import it reads on each run, within the reserve.
+- Discovery is due when the connection's scope set differs from
+  `profile.scope_set`. The module step also checks the connection's scopes at
+  run time. So the next run after a new consent mirrors the modules.
+- Discovery stops reading module fields at the reserve. A module that still
+  waits for its fields is not read, and discovery is due again after an hour.
 - The sync reads the count of each module once in 24 hours. The cursor row
   `zoho:module_counts` keeps it, so an incremental run also reports
-  `zoho_count`.
+  `zoho_count`. A failed count keeps its time too.
+- The U5b reset counts and deletes `crm_module_records`.
 - The two doors are `upsert_module_records_from_source` and
   `delete_module_records_from_source`. A replay that changes nothing writes
   nothing.
