@@ -18,7 +18,7 @@ export const EMPTY_STAGES_PREFIX = "metorite:crm:empty-stages:";
 type Store = Pick<Storage, "getItem" | "setItem">;
 
 /** The browser's local store, or null where reading it throws. */
-function localStore(): Store | null {
+export function localStore(): Store | null {
   try {
     return typeof window !== "undefined" ? window.localStorage : null;
   } catch {

@@ -27,6 +27,7 @@ import {
 import { MIRROR_REFUSALS } from "./connect";
 import { NO_RELATED, RELATED_PAGE, type RelatedLists } from "./related";
 import { exportQuery, extraQuery, listQuery } from "./filters";
+import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
   reorderFailureMessage,
@@ -89,7 +90,8 @@ type CrmState = {
   /** Re-read whichever collection is showing (board or list). */
   refreshCollection: () => Promise<void>;
   loadVocabulary: () => Promise<void>;
-  loadBoard: (view: CrmView) => Promise<void>;
+  /** `cardSort` orders the cards of each deal lane (CRM-X3). */
+  loadBoard: (view: CrmView & { cardSort?: CardSort }) => Promise<void>;
   loadLeadBoard: (view: CrmView) => Promise<void>;
   /** A lead dropped on a Lead Status lane. `move.dealId` holds the lead id. */
   moveLead: (move: DealMove, extra?: Record<string, unknown>) => Promise<void>;
@@ -244,9 +246,11 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadBoard(view) {
+    // `lastView` keeps `cardSort` too, so a re-read after a write keeps the
+    // member's lane order (CRM-X3).
     set({ loading: true, lastView: view });
     try {
-      const extra = extraQuery("deals", view);
+      const extra = { ...extraQuery("deals", view), ...cardSortQuery(view.cardSort) };
       const pipeline =
         Object.keys(extra).length > 0
           ? await api.getPipeline(view.owner, view.pipelineId, extra)
