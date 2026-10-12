@@ -226,8 +226,9 @@ export function parseView(search: string | URLSearchParams): CrmView {
     layout: parseLayout(tab, legacy?.layout, params.get("layout"), params),
     pipelineId: params.get("pipeline") || null,
     record,
-    // A tab of no record means nothing, so it reads as the default.
-    recordTab: record ? parseRecordTab(params.get("rtab")) : "overview",
+    // A tab of no record means nothing, so it reads as the default. A generic
+    // record (CRM-Q6b) keeps its tab too.
+    recordTab: record || moduleRecord ? parseRecordTab(params.get("rtab")) : "overview",
     q: params.get("q") ?? "",
     statusId: params.get("status") || null,
     includeConverted: params.get("converted") === "1",

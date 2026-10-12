@@ -142,6 +142,12 @@ describe("the URL of a module list and a generic record", () => {
     expect(both.moduleRecord).toBeNull();
   });
 
+  it("keeps the record tab of a generic record in ?rtab=", () => {
+    const view = parseView("tab=module&module=Quotes&mrec=Quotes%3Aq1&rtab=related");
+    expect(view.recordTab).toBe("related");
+    expect(serializeView(view)).toBe("tab=module&module=Quotes&mrec=Quotes%3Aq1&rtab=related");
+  });
+
   it("never stacks the two sheets", () => {
     const generic = openModuleRecord(DEFAULT_VIEW, "Quotes", "q1");
     expect(serializeView(generic)).toBe("mrec=Quotes%3Aq1");

@@ -539,7 +539,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           : view.tab === "reports"
             ? "Forecast, funnel, win rate and who is carrying what"
             : view.tab === "module"
-              ? `${moduleLabel(modules, view.module)} from Zoho, read only`
+              ? moduleLabel(modules, view.module)
               : // A list view names itself. With the rail folded, the four
               // lists share one layout, and this line is all that tells
               // Deals from Contacts.
