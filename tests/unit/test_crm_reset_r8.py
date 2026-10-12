@@ -680,7 +680,21 @@ async def test_a_record_written_during_the_start_over_is_409_not_500(x0, app_eng
         "SELECT CAST(:o AS uuid), 'Late', id FROM crm_lead_statuses "
         "WHERE organization_id = CAST(:o AS uuid) LIMIT 1"), {"o": x0.org_a})
     task = asyncio.create_task(_reset(x0, {"confirm": "DELETE", "then": "none"}))
-    await asyncio.sleep(1.5)
+    # Commit only once the reset waits on the lead's lock. A fixed sleep raced
+    # the reset under load: the lead committed first, and the reset removed it.
+    for _ in range(300):
+        await asyncio.sleep(0.05)
+        with x0.admin_engine.connect() as c:
+            waiting = c.execute(text(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            )).scalar()
+        if waiting:
+            break
+    else:
+        tx.rollback()
+        page.close()
+        pytest.fail("the reset never waited on the lock of the late lead")
     tx.commit()
     page.close()
     r = await task
