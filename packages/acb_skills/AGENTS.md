@@ -313,6 +313,8 @@ answer "yes" once. Every fault there denies. The default is off, so a web run
    `crm-assistant` imports them, and the injection chain offers them as the
    `crm` skill family. Each tool reads a `/crm` route as the run's member,
    with the internal bearer and `X-User-Email`. With no member, it refuses.
+   An identity with no `@` (a shared room's `room:<thread>`) gets
+   `CRM_SHARED_ROOM`, and nothing goes to the gateway.
    It opens no database session and takes no SQL. A 404 from the kill switch
    and a 403 from the access rule each come back as a sentence. An answer
    holds 50 rows at most and names the next page. Each path segment goes

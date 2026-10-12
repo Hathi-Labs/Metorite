@@ -2681,7 +2681,7 @@ total. `acb_skills/skill_families.py` has no `crm` family.
 | **CRM-C4** Field studio | Create, rename, order, hide, sections, picklists, required and defaults (Native) | AGENT-SAFE. Flag `CRM_FIELD_STUDIO_ORGS`, shipped empty | L | 256 | CRM-C1 |
 | **CRM-C5** Field studio to Zoho | The C4 studio and the C3 stage order write to Zoho (Mirror) | AGENT-SAFE to build. 🔴 OWNER-GATE to turn on, and for the first live write | L | None | CRM-C4, the §19.9 consent, its own spec audit |
 | **CRM-C6** Field mapping | Lead conversion mapping, the CRM-Q7a Field map and lookup targets | AGENT-SAFE | M | 257 | CRM-C4, CRM-Q7a merged |
-| **CRM-C7** AI reach | `crm-assistant` reads what a member can read. Every agent can reach the CRM. `agent-sales-assistant` goes | AGENT-SAFE | M | 254 | Nothing |
+| **CRM-C7** AI reach | `crm-assistant` reads what a member can read. Every agent can reach the CRM. `agent-sales-assistant` goes | AGENT-SAFE | M | 256 (254 and 255 were taken) | Nothing |
 
 **Migration numbers (R1).** 252 is on `main`. 253 is on the unmerged branch
 `crm-q7a` (`253_crm_field_rules.sql`). This section reserves **254 to 257**
@@ -3326,7 +3326,7 @@ No agent gets SQL. `acb_skills/history_tools.py` records that rule.
 
    | Tool | Route | Notes |
    |---|---|---|
-   | `crm_list_records` | `GET /crm/{entity}` | Status, owner, pipeline, date ranges and `custom.<key>` (CRM-Q8). `page_size` up to 100 |
+   | `crm_list_records` | `GET /crm/{entity}` | Status, owner, pipeline, date ranges and `custom.<key>` (CRM-Q8). `page_size` up to 50 |
    | `crm_get_record` | `GET /crm/{entity}/{id}` and `/crm/fields/{entity}` | Labels for each custom key and option value |
    | `crm_list_modules`, `crm_list_module_records`, `crm_get_module_record` | `GET /crm/modules...` (CRM-Q6b) | Native gets an empty list |
    | `crm_report` | `GET /crm/reports/{kind}` | `pipeline`, `funnel`, `win-loss` or `owners` |
@@ -3337,8 +3337,8 @@ No agent gets SQL. `acb_skills/history_tools.py` records that rule.
    | `crm_aggregate` | `GET /crm/aggregate` (new) | Item 2 |
    | `crm_stage_dwell` | `GET /crm/aggregate/stage-dwell` (new) | Item 2 |
 
-   A tool answer is text, 60 rows at most. When more rows exist, it ends
-   with "More: call again with page=N". `search_crm` goes from 25 to 100.
+   A tool answer is text, 50 rows at most. When more rows exist, it ends
+   with "More: call again with page=N". `search_crm` goes from 25 to 50.
 2. **The aggregate routes.** New `routes/crm/aggregate.py`. Any member that
    the access rule admits may call them.
    - `GET /crm/aggregate` takes `entity`, `measure` and `group_by`, plus
@@ -3369,6 +3369,11 @@ No agent gets SQL. `acb_skills/history_tools.py` records that rule.
 6. **Remove `agent-sales-assistant`.** The owner said on 2026-10-12 that it
    does not exist and is not needed. Remove each reference, and do not
    point it at another agent.
+   **Item 6 exception (decision, 2026-10-13): email drafting consults
+   `crm-assistant` with the member's identity.** The consult sends
+   `user_email`, so the CRM tools read as that member, and a draft gets
+   real CRM context. The meeting copilot gets no CRM row: its
+   `call_agent` carries no member, and a CRM tool refuses such a run.
    - `apps/services/gateway/agents.json`, the registry entry.
    - `gateway/routes/agent.py:596` (a comment) and `:1135` (the `@sales`
      example).
@@ -3384,10 +3389,10 @@ No agent gets SQL. `acb_skills/history_tools.py` records that rule.
      scripts use the name as a sample.
      Give each another live agent name. `grep -rl sales-assistant` lists
      them.
-   - **Migration 254** runs `DELETE FROM dynamic_agents WHERE name =
-     'agent-sales-assistant'`. No foreign key points to that table. The
-     importer (`routes/agent.py:786`) only adds agents, so the row stays
-     without this step.
+   - **Migration 256** deletes the row of `agent-sales-assistant` from
+     `dynamic_agents`, in each tenant. No foreign key points to that
+     table. The importer (`routes/agent.py:786`) only adds agents, so the
+     row stays without this step.
    - Migrations 15 and 16 name it in two comments. They are history and do
      not change.
 7. **WS-55 stays out.** The inbound MCP server excludes the CRM in v1.
@@ -3401,7 +3406,7 @@ write tool.
 `skill_families.py`, `orchestrator/_tool_injection.py`,
 `orchestrator/executor.py`, `apps/agents/agent-crm/agents.py`, `config.json`
 (`own_tool_scope`) and `instructions.md`, `routes/crm/aggregate.py` (new),
-`routes/crm/settings.py`, `infra/postgres/254_remove_sales_assistant.sql`
+`routes/crm/settings.py`, `infra/postgres/256_remove_sales_assistant.sql`
 (new), the files of item 6, and the fences below.
 
 **Done when.**
@@ -3416,7 +3421,7 @@ write tool.
 4. `test_skills_registry.py` passes with the `crm` family.
 5. The new `test_no_sales_assistant.py` fails on the name in any file
    outside `project-docs/`, `docs/`, the migrations and the fence itself.
-6. After the deploy, the ledger shows 254. A count of the row in
+6. After the deploy, the ledger shows 256. A count of the row in
    `dynamic_agents` gives 0.
 
 **Fences.** `tests/unit/test_crm_agent.py`, `tests/unit/test_crm_aggregate_r8.py`
@@ -3457,9 +3462,13 @@ build follows the resolutions D1 to D11 of the dispatch.
 - **The removal.** The migration is **256**, not 254. The open PR #938 holds
   254, and the CRM-C3 worktree holds 255. ⚠️ `dynamic_agents` has FORCE row
   level security in production (`generated/04_policies.sql`). So the
-  migration binds each tenant in turn, as 221 does. Two callers need CRM
-  data, so they name `crm-assistant`: the notes consults and the email draft
-  consult. WS43-G11 is moot.
+  migration binds each tenant in turn, as 221 does. The email draft
+  consult names `crm-assistant` (the item 6 exception). The meeting
+  copilot has no CRM row. WS43-G11 is moot.
+- **Review round 1.** A tool refuses an identity with no `@` (a shared
+  room's compartment), and it sends nothing. The export also builds its
+  filters through `records.list_query`. The refusal test covers each of
+  the 12 tools.
 - **The fences.** `test_crm_aggregate_r8.py`, `test_crm_aggregate.py`,
   `test_crm_agent.py`, `test_crm_mirror_run_tools.py`,
   `test_skills_registry.py`, `test_no_sales_assistant.py`,

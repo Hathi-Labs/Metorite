@@ -1228,48 +1228,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/maf_coding_engine.md` §12 · `work_plan.md` §6.1 WS-43
 - **Added:** 2026-10-03 · PR #584 fix round 1
 
-### H-211 · Remove `approve_all` from the root `metorite` agent and from `agent-sales-assistant` · [AGENT]
+### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
 - **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open. For the other agent, run
-  `gh api repos/FracktalWorks/agent-sales-assistant/contents/agents.py --jq .content | base64 -d | grep -n approve_all`.
-  A hit means it is open there too.
-- **What happens.** Both factories pass
-  `on_permission_request: PermissionHandler.approve_all`. The root one is
-  `agents.py:102-122`. The external one is `agents.py:676` at `03de684e`.
+  `on_permission_request` line means this is open.
+- **What happens.** The root factory passes
+  `on_permission_request: PermissionHandler.approve_all` (`agents.py:102-122`).
   `GitHubCopilotAgent` stores that handler in `_permission_handler`. The
-  executor installs the B6 handler only when `_permission_handler is None`
-  (`executor.py:919`, `:3346`, `:3878`, `:4787` and `:5307`). So these two
-  agents approve every shell command, file write and fetch, in every
+  executor installs the B6 handler only when `_permission_handler is None`.
+  So this agent approves every shell command, file write and fetch, in every
   `AGENT_PERMISSION_MODE`.
 - **Do.**
   1. Delete `on_permission_request` from the root factory. The executor then
      installs `_copilot_permission_handler()`.
-  2. Open a PR in `FracktalWorks/agent-sales-assistant` that does the same.
-     Do it together with H-212.
-  3. Add a fence that fails when a first-party factory sets `approve_all`.
-  4. `mutation_runner.py:85` also sets it, inside the mutation container.
+  2. Add a fence that fails when a first-party factory sets `approve_all`.
+  3. `mutation_runner.py:85` also sets it, inside the mutation container.
      Allow-list that one site with its reason, or fix it too.
+- **Changed 2026-10-13.** WS-53 CRM-C7 removed the outside sales agent, so its
+  half of this entry and all of H-212 are gone.
 - **Authority:** `permissions_sandbox_b6.md` §"The gap" ·
   `agent_architecture.md` §3.2 · `specs/maf_coding_engine.md` §14
-- **Added:** 2026-10-03 · the WS-43 spec session
-
-### H-212 · Fix the `copilot.types` import in `agent-sales-assistant` · [AGENT]
-- **Check:** `gh api repos/FracktalWorks/agent-sales-assistant/contents/agents.py --jq .content | base64 -d | grep -n "copilot.types"`.
-  A hit means this is open.
-- **What happens.** The agent's `build_agent` runs
-  `from copilot.types import PermissionHandler` (`agents.py:664` at
-  `03de684e`). H-181 moved this repo to `github-copilot-sdk` 1.0.11, and that
-  version has no `copilot.types` module. Measured 2026-10-03: on 1.0.11,
-  `import copilot.types` raises `ModuleNotFoundError`. So the factory raises
-  `ImportError` when the loader builds the agent. Then `@sales` and the email
-  drafting consult of `agent-sales-assistant` fail.
-- **Not measured.** Nobody read the box log. The failure on production comes
-  from the code and the lock, not from a log line.
-- **Do.** In that repo, delete the `copilot.types` import together with the
-  `approve_all` line (H-211). Then load the agent on a dev gateway and run one
-  `@sales` chat.
-- **Authority:** H-181 · `uv.lock` (`github-copilot-sdk` 1.0.11) ·
-  `specs/maf_coding_engine.md` §14
 - **Added:** 2026-10-03 · the WS-43 spec session
 
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
@@ -2738,8 +2715,8 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `rg -n "FracktalWorks/" apps/services/gateway/agents.json README.md`
   → hits mean still pending.
 - **Why:** The rebrand moved this repo's slug to `Hathi-Labs/Metorite`, but
-  the satellite agent/skill repos (`FracktalWorks/agent-sales-assistant`,
-  `FracktalWorks/agent-*`, `FracktalWorks/skill-*`) referenced in
+  the satellite agent/skill repos (`FracktalWorks/agent-*`,
+  `FracktalWorks/skill-*`) referenced in
   `agents.json`, `README.md` and `system_architecture.md` are separate real
   repositories that were NOT forked. An agent cannot know whether they stay
   upstream, get forked into Hathi-Labs, or get dropped — that is an org
