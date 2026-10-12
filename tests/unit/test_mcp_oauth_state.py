@@ -67,8 +67,13 @@ async def test_a_replayed_state_is_400_and_sends_no_token_request(world, reg) ->
     assert len(reg.attached) == 1
 
 
-async def test_a_state_of_another_org_is_400(world, reg) -> None:
+async def test_a_state_of_another_org_is_400(world, reg, redis) -> None:
     _, code, state = await f.start_and_consent(_admin(), world)
+    # The tenant prefix of Redis is a second wall: org B holds no pending flow
+    # under this nonce. Plant one, so only the org of the state stops B.
+    (key, raw), = redis.data.items()
+    assert ORG_A in key
+    redis.data[key.replace(ORG_A, ORG_B)] = raw
     # The same email in another org, and another admin of another org.
     for who in (_admin(ADMIN, ORG_B), _admin("admin@b.test", ORG_B)):
         await _refused(who, code, state, world)
