@@ -1011,7 +1011,7 @@ def _org_answer(zoho: FakeZoho, body: dict[str, Any] | None) -> None:
 
 
 @pytest.fixture
-def stored(world, monkeypatch):  # noqa: ANN001 - a fixture
+def stored(world, monkeypatch):
     """A source profile names the account ``Z-A``. A start puts the old row in."""
     registry, zoho = world
 
