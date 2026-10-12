@@ -188,3 +188,19 @@ def test_the_adapter_reads_a_generic_module_by_its_api_name() -> None:
     for bad in ("module:", "module:../x", "module:a b", "module:1abc"):
         with pytest.raises(ValueError):
             client._module(bad)
+
+
+@pytest.mark.parametrize("entity,scope", [
+    ("module:Sales_Orders", "ZohoCRM.modules.salesorders.READ"),
+    ("module:Price_Books", "ZohoCRM.modules.pricebooks.READ"),
+    ("module:Install_Base", "ZohoCRM.modules.custom.READ"),
+    ("deal", "ZohoCRM.modules.deals.READ"),
+])
+async def test_a_scope_refusal_names_the_published_scope(entity: str, scope: str) -> None:
+    """The error of a refused read names the scope an admin must grant."""
+    from tests.unit.test_crm_sources_zoho import Fake, ok
+
+    refused = ok({"code": "OAUTH_SCOPE_MISMATCH", "message": "invalid oauth scope"}, 401)
+    with pytest.raises(client.ZohoScopeError) as caught:
+        await Fake([refused]).source().list_changed(entity)
+    assert caught.value.scope == scope

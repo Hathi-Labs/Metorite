@@ -37,7 +37,7 @@ database. The fake Zoho is the one of the CRM-Q1 and CRM-Q5 suites.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -130,12 +130,31 @@ class ModZoho(Q5Zoho, Q1Zoho):
     def __init__(self, tag: str, api_host: str, accounts_host: str) -> None:
         super().__init__(tag, api_host, accounts_host)
         self.modules = [dict(m) for m in MODULES]
+        #: Discovery cannot read the module list (a section that fails).
+        self.modules_error = False
+        #: Modules whose count endpoint answers 500.
+        self.count_faults: set[str] = set()
 
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/crm/v8/settings/modules":
+        path = request.url.path
+        if path == "/crm/v8/settings/modules":
             self.requests.append(request)
+            if self.modules_error:
+                return httpx.Response(500, json={"code": "INTERNAL_ERROR"})
             return httpx.Response(200, json={"modules": self.modules})
+        count = re.fullmatch(r"/crm/v8/(\w+)/actions/count", path)
+        if count and count.group(1) in self.count_faults:
+            self.requests.append(request)
+            return httpx.Response(500, json={"code": "INTERNAL_ERROR"})
         return super().handle(request)
+
+    def changed_reads(self, module: str) -> int:
+        """Reads of the changed list only (no deleted list, no count)."""
+        return sum(1 for r in self.requests if r.url.path == f"/crm/v2/{module}")
+
+    def count_reads(self, module: str) -> int:
+        return sum(1 for r in self.requests
+                   if r.url.path == f"/crm/v8/{module}/actions/count")
 
     def _fields(self, module: str) -> list[dict[str, Any]]:
         if module in MODULE_FIELDS:
@@ -214,6 +233,28 @@ async def _run(org: str, **kw: Any) -> Any:
     from gateway.crm_sync import engine
 
     return await engine.run_org(org, **kw)
+
+
+def _grant_all_scopes(p: Any, org: str) -> None:
+    """The connection row gains every scope of the consent, and keeps its id."""
+    from gateway.routes.crm.connection import ZOHO_READ_SCOPES
+
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE integration_connections SET scopes = :s "
+            "WHERE organization_id = CAST(:o AS uuid)"),
+            {"s": list(ZOHO_READ_SCOPES), "o": org})
+
+
+def _age_module_reads(p: Any, org: str, hours: int = 2) -> None:
+    """Move the last read of each generic module's changed list back."""
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET cursor_state = jsonb_set(cursor_state, "
+            "'{checked_at}', to_jsonb((now() - make_interval(hours => :h))::text)) "
+            "WHERE organization_id = CAST(:o AS uuid) AND module LIKE 'zoho:module:%' "
+            "AND module NOT LIKE '%deleted' AND cursor_state ? 'checked_at'"),
+            {"o": org, "h": hours})
 
 
 def _add_member(p: Any, org: str) -> None:
@@ -338,6 +379,7 @@ async def test_a_changed_record_updates_and_a_deleted_record_goes(mz) -> None:
     product = next(r for r in a.data["Products"] if r["id"] == "p1")
     product.update(Unit_Price=15, Modified_Time=stamp(40), Product_Name="A-Widget 2")
     a.drop("Products", "p2", tombstone=True)
+    _age_module_reads(p, p.org_a)  # an idle module reads once an hour
     second = await _run(p.org_a)
     assert (second.status, second.kind) == ("ok", "incremental")
     rows = _records(p, p.org_a)
@@ -456,15 +498,16 @@ async def test_a_connection_without_the_new_scopes_reads_no_module(mz) -> None:
     products = next(m for m in profile["modules"] if m["api_name"] == "Products")
     assert products["mirrored"] is False
     assert products["scope"] == "ZohoCRM.modules.products.READ"
-    # The admin connects again and grants the scopes. The next discovery reads.
-    await _connect_all(p, p.org_a, a)
-    with p.admin_engine.begin() as c:
-        c.execute(text("UPDATE crm_source_profiles SET fetched_at = :t WHERE "
-                       "organization_id = CAST(:o AS uuid)"),
-                  {"o": p.org_a, "t": datetime.now(UTC) - timedelta(hours=48)})
+    # The admin connects again and grants the scopes. The connection row and
+    # the stored profile stay, and no clock moves: the NEXT run must see that
+    # the scope set changed, discover again, and mirror the modules.
+    _grant_all_scopes(p, p.org_a)
     healed = await _run(p.org_a)
     assert healed.status == "ok"
     assert _count(p, "crm_module_records", p.org_a) == 3
+    names = {r[3] for r in _records(p, p.org_a).values()}
+    assert names == {"A-Widget", "A-Gadget", "A-Install"}, "the display field was read"
+    assert _count(p, "crm_field_defs", p.org_a, "entity = 'module:Products'") == 3
 
 
 # ── 7. A linking module and a subform ────────────────────────────────────────
@@ -589,3 +632,113 @@ def test_the_module_records_migration_is_found_by_content_and_replays(mz) -> Non
     policy = _q(p, "SELECT qual IS NOT NULL, with_check IS NOT NULL FROM pg_policies "
                    "WHERE tablename = 'crm_module_records'")
     assert policy and all(row == (True, True) for row in policy)
+
+
+# ── Review fixes (2026-10-12) ────────────────────────────────────────────────
+
+
+async def test_a_revoked_scope_stops_a_module_when_discovery_keeps_the_old_list(mz) -> None:
+    """The run decides availability from the connection's scopes at run time.
+    Here discovery cannot read the module list, so the profile keeps the old
+    ``mirrored`` flags. The module must still count as unavailable."""
+    p, a, _b = mz
+    _seed(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE integration_connections SET scopes = ARRAY['ZohoCRM.modules.leads.READ'] "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": p.org_a})
+    a.modules_error = True
+    _age_module_reads(p, p.org_a)
+    before = a.changed_reads("Products")
+    second = await _run(p.org_a)
+    assert second.status == "ok"
+    assert second.counts["module:Products"]["unavailable"] == 1
+    assert second.counts["module:Install_Base"]["unavailable"] == 1
+    assert a.changed_reads("Products") == before, "no call for a module without its scope"
+
+
+async def test_a_module_that_hides_modified_time_is_read_again_after_the_interval(
+    mz,
+) -> None:
+    """A module with no ``Modified_Time`` pages by offset and has no cursor to
+    move. It is read again in full once each ``RECONCILE_EVERY``, and a full
+    re-read that finds no change writes nothing."""
+    p, a, _b = mz
+    _seed(a)
+    a.hide.add("Install_Base")
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    first = _records(p, p.org_a)["Install_Base", "i1"]
+
+    a.add("Install_Base", "i2", 30, Name="A-Install 2")
+    _age_module_reads(p, p.org_a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert ("Install_Base", "i2") not in _records(p, p.org_a), "not inside the interval"
+
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_sync_cursors SET last_reconciled_at = now() - interval '25 hours' "
+            "WHERE organization_id = CAST(:o AS uuid) "
+            "AND module = 'zoho:module:Install_Base'"), {"o": p.org_a})
+    again = await _run(p.org_a)
+    assert again.status == "ok"
+    rows = _records(p, p.org_a)
+    assert rows["Install_Base", "i2"][3] == "A-Install 2"
+    assert rows["Install_Base", "i1"][9] == first[9], "the unchanged record is not rewritten"
+    assert again.counts["module:Install_Base"]["upserted"] == 1
+
+
+async def test_a_failed_module_count_is_not_asked_again_on_every_run(mz) -> None:
+    p, a, _b = mz
+    _seed(a)
+    a.count_faults.add("Products")
+    await _connect_all(p, p.org_a, a)
+    for _ in range(3):
+        assert (await _run(p.org_a)).status == "ok"
+    assert a.count_reads("Products") == 1, "one credit a day, not one a run"
+    assert a.count_reads("Install_Base") == 1
+
+
+async def test_an_idle_module_reads_its_changed_list_at_most_once_an_hour(mz) -> None:
+    p, a, _b = mz
+    _seed(a)
+    await _connect_all(p, p.org_a, a)
+    assert (await _run(p.org_a)).status == "ok"
+    after_import = a.changed_reads("Products")
+    for _ in range(2):
+        assert (await _run(p.org_a)).status == "ok"
+    assert a.changed_reads("Products") == after_import, "no read inside the hour"
+    _age_module_reads(p, p.org_a)
+    assert (await _run(p.org_a)).status == "ok"
+    assert a.changed_reads("Products") == after_import + 1, "one read after the hour"
+
+
+async def test_module_field_reads_stop_at_the_reserve_and_wait_for_the_next_discovery(
+    mz, monkeypatch,
+) -> None:
+    from gateway.crm_sync import engine
+
+    p, a, _b = mz
+    _seed(a)
+    await _connect_all(p, p.org_a, a)
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 10**9)  # only the reserve is left
+    assert (await _run(p.org_a)).status == "ok"
+    fields = [r.url.params.get("module") for r in a.requests
+              if r.url.path == "/crm/v8/settings/fields"]
+    assert "Products" not in fields and "Install_Base" not in fields
+    assert _count(p, "crm_field_defs", p.org_a, "entity LIKE 'module:%'") == 0
+    assert _count(p, "crm_module_records", p.org_a) == 0, "no record without its fields"
+
+    # The next discovery reads them. A profile with fields still to read is due
+    # again after an hour, not after a day.
+    monkeypatch.setattr(engine, "MODULES_RESERVE", 20)
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_source_profiles SET fetched_at = now() - "
+                       "interval '2 hours' WHERE organization_id = CAST(:o AS uuid)"),
+                  {"o": p.org_a})
+    assert (await _run(p.org_a)).status == "ok"
+    assert _count(p, "crm_field_defs", p.org_a, "entity LIKE 'module:%'") == 5
+    names = {r[3] for r in _records(p, p.org_a).values()}
+    assert names == {"A-Widget", "A-Gadget", "A-Install"}

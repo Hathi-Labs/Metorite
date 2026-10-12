@@ -266,6 +266,20 @@ def _module(entity: str) -> str:
         raise ValueError(f"Zoho has no module for the entity {entity!r}") from None
 
 
+def _read_scope(entity: str) -> str:
+    """The published read scope of an entity's module, for a scope refusal.
+
+    The one rule is ``mapping.module_read_scope`` (``Sales_Orders`` gives
+    ``salesorders``). A generic module that is not a standard module is a
+    custom module, and takes ``ZohoCRM.modules.custom.READ``.
+    """
+    from gateway.crm_sources.zoho.mapping import GENERIC_STANDARD_MODULES, module_read_scope
+
+    module = _module(entity)
+    custom = entity.startswith(_GENERIC_PREFIX) and module not in GENERIC_STANDARD_MODULES
+    return module_read_scope(module, custom=custom)
+
+
 def _page_params(cursor: SourceCursor, extra: Mapping[str, Any]) -> dict[str, Any]:
     """``page`` and ``per_page``, or ``page_token`` and ``per_page`` with no page."""
     params: dict[str, Any] = {**extra, "per_page": PER_PAGE}
@@ -662,10 +676,8 @@ class ZohoSource:
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
         if _is_scope_refusal(r):
-            module = _module(entity)
             raise ZohoScopeError(
-                f"ZohoCRM.modules.{module.lower()}.READ",
-                str(_error_body(r).get("message") or "")[:200],
+                _read_scope(entity), str(_error_body(r).get("message") or "")[:200],
             )
         self._raise_for_status(r, path)
         body = _error_body(r)

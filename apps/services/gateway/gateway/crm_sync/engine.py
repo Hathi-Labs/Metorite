@@ -181,6 +181,11 @@ MODULE_COUNTS: tuple[str, ...] = (
 #: the estimate. A count is read again after :data:`DISCOVERY_EVERY`.
 MODULE_COUNTS_ROW = f"{PROVIDER}:module_counts"
 MODULE_TABLE = "crm_module_records"
+#: After its first import, a generic module reads its changed list at most
+#: this often, the cadence of the deleted lists. A module with no change
+#: still costs one credit for each read, and ten idle modules on every run
+#: would double the cost of a run and slow the Leads and Deals.
+MODULE_READ_EVERY = timedelta(hours=1)
 
 LEAD_STATUSES = "crm_lead_statuses"
 DEAL_STATUSES = "crm_deal_statuses"
@@ -1120,7 +1125,13 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # A generic module is never walked: it has no ``ext_seen_at`` stamp, and
     # its deletes come from the deleted list only (CRM-Q6a).
     walking = entity in ctx.reconcile and not generic
-    if row.initial_done_at is not None and saved.get("offset_paged") and not walking:
+    rereading = generic and _module_reread(ctx, row)
+    if generic and not rereading and _module_read_recently(ctx, row):
+        return
+    if (
+        row.initial_done_at is not None and saved.get("offset_paged") and not walking
+        and not rereading and not (generic and saved.get("in_progress"))
+    ):
         return
     stamping = walking or row.initial_done_at is None
     resumed = bool(saved.get("in_progress")) and (bool(saved.get("walk_start")) or not stamping)
@@ -1150,7 +1161,7 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
         newest = _parse(saved.get("max_modified"))
         newest_ids = set(saved.get("watermark_ids") or ())
     else:
-        since = None if walking or backfill else row.last_pulled_at
+        since = None if walking or backfill or rereading else row.last_pulled_at
         ids = tuple(saved.get("watermark_ids") or ()) if since is not None else ()
         cursor = SourceCursor(since=since, seen_ids=ids)
         newest = since
@@ -1161,6 +1172,10 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
     # cursor made earlier is a full read, once (CRM-Q5). It does not stamp and
     # it deletes nothing.
     marks: dict[str, Any] = {"converted_both": True} if entity == "lead" else {}
+    if rereading:
+        # Kept in the cursor while the full re-read runs, so a stop at the
+        # reserve resumes it as a re-read (CRM-Q6a).
+        marks["reread"] = True
     table = MODULE_TABLE if generic else _table(entity)
     try:
         while True:
@@ -1243,9 +1258,12 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
                             "retry_from": _iso(_pin(failed_map)),
                             "prev_walk_start": _iso(next_prev),
                             **marks,
+                            # The hourly cadence of a generic module (CRM-Q6a).
+                            **({"checked_at": _iso(ctx.started)} if generic else {}),
                         },
                         row.initial_done_at or complete_at,
-                        complete_at if (walking or first_pass) else row.last_reconciled_at,
+                        complete_at if (walking or first_pass or rereading)
+                        else row.last_reconciled_at,
                     )
                 await _save_cursor(ctx, db, row, "ok" if last_page else "partial")
             ctx.cursors[module] = row
@@ -1254,6 +1272,35 @@ async def _changed_pass(ctx: _Ctx, entity: str) -> None:  # noqa: C901 - one res
             cursor = page.next_cursor  # type: ignore[assignment]
     finally:
         ctx.stamp = None
+
+
+def _module_reread(ctx: _Ctx, row: CursorRow) -> bool:
+    """True when a generic module that hides ``Modified_Time`` is due for its
+    full re-read (CRM-Q6a), or one that stopped at the reserve goes on.
+
+    Such a module pages by offset and has no cursor to move, so an incremental
+    read cannot see a new record. It is read again in full once each
+    :data:`RECONCILE_EVERY`. The door skips each record that did not change,
+    so a re-read that finds nothing new writes nothing. It deletes nothing.
+    """
+    state = row.state or {}
+    if state.get("in_progress"):
+        return bool(state.get("reread"))
+    if row.initial_done_at is None or not state.get("offset_paged"):
+        return False
+    done = row.last_reconciled_at
+    return done is None or ctx.started - done >= RECONCILE_EVERY
+
+
+def _module_read_recently(ctx: _Ctx, row: CursorRow) -> bool:
+    """True when a generic module read its changed list less than
+    :data:`MODULE_READ_EVERY` ago (CRM-Q6a). A module whose first import is not
+    done, or that stopped mid-read at the reserve, reads on every run."""
+    state = row.state or {}
+    if row.initial_done_at is None or state.get("in_progress") or state.get("unavailable"):
+        return False
+    checked = _parse(state.get("checked_at"))
+    return checked is not None and ctx.started - checked < MODULE_READ_EVERY
 
 
 def _unavailable_now(ctx: _Ctx, entity: str) -> bool:
@@ -1491,13 +1538,28 @@ async def _field_defs(ctx: _Ctx) -> None:
 
 
 def _discovery_due(ctx: _Ctx) -> bool:
-    """First import, a new connection, or a profile older than 24 hours."""
+    """First import, a new connection, a profile older than 24 hours, or a
+    profile that no longer fits the connection.
+
+    CRM-Q6a adds two cases. A connection whose scope set differs from the one
+    the profile was built with (a reconnect that grants or drops a module
+    scope) makes discovery due at once. A profile that still waits for the
+    fields of a module (the reserve stopped their read) is due after an hour.
+    """
     current = ctx.profile
     if current is None or current.fetched_at is None:
         return True
     if current.connection_id != ctx.handle.connection_id:
         return True
-    return ctx.started - current.fetched_at >= DISCOVERY_EVERY
+    if current.profile.get("scope_set") != ctx.mapping.scope_set_key(ctx.handle.scopes):
+        return True
+    age = ctx.started - current.fetched_at
+    pending = any(
+        row.get("fields_pending") for row in ctx.mapping.generic_modules(current.profile)
+    )
+    if pending and age >= DELETED_EVERY:
+        return True
+    return age >= DISCOVERY_EVERY
 
 
 _NAMED = (
@@ -1775,15 +1837,23 @@ async def _mirror_pipelines(
 
 async def _read_module_fields(
     ctx: _Ctx, profile: dict[str, Any],
-) -> dict[str, list[dict[str, Any]]]:
-    """The ``settings/fields`` rows of each mirrored generic module (CRM-Q6a).
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+    """The ``settings/fields`` rows of each mirrored generic module (CRM-Q6a),
+    and the modules whose read waits for the next discovery.
 
-    Metadata only, one credit for each module. A module whose fields cannot be
-    read keeps its old display field, and its records still sync.
+    Metadata only, one credit for each module. Discovery runs before the known
+    entities, so these reads stop while :data:`MODULES_RESERVE` credits remain.
+    The skipped modules stay ``fields_pending`` in the profile, and the next
+    discovery reads them. A module whose fields cannot be read for another
+    reason keeps its old display field, and its records still sync.
     """
     found: dict[str, list[dict[str, Any]]] = {}
+    skipped: set[str] = set()
     for row in ctx.mapping.generic_modules(profile):
         if not row.get("mirrored"):
+            continue
+        if _budget_low(ctx, MODULES_RESERVE):
+            skipped.add(row["api_name"])
             continue
         entity = ctx.mapping.module_entity(row["api_name"])
         try:
@@ -1797,7 +1867,7 @@ async def _read_module_fields(
                 raise
             _log.warning("crm.sync.module_fields_unreadable entity=%s error=%s",
                          entity, error_code(exc))
-    return found
+    return found, skipped
 
 
 async def _write_module_field_defs(
@@ -1844,8 +1914,10 @@ async def _discover(ctx: _Ctx) -> None:
         return
     previous = ctx.profile.profile if ctx.profile is not None else None
     profile = ctx.mapping.build_profile(raw, previous, ctx.handle.scopes)
-    module_fields = await _read_module_fields(ctx, profile)
-    profile = ctx.mapping.with_module_fields(profile, module_fields, previous)
+    module_fields, fields_skipped = await _read_module_fields(ctx, profile)
+    profile = ctx.mapping.with_module_fields(
+        profile, module_fields, previous, pending=fields_skipped,
+    )
     org = profile.get("org") or {}
     meta = {
         "domain_name": org.get("domain_name"),
@@ -1923,28 +1995,36 @@ async def _module_records(ctx: _Ctx) -> None:
     the CRM-Q5 steps (``crm_platform.md`` §18.7).
 
     A module whose read scope the connection lacks is counted as unavailable,
-    with no call. Each other module reads the same way as a known entity:
-    the changed records since its cursor ``zoho:module:<ApiName>``, then the
-    deleted list. The step stops while :data:`MODULES_RESERVE` credits remain,
-    and the next run goes on from the cursor. A scope error, a 400 or a 500
-    marks that one module unavailable, with the CRM-Q5 rule.
+    with no call. The run decides that from the scopes of the connection NOW
+    (``RunHandle.scopes``), not only from the ``mirrored`` flag that discovery
+    stored. A module whose fields wait for the next discovery is not read
+    yet, so no record lands without its name. Each other module reads the same
+    way as a known entity: the changed records since its cursor
+    ``zoho:module:<ApiName>``, then the deleted list. The step stops while
+    :data:`MODULES_RESERVE` credits remain, and the next run goes on from the
+    cursor. A scope error, a 400 or a 500 marks that one module unavailable,
+    with the CRM-Q5 rule.
     """
     rows = ctx.mapping.generic_modules(ctx.profile.profile if ctx.profile else None)
     if not rows:
         return
     ctx.modules = {row["api_name"]: row for row in rows}
-    entities = tuple(
-        ctx.mapping.module_entity(row["api_name"]) for row in rows if row.get("mirrored")
-    )
+    granted = set(ctx.handle.scopes)
+    entities: list[str] = []
     for row in rows:
-        if not row.get("mirrored"):
-            _count_unavailable(ctx, ctx.mapping.module_entity(row["api_name"]))
+        entity = ctx.mapping.module_entity(row["api_name"])
+        if row.get("scope") not in granted:
+            _count_unavailable(ctx, entity)
+        elif row.get("fields_pending"):
+            ctx.module_step(entity, "skipped")
+        else:
+            entities.append(entity)
     if not entities or _budget_low(ctx, MODULES_RESERVE):
         return
     async with ctx.page() as db:
         connection = await store.get(db, ctx.org, PROVIDER, OWNING_APP)
     ctx.link_meta = dict(connection.provider_meta) if connection is not None else {}
-    await _start_deleted_windows(ctx, entities)
+    await _start_deleted_windows(ctx, tuple(entities))
     for entity in entities:
         if _budget_low(ctx, MODULES_RESERVE):
             break
@@ -1961,14 +2041,16 @@ async def _module_estimate(ctx: _Ctx, entity: str) -> None:
     ``zoho_count``. One credit, read again after :data:`DISCOVERY_EVERY`.
 
     The count is kept in the cursor row :data:`MODULE_COUNTS_ROW`, so an
-    incremental run still reports it. A failure costs only the count.
+    incremental run still reports it. A failure costs only the count, and its
+    time is kept too, so a module that cannot be counted is asked once a day
+    and not on every run.
     """
     row = _row(ctx, MODULE_COUNTS_ROW)
     state = row.state or {}
     counts = {str(k): v for k, v in (state.get("counts") or {}).items()}
     stamps = {str(k): v for k, v in (state.get("at") or {}).items()}
     stamp = _parse(stamps.get(entity))
-    due = entity not in counts or stamp is None or ctx.started - stamp >= DISCOVERY_EVERY
+    due = stamp is None or ctx.started - stamp >= DISCOVERY_EVERY
     if due and not _budget_low(ctx, MODULES_RESERVE):
         try:
             count = await ctx.call(lambda s: s.count_records(entity))
@@ -1980,17 +2062,18 @@ async def _module_estimate(ctx: _Ctx, entity: str) -> None:
             count = None
         if count is not None:
             counts[entity] = int(count)
-            stamps[entity] = _iso(ctx.started)
-            saved = CursorRow(
-                MODULE_COUNTS_ROW, row.last_pulled_at,
-                {"counts": counts, "at": stamps},
-                row.initial_done_at or ctx.started, row.last_reconciled_at,
-            )
+        stamps[entity] = _iso(ctx.started)
+        saved = CursorRow(
+            MODULE_COUNTS_ROW, row.last_pulled_at,
+            {"counts": counts, "at": stamps},
+            row.initial_done_at or ctx.started, row.last_reconciled_at,
+        )
+        if isinstance(counts.get(entity), int):
             ctx.estimate = {**(ctx.estimate or {}), entity: counts[entity]}
-            async with ctx.page() as db:
-                await _save_cursor(ctx, db, saved, "ok")
-            ctx.cursors[MODULE_COUNTS_ROW] = saved
-            return
+        async with ctx.page() as db:
+            await _save_cursor(ctx, db, saved, "ok")
+        ctx.cursors[MODULE_COUNTS_ROW] = saved
+        return
     if isinstance(counts.get(entity), int):
         ctx.estimate = {**(ctx.estimate or {}), entity: counts[entity]}
 

@@ -854,6 +854,7 @@ def with_module_fields(
     profile: dict[str, Any],
     fields: Mapping[str, list[Mapping[str, Any]]],
     previous: Mapping[str, Any] | None = None,
+    pending: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Put the display field of each generic module into the profile.
 
@@ -861,15 +862,23 @@ def with_module_fields(
     with ``display_field`` true names the record (``crm_module_records.name``).
     A module whose fields were not read keeps the display field of *previous*.
     With none, ``display_field`` is ``None`` and the name stays NULL.
+
+    *pending* names the modules whose read waited for credits. Such a module
+    whose fields were never read gets ``fields_pending``. The sync reads no
+    record of it, and the next discovery reads its fields.
     """
-    old = {
-        m.get("api_name"): m.get("display_field")
+    previous_rows = {
+        m.get("api_name"): m
         for m in (previous or {}).get("modules") or [] if isinstance(m, Mapping)
     }
+    old = {name: m.get("display_field") for name, m in previous_rows.items()}
     for row in profile.get("modules") or []:
         if not row.get("generic"):
             continue
         api_name = row["api_name"]
+        before = previous_rows.get(api_name) or {}
+        read_before = "display_field" in before and not before.get("fields_pending")
+        row["fields_pending"] = api_name in pending and not read_before
         if api_name in fields:
             row["display_field"] = next(
                 (
@@ -1031,7 +1040,18 @@ def build_profile(
         # The sections the read could not get. A section named here is the
         # copy of the previous profile, or empty.
         "unreadable": sorted(failed),
+        # The scope set the module rows were built with (CRM-Q6a). A connection
+        # whose scopes differ makes the next discovery due.
+        "scope_set": scope_set_key(scopes),
     }
+
+
+def scope_set_key(scopes: frozenset[str] | tuple[str, ...] | list[str]) -> str:
+    """A stable key of a scope set: order and repeats do not change it."""
+    import hashlib
+
+    joined = "\n".join(sorted({str(s) for s in scopes}))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 def profile_tabs(profile: Mapping[str, Any]) -> dict[str, str]:
@@ -1074,6 +1094,7 @@ __all__ = [
     "pipeline_rows",
     "pipeline_stages",
     "profile_tabs",
+    "scope_set_key",
     "stage_type_hint",
     "with_module_fields",
 ]

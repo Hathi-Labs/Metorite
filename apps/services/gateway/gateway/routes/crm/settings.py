@@ -69,14 +69,19 @@ ALLOWED_MODE_CHANGES: frozenset[tuple[str | None, str | None]] = frozenset({
     ("mirror", None),
 })
 
-#: The five record tables. Every row counts, native or mirrored.
+#: The record tables. Every row counts, native or mirrored. The generic record
+#: store of the mirror (CRM-Q6a) counts too.
 _RECORD_TABLES: tuple[str, ...] = (
     "crm_leads", "crm_deals", "crm_contacts", "crm_companies", "crm_activities",
+    "crm_module_records",
 )
 
 #: Child first. Nothing references them with 0 records, but a status that a
 #: record names is ``ON DELETE RESTRICT``, so the order is the safe one.
 _RESET_DELETES: tuple[str, ...] = (
+    # CRM-Q6a: the reset deletes the module cursors below, so a generic record
+    # that lands after the count must not stay without its cursor.
+    "crm_module_records",
     "crm_status_changes", "crm_pipeline_stages", "crm_pipelines",
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
     # The shape of the old Zoho account (CRM-Q1). A new setup reads its own.
