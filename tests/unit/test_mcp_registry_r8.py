@@ -69,6 +69,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 from tests.unit.test_mcp_servers_org_scope import (  # noqa: F401
     graph_on_promoted,
     registry_on_promoted,
+    seed_registry,
 )
 
 # ⚠️ Without this gate the suite ERRORS where no ladder URL is set (the deploy
@@ -404,9 +405,12 @@ async def test_g_the_stored_test_sends_the_decrypted_header_through_the_guard(
 
     monkeypatch.setattr(outbound_guard, "request", _fetch)
     name_a, name_b = _name("ga"), _name("gb")
-    await _register(_user(ADMIN_A, ns.org_a), name_a, url="https://a.example.com/mcp",
-                    headers={"Authorization": SENTINEL})
-    await _register(_user(ADMIN_B, ns.org_b), name_b, headers={"Authorization": SENTINEL_B})
+    # Written by the registry writer itself, so only a decrypt of the blob
+    # can give the route the header.
+    await seed_registry(ns.org_a, name_a, url="https://a.example.com/mcp",
+                        headers={"Authorization": SENTINEL})
+    await seed_registry(ns.org_b, name_b, headers={"Authorization": SENTINEL_B})
+    assert SENTINEL not in _registry(ns, ns.org_a)[name_a]["whole"]
 
     res = await _call(_user(ADMIN_A, ns.org_a), "POST", f"/integrations/mcp/{name_a}/test")
     assert res.status_code == 200 and res.json() == {"ok": True, "tools": None, "error": None}

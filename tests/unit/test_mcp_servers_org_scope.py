@@ -116,10 +116,14 @@ async def registry_on_promoted(graph_on_promoted, monkeypatch):
     from acb_common import get_settings
 
     p = graph_on_promoted
-    monkeypatch.setattr(get_settings(), "acb_master_key", R8_MASTER_KEY, raising=False)
+    app_dsn = p.app_url.render_as_string(hide_password=False)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "acb_master_key", R8_MASTER_KEY, raising=False)
+    # The key-store reads of the read model go to the same catalog.
+    monkeypatch.setattr(settings, "database_url", app_dsn, raising=False)
     monkeypatch.setattr(key_store, "_store", None)
     try:
-        async with tenant_engine_scope(p.app_url.render_as_string(hide_password=False)):
+        async with tenant_engine_scope(app_dsn):
             yield p
     finally:
         with p.admin_engine.begin() as c:
