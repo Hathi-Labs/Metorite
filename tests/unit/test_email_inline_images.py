@@ -361,6 +361,9 @@ class _Harness:
         self.redis = redis or _BinRedis()
         self.complete = True
         self.owner_reads = 0
+        self.grant_reads = 0
+        self.creds = "grant-old"
+        self.decrypted: list[str] = []
         self.db_delay = 0.0
         self.parts = parts if parts is not None else [
             InlineImage("image001.png@01dd5a75.a7b8ea10", PNG, "image/png"),
@@ -377,20 +380,25 @@ class _Harness:
         self.persisted = 0
         self.row = SimpleNamespace(
             id=MSG_ID, provider_message_id="prov-msg", account_id="acct-1",
-            provider="microsoft", credentials_encrypted="blob",
+            provider="microsoft", credentials_encrypted="grant-old",
         )
         harness = self
 
         class _Db:
             async def execute(self, statement: Any, params: dict[str, Any]) -> Any:
                 sql = str(statement)
-                if "FROM email_messages" in sql:
+                grant = "credentials_encrypted" in sql
+                if grant:
+                    harness.grant_reads += 1
+                elif "FROM email_messages" in sql:
                     harness.owner_reads += 1
                 if harness.db_delay:
                     await asyncio.sleep(harness.db_delay)
                 owned = (params.get("user_id") in owners
                          or "ea.user_id = :user_id" not in sql)
-                return SimpleNamespace(fetchone=lambda: harness.row if owned else None)
+                answer = (SimpleNamespace(provider="microsoft", credentials_encrypted=harness.creds)
+                          if grant else harness.row)
+                return SimpleNamespace(fetchone=lambda: answer if owned else None)
 
         @asynccontextmanager
         async def _tenant_session():
@@ -435,7 +443,11 @@ class _Harness:
             return TenantRedis(harness.redis)
 
         monkeypatch.setattr(ii, "_tenant_session", _tenant_session)
-        monkeypatch.setattr(ii, "_decrypt_credentials", lambda _blob: ({}, object()))
+        def _decrypt(blob: str) -> tuple[dict, object]:
+            harness.decrypted.append(blob)
+            return {}, object()
+
+        monkeypatch.setattr(ii, "_decrypt_credentials", _decrypt)
         monkeypatch.setattr(ii, "_instantiate_provider", lambda _name, _creds: _Provider())
         monkeypatch.setattr(ii, "_persist_rotated_creds", _persist)
         monkeypatch.setattr(ii, "get_tenant_redis", _get_tenant_redis)
@@ -579,12 +591,14 @@ class TestTheRoute:
         h = _Harness(monkeypatch)
         h.rotate = True
         await _get("ii_chart")
-        assert h.persisted == 1 and h.sessions_opened == 2
+        # The owner read, the grant read, and the write of the token.
+        assert h.persisted == 1 and h.sessions_opened == 3
 
     async def test_no_rotation_opens_one_session(self, monkeypatch) -> None:
         h = _Harness(monkeypatch)
         await _get("ii_chart")
-        assert h.sessions_opened == 1 and h.persisted == 0
+        # The owner read and the grant read.
+        assert h.sessions_opened == 2 and h.persisted == 0
 
     async def test_the_total_cap_holds(self, monkeypatch) -> None:
         big = _png_like(ii.MAX_INLINE_IMAGE_BYTES)
@@ -596,6 +610,14 @@ class TestTheRoute:
         with pytest.raises(HTTPException) as err:
             await _get("p4")
         assert err.value.status_code == 404
+
+    async def test_the_route_cap_skips_and_keeps_a_smaller_part(self, monkeypatch) -> None:
+        """Review P3-a: the route's own cap skips a large part, not the rest."""
+        big = _png_like(int(4.9 * 1024 * 1024))
+        parts = [InlineImage(f"p{n}", big, "image/png") for n in range(5)]
+        parts.append(InlineImage("logo", PNG, "image/png"))
+        _Harness(monkeypatch, parts=parts)
+        assert (await _get("logo")).body == PNG
 
     def test_the_route_reads_the_owner_and_the_session_from_the_seam(self) -> None:
         """R11 and R5: no organization or member comes from the request, and
@@ -625,7 +647,9 @@ class TestTheReadStopsAtTheCaps:
             "pm-1", max_count=100, max_bytes=5 * MB, max_total=20 * MB)
         assert sorted(graph.part_reads()) == ["a-0", "a-1", "a-2", "a-3"], (
             "the read fetched a part past the total cap")
-        assert len(got.images) == 4 and got.complete
+        assert len(got.images) == 4
+        # Two inline parts were left out, so the list lives a minute (P3-a).
+        assert got.complete is False
 
     async def test_gmail_downloads_no_pdf_with_a_content_id(self) -> None:
         pdf = {"mimeType": "application/pdf", "filename": "spec.pdf",
@@ -807,11 +831,94 @@ class TestOneOwnerReadForEachOpen:
         await _get("ii_chart")
         assert h.owner_reads == 2
 
-    async def test_a_rotated_token_drops_the_verdict(self, monkeypatch) -> None:
+    async def test_a_reconnect_after_the_verdict_uses_the_new_grant(
+        self, monkeypatch,
+    ) -> None:
+        """Review P3-b: the kept verdict holds no credentials. A reconnect
+        inside its minute, then a picture miss, reads the NEW grant."""
         h = _Harness(monkeypatch)
-        h.rotate = True
         await _get("ii_chart")
-        assert ii._OWNERS == {}, "a verdict with old credentials stayed"
+        assert h.owner_reads == 1 and h.decrypted == ["grant-old"]
+        h.creds = "grant-new"  # the member reconnects the mailbox
+        h.redis.store.clear()  # the next open misses the cache
+        await _get("ii_chart")
+        assert h.owner_reads == 1, "the verdict was not kept"
+        assert h.decrypted == ["grant-old", "grant-new"], (
+            "the provider read used the grant of the kept verdict")
+
+    def test_the_owner_read_selects_no_credentials(self) -> None:
+        import inspect
+
+        src = inspect.getsource(ii.get_inline_image)
+        assert "credentials_encrypted" not in src
+
+
+class TestInlinePartsComeFirst:
+    """``email-inline-order`` (review P3-a). Large image files that the body
+    never names cannot crowd out a small inline logo."""
+
+    async def test_outlook_reads_the_logo_after_25_mb_of_image_files(self) -> None:
+        files = [_part(f"f-{n}", cid=f"file{n}", inline=False, size=5 * MB) for n in range(5)]
+        graph = _Graph([*files, _part("a-logo", cid="logo", size=1000)])
+        got = await _outlook(graph).get_inline_images(
+            "pm-1", max_count=100, max_bytes=5 * MB, max_total=20 * MB)
+        assert "a-logo" in graph.part_reads(), "the image files crowded out the logo"
+        assert "logo" in [i.content_id for i in got.images]
+        # Only a file the body never names was left out, so the read is whole.
+        assert got.complete is True
+
+    async def test_outlook_skips_a_large_inline_part_and_keeps_a_small_one(self) -> None:
+        big = [_part(f"a-{n}", cid=f"c{n}", size=int(4.5 * MB)) for n in range(5)]
+        graph = _Graph([*big, _part("a-tiny", cid="tiny", size=1000)])
+        got = await _outlook(graph).get_inline_images(
+            "pm-1", max_count=100, max_bytes=5 * MB, max_total=20 * MB)
+        assert "a-tiny" in graph.part_reads(), "the cap stopped the read at the large part"
+        assert "a-4" not in graph.part_reads()
+        assert got.complete is False, "a skipped inline part must shorten the list's life"
+
+    async def test_gmail_reads_the_inline_logo_first(self) -> None:
+        def image(att: str, cid: str, size: int, inline: bool) -> dict:
+            headers = [{"name": "Content-ID", "value": f"<{cid}>"}]
+            if inline:
+                headers.append({"name": "Content-Disposition", "value": "inline"})
+            return {"mimeType": "image/png", "headers": headers,
+                    "body": {"size": size, "attachmentId": att}}
+
+        tree = {"mimeType": "multipart/mixed", "parts": [
+            *[image(f"att-{n}", f"pic{n}", 5 * MB, False) for n in range(5)],
+            image("att-logo", "logo", len(PNG), True),
+        ]}
+        reads: list[str] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/messages/g-1"):
+                return httpx.Response(200, json={"id": "g-1", "payload": tree})
+            reads.append(request.url.path.rsplit("/", 1)[-1])
+            return httpx.Response(200, json={"data": base64.urlsafe_b64encode(PNG).decode()})
+
+        provider = GmailProvider({"access_token": "t", "refresh_token": "r"})
+        provider._http = httpx.AsyncClient(
+            base_url=GMAIL_API_BASE, transport=httpx.MockTransport(handle))
+        got = await provider.get_inline_images(
+            "g-1", max_count=100, max_bytes=5 * MB, max_total=20 * MB)
+        assert reads[0] == "att-logo", "the parts marked inline must come first"
+        assert "logo" in [i.content_id for i in got.images]
+        assert got.complete is False, "a part left out by the cap shortens the list's life"
+
+
+class TestOneGateForTheBinaryPool:
+    """``email-inline-redis-gate`` (review P3-c). Both users of the binary
+    pool queue on the one gate of ``attachments.py``."""
+
+    def test_both_routes_use_the_one_gate(self) -> None:
+        import inspect
+
+        from gateway.routes.email.transport import attachments as att
+
+        assert ii._binary_redis_gate is att._binary_redis_gate
+        fetch = inspect.getsource(att._fetch_owned_attachment)
+        assert fetch.count("async with _binary_redis_gate():") == 2
+        assert fetch.count("binary=True") == 2
 
 
 # ── 5. R8: the owner check on a real database ───────────────────────────────

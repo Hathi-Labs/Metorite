@@ -2764,8 +2764,10 @@ class GmailProvider(BaseEmailProvider):
         that is an inline picture: ``_gmail_part_is_inline`` and an
         ``image/*`` type (review P2-3). So a PDF with a ``Content-ID`` is
         never downloaded. A small part carries its bytes in the tree, and a
-        larger one is read by its ``attachmentId``. The choice stops at
-        *max_count* parts, or when the sizes in the tree reach *max_total*.
+        larger one is read by its ``attachmentId``. The parts marked
+        ``inline`` come first. The choice stops at *max_count* parts, and it
+        skips a part that would take the sizes over *max_total*. A skip makes
+        the read incomplete (review P3-a).
 
         The walk never opens an attached mail, because its parts belong to
         that mail. A failed read of one part skips that part and makes the
@@ -2777,21 +2779,32 @@ class GmailProvider(BaseEmailProvider):
         )
         resp.raise_for_status()
         payload = resp.json().get("payload", {}) or {}
+        # The parts with an ``inline`` disposition first, then the parts
+        # with a Content-ID and no disposition. A part over the budget is
+        # skipped, and a smaller one after it can still fit. Each candidate
+        # is a picture that the body can name, so a skip makes the read
+        # incomplete (review P3-a).
+        candidates = [
+            p for p in _iter_gmail_parts(payload, descend=_gmail_opens_part)
+            if not p.get("parts") and _gmail_part_is_inline_image(p)
+        ]
+        candidates.sort(key=lambda p: not _gmail_part_header(
+            p, "Content-Disposition").strip().lower().startswith("inline"))
         out: list[InlineImage] = []
         chosen = 0
         complete = True
-        for part in _iter_gmail_parts(payload, descend=_gmail_opens_part):
+        for part in candidates:
             if len(out) >= max_count:
+                complete = False
                 break
-            if part.get("parts") or not _gmail_part_is_inline_image(part):
-                continue
             cid = normalize_content_id(_gmail_part_header(part, "Content-ID"))
             body = part.get("body", {}) or {}
             size = int(body.get("size", 0) or 0)
             if not cid or size > max_bytes:
                 continue
             if chosen + size > max_total:
-                break
+                complete = False
+                continue
             chosen += size
             try:
                 if body.get("data"):

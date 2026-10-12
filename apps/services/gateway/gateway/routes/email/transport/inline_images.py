@@ -44,7 +44,6 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common.tenant_redis import (
-    BINARY_POOL_MAX_CONNECTIONS,
     get_tenant_redis,
     key,
     organization_scope,
@@ -61,7 +60,11 @@ from gateway.routes.email.core import (
     _tenant_session,
     router,
 )
-from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.transport.attachments import (
+    BINARY_REDIS_GATE_SIZE,
+    _binary_redis_gate,
+    _canonical_uuid,
+)
 from gateway.routes.email.transport.messages import (
     _is_provider_429,
     _provider_retry_after,
@@ -86,11 +89,8 @@ INLINE_CACHE_TTL_SECS = ATTACHMENT_CACHE_TTL_SECS
 #: next open soon reads that part again, and a passing fault never reads as
 #: "no such picture" for an hour (review P2-4).
 INLINE_RETRY_TTL_SECS = 60
-#: How many binary Redis calls of this route run at once. The binary pool of
-#: ``tenant_redis`` holds 4 connections and raises when it is full, with no
-#: wait. So the route queues its calls below that size, and the download
-#: route keeps a connection (review P2-1). The pool itself stays as it is.
-REDIS_GATE_SIZE = max(1, BINARY_POOL_MAX_CONNECTIONS - 1)
+#: The gate of the binary Redis calls (``attachments._binary_redis_gate``).
+REDIS_GATE_SIZE = BINARY_REDIS_GATE_SIZE
 #: How long a POSITIVE owner verdict lives in this process (review P2-2). One
 #: open of a body asks for each of its pictures at once, up to 165, and one
 #: owner read for each would fill the database pool. A denial is never kept.
@@ -187,8 +187,11 @@ async def _flight(*name: str) -> AsyncIterator[_Flight]:
 # ── The owner verdict, kept for a short time ────────────────────────────────
 
 #: ``(org, member, message id)`` → ``(expiry on the monotonic clock, row)``.
-#: Only a row that the owner read FOUND goes in. In memory, for the reason
-#: that :class:`_Flight` gives.
+#: Only a row that the owner read FOUND goes in. The row holds the ids and the
+#: provider name, and NEVER the credentials (review P3-b): a reconnect inside
+#: the minute would let a kept grant refresh over the new tokens. The flight
+#: reads the credentials again. In memory, for the reason that
+#: :class:`_Flight` gives.
 _OWNERS: dict[tuple[str, str, str], tuple[float, Any]] = {}
 
 
@@ -222,27 +225,7 @@ def _keep_owner(name: tuple[str, str, str], row: Any) -> None:
     _OWNERS[name] = (now + OWNER_TTL_SECS, row)
 
 
-def _forget_owner(row_id: str) -> None:
-    """Drop each verdict of a message, so a rotated token is read again."""
-    for name in [k for k, (_exp, r) in _OWNERS.items() if str(r.id) == row_id]:
-        _OWNERS.pop(name, None)
-
-
 # ── The cache ───────────────────────────────────────────────────────────────
-
-#: One gate for each event loop. An ``asyncio.Semaphore`` binds to the loop
-#: that first waits on it, so a gate kept across loops would break.
-_GATES: dict[int, asyncio.Semaphore] = {}
-
-
-def _redis_gate() -> asyncio.Semaphore:
-    loop = id(asyncio.get_running_loop())
-    gate = _GATES.get(loop)
-    if gate is None:
-        _GATES.clear()
-        gate = _GATES[loop] = asyncio.Semaphore(REDIS_GATE_SIZE)
-    return gate
-
 
 async def _cached_ids(org_id: str | None, row_id: str) -> set[str] | None:
     """The digests of the pictures of a message, else ``None`` for a miss.
@@ -253,7 +236,7 @@ async def _cached_ids(org_id: str | None, row_id: str) -> set[str] | None:
     if not org_id:
         return None
     try:
-        async with _redis_gate():
+        async with _binary_redis_gate():
             with organization_scope(org_id):
                 raw = await get_tenant_redis(binary=True).get(
                     key(INLINE_IDS_NAMESPACE, row_id))
@@ -272,7 +255,7 @@ async def _cached_picture(
     if not org_id:
         return None
     try:
-        async with _redis_gate():
+        async with _binary_redis_gate():
             with organization_scope(org_id):
                 raw = await get_tenant_redis(binary=True).get(
                     key(INLINE_NAMESPACE, row_id, digest))
@@ -301,13 +284,13 @@ async def _remember(
         return
     try:
         for digest, (mime, content) in pictures.items():
-            async with _redis_gate():
+            async with _binary_redis_gate():
                 with organization_scope(org_id):
                     await get_tenant_redis(binary=True).setex(
                         key(INLINE_NAMESPACE, row_id, digest), INLINE_CACHE_TTL_SECS,
                         mime.encode("ascii") + b"\n" + content,
                     )
-        async with _redis_gate():
+        async with _binary_redis_gate():
             with organization_scope(org_id):
                 await get_tenant_redis(binary=True).setex(
                     key(INLINE_IDS_NAMESPACE, row_id),
@@ -322,16 +305,31 @@ async def _remember(
 
 
 async def _read_pictures(
-    row: Any, row_id: str,
+    row: Any, row_id: str, user: UserContext,
 ) -> tuple[dict[str, tuple[str, bytes]], bool]:
     """Every inline picture of the message, by the digest of its Content-ID,
     and whether the provider read each part that it chose.
 
-    No session is open across the provider call. A session opens after it
-    only when the provider rotated its tokens, as in the HTML route.
+    The credentials come from a fresh read, with the owner predicate again,
+    never from the kept verdict (review P3-b). That is one database read for
+    each provider read. No session is open across the provider call. A
+    session opens after it only when the provider rotated its tokens, as in
+    the HTML route.
     """
-    creds, store = _decrypt_credentials(row.credentials_encrypted)
-    provider = _instantiate_provider(row.provider, creds)
+    async with _tenant_session() as db:
+        grant = (await db.execute(
+            text(
+                """SELECT ea.provider, ea.credentials_encrypted
+                   FROM email_messages em
+                   JOIN email_accounts ea ON em.account_id = ea.id
+                   WHERE em.id = :mid AND ea.user_id = :user_id"""
+            ),
+            {"mid": row_id, "user_id": user.email or "anonymous"},
+        )).fetchone()
+    if grant is None:
+        raise HTTPException(status_code=404, detail="Picture not found")
+    creds, store = _decrypt_credentials(grant.credentials_encrypted)
+    provider = _instantiate_provider(grant.provider, creds)
     account_id = str(row.account_id)
     try:
         if not await provider.authenticate():
@@ -359,8 +357,6 @@ async def _read_pictures(
         ) from None
     finally:
         if provider.credentials_dirty():
-            # A kept verdict holds the old credentials. Drop it.
-            _forget_owner(row_id)
             try:
                 async with _tenant_session() as db:
                     await _persist_rotated_creds(db, store, account_id, provider)
@@ -376,7 +372,7 @@ async def _read_pictures(
         if mime is None or not cid or len(part.content) > MAX_INLINE_IMAGE_BYTES:
             continue
         if total + len(part.content) > MAX_INLINE_TOTAL_BYTES:
-            break
+            continue
         total += len(part.content)
         pictures.setdefault(_digest(cid), (mime, part.content))
     return pictures, read.complete
@@ -423,7 +419,7 @@ async def get_inline_image(
                     row = (await db.execute(
                         text(
                             """SELECT em.id, em.provider_message_id, em.account_id,
-                                      ea.provider, ea.credentials_encrypted
+                                      ea.provider
                                FROM email_messages em
                                JOIN email_accounts ea ON em.account_id = ea.id
                                WHERE em.id = :mid AND ea.user_id = :user_id"""
@@ -452,7 +448,7 @@ async def get_inline_image(
             raise flight.failed
         if flight.pictures is None:
             try:
-                pictures, complete = await _read_pictures(row, row_id)
+                pictures, complete = await _read_pictures(row, row_id, user)
             except HTTPException as exc:
                 flight.failed = exc
                 raise

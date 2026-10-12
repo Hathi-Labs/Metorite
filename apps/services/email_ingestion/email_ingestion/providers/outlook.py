@@ -2338,8 +2338,10 @@ class OutlookProvider(BaseEmailProvider):
 
         A part can be a picture when Graph marks it ``isInline`` or its type
         is ``image/*``, and it is a file attachment of *max_bytes* or less.
-        The choice stops at *max_count* parts, or when the listed sizes reach
-        *max_total*, before any byte is read (review P2-3).
+        The choice takes the ``isInline`` parts first. It stops at
+        *max_count* parts, and it skips a part that would take the listed
+        sizes over *max_total*, before any byte is read (review P2-3, P3-a).
+        A skipped inline part makes the read incomplete.
 
         A failed read of one part skips that part and makes the read
         incomplete (review P2-4). A 429 that remains after the one retry of
@@ -2358,20 +2360,29 @@ class OutlookProvider(BaseEmailProvider):
             data = resp.json()
             listed.extend(data.get("value", []) or [])
             url, params = data.get("@odata.nextLink"), None
+        # Inline parts first, so a large image file that the body never
+        # names cannot crowd out a small logo that it does. A part over the
+        # budget is skipped, and a smaller one after it can still fit. A
+        # skipped INLINE part makes the read incomplete, so the list of names
+        # lives a minute, not an hour (review P3-a).
+        candidates = [a for a in listed if _inline_candidate(a, max_bytes)]
+        candidates.sort(key=lambda a: not a.get("isInline"))
         picks: list[dict[str, Any]] = []
         chosen = 0
-        for att in listed:
+        capped_inline = False
+        for att in candidates:
             if len(picks) >= max_count:
+                capped_inline = capped_inline or any(
+                    a.get("isInline") for a in candidates[candidates.index(att):])
                 break
-            if not _inline_candidate(att, max_bytes):
-                continue
             size = _listed_size(att)
             if chosen + size > max_total:
-                break
+                capped_inline = capped_inline or bool(att.get("isInline"))
+                continue
             chosen += size
             picks.append(att)
         if not picks:
-            return InlineRead()
+            return InlineRead(complete=not capped_inline)
         gate = asyncio.Semaphore(4)
         failed: list[str] = []
 
@@ -2413,7 +2424,8 @@ class OutlookProvider(BaseEmailProvider):
             raise errors.exceptions[0] from None
         found = [t.result() for t in tasks]
         return InlineRead(
-            images=[img for img in found if img is not None], complete=not failed,
+            images=[img for img in found if img is not None],
+            complete=not failed and not capped_inline,
         )
 
     # ── Helpers ──────────────────────────────────────────────────────────
