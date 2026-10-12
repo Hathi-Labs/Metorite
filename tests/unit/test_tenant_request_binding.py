@@ -271,12 +271,12 @@ _REFUSED_NAMES = frozenset({
     "importlib", "ctypes", "object", "type", "vars", "globals", "locals",
     "setattr", "delattr", "getattr", "__import__", "eval", "exec", "compile",
     "dict", "breakpoint", "import_module", "_getframe", "currentframe",
-    "getframe",
+    "getframe", "string",
 })
 #: The modules among :data:`_REFUSED_NAMES`. Importing from one is refused.
 _REFUSED_MODULES = frozenset({
     "sys", "inspect", "gc", "traceback", "operator", "functools", "builtins",
-    "importlib", "ctypes",
+    "importlib", "ctypes", "string",
 })
 
 #: The allow-list of rule 1c: each ``getattr`` call the real code makes, by
@@ -313,8 +313,11 @@ _ALLOWED_GETATTR: dict[tuple[str, str], str] = {
 _REFUSED_ATTR_PREFIXES = ("__", "tb_", "f_", "gi_", "cr_")
 _REFUSED_ATTRS = frozenset({"cell_contents"})
 #: Round 5: a format string reaches attributes and items by name, past the
-#: attribute rules. Any attribute with one of these names is refused.
-_FORMAT_ATTRS = frozenset({"format", "format_map"})
+#: attribute rules. Any attribute with one of these names is refused. The
+#: last three close `string.Formatter`, which reads fields the same way.
+_FORMAT_ATTRS = frozenset({
+    "format", "format_map", "vformat", "get_field", "format_field",
+})
 _ALLOWED_ATTRS: dict[str, str] = {}
 
 #: RULE 2d: the ONLY stores of these names in ``_effective_template``, as
@@ -832,6 +835,10 @@ def test_branch_zero_reads_no_host_derived_input():
       ``_REFUSED_NAMES`` (the introspection modules, the frame and dynamic
       calls, ``getattr``, ``type``, ``object`` and ``dict``) outside the
       allow-list ``_ALLOWED_GETATTR``, and any import from those modules;
+    * a name that starts with ``__``, and an attribute named ``format``,
+      ``format_map``, ``vformat``, ``get_field`` or ``format_field``, because
+      a format string reads attributes by name (``str.format`` and
+      ``string.Formatter``);
     * every rebind of a trusted name (a branch-0 name or a global of its own
       module), any decorator, any use of ``_route_template``, and any store
       of ``contexts``, ``cached`` or ``context`` off its pinned line;
@@ -1271,6 +1278,15 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
         "_agent_user", _A_AGENT, ["_h = '{0.__class__.__mro__}'.format(_x)"], {}),
     "B73 __builtins__['getattr']": (
         "_agent_user", _A_AGENT, ["_g = __builtins__['getattr']"], {}),
+    # A string.Formatter reads fields by name, as str.format does.
+    "B74 string.Formatter().vformat walks a traceback": (
+        "_agent_user", _A_AGENT,
+        ["import string", "try:", "    raise ValueError", "except ValueError as _e:",
+         "    _h = string.Formatter().vformat("
+         "'{0.__traceback__.tb_frame.f_back.f_locals[request].url.hostname}', (_e,), {})"],
+        {}),
+    "B75 a Formatter from a helper calls get_field": (
+        "_agent_user", _A_AGENT, ["_h = _fmt.get_field('0.__class__', (_x,), {})"], {}),
 }
 
 
@@ -1303,7 +1319,7 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    assert len(_BYPASSES) == 77
+    assert len(_BYPASSES) == 79
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────

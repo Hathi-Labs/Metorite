@@ -1177,7 +1177,7 @@ class Settings(BaseSettings):
     # refuses every request. The gateway accepts the current key and the
     # previous key, so a rotation needs no outage. The edge signs with the
     # current key only. It calls the gateway at `agent_edge_gateway_url`.
-    # 🔴 Setting a key on a box is gate `env-write` (EA-10, HANDOFF H-302).
+    # 🔴 Setting a key on a box is gate `env-write` (EA-10, HANDOFF H-303).
     agent_edge_signing_key: str = ""
     agent_edge_signing_key_previous: str = ""
     agent_edge_gateway_url: str = "http://127.0.0.1:8080"
