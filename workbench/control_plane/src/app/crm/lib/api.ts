@@ -13,6 +13,7 @@ import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
+import type { FieldDef } from "./fields";
 import type {
   Activity,
   Contact,
@@ -143,6 +144,13 @@ export function deleteRecord(
   id: string
 ): Promise<{ deleted: string; entity: string; cascaded: Record<string, number> }> {
   return call(`/${entity}/${id}`, { method: "DELETE" });
+}
+
+// ── Field definitions (CRM-Q4) ────────────────────────────────────────────
+
+/** What each custom field of one entity means. Read only. */
+export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
+  return call<FieldDef[]>(`/fields/${entity}`);
 }
 
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────

@@ -16,6 +16,7 @@
 import Modal from "@/components/ui/Modal";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { isMirrored, zohoLink } from "../lib/connect";
+import { useFieldDefs } from "../lib/useCrmMode";
 import { NO_RELATED, type RelatedLists } from "../lib/related";
 import FieldsPanel from "./FieldsPanel";
 import Timeline from "./Timeline";
@@ -85,6 +86,7 @@ export default function RecordSheet({
   onRetryRelated?: () => void;
 }) {
   const { isMobile } = useViewMode();
+  const { defs } = useFieldDefs(entity);
 
   const title = record
     ? TITLE_KEY[entity]
@@ -159,6 +161,7 @@ export default function RecordSheet({
               onSetPrimary={onSetPrimary}
               onDetach={onDetach}
               onOpenContact={onOpenContact}
+              fieldDefs={defs}
               related={related}
               onOpenRelated={onOpenRelated}
               onRetryRelated={onRetryRelated}

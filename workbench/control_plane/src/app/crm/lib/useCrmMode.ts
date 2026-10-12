@@ -13,7 +13,8 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import * as api from "./api";
 import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
-import type { DealPipeline } from "./types";
+import type { FieldDef } from "./fields";
+import type { DealPipeline, EntitySlug } from "./types";
 import {
   POLL_MS,
   WATCH_LIMIT_POLLS,
@@ -163,4 +164,19 @@ export function usePipelines(enabled: boolean): PipelinesState {
     () => api.listPipelines().catch(() => null),
   );
   return { pipelines: res.data ?? null, loading: enabled && res.loading };
+}
+
+export type FieldDefsState = { defs: FieldDef[] | null; loading: boolean };
+
+/**
+ * The field definitions of one entity (CRM-Q4). Every failure reads as "no
+ * definitions", and the record then shows the humanised keys, as before. A
+ * record that fails to open because its labels failed is worse.
+ */
+export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
+  const res = useCachedResource<FieldDef[] | null>(
+    entity ? `crm:fields:${entity}` : null,
+    () => api.listFields(entity!).catch(() => null),
+  );
+  return { defs: res.data ?? null, loading: entity !== null && res.loading };
 }
