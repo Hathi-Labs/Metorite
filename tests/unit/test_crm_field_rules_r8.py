@@ -321,6 +321,14 @@ async def test_a_fixed_column_needs_its_standard_field_off_every_layout(fr) -> N
     assert targets["email"]["open"] is False
     assert targets["email"]["reason"] == "standard_field_on_layout"
     assert targets["lost_note"]["kind"] == "free" and targets["lost_note"]["open"]
+    # Each field names the columns it may fill now, so the client holds no
+    # copy of the rules.
+    by_key = {f["key"]: f for f in got["fields"]}
+    assert set(by_key["Custom_Industry"]["targets"]) == {
+        "lost_note", "website", "industry", "phone", "mobile", "lead_source",
+        "description"}, "Company and Email are on the layout"
+    assert set(by_key["Headcount"]["targets"]) == {"no_of_employees", "annual_revenue"}
+    assert by_key["Next_Call"]["targets"] == [] and by_key["Tags_X"]["targets"] == []
     assert [r["field_api_name"] for r in got["rules"]] == ["Custom_Industry"]
 
 

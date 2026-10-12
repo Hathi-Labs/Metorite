@@ -140,13 +140,16 @@ class FieldRuleModel(BaseModel):
 
 
 class FieldMapField(BaseModel):
-    """A field that goes to ``custom`` today."""
+    """A field that goes to ``custom`` today. ``targets`` are the columns that
+    it may fill now, by the rules of ``mapping.rule_problem``, so the client
+    holds no copy of them."""
 
     key: str
     label: str
     type: str
     visible: bool = True
     options: list[Any] | None = None
+    targets: list[str] = []
 
 
 class FieldMapTarget(BaseModel):
@@ -331,6 +334,14 @@ async def get_field_rules(
         rules = (await db.execute(
             text(_RULES_SQL), {"entity": word, "src": PROVIDER},
         )).fetchall()
+    mapping = mapping_for(PROVIDER)
+    layout = mapping.entity_layout_fields(profile, word)
+    known = mapping.entity_field_types(profile, word)
+    columns = list(mapping.FIELD_RULE_TARGETS[word])
+
+    def legal(field_type: str) -> list[str]:
+        return [c for c in columns if mapping.rule_problem(word, field_type, c, layout) is None]
+
     return FieldMapModel(
         entity=word,
         profile_version=version,
@@ -338,6 +349,11 @@ async def get_field_rules(
             FieldMapField(
                 key=f.key, label=f.label, type=f.type, visible=bool(f.visible),
                 options=f.options if isinstance(f.options, list) else None,
+                # A field that the latest profile no longer lists fills nothing.
+                targets=(
+                    legal(known[f.key] if known is not None else f.type)
+                    if known is None or f.key in known else []
+                ),
             )
             for f in fields
         ],
