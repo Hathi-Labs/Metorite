@@ -374,7 +374,9 @@ async def test_a_server_whose_names_collide_is_left_out(monkeypatch, offline):
     with structlog.testing.capture_logs() as logs:
         await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
     assert _names(agent) == ["crm"]
-    assert offline["closed"] == ["web"] and offline["clients"][0].closed
+    # The attach opens the servers in name order (WS-8c item 28): crm, web.
+    assert offline["closed"] == ["web"]
+    assert [c.closed for c in offline["clients"]] == [False, True]
     clash = [e for e in logs if e["event"] == "mcp.name_collision"]
     assert clash and clash[0]["name"] == "web" and clash[0]["tools"] == ["web_search"]
 

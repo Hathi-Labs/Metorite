@@ -36,8 +36,10 @@ import json
 import re
 import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -52,6 +54,7 @@ from gateway.routes.email.automation import insights_store as store
 from evals.email_insights import checkers
 from evals.email_insights import run as eval_run
 from evals.email_insights.dataset import BODY, load_answers, load_mails, load_screen_open
+from tests.unit._linear_time import assert_linear
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = json.loads((ROOT / "tests/fixtures/amount_cases.json").read_text(encoding="utf-8"))
@@ -180,18 +183,21 @@ def test_a_day_and_a_month_beside_a_full_date_caps_the_confidence() -> None:
     assert (fact.due_on, fact.confidence) == (date(2026, 10, 15), X.CONF_PART)
 
 
-@pytest.mark.parametrize("text", [
-    "100 " * 25000 + "x 100 INR",
-    "1," * 25000 + "1 x 100 INR",
-], ids=["spaced_runs", "one_long_comma_run"])
-def test_parse_amount_is_linear_on_a_long_text(text: str) -> None:
+AMOUNT_TEXTS: dict[str, Callable[[int], str]] = {
+    "spaced_runs": lambda k: "100 " * k + "x 100 INR",
+    "one_long_comma_run": lambda k: "1," * k + "1 x 100 INR",
+}
+
+
+@pytest.mark.parametrize("make", AMOUNT_TEXTS.values(), ids=AMOUNT_TEXTS.keys())
+def test_parse_amount_is_linear_on_a_long_text(make: Callable[[int], str]) -> None:
     """Review round 3: the split check reads a window of 40 characters before
     the number. The first input took 18.5 s with the rule of round 2. With no
-    window, the second input takes about 40 s with the rule of round 3."""
-    start = time.perf_counter()
-    assert X.parse_amount(text).amount == Decimal("100.00")
-    # 0.5 s leaves room for a slow CI runner. A quadratic search takes 18 to 40 s.
-    assert time.perf_counter() - start < 0.5
+    window, the second input takes about 40 s with the rule of round 3.
+
+    The fence is the ratio of two timings, not a wall clock (``_linear_time``)."""
+    assert X.parse_amount(make(25000)).amount == Decimal("100.00")
+    assert_linear(lambda k: partial(X.parse_amount, make(k)), 25000)
 
 
 def test_a_long_claim_never_reaches_the_parser() -> None:
@@ -215,17 +221,22 @@ def test_a_claim_longer_than_a_quote_stores_no_date() -> None:
     assert fact.confidence == X.CONF_PART
 
 
-@pytest.mark.parametrize("text", [
-    ("1 Oct 2026 " * 9100)[:100_000],
-    "Friday" + " " * 100_000 + "15 October 2026",
-    ("x" * 50 + "15 October 2026 ") * 1515,
-], ids=["many_dates", "long_space", "spread_dates"])
-def test_parse_due_is_linear_on_a_long_text(text: str) -> None:
+DUE_TEXTS: dict[str, tuple[Callable[[int], str], int]] = {
+    "many_dates": (lambda k: "1 Oct 2026 " * k, 9100),
+    "long_space": (lambda k: "Friday" + " " * k + "15 October 2026", 100_000),
+    "spread_dates": (lambda k: ("x" * 50 + "15 October 2026 ") * k, 1515),
+}
+
+
+@pytest.mark.parametrize(("make", "n"), DUE_TEXTS.values(), ids=DUE_TEXTS.keys())
+def test_parse_due_is_linear_on_a_long_text(make: Callable[[int], str], n: int) -> None:
     """Review round 2 (P3): the weekday search uses a short window, and the
-    overlap check uses a mask. Before round 2, the first case took 4 s."""
-    start = time.perf_counter()
-    X.parse_due(text)
-    assert time.perf_counter() - start < 0.5
+    overlap check uses a mask. Before round 2, the first case took 4 s.
+
+    A wall clock of 0.5 s failed the deploy gate on 2026-10-12, when a loaded
+    runner took 1.7 s. The fence is now the ratio of two timings
+    (``_linear_time``)."""
+    assert_linear(lambda k: partial(X.parse_due, make(k)), n)
 
 
 def test_the_date_of_the_invoice_is_not_the_due_date() -> None:
