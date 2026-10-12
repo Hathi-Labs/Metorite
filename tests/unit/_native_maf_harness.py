@@ -153,6 +153,7 @@ def drive_native(
     extra_payload: dict[str, Any] | None = None,
     request_model: str | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    shows_cards: bool = True,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run agent *name* (built from *rel_dir*) through ``run_agent_stream``.
 
@@ -164,6 +165,8 @@ def drive_native(
     *request_model* is the ``model`` of ``AgentRunRequest``, the chat's pick.
     *on_event* gets each event WHILE the run goes on, for example to answer
     a confirmation card the way ``POST /agent/respond-input`` does.
+    *shows_cards* is what the chat route declares (True): this harness stands
+    for the web chat, whose client draws each card.
     """
     executor = pytest.importorskip(
         "orchestrator.executor", reason="orchestrator not installed",
@@ -222,6 +225,7 @@ def drive_native(
             thread_id=tid,
             think_mode=think_mode or "auto",
             model=request_model,
+            shows_cards=shows_cards,
         ):
             lines.append(line)
             if on_event is not None:

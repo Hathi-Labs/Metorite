@@ -136,6 +136,8 @@ async def _drive(harness: OpsHarness, session: Session, spec: TaskSpec, run: _Ru
             AGENT, {"message": session.prompt, "user_email": session.member, "source": "eval"},
             run_id=run_id, thread_id=session.thread_id, model=harness.tier,
             organization_id=harness.org, session_user=session.member,
+            # The eval stands for the web chat, and it answers each card.
+            shows_cards=True,
         )
         async for line in gen:
             for event in parse_frames([line]):
