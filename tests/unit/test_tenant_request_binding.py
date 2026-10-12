@@ -211,14 +211,16 @@ def test_the_dependency_takes_no_host_derived_input_at_all(identity):
 # ── WS-55 EA-3a: branch 0 reads no host input and takes no tenant from a header
 #
 # Spec ``external_agent_access.md`` §10.1. ⚠️ Since the parameter test above
-# was widened, THIS is the H2 guard for branch 0. Two layers:
+# was widened, THIS is the H2 guard for branch 0. Two layers, and both are a
+# BACKSTOP, not a proof (§10.1, "process control"):
 #
 # 1. A STATIC scan that INVERTS the rule. It flags every occurrence of the name
 #    `request` in the branch-0 functions, unless the occurrence is one of a few
-#    exact, allowed shapes. Anything the scan does not recognise is a finding.
+#    exact, allowed shapes. It also refuses every way to rebind a name the
+#    scan trusts. Anything it does not recognise is a finding.
 # 2. A RUNTIME tripwire (`tests/unit/_branch_zero_tripwire.py`). Every branch-0
-#    test in `test_mcp_edge_signing.py` runs a second time with the request
-#    wrapped, so any host-derived read on an EXERCISED path raises.
+#    test in `test_mcp_edge_signing.py` runs a second time on a wrapped request,
+#    and any read outside the allowlist is recorded and fails the test.
 
 #: The functions that make up branch 0, by name in ``acb_auth.deps``. The
 #: request may be handed only to one of these, and the scan reads each one.
@@ -249,6 +251,13 @@ _HOST_NAMES = frozenset({
     "host", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
     "x-real-ip", "forwarded", "origin", "referer", "server", "client",
 })
+#: Calls that reach a name or an attribute the AST cannot see. Each one is a
+#: finding anywhere in a scanned function.
+_DYNAMIC_CALLS = frozenset({
+    "setattr", "delattr", "globals", "locals", "vars", "eval", "exec",
+    "compile", "__import__", "breakpoint", "import_module", "_getframe",
+    "currentframe", "getframe",
+})
 
 #: The one call outside branch 0 that may receive the request's scope:
 #: ``<receiver>.matches(request.scope)`` in ``_effective_template``, where the
@@ -260,6 +269,10 @@ _HOST_NAMES = frozenset({
 #: the name from the real code and pins it here.
 _MATCHES_RECEIVER = "context"
 
+#: The trigger's loop variable may only be used as
+#: ``<var>.lower().startswith(<literal that starts with this>)``.
+_TRIGGER_PREFIX = "x-agent-"
+
 
 def _sources() -> dict[str, str]:
     import inspect
@@ -269,6 +282,13 @@ def _sources() -> dict[str, str]:
         name: textwrap.dedent(inspect.getsource(getattr(deps, name)))
         for name in _BRANCH_ZERO
     }
+
+
+def _protected() -> frozenset[str]:
+    """Names a scanned function may never rebind: the branch-0 functions and
+    every module global of ``acb_auth.deps`` (``agent_signing``,
+    ``db_busy``, ``bind_tenant``, ``_route_template``, ...)."""
+    return frozenset({*_BRANCH_ZERO, *(n for n in vars(deps) if not n.startswith("__"))})
 
 
 def _docstring_ids(tree) -> set[int]:
@@ -285,7 +305,8 @@ def _docstring_ids(tree) -> set[int]:
 
 def _fold(node) -> str | None:
     """The text a str or bytes literal, a ``+`` of literals, an f-string of
-    literals or an ``agent_signing.HEADER_*`` name spells. None when computed."""
+    literals or an ``agent_signing.<NAME>`` constant spells. None when it is
+    computed."""
     import ast
 
     from acb_auth import agent_signing
@@ -313,6 +334,18 @@ def _params(fn) -> list[str]:
     return [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
 
 
+def _root_name(node):
+    import ast
+
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def ast_name(func) -> str:
+    return getattr(func, "id", None) or getattr(func, "attr", None) or "?"
+
+
 class _InvertedScan:
     """Every `request` must be an allowed shape. Anything else is a finding."""
 
@@ -329,6 +362,7 @@ class _InvertedScan:
             for parent in ast.walk(self.tree)
             for child in ast.iter_child_nodes(parent)
         }
+        self.protected = _protected()
         self.problems: list[str] = []
 
     def flag(self, node, what: str) -> None:
@@ -337,18 +371,27 @@ class _InvertedScan:
     def run(self) -> list[str]:
         import ast
 
-        if not isinstance(self.fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            self.flag(self.fn, "is not one function")
+        if len(self.tree.body) != 1 or not isinstance(
+                self.fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self.flag(self.tree.body[0], "is not one plain function")
             return self.problems
         for node in ast.walk(self.tree):
             self.strings(node)
+            self.rebinding(node)
+            self.dynamic(node)
             if isinstance(node, ast.Name) and node.id == "request":
                 self.occurrence(node)
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_one_header":
                 key = node.args[1] if len(node.args) > 1 else None
                 if key is None or (_fold(key) or "\0").lower() not in _HEADERS:
                     self.flag(node, "_one_header without an allowed literal header")
+        if self.name == "_one_header":
+            self.one_header_name()
+        if self.name == "_is_agent_request":
+            self.trigger_loop()
         return self.problems
+
+    # ── literals ────────────────────────────────────────────────────────────
 
     def strings(self, node) -> None:
         """No str or bytes literal, ``+`` or f-string of them names a host."""
@@ -359,6 +402,111 @@ class _InvertedScan:
             text = _fold(node)
             if text is not None and text.strip().lower() in _HOST_NAMES:
                 self.flag(node, f"names {text!r}")
+
+    # ── A1, A2, A5: nothing the scan trusts may be rebound or wrapped ──────
+
+    def rebinding(self, node) -> None:
+        import ast
+
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for decorator in node.decorator_list:
+                self.flag(decorator, "has a decorator")
+            if node is not self.fn and node.name in self.protected:
+                self.flag(node, f"defines the trusted name {node.name}")
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and (
+                node.id in self.protected):
+            self.flag(node, f"rebinds the trusted name {node.id}")
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(
+                node.ctx, ast.Load) and _root_name(node) in self.protected:
+            # The one write the real code makes: `_effective_template` fills
+            # its own cache of route contexts, keyed by `id(route)`.
+            cache_fill = (self.name == "_effective_template"
+                          and isinstance(node, ast.Subscript)
+                          and isinstance(node.value, ast.Name)
+                          and node.value.id == "_TEMPLATES")
+            if not cache_fill:
+                self.flag(node, f"writes into the trusted name {_root_name(node)}")
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            self.flag(node, "declares global or nonlocal")
+        if isinstance(node, ast.ExceptHandler) and node.name in self.protected:
+            self.flag(node, f"binds the trusted name {node.name} in except")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = getattr(node, "module", None) or ""
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                if alias.asname:
+                    self.flag(node, f"imports {alias.name} as {alias.asname}")
+                if bound in self.protected:
+                    self.flag(node, f"imports over the trusted name {bound}")
+                if "_route_template" in (alias.name, module):
+                    self.flag(node, "imports _route_template")
+        if (isinstance(node, ast.Name) and node.id == "_route_template") or (
+                isinstance(node, ast.Attribute) and node.attr == "_route_template"):
+            self.flag(node, "reaches _route_template, which falls back to request.url")
+
+    def dynamic(self, node) -> None:
+        import ast
+
+        if isinstance(node, ast.Call) and ast_name(node.func) in _DYNAMIC_CALLS:
+            self.flag(node, f"calls {ast_name(node.func)}")
+
+    # ── A3: `_one_header` reads its parameter `name`, and nothing else ──────
+
+    def one_header_name(self) -> None:
+        import ast
+
+        names = set(_params(self.fn)) - {"request"}
+        for node in ast.walk(self.tree):
+            if not (isinstance(node, ast.Name) and node.id in names):
+                continue
+            parent = self.parents.get(node)
+            ok = (isinstance(node.ctx, ast.Load) and isinstance(parent, ast.Call)
+                  and parent.args == [node] and not parent.keywords
+                  and isinstance(parent.func, ast.Attribute)
+                  and parent.func.attr in ("get", "getlist")
+                  and isinstance(parent.func.value, ast.Attribute)
+                  and parent.func.value.attr == "headers"
+                  and isinstance(parent.func.value.value, ast.Name)
+                  and parent.func.value.value.id == "request")
+            if not ok:
+                self.flag(node, f"uses the parameter {node.id} outside request.headers.getlist")
+
+    # ── A4: the trigger's loop variable ─────────────────────────────────────
+
+    def trigger_loop(self) -> None:
+        import ast
+
+        loops = [n for n in ast.walk(self.tree) if isinstance(n, ast.For)
+                 and isinstance(n.iter, ast.Attribute) and n.iter.attr == "headers"
+                 and isinstance(n.iter.value, ast.Name) and n.iter.value.id == "request"]
+        for loop in loops:
+            if not isinstance(loop.target, ast.Name):
+                self.flag(loop, "unpacks the header names")
+                continue
+            var = loop.target.id
+            for node in ast.walk(self.tree):
+                if not (isinstance(node, ast.Name) and node.id == var) or node is loop.target:
+                    continue
+                if not self._prefix_test(node):
+                    self.flag(node, f"uses the header name {var} beyond a prefix test")
+
+    def _prefix_test(self, node) -> bool:
+        import ast
+
+        lower = self.parents.get(node)
+        call1 = self.parents.get(lower)
+        start = self.parents.get(call1)
+        call2 = self.parents.get(start)
+        return (isinstance(node.ctx, ast.Load)
+                and isinstance(lower, ast.Attribute) and lower.attr == "lower"
+                and isinstance(call1, ast.Call) and call1.func is lower
+                and not call1.args and not call1.keywords
+                and isinstance(start, ast.Attribute) and start.attr == "startswith"
+                and isinstance(call2, ast.Call) and call2.func is start
+                and len(call2.args) == 1 and not call2.keywords
+                and (_fold(call2.args[0]) or "").lower().startswith(_TRIGGER_PREFIX))
+
+    # ── every occurrence of `request` ──────────────────────────────────────
 
     def occurrence(self, node) -> None:
         import ast
@@ -438,7 +586,7 @@ class _InvertedScan:
             return
         if key == ("headers",):
             if isinstance(use, ast.For) and use.iter is top and self.name == "_is_agent_request":
-                return  # the trigger reads header NAMES
+                return  # the trigger reads header NAMES (see `trigger_loop`)
             if isinstance(use, ast.Compare) and top in use.comparators and all(
                     isinstance(op, (ast.In, ast.NotIn)) for op in use.ops):
                 self.literal(use.left, _HEADERS, "header")
@@ -473,7 +621,7 @@ class _InvertedScan:
         if key[0] == "headers":
             if (self.name == "_one_header" and isinstance(given, ast.Name)
                     and given.id in set(_params(self.fn)) - {"request"}):
-                return  # its call sites are checked in `run`
+                return  # `one_header_name` and `run` check this parameter
             self.literal(given, _HEADERS, "header")
         else:
             self.literal(given, _SCOPE_KEYS, "scope key")
@@ -486,10 +634,6 @@ class _InvertedScan:
             self.flag(node, f"reads {what} {text!r}")
 
 
-def ast_name(func) -> str:
-    return getattr(func, "id", None) or getattr(func, "attr", None) or "?"
-
-
 def _scan(sources: dict[str, str]) -> list[str]:
     problems: list[str] = []
     for name, source in sources.items():
@@ -498,8 +642,8 @@ def _scan(sources: dict[str, str]) -> list[str]:
 
 
 def test_branch_zero_reads_no_host_derived_input():
-    """The STATIC half of the H2 guard for branch 0. What it proves, for the
-    functions in ``_BRANCH_ZERO``:
+    """The STATIC half of the H2 guard for branch 0. What it checks, for the
+    functions in ``_BRANCH_ZERO`` and every def and lambda nested in them:
 
     * every occurrence of the name ``request`` is one of these shapes, and any
       other shape is a finding: an attribute chain of ``_ALLOWED_CHAINS`` used
@@ -512,21 +656,33 @@ def test_branch_zero_reads_no_host_derived_input():
       ``request.headers.get/getlist(<key>)`` and ``request.headers[<key>]``
       and ``<key> in request.headers`` with a literal key of ``_HEADERS``;
       ``request.scope.get(<key>)`` and ``request.scope[<key>]`` with a literal
-      key of ``_SCOPE_KEYS``; ``for name in request.headers`` in the trigger
-      only (header NAMES); ``context.matches(request.scope)`` in
-      ``_effective_template`` only. A key passed by keyword counts, and a
-      computed key is a finding, except the parameter of ``_one_header``,
-      whose call sites must pass an allowed literal;
+      key of ``_SCOPE_KEYS``; ``for <name> in request.headers`` in the trigger
+      only, where ``<name>`` is used ONLY as
+      ``<name>.lower().startswith(<"x-agent-" literal>)``;
+      ``context.matches(request.scope)`` in ``_effective_template`` only. A
+      key passed by keyword counts, and a computed key is a finding. The one
+      exception is the parameter ``name`` of ``_one_header``: it may appear
+      only as ``request.headers.getlist(name)`` or ``.get(name)``, never be
+      assigned, and every call site must pass an allowed literal;
+    * nothing the scan trusts is rebound: no store, ``del``, import, ``def``,
+      ``class``, ``except ... as`` or attribute write of a ``_BRANCH_ZERO``
+      name or of any module global of ``acb_auth.deps``; no ``global`` or
+      ``nonlocal``; no import with ``as``; no decorator on any scanned or
+      nested function; no use or import of ``_route_template``;
+    * no ``setattr``, ``delattr``, ``globals``, ``locals``, ``vars``,
+      ``eval``, ``exec``, ``compile``, ``__import__``, ``import_module`` or
+      frame walk;
     * no str or bytes literal, ``+`` or f-string of literals names a host, a
       forwarded header, an origin, a referer, ``server`` or ``client``.
 
-    What it cannot prove: dynamic access the AST does not show (``eval``,
-    ``globals()``, an object that reaches the request through another
-    reference). The runtime tripwire covers the paths the tests EXERCISE.
-    A review must still read every change to these functions.
+    What it cannot see: an attribute or a name built at runtime and reached
+    without the calls above, an object that already holds the request through
+    another reference, and code outside ``_BRANCH_ZERO``. The runtime
+    tripwire covers the paths that the tests EXERCISE. A review must still
+    read every change to these functions (§10.1, process control).
 
     Mutations: :func:`test_the_scan_turns_red_for_each_bypass` (on parsed
-    copies) and :func:`test_the_tripwire_bites_a_mutated_branch_zero`.
+    copies) and :func:`test_the_tripwire_catches_a_mutated_branch_zero`.
     """
     assert _scan(_sources()) == []
 
@@ -560,89 +716,153 @@ def test_the_matches_receiver_is_derived_from_the_real_source():
 
 
 def test_branch_zero_never_calls_the_url_fallback():
-    """``_route_template`` falls back to ``request.url``. Branch 0 calls
-    ``_matched_template``, which has no fallback."""
-    import inspect
+    """``_route_template`` falls back to ``request.url``. No scanned function
+    names it, calls it, reaches it as an attribute or imports it, by any
+    alias, and ``_agent_user`` calls ``_matched_template`` (AST, not text)."""
+    import ast
 
-    source = inspect.getsource(deps._agent_user)
-    assert "_route_template(" not in source
-    assert "_matched_template(request)" in source
+    for name, source in _sources().items():
+        for node in ast.walk(ast.parse(source)):
+            assert not (isinstance(node, ast.Name) and node.id == "_route_template"), name
+            assert not (isinstance(node, ast.Attribute)
+                        and node.attr == "_route_template"), name
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    assert alias.name != "_route_template", name
+    calls = [n for n in ast.walk(ast.parse(_sources()["_agent_user"]))
+             if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_matched_template"]
+    assert len(calls) == 1
 
 
-#: Each bypass: the function it goes into, the lines inserted before that
-#: function's anchor, and any helper added to the scanned set.
-_AGENT_ANCHOR = "    keys = agent_signing.usable_keys()\n"
-_TEMPLATE_ANCHOR = '    routes = getattr(request.scope.get("app"), "routes", None)\n'
-_BYPASSES: dict[str, tuple[str, list[str], dict[str, str]]] = {
-    "B1 request.headers['host']": ("_agent_user", ["_h = request.headers['host']"], {}),
-    "B2 request.url.hostname": ("_agent_user", ["_h = request.url.hostname"], {}),
-    "B3 a scanned helper reads request.client": (
-        "_agent_user", ["_h = _peer(request)"],
-        {"_peer": "def _peer(request):\n    return request.client\n"}),
-    "B3b the helper is not scanned": ("_agent_user", ["_h = _peer(request)"], {}),
-    "B4 _peer(request.scope)": (
-        "_agent_user", ["_h = _peer(request.scope)"],
+#: Each bypass: the function it goes into, the anchor line it goes BEFORE (at
+#: that line's indentation), the inserted lines, and any helper added to the
+#: scanned set. Each must give a finding ON an inserted line, or in a helper.
+_A_AGENT = "    keys = agent_signing.usable_keys()\n"
+_A_TEMPLATE = '    routes = getattr(request.scope.get("app"), "routes", None)\n'
+_A_ONE = "    values = request.headers.getlist(name)\n"
+_A_TRIGGER = "        if name.lower().startswith(agent_signing.AGENT_HEADER_PREFIX):\n"
+_A_VERIFY = "    connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)\n"
+_A_DEF = "async def _agent_user(request: Request) -> UserContext:\n"
+_PEER_CLIENT = "def _peer(request):\n    return request.client\n"
+_BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
+    "B01 request.headers['host']": ("_agent_user", _A_AGENT, ["_h = request.headers['host']"], {}),
+    "B02 request.url.hostname": ("_agent_user", _A_AGENT, ["_h = request.url.hostname"], {}),
+    "B03 a scanned helper reads request.client": (
+        "_agent_user", _A_AGENT, ["_h = _peer(request)"], {"_peer": _PEER_CLIENT}),
+    "B03b the helper is not scanned": ("_agent_user", _A_AGENT, ["_h = _peer(request)"], {}),
+    "B04 _peer(request.scope)": (
+        "_agent_user", _A_AGENT, ["_h = _peer(request.scope)"],
         {"_peer": "def _peer(scope):\n    return scope.get('client')\n"}),
-    "B5 getattr(request, 'url')": ("_agent_user", ["_h = getattr(request, 'url')"], {}),
-    "B6 list(request.headers.raw)": ("_agent_user", ["_h = list(request.headers.raw)"], {}),
-    "B6b request.headers.items()": ("_agent_user", ["_h = dict(request.headers.items())"], {}),
-    "B7 request.scope['server']": ("_agent_user", ["_h = request.scope['server']"], {}),
-    "B8 helper(req=request)": ("_agent_user", ["_h = _helper(req=request)"], {}),
-    "B9 a bytes literal": ("_agent_user", ["_h = b'x-forwarded-host'"], {}),
+    "B05 getattr(request, 'url')": ("_agent_user", _A_AGENT, ["_h = getattr(request, 'url')"], {}),
+    "B06 list(request.headers.raw)": (
+        "_agent_user", _A_AGENT, ["_h = list(request.headers.raw)"], {}),
+    "B06b request.headers.items()": (
+        "_agent_user", _A_AGENT, ["_h = dict(request.headers.items())"], {}),
+    "B07 request.scope['server']": ("_agent_user", _A_AGENT, ["_h = request.scope['server']"], {}),
+    "B08 helper(req=request)": ("_agent_user", _A_AGENT, ["_h = _helper(req=request)"], {}),
+    "B09 a bytes literal": ("_agent_user", _A_AGENT, ["_h = b'x-forwarded-host'"], {}),
     "B10 a built header name": (
-        "_agent_user", ["_h = request.headers.get('x-forwarded-' + 'host')"], {}),
-    "B11 a plain alias": ("_agent_user", ["_r = request", "_h = _r.url"], {}),
-    "B12 request.scope.get('client')": ("_agent_user", ["_h = request.scope.get('client')"], {}),
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('x-forwarded-' + 'host')"], {}),
+    "B11 a plain alias": ("_agent_user", _A_AGENT, ["_r = request", "_h = _r.url"], {}),
+    "B12 request.scope.get('client')": (
+        "_agent_user", _A_AGENT, ["_h = request.scope.get('client')"], {}),
     "B13 a walrus alias": (
-        "_agent_user", ["if (_r := request):", "    _h = _r.url"], {}),
-    "B14 an inline walrus": ("_agent_user", ["_h = (_r := request).url"], {}),
+        "_agent_user", _A_AGENT, ["if (_r := request):", "    _h = _r.url"], {}),
+    "B14 an inline walrus": ("_agent_user", _A_AGENT, ["_h = (_r := request).url"], {}),
     "B15 a tuple-unpack alias": (
-        "_agent_user", ["_r, _s = request, None", "_h = _r.url"], {}),
+        "_agent_user", _A_AGENT, ["_r, _s = request, None", "_h = _r.url"], {}),
     "B16 an annotated alias": (
-        "_agent_user", ["_r: object = request", "_h = _r.url"], {}),
+        "_agent_user", _A_AGENT, ["_r: object = request", "_h = _r.url"], {}),
     "B17 a for-loop alias": (
-        "_agent_user", ["for _r in [request]:", "    _h = _r.url"], {}),
-    "B18 a comprehension": ("_agent_user", ["_h = [r.url for r in (request,)]"], {}),
+        "_agent_user", _A_AGENT, ["for _r in [request]:", "    _h = _r.url"], {}),
+    "B18 a comprehension": (
+        "_agent_user", _A_AGENT, ["_h = [r.url for r in (request,)]"], {}),
     "B19 a nested def with default r=request": (
-        "_agent_user", ["def _f(r=request):", "    return r.client", "_h = _f()"], {}),
-    "B20 a lambda r=request": ("_agent_user", ["_h = (lambda r=request: r.url)()"], {}),
+        "_agent_user", _A_AGENT,
+        ["def _f(r=request):", "    return r.client", "_h = _f()"], {}),
+    "B20 a lambda r=request": (
+        "_agent_user", _A_AGENT, ["_h = (lambda r=request: r.url)()"], {}),
     "B21 headers.get(key=chr(104)+'ost')": (
-        "_agent_user", ["_h = request.headers.get(key=chr(104) + 'ost')"], {}),
+        "_agent_user", _A_AGENT, ["_h = request.headers.get(key=chr(104) + 'ost')"], {}),
     "B22 scope.get(key=chr(99)+'lient')": (
-        "_agent_user", ["_h = request.scope.get(key=chr(99) + 'lient')"], {}),
+        "_agent_user", _A_AGENT, ["_h = request.scope.get(key=chr(99) + 'lient')"], {}),
     "B23 _peer(*[request])": (
-        "_agent_user", ["_h = _peer(*[request])"],
-        {"_peer": "def _peer(request):\n    return request.client\n"}),
+        "_agent_user", _A_AGENT, ["_h = _peer(*[request])"], {"_peer": _PEER_CLIENT}),
     "B24 _peer(**{'r': request})": (
-        "_agent_user", ["_h = _peer(**{'r': request})"],
+        "_agent_user", _A_AGENT, ["_h = _peer(**{'r': request})"],
         {"_peer": "def _peer(r):\n    return r.client\n"}),
-    "B25 _BOX[0] = request": ("_agent_user", ["_BOX[0] = request"], {}),
+    "B25 _BOX[0] = request": ("_agent_user", _A_AGENT, ["_BOX[0] = request"], {}),
     "B26 a decorator with a default argument": (
-        "_agent_user", ["@_deco", "def _f(r=request):", "    return r.client",
-                        "_h = _f()"], {}),
+        "_agent_user", _A_AGENT,
+        ["@_deco", "def _f(r=request):", "    return r.client", "_h = _f()"], {}),
     "B27 an if-expression alias": (
-        "_agent_user", ["_r = request if True else None", "_h = _r.url"], {}),
+        "_agent_user", _A_AGENT, ["_r = request if True else None", "_h = _r.url"], {}),
     "B28 _peer(request, None) into def _peer(x, request=None)": (
-        "_agent_user", ["_h = _peer(request, None)"],
+        "_agent_user", _A_AGENT, ["_h = _peer(request, None)"],
         {"_peer": "def _peer(x, request=None):\n    return x.client\n"}),
     "B29 a local function named matches": (
-        "_agent_user",
+        "_agent_user", _A_AGENT,
         ["def matches(s):", "    return s.get('client')", "_h = matches(request.scope)"], {}),
     "B30 req: object = request in _effective_template": (
-        "_effective_template", ["req: object = request", "_h = req.client"], {}),
-    "B31 return request": ("_agent_user", ["return request"], {}),
-    "B32 request.headers.keys()": ("_agent_user", ["_h = list(request.headers.keys())"], {}),
+        "_effective_template", _A_TEMPLATE, ["req: object = request", "_h = req.client"], {}),
+    "B31 return request": ("_agent_user", _A_AGENT, ["return request"], {}),
+    "B32 request.headers.keys()": (
+        "_agent_user", _A_AGENT, ["_h = list(request.headers.keys())"], {}),
+    # ── fix round 3 ──
+    "B33 _is_agent_request = _peer_unscanned": (
+        "_agent_user", _A_AGENT,
+        ["_is_agent_request = _peer_unscanned", "_h = _is_agent_request(request)"], {}),
+    "B34 import _route_template as _matched_template": (
+        "_agent_user", _A_AGENT,
+        ["from acb_auth.deps import _route_template as _matched_template",
+         "_h = _matched_template(request)"], {}),
+    "B35 _one_header reassigns name to chr(104)+'ost'": (
+        "_one_header", _A_ONE,
+        ["name = chr(104) + 'ost' if name == agent_signing.HEADER_CONNECTION else name"], {}),
+    "B36 the trigger loop binds a tenant from a header name": (
+        "_is_agent_request", _A_TRIGGER, ["bind_tenant(name[8:])"], {}),
+    "B37 a @_traced decorator on _agent_user": ("_agent_user", _A_DEF, ["@_traced"], {}),
+    "B38 a local shadow of agent_signing": (
+        "_verify_signed_request", _A_VERIFY, ["agent_signing = _fake_signing"], {}),
+    "B38b import json as agent_signing": (
+        "_verify_signed_request", _A_VERIFY, ["import json as agent_signing"], {}),
+    "B39 setattr on agent_signing": (
+        "_agent_user", _A_AGENT,
+        ["setattr(agent_signing, 'HEADER_' + 'CONNECTION', 'ho' + 'st')"], {}),
+    "B39b an attribute write on agent_signing": (
+        "_agent_user", _A_AGENT, ["agent_signing.HEADER_CONNECTION = _x"], {}),
+    "B40 _one_header swaps name and falls back on an error": (
+        "_one_header", _A_ONE,
+        ["_orig = name", "name = 'ho' + 'st'", "try:",
+         "    values = request.headers.getlist(name)",
+         "except Exception:", "    name = _orig"], {}),
+    "B41 repr(request.scope)": ("_agent_user", _A_AGENT, ["_h = repr(request.scope)"], {}),
+    "B42 dict.get(request.scope, 'client')": (
+        "_agent_user", _A_AGENT, ["_h = dict.get(request.scope, 'client')"], {}),
+    "B43 dict.get(scope, 'headers') through an alias": (
+        "_agent_user", _A_AGENT, ["_s = request.scope", "_h = dict.get(_s, 'headers')"], {}),
+    "B44 dict.get(scope, 'server') through an alias": (
+        "_agent_user", _A_AGENT, ["_s = request.scope", "_h = dict.get(_s, 'server')"], {}),
+    "B45 a host read in try/except that returns SWALLOWED": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    _h = request.url.hostname", "except Exception:",
+         "    _h = 'SWALLOWED'"], {}),
+    "B46 eval of a built attribute": (
+        "_agent_user", _A_AGENT, ["_h = eval('request.' + 'url')"], {}),
+    "B47 a global declaration": ("_agent_user", _A_AGENT, ["global _is_agent_request"], {}),
+    "B48 del of a trusted name": ("_agent_user", _A_AGENT, ["del db_busy"], {}),
 }
 
 
-def _mutated(target: str, lines: list[str], helpers: dict[str, str]):
-    """The sources with the bypass inserted, and the inserted line numbers."""
+def _mutated(target: str, anchor: str, lines: list[str], helpers: dict[str, str]):
+    """The sources with the bypass inserted before *anchor*, and the line
+    numbers it takes."""
     sources = _sources()
-    anchor = _AGENT_ANCHOR if target == "_agent_user" else _TEMPLATE_ANCHOR
     source = sources[target]
-    assert source.count(anchor) == 1, target
+    assert source.count(anchor) == 1, (target, anchor)
+    indent = anchor[: len(anchor) - len(anchor.lstrip(" "))]
     first = source[: source.index(anchor)].count("\n") + 1
-    block = "".join(f"    {line}\n" for line in lines)
+    block = "".join(f"{indent}{line}\n" for line in lines)
     sources[target] = source.replace(anchor, block + anchor)
     sources.update(helpers)
     return sources, set(range(first, first + len(lines)))
@@ -653,8 +873,8 @@ def test_the_scan_turns_red_for_each_bypass(label):
     """Each bypass goes into a COPY of the source, parsed with ``ast``. The real
     file never changes. Each must give a finding ON an inserted line, or in an
     added helper, so it cannot pass on a finding about something else."""
-    target, lines, helpers = _BYPASSES[label]
-    sources, inserted = _mutated(target, lines, helpers)
+    target, anchor, lines, helpers = _BYPASSES[label]
+    sources, inserted = _mutated(target, anchor, lines, helpers)
     problems = _scan(sources)
     hits = [p for p in problems
             if any(p.startswith(f"{target}:{n} ") for n in inserted)
@@ -662,38 +882,78 @@ def test_the_scan_turns_red_for_each_bypass(label):
     assert hits, (label, problems)
 
 
-# ── The runtime tripwire bites ───────────────────────────────────────────────
+def test_the_bypass_list_has_the_count_the_spec_names():
+    assert len(_BYPASSES) == 52
 
-_TRIPWIRE_MUTANTS = {
-    "request.url.hostname": ["_h = request.url.hostname"],
-    "request.client": ["_h = request.client"],
-    "headers.get('host')": ["_h = request.headers.get('host')"],
-    "headers.get(chr(104)+'ost')": ["_h = request.headers.get(chr(104) + 'ost')"],
-    "an annotated alias": ["_r: object = request", "_h = _r.url"],
+
+# ── The runtime tripwire ─────────────────────────────────────────────────────
+
+#: Each mutant: the function, its anchor, and the lines inserted (compiled
+#: from a string; the real file never changes).
+_TRIPWIRE_MUTANTS: dict[str, tuple[str, str, list[str]]] = {
+    "request.url.hostname": ("_agent_user", _A_AGENT, ["_h = request.url.hostname"]),
+    "request.client": ("_agent_user", _A_AGENT, ["_h = request.client"]),
+    "headers.get('host')": ("_agent_user", _A_AGENT, ["_h = request.headers.get('host')"]),
+    "headers.get(chr(104)+'ost')": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get(chr(104) + 'ost')"]),
+    "an annotated alias": ("_agent_user", _A_AGENT, ["_r: object = request", "_h = _r.url"]),
+    "repr(request.scope)": ("_agent_user", _A_AGENT, ["_h = repr(request.scope)"]),
+    "dict.get(scope, 'headers')": (
+        "_agent_user", _A_AGENT, ["_h = dict.get(request.scope, 'headers')"]),
+    "dict.get(scope, 'server')": (
+        "_agent_user", _A_AGENT, ["_h = dict.get(request.scope, 'server')"]),
+    "request._real": ("_agent_user", _A_AGENT, ["_h = request._real.headers.get('host')"]),
+    "request.headers._real": (
+        "_agent_user", _A_AGENT, ["_h = request.headers._real.get('host')"]),
+    "a host read swallowed by except Exception": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    _h = request.url.hostname", "except Exception:",
+         "    _h = 'SWALLOWED'"]),
+    "a host read swallowed by a bare except": (
+        "_agent_user", _A_AGENT,
+        ["try:", "    _h = request.headers.get('host')", "except:  # noqa: E722",
+         "    _h = 'SWALLOWED'"]),
+    "_one_header swaps name and falls back": (
+        "_one_header", _A_ONE,
+        ["_orig = name", "name = 'ho' + 'st'", "try:",
+         "    _v = request.headers.getlist(name)",
+         "except BaseException:", "    name = _orig"]),
+    "scope.get('type') outside matches": (
+        "_agent_user", _A_AGENT, ["_h = request.scope.get('type')"]),
 }
 
 
-def _mutant_agent_user(lines: list[str]):
-    """``_agent_user`` with *lines* inserted, compiled in ``deps``' globals."""
+def _mutant(target: str, anchor: str, lines: list[str]):
+    """*target* with *lines* inserted, compiled in ``deps``' globals."""
     import inspect
     import textwrap
 
-    source = textwrap.dedent(inspect.getsource(deps._agent_user))
-    assert source.count(_AGENT_ANCHOR) == 1
-    block = "".join(f"    {line}\n" for line in lines)
-    source = source.replace(_AGENT_ANCHOR, block + _AGENT_ANCHOR)
+    source = textwrap.dedent(inspect.getsource(getattr(deps, target)))
+    assert source.count(anchor) == 1
+    indent = anchor[: len(anchor) - len(anchor.lstrip(" "))]
+    block = "".join(f"{indent}{line}\n" for line in lines)
     namespace: dict = {}
-    exec(compile(source, "<mutant _agent_user>", "exec"), vars(deps), namespace)
-    return namespace["_agent_user"]
+    exec(compile(source.replace(anchor, block + anchor), f"<mutant {target}>", "exec"),
+         vars(deps), namespace)
+    return namespace[target]
 
 
-def test_the_tripwire_passes_the_real_branch_zero(monkeypatch):
-    from fastapi.testclient import TestClient
-
+@pytest.fixture
+def tripwire_armed(monkeypatch):
+    """Arm the tripwire, and assert at teardown that nothing tripped."""
     from tests.unit import _branch_zero_tripwire as tripwire
 
+    yield tripwire
+    tripwire.assert_clean()
+
+
+def test_the_tripwire_passes_the_real_branch_zero(monkeypatch, tripwire_armed):
+    from fastapi.testclient import TestClient
+
     app, seen = _signed_app(monkeypatch, row_org=ORG, member_org=ORG)
-    tripwire.arm(monkeypatch, deps)
+    armed = tripwire_armed.arm(monkeypatch, deps)
+    app.dependency_overrides[deps.get_current_user] = (
+        tripwire_armed.current_user_override(armed))
     with TestClient(app) as client:
         answer = client.get(_TASK, headers=_signed_headers(ORG))
     assert answer.status_code == 200, answer.text
@@ -702,17 +962,116 @@ def test_the_tripwire_passes_the_real_branch_zero(monkeypatch):
 
 
 @pytest.mark.parametrize("label", sorted(_TRIPWIRE_MUTANTS))
-def test_the_tripwire_bites_a_mutated_branch_zero(monkeypatch, label):
-    """The real file never changes: the mutant is compiled from a string."""
+def test_the_tripwire_catches_a_mutated_branch_zero(monkeypatch, label):
+    """The mutant is compiled from a string; the real file never changes. It
+    must trip DURING the request or leave a violation for TEARDOWN, even when
+    it catches the error and answers normally."""
+    from fastapi.testclient import TestClient
+
+    from tests.unit import _branch_zero_tripwire as tripwire
+
+    target, anchor, lines = _TRIPWIRE_MUTANTS[label]
+    app, _ = _signed_app(monkeypatch, row_org=ORG, member_org=ORG)
+    mutant = _mutant(target, anchor, lines)
+    if target == "_agent_user":
+        armed = tripwire.arm(monkeypatch, deps, agent_user=mutant)
+    else:
+        monkeypatch.setattr(deps, target, mutant)
+        armed = tripwire.arm(monkeypatch, deps)
+    app.dependency_overrides[deps.get_current_user] = tripwire.current_user_override(armed)
+    raised: BaseException | None = None
+    try:
+        with TestClient(app) as client:
+            client.get(_TASK, headers=_signed_headers(ORG))
+    except BaseException as exc:  # the point: nothing swallows it
+        raised = exc
+    found = list(tripwire.VIOLATIONS)
+    tripwire.VIOLATIONS.clear()
+    assert found or isinstance(raised, (TypeError, tripwire.TripwireError)), (
+        label, raised)
+    if not isinstance(raised, TypeError):
+        assert found, (label, "no violation recorded for the teardown check")
+
+
+def test_a_swallowed_violation_still_fails_the_teardown(monkeypatch):
+    """The verifier's mutant: it catches the tripwire error and falls back, so
+    the request answers 200. The violation is recorded anyway, and the
+    teardown check (``assert_clean``) fails on it."""
     from fastapi.testclient import TestClient
 
     from tests.unit import _branch_zero_tripwire as tripwire
 
     app, _ = _signed_app(monkeypatch, row_org=ORG, member_org=ORG)
-    tripwire.arm(monkeypatch, deps,
-                 agent_user=_mutant_agent_user(_TRIPWIRE_MUTANTS[label]))
-    with TestClient(app) as client, pytest.raises(tripwire.TripwireError):
-        client.get(_TASK, headers=_signed_headers(ORG))
+    mutant = _mutant("_agent_user", _A_AGENT,
+                     ["try:", "    _h = request.url.hostname",
+                      "except BaseException:", "    _h = 'SWALLOWED'"])
+    armed = tripwire.arm(monkeypatch, deps, agent_user=mutant)
+    app.dependency_overrides[deps.get_current_user] = tripwire.current_user_override(armed)
+    with TestClient(app) as client:
+        answer = client.get(_TASK, headers=_signed_headers(ORG))
+    assert answer.status_code == 200, "the mutant swallowed the error"
+    with pytest.raises(AssertionError, match=r"request.url"):
+        tripwire.assert_clean()
+
+
+def test_the_tripwire_error_is_not_an_exception():
+    from tests.unit import _branch_zero_tripwire as tripwire
+
+    assert issubclass(tripwire.TripwireError, BaseException)
+    assert not issubclass(tripwire.TripwireError, Exception)
+
+
+def test_the_real_request_is_not_an_attribute_of_the_wrapper(monkeypatch):
+    from starlette.requests import Request
+
+    from tests.unit import _branch_zero_tripwire as tripwire
+
+    real = Request({"type": "http", "method": "GET", "path": "/x", "headers": [
+        (b"host", b"other-org.metorite.com")], "query_string": b""})
+    wrapped = tripwire.wrap(real)
+    for reach in (lambda: wrapped._real, lambda: wrapped.headers._real,
+                  lambda: wrapped.scope._real, lambda: vars(wrapped)):
+        with pytest.raises((tripwire.TripwireError, TypeError)):
+            reach()
+    with pytest.raises(TypeError):
+        dict.get(wrapped.scope, "client")
+    tripwire.VIOLATIONS.clear()
+
+
+def test_a_route_served_at_two_prefixes_runs_under_the_tripwire(monkeypatch, tripwire_armed):
+    """With one route object at two prefixes, ``_effective_template`` asks
+    ``context.matches(request.scope)``. That path runs under the tripwire, and
+    the matcher reads only keys of ``MATCHES_SCOPE_KEYS``. A read of a
+    matches key OUTSIDE the matcher still trips (the mutant
+    ``scope.get('type') outside matches``)."""
+    from acb_common.db import current_tenant
+    from fastapi import APIRouter, Depends, FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.main import TenantScopeMiddleware
+
+    _signed_app(monkeypatch, row_org=ORG, member_org=ORG)  # arms branch 0
+    router = APIRouter()
+
+    @router.get("/tasks/{task_id}")
+    async def task(task_id: str, user=Depends(deps.get_current_user)):
+        return {"email": user.email, "tenant": current_tenant()}
+
+    app = FastAPI()
+    app.add_middleware(TenantScopeMiddleware)
+    app.include_router(router, prefix="/projects")
+    app.include_router(router, prefix="/alt")
+    armed = tripwire_armed.arm(monkeypatch, deps)
+    app.dependency_overrides[deps.get_current_user] = (
+        tripwire_armed.current_user_override(armed))
+    with TestClient(app) as client:
+        answer = client.get(_TASK, headers=_signed_headers(ORG))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["tenant"] == ORG
+    matched = {k.split(":", 1)[1] for k in armed.scope_reads if k.startswith("matches:")}
+    assert matched, "the two-prefix path did not call matches"
+    assert matched <= tripwire_armed.MATCHES_SCOPE_KEYS
+    plain = {k for k in armed.scope_reads if not k.startswith("matches:")}
+    assert plain == tripwire_armed.ALLOWED_SCOPE_KEYS
 
 
 def _signed_app(monkeypatch, *, row_org: str, member_org: str):

@@ -105,15 +105,24 @@ class _World:
         return ("uid-" + (email or ""), org) if org else (None, None)
 
 
+#: The armed tripwire of the running test, when there is one. ``_app``
+#: installs its ``get_current_user`` override, so the tripwire also sees the
+#: body of ``get_current_user`` and not only the two branch-0 helpers.
+_ARMED: list = []
+
+
 @pytest.fixture(params=["plain", "tripwire"])
-def world(request, monkeypatch) -> _World:
+def world(request, monkeypatch):
     """Every test that uses the stand-in gateway runs twice. The second run
     arms the runtime tripwire (``tests/unit/_branch_zero_tripwire.py``), so a
     host-derived read on ANY exercised branch-0 path fails the test, whatever
-    its static shape."""
+    its static shape. At TEARDOWN it asserts that no violation was recorded,
+    so a violation that the code swallowed still fails the test."""
     w = _World()
     w.tripwire = request.param == "tripwire"
-    w.wrapped = tripwire.arm(monkeypatch, deps) if w.tripwire else []
+    w.armed = tripwire.arm(monkeypatch, deps) if w.tripwire else None
+    if w.armed is not None:
+        _ARMED.append(w.armed)
     settings = get_settings()
     monkeypatch.setattr(settings, "agent_access_enabled", True)
     monkeypatch.setattr(settings, "agent_edge_signing_key", KEY)
@@ -128,12 +137,20 @@ def world(request, monkeypatch) -> _World:
     monkeypatch.setattr(agent_tokens, "read_live_connection", w.read_live_connection)
     monkeypatch.setattr(deps, "resolve_access", w.resolve_access)
     monkeypatch.setattr(deps, "resolve_identity", w.resolve_identity)
-    return w
+    try:
+        yield w
+    finally:
+        _ARMED.clear()
+    if w.armed is not None:
+        tripwire.assert_clean()
 
 
 def _app() -> FastAPI:
     """Routes at templates of ``MCP_ROUTES``, and three that are not in it."""
     app = FastAPI(dependencies=[require_authenticated(public=frozenset({"/healthz"}))])
+    if _ARMED:
+        app.dependency_overrides[get_current_user] = (
+            tripwire.current_user_override(_ARMED[0]))
 
     def _who(user: UserContext) -> dict:
         return {
@@ -716,10 +733,10 @@ async def test_any_other_failed_read_stays_a_refusal(world, monkeypatch):
 
 async def test_the_success_path_reads_exactly_the_allowed_scope_keys(world, monkeypatch):
     """The tripwire's scope allowlist is EXACTLY what branch 0 reads."""
-    seen = world.wrapped if world.tripwire else tripwire.arm(monkeypatch, deps)
+    armed = world.armed or tripwire.arm(monkeypatch, deps)
     assert (await _get(TASK, "q=x")).status_code == 200
-    scope_keys = {k for w in seen for k in w.reads["scope"]}
-    header_names = {h for w in seen for h in w.reads["headers"]}
+    scope_keys = armed.scope_reads
+    header_names = armed.header_reads
     assert scope_keys == tripwire.ALLOWED_SCOPE_KEYS
     assert header_names <= tripwire.ALLOWED_HEADERS
     assert {"x-agent-connection", "x-agent-timestamp", "x-agent-signature",
@@ -828,3 +845,91 @@ def test_the_oauth_shape_checks_refuse_a_trailing_newline():
     assert not agent_oauth._SCHEME.fullmatch("https\n")
     assert agent_oauth.ACTOR_VIA_PATTERN.fullmatch("mcp:client.example")
     assert not agent_oauth.ACTOR_VIA_PATTERN.fullmatch("mcp:client.example\n")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fix round 3, C: the ROLE read alone fails
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _role_outages() -> dict[str, BaseException]:
+    import sqlalchemy.exc as sa_exc
+
+    found = {k: v for k, v in _outages().items() if k != "pool timeout"}
+    found["OperationalError(OSError)"] = sa_exc.OperationalError(
+        "SELECT 1", {}, OSError(111, "Connection refused"))
+    return found
+
+
+def _role_read(monkeypatch, error: BaseException | None) -> list[int]:
+    """The REAL ``resolve_access`` with a session factory that raises *error*
+    (or records a read when *error* is None). The identity read is the
+    world's fake, and it works."""
+    from acb_auth import access
+
+    reads: list[int] = []
+
+    def _factory():
+        def _session():
+            reads.append(1)
+            if error is not None:
+                raise error
+            raise AssertionError("no read was expected")
+        return _session
+
+    access.invalidate()
+    monkeypatch.setattr(access, "_get_session_factory", _factory)
+    monkeypatch.setattr(deps, "resolve_access", access.resolve_access)
+    return reads
+
+
+@pytest.mark.parametrize("label", sorted(_role_outages()))
+async def test_an_outage_in_the_role_read_alone_is_the_one_503(world, monkeypatch, label):
+    from acb_auth import access
+
+    _role_read(monkeypatch, _role_outages()[label])
+    try:
+        for extra in ({}, {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": MEMBER}):
+            r = await _get(TASK, extra=extra)
+            assert r.status_code == 503, (label, extra, r.text)
+            assert r.headers["retry-after"] == "2"
+    finally:
+        access.invalidate()
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), RuntimeError("bug")])
+async def test_a_role_read_that_fails_otherwise_stays_a_refusal(world, monkeypatch, error):
+    from acb_auth import access
+
+    _role_read(monkeypatch, error)
+    try:
+        assert (await _get(TASK)).status_code == 401
+        assert access.role_read_failed() is False
+    finally:
+        access.invalidate()
+
+
+async def test_a_cached_role_never_reads_and_never_flags(world, monkeypatch):
+    from acb_auth import access
+
+    reads = _role_read(monkeypatch, None)
+    access._cache_put(MEMBER, build_access(["feature:projects"], [], is_active=True))
+    try:
+        r = await _get(TASK)
+        assert r.status_code == 200, r.text
+        assert reads == [], "a cache hit opened a session"
+        assert access.role_read_failed() is False
+    finally:
+        access.invalidate()
+
+
+def test_the_outage_list_is_one_list():
+    """``db_busy.is_db_outage`` is the one classification. Branch 0 and the
+    role read both call it, and neither keeps a copy."""
+    import inspect
+
+    from acb_auth import access
+
+    assert "is_db_outage(" in inspect.getsource(deps._read_connection)
+    assert "is_db_outage(" in inspect.getsource(access.resolve_access)
+    assert not hasattr(deps, "_is_database_outage")
