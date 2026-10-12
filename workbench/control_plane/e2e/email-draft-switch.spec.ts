@@ -9,9 +9,13 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * autosave kept it as a draft in B's thread. `busy` also stayed on, so B's
  * panel showed Stop.
  *
- * The test holds A's stream, switches to B, opens B's reply and the AI
- * panel, and only then lets A's stream answer.
- * Mutation caught: no `ai.reset()` in the switch effect of `EmailDetail`.
+ * The test holds A's stream and switches to B. The switch alone must abort
+ * A's request, before B's reply opens, so the pane stops paying for it. The
+ * test then opens B's reply and the AI panel, and only then lets A's stream
+ * answer.
+ * Mutations caught: no `ai.reset()` in the switch effect of `EmailDetail`
+ * (A's request stays open after the switch), and no `ai.reset()` in either
+ * the switch effect or `startReply` (A's draft lands in B's reply).
  */
 
 const ACCOUNT = {
@@ -57,6 +61,12 @@ async function installMocks(page: Page) {
     releaseA = done;
   });
   const streams: string[] = [];
+  const aborted: string[] = [];
+  page.on("requestfailed", (req) => {
+    if (!req.url().includes("/api/email/compose-assist/stream")) return;
+    const sent = JSON.parse(req.postData() ?? "{}");
+    aborted.push(String(sent.message_id ?? ""));
+  });
 
   // The fallback first: Playwright tries the LAST route first.
   await page.route("**/api/**", (r) => json(r, {}));
@@ -95,7 +105,7 @@ async function installMocks(page: Page) {
       .catch(() => undefined);
   });
   await page.route("**/api/email/compose-assist", (r) => json(r, { draft: "From the JSON route" }));
-  return { releaseA, streams };
+  return { releaseA, streams, aborted };
 }
 
 async function openReplyAndDraft(page: Page) {
@@ -111,7 +121,7 @@ test.describe("A mail switch ends the AI round of the mail before", () => {
   test.describe.configure({ timeout: 120_000 });
 
   test("mail B's reply never gets mail A's draft, and B's panel is not busy", async ({ page }) => {
-    const { releaseA, streams } = await installMocks(page);
+    const { releaseA, streams, aborted } = await installMocks(page);
     await page.goto(`/email?email=${MAIL_A}&account=${ACCOUNT.id}`);
     await expect(page.getByText("The body of mail A.").first()).toBeVisible({ timeout: 60_000 });
 
@@ -124,6 +134,8 @@ test.describe("A mail switch ends the AI round of the mail before", () => {
     // The member opens mail B and starts its reply.
     await page.locator(`[data-email-row="${MAIL_B}"]`).first().click();
     await expect(page.getByText("The body of mail B.").first()).toBeVisible({ timeout: 15_000 });
+    // The switch alone aborts A's request. B's reply is not open yet.
+    await expect.poll(() => aborted, { timeout: 5_000 }).toEqual([MAIL_A]);
     const boxB = await openReplyAndDraft(page);
 
     // `busy` cleared: B's panel offers Draft, not Stop.
