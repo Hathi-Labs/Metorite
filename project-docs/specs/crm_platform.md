@@ -1205,7 +1205,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
 | **CRM-Q8** | ✅ built 2026-10-12. Built as: migration 250 adds `crm_views`. The list routes and `GET /crm/pipeline` take `owner` (or `me`), `source`, the created, updated and close date ranges, and `custom.<key>=<value>` or `custom.<key>.in=a,b`. A custom key that `crm_field_defs` does not list gives 422. The export takes the same parameters. `GET`, `POST`, `PATCH` and `DELETE /crm/views` save a view of the filters, sort, columns, layout and pipeline. A view is private to its owner, and only an admin shares it. A view works in Mirror mode. Saved views nest under each entity in the rail, `?view=` opens one, and the column choice moves into the view while one is active. Filters on a board and a list use one filter bar. A multiselect field matches when any chosen option is in its array. In Mirror mode the updated range uses the Zoho modified time, and the created range gives 422 `created_range_mirror`. Follow-up: a mirrored created column, so that a created range works in Mirror mode. This also builds CRM-S2 | P0 |
 | **CRM-Q9** | ✅ built 2026-10-12. Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
-| **CRM-Q10** | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
+| **CRM-Q10** (⚠️ id clash: the 2026-10-13 hotfix "a reconnect never freezes the mirror" took this id. Renumber this row) | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
@@ -1683,6 +1683,101 @@ and the target list as its only arguments.
 4. The call goes through `acompletion_with_fallback` with
    `feature="crm.field_map"`, and with the org bound.
 5. A second press for the same profile version makes no model call.
+
+#### CRM-Q10: a reconnect never freezes the mirror
+
+**Gate.** AGENT-SAFE. This is a production hotfix (2026-10-13). It adds no
+migration, no route and no flag. `CRM_MIRROR` already gates the sync.
+
+⚠️ **The id.** The §18.5 row CRM-Q10 (layouts and sections, P1) is a different
+ticket. The orchestrator gave this hotfix the same id on 2026-10-13. Give the
+P1 row a new id before anyone builds it.
+
+**The incident (Fracktal, Mirror mode, measured on prod 2026-10-12).**
+
+1. At 15:10 UTC the owner used "Reconnect Zoho (keeps the records)" to grant
+   the module scopes of CRM-Q6a. It was the same Zoho account and the same
+   connection id.
+2. Each consent ran `_DROP_PROFILES_SQL` in `store.save_credential`. So
+   `crm_source_profiles` held 0 rows.
+3. With no profile, `profiles.budget_for` returns `None`, and the run budget
+   falls to the floor `DAILY_CREDIT_BUDGET` (500 credits).
+4. The org had spent about 950 credits in 24 hours. So the run budget,
+   `max(500 - used_24h, 0)`, was 0.
+5. From 15:00 UTC each run stopped at once with the code `budget` and 0
+   credits. Discovery restores the profile and the edition budget, but
+   discovery needs credits. So the mirror froze until the 24-hour window fell
+   below 500 credits.
+
+**The root cause in the code.** A new consent always dropped the profile, also
+for the same account. And a run with no profile had no credit for the one step
+that makes a profile.
+
+**Scope.**
+
+1. **A consent to the same account keeps the profile.**
+   - `store.save_credential` takes `keep_profile`. The default is `False`, and
+     it drops the profile as before.
+   - The callback (`routes/crm/connection.py`) passes `True` only when
+     `_same_account` confirms the account (step 1, 2 or 3 of CRM-X0).
+   - The save marks the profile stale: its `fetched_at` moves 7 days back. So
+     `_discovery_due` is true at the next run, and discovery reads the new
+     scopes.
+   - An account that the callback cannot confirm still drops the profile. A
+     different account still gets `needs_reset` and saves nothing (CRM-X0).
+2. **With no profile, discovery can run.**
+   - `engine.DISCOVERY_ALLOWANCE` is 25 credits. With no profile and the
+     default budget, discovery may spend up to that many credits, also when
+     the default budget is spent.
+   - When less than the allowance is left, discovery runs first, before the
+     estimate and the field definitions.
+   - When discovery has read the account, the run budget becomes the edition
+     budget minus `used_24h`, as before. The credits of this run, discovery
+     included, count against it. The module fields and the rest of the run
+     obey that budget.
+   - The floor check of `ctx.call` (`CREDITS_FLOOR`) still runs before the
+     discovery call. A discovery that fails sets the budget back.
+3. **Sync health names the pause.**
+   - `GET /crm/sync/health` returns `credits.resumes_at`. It is the time when
+     the credits of the 24-hour window fall below the budget. It is null when
+     the window is already below the budget.
+   - When the last run stopped with `budget` and `resumes_at` is set, the card
+     says "Paused: the daily Zoho API budget is spent. It resumes at HH:MM."
+4. **Not changed.** `BUDGET_FRACTION`, `ASSUMED_DAILY_CREDITS` and the runs that
+   count toward `used_24h` stay as they are.
+
+**The cost of one discovery (measured).** `ZohoSource.discover` makes 2 + 2 × 4
+calls, plus one for each Deals layout. That is 11 credits with one Deals layout
+(`test_crm_discovery.py` asserts 11). The allowance of 25 covers 15 Deals
+layouts, or 14 retries.
+
+**Done when.**
+
+1. An R8 test reconnects the same account through the real callback. The
+   profile row stays, and it is stale. A save with `keep_profile=False` drops
+   it. A different account keeps it and gets `needs_reset`.
+2. An R8 test starts with no profile and 950 credits spent in 24 hours. An
+   incremental run and a reconcile run each discover, store the profile, use
+   the edition budget, and end `ok`.
+3. That test fails without the fix: the run stops with `budget` and 0 credits.
+4. A hermetic test shows that a reported credit count under `CREDITS_FLOOR`
+   still stops discovery before its call.
+5. An R8 test shows `credits.resumes_at` for a spent window, and null for a
+   window under the budget.
+6. A vitest shows the pause sentence with its time.
+
+**Fences.** `tests/unit/test_crm_q10_reconnect_r8.py` (R8, `_DB_GATE`),
+`tests/unit/test_crm_reset_r8.py`, `tests/unit/test_crm_discovery.py`,
+`tests/unit/test_crm_sync_health_r8.py` and
+`src/app/crm/components/crmQ9.test.ts`.
+
+**Verification.**
+
+```bash
+uv run pytest tests/unit/test_crm_q10_reconnect_r8.py tests/unit/test_crm_reset_r8.py \
+  tests/unit/test_crm_discovery.py tests/unit/test_crm_sync_health_r8.py -q
+cd workbench/control_plane && npx vitest run src/app/crm/components/crmQ9.test.ts
+```
 
 ---
 
