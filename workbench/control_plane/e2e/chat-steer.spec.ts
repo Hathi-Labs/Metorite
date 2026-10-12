@@ -195,6 +195,20 @@ test.describe("a message sent during a run steers it", () => {
     expect((await calls(page)).map((c) => c.kind)).toEqual(["run", "steer", "followup"]);
   });
 
+  test("a steer, then Stop: the run halts and no follow-up is asked", async ({ page }) => {
+    // Review of #920, round 2: a Stop asks for no follow-up.
+    const box = await startRun(page);
+    await box.fill(STEER_TEXT);
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.locator("[data-chat-steer]")).toHaveAttribute("data-chat-steer", "added");
+    await page.getByRole("button", { name: "Stop the reply" }).click();
+    await expect.poll(async () => (await calls(page)).map((c) => c.kind)).toEqual(["run", "steer", "cancel"]);
+    await expect(page.locator("[data-chat-primary]")).toHaveAttribute("data-chat-primary", "send");
+    // Give a follow-up time to fire, if one were owed.
+    await page.waitForTimeout(2500);
+    expect((await calls(page)).map((c) => c.kind)).toEqual(["run", "steer", "cancel"]);
+  });
+
   test("Stop halts the run, and Esc from an empty box does the same", async ({ page }) => {
     const box = await startRun(page);
     await page.getByRole("button", { name: "Stop the reply" }).click();
