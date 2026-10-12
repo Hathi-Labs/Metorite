@@ -122,3 +122,29 @@ export function initials(...parts: (string | null | undefined)[]): string {
     .map((p) => p[0]!.toUpperCase());
   return letters.slice(0, 2).join("") || "?";
 }
+
+/**
+ * The day an activity falls on, as days from the member's local today:
+ * -1 is yesterday, 0 is today, 1 is tomorrow. Null for no date.
+ *
+ * ONE day rule for the CRM (crm_platform.md §19.7). A task's `due_at` holds a
+ * date at 00:00 UTC, because the Zoho sync and the composer both write it so.
+ * So for `allDay` the rule reads the UTC date of `at`. For a call or a
+ * meeting it reads the local date. Either one is compared with the local
+ * date of `now`. A compare of instants calls a task due today "overdue" in
+ * India for the whole day, since 00:00 UTC is 05:30 there.
+ */
+export function dueDay(
+  at: string | null | undefined,
+  allDay: boolean,
+  now: Date = new Date()
+): number | null {
+  if (!at) return null;
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return null;
+  const day = allDay
+    ? Date.UTC(when.getUTCFullYear(), when.getUTCMonth(), when.getUTCDate())
+    : Date.UTC(when.getFullYear(), when.getMonth(), when.getDate());
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((day - today) / 86_400_000);
+}

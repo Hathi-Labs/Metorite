@@ -17,7 +17,7 @@ empties the funnel report the whole model exists to make free.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, Request
@@ -27,6 +27,8 @@ from gateway.routes.crm.core import (
     DEALS,
     LEADS,
     MAX_PAGE_SIZE,
+    NEXT_ACTIVITY_SQL,
+    NEXT_AT_SQL,
     ORGANIZATIONS,
     WEIGHTED_SQL,
     WEIGHTED_TYPES,
@@ -38,6 +40,7 @@ from gateway.routes.crm.core import (
     actor,
     assert_writable,
     attach_ext_urls,
+    attach_next_activity,
     checked_uuid,
     current_tenant,
     custom_pairs,
@@ -366,6 +369,38 @@ class PipelineResponse(BaseModel):
     lanes: list[PipelineLane]
 
 
+#: ``?card_sort=`` → the order of the cards inside a lane (WS-53 CRM-X3). The
+#: ``Literal`` on the route is the allowlist, so any other value is a 422.
+#: Each value names the inner order and the outer one that
+#: :func:`core.project_joined` re-applies over ``base``.
+CardSort = Literal["stage_age", "next_activity"]
+_CARD_ORDERS: dict[str, tuple[str, str]] = {
+    "stage_age": (
+        "status_changed_at DESC NULLS LAST, id DESC",
+        "base.status_changed_at DESC NULLS LAST, base.id DESC",
+    ),
+    "next_activity": (
+        "next_at ASC NULLS LAST, crm_deals.id DESC",
+        "base.next_at ASC NULLS LAST, base.id DESC",
+    ),
+}
+
+#: The lane read's ``next_at``: the smallest instant of the next-activity
+#: rule for this deal (``core.NEXT_ACTIVITY_SQL``). One rule, so the order of
+#: a lane and the chip on each card cannot disagree.
+_NEXT_AT_COLUMN = (
+    f"(SELECT min({NEXT_AT_SQL}) FROM crm_activities a "
+    f"WHERE a.deal_id = crm_deals.id AND {NEXT_ACTIVITY_SQL}) AS next_at"
+)
+
+
+def _lane_select(card_sort: str) -> str:
+    """The SELECT list of a lane read. Only ``next_activity`` adds ``next_at``."""
+    if card_sort == "next_activity":
+        return f"crm_deals.*, {_NEXT_AT_COLUMN}"
+    return "*"
+
+
 async def _board_lanes(
     db: Any, pipeline_id: str | None, where: str, params: dict[str, Any],
 ) -> list[Any]:
@@ -418,6 +453,7 @@ async def get_pipeline(
     updated_to: str | None = None,
     close_from: str | None = None,
     close_to: str | None = None,
+    card_sort: CardSort = "stage_age",
     user: UserContext = Depends(get_current_user),
     request: Request = None,  # type: ignore[assignment]
 ) -> PipelineResponse:
@@ -445,6 +481,13 @@ async def get_pipeline(
     pipeline. The board places each lane by its own order rule
     (``lib/board.ts`` ``orderLanes``), so a held lane can sit between listed
     ones. This payload order is not that order.
+
+    **The next activity** (WS-53 CRM-X3). Each card carries
+    ``next_activity``, read in ONE statement after the lane loop
+    (``core.attach_next_activity``), whatever the count of lanes and cards.
+    ``?card_sort=next_activity`` orders each lane soonest first, then the
+    cards with none. The sort changes the order of ``rows`` and nothing else:
+    the lane aggregates do not read it.
     """
     async with _tenant_session() as db:
         params: dict[str, Any] = {}
@@ -476,7 +519,8 @@ async def get_pipeline(
         # ⚠️ After the LAST filter: the held-lane read reuses `where` whole.
         lanes = await _board_lanes(db, wanted, where, params)
 
-        out: list[PipelineLane] = []
+        inner_order, outer_order = _CARD_ORDERS[card_sort]
+        read: list[tuple[Any, Any, list[dict[str, Any]]]] = []
         for lane in lanes:
             scope = {
                 **params,
@@ -493,22 +537,27 @@ async def get_pipeline(
                 scope,
             )).fetchone()
             inner = (
-                f"SELECT * FROM crm_deals WHERE {where} "
-                "ORDER BY status_changed_at DESC NULLS LAST, id DESC "
-                "LIMIT :limit"
+                f"SELECT {_lane_select(card_sort)} FROM crm_deals WHERE {where} "
+                f"ORDER BY {inner_order} LIMIT :limit"
             )
             rows = (await db.execute(
                 # Cards print the account name; the board must not make the
                 # browser join a paged organization list to render them
                 # (WS-26c dw 2).
-                text(project_joined(
-                    DEALS, inner,
-                    "base.status_changed_at DESC NULLS LAST, base.id DESC",
-                )),
+                text(project_joined(DEALS, inner, outer_order)),
                 {**scope, "limit": per_lane},
             )).fetchall()
             wired = [row_to_dict(r, DealModel) for r in rows]
             await attach_ext_urls(db, DEALS.table, wired)
+            read.append((lane, agg, wired))
+
+        # ONE read of the next activities for every card of every lane, after
+        # the loop (CRM-X3). Inside the loop it would be one for each lane.
+        await attach_next_activity(
+            db, DEALS, [row for _, _, wired in read for row in wired],
+        )
+        out: list[PipelineLane] = []
+        for lane, agg, wired in read:
             out.append(PipelineLane(
                 status=status_wire(lane),
                 rows=wired,
