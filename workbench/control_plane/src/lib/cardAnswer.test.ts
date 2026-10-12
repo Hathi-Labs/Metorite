@@ -120,7 +120,9 @@ describe("a run_restarted resend", () => {
 
   it("is stamped on the turn and sent with it, by the hook and the chat", () => {
     const hook = readFileSync(`${SRC}/hooks/useAgentChat.ts`, "utf8");
-    expect(hook).toContain("...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),");
+    // Two stamp sites: the held bubble, and the bubble of a send.
+    const stamp = "...(opts?.cardAnswer ? { customEvents: [cardAnswerMarker(opts.cardAnswer)] } : {}),";
+    expect(hook.split(stamp).length - 1).toBe(2);
     expect(hook).toContain("...cardAnswerField(userMsg),");
     const chat = readFileSync(`${SRC}/components/AgentChat.tsx`, "utf8");
     expect(chat).toContain("cardAnswer: display ?? parseCardAnswerEnvelope(resend),");
