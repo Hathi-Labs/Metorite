@@ -105,7 +105,16 @@ export function activeCount(view: CrmView): number {
 }
 
 /** What a view lost before its request: stale custom fields and ranges the mode refuses. */
-export type Pruned = { view: CrmView; removed: string[] };
+export type Pruned = {
+  view: CrmView;
+  removed: string[];
+  /**
+   * The definitions failed to load, so the custom filters cannot be checked.
+   * They are kept (dropping them would widen the list without a word), and the
+   * caller must not fetch with them.
+   */
+  unchecked: boolean;
+};
 
 /**
  * Drop each filter the gateway would refuse (CRM-Q8 review).
@@ -113,9 +122,9 @@ export type Pruned = { view: CrmView; removed: string[] };
  * A saved view or a `cf.X` link can name a custom field that no longer exists,
  * for example after a mode reset deleted the Zoho definitions. The gateway
  * answers 422 for an unknown key, and the whole list would fail. So a key that
- * the loaded definitions do not list is dropped before the fetch. With no
- * definitions at all (the read failed) every custom key is dropped, because
- * none can be checked. In Mirror mode the Created range is dropped as well,
+ * the loaded definitions do not list is dropped before the fetch. A FAILED
+ * read (`defs` is null) drops nothing and sets `unchecked`: a one-off network
+ * error must not widen the list. In Mirror mode the Created range is dropped as well,
  * because a synced record keeps no created date.
  *
  * Pure. The caller shows `removed` as a short note.
@@ -126,11 +135,12 @@ export function pruneFilters(
   mirror: boolean,
 ): Pruned {
   const removed: string[] = [];
+  const unchecked = defs === null && Object.keys(view.custom).length > 0;
   const known = new Set((defs ?? []).map((d) => d.key));
   const labels = new Map((defs ?? []).map((d) => [d.key, d.label]));
   let custom = view.custom;
   for (const key of Object.keys(view.custom)) {
-    if (known.has(key)) continue;
+    if (defs === null || known.has(key)) continue;
     if (custom === view.custom) custom = { ...view.custom };
     delete custom[key];
     removed.push(labels.get(key) ?? key);
@@ -144,6 +154,6 @@ export function pruneFilters(
       if (!removed.includes("Created")) removed.push("Created");
     }
   }
-  if (removed.length === 0) return { view, removed };
-  return { view: { ...view, custom, ranges }, removed };
+  if (removed.length === 0) return { view, removed, unchecked };
+  return { view: { ...view, custom, ranges }, removed, unchecked };
 }

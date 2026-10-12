@@ -2,6 +2,7 @@
 // The runner has no DOM, so each component is rendered to a string.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { FieldDef } from "../lib/fields";
@@ -407,10 +408,33 @@ describe("a stale filter is dropped before the request", () => {
     expect(listQuery("deals", view)).not.toHaveProperty("custom.Gone.in");
   });
 
-  it("drops every custom key when the definitions failed to load", () => {
-    const { view, removed } = pruneFilters(stale, null, false);
-    expect(view.custom).toEqual({});
-    expect(removed).toEqual(["Region", "Gone"]);
+  it("keeps every custom key when the definitions failed to load", () => {
+    const out = pruneFilters(stale, null, false);
+    expect(out.view.custom).toEqual({ Region: ["North"], Gone: ["x"] });
+    expect(out.removed).toEqual([]);
+    expect(out.unchecked).toBe(true);
+  });
+
+  it("drops a key that a successful load does not list, even when the list is empty", () => {
+    const out = pruneFilters(stale, [], false);
+    expect(out.view.custom).toEqual({});
+    expect(out.unchecked).toBe(false);
+  });
+
+  it("is not unchecked when no custom filter is set", () => {
+    expect(pruneFilters(DEFAULT_VIEW, null, false).unchecked).toBe(false);
+  });
+
+  it("says that the custom filters could not be checked", () => {
+    const html = renderToStaticMarkup(
+      createElement(FilterBar, {
+        entity: "deals", view: DEFAULT_VIEW, onChange: noop, rows: [], fieldDefs: null,
+        unchecked: true, activeView: null, dirty: false, canEdit: false, isAdmin: false,
+        saving: false, onSave: async () => undefined, onUpdate: async () => undefined,
+        onReset: noop,
+      }),
+    );
+    expect(html).toContain("Could not check the custom filters. Reload to try again.");
   });
 
   it("drops the created range in Mirror mode and keeps the updated range", () => {
@@ -452,5 +476,17 @@ describe("a stale filter is dropped before the request", () => {
     );
     expect(html).toContain("A filter was removed: Gone");
     expect(html).not.toContain("Created from");
+  });
+});
+
+describe("the page wiring of the filter checks", () => {
+  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf-8");
+
+  it("shows no removal note while the definitions load", () => {
+    expect(page).toContain("removed={waitingForDefs ? [] : pruned.removed}");
+  });
+
+  it("fetches nothing while the custom filters cannot be checked", () => {
+    expect(page).toContain("if (waitingForDefs || unchecked) return;");
   });
 });

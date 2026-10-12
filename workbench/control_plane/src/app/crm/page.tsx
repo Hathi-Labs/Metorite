@@ -175,7 +175,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     [pruned.view, pipelineId],
   );
   /** Custom filters wait for the definitions that check them. */
-  const waitingForDefs = defsLoading && Object.keys(view.custom).length > 0;
+  const hasCustom = Object.keys(view.custom).length > 0;
+  const waitingForDefs = defsLoading && hasCustom;
+  /** The definitions failed: the custom filters cannot be checked, so nothing is fetched. */
+  const unchecked = !defsLoading && pruned.unchecked;
   const boardOn = isBoardView(view);
   // Stable keys for the filters that are objects: the load effect watches them.
   const rangesKey = JSON.stringify(loadView.ranges);
@@ -230,7 +233,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   useEffect(() => {
     // Deals waits for the pipeline list, so the board loads once and not twice.
     if (view.tab === "deals" && pipelinesLoading) return;
-    if (waitingForDefs) return;
+    if (waitingForDefs || unchecked) return;
     if (boardOn) {
       if (view.tab === "leads") store.loadLeadBoard(loadView);
       else store.loadBoard(loadView);
@@ -260,6 +263,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     rangesKey,
     customKey,
     waitingForDefs,
+    unchecked,
   ]);
 
   useEffect(() => {
@@ -620,7 +624,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               rows={barRows}
               fieldDefs={barDefs}
               mirror={ctx.mode === "mirror"}
-              removed={pruned.removed}
+              removed={waitingForDefs ? [] : pruned.removed}
+              unchecked={unchecked}
               activeView={activeSaved}
               dirty={dirty}
               canEdit={activeSaved ? canEditView(activeSaved, ctx.isAdmin) : false}

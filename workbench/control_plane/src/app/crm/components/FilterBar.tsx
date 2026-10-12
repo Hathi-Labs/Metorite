@@ -46,6 +46,8 @@ export type FilterBarProps = {
   mirror?: boolean;
   /** Filters dropped before the request, by name. */
   removed?: string[];
+  /** The custom filters could not be checked, so the list was not read. */
+  unchecked?: boolean;
   /** The saved view in effect, or null. */
   activeView: SavedView | null;
   /** The screen differs from the saved view. */
@@ -67,6 +69,7 @@ export default function FilterBar({
   fieldDefs,
   mirror = false,
   removed = [],
+  unchecked = false,
   activeView,
   dirty,
   canEdit,
@@ -170,6 +173,12 @@ export default function FilterBar({
       {removed.length > 0 ? (
         <p role="status" className="mt-2 text-[11px] text-muted-foreground">
           A filter was removed: {removed.join(", ")} is not available here.
+        </p>
+      ) : null}
+
+      {unchecked ? (
+        <p role="status" className="mt-2 text-[11px] text-destructive">
+          Could not check the custom filters. Reload to try again.
         </p>
       ) : null}
 
