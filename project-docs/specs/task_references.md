@@ -43,9 +43,10 @@ The owner asked for five things on 2026-10-13:
 | Attachments | `routes/projects/attachments.py`, `attachmentsApi` in `projects/lib/api.ts` | TR-4 uploads a pasted image through it |
 | The org's GitHub token | `gateway/connections/github.py` `token_or_none` | TR-1 reads a PR's title and state |
 | The pill | `components/ui/EntityPill.tsx` | TR-2 and TR-5 draw with it |
-| `#123` parsing | `src/lib/taskRefs.ts` (`findTaskRefs`, `resolveTaskRefs`, `TaskRefPill`), built by the chat session on branch `task-ref-autolink` | TR-5 imports it. No second parser |
-| Markdown | `MarkdownBody` in `components/MarkdownMessage.tsx` | TR-4 renders the description |
-| Activity | `pm_task_activity` type `link` | Each add or remove writes one row |
+| The MCP write tool | `external_agent_access.md` EA-6 | `add_task_reference` calls the TR-1 route. EA-6 builds no table and no UI |
+| `#123` parsing | `src/lib/taskRefs.ts` (`findTaskRefs`, `splitTaskRefs`) and the pill `TaskPill` in `components/ChatTaskRef.tsx`, built by the chat session on branch `task-ref-autolink` (not merged on 2026-10-13) | TR-5 imports them. No second parser |
+| Markdown | `MarkdownBody` in `components/MarkdownMessage.tsx`, which draws an image through `MarkdownImage` and `lib/markdownMedia.ts` | TR-4 renders the description |
+| Activity | `pm_activities`, column `type`, value `link` (CHECK in `210_projects_task_merge.sql`, `ACTIVITY_TYPES` in `routes/projects/core.py`) | Each add or remove writes one row |
 
 ## 5. The table
 
@@ -66,15 +67,19 @@ The owner asked for five things on 2026-10-13:
 | `created_by`, `created_at`, `updated_at` | | |
 
 - A unique key on `(organization_id, task_id, kind, provider, ref)` makes an add idempotent.
-- The migration is expand-only (R6). Take the number at build time and check it again at merge (R1).
+- The migration is expand-only (R6). Take the number at build time and check it again at merge (R1). On 2026-10-13 the highest on `main` was 252, and two open branches each claimed 253.
+- **R5.** The migration carries a guarded RLS block, as `251_crm_module_records.sql` does. Then `uv run python scripts/gen_tenant_migration.py` adds the table to `generated/04_policies.sql`. `gen_tenant_migration.EXEMPT` is full at 15, so the table must be scoped.
 
 ## 6. The slices
 
 ### TR-1 — the table, the classifier and the route (AGENT-SAFE)
 
 - **The classifier** is a pure function in the gateway. It takes a URL and returns `kind`, `provider`, `ref` and a short label. It knows these GitHub shapes: `/pull/N`, `/issues/N`, `/commit/SHA`, `/tree/BRANCH`, and an issue or PR comment `#issuecomment-N`. It also knows GitLab merge requests and Google Docs, Sheets and Slides. Every other `http(s)` URL is `url`. Any other scheme is refused with 422.
-- **The route.** `GET /projects/tasks/{id}/refs`, `POST /projects/tasks/{id}/refs` with `{url, title?}`, and `DELETE /projects/tasks/{id}/refs/{ref_id}`. A write needs edit access to the task. A read needs read access, as the links route does today.
+- **The route.** `GET /projects/tasks/{id}/refs`, `POST /projects/tasks/{id}/refs` with `{url, title?}`, and `DELETE /projects/tasks/{id}/refs/{ref_id}`. Both need the task to be visible to the caller, through the same check the links routes use (`routes/projects/tasks.py`, the POST and DELETE `/links`). A task that is not visible answers 404.
 - **The GitHub read.** The route reads the title and state through the org's GitHub token. It does this on an add, and on a read when `fetched_at` is older than 15 minutes. It reads at most 10 references per call, with a 3-second timeout each. With no token, or on any failure, the reference keeps what it has and the route still answers. The token never reaches the client.
+- **The read runs outside the database transaction.** The route reads the rows, closes the session, calls GitHub, then opens a new session to write the titles. Ten slow reads must not hold a connection.
+- **The host is fixed.** The read calls `api.github.com` only, with owner and repo limited to `[A-Za-z0-9._-]`. It does not use `outbound_guard`, which is for URLs a caller chooses.
+- **Disclosure.** The read uses the organization's token. So every member who can see the task sees the title and state of a private repository that the token can reach. A member can also learn such a title by pasting its URL. That is the reach the organization chose when it connected GitHub (WS-54 IN-7). A member never sees the token, and never sees a repository the token cannot reach.
 - **Done when:** the classifier passes a table test of at least 20 URLs. The route adds, lists and removes a reference, and a second add of the same URL returns the first row. A read for another org's task returns 404 against a real database (R8). Each add and remove writes one `link` activity row.
 
 ### TR-2 — the Links section on the card (AGENT-SAFE)
@@ -86,20 +91,21 @@ The owner asked for five things on 2026-10-13:
 
 ### TR-3 — the chat tools (AGENT-SAFE)
 
-- `add_task_link(task, url, title?)` and `remove_task_link(task, url)` in `skill_projects/writes.py`. Both call the TR-1 route, so the chat agent and a person write one path.
+- `add_task_ref(task, url, title?)` and `remove_task_ref(task, url)` in `skill_projects/writes.py`. The names stay clear of `link_tasks`, which links two tasks. Both call the TR-1 route, so the chat agent and a person write one path.
 - `task_detail` in `reads.py` lists the references.
-- **Done when:** a scripted chat run adds a PR link to a task, and the card shows it. The tool registry fences in `skill_projects` pass.
+- **Done when:** `tests/unit/test_projects_task_refs_tools.py` shows that `add_task_ref` posts `{url, title}` to the TR-1 route for the resolved task, and that `remove_task_ref` deletes the matching row. The manifest and parity fences pass (`test_projects_agent_writes.py`, `test_projects_chat_coverage.py`, `test_projects_field_parity.py`).
 
 ### TR-4 — the description renders, and a pasted image attaches (AGENT-SAFE)
 
 - **View.** The saved description renders through `MarkdownBody`: paragraphs, lists, links, code and images. A click on it, or the edit button, opens the plain field as today.
+- **Images from attachments draw inline.** `lib/markdownMedia.ts` treats every `/api/` path except the workspace proxy as remote, and draws it as a click-to-load placeholder. TR-4 adds one more safe path, matched by an exact pattern: `^/api/projects/attachments/<uuid>/[^/?#%\\]+$`. `markdownMedia.test.ts` fences it, with near misses that stay remote. `TaskBody` passes no `sessionId`, so `resolveMediaSrc` does not rewrite the path into the workspace proxy. Any other image URL keeps today's placeholder, because a chat tool can write a description too.
 - **Paste and drop.** An image pasted or dropped into the description field or the comment composer uploads through the attachment route. While it uploads, the field holds `![Uploading name…]()`. When the upload ends, that becomes `![name](<attachment url>)`. A failed upload removes the placeholder and says so in a toast.
 - A file that is not an image, dropped on the card, uploads as an attachment and inserts nothing.
 - **Done when:** a pasted PNG shows in the Files list and inline in the rendered description. A dropped PDF shows in Files only. A file over the size limit shows the route's refusal.
 
 ### TR-5 — `#123` pills and links from the text (AGENT-SAFE, after `taskRefs.ts` lands)
 
-- **Pills.** The title, the rendered description and each comment draw `#123` through `TaskRefPill`. A link to a project (`/projects?project=<id>`) draws as a project pill.
+- **Pills.** The title, the rendered description and each comment draw `#123` through `TaskPill`, found by `findTaskRefs`. Use the exports as they are when `task-ref-autolink` merges, and re-read them first. A link to a project (`/projects?project=<id>`) draws as a project pill.
 - **Links from text.** When a person or an agent saves a title, a description or a comment, the gateway finds each `#N`. For each one that names a visible task in the same organization, other than this task, it adds a `relates_to` link. A GitHub or doc URL in the same text adds a TR-1 reference with `via = text`.
 - **Never removed by an edit.** Deleting `#123` from the text keeps the link. A person removes a link from the Links section.
 - **One grammar, two languages.** The gateway's `#N` finder is Python, and the client's is `findTaskRefs`. One JSON file of cases, `tests/fixtures/task_ref_cases.json`, drives both tests, so the two cannot drift.
@@ -109,11 +115,15 @@ The owner asked for five things on 2026-10-13:
 ## 7. Verification commands
 
 ```
-uv run pytest tests/unit/test_task_refs_classifier.py tests/unit/test_task_refs_route.py -q
+uv run pytest tests/unit/test_task_refs_classifier.py tests/unit/test_task_refs_route.py tests/unit/test_tenant_coverage.py -q
+uv run pytest tests/unit/test_projects_task_refs_tools.py tests/unit/test_projects_agent_writes.py tests/unit/test_projects_chat_coverage.py -q
 uv run pytest tests/unit/test_task_refs_text_links.py -q
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/projects src/lib/taskRefs.test.ts
-cd workbench/control_plane && npx playwright test e2e/visual/<rig>.visual.ts --project=visual
+uv run ruff check <touched files> && uv run mypy <touched files>
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/projects src/lib/markdownMedia.test.ts src/lib/taskRefs.test.ts
+cd workbench/control_plane && npx playwright test e2e/visual/task-refs.visual.ts --project=visual
 ```
+
+The rig file `e2e/visual/task-refs.visual.ts` is written for the review and not committed (`.claude/skills/visual-review`).
 
 R8: run the route test against a private database (`bash scripts/dev_db.sh`), never the shared scratch one.
 
@@ -126,3 +136,4 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 ## 9. Change log
 
 - 2026-10-13 — Written. Research of Plane, Linear and OpenProject in §2. The table follows `external_agent_access.md` §11, with `issue`, `comment` and `doc` added, and `fetched_at` and `via` as columns.
+- 2026-10-13 — The spec audit (GO-NARROWED) changed six things. The activity table is `pm_activities`. EA-6 keeps only the MCP tool. TR-1 states the disclosure rule and reads GitHub outside the transaction. The chat tools are `add_task_ref` and `remove_task_ref`, with a named test. TR-4 adds one safe image path. TR-5 names the real exports.
