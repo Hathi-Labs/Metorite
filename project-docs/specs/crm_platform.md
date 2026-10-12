@@ -1755,8 +1755,8 @@ means that the slice works in Mirror mode with no write-back (CRM-Z9).
 | **CRM-I1** Pipeline health and "Needs you" | A health strip: stale deals, slipped close dates, no next step, no touch in 14 days, closing this month. My stale deals reach "Needs you" | AGENT-SAFE in the app. A push or a mail waits for UX-Q4 | M | CRM-X3 | Y |
 | **CRM-X8** A board you can shape | Card fields, a choice of lane sum, "Load more" in a lane, a lane that folds, and one summary lane for won and lost deals | AGENT-SAFE | M | CRM-Q8 (built) | Y |
 | **CRM-U3 and CRM-U4** Fast, and one look | A revisit paints at once. Skeletons, empty states with a way out, the shared lane colours, a flash where a card lands, and undo after a Native move | AGENT-SAFE | M | Nothing | Y |
-| **CRM-I2** Targets and the forecast by month | A target for each member, the forecast by month against it, "₹X to go", and a Home card | OWNER-GATE: UX-Q2 | M to L | Nothing | Y |
-| **CRM-X6 and CRM-X7** Win moments and streaks | A calm toast and a flash when a deal is won. A private count of working days with a logged call, meeting or note | OWNER-GATE: UX-Q1 | S and M | CRM-I2 for "% of target". CRM-S1 or CRM-X5 for the counts | Y |
+| **CRM-I2** Targets and the forecast by month | A target for each member, the forecast by month against it, "₹X to go", and a Home card | AGENT-SAFE (UX-Q2 answered) | M to L | Nothing | Y |
+| **CRM-X6 and CRM-X7** Win moments and streaks | A calm toast and a flash when a deal is won. A private count of working days with a logged call, meeting or note | AGENT-SAFE (UX-Q1 answered) | S and M | CRM-I2 for "% of target". CRM-S1 or CRM-X5 for the counts | Y |
 | **CRM-I3** Deal brief | A "Brief" button that writes 4 to 6 lines about one deal and suggests the next step | OWNER-GATE: UX-Q3 | M | The AI meter (H-171) | Y |
 | **CRM-X9** Keyboard | A row cursor with `j` and `k`, Enter to open, keys that compose in the sheet, and a `?` sheet of shortcuts | AGENT-SAFE | S to M | CRM-X1, CRM-X4 | Y |
 | **CRM-X10** Mobile | One lane at a time with a lane picker, lists as cards on a phone, "Log this call" after a tap to call, and a composer that stays in view | AGENT-SAFE | M | CRM-X4 | Y |
@@ -1789,10 +1789,32 @@ customer they are the next build after §19.2.
 | Stage transition forms | The move dialog gains a checklist and optional fields for each transition | Native mode |
 | Cadences | Sequences of mail, calls and tasks that stop on a reply | UX-Q4, because a cadence sends mail |
 
-### 19.4 Owner questions (open)
+### 19.4 Owner questions
 
 The owner decides these. An agent builds no OWNER-GATE slice of §19.2 before
 the answer. Each recommendation is the audit's.
+
+**Owner answers (2026-10-12, in chat).** These four answers bind. UX-Q3 and
+UX-Q4 stay open.
+
+- **UX-Q1, win moments: calm.** The deal owner sees a short toast and a card
+  flash. The team sees a "wins this week" line. A streak is private to its
+  member. No confetti by default.
+- **UX-Q2, targets: monthly, for each member.** An admin sets a monthly ₹
+  target for each rep. Everyone sees the team total. Each rep sees their own
+  progress.
+- **UX-Q5, idle days in Mirror mode: yes.** The limit is a Metorite-only
+  setting and never writes to Zoho. A stale deal shows its colour, and CRM-I1
+  puts it in "Needs you".
+- **UX-Q6, write-back: build it, flag off.** CRM-Z9 lands behind a flag that
+  defaults to off. The owner checks it on a test deal, then turns it on for
+  Fracktal. The flag flip is the owner's act. Write-back needs Zoho WRITE
+  scopes. A consent for every org must not ask for them, so only an org with
+  the flag on gets a second consent for them. `routes/crm/connection.py`
+  builds the consent from `ZOHO_READ_SCOPES` today. CRM-Z9 needs its own audit
+  before dispatch.
+
+The list below keeps each question as it was asked.
 
 1. **UX-Q1. Win moments and streaks.** Is a win moment on by default? Does the
    team see a win, or only the owner of the deal? Is a streak private? Does
