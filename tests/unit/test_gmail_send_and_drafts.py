@@ -54,9 +54,12 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from email import message_from_bytes
+from email import encoders, message_from_bytes
 from email.message import Message
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -1049,6 +1052,179 @@ async def test_an_attached_mail_stays_one_file_after_an_update(
     assert [(p.get_filename(), p.get_payload(decode=True))
             for p in inner.walk() if p.get_filename()] == [
         ("inner.pdf", b"%PDF-inner")]
+
+
+# ── EM-G3a-f7 (§12.3.12.5, PR-C1a): the inline parts of a Gmail-web draft ───
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "gmail"
+#: The cid that the fixture names, and the bytes of its image. The fixture
+#: gives the image as an attachment id only, so the test gives it bytes.
+CID = "ii_m1layout0"
+PNG = b"\x89PNG\r\n\x1a\n-layout"
+PDF_BYTES = b"%PDF-1.7 quote"
+
+
+def _part_of(node: dict[str, Any]) -> Message:
+    """The MIME part that one ``payload`` node of a fixture stands for."""
+    main, _, sub = node["mimeType"].partition("/")
+    if main == "multipart":
+        container = MIMEMultipart(sub)
+        for child in node["parts"]:
+            container.attach(_part_of(child))
+        return container
+    data = node["body"].get("data")
+    if data is not None:
+        content = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+        return MIMEText(content.decode(), sub, "utf-8")
+    part = MIMEBase(main, sub)
+    part.set_payload(PNG)
+    encoders.encode_base64(part)
+    headers = {h["name"]: h["value"] for h in node["headers"]}
+    for name in ("Content-ID", "Content-Disposition"):
+        part[name] = headers[name]
+    return part
+
+
+def _gmail_web_draft(*, with_pdf: bool = False) -> bytes:
+    """Fixture ``c_related_inline_image.json`` as a draft made in Gmail web:
+    ``multipart/related`` with the body and one inline image. ``with_pdf``
+    puts it in ``multipart/mixed`` beside a PDF, as Gmail does."""
+    fixture = json.loads((_FIXTURES / "c_related_inline_image.json")
+                         .read_text(encoding="utf-8"))
+    mail = _part_of(fixture["payload"])
+    if with_pdf:
+        mixed = MIMEMultipart("mixed")
+        mixed.attach(mail)
+        pdf = MIMEBase("application", "pdf")
+        pdf.set_payload(PDF_BYTES)
+        encoders.encode_base64(pdf)
+        pdf.add_header("Content-Disposition", "attachment", filename="quote.pdf")
+        mixed.attach(pdf)
+        mail = mixed
+    mail["To"] = RAVI
+    mail["Subject"] = "New layout"
+    return mail.as_bytes()
+
+
+def _shape(part: Message) -> Any:
+    """The tree of content types of a mail."""
+    if part.is_multipart():
+        return (part.get_content_type(), [_shape(p) for p in part.get_payload()])
+    return part.get_content_type()
+
+
+def _attached(msg: Message) -> list[tuple[str | None, str, bytes]]:
+    """(name, type, bytes) of each part with the ``attachment`` disposition."""
+    return [(p.get_filename(), p.get_content_type(), p.get_payload(decode=True))
+            for p in msg.walk() if p.get_content_disposition() == "attachment"]
+
+
+_RELATED = ("multipart/related", [
+    ("multipart/alternative", ["text/plain", "text/html"]), "image/png"])
+
+
+async def test_a_kept_html_draft_keeps_its_inline_image(fake: _Gmail) -> None:
+    """Acceptance 1, M1. A save with ``keep_html`` sends the HTML of the
+    draft. The gateway reads it from Gmail through ``get_message_body``, as
+    for a row with no HTML. The update puts the HTML and its image back in
+    ``multipart/related``. The image keeps its ``Content-ID``, and the HTML
+    keeps ``src="cid:…"``."""
+    fake.add_raw_draft("r-c", "m-c", _gmail_web_draft(), thread="t-c")
+    p = _provider()
+    html = (await p.get_message_body("m-c")).body_html
+    assert f'src="cid:{CID}"' in html
+
+    await p.update_draft("m-c", to=[RAVI], body_text="Please find the layout.",
+                         body_html=html)
+
+    msg = _decode(fake.saved[-1]["message"]["raw"])
+    assert _shape(msg) == _RELATED
+    alternative, image = msg.get_payload()
+    sent_html = alternative.get_payload()[1].get_payload(decode=True).decode()
+    assert f'src="cid:{CID}"' in sent_html
+    assert image["Content-ID"] == f"<{CID}>"
+    assert image.get_content_disposition() == "inline"
+    assert image.get_payload(decode=True) == PNG
+    assert _attached(msg) == [], "the inline image went back as a file"
+
+
+async def test_an_update_with_no_html_sends_no_inline_part(fake: _Gmail) -> None:
+    """Acceptance 2. A save with no ``keep_html`` sends the text only. The
+    inline image does not go back, and it does not come back as a plain file
+    named ``layout.png`` either (measure, hop 8)."""
+    fake.add_raw_draft("r-c", "m-c", _gmail_web_draft(), thread="t-c")
+
+    await _provider().update_draft("m-c", to=[RAVI], body_text="A new text.")
+
+    msg = _decode(fake.saved[-1]["message"]["raw"])
+    assert _shape(msg) == "text/plain"
+    assert [p for p in msg.walk() if p.get_content_maintype() == "image"] == []
+    assert _attached(msg) == []
+
+
+async def test_an_update_keeps_a_file_beside_an_inline_image(fake: _Gmail) -> None:
+    """Acceptance 3. ``multipart/mixed`` holds ``multipart/related`` and a
+    PDF. Each update keeps the PDF: the save that keeps the HTML, and the
+    text save after it. The first one keeps the image too."""
+    fake.add_raw_draft("r-c", "m-c", _gmail_web_draft(with_pdf=True),
+                       thread="t-c")
+    p = _provider()
+    html = (await p.get_message_body("m-c")).body_html
+
+    mid = await p.update_draft("m-c", to=[RAVI], body_text="v2", body_html=html)
+
+    kept = _decode(fake.saved[-1]["message"]["raw"])
+    assert _shape(kept) == ("multipart/mixed", [_RELATED, "application/pdf"])
+    assert _attached(kept) == [("quote.pdf", "application/pdf", PDF_BYTES)]
+
+    await p.update_draft(mid, to=[RAVI], body_text="v3")
+
+    text_only = _decode(fake.saved[-1]["message"]["raw"])
+    assert _shape(text_only) == ("multipart/mixed", ["text/plain", "application/pdf"])
+    assert _attached(text_only) == [("quote.pdf", "application/pdf", PDF_BYTES)]
+
+
+@pytest.mark.parametrize("html", [
+    "<p>No picture here.</p>",
+    f'<p><img src="cid:{CID}1"></p>',
+], ids=["no-cid", "a-longer-cid"])
+async def test_an_inline_part_goes_back_only_when_the_html_names_it(
+        fake: _Gmail, html: str) -> None:
+    """Acceptance 4, M2. An HTML that names no cid of the draft sends no
+    inline part. A cid that only starts with the cid of the image is another
+    cid."""
+    fake.add_raw_draft("r-c", "m-c", _gmail_web_draft(), thread="t-c")
+
+    await _provider().update_draft("m-c", to=[RAVI], body_text="v2",
+                                   body_html=html)
+
+    msg = _decode(fake.saved[-1]["message"]["raw"])
+    assert _shape(msg) == ("multipart/alternative", ["text/plain", "text/html"])
+    assert _attached(msg) == []
+
+
+@pytest.mark.parametrize("html, named", [
+    ('<img srcset="cid:a,cid:b 2x">', {"a", "b"}),
+    ('<img srcset="cid:a 1x, cid:B 2x">', {"a", "b"}),
+    ('<img src="cid:a%40x.test">', {"a@x.test"}),
+], ids=["srcset-no-space", "srcset-with-space", "escaped"])
+def test_each_cid_of_a_srcset_counts(html: str, named: set[str]) -> None:
+    """Review round 1, P3. A comma ends a cid, so each entry of a
+    ``srcset`` names its own cid."""
+    assert gmail_mod._named_cids(html) == named
+
+
+async def test_a_cid_named_in_a_srcset_keeps_its_inline_image(
+        fake: _Gmail) -> None:
+    """Review round 1, P3. The HTML names the image in the first entry of a
+    ``srcset`` only. The update still puts the image back."""
+    fake.add_raw_draft("r-c", "m-c", _gmail_web_draft(), thread="t-c")
+
+    await _provider().update_draft(
+        "m-c", to=[RAVI], body_text="v2",
+        body_html=f'<p><img srcset="cid:{CID},cid:other 2x"></p>')
+
+    assert _shape(_decode(fake.saved[-1]["message"]["raw"])) == _RELATED
 
 
 # ── R8: the local draft row (items 6 and 8, E-A2, E-A5) ─────────────────────

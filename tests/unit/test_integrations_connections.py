@@ -144,7 +144,7 @@ def test_the_mcp_list_shape_names_no_value() -> None:
     assert set(out) == {
         "name", "label", "description", "transport", "command", "url",
         "env_var_names", "header_names", "agent_scope", "enabled",
-        "created_at", "updated_at",
+        "always_confirm", "created_at", "updated_at",
     }
     assert out["header_names"] == ["Authorization"] and out["env_var_names"] == []
     assert out["command"] is None

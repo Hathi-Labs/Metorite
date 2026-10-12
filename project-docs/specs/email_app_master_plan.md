@@ -12877,9 +12877,10 @@ uv run ruff check tests/unit/test_gmail_rate_limits.py
 
 #### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
 
-**Status.** 📝 Specified 2026-10-12, not built. Re-specified twice on 2026-10-12: after the first
-re-audit (E1, C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The
-measure below widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
+**Status.** 🔨 PR-C1a built, not merged (2026-10-12, branch `gmail-c1a-save`). PR-C1b and PR-C2
+are not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
+widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
 
 **Gate.** 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2). No migration, no flag.
 
@@ -13045,6 +13046,12 @@ answer of an Outlook save does not change. On the client, `saveDraft` (`lib/api.
    D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
 5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
 
+⚠️ **The kept HTML has no signature until the send (review round 1 of PR-C1a).** The upsert adds
+the signature to the text only (`append_signature_text`). A save with `keep_html` sends the HTML of
+the draft as it was. So Gmail web shows that draft with no signature in its HTML. `sign_html` adds
+the signature at the send (item 5). PR-C1b must test that a kept draft goes out with the signature
+once.
+
 **Scope of PR-C2 (UI).**
 
 1. **`lib/draftSave.ts`.** Five pure helpers:
@@ -13101,6 +13108,18 @@ there sends the text only (D-G3a-f7-11a). The tool card "save" (`EmailToolCards.
 
 The limit that stays: a later caller of `upsert_draft` without `keep_html` saves the text only. A
 Gmail-web draft then loses its HTML, and no card shows the notice.
+
+**Known limit EM-G3a-f7-k2 (review round 1 of PR-C1a), an inline part at the top of
+`multipart/mixed`.** A part with a `Content-ID` and no `Content-Disposition` can sit at the top of
+`multipart/mixed`, beside the body. Since PR-C1a, `_draft_files` counts it as an inline part, not
+as a file. So it goes back only when the HTML names its cid. On main, the update put it back as a
+file. The member does not lose a file that the app showed: the parse already skips such a part
+(`_gmail_part_is_inline`, `gmail.py:97`), so no row lists it as a file.
+
+**Review round 1 of PR-C1a (2026-10-12).** The sync cuts a body over 2 MiB and ends it with
+`persist.TRUNCATION_MARKER`. `_html_to_keep` treats a cut row HTML as absent, and reads Gmail. The
+Gmail read waits `BODY_FETCH_TIMEOUT_S` at most, and a timeout answers `lost`. A comma ends a cid, so
+each entry of a `srcset` names its own cid.
 
 **Acceptance of PR-C1 (done when).**
 
