@@ -23,6 +23,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+
 def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,
@@ -150,13 +151,36 @@ class LocalServer:
     headers_seen: list[dict[str, str]]
 
 
+#: The description of each filler tool of a large server. It has two lines,
+#: and the first is longer than the 80 characters of an index line.
+FILLER_DESCRIPTION = (
+    "Search the bulk store {i} for the records that match a query, and return "
+    "them with their fields.\n"
+    "Returns at most limit records, and a cursor for the next page. Each record "
+    "holds its id, its title, its owner, its stage and the time it changed last."
+)
+
+
+def _filler_tool(i: int, calls: list[str]) -> Any:
+    def bulk(query: str, limit: int = 10, cursor: str = "",
+             fields: list[str] | None = None, owner: str = "") -> str:
+        calls.append(f"bulk_{i:02d}:{query}")
+        return f"bulk_{i:02d}:{query}"
+
+    return bulk
+
+
 @contextlib.contextmanager
-def local_mcp_server() -> Iterator[LocalServer]:
+def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
     * ``echo`` says it is read-only, so it runs with no card (H-299).
     * ``delete_record`` says it is destructive, so it needs the card.
     * ``plain_note`` sends no hints, so it needs the card too.
+
+    *filler* adds that many read-only tools ``bulk_00``, ``bulk_01`` and so
+    on, each with a long description and five arguments. With 10 or more,
+    the server has more than 12 tools, so it gets the index (WS-8c item 23).
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
@@ -165,6 +189,12 @@ def local_mcp_server() -> Iterator[LocalServer]:
     calls: list[str] = []
     headers_seen: list[dict[str, str]] = []
     server = FastMCP("probe", stateless_http=True, json_response=True)
+    for i in range(filler):
+        server.add_tool(
+            _filler_tool(i, calls), name=f"bulk_{i:02d}",
+            description=FILLER_DESCRIPTION.format(i=i),
+            annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+        )
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def echo(text: str) -> str:
