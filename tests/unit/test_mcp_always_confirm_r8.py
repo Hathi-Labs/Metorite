@@ -241,6 +241,43 @@ async def test_org_b_cannot_flip_org_a_server(ns, audit) -> None:  # noqa: F811
     assert _meta(ns, ns.org_a, name_a)["always_confirm"] is True
 
 
+async def test_a_register_writes_one_audit_event_and_no_secret(ns, audit) -> None:  # noqa: F811
+    """A re-POST of a name can turn the switch off (it replaces the meta
+    whole), so the register is audited as the PATCH is (review of #917)."""
+    user = _user(ADMIN_A, ns.org_a)
+    name = _name("repost")
+    await _post(user, name)
+    assert len(audit) == 1
+    first = audit[0]
+    assert first.action == "integration.mcp.registered" and first.target == f"mcp:{name}"
+    assert first.actor == f"user:{ADMIN_A}" and first.organization_id == ns.org_a
+    assert first.payload == {"organization_id": ns.org_a, "always_confirm": True,
+                             "outcome": "created"}
+
+    audit.clear()
+    await _post(user, name, always_confirm=False)
+    assert _meta(ns, ns.org_a, name)["always_confirm"] is False
+    (event,) = audit
+    assert event.action == "integration.mcp.registered"
+    assert event.payload == {"organization_id": ns.org_a, "always_confirm": False,
+                             "outcome": "updated"}
+    text = repr(audit)
+    assert SENTINEL not in text and "sentinel-h300" not in text
+    assert "mcp.example.com" not in text, "the url reached the audit payload"
+
+
+async def test_a_register_refuses_a_flag_that_is_not_a_boolean(ns, audit) -> None:  # noqa: F811
+    user = _user(ADMIN_A, ns.org_a)
+    for value in ("false", "off", 0):
+        name = _name("strict")
+        res = await _call(user, "POST", "/integrations/mcp", {
+            "name": name, "transport": "http-sse", "url": "https://mcp.example.com/mcp",
+            "always_confirm": value})
+        assert res.status_code == 422, (value, res.text)
+        assert name not in _registry(ns, ns.org_a)
+    assert audit == []
+
+
 async def test_the_store_predicate_holds_on_a_session_that_bypasses_rls(ns) -> None:  # noqa: F811
     """Two orgs hold one name. On a session with RLS off (the admin is a
     superuser), only the org predicate of the statement can keep the change

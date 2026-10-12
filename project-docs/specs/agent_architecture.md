@@ -1124,6 +1124,13 @@ logs `mcp.tool_annotations_changed`. Item 31 gives the admin a switch that ignor
       changes the one key, under any status, and keeps the headers. Another org's name is
       404. Each change writes one audit event, `integration.mcp.always_confirm`, through
       `routes/integrations.audit_integration`, the one audit helper of the console.
+    - **When a change applies.** A change applies from the next run. A live run keeps the
+      flag that it read at the attach.
+    - **The register.** `POST /integrations/mcp` writes one audit event too,
+      `integration.mcp.registered`, with `always_confirm` and `created` or `updated`. A
+      re-POST of a name can turn the switch off, so it is audited as the PATCH is. The
+      payload holds no header and no url. `always_confirm` is a strict boolean on both
+      routes, so `"false"`, `"off"` and `0` get 422.
     - **The reads.** `GET /integrations/mcp` returns `always_confirm`, and the read model
       returns `detail.always_confirm` as `"true"` or `"false"`. The rest of each shape does
       not change.
@@ -1191,7 +1198,7 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A30 | A hidden tool whose name clashes with a platform tool leaves its server out. | `test_maf_mcp_budget.py` |
 | A31 | With `always_confirm` true, a tool with `readOnlyHint` true and `destructiveHint` false waits for the card. Approve runs it and Deny refuses it, on the gate and on the real `run_agent_stream` with a FastMCP server. With the switch off or the key missing, that tool runs with no card. | `test_maf_mcp_confirm.py` |
 | A32 | A new server is set to always confirm. A row with no key and a moved `mcp_servers` row read as false. R8. | `test_mcp_always_confirm_r8.py` |
-| A33 | `PATCH /integrations/mcp/{name}` flips the switch and keeps the headers, and writes one audit event. A member without `integrations:manage` gets 403. Another org's name is 404. R8, two orgs, the app role. | `test_mcp_always_confirm_r8.py` |
+| A33 | `PATCH /integrations/mcp/{name}` flips the switch and keeps the headers, and writes one audit event. A re-POST with the switch off writes one audit event with no header in it. A string value gets 422. A member without `integrations:manage` gets 403. Another org's name is 404. R8, two orgs, the app role. | `test_mcp_always_confirm_r8.py` |
 | A34 | `GET /integrations/mcp` and the read model return the flag, and no header value reaches a response or a log line. The console toggle is on for a new server, and it sends `always_confirm`. | `test_mcp_always_confirm_r8.py`, `alwaysConfirm.test.ts` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`

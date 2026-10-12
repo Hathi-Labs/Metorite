@@ -82,7 +82,7 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | M33 | the title names the remote tool name again | ``test_the_gate_puts_the_local_name_in_the_title`` |
 
 **H-300, the "always confirm" switch.** The table was written before the code.
-Rows M36 to M38 are fenced in ``tests/unit/test_mcp_always_confirm_r8.py``.
+Rows M35 to M40 are fenced in ``tests/unit/test_mcp_always_confirm_r8.py``.
 
 | # | Mutation | Test that fails |
 |---|---|---|
@@ -92,6 +92,8 @@ Rows M36 to M38 are fenced in ``tests/unit/test_mcp_always_confirm_r8.py``.
 | M36b | the writer default of a new server is false | ``test_a_new_server_defaults_to_always_confirm`` (R8) |
 | M37 | the PATCH skips the role check | ``test_a_member_without_manage_gets_403`` (R8), ``test_integrations_in0.py::test_a_member_without_manage_is_refused_before_the_handler`` |
 | M38 | the PATCH statement loses its org predicate | ``test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` (R8) |
+| M39 | the register writes no audit event (review of #917) | ``test_a_register_writes_one_audit_event_and_no_secret`` (R8) |
+| M40 | the register flag is a lax ``bool`` again | ``test_a_register_refuses_a_flag_that_is_not_a_boolean`` (R8) |
 """
 from __future__ import annotations
 

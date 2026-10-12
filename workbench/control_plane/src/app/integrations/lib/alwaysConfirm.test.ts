@@ -43,6 +43,8 @@ describe("the switch in the Add form", () => {
     const base = { ...EMPTY_MCP_FORM, name: "n", url: "https://x" };
     expect(mcpBody(base).always_confirm).toBe(true);
     expect(mcpBody({ ...base, alwaysConfirm: false }).always_confirm).toBe(false);
+    // A real boolean, never a string: the gateway takes a strict bool.
+    expect(typeof mcpBody(base).always_confirm).toBe("boolean");
   });
 
   it("draws one labelled, checked toggle with the help line", () => {

@@ -133,9 +133,11 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
       toast.show({
         key: "integrations-always-confirm",
         variant: "success",
+        // A live run keeps the flag it read at the attach, so the words
+        // speak of new chats only (H-300).
         title: next
-          ? `${rowLabel(open)} now asks before any tool runs.`
-          : `${rowLabel(open)} now asks only for tools that can change data.`,
+          ? "New chats will ask before any tool runs."
+          : "New chats will ask only before tools that can change data.",
       });
       invalidateConnections();
     } catch (err) {

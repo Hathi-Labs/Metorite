@@ -1803,7 +1803,8 @@ class McpServerRequest(BaseModel):
     #: H-300: every tool of the server needs the member's card, whatever its
     #: hints say. A new server is set to always confirm unless the admin
     #: says no.
-    always_confirm: bool = True
+    #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
+    always_confirm: StrictBool = True
 
 
 class McpAlwaysConfirmRequest(BaseModel):
@@ -1937,20 +1938,29 @@ async def register_mcp_server(
             ) from None
 
     try:
-        await mcp_registry.save(
+        saved = await mcp_registry.save(
             org, name=req.name, url=req.url or "", headers=req.headers,
             connected_by=user.email, label=req.label or req.name,
             description=req.description, transport=req.transport,
             agent_scope=req.agent_scope, enabled=req.enabled,
             always_confirm=req.always_confirm,
         )
-        _log.info("mcp.registered", name=req.name, actor=user.email,
-                  always_confirm=req.always_confirm)
-        return {"ok": True, "name": req.name}
     except Exception as exc:
         # The class of the error only: a DB message can echo a bound header.
         _log.warning("mcp.register_failed", name=req.name, error=type(exc).__name__)
         raise HTTPException(500, "The MCP server could not be saved.") from exc
+    # H-300: a register can turn the switch off, on a new server or on a
+    # re-POST of one that exists, so it writes an audit event as the PATCH
+    # does. The insert sets both stamps to one now(). An update keeps
+    # ``created_at``. No header and no url go into the payload.
+    stamp = getattr(saved, "created_at", None)
+    created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
+                      always_confirm=req.always_confirm,
+                      outcome="created" if created else "updated")
+    _log.info("mcp.registered", name=req.name, actor=user.email,
+              always_confirm=req.always_confirm)
+    return {"ok": True, "name": req.name}
 
 
 @router.patch(

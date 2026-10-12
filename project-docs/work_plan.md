@@ -5059,7 +5059,8 @@ connections work?"
 admins get a per-server 'always confirm' switch, now that MCP is on for all
 orgs?" The owner answered: "Build it now, keep MCP on." `MAF_MCP_ORGS=*` stays
 on production. The switch is `provider_meta.always_confirm` on the registry row,
-read by `McpPermissionGate`, and it comes right after IN-4 (HANDOFF H-300).
+read by `McpPermissionGate`. It came right after IN-4, and it is built as
+`specs/agent_architecture.md` §12.2 WS-8c, item 31.
 
 **What it extends.** D96.4: an MCP server is a connection. D98 adds the
 connections that need an OAuth consent.
