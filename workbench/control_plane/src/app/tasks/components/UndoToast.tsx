@@ -38,7 +38,7 @@ function useUndoToastMounted(): boolean {
 
 /**
  * Keep THE toast in step with the store's snapshot. `keys` says whether the
- * `u` / Ctrl+Z keys are bound where it is read. `enabled: false` holds still.
+ * Ctrl+Z key is bound where it is read. `enabled: false` holds still.
  * `resay` re-says the toast with no key hint when the reader leaves.
  */
 function useUndoToastSync(keys: boolean, enabled = true, resay = true) {
@@ -58,7 +58,7 @@ function useUndoToastSync(keys: boolean, enabled = true, resay = true) {
       openTask: openFocus,
     };
     syncUndoToast(undoSnapshot, toast, store, { keys });
-    // Unmount (a route change) unbinds `u` and Ctrl+Z, but the toast lives on
+    // Unmount (a route change) unbinds Ctrl+Z, but the toast lives on
     // in the app-wide viewport. Re-say it in place without the key hint. The
     // Undo button still works: the store is app-wide.
     // The fallback passes `resay: false`. It stops only because a page took
@@ -98,17 +98,13 @@ export function UndoToast() {
   useUndoToastSync(!isMobile);
 
   /**
-   * Keyboard: Ctrl/Cmd+Z, or the bare `u` this app has always used.
+   * Keyboard: Ctrl/Cmd+Z, the same key as in Projects. Undo is the one
+   * binding a member brings with them from every other application. The bare
+   * `u` this app also answered went with the letter shortcuts (owner,
+   * 2026-10-13).
    *
-   * Ctrl+Z was added 2026-08-31 so the shortcut is the same across the product
-   * — undo is the one binding a user brings with them from every other
-   * application, and having it work in Projects but not here is worse than
-   * having it nowhere. `u` stays: it is in the toast's own hint and in
-   * people's fingers.
-   *
-   * Both predicates come from `@/lib/keyboard` rather than the hand-rolled
-   * tag check that was here. That check missed `<select>`, so `u` fired while
-   * a dropdown had focus.
+   * Both predicates come from `@/lib/keyboard` rather than a hand-rolled tag
+   * check, which missed `<select>`.
    *
    * ⚠️ **This is still ONE level and there is no redo.** The store's model is a
    * snapshot of the rows before a change, and two snapshots of overlapping
@@ -121,8 +117,7 @@ export function UndoToast() {
     if (!undoSnapshot || sharedId) return;
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target as HTMLElement | null)) return;
-      const bare = !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "u" || e.key === "U");
-      if (bare || isUndoShortcut(e)) {
+      if (isUndoShortcut(e)) {
         e.preventDefault();
         undoLastChange();
       }

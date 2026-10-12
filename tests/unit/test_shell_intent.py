@@ -330,6 +330,33 @@ class TestOneJobList:
         assert f'"is_admin": access.has("{intent.ADMIN_PERMISSION}")' in me
 
 
+#: The four CRM jobs (WS-53 CRM-X2, `crm_platform.md` §19.6). Kebab case, as
+#: the code names every job, and each one opens a form or a list and saves
+#: nothing.
+CRM_JOBS = {
+    "new-lead": "/crm?do=new-lead",
+    "new-deal": "/crm?do=new-deal",
+    "log-call": "/crm?do=log-call",
+    "find-record": "/crm?do=find-record",
+}
+
+
+class TestTheCrmJobs:
+    def test_a_crm_member_holds_the_four_crm_jobs(self):
+        held = {j.id: j.href for j in intent.held_jobs(member("crm"))}
+        assert {k: held.get(k) for k in CRM_JOBS} == CRM_JOBS
+
+    def test_a_member_without_the_crm_holds_none(self):
+        held = {j.id for j in intent.held_jobs(member("tasks", "email"))}
+        assert not held & set(CRM_JOBS)
+
+    def test_each_is_gated_on_the_crm_and_on_no_admin_test(self):
+        for job in intent.JOBS:
+            if job.id in CRM_JOBS:
+                assert (job.feature, job.admin) == ("crm", False), job.id
+                assert job.meaning and "crm" in job.meaning.lower(), job.id
+
+
 def admin_member(*features: str) -> UserContext:
     granted = {f"feature:{f}" for f in features} | {intent.ADMIN_PERMISSION}
     return UserContext(

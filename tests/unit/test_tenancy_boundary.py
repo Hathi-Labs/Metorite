@@ -142,6 +142,8 @@ EXPECTED_SCOPED = {
     "crm_views",
     # WS-53 CRM-Q6a (2026-10-12): the generic record store of the mirror.
     "crm_module_records",
+    # WS-53 CRM-Q7a (2026-10-12): the field rules of the Field map.
+    "crm_field_rules",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`
