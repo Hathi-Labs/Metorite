@@ -15651,8 +15651,8 @@ or replying to messages but also when the email AI assistant generates insights 
 inboxes, intelligently incorporating relevant body content.
 ```
 
-**Status.** 📝 SPECIFIED 2026-10-12. 🔨 PR-A is built, not merged (branch `email-stall-pra`).
-The spec audit of 2026-10-12 returned
+**Status.** 📝 SPECIFIED 2026-10-12. ✅ PR-A is MERGED as #894 (`52c791d7a`, 2026-10-12).
+🔨 PR-A1 is built, not merged (branch `email-stall-pra1`). The spec audit of 2026-10-12 returned
 GO-NARROWED, and its edits D1 to D14 are in this section. The re-audit of 2026-10-12
 returned GO-NARROWED, and its edits E1 to E6 are in this section too. Slice **EM-T17** has
 seven PRs (§17.7).
@@ -16017,6 +16017,8 @@ with the bound and the step, and no tenant text.
 - **No session across the model.** PR-A1 takes this from EM-T4a-4 (§10.4.6 item 6).
   `_compose_assist_run` closes its session before the model call, and opens a short new one
   for `_store_ai_draft`. Its docstring (`drafting.py:1835-1836`) changes to say so.
+- **The rule path gets two of the bounds.** The rule draft also calls `_orchestrate_draft`.
+  So the `SIDE_STEP_BOUND_S` bounds of the Mem0 recall and the consult plan apply there too.
 - **The rule draft keeps its place in Block W.** EM-T4a-3 item 1 owns that move.
 
 - **The log line that measures it.** `email.draft_timing` holds the stage durations in ms
@@ -16040,6 +16042,17 @@ So the context step of `_compose_assist_run` runs in this order:
    (the EM-T4c idiom, `apps/services/gateway/AGENTS.md:73`). Then it reads the memories, the
    few-shot by the embedding, and the calendar.
 
+**Block 2 has two parts (B2, built 2026-10-12).** A cancel by `CONTEXT_STEP_BOUND_S` rolls back
+the block that is open. So block 2a writes the body and the creds in a block of its own, and
+that block runs outside the context bound. Block 2b then reads, in the time that is left.
+Block 2a also writes the creds when the fetch passed `SIDE_STEP_BOUND_S` after
+`authenticate()` refreshed the token. `core.BodyFetch` holds the three steps of the fetch, and
+it shares `_hydrated_columns` and `_store_hydrated_body` with `hydrate_message_body`.
+
+**An expiry in block 1 (B3, built 2026-10-12).** The draft goes on only when block 1 has done
+the owner check and has the target row. An expiry before that point raises, and the stream
+route sends its `error` event. No draft goes on without the owner check.
+
 `_fetch_sent_fewshot` (`drafting.py:199`) splits into the embed (step 2) and the read
 (step 3). The Mem0 recall and the consult plan run in `_orchestrate_draft`
 (`drafting.py:1512`), with no session. They already run at the same time, and PR-A1 gives
@@ -16054,7 +16067,8 @@ each one `SIDE_STEP_BOUND_S`.
 
 **The context step on expiry (before PR-B).** When `CONTEXT_STEP_BOUND_S` ends:
 
-- The target body is the stored `body_text`, or else the snippet.
+- The target body is the stored `body_text`, or else the snippet. A body that the fetch
+  brought before the expiry counts as stored, because block 2a writes it.
 - The thread is the output of `_fetch_thread_context`, or empty.
 - Each other side block is empty: the examples, the few-shot, the memories and the calendar.
 - The open session block exits before the draft goes on.
