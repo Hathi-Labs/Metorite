@@ -53,6 +53,110 @@ export interface NeedsFeed {
   total: number;
   items: NeedsItem[];
   sources: Partial<Record<NeedsApp, SourceState>>;
+  /**
+   * How many need the member in each source that answered `ok`. It is the
+   * app's own count where its read has one (the Projects bell's unread
+   * count, a mailbox's Needs-reply count), else the rows the source found.
+   * The sidebar's row counts read it, because the cut can drop one app's
+   * rows from `items` entirely. An older gateway leaves it out, and a count
+   * then reads the rows in `items`.
+   */
+  totals: Partial<Record<NeedsApp, number>>;
+  /**
+   * The sources whose `totals` entry is a FLOOR: the read stopped at its
+   * cap of 15 and has no count, so the source holds that many OR MORE. The
+   * row prints "15+" (`navNeeds.ts`). An older gateway leaves it out.
+   */
+  capped: NeedsApp[];
+}
+
+/**
+ * The app that owns each source's rows: the sidebar row that counts them.
+ * THE one map. A new provider adds one line here, and its rows count on its
+ * app's row. The `tasks` rows open in Projects (`href`), but they are the
+ * member's due tasks, so they count on My Tasks.
+ */
+export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
+  tasks: "/tasks",
+  approvals: "/approvals",
+  projects: "/projects",
+  email: "/email",
+};
+
+/**
+ * How many rows need the member in each app, by `total` semantics: the
+ * source's rows before the feed's cut, less the rows an act took off.
+ *
+ * Only a source that answered `ok` has an entry. A source that `failed`
+ * has none, so its row shows no number, never a 0 and never a stale one.
+ * `shown` is the feed's rows that are still on screen (`useNeedsYou`'s
+ * `items`). `approvals` is false for a member who may not see that group.
+ */
+export function countsByApp(
+  feed: NeedsFeed,
+  shown: readonly NeedsItem[],
+  approvals: boolean,
+): Partial<Record<NeedsApp, number>> {
+  const out: Partial<Record<NeedsApp, number>> = {};
+  for (const app of Object.keys(NEEDS_APP_HREF) as NeedsApp[]) {
+    if (feed.sources?.[app] !== "ok") continue;
+    if (app === "approvals" && !approvals) continue;
+    const sent = feed.items.filter((i) => i.app === app).length;
+    const still = shown.filter((i) => i.app === app).length;
+    const total = feed.totals?.[app];
+    const before = typeof total === "number" && Number.isFinite(total) ? Math.max(total, sent) : sent;
+    out[app] = Math.max(0, before - (sent - still));
+  }
+  return out;
+}
+
+/**
+ * The apps whose count is a floor (`capped`), among the ones that have a
+ * count. A failed source has no count, so it is never a floor either.
+ */
+export function floorApps(feed: NeedsFeed, approvals: boolean): Set<NeedsApp> {
+  const out = new Set<NeedsApp>();
+  for (const app of Array.isArray(feed.capped) ? feed.capped : []) {
+    if (!(app in NEEDS_APP_HREF) || feed.sources?.[app] !== "ok") continue;
+    if (app === "approvals" && !approvals) continue;
+    out.add(app);
+  }
+  return out;
+}
+
+/**
+ * The counts by the href of the row that shows them. A zero has no entry.
+ * With `held`, an app the member cannot open has no entry either: the
+ * sidebar has no row for it, and All apps does not list it.
+ */
+export function needsByHref(
+  counts: Partial<Record<NeedsApp, number>>,
+  held?: ReadonlySet<string>,
+): Record<string, number> {
+  return byHref(counts, held);
+}
+
+/** The hrefs whose count is a floor, by the same map and the same `held`. */
+export function floorHrefs(floors: ReadonlySet<NeedsApp>, held?: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>();
+  for (const app of floors) {
+    const href = NEEDS_APP_HREF[app];
+    if (href && (!held || held.has(href))) out.add(href);
+  }
+  return out;
+}
+
+function byHref(
+  counts: Partial<Record<NeedsApp, number>>,
+  held?: ReadonlySet<string>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [app, n] of Object.entries(counts) as [NeedsApp, number][]) {
+    const href = NEEDS_APP_HREF[app];
+    if (!href || !(n > 0) || (held && !held.has(href))) continue;
+    out[href] = (out[href] ?? 0) + n;
+  }
+  return out;
 }
 
 /**
@@ -90,6 +194,8 @@ export function readFeed(raw: unknown): NeedsFeed {
     total: typeof body.total === "number" ? Math.max(body.total, count) : count,
     items,
     sources: body.sources && typeof body.sources === "object" ? body.sources : {},
+    totals: body.totals && typeof body.totals === "object" ? body.totals : {},
+    capped: Array.isArray(body.capped) ? body.capped : [],
   };
 }
 

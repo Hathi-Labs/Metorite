@@ -28,7 +28,7 @@ import {
 } from "react";
 import { useSession } from "next-auth/react";
 import { useChatScope, useChatSignOutClear } from "@/hooks/useChatSessions";
-import Sidebar from "@/components/Sidebar";
+import Sidebar, { NeedsCount } from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import NavBadge from "@/components/NavBadge";
@@ -58,7 +58,10 @@ import {
   launcherGroups,
   shellNavOn,
   shellSidebar,
+  strayCount,
 } from "@/lib/shell/shellNav";
+import { addAppsName, rowMeta, rowName } from "@/lib/shell/navNeeds";
+import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup, { BAR_LOCKUP } from "@/components/OrgBrandLockup";
@@ -470,6 +473,14 @@ function MobileBottomNavInner({
   // member turns it amber, an unread reply blue, and a running count green
   // (`lib/runActivity.ts`).
   const drawerBadge = (href: string) => runBadge(runCounts[href] ?? 0, needsCounts[href] ?? 0, unreadCounts[href] ?? 0);
+  // What needs the member in each app, as on the desktop sidebar: the one
+  // feed and the one slot rule (`useNavNeeds`, `rowMeta`).
+  const heldHrefs = navSections.flatMap((s) => s.items.map((p) => p.href));
+  // The same gate as the desktop sidebar: no workspace, no read.
+  const navNeeds = useNavNeeds(shellNav && shouldPollWorkspace(access, accessLoading), heldHrefs);
+  const appNeeds = navNeeds.counts;
+  const strayNeeds = strayCount(appNeeds, drawerHrefs);
+  const strayFloor = [...navNeeds.floors].some((href) => !drawerHrefs.has(href));
 
   const menuContent = (
     <>
@@ -547,11 +558,16 @@ function MobileBottomNavInner({
             <div className="flex flex-col gap-0.5">
               {section.items.map((p) => {
                 const active = shellNav ? isActive(pathname, p.href) : pathname?.startsWith(p.href);
+                // One slot: the run badge wins it, else the needs count (`rowMeta`).
+                const b = drawerBadge(p.href);
+                const floor = navNeeds.floors.has(p.href);
+                const meta = rowMeta(b?.count, appNeeds[p.href], floor);
                 return (
                   <Link
                     key={p.href}
                     href={p.href}
                     onClick={close}
+                    aria-label={rowName(p.label, appNeeds[p.href], b?.label, floor)}
                     className={`rounded-lg px-3 py-2.5 tech-transition flex items-center gap-2.5 ${
                       active
                         ? "bg-primary/10 text-primary"
@@ -562,10 +578,11 @@ function MobileBottomNavInner({
                       <AppIcon name={p.icon} size={15} strokeWidth={active ? 2.5 : 2} />
                     </span>
                     <span className="text-sm font-medium">{p.label}</span>
-                    {(() => {
-                      const b = drawerBadge(p.href);
-                      return b ? <NavBadge count={b.count} tone={b.tone} label={b.label} /> : null;
-                    })()}
+                    {b ? (
+                      <NavBadge count={b.count} tone={b.tone} label={b.label} />
+                    ) : meta?.kind === "needs" ? (
+                      <NeedsCount text={meta.text} />
+                    ) : null}
                   </Link>
                 );
               })}
@@ -584,6 +601,7 @@ function MobileBottomNavInner({
                 setLauncherOpen(true);
               }}
               aria-haspopup="dialog"
+              aria-label={strayNeeds > 0 ? addAppsName(strayNeeds, undefined, strayFloor) : undefined}
               data-nav-add-apps=""
               className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
             >
@@ -591,6 +609,10 @@ function MobileBottomNavInner({
                 <AppIcon name="Plus" size={15} />
               </span>
               <span className="text-sm">Add apps</span>
+              {(() => {
+                const meta = rowMeta(undefined, strayNeeds, strayFloor);
+                return meta?.kind === "needs" ? <NeedsCount text={meta.text} /> : null;
+              })()}
             </button>
           </div>
         )}

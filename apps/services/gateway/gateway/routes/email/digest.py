@@ -253,6 +253,21 @@ async def needs_reply_threads(
             db, account_id, "NEEDS_REPLY", limit, with_time=True)
 
 
+async def needs_reply_count(user: UserContext, account_id: str) -> int:
+    """How many live threads of ONE mailbox the member owns need a reply.
+
+    The digest's own Needs-reply count (:func:`_digest_needs_reply`): one
+    ``COUNT`` on ``idx_thread_status_account_status``, with the
+    ``_LIVE_THREAD`` rule of :func:`needs_reply_threads`. The owner check
+    runs first, so a mailbox of another member is 404 before the count. The
+    shell's needs feed calls it only for a mailbox whose list reached the
+    cap, so its row can say the real number. Not a route.
+    """
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        return int(await _digest_needs_reply(db, account_id))
+
+
 async def _digest_backlog_aging(
     db: Any, account_id: str, limit: int = 5, *, prioritized: bool = False,
 ) -> list[dict[str, Any]]:

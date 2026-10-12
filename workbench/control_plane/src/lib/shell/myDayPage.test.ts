@@ -174,6 +174,8 @@ describe("/ with the My Day flag", () => {
           count: items.length,
           total: items.length,
           sources: { tasks: "ok", approvals: "ok" },
+          byApp: { tasks: 2, approvals: 1 },
+          floors: new Set<never>(),
           loading: false,
           error: null,
           refresh: () => {},
