@@ -36,6 +36,10 @@ from email_ingestion.body_backfill import _html_to_text
 # "load full message" backfill stays the single escape hatch.
 MAX_BODY_TEXT_BYTES = 500 * 1024       # 500 KB
 MAX_BODY_HTML_BYTES = 2 * 1024 * 1024  # 2 MB
+#: The end of a body that :func:`truncate_body` cut. A reader that writes a
+#: stored body back to the provider must treat such a body as absent
+#: (WS-17 EM-G3a-f7, ``drafting._html_to_keep``).
+TRUNCATION_MARKER = " ... [truncated]"
 
 
 def truncate_body(value: str | None, max_bytes: int) -> str | None:
@@ -50,7 +54,7 @@ def truncate_body(value: str | None, max_bytes: int) -> str | None:
     encoded = value.encode("utf-8", errors="replace")
     if len(encoded) <= max_bytes:
         return value
-    marker = b" ... [truncated]"
+    marker = TRUNCATION_MARKER.encode()
     # Back up off any continuation byte so we never split a multi-byte char.
     cut = max_bytes - len(marker)
     while cut > 0 and (encoded[cut] & 0xC0) == 0x80:

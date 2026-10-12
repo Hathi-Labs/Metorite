@@ -2251,6 +2251,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             continue
         out.append(_maf_mcp.McpServer(
             name=str(srv.name), url=str(srv.url), headers=_str_map(srv.headers),
+            # H-300: the admin's "always confirm" switch. A row with no key
+            # reads as false, so the server keeps its H-299 behaviour.
+            always_confirm=getattr(srv, "always_confirm", False) is True,
         ))
     return out
 

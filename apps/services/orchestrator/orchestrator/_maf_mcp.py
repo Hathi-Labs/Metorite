@@ -35,6 +35,12 @@ The rules:
    card, so such a tool is refused there. The hints are the server's claim,
    and a hostile server can lie. Each attach logs them as
    ``mcp.tool_annotations``, so an admin can audit them.
+   **Always confirm** (H-300): an admin can set a server to "always
+   confirm" (``provider_meta.always_confirm`` on its registry row). Then
+   EVERY tool of that server needs the card, whatever its hints say. The flag
+   goes from the row to :class:`McpServer`, onto the tool at the attach
+   (:func:`server_always_confirms`), and to ``decide()`` as the fact
+   ``mcp_always_confirm``. ``decide()`` stays the one gate.
 7. **No stdio.** Nothing here builds an ``MCPStdioTool`` (D85). Fence:
    ``tests/unit/test_no_mcp_stdio.py``.
 
@@ -93,6 +99,8 @@ class McpServer:
     name: str
     url: str
     headers: dict[str, str] = field(default_factory=dict, repr=False)
+    #: H-300: every tool of this server needs the card. False keeps H-299.
+    always_confirm: bool = False
 
 
 #: An open server: the tool and the client that the run must close.
@@ -372,6 +380,18 @@ def _record_tool_list(meta: dict[str, ToolMeta], result: Any, server: str = "") 
         meta[remote] = ToolMeta(hints=hints, description=description)
 
 
+#: The key on a tool's ``__dict__`` that holds its server's H-300 flag.
+_ALWAYS_CONFIRM_KEY = "_ws8c_always_confirm"
+
+
+def server_always_confirms(tool: Any) -> bool:
+    """True when an admin set the server of *tool* to "always confirm" (H-300).
+
+    The attach writes the flag from the registry row. A tool with no flag
+    reads as false, as a row with no key does."""
+    return getattr(tool, "__dict__", {}).get(_ALWAYS_CONFIRM_KEY) is True
+
+
 def tool_meta(tool: Any, remote_name: str) -> ToolMeta | None:
     """What the server of *tool* said about its tool *remote_name*, or None."""
     meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta")
@@ -503,6 +523,8 @@ async def attach_mcp_tools(
                 load_prompts=False,
                 request_timeout=REQUEST_TIMEOUT_S,
             )
+            # H-300: the gate reads the server's flag from the tool.
+            tool.__dict__[_ALWAYS_CONFIRM_KEY] = server.always_confirm is True
             async with asyncio.timeout(CONNECT_BUDGET_S):
                 await tool.connect()
         except asyncio.CancelledError:
@@ -536,7 +558,8 @@ async def attach_mcp_tools(
         tools=list(agent.mcp_tools), member_present=member_present,
     )]
     names = [t.name for t in tools]
-    _log.info("mcp.attached", servers=names)
+    _log.info("mcp.attached", servers=names,
+              always_confirm=[t.name for t in tools if server_always_confirms(t)])
     return names
 
 
@@ -820,7 +843,17 @@ def _hidden_line(hidden: list[str], partly: list[str] | None = None) -> str:
             + _count_line(list(partly or []), "is partly hidden", "are partly hidden"))
 
 
-def _hint_line(hints: dict[str, bool] | None) -> str:
+#: The first sentence of the card of a server that is set to always confirm.
+ALWAYS_CONFIRM_LINE = "This server is set to always confirm."
+
+
+def _hint_line(hints: dict[str, bool] | None, always_confirm: bool = False) -> str:
+    if always_confirm:
+        from acb_skills.permission_policy import mcp_needs_confirmation
+
+        if not mcp_needs_confirmation(hints):
+            return f"{ALWAYS_CONFIRM_LINE} The server marks this tool as read-only."
+        return f"{ALWAYS_CONFIRM_LINE} {_hint_line(hints)}"
     if not hints:
         return "The server sent no hints for this tool."
     if hints.get("destructiveHint") is True:
@@ -830,7 +863,7 @@ def _hint_line(hints: dict[str, bool] | None) -> str:
 
 def card_text(server: str, tool: str, arguments: dict[str, Any],
               meta: ToolMeta | None, fallback_description: str = "",
-              local: str = "") -> tuple[str, str, str]:
+              local: str = "", always_confirm: bool = False) -> tuple[str, str, str]:
     """The title, detail and body of the card for one MCP call.
 
     The title names the LOCAL tool name of MAF (*local*), in
@@ -841,7 +874,8 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
     name each hidden value, and then the server's description under
     :data:`DESCRIPTION_LABEL`. Only the description is cut to fit.
     Arguments that do not fit raise :class:`CardTooLong`, because a member
-    must see the whole call that Approve runs."""
+    must see the whole call that Approve runs. With *always_confirm* (H-300)
+    the detail first says that the server is set to always confirm."""
     hidden: list[str] = []
     partly: list[str] = []
     shown = json.dumps(redact_arguments(arguments, hidden, partly), indent=2,
@@ -856,7 +890,7 @@ def card_text(server: str, tool: str, arguments: dict[str, Any],
         description = description[: max(0, room - 1)] + "…"
     shown_server, shown_tool = _shown_name(server), _shown_name(tool)
     title = f"Run the MCP tool {_local_name(local or tool)}?"
-    detail = (f"{_hint_line(meta.hints if meta else None)} "
+    detail = (f"{_hint_line(meta.hints if meta else None, always_confirm)} "
               f"Server: {shown_server} · Tool: {shown_tool}")
     return title, detail, head + description
 
@@ -887,21 +921,29 @@ def _tool_functions(tool: Any) -> list[Any]:
     return list(getattr(tool, "_functions", None) or getattr(tool, "functions", None) or [])
 
 
-def _owner_of(tools: list[Any], function: Any) -> tuple[str, str, ToolMeta | None]:
-    """The server name, the remote tool name and its hints, for *function*.
+def _owner_tool(tools: list[Any], function: Any) -> Any | None:
+    """The MCP tool (the server) that holds *function*, or None.
 
-    The same object first. Else a name that exactly ONE tool holds. Else an
-    unknown server with no hints, which needs the card."""
+    The same object first. Else a name that exactly ONE tool holds."""
     name = str(getattr(function, "name", "") or "")
-    props = getattr(function, "additional_properties", None) or {}
-    remote = str(props.get("_mcp_remote_name") or name)
     same = [t for t in tools if any(f is function for f in _tool_functions(t))]
     if not same:
         same = [t for t in tools
                 if any(getattr(f, "name", None) == name for f in _tool_functions(t))]
-    if len(same) != 1:
+    return same[0] if len(same) == 1 else None
+
+
+def _owner_of(tools: list[Any], function: Any) -> tuple[str, str, ToolMeta | None]:
+    """The server name, the remote tool name and its hints, for *function*.
+
+    The owner is :func:`_owner_tool`. With none, an unknown server with no
+    hints, which needs the card."""
+    name = str(getattr(function, "name", "") or "")
+    props = getattr(function, "additional_properties", None) or {}
+    remote = str(props.get("_mcp_remote_name") or name)
+    owner = _owner_tool(tools, function)
+    if owner is None:
         return "(unknown server)", remote, None
-    owner = same[0]
     return str(getattr(owner, "name", "") or ""), remote, tool_meta(owner, remote)
 
 
@@ -916,7 +958,9 @@ def _make_gate_class() -> type:
 
         H-299: ``decide()`` gets the server's hints, and every code but
         ``mcp_read_only`` needs the member's card before the call reaches
-        the server (``ask_tools.request_confirmation``). *tools* are the MCP
+        the server (``ask_tools.request_confirmation``). H-300: it also gets
+        the server's "always confirm" flag, and then ``decide()`` never
+        answers ``mcp_read_only``. *tools* are the MCP
         tools of the run, so the gate can find the server of a function.
         *member_present* is False for a run with no member, and then a tool
         that needs a card is refused."""
@@ -948,10 +992,13 @@ def _make_gate_class() -> type:
                 context.result = UNREADABLE_ARGUMENTS_TEXT.format(tool=_shown_name(name))
                 return
             server, remote, meta = self.owner_of(function)
+            # H-300: the admin's switch on the server. The owner holds it.
+            always = server_always_confirms(_owner_tool(self.tools, function))
             allowed, reason = _permission_gate(
                 name, arguments, surface="mcp_tool",
                 facts={"mcp_tool": True,
-                       "mcp_annotations": meta.hints if meta is not None else None},
+                       "mcp_annotations": meta.hints if meta is not None else None,
+                       "mcp_always_confirm": always},
             )
             if not allowed:
                 context.result = f"[blocked by permission policy: {reason}]"
@@ -968,7 +1015,7 @@ def _make_gate_class() -> type:
             try:
                 card = card_text(server, remote, arguments, meta,
                                  str(getattr(function, "description", "") or ""),
-                                 local=name)
+                                 local=name, always_confirm=always)
             except Exception:  # CardTooLong, or a fault: no whole card, no call
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
@@ -1017,6 +1064,7 @@ __all__ = [
     "maf_mcp_orgs",
     "mcp_service",
     "redact_arguments",
+    "server_always_confirms",
     "tool_hints",
     "tool_meta",
 ]

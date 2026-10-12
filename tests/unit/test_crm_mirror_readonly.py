@@ -474,6 +474,10 @@ _RAW_ALLOW = {
     # CRM-U5b: Change CRM setup. Deletes the org's stages and lost reasons
     # only after the route proved 0 records and no connected Zoho.
     "settings.py::_reset_setup",
+    # CRM-X0: the start over. It removes mirrored rows on purpose, after the
+    # admin check, the typed DELETE and the stop of the sync. Only
+    # `settings.py` may call it (`test_crm_upsert_from_source_fence.py`).
+    "core.py::reset_crm_from_admin",
 }
 _REFUSES = {"assert_writable", "refuse_in_mirror_mode"}
 
