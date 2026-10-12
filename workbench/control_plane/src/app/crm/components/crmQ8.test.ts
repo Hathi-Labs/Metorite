@@ -13,6 +13,7 @@ import {
   optionsOf,
   ownerOptions,
   picklistDefs,
+  pruneFilters,
   setCustom,
   setRange,
 } from "../lib/filterBar";
@@ -387,5 +388,69 @@ describe("the column chooser follows the saved view", () => {
       }),
     );
     expect(html).not.toContain("North");
+  });
+});
+
+// ── Filters the gateway would refuse (review) ──────────────────────────────
+
+describe("a stale filter is dropped before the request", () => {
+  const stale: CrmView = {
+    ...DEFAULT_VIEW,
+    custom: { Region: ["North"], Gone: ["x"] },
+    ranges: { created_from: "2026-01-01", updated_to: "2026-02-01" },
+  };
+
+  it("drops a custom key that the definitions no longer list", () => {
+    const { view, removed } = pruneFilters(stale, [region], false);
+    expect(view.custom).toEqual({ Region: ["North"] });
+    expect(removed).toEqual(["Gone"]);
+    expect(listQuery("deals", view)).not.toHaveProperty("custom.Gone.in");
+  });
+
+  it("drops every custom key when the definitions failed to load", () => {
+    const { view, removed } = pruneFilters(stale, null, false);
+    expect(view.custom).toEqual({});
+    expect(removed).toEqual(["Region", "Gone"]);
+  });
+
+  it("drops the created range in Mirror mode and keeps the updated range", () => {
+    const { view, removed } = pruneFilters(stale, [region], true);
+    expect(view.ranges).toEqual({ updated_to: "2026-02-01" });
+    expect(removed).toContain("Created");
+  });
+
+  it("returns the same view when nothing is stale", () => {
+    const clean: CrmView = { ...DEFAULT_VIEW, custom: { Region: ["North"] } };
+    const out = pruneFilters(clean, [region], false);
+    expect(out.view).toBe(clean);
+    expect(out.removed).toEqual([]);
+  });
+
+  it("hides the Created range in Mirror mode", () => {
+    expect(dateFilters("deals", true).map((d) => d.label)).toEqual(["Updated", "Closing"]);
+  });
+
+  it("tells the member that a filter was removed", () => {
+    const html = renderToStaticMarkup(
+      createElement(FilterBar, {
+        entity: "deals",
+        view: DEFAULT_VIEW,
+        onChange: noop,
+        rows: [],
+        fieldDefs: [region],
+        mirror: true,
+        removed: ["Gone"],
+        activeView: null,
+        dirty: false,
+        canEdit: false,
+        isAdmin: false,
+        saving: false,
+        onSave: async () => undefined,
+        onUpdate: async () => undefined,
+        onReset: noop,
+      }),
+    );
+    expect(html).toContain("A filter was removed: Gone");
+    expect(html).not.toContain("Created from");
   });
 });

@@ -78,6 +78,7 @@ import {
 } from "./lib/board";
 import { activeChip, applyChip, chipsFor } from "./lib/filters";
 import { readColumns } from "./lib/fields";
+import { pruneFilters } from "./lib/filterBar";
 import {
   activeSavedView,
   applyView,
@@ -159,11 +160,26 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The pipeline a request filters by, or null for "no filter". */
   const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
   /** The view the loaders read: the URL's view plus the pipeline in effect. */
-  const loadView = useMemo(() => ({ ...view, pipelineId }), [view, pipelineId]);
+  /** The collection whose records the filters narrow: a list or a board. */
+  const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
+  const { defs: filterDefs, loading: defsLoading } = useFieldDefs(filterEntity);
+  // A filter the gateway would refuse is dropped before the fetch (CRM-Q8):
+  // a saved view can name a custom field that is gone, and one 422 would
+  // empty the whole list.
+  const pruned = useMemo(
+    () => pruneFilters(view, filterDefs, ctx.mode === "mirror"),
+    [view, filterDefs, ctx.mode],
+  );
+  const loadView = useMemo(
+    () => ({ ...pruned.view, pipelineId }),
+    [pruned.view, pipelineId],
+  );
+  /** Custom filters wait for the definitions that check them. */
+  const waitingForDefs = defsLoading && Object.keys(view.custom).length > 0;
   const boardOn = isBoardView(view);
   // Stable keys for the filters that are objects: the load effect watches them.
-  const rangesKey = JSON.stringify(view.ranges);
-  const customKey = JSON.stringify(view.custom);
+  const rangesKey = JSON.stringify(loadView.ranges);
+  const customKey = JSON.stringify(loadView.custom);
   // Saved views (CRM-Q8): nested in the rail, and applied through `?view=`.
   const allViews = useAllSavedViews();
   const savedList = useMemo(() => Object.values(allViews).flat(), [allViews]);
@@ -214,6 +230,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   useEffect(() => {
     // Deals waits for the pipeline list, so the board loads once and not twice.
     if (view.tab === "deals" && pipelinesLoading) return;
+    if (waitingForDefs) return;
     if (boardOn) {
       if (view.tab === "leads") store.loadLeadBoard(loadView);
       else store.loadBoard(loadView);
@@ -242,6 +259,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     view.source,
     rangesKey,
     customKey,
+    waitingForDefs,
   ]);
 
   useEffect(() => {
@@ -251,7 +269,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   /** The collection a LIST is showing. A board is not a list, so it is null there. */
   const listEntity: EntitySlug | null = isEntity(view.tab) && !boardOn ? view.tab : null;
-  const { defs: listFieldDefs } = useFieldDefs(listEntity);
+  const listFieldDefs = filterDefs;
 
   /** What the Refresh button re-reads — one branch per kind of tab. */
   function reload(): void {
@@ -272,10 +290,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         ? store.leadStatuses
         : [];
 
-  /** The entity whose records the filter bar narrows: a list or a board. */
-  const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
-  const { defs: boardFieldDefs } = useFieldDefs(boardOn ? filterEntity : null);
-  const barDefs = boardOn ? boardFieldDefs : listFieldDefs;
+  const barDefs = filterDefs;
   const barRows: Array<Record<string, unknown>> = boardOn
     ? (view.tab === "leads" ? store.leadLanes : store.lanes).flatMap(
         (lane) => lane.rows as Array<Record<string, unknown>>,
@@ -512,7 +527,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           title="Export what is on screen as a CSV"
           onClick={async () => {
             setExporting(true);
-            await store.exportList(listEntity, view);
+            await store.exportList(listEntity, loadView);
             setExporting(false);
           }}
         >
@@ -604,6 +619,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               onChange={go}
               rows={barRows}
               fieldDefs={barDefs}
+              mirror={ctx.mode === "mirror"}
+              removed={pruned.removed}
               activeView={activeSaved}
               dirty={dirty}
               canEdit={activeSaved ? canEditView(activeSaved, ctx.isAdmin) : false}

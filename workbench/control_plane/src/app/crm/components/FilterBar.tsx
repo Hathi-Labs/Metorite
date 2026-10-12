@@ -42,6 +42,10 @@ export type FilterBarProps = {
   /** The rows on screen, to offer the owners that hold records. */
   rows: ReadonlyArray<Record<string, unknown>>;
   fieldDefs: FieldDef[] | null;
+  /** Mirror mode: a synced record keeps no created date, so the range is hidden. */
+  mirror?: boolean;
+  /** Filters dropped before the request, by name. */
+  removed?: string[];
   /** The saved view in effect, or null. */
   activeView: SavedView | null;
   /** The screen differs from the saved view. */
@@ -61,6 +65,8 @@ export default function FilterBar({
   onChange,
   rows,
   fieldDefs,
+  mirror = false,
+  removed = [],
   activeView,
   dirty,
   canEdit,
@@ -130,7 +136,7 @@ export default function FilterBar({
             />
           );
         })}
-        {dateFilters(entity).map((range) => (
+        {dateFilters(entity, mirror).map((range) => (
           <div
             key={range.label}
             className="flex items-center gap-1"
@@ -160,6 +166,12 @@ export default function FilterBar({
           </Button>
         ) : null}
       </div>
+
+      {removed.length > 0 ? (
+        <p role="status" className="mt-2 text-[11px] text-muted-foreground">
+          A filter was removed: {removed.join(", ")} is not available here.
+        </p>
+      ) : null}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {naming ? (

@@ -23,9 +23,10 @@ export const SOURCE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
 export type DateFilter = { label: string; from: RangeKey; to: RangeKey };
 
 /** The date ranges an entity offers. Only a deal has a close date. */
-export function dateFilters(entity: EntitySlug): DateFilter[] {
+export function dateFilters(entity: EntitySlug, mirror = false): DateFilter[] {
+  // A synced record keeps no created date, and the gateway refuses the range.
   const out: DateFilter[] = [
-    { label: "Created", from: "created_from", to: "created_to" },
+    ...(mirror ? [] : [{ label: "Created", from: "created_from", to: "created_to" } as DateFilter]),
     { label: "Updated", from: "updated_from", to: "updated_to" },
   ];
   if (entity === "deals") out.push({ label: "Closing", from: "close_from", to: "close_to" });
@@ -101,4 +102,48 @@ export function activeCount(view: CrmView): number {
     RANGE_KEYS.filter((k) => view.ranges[k]).length +
     Object.values(view.custom).filter((items) => items.length > 0).length
   );
+}
+
+/** What a view lost before its request: stale custom fields and ranges the mode refuses. */
+export type Pruned = { view: CrmView; removed: string[] };
+
+/**
+ * Drop each filter the gateway would refuse (CRM-Q8 review).
+ *
+ * A saved view or a `cf.X` link can name a custom field that no longer exists,
+ * for example after a mode reset deleted the Zoho definitions. The gateway
+ * answers 422 for an unknown key, and the whole list would fail. So a key that
+ * the loaded definitions do not list is dropped before the fetch. With no
+ * definitions at all (the read failed) every custom key is dropped, because
+ * none can be checked. In Mirror mode the Created range is dropped as well,
+ * because a synced record keeps no created date.
+ *
+ * Pure. The caller shows `removed` as a short note.
+ */
+export function pruneFilters(
+  view: CrmView,
+  defs: FieldDef[] | null,
+  mirror: boolean,
+): Pruned {
+  const removed: string[] = [];
+  const known = new Set((defs ?? []).map((d) => d.key));
+  const labels = new Map((defs ?? []).map((d) => [d.key, d.label]));
+  let custom = view.custom;
+  for (const key of Object.keys(view.custom)) {
+    if (known.has(key)) continue;
+    if (custom === view.custom) custom = { ...view.custom };
+    delete custom[key];
+    removed.push(labels.get(key) ?? key);
+  }
+  let ranges = view.ranges;
+  if (mirror) {
+    for (const key of ["created_from", "created_to"] as const) {
+      if (!ranges[key]) continue;
+      if (ranges === view.ranges) ranges = { ...view.ranges };
+      delete ranges[key];
+      if (!removed.includes("Created")) removed.push("Created");
+    }
+  }
+  if (removed.length === 0) return { view, removed };
+  return { view: { ...view, custom, ranges }, removed };
 }
