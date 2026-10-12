@@ -71,6 +71,7 @@ import {
 } from "./lib/connect";
 import {
   boardTotals,
+  orderLanes,
   missingRequiredFields,
   needsLostReason,
   type DealMove,
@@ -402,7 +403,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     ctx.mode,
     pickedEmpty && pickedEmpty.scope === memberScope ? pickedEmpty.show : savedEmpty
   );
-  const dealLanes = visibleLanes(store.lanes, showEmpty);
+  // The one column order, for this mode (lib/board.ts `orderLanes`).
+  const dealLanes = visibleLanes(orderLanes(store.lanes, ctx.mode), showEmpty);
   const dealBoard = boardOn && view.tab === "deals";
   const mayCreate = canCreate(ctx.mode);
 

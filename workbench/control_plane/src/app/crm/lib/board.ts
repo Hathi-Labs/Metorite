@@ -6,6 +6,7 @@
 //
 // Spec: project-docs/specs/crm_app.md §5 surface 1.
 
+import type { CrmMode } from "./connect";
 import { stageAgeDays } from "./format";
 import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
@@ -75,9 +76,9 @@ export function statusTone(status: Pick<Status, "color" | "type">): string {
 const LANE_GROUP: Record<StatusType, number> = {
   open: 0,
   ongoing: 0,
-  on_hold: 0,
-  won: 1,
-  lost: 2,
+  on_hold: 1,
+  won: 2,
+  lost: 3,
 };
 
 /** Two pipeline places. A missing place sorts after every stated place. */
@@ -94,46 +95,61 @@ function comparePlaces(
 }
 
 /**
- * THE order of the Deals board columns, in both modes (owner report,
- * 2026-10-12). This is the one place that decides it.
+ * THE order of the Deals board columns (owner decision, 2026-10-12). This is
+ * the one place that decides it, and the mode is a parameter.
  *
- * 1. Open stages first, by `probability` from low to high. A tie goes to
- *    the place in the chosen pipeline, then to the global `position`.
- * 2. Then the won stages, by the same places.
- * 3. Then the lost stages, at the far end, by the same places.
+ * The groups, in both modes: open and ongoing stages, then `on_hold`, then
+ * won, then lost at the far end.
+ *
+ * - **Mirror mode.** Inside the open group, `probability` from low to high.
+ *   A tie, and every other group, goes to the place in the chosen pipeline,
+ *   then to the global `position`.
+ * - **Native mode, and a mode not yet known.** The admin's stage order, the
+ *   global `position`, then the pipeline place. Probability never reorders a
+ *   Native board: a new Native stage has probability 0 and would jump first.
  *
  * A stage with no pipeline place (no pipeline chosen, or a stage that only
- * holds deals) comes after the listed stages of its group. The stage editor in
+ * holds deals) sorts after the stated places of its tie. The stage editor in
  * CRM settings keeps its own order.
  */
 export function orderLanes<T extends Pick<PipelineLane, "status" | "pipeline_position">>(
-  lanes: readonly T[]
+  lanes: readonly T[],
+  mode: CrmMode
 ): T[] {
+  const mirror = mode === "mirror";
   return [...lanes].sort((a, b) => {
     const group = (LANE_GROUP[a.status.type] ?? 0) - (LANE_GROUP[b.status.type] ?? 0);
     if (group !== 0) return group;
-    if (LANE_GROUP[a.status.type] === 0) {
-      const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
-      if (odds !== 0) return odds;
+    if (mirror) {
+      if (LANE_GROUP[a.status.type] === 0) {
+        const odds = (a.status.probability ?? 0) - (b.status.probability ?? 0);
+        if (odds !== 0) return odds;
+      }
+      const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
+      if (inPipeline !== 0) return inPipeline;
+      const global = a.status.position - b.status.position;
+      if (global !== 0) return global;
+    } else {
+      const global = a.status.position - b.status.position;
+      if (global !== 0) return global;
+      const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
+      if (inPipeline !== 0) return inPipeline;
     }
-    const inPipeline = comparePlaces(a.pipeline_position, b.pipeline_position);
-    if (inPipeline !== 0) return inPipeline;
-    const global = a.status.position - b.status.position;
-    if (global !== 0) return global;
     return a.status.name.localeCompare(b.status.name);
   });
 }
 
 /**
- * Lanes in board order (`orderLanes`), empty ones included. The page decides
- * which empty lanes to hide (`lib/emptyStages.ts`).
+ * Lanes in the Native order of `orderLanes`, empty ones included. The page
+ * orders them again for its mode, and decides which empty lanes to hide
+ * (`lib/emptyStages.ts`). The store does not know the mode.
  *
  * The board must not depend on a payload's ordering to be correct, so it
  * sorts here and does not trust the order of the payload.
  */
 export function toBoardLanes(pipeline: Pipeline | null): BoardLane[] {
   if (!pipeline) return [];
-  return orderLanes(pipeline.lanes).map((lane) => ({
+  return orderLanes(pipeline.lanes, null).map((lane) => ({
     ...lane,
     tone: statusTone(lane.status),
   }));
