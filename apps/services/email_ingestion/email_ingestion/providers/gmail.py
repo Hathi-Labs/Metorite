@@ -41,12 +41,14 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    InlineImage,
     ProviderMailTooLarge,
     ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    normalize_content_id,
     received_key,
 )
 
@@ -126,6 +128,11 @@ def _iter_gmail_parts(
         return
     for sub in part.get("parts", []) or []:
         yield from _iter_gmail_parts(sub, descend=descend)
+
+
+def _gmail_opens_part(part: dict) -> bool:
+    """False for an attached mail: the inline walk never reads its parts."""
+    return not str(part.get("mimeType") or "").lower().startswith("message/")
 
 
 def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
@@ -2735,6 +2742,53 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         data = resp.json()
         return base64.urlsafe_b64decode(data["data"])
+
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+    ) -> list[InlineImage]:
+        """The inline pictures of one message (WS-17, the inline images fix).
+
+        One read of the whole MIME tree (``format=full``), then each part
+        with a ``Content-ID``. A small part carries its bytes in the tree, and
+        a larger one is read by its ``attachmentId``. The walk never opens an
+        attached mail, because its parts belong to that mail. A failed read
+        of one part skips that part.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{provider_message_id}", params={"format": "full"},
+        )
+        resp.raise_for_status()
+        payload = resp.json().get("payload", {}) or {}
+        out: list[InlineImage] = []
+        for part in _iter_gmail_parts(payload, descend=_gmail_opens_part):
+            if len(out) >= max_count:
+                break
+            if part.get("parts"):
+                continue
+            cid = normalize_content_id(_gmail_part_header(part, "Content-ID"))
+            body = part.get("body", {}) or {}
+            if not cid or int(body.get("size", 0) or 0) > max_bytes:
+                continue
+            try:
+                if body.get("data"):
+                    raw = str(body["data"])
+                    content = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+                elif body.get("attachmentId"):
+                    content = await self.get_attachment(
+                        provider_message_id, str(body["attachmentId"]))
+                else:
+                    continue
+            except ProviderRateLimited:
+                raise
+            except Exception:  # one part fails, and the rest still show
+                continue
+            if content and len(content) <= max_bytes:
+                out.append(InlineImage(
+                    content_id=cid, content=content,
+                    mime_type=str(part.get("mimeType") or ""),
+                ))
+        return out
 
     # ── Helpers ──────────────────────────────────────────────────────────
 

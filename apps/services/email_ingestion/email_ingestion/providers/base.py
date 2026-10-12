@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import unquote
 
 import httpx
 
@@ -318,6 +319,30 @@ class Attachment:
     mime_type: str
     size_bytes: int
     provider_attachment_id: str
+
+
+@dataclass(frozen=True)
+class InlineImage:
+    """One inline part of a mail, which its HTML names with ``cid:``.
+
+    ``content_id`` is in the form of :func:`normalize_content_id`. The
+    ``mime_type`` is the type that the provider declares. The gateway does not
+    trust it and reads the type from the bytes (WS-17, the inline images fix).
+    """
+
+    content_id: str
+    content: bytes
+    mime_type: str = ""
+
+
+def normalize_content_id(value: str | None) -> str:
+    """The one form of a Content-ID that a ``cid:`` URL and a part share.
+
+    A part header holds ``<id>``, and RFC 2392 encodes a ``cid:`` URL with
+    ``%`` escapes. So the form drops the angle brackets, decodes the escapes
+    and uses lower case, as ``gmail._named_cids`` does.
+    """
+    return unquote(str(value or "")).strip().strip("<>").strip().lower()
 
 
 @dataclass
@@ -985,6 +1010,23 @@ class BaseEmailProvider(ABC):
     ) -> bytes:
         """Download an attachment's raw bytes."""
         ...
+
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+    ) -> list[InlineImage]:
+        """The inline parts of one message that can be pictures.
+
+        The reading pane shows ``<img src="cid:...">`` through the gateway
+        route ``GET /email/messages/{id}/inline`` (WS-17, the inline images
+        fix, ``email_app_master_plan.md`` §16.6). The route calls this once
+        for each message and caches each part. It reads at most *max_count*
+        parts, and it skips a part over *max_bytes*. A part with no
+        Content-ID is not in the list.
+
+        The default gives no part, so a provider with no override (IMAP)
+        shows the alt text, as before.
+        """
+        return []
 
 
 def local_folder_after_move(provider: Any, name: str) -> str | None:

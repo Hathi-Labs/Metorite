@@ -30,12 +30,14 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    InlineImage,
     ProviderAttachmentFailed,
     ProviderMailTooLarge,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    normalize_content_id,
     received_key,
 )
 
@@ -2318,6 +2320,69 @@ class OutlookProvider(BaseEmailProvider):
         import base64
         return base64.b64decode(data.get("contentBytes", ""))
 
+    async def get_inline_images(
+        self, provider_message_id: str, *, max_count: int, max_bytes: int,
+    ) -> list[InlineImage]:
+        """The inline pictures of one message (WS-17, the inline images fix).
+
+        Two steps, so the read never pulls the bytes of a real file:
+
+        1. The list of the parts, with the base properties of ``attachment``
+           only. ``contentId`` is a property of ``fileAttachment``, and a
+           ``$select`` of it on the list is not a base property. So this
+           read gets no bytes and no Content-ID.
+        2. One read of each part that can be a picture. That read gives the
+           ``contentId`` and the bytes. It runs for at most *max_count*
+           parts, four at a time.
+
+        A part can be a picture when Graph marks it ``isInline`` or its type
+        is ``image/*``, and it is a file attachment of *max_bytes* or less.
+        A failed read of one part skips that part. A 429 that remains after
+        the one retry of :meth:`_graph_send` raises, so the route answers 503.
+        """
+        base = f"/me/messages/{provider_message_id}/attachments"
+        listed: list[dict[str, Any]] = []
+        url: str | None = base
+        params: dict[str, str] | None = {"$select": "id,name,contentType,size,isInline"}
+        for _page in range(5):
+            if url is None:
+                break
+            resp = await self._graph_send("GET", url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            listed.extend(data.get("value", []) or [])
+            url, params = data.get("@odata.nextLink"), None
+        picks = [a for a in listed if _inline_candidate(a, max_bytes)][:max_count]
+        if not picks:
+            return []
+        gate = asyncio.Semaphore(4)
+
+        async def _one(att: dict[str, Any]) -> InlineImage | None:
+            async with gate:
+                resp = await self._graph_send("GET", f"{base}/{att['id']}")
+            if resp.status_code == 429:
+                resp.raise_for_status()
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            cid = normalize_content_id(data.get("contentId"))
+            raw = data.get("contentBytes")
+            if not cid or not raw:
+                return None
+            try:
+                content = base64.b64decode(raw)
+            except (ValueError, TypeError):
+                return None
+            if not content or len(content) > max_bytes:
+                return None
+            return InlineImage(
+                content_id=cid, content=content,
+                mime_type=str(data.get("contentType") or att.get("contentType") or ""),
+            )
+
+        found = await asyncio.gather(*(_one(a) for a in picks))
+        return [img for img in found if img is not None]
+
     # ── Helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
@@ -2415,6 +2480,34 @@ class OutlookProvider(BaseEmailProvider):
             received_at=self._parse_received_datetime(raw.get("receivedDateTime")),
             raw=raw,
         )
+
+
+#: The Graph types of a part that holds no bytes of its own: an attached
+#: Outlook item and a link to a cloud file.
+_NO_BYTES_TYPES = frozenset({
+    "#microsoft.graph.itemAttachment", "#microsoft.graph.referenceAttachment",
+})
+#: The room for the metadata that Graph counts in the ``size`` of a part.
+_SIZE_SLACK = 64 * 1024
+
+
+def _inline_candidate(att: dict[str, Any], max_bytes: int) -> bool:
+    """True when a listed part can be an inline picture of the body.
+
+    Graph marks a ``cid:`` part ``isInline``. Some senders send a picture
+    with a Content-ID as a plain attachment, so an ``image/*`` part counts
+    too. A part with no bytes, or larger than *max_bytes*, never counts.
+    """
+    if not att.get("id") or att.get("@odata.type") in _NO_BYTES_TYPES:
+        return False
+    try:
+        size = int(att.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size > max_bytes + _SIZE_SLACK:
+        return False
+    kind = str(att.get("contentType") or "").lower()
+    return bool(att.get("isInline")) or kind.startswith("image/")
 
 
 def _outlook_attachments(raw: dict) -> list[Attachment]:
