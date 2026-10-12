@@ -41,6 +41,7 @@ import type {
   TimelineEntry,
   WinLossReport,
 } from "./types";
+import type { CrmModule, ModuleListResponse, ModuleRecordPage } from "./modules";
 
 export class CrmError extends Error {
   status: number;
@@ -363,6 +364,33 @@ export function getWinLossReport(): Promise<WinLossReport> {
 
 export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
+}
+
+// ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────
+
+/** The mirrored generic modules, in the profile order. Empty in Native mode. */
+export function listModules(): Promise<CrmModule[]> {
+  return call<CrmModule[]>("/modules");
+}
+
+/**
+ * One page of a module's records. The module name goes into the path encoded,
+ * and the gateway checks it against the profile before it reads a record.
+ */
+export function listModuleRecords(
+  module: string,
+  query: ListQuery = {},
+): Promise<ModuleListResponse> {
+  return call<ModuleListResponse>(
+    `/modules/${encodeURIComponent(module)}/records${queryString(query)}`,
+  );
+}
+
+/** One generic record, with its field definitions and its lookup links. */
+export function getModuleRecord(module: string, id: string): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+  );
 }
 
 // ── Mode, connection and sync (WS-53 CRM-U5, CRM-Z7) ───────────────────────

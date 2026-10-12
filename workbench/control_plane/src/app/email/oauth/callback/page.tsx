@@ -95,6 +95,7 @@ const TONE: Record<CallbackView["kind"], { icon: string; className: string }> = 
   retry: { icon: "RefreshCw", className: "bg-warning/10 text-warning" },
   scope_missing: { icon: "ShieldAlert", className: "bg-warning/10 text-warning" },
   workspace_admin_blocked: { icon: "ShieldCheck", className: "bg-warning/10 text-warning" },
+  provider_unavailable: { icon: "Clock", className: "bg-muted text-muted-foreground" },
   unknown: { icon: "AlertCircle", className: "bg-destructive/10 text-destructive" },
 };
 

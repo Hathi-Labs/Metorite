@@ -38,6 +38,10 @@ the shadowing reason above: ``/crm/leads/export.csv`` would sit under
 ``fields.py`` is WS-53 CRM-Q4 — ``GET /crm/fields/{entity}``, the field
 definitions that the sync writes. Read only.
 
+``modules.py`` is WS-53 CRM-Q6b — ``GET /crm/modules`` and the read-only
+record routes of each mirrored generic Zoho module (``crm_module_records``).
+Its paths start with the literal ``modules/`` segment, so no route shadows it.
+
 ``reports.py`` is WS-26g — the four read-only ``/crm/reports/*`` blocks
 (forecast by stage, funnel, win/loss, owner leaderboard) over
 ``crm_status_changes`` and ``crm_deals``. It writes nothing and adds no
@@ -77,6 +81,7 @@ from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
 from gateway.routes.crm import fields as _fields  # noqa: F401
 from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
+from gateway.routes.crm import modules as _modules  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
 from gateway.routes.crm import records as _records  # noqa: F401

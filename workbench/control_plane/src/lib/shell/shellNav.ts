@@ -16,6 +16,10 @@
  *
  * 1. The account menu lives at the sidebar's FOOT, where the account switcher
  *    already is, not in a new avatar at the top. One place for "you".
+ *    ⚠️ Superseded on 2026-10-12 by the owner, with the shell bar on: the
+ *    account acts are an avatar at the bar's right end (`BarAccount`), and
+ *    the foot is the Metorite menu (`metoriteMenu` below). The classic frame
+ *    keeps the foot as it was.
  * 2. Chat and Approvals keep a sidebar door until NS-6 builds the dock and
  *    the bell that would replace them. Before that, moving them away would
  *    hide the assistant and an approver's queue.
@@ -183,6 +187,65 @@ export function accountLinks(sections: readonly NavSection[]): AccountLink[] {
   // Right after My Profile, because both describe the member.
   const at = mine.findIndex((l) => l.href === "/people/me") + 1;
   return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), ...org];
+}
+
+/**
+ * One row of the Metorite menu at the sidebar's foot (owner, 2026-10-12). A
+ * `link` opens a page. `colour-mode` is the light and dark toggle. An
+ * `action` sends a shell event, and `MetoriteFoot.tsx` maps each id to it.
+ */
+export type MetoriteItem =
+  | ({ kind: "link" } & AccountLink)
+  | { kind: "colour-mode" }
+  | { kind: "action"; id: "change-layout"; label: string; icon: string };
+
+export interface MetoriteGroup {
+  id: string;
+  label: string;
+  items: MetoriteItem[];
+}
+
+/** The account pages that are settings, not facts about the member. */
+const SETTINGS_PAGES: ReadonlySet<string> = new Set(["/settings/appearance"]);
+
+/** NS-7: ask the first sign-in question again (§8.4 rule 3). */
+export const CHANGE_LAYOUT_ITEM: MetoriteItem = {
+  kind: "action",
+  id: "change-layout",
+  label: "Change my layout",
+  icon: "LayoutTemplate",
+};
+
+/**
+ * The Metorite menu, in its groups (owner, 2026-10-12: "Clicking the
+ * Metorite logo opens information and settings for configuring Metorite …
+ * The user's profile and access controls also appear alongside").
+ *
+ * - **You**: the member's own pages, My Profile and My access.
+ * - **Settings**: Appearance, the colour mode, and "Change my layout" while
+ *   the shell nav is on (NS-7 asks the question only then).
+ *
+ * It reads `accountLinks`, so a page is listed once, in one place. ⚠️ A new
+ * option is ONE line here, in the group it belongs to. Do not add a row in
+ * the component. The menu holds no account act: those are in the shell bar's
+ * account menu (`BarAccount`). Fence: `shellAccount.test.ts`.
+ */
+export function metoriteMenu(sections: readonly NavSection[], opts: { layout: boolean }): MetoriteGroup[] {
+  const links = accountLinks(sections);
+  const link = (l: AccountLink): MetoriteItem => ({ kind: "link", ...l });
+  const groups: MetoriteGroup[] = [
+    { id: "you", label: "You", items: links.filter((l) => !SETTINGS_PAGES.has(l.href)).map(link) },
+    {
+      id: "settings",
+      label: "Settings",
+      items: [
+        ...links.filter((l) => SETTINGS_PAGES.has(l.href)).map(link),
+        { kind: "colour-mode" },
+        ...(opts.layout ? [CHANGE_LAYOUT_ITEM] : []),
+      ],
+    },
+  ];
+  return groups.filter((g) => g.items.length > 0);
 }
 
 /** All apps: every held pane that is an app, by team. */

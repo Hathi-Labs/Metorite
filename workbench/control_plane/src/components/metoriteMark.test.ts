@@ -5,7 +5,7 @@
  *   1. A comet path that drifted from `brand/`, or a second copy of it.
  *   2. Gradient stops that ignore the colour mode, or the wrong master's.
  *   3. Two marks on one page that share one gradient id.
- * Where the comet sits is `lib/shell/shellSignature.test.ts` and
+ * Where the comet sits is `lib/shell/shellAccount.test.ts` and
  * `e2e/shell-signature.spec.ts`.
  */
 

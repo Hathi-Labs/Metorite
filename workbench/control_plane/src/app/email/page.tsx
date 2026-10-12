@@ -45,11 +45,10 @@ import {
   emailSurface,
   liveProviders,
   rangeStepProviderFrom,
-  RECONNECT_LABEL,
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
-  reconnectProvider,
+  reconnectAction,
   rememberMailboxesBeforeConnect,
   shouldPollFirstSync,
   type ConnectProviderId,
@@ -212,6 +211,8 @@ export default function EmailPage() {
     rangeStepQuery,
     liveProviders(connectProviders),
   );
+  // The live set of the capability read, for the reconnect banner (EM-G8-f1).
+  const liveConnect = liveProviders(connectProviders);
   useEffect(() => {
     if (connectParamRef.current || accounts.length === 0) return;
     if (!wantsConnectChoices(window.location.search)) return;
@@ -1151,11 +1152,13 @@ export default function EmailPage() {
               </p>
             </div>
             {(() => {
-              const provider = reconnectProvider(attentionAccount);
-              if (!provider) {
+              // EM-G8-f1: a Gmail mailbox gets no button while the capability
+              // read says Gmail is not live. Outlook keeps its button.
+              const action = reconnectAction(attentionAccount, liveConnect);
+              if (action.kind !== "button") {
                 return (
                   <span className="text-[11px] text-muted-foreground flex-shrink-0 max-w-[40%]">
-                    Disconnect it from the account menu, then connect it again.
+                    {action.text}
                   </span>
                 );
               }
@@ -1165,9 +1168,9 @@ export default function EmailPage() {
                   size="sm"
                   icon="RefreshCw"
                   className="flex-shrink-0"
-                  onClick={() => handleConnect(provider, attentionAccount.emailAddress)}
+                  onClick={() => handleConnect(action.provider, attentionAccount.emailAddress)}
                 >
-                  {RECONNECT_LABEL[provider]}
+                  {action.label}
                 </Button>
               );
             })()}

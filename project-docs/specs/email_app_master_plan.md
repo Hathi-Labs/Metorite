@@ -13357,7 +13357,7 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.12.7 EM-G8-f1 — the known limits of the connect UI
 
-**Status.** 📝 Specified 2026-10-12, not built. PR-F.
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
 
 **Gate.** 🟢 AGENT-SAFE · visual review. UI only. No migration, no flag.
 

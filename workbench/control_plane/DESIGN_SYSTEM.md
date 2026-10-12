@@ -444,7 +444,7 @@ Naming both, because a third appears whenever the set is left implicit.
 > tools.**
 
 - The shell bar holds only shell things: the fold control, the logo, the
-  command bar, the activity control and our signature. It draws the same
+  command bar, the activity control and the account. It draws the same
   pixels on every page. The command bar's "in <App>" chip is the command bar's own scope, so
   it stays.
 - **The shell's one bell sits before the activity control** (owner,
@@ -452,10 +452,24 @@ Naming both, because a third appears whenever the set is left implicit.
   only while `NEXT_PUBLIC_SHELL_DOCK` is on (NS-6 slice 6a). From slice 6b,
   the one assistant toggle joins it, behind the same flag. An app's own bell
   or tool never goes in the shell bar.
-- **Our comet signs the right end, last, after a thin divider** (owner,
-  2026-10-11, `BarSignature`). It is not a control. It shows from `xl` up,
-  and it hides when the org has no logo, because the logo slot then shows the
-  comet. Do not remove it.
+- **The account is the last item at the right end** (owner, 2026-10-12,
+  `BarAccount`). The trigger is quiet: an avatar, and the email in muted
+  text from 1400px up. It has no border and no fill at rest. It has the
+  height of the bar's other controls and the bar's focus ring. Its menu holds
+  account acts only: the current account with a "Signed in" mark, the other
+  accounts, "Add another account" and sign-out.
+- The right group keeps the width of its content. It has no `min-w-0`, so it
+  never spills over the command bar. Where the room is short, the command bar
+  gives way.
+- ~~Our comet signs the right end~~ (2026-10-11, `BarSignature`).
+  **Superseded on 2026-10-12.** Our comet and the word "Metorite" are now the
+  sidebar's foot (`MetoriteFoot`). The foot opens the Metorite menu: You (My
+  Profile, My access) and Settings (Appearance, the colour mode, "Change my
+  layout"). `metoriteMenu` in `src/lib/shell/shellNav.ts` is its one list.
+  Folded, the comet sits alone on the rail's icon column.
+- Fences: `src/lib/shell/shellAccount.test.ts` and
+  `e2e/shell-account.spec.ts`. The classic frame (shell bar off) and the
+  phone keep their account surfaces.
 - The app bar sits under the shell bar, at the top of the app's content. It
   spans the whole app, over the app's own rail too.
 - An app's rail toggle lives in its bar, never in the rail. The Email app's
