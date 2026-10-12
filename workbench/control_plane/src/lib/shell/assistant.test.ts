@@ -25,6 +25,7 @@ import {
   STALE_CHAT_MS,
   __resetAssistantForTests,
   assistantState,
+  barMayJoin,
   clampDockWidth,
   closeAssistant,
   consumeAsk,
@@ -43,6 +44,7 @@ import {
   surfaceContext,
   switchTarget,
 } from "./assistant";
+import { shellChatOn } from "./chatFlag";
 import { shellSidebar } from "./shellNav";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -166,6 +168,59 @@ describe("a fresh chat, or the last one", () => {
   it("a recent chat is joined, and one from hours ago is not", () => {
     expect(startsFresh({ messageCount: 4, updatedAt: at(STALE_CHAT_MS - 1000) }, now)).toBe(false);
     expect(startsFresh({ messageCount: 4, updatedAt: at(STALE_CHAT_MS + 1000) }, now)).toBe(true);
+  });
+});
+
+describe("the bar joins only the member's own private chat (review of 2026-10-12)", () => {
+  const now = Date.parse("2026-10-12T12:00:00Z");
+  const recent = { messageCount: 3, updatedAt: new Date(now - 60_000).toISOString() };
+
+  it("joins the member's own recent chat", () => {
+    expect(barMayJoin({ ...recent, isOwner: true, participantCount: 1 }, now)).toBe(true);
+    expect(barMayJoin(recent, now)).toBe(true);
+  });
+
+  it("never a room: the words and the page's facts would reach every member", () => {
+    expect(barMayJoin({ ...recent, participantCount: 2 }, now)).toBe(false);
+    expect(barMayJoin({ ...recent, isOwner: false }, now)).toBe(false);
+  });
+
+  it("never an archived chat, and never a stale one", () => {
+    expect(barMayJoin({ ...recent, archivedAt: new Date(now).toISOString() }, now)).toBe(false);
+    expect(barMayJoin({ messageCount: 3, updatedAt: new Date(now - STALE_CHAT_MS - 1).toISOString() }, now)).toBe(false);
+    expect(barMayJoin(null, now)).toBe(false);
+  });
+
+  it("the dock's choice and its ask both go through the rule", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toMatch(/!s\.archivedAt && s\.isOwner !== false && \(s\.participantCount \?\? 0\) <= 1/);
+    expect(dock).toMatch(/if \(!ownEmpty && !barMayJoin\(cur, Date\.now\(\)\)\)/);
+  });
+
+  it("the app switch needs the assistant open", () => {
+    expect(read("lib/shell/AssistantDock.tsx")).toContain("if (!live.open || !threadId || threadId !== live.activeId) return;");
+  });
+});
+
+describe("the chat flag needs the full frame (review of 2026-10-12)", () => {
+  const KEYS = ["NEXT_PUBLIC_SHELL_CHAT", "NEXT_PUBLIC_SHELL_BAR", "NEXT_PUBLIC_SHELL_NAV"] as const;
+  const set = (on: Partial<Record<(typeof KEYS)[number], boolean>>) => {
+    for (const k of KEYS) {
+      if (on[k]) process.env[k] = "1";
+      else delete process.env[k];
+    }
+  };
+  afterEach(() => set({}));
+
+  it("is on with all three, and off when either shell flag is missing", () => {
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(shellChatOn()).toBe(true);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_BAR: true });
+    expect(shellChatOn()).toBe(false);
+    set({ NEXT_PUBLIC_SHELL_CHAT: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(shellChatOn()).toBe(false);
+    set({ NEXT_PUBLIC_SHELL_BAR: true, NEXT_PUBLIC_SHELL_NAV: true });
+    expect(shellChatOn()).toBe(false);
   });
 });
 

@@ -48,7 +48,7 @@ import { isOpenShortcut } from "../projects/lib/search";
 import { MY_DAY, myDayLink, myDayShown } from "../projects/lib/reportEntry";
 import { hitTarget, searchAllowed } from "./lib/searchHit";
 import { ShellJob } from "@/lib/shell/doJob";
-import { useAssistantFacts } from "@/lib/shell/assistant";
+import { openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { tasksAssistantFacts } from "./lib/assistantFacts";
 import { OPEN_CHAT_JOB } from "@/lib/runActivity";
@@ -179,11 +179,16 @@ export default function TasksPage() {
   const openChat = useCallback(
     (f: Record<string, string>) => {
       if (!f.session) return;
+      // D99: an old link opens the chat in the one assistant.
+      if (chatOn) {
+        openAssistant({ sessionId: f.session });
+        return;
+      }
       askRailSession("task-manager", f.session);
       if (isMobile) openDrawer(<AssistantRail />);
       else setAssistantOpen(true);
     },
-    [isMobile, openDrawer],
+    [chatOn, isMobile, openDrawer],
   );
 
   // Search opens from ⌘K and from the top bar's Search button, through ONE

@@ -28,6 +28,12 @@ NS-3 slice B (2026-10-09) builds My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`.
 The owner turned it ON in production on 2026-10-10 (§13.1). NS-3 slice C
 (2026-10-10) adds Approvals to the needs feed and to My Day.
 
+**NS-6 slice 6b BUILT 2026-10-13, dark: the chat bar and the one
+assistant** (D99, §7.1). It is behind `NEXT_PUBLIC_SHELL_CHAT`, and the flag
+counts as on only with both shell flags on. Migration 254 adds
+`chat_session.archived_at`. Only the owner turns the flag on in production
+(§13.1).
+
 **NS-6 slice 6a BUILT 2026-10-10, dark: the one bell** (§7.2). The shell draws
 "Needs you" at the right end of the shell bar, before Activity. It is behind
 `NEXT_PUBLIC_SHELL_DOCK`, which is off by default. With the flag on, Projects
@@ -2024,7 +2030,7 @@ Done when:
 6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
-### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark
+### NS-6 · One dock and one bell — AGENT-SAFE · slice 6a (the bell) BUILT 2026-10-10, dark · slice 6b (the chat bar, D99) BUILT 2026-10-13, dark
 
 Flag `NEXT_PUBLIC_SHELL_DOCK`. Files: a new dock in `src/lib/shell/`, the three
 rails, `AssistantToggle`, and `NotificationBell`.
@@ -2073,6 +2079,27 @@ Done when, with the flag on:
 9. A member renames a chat, and the name reaches the server.
 
 With the flag off, every surface renders as it does today.
+
+**Built in slice 6b (2026-10-13).** Items 1 to 9 hold in code. The
+session picker follows Claude Code's (owner, 2026-10-12): a search, one list
+newest first with each chat's age, and "Archived chats" folded under its
+count. A row renames and archives, and an archived row restores or deletes.
+
+- **Only the owner** of a chat renames, archives, restores or deletes it in
+  the picker. The server refuses an archive from anybody else
+  (`_MAY_DELETE_SQL`). The archive is a column of the chat, so a room the
+  owner archives is archived for every member.
+- **The bar joins only the member's own private chat** (`barMayJoin`). It
+  sends the member's words and the facts of their page, so it never joins a
+  room or an archived chat. It joins a chat only while it is recent.
+- **The app switch fires only while the assistant is open.** A closed
+  assistant never moves the page.
+- **An archive alone does not move the chat to the top.**
+
+Fences: `src/lib/shell/assistant.test.ts`, `chatHistory.test.ts`,
+`assistantFacts.test.ts`, `activityControl.test.ts`, and
+`tests/unit/test_chat_session_archive_r8.py`, which is in the pr-check list
+of suites that must not skip. Three mutants of the archive SQL were killed.
 
 **Slice 6c — history and artifacts.** The full view lists each chat's
 files from `agent_file_history.session_id`, and each opens in the file

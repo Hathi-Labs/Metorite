@@ -620,8 +620,14 @@ export default function EmailPage() {
   // desktop, so open it the same way.
   useEffect(() => {
     if (!pendingChatPrompt) return;
-    setAutomationFeature("chat");
     closeDrawer();
+    // D99: the prompt waits in the one assistant's composer instead.
+    if (ONE_ASSISTANT) {
+      openAssistant({ draft: pendingChatPrompt });
+      useEmailStore.getState().setPendingChatPrompt(null);
+      return;
+    }
+    setAutomationFeature("chat");
   }, [pendingChatPrompt, closeDrawer]);
 
   const handleEmailSelect = useCallback(
@@ -865,6 +871,11 @@ export default function EmailPage() {
         ready={surface !== "loading"}
         onOpen={(f) => {
           if (!f.session) return;
+          // D99: an old link opens the chat in the one assistant.
+          if (ONE_ASSISTANT) {
+            openAssistant({ sessionId: f.session });
+            return;
+          }
           askRailSession("email-assistant", f.session);
           setAutomationFeature("chat");
           closeDrawer();

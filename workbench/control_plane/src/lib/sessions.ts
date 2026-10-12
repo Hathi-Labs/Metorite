@@ -9,6 +9,7 @@
  * store and write-through to localStorage for instant reads on mount.
  */
 
+import { shellChatOn } from "@/lib/shell/chatFlag";
 import { clearCachedLayouts } from "@/lib/shell/shellCache";
 import { clearSidebarFolds } from "@/lib/shell/sidebarFolds";
 import { serializeReasoning, parseReasoning } from "@/lib/chatStream";
@@ -36,7 +37,7 @@ export interface ChatSession {
   /** >1 means somebody else is in here too. Drives the shared badge. */
   participantCount?: number;
   /**
-   * D99 (migration 253): when the member archived the chat, or null. An
+   * D99 (migration 254): when the member archived the chat, or null. An
    * archived chat stays, and the assistant lists it under "Archived".
    */
   archivedAt?: string | null;
@@ -627,8 +628,13 @@ export function enrichSession(
   const sessions = getSessions();
   const s = sessions.find((x) => x.id === id);
   if (!s) return;
+  // The auto-title goes to the server once, when it is set. Sent on every
+  // turn, a second device with an old title undid a rename made on the
+  // first (D99 review, 2026-10-12). The server keeps a title it has.
+  let newTitle: string | undefined;
   if (info.firstUserMessage && !s.title) {
     s.title = truncateAtWord(info.firstUserMessage, 60);
+    newTitle = s.title;
   }
   if (info.lastPreview !== undefined) {
     s.lastPreview = truncateAtWord(info.lastPreview, 120);
@@ -638,7 +644,7 @@ export function enrichSession(
   writeList(sessions);
   // Sync enriched metadata to Postgres in background.
   _patchSessionInDb(id, {
-    title: s.title,
+    title: newTitle,
     lastPreview: s.lastPreview,
     messageCount: s.messageCount,
   }).catch(() => {});
@@ -772,9 +778,10 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       s.isOwner = r.isOwner;
       s.participantCount = r.participantCount;
       // D99: an archive and a name made on another device reach this one.
-      // The server keeps both, so its answer wins here.
+      // The server keeps both, so its answer wins here. The name only with
+      // the chat bar on: off, the merge keeps every local title, as before.
       s.archivedAt = r.archivedAt ?? null;
-      if (r.title) s.title = r.title;
+      if (r.title && shellChatOn()) s.title = r.title;
     }
 
     // Add any sessions from Postgres that aren't in localStorage.

@@ -87,7 +87,7 @@ import {
   setAssistantMode,
   setAssistantSession,
   setDockWidth,
-  startsFresh,
+  barMayJoin,
   surfaceContext,
   switchTarget,
   useAssistant,
@@ -115,7 +115,9 @@ function useAssistantChat(open: boolean) {
   const [restoredId, setRestoredId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
-  const handledFresh = useRef(st.freshSeq);
+  // From 0, not from the store: a `/chat?do=new-chat` that asked for a new
+  // chat before this mounted must still be honoured (review of 2026-10-12).
+  const handledFresh = useRef(0);
   const refresh = useCallback(() => setSessions(getSessions()), []);
 
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -152,10 +154,12 @@ function useAssistantChat(open: boolean) {
     let cancelled = false;
     const choose = () => {
       if (cancelled) return;
+      // The newest of the member's own private chats with the one agent. A
+      // room or an archived chat is never chosen for them (`barMayJoin`).
       const last = getSessions()
-        .filter((s) => s.agentName === ASSISTANT_AGENT)
+        .filter((s) => s.agentName === ASSISTANT_AGENT && !s.archivedAt && s.isOwner !== false && (s.participantCount ?? 0) <= 1)
         .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0))[0];
-      if (last && !startsFresh(last, Date.now())) {
+      if (last && barMayJoin(last, Date.now())) {
         setRestoredId(last.id);
         setAssistantSession(last.id);
       } else {
@@ -183,7 +187,11 @@ function useAssistantChat(open: boolean) {
     const ask = st.ask;
     if (!open || !ask || !st.sessionId || decided?.seq === ask.seq) return;
     const cur = getSessions().find((s) => s.id === st.sessionId);
-    if (cur && startsFresh(cur, Date.now())) {
+    // An empty chat of the member's own takes the words. Any other chat
+    // takes them only if the bar may join it: never a room, never an
+    // archived chat, never a stale one.
+    const ownEmpty = cur && !cur.messageCount && !cur.archivedAt && cur.isOwner !== false;
+    if (!ownEmpty && !barMayJoin(cur, Date.now())) {
       openAssistant({ fresh: true });
       return;
     }
@@ -340,12 +348,14 @@ function SessionRow({
   }
   return (
     <li className="group relative" data-session-row={session.id}>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="none"
+        layout="flex items-center"
         onClick={onSelect}
         aria-current={on ? "true" : undefined}
-        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm tech-transition ${
-          on ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+        className={`w-full gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
+          on ? "bg-primary/10 text-primary" : ""
         }`}
       >
         <SessionRunDot running={running} unread={unread} placeholder />
@@ -353,19 +363,22 @@ function SessionRow({
         <span className="shrink-0 text-[11px] text-muted-foreground group-hover:invisible group-focus-within:invisible">
           {relativeAge(session.updatedAt, now)}
         </span>
-      </button>
+      </Button>
       <span className="reveal-on-hover absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          icon="Pencil"
-          aria-label={`Rename ${title}`}
-          title="Rename"
-          onClick={() => {
-            setDraft(title === "New chat" ? "" : title);
-            setEditing(true);
-          }}
-        />
+        {/* A room's name is its owner's to change: every member sees it. */}
+        {session.isOwner !== false ? (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="Pencil"
+            aria-label={`Rename ${title}`}
+            title="Rename"
+            onClick={() => {
+              setDraft(title === "New chat" ? "" : title);
+              setEditing(true);
+            }}
+          />
+        ) : null}
         {onArchive ? (
           <Button variant="ghost" size="icon-xs" icon="Archive" aria-label={`Archive ${title}`} title="Archive" onClick={onArchive} />
         ) : null}
@@ -433,9 +446,11 @@ function SessionPicker({
       unread={unread.has(s.id)}
       onSelect={() => onSelect(s.id)}
       onRename={(t) => onRename(s.id, t)}
+      // Archive, restore and delete are the owner's: the server refuses
+      // anybody else (`_MAY_DELETE_SQL`), so nobody else sees the buttons.
       onArchive={archived || s.isOwner === false ? undefined : () => onArchive(s.id, true)}
-      onRestore={archived ? () => onArchive(s.id, false) : undefined}
-      onRemove={archived ? () => onRemove(s.id) : undefined}
+      onRestore={archived && s.isOwner !== false ? () => onArchive(s.id, false) : undefined}
+      onRemove={archived && s.isOwner !== false ? () => onRemove(s.id) : undefined}
     />
   );
   const shape =
@@ -472,18 +487,20 @@ function SessionPicker({
         )}
         {lists.archived.length > 0 ? (
           <div className="mt-1 border-t border-border pt-1">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="none"
+              layout="flex items-center"
               onClick={() => setShowArchived((o) => !o)}
               aria-expanded={showArchived}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground tech-transition hover:bg-secondary hover:text-foreground"
+              className="w-full gap-2 rounded-md px-2 py-1.5 text-left text-xs"
             >
               <Icon name={showArchived ? "ChevronDown" : "ChevronRight"} size={14} />
               <span className="flex-1">Archived chats</span>
               <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-foreground">
                 {lists.archived.length}
               </span>
-            </button>
+            </Button>
             {showArchived ? (
               <ul className="flex flex-col gap-0.5">{lists.archived.map((s) => row(s, true))}</ul>
             ) : null}
@@ -605,17 +622,20 @@ function AssistantSurface({ phone }: { phone: boolean }) {
 
   // ── The app switch ──────────────────────────────────────────────────────
   const movedRef = useRef<Set<string>>(new Set());
-  const liveRef = useRef({ activeId: chat.activeId, pathname, sections, form, canDock });
+  const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock });
   useEffect(() => {
-    liveRef.current = { activeId: chat.activeId, pathname, sections, form, canDock };
-  }, [chat.activeId, pathname, sections, form, canDock]);
+    liveRef.current = { open: st.open, activeId: chat.activeId, pathname, sections, form, canDock };
+  }, [st.open, chat.activeId, pathname, sections, form, canDock]);
   useAgentEvents({
     onRunStarted: ({ threadId }) => {
       if (threadId === liveRef.current.activeId) movedRef.current = new Set();
     },
     onDelegate: ({ name, threadId }) => {
       const live = liveRef.current;
-      if (!threadId || threadId !== live.activeId) return;
+      // Only while the member watches the assistant. A closed assistant
+      // keeps its chat mounted, and a page that moves under a member who is
+      // writing in another app loses their place (review of 2026-10-12).
+      if (!live.open || !threadId || threadId !== live.activeId) return;
       const target = switchTarget({ name, pathname: live.pathname, sections: live.sections, done: movedRef.current });
       if (!target) return;
       movedRef.current.add(target.href);
@@ -745,12 +765,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           ) : (
             <>
               {/* A press outside the dropdown closes it. */}
-              <button
-                type="button"
-                aria-label="Close your chats"
-                tabIndex={-1}
+              <div
+                aria-hidden
                 onClick={() => setPickerOpen(false)}
-                className="absolute inset-0 z-20 cursor-default bg-background/40"
+                className="absolute inset-0 z-20 bg-background/40"
               />
               <div
                 className="absolute inset-x-2 top-2 z-30"

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 253_chat_session_archived.sql - a member archives a chat.
+-- 254_chat_session_archived.sql - a member archives a chat.
 --
 -- What: one nullable column, `chat_session.archived_at`. NULL is a chat in the
 --       list. A time is a chat the member archived, and the list shows it under

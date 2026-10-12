@@ -1,4 +1,4 @@
-"""D99 — a member archives a chat (migration 253, ``navigation_shell.md`` §7.1).
+"""D99 — a member archives a chat (migration 254, ``navigation_shell.md`` §7.1).
 
 The real ``PATCH /chat/sessions/{id}`` and ``GET /chat/sessions`` handlers run
 against the H3 rehearsal's phase-4 catalog, as its NOSUPERUSER NOBYPASSRLS
@@ -149,6 +149,25 @@ def test_a_second_archive_keeps_the_first_time_and_a_restore_clears_it(graph_as_
     res = alice.patch(f"/chat/sessions/{sid}", json={"archived": False})
     assert res.status_code == 200, res.text
     assert _archived_at(graph_as_app, sid) is None
+
+
+def test_an_archive_alone_does_not_move_the_chat_to_the_top(graph_as_app):
+    alice = _client(_user(_ALICE, graph_as_app.org_a))
+    sid = _new_chat(alice)
+
+    def updated():
+        with graph_as_app.admin_engine.connect() as c:
+            return c.execute(
+                text("SELECT updated_at FROM chat_session WHERE id = :id"), {"id": sid},
+            ).scalar()
+
+    before = updated()
+    time.sleep(0.05)
+    assert alice.patch(f"/chat/sessions/{sid}", json={"archived": True}).status_code == 200
+    assert updated() == before
+    # Any other change still stamps it, as before D99.
+    assert alice.patch(f"/chat/sessions/{sid}", json={"title": "x"}).status_code == 200
+    assert updated() > before
 
 
 def test_a_rename_leaves_the_archive_alone(graph_as_app):

@@ -85,7 +85,7 @@ class SessionPatchRequest(BaseModel):
     title: str | None = None
     last_preview: str | None = None
     message_count: int | None = None
-    #: D99 (migration 253). True archives the chat, False takes it back into
+    #: D99 (migration 254). True archives the chat, False takes it back into
     #: the list, None leaves it. An archive keeps its first time.
     archived: bool | None = None
 
@@ -174,7 +174,7 @@ def _get_sessions(user_id: str, *, organization_id: str | None) -> list[dict]:
             # >1 means somebody else is in here too. The sidebar shows a shared
             # badge on exactly this signal, so it never lies about a solo thread.
             "participantCount": int(r.participant_count or 0),
-            # D99 (migration 253): an archived chat stays in the list, and
+            # D99 (migration 254): an archived chat stays in the list, and
             # the assistant shows it under "Archived".
             "archivedAt": r.archived_at.isoformat() if r.archived_at else None,
         }
@@ -416,7 +416,13 @@ def _patch_session(
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    sets: list[str] = ["updated_at = now()"]
+    # D99: an archive alone does not move the chat to the top of the list.
+    # Every other change still stamps `updated_at`, as before.
+    touches = (
+        req.title is not None or req.last_preview is not None
+        or req.message_count is not None or req.archived is None
+    )
+    sets: list[str] = ["updated_at = now()"] if touches else []
     params: dict = {"id": session_id, "uid": user_id}
     if req.title is not None:
         sets.append("title = :title")

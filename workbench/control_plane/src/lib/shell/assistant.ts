@@ -308,6 +308,26 @@ export function startsFresh(last: Pick<ChatSession, "messageCount" | "updatedAt"
   return now - at > STALE_CHAT_MS;
 }
 
+/**
+ * Whether words typed in the bar may join `chat`, or must start a new chat.
+ *
+ * The bar sends the member's words AND the facts of their page: an open
+ * email, a task, a mailbox. So it joins only the member's own private chat.
+ * A room shares every turn with its members, and an archived chat is one the
+ * member put away (review of 2026-10-12). Then it joins only while the chat
+ * is recent (`startsFresh`).
+ */
+export function barMayJoin(
+  chat: Pick<ChatSession, "messageCount" | "updatedAt" | "archivedAt" | "isOwner" | "participantCount"> | null | undefined,
+  now: number,
+): boolean {
+  if (!chat) return false;
+  if (chat.archivedAt) return false;
+  if (chat.isOwner === false) return false;
+  if ((chat.participantCount ?? 0) > 1) return false;
+  return !startsFresh(chat, now);
+}
+
 // ── The context ──────────────────────────────────────────────────────────────
 
 /** What an app tells the assistant about its page. */

@@ -15,20 +15,38 @@
  * The `enforcement-flip` grant does not cover it.
  */
 
-/** Whether the chat bar and the one assistant are on in this browser. */
-export function shellChatOn(): boolean {
-  // The literal member expression, the one form Next inlines (publicFlags.test.ts).
-  if (process.env.NEXT_PUBLIC_SHELL_CHAT === "1") return true;
+/** One build-time flag, or its dev-only `localStorage` override. */
+function flag(built: string | undefined, key: string): boolean {
+  if (built === "1") return true;
   // ⚠️ Development and test builds ONLY, as `shellDockOn` does: a browser may
-  // turn it on for itself (`localStorage["cc-shell-chat"] = "1"`), so the
-  // browser suite and the visual rig see both sides in one dev server. Next
-  // inlines NODE_ENV, so a production build drops this branch.
+  // turn a flag on for itself, so the browser suite and the visual rig see
+  // both sides in one dev server. Next inlines NODE_ENV, so a production
+  // build drops this branch.
   if (process.env.NODE_ENV !== "production") {
     try {
-      return typeof localStorage !== "undefined" && localStorage.getItem("cc-shell-chat") === "1";
+      return typeof localStorage !== "undefined" && localStorage.getItem(key) === "1";
     } catch {
       return false;
     }
   }
   return false;
+}
+
+/**
+ * Whether the chat bar and the one assistant are on in this browser.
+ *
+ * ⚠️ It needs the full frame too: `NEXT_PUBLIC_SHELL_BAR` and
+ * `NEXT_PUBLIC_SHELL_NAV` (`desktopFrame` in `shellNav.ts`). Only that frame
+ * mounts the bar and the assistant, and this flag takes away the apps' own
+ * rails and sends every chat link to `/chat`. Alone, it would leave a member
+ * with no way into any assistant (review of 2026-10-12). So the flag is on
+ * only where its whole surface is.
+ */
+export function shellChatOn(): boolean {
+  // The literal member expressions, the one form Next inlines (publicFlags.test.ts).
+  return (
+    flag(process.env.NEXT_PUBLIC_SHELL_CHAT, "cc-shell-chat") &&
+    flag(process.env.NEXT_PUBLIC_SHELL_BAR, "cc-shell-bar") &&
+    flag(process.env.NEXT_PUBLIC_SHELL_NAV, "cc-shell-nav")
+  );
 }
