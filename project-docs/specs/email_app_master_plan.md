@@ -13054,7 +13054,9 @@ below reads `availableLabels` instead, because `folders` cannot hold them.
   (O-GM-1). The member reads the word that Gmail uses.
 - **D-G8-f1-3. The reconnect banner reads the capability.** On a Gmail mailbox, while the read says
   `gmail: false`, the banner shows a line with no button. Outlook keeps its button in each case.
-- **D-G8-f1-4. `provider_unavailable` gets its own view.** It does not offer a retry.
+- **D-G8-f1-4. `provider_unavailable` gets its own view.** It does not offer a retry. The body says
+  "your account", not "your organization". *Reason:* the flag and `EMAIL_GMAIL_CONNECT_MEMBERS`
+  open Gmail for each member, not for each organization (orchestrator, 2026-10-12).
 
 **The words (E-D3 form).** Each line passes `node .claude/hooks/ste-lint.mjs` (2026-10-12).
 
@@ -13065,7 +13067,7 @@ below reads `availableLabels` instead, because `folders` cannot hold them.
 | D-G8-f1-2 | The create error, Gmail | `Couldn't create that label. Try again.` | `gmail-move-field-creates-a-label` |
 | D-G8-f1-3 | The reconnect banner, Gmail, read says no | `Gmail reconnect is not available right now.` | `gmail-reconnect-banner-has-no-button-when-the-read-says-no` |
 | D-G8-f1-4 | The title of `provider_unavailable` | `Gmail is not available yet` | `provider-unavailable-copy` |
-| D-G8-f1-4 | The body of `provider_unavailable` | `Gmail is not available for your organization yet.` | `provider-unavailable-copy` |
+| D-G8-f1-4 | The body of `provider_unavailable` | `Gmail is not available for your account yet.` | `provider-unavailable-copy` |
 
 **Scope.**
 
@@ -13089,8 +13091,8 @@ below reads `availableLabels` instead, because `folders` cannot hold them.
    the button words and the banner button match main.
 4. The banner on a Gmail mailbox shows no button while the read says `gmail: false`. It shows
    "Reconnect Gmail" while the read says `gmail: true`.
-5. The callback page for `provider_unavailable` shows the title and the body of the table, and no
-   retry.
+5. The callback page for `provider_unavailable` shows the title `Gmail is not available yet` and
+   the body `Gmail is not available for your account yet.` It shows no retry.
 6. Do a visual review of the rule editor and the banner (§12.3.10 item 8). Look in light mode, at
    compact density, with a changed accent and at 390 px. Look at the neighbour too: the Outlook
    banner and the Outlook move field.
