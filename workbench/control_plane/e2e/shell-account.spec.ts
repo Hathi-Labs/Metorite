@@ -288,20 +288,35 @@ test.describe("the sidebar foot is the Metorite menu", () => {
     const ring = (l: ReturnType<Page["locator"]>) =>
       l.evaluate((el) => {
         const s = getComputedStyle(el);
-        return { style: s.outlineStyle, width: s.outlineWidth, color: s.outlineColor, offset: s.outlineOffset };
+        return JSON.stringify({ style: s.outlineStyle, width: s.outlineWidth, color: s.outlineColor, offset: s.outlineOffset });
       });
+    // Both ease their outline in (`tech-transition`, the control state
+    // layer), so a first frame reads a value between two rings. Read each one
+    // only once two reads 150ms apart agree.
+    const settled = async (l: ReturnType<Page["locator"]>) => {
+      let last = "";
+      for (let i = 0; i < 30; i++) {
+        const now = await ring(l);
+        if (now === last) return JSON.parse(now) as Record<string, string>;
+        last = now;
+        await page.waitForTimeout(150);
+      }
+      throw new Error(`the ring never settled: ${last}`);
+    };
     // From the keyboard, so `:focus-visible` matches.
-    await trigger(page).focus();
-    await page.keyboard.press("Shift+Tab");
-    await page.keyboard.press("Tab");
-    await expect(trigger(page)).toBeFocused();
-    const house = await ring(trigger(page));
+    const keyFocus = async (l: ReturnType<Page["locator"]>) => {
+      await l.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      await expect(l).toBeFocused();
+      expect(await l.evaluate((el) => el.matches(":focus-visible"))).toBe(true);
+    };
+    await keyFocus(trigger(page));
+    const house = await settled(trigger(page));
     expect(house.style).toBe("solid");
-    await metorite(page).focus();
-    await page.keyboard.press("Shift+Tab");
-    await page.keyboard.press("Tab");
-    await expect(metorite(page)).toBeFocused();
-    expect(await ring(metorite(page))).toEqual(house);
+    expect(house.offset).toBe("2px");
+    await keyFocus(metorite(page));
+    expect(await settled(metorite(page))).toEqual(house);
     // The word in the rows' type: the same size as "All apps".
     const size = (l: ReturnType<Page["locator"]>) => l.evaluate((el) => getComputedStyle(el).fontSize);
     expect(await size(metorite(page).getByText("Metorite"))).toBe(await size(aside(page).getByText("All apps")));
