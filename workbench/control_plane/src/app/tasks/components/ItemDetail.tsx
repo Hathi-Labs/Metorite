@@ -33,6 +33,8 @@ import {
   projectsApi,
 } from "@/app/projects/lib/api";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
+import { taskWhere } from "@/app/projects/lib/tree";
+import { useCompanyTree } from "../lib/companyTree";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
 import { CLOSE_TASK_LABEL } from "@/lib/taskPanel";
 import { fetchMyTaskLanes } from "../lib/api";
@@ -333,6 +335,12 @@ export function TaskDetail({
   // S6e — the shared body needs the one store's routes, which the demo
   // backend does not serve. The strip draws in both modes.
   const lens = backend === "live";
+  // The header's breadcrumb: where a board task lives, from its space down.
+  // A task in a private project of mine is not in the company tree, so it
+  // has none. A crumb opens that node in Projects (`?project=`).
+  const router = useRouter();
+  const { roots } = useCompanyTree(lens);
+  const where = taskWhere(roots, item.projectId);
 
   const [pushState, setPushState] = useState<"idle" | "busy" | string>("idle");
   // Delegating a LOCAL task opens the "create in ClickUp under a project" flow
@@ -857,6 +865,10 @@ export function TaskDetail({
             archive/delete actions clear of it */}
         <div className={focused ? "pr-9" : ""}>
           <TaskHeaderRow
+            where={{
+              path: where,
+              onOpen: (id) => router.push(`/projects?project=${encodeURIComponent(id)}`),
+            }}
             taskRef={taskRef({ task_number: item.taskNumber ?? null }) ?? "Task"}
             // The link opens the task in Projects, the deep link the bell and
             // search already use. Only a live task has one: a demo row is

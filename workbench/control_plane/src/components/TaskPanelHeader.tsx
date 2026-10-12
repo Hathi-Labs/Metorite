@@ -12,9 +12,13 @@
  *
  * One order now, in both apps:
  *
- *   #ref [copy link] · app chips … · app actions · [expand] [close]
+ *   Space › Project › #ref [copy link] · app chips … · app actions · [expand] [close]
  *   Title (click to edit)
  *
+ * - `where` — the task's place in the tree, from its space down to its
+ *   project. A card opened from the chat or a link says nothing else about
+ *   where the task lives (owner, 2026-10-12). Omit it, or pass an empty
+ *   path, and the row starts at the ref.
  * - `taskRef` — the task's reference ("#42"), or "Task" when it has none.
  * - `linkFor` — the URL the copy button puts on the clipboard. Omit it and
  *   the button is absent.
@@ -39,7 +43,21 @@ export interface TaskHeaderExpand {
   onToggle: () => void;
 }
 
+/** One step of a task's place in the tree: a space, a folder or a project. */
+export interface TaskCrumb {
+  id: string;
+  name: string;
+}
+
+export interface TaskWhere {
+  /** From the space down to the task's own project. */
+  path: readonly TaskCrumb[];
+  /** Opens that node. Omit it and the crumbs are plain text. */
+  onOpen?: (id: string) => void;
+}
+
 export function TaskHeaderRow({
+  where,
   taskRef,
   linkFor,
   chips,
@@ -47,6 +65,7 @@ export function TaskHeaderRow({
   expand,
   onClose,
 }: {
+  where?: TaskWhere;
   taskRef: string;
   linkFor?: () => string;
   chips?: ReactNode;
@@ -72,22 +91,30 @@ export function TaskHeaderRow({
 
   const stop = expand?.expanded ? "full" : "side";
 
+  const ref = (
+    <>
+      <p className="truncate text-xs text-muted-foreground">{taskRef}</p>
+      {linkFor ? (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          icon={copied ? "Check" : "Link"}
+          aria-label="Copy a link to this task"
+          title="Copy a link that opens this task"
+          onClick={() => void copy()}
+        />
+      ) : null}
+    </>
+  );
+
   return (
     <div className="mb-1.5 flex items-start justify-between gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <div className="flex min-w-0 items-center gap-0.5">
-          <p className="truncate text-xs text-muted-foreground">{taskRef}</p>
-          {linkFor ? (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon={copied ? "Check" : "Link"}
-              aria-label="Copy a link to this task"
-              title="Copy a link that opens this task"
-              onClick={() => void copy()}
-            />
-          ) : null}
-        </div>
+        {where && where.path.length > 0 ? (
+          <TaskWhereCrumbs where={where} current={ref} />
+        ) : (
+          <div className="flex min-w-0 items-center gap-0.5">{ref}</div>
+        )}
         {chips}
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
@@ -116,6 +143,64 @@ export function TaskHeaderRow({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** The breadcrumb's separator. It LEADS its item, so a wrapped line starts
+ *  with "›" and no line ends on a dangling one. */
+function Chevron() {
+  return <AppIcon name="ChevronRight" aria-hidden className="h-3 w-3 shrink-0 text-muted-foreground" />;
+}
+
+/**
+ * Where the task lives: Space › Folder › Project › Subproject › #ref. The
+ * ref and its copy-link are the LAST crumb (`aria-current`), as a breadcrumb
+ * ends on the current page, so a wrapped line keeps the ref beside its
+ * project instead of on a line of its own. The task's own project is in the
+ * foreground colour, because that is the answer the reader came for. Each
+ * crumb opens its node when the host passes `onOpen`.
+ *
+ * A long name truncates at `max-w-40`, with the full name in its tooltip, and
+ * the row wraps rather than pushing the close button off the panel.
+ */
+function TaskWhereCrumbs({ where, current }: { where: TaskWhere; current: ReactNode }) {
+  const last = where.path.length - 1;
+  return (
+    <nav aria-label="Where this task is" className="min-w-0">
+      <ol className="flex min-w-0 flex-wrap items-center gap-0.5 text-xs text-muted-foreground">
+        {where.path.map((crumb, i) => {
+          const tone = i === last ? "font-medium text-foreground" : "";
+          return (
+            <li key={crumb.id} className="flex min-w-0 items-center gap-0.5">
+              {i > 0 ? <Chevron /> : null}
+              {where.onOpen ? (
+                <Button
+                  variant="ghost"
+                  size="none"
+                  radius="keep"
+                  layout="block"
+                  title={`Open ${crumb.name}`}
+                  onClick={() => where.onOpen?.(crumb.id)}
+                  className="max-w-40 truncate rounded-md px-1 py-0.5 text-xs"
+                >
+                  {/* The tone on a span: a Button's className is for layout
+                      only, and the ghost variant owns the colour. */}
+                  <span className={tone}>{crumb.name}</span>
+                </Button>
+              ) : (
+                <span title={crumb.name} className={`max-w-40 truncate px-1 ${tone}`}>
+                  {crumb.name}
+                </span>
+              )}
+            </li>
+          );
+        })}
+        <li aria-current="page" className="flex min-w-0 items-center gap-0.5">
+          <Chevron />
+          {current}
+        </li>
+      </ol>
+    </nav>
   );
 }
 

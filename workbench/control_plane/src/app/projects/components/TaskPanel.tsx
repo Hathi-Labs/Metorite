@@ -54,7 +54,7 @@
 import Badge from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
-import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
+import { EditableTaskTitle, TaskHeaderRow, type TaskWhere } from "@/components/TaskPanelHeader";
 import { useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
@@ -120,6 +120,11 @@ interface Props {
    * is the local part of their email.
    */
   onPeopleSeen?: (who: string[]) => void;
+  /**
+   * Where the task lives, from its space down to its project. The page owns
+   * it because the page holds the tree, and opening a crumb selects a node.
+   */
+  where?: TaskWhere;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -138,6 +143,7 @@ export function TaskPanel({
   onMode,
   personLabels,
   onPeopleSeen,
+  where,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -233,6 +239,7 @@ export function TaskPanel({
             2026-09-23), hidden where the page passed no `onMode` (the phone,
             where the panel is always the whole screen). */}
         <TaskHeaderRow
+          where={where}
           taskRef={taskRef(task) ?? "Task"}
           linkFor={() => taskDeepLink(task, window.location.origin, orgId)}
           expand={
