@@ -671,7 +671,8 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
 
     Args:
         view: inbox | next | waiting | someday | reference | calendar | done | all.
-        query: Optional text search within the view.
+        query: Optional search within the view. Each word must be in the
+            title or the description, in any order.
         context: Optional @context filter (e.g. "@calls") for the next view.
     """
     flags = _VIEW_QUERY.get(view)
@@ -688,12 +689,14 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
     elif view == "archive":
         items = [i for i in items if i.get("archived_at")]
     if query.strip():
-        # `/my/inbox` has no text filter; the old route's ILIKE over title and
-        # notes, done here.
-        q = query.strip().lower()
+        # `/my/inbox` has no text filter, so the match runs here, by the
+        # Projects search's rule (`filters.text_match_clause`, 2026-10-13):
+        # every word, in the title or the description, in any order.
+        words = query.lower().split()
         items = [i for i in items
-                 if q in str(i.get("title") or "").lower()
-                 or q in str(i.get("description") or "").lower()]
+                 if all(w in str(i.get("title") or "").lower()
+                        or w in str(i.get("description") or "").lower()
+                        for w in words)]
     if not items:
         return f"No items in {view}."
     shown = _ordered(items)[:30]
