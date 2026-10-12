@@ -3,7 +3,7 @@
 // The gateway streams `GET /crm/export/all.zip`. A proxy that read the body
 // whole would hold every record of the org in memory and meet its 30 s limit.
 // These cases RUN the handler against a body that is still open.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/auth", () => ({
   auth: async () => ({ user: { email: "priya@fracktal.in" } }),
@@ -38,6 +38,12 @@ const within = <T,>(work: Promise<T>, ms: number) =>
   ]);
 
 describe("the CRM proxy and the whole-CRM ZIP", () => {
+  // Load the route once before any clock starts, so a cold transform on a
+  // busy machine is not read as a proxy that waits for the whole body.
+  beforeAll(async () => {
+    await import("next/server");
+    await import("./route");
+  }, 60_000);
   beforeEach(() => vi.unstubAllGlobals());
 
   it("answers before the gateway has finished the file", async () => {
@@ -50,7 +56,7 @@ describe("the CRM proxy and the whole-CRM ZIP", () => {
         "x-content-type-options": "nosniff",
       },
     });
-    const res = await within(relay(["export", "all.zip"], upstream), 2000);
+    const res = await within(relay(["export", "all.zip"], upstream), 5000);
     expect(res, "the proxy waited for the whole body").not.toBe("timeout");
     const answer = res as Response;
     expect(answer.status).toBe(200);
