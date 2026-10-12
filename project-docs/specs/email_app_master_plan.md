@@ -12942,7 +12942,7 @@ images go too, or come back as plain files.
   shows the notice. On the next press of the member, the client sends `allow_text_only: true`, and
   the send goes ahead with the text only. *Reason:* a send is final, so the member chooses the
   loss. A save is not final, so a save goes ahead and says `lost`.
-- **D-G3a-f7-11a (spec writer, 2026-10-12). PR-C1 alone blocks no send.** `SendDraftRequest` gets
+- **D-G3a-f7-11a (spec writer, 2026-10-12). PR-C1 alone blocks no send.** `DraftSendRequest` gets
   `allow_text_only: bool | None = None`. With `None`, which is each client before PR-C2, a failed
   read sends the text only, as main does. With `false`, the send answers the 409 of D-G3a-f7-11.
   With `true`, it sends the text only. PR-C2 sends `false` on the first press and `true` on the
@@ -12974,7 +12974,7 @@ answer of an Outlook save does not change. On the client, `saveDraft` (`lib/api.
    mailbox with `keep_html`, `upsert_draft` takes the HTML of D-G3a-f7-6 and passes it to
    `update_draft` as `body_html`. The answer gets `html`, at the line named above.
    `_upsert_local_draft` follows D-G3a-f7-8.
-4. **`drafting.py`, the send.** `SendDraftRequest` gets `allow_text_only` (D-G3a-f7-11a).
+4. **`drafting.py`, the send.** `DraftSendRequest` gets `allow_text_only` (D-G3a-f7-11a).
    `send_draft_endpoint` reads `body_html` with the row. It follows D-G3a-f7-6, D-G3a-f7-6a,
    D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
 5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
@@ -13065,7 +13065,7 @@ Gmail-web draft then loses its HTML, and no card shows the notice.
     the AI drafter and `/drafts/save` write the same row as on main.
 13. (B1) The HTML read runs inside the session block of each route. The R8 fence counts one
     `_tenant_session` in each route, as on main.
-14. (B3) A Gmail save answers `html`. An Outlook save answers the same keys as on main.
+14. (B3) A Gmail save answers `html`. A save with `keep_html` answers `kept` or `lost`. A save without `keep_html` answers `none`. An Outlook save answers the same keys as on main.
 
 **Acceptance of PR-C2 (done when).**
 
