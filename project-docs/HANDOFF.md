@@ -5165,19 +5165,27 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
 - **Added:** 2026-10-10 · the person names session
 
-### H-300 · Decide on an "always confirm" setting for each MCP server · [OWNER]
+### H-300 · Build an "always confirm" setting for each MCP server · [AGENT]
 - **Check:** `grep -n "always_confirm" apps/services/orchestrator/orchestrator/_maf_mcp.py`
   → no hit means this is open.
 - **Why:** an MCP tool that says it is read-only runs with no card (H-299,
   WS-8c item 13). The server writes that hint, and a hostile server can mark
   a tool that deletes as read-only. The log line `mcp.tool_annotations` lets
   an admin audit the hints. It does not stop the call.
-- **Do:** decide if an admin may set "always confirm" on one MCP server, so
-  that every tool of that server needs the card, whatever its hints say. If
-  yes, add a column to `mcp_servers`, default `true` for a new row, and pass
-  it to `McpPermissionGate`. Do not build it before the owner decides.
-- **When:** before the first org outside Fracktal gets `MAF_MCP_ORGS`.
-- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (the known limit)
+- **Owner answer, 2026-10-12:** "build it now, keep MCP on". `MAF_MCP_ORGS=*`
+  stays on production.
+- **Do:** store `provider_meta.always_confirm` on the registry row of the
+  server. IN-4 moves the MCP rows into `integration_connections`.
+  `McpPermissionGate` reads the key. When it is `true`, every tool of that
+  server needs the card, whatever its hints say. The list and load tools of
+  WS-8c item 27 stay without a card. A new row gets `true`, as this entry said
+  before. A row with no key reads as `false`, so a server keeps its behaviour.
+  The console gets a switch for it, behind `integrations:manage`. Fence it in
+  `test_maf_mcp_confirm.py`, red first.
+- **When:** right after IN-4 merges.
+- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (the known limit) ·
+  `specs/integrations_console.md` §3.6.9 · `work_plan.md` D98 · the owner,
+  2026-10-12
 - **Added:** 2026-10-12 · H-299
 
 # DONE — deleted, not archived
