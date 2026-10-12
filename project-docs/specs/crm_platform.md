@@ -32,6 +32,8 @@
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 >
 > **Built later:** CRM-Q6a, the generic record store (2026-10-12, migration 251). See §18.7.
+>
+> **Built from §19:** CRM-X4, the record page v2 (2026-10-12, §19.8).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -1867,7 +1869,7 @@ answers. Each recommendation is the audit's.
 The reconnect of Fracktal's Zoho is an act, not a question. §12 already holds
 it. Zoho tasks reach CRM-X3 and CRM-X5 only after it.
 
-### 19.5 CRM-X1: Find and page
+### 19.5 CRM-X1: Find and page (✅ built 2026-10-12)
 
 **Scope.**
 
@@ -1981,6 +1983,17 @@ CRM router, so the kill switch, `feature:crm` and the access rule hold.
   column set, and each exported key is a field of its model.
 - `app/crm/components/crmX1.test.ts`, new: items 7 and 8, and the page that
   `listQuery` sends.
+
+**Built as.** The scope and the nine items are built, and each fence went red
+first. The review added three rules. A short or empty page ends "Load more"
+(`hasMore`), because a sync can move a row between two reads. A write re-reads
+as many rows as the list showed, up to 100. A query with 4 digits or more also
+matches a phone on its digits alone, through a second bound parameter. The
+visual review found one defect: a pause after a space removed the space. The
+pure rule is now in `lib/filterBar.ts` (`searchBoxSync`). On Leads, "Last
+touched" sits before the converted badge. Two findings stay open. The search
+box makes the Closing range wrap at 1440, and a `blue` stage follows the accent
+until CRM-U3.
 
 ### 19.6 CRM-X2: The CRM joins the shell
 
@@ -2216,7 +2229,7 @@ SELECT DISTINCT ON (a.deal_id)
 - `tests/unit/test_crm_mirror_readonly.py`, existing: the slice writes
   nothing.
 
-### 19.8 CRM-X4: Record page v2
+### 19.8 CRM-X4: Record page v2 (✅ built 2026-10-12)
 
 **Scope.**
 

@@ -5,7 +5,10 @@ import {
   DEFAULT_VIEW,
   openRecord,
   parseView,
+  recordTabsFor,
+  selectRecordTab,
   selectTab,
+  shownRecordTab,
   serializeView,
   viewHref,
 } from "./urlState";
@@ -233,5 +236,46 @@ describe("applySort", () => {
   it("writes no dir without a sort, and reads a nonsense one as desc", () => {
     expect(serializeView({ ...DEFAULT_VIEW, dir: "asc" })).toBe("");
     expect(parseView("?sort=name&dir=sideways").dir).toBe("desc");
+  });
+});
+
+// CRM-X4 item 2 (spec section 19.8): the tab of the record page is URL state.
+describe("the record tab, ?rtab=", () => {
+  it("opens the tab the URL names", () => {
+    expect(parseView("?deal=d1&rtab=timeline").recordTab).toBe("timeline");
+    expect(parseView("?deal=d1&rtab=fields").recordTab).toBe("fields");
+  });
+
+  it("opens Overview for an unknown value, and with no value", () => {
+    expect(parseView("?deal=d1&rtab=history").recordTab).toBe("overview");
+    expect(parseView("?deal=d1").recordTab).toBe("overview");
+  });
+
+  it("means nothing without an open record", () => {
+    expect(parseView("?rtab=timeline").recordTab).toBe("overview");
+  });
+
+  it("travels in the URL beside the record, and Overview writes nothing", () => {
+    const open = openRecord(DEFAULT_VIEW, "deal", "d1");
+    expect(viewHref(selectRecordTab(open, "timeline"))).toBe("/crm?deal=d1&rtab=timeline");
+    expect(viewHref(selectRecordTab(open, "overview"))).toBe("/crm?deal=d1");
+    const view = selectRecordTab(open, "related");
+    expect(parseView(serializeView(view))).toEqual(view);
+  });
+
+  it("keeps the tab when the page steps to another record, and drops it when the sheet closes", () => {
+    const open = selectRecordTab(openRecord(DEFAULT_VIEW, "deal", "d1"), "timeline");
+    expect(openRecord(open, "deal", "d2").recordTab).toBe("timeline");
+    expect(closeRecord(open).recordTab).toBe("overview");
+    expect(viewHref(closeRecord(open))).toBe("/crm");
+  });
+
+  it("gives a lead no Related tab, and shows a lead's Related link as Overview", () => {
+    expect(recordTabsFor("leads")).toEqual(["overview", "timeline", "fields"]);
+    for (const entity of ["deals", "contacts", "organizations"] as const) {
+      expect(recordTabsFor(entity)).toEqual(["overview", "timeline", "related", "fields"]);
+    }
+    expect(shownRecordTab("leads", "related")).toBe("overview");
+    expect(shownRecordTab("deals", "related")).toBe("related");
   });
 });

@@ -33,6 +33,7 @@ from gateway.routes.email.automation.identity import (
     sender_scope,
 )
 from gateway.routes.email.core import (
+    BodyFetch,
     _account_scope,
     _assert_account_owner,
     _attachment_summaries,
@@ -213,15 +214,41 @@ async def _fetch_sent_fewshot(
 
     Returns "" when semantic search is off (``embed_query`` → None → no LLM cost)
     or nothing is embedded yet, so the drafter just falls back to its other
-    context. The thread being replied to is excluded so it can't echo itself."""
+    context. The thread being replied to is excluded so it can't echo itself.
+
+    It is the embed (:func:`_embed_for_fewshot`) and then the read
+    (:func:`_read_sent_fewshot`). Compose-assist runs the embed with no
+    session and the read in its block 2 (EM-T17 PR-A1, §17.3.7)."""
+    qvec = await _embed_for_fewshot(subject, body)
+    return await _read_sent_fewshot(
+        db, account_id, qvec, exclude_thread_id=exclude_thread_id, limit=limit)
+
+
+async def _embed_for_fewshot(
+    subject: str | None, body: str | None,
+) -> list[float] | None:
+    """The embedding of the mail a reply answers. None when semantic search
+    is off, and None on a failure, which it logs. It reads no table, so a
+    caller can run it with no session."""
+    from email_ingestion.email_embeddings import (  # noqa: PLC0415
+        _embed_text,
+        embed_query,
+    )
     try:
-        from email_ingestion.email_embeddings import (  # noqa: PLC0415
-            _embed_text,
-            embed_query,
-        )
-        qvec = await embed_query(_embed_text(subject, body))
-        if qvec is None:
-            return ""
+        return await embed_query(_embed_text(subject, body))
+    except Exception as exc:
+        _log.warning("email.sent_fewshot_failed", error=str(exc)[:160])
+        return None
+
+
+async def _read_sent_fewshot(
+    db: Any, account_id: str, qvec: list[float] | None, *,
+    exclude_thread_id: str | None = None, limit: int = 3,
+) -> str:
+    """The Sent mail nearest to ``qvec``, quote-stripped. "" with no vector."""
+    if qvec is None:
+        return ""
+    try:
         qlit = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
         rows = (await db.execute(text(
             """SELECT em.body_text, em.snippet
@@ -1462,6 +1489,31 @@ async def _emit_activity(
         pass
 
 
+# ── No stall in the context step (WS-17 EM-T17 PR-A1, §17.3.7) ──────────────
+# Each bound is a module constant that a test can make short, and each caller
+# reads it at call time. Fence: tests/unit/test_email_draft_no_stall.py.
+
+#: Each side step with no session: the body fetch of the target, the embed,
+#: the Mem0 recall and the consult plan. Past it the step gives nothing, as a
+#: failed step does.
+SIDE_STEP_BOUND_S = 5.0
+#: The whole context step of `_compose_assist_run`. Past it the draft goes on
+#: with what the step holds (`_PhasedReply.on_expiry`).
+CONTEXT_STEP_BOUND_S = 20.0
+
+
+async def _side_step(aw: Awaitable[Any], *, step: str, default: Any) -> Any:
+    """Await one side step under ``SIDE_STEP_BOUND_S``. Past the bound it
+    logs ``email.side_step_timeout`` with the step and the bound, and gives
+    ``default``. The line holds no tenant text."""
+    try:
+        return await asyncio.wait_for(aw, SIDE_STEP_BOUND_S)
+    except TimeoutError:
+        _log.warning("email.side_step_timeout", step=step,
+                     bound_s=SIDE_STEP_BOUND_S)
+        return default
+
+
 async def _orchestrate_draft(
     email: dict[str, str], about: str, signature: str, user_email: str,
     *, max_agents: int = 2, agent_timeout: float = 90.0, instructions: str = "",
@@ -1522,10 +1574,14 @@ async def _orchestrate_draft(
 
     # 2) Memory recall and the consult qualifier are independent of each other
     # — run them concurrently, so qualifying the email costs no wall-clock
-    # unless it actually triggers a specialist consult.
+    # unless it actually triggers a specialist consult. EM-T17 PR-A1: each one
+    # ends at SIDE_STEP_BOUND_S and then gives nothing. The rule draft runs
+    # this function too, so the bounds reach the rule path.
     await _emit_activity(on_activity, kind="stage", id="memory", status="start")
     mem_parts, plan = await asyncio.gather(
-        _memory_context(), _draft_consult_plan(email, on_activity=on_activity))
+        _side_step(_memory_context(), step="memory", default=[]),
+        _side_step(_draft_consult_plan(email, on_activity=on_activity),
+                   step="consult_plan", default=[]))
     context_parts.extend(mem_parts)
     await _emit_activity(
         on_activity, kind="stage", id="memory", status="done",
@@ -1651,9 +1707,92 @@ async def _reply_target(
     ), params)).fetchone()
 
 
+#: The side blocks of a reply context. Past CONTEXT_STEP_BOUND_S each one is
+#: empty (§17.3.7, "The context step on expiry").
+_SIDE_KEYS = ("sender_examples", "reply_memories", "sent_examples", "calendar")
+
+
+async def _fill_reply_side(
+    db: Any, email: dict[str, Any], account_id: str, row: Any,
+    sent_examples: Callable[[], Awaitable[str]],
+) -> None:
+    """The reads that need the body: the memories, the few-shot and the
+    calendar. ``sent_examples`` reads the few-shot in this block."""
+    email["reply_memories"] = await _fetch_reply_memories(db, account_id, email)
+    # "Draft in my voice": semantically-nearest SENT mail (any recipient) to what
+    # we're replying to. No-op + no cost when semantic search is off.
+    email["sent_examples"] = await sent_examples()
+    # Calendar context — ONLY when the message is asking about timing, so an
+    # ordinary reply doesn't carry the user's schedule for no reason.
+    email["calendar"] = (
+        await _fetch_calendar_context(db, account_id)
+        if _asks_about_scheduling(row.subject, email["body"]) else "")
+
+
+class _PhasedReply:
+    """The reply context of ``_compose_assist_run`` in phases, so no session
+    is open across the provider, the embed or the model (WS-17 EM-T17 PR-A1,
+    ``email_app_master_plan.md`` §17.3.7).
+
+    1. Block 1: ``_build_reply_context(..., phased=self)`` reads the target
+       row, self, the domains, the files, the thread and the sender examples.
+       It loads the provider (``core.BodyFetch.load``). It fills
+       :attr:`email` in place, so an expiry keeps what it read.
+    2. No session: :meth:`fetch_and_embed`.
+    3. Block 2a: ``self.fetch.store(db)`` writes the body and the rotated
+       creds. The caller runs it outside the context bound (B2).
+    4. Block 2b: :meth:`read_side` reads the memories, the few-shot by the
+       embedding, and the calendar.
+    """
+
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id      # the sending mailbox
+        self.row: Any = None              # the target, once block 1 has it
+        self.email: dict[str, Any] = {}
+        self.fetch: BodyFetch | None = None
+        self.qvec: list[float] | None = None
+
+    def body(self) -> str:
+        """The fetched body, else the stored ``body_text``, else the snippet."""
+        fetched = self.fetch.body_text if self.fetch is not None else None
+        return ((fetched or getattr(self.row, "body_text", None) or "").strip()
+                or getattr(self.row, "snippet", None) or "")
+
+    async def fetch_and_embed(self) -> None:
+        """Step 2, with NO session open. Each part ends at SIDE_STEP_BOUND_S
+        and then gives nothing, so the draft goes on with the stored body."""
+        if self.row is None:
+            return
+        if self.fetch is not None:
+            await self.fetch.fetch(bound_s=SIDE_STEP_BOUND_S)
+        self.email["body"] = self.body()
+        self.qvec = await _side_step(
+            _embed_for_fewshot(self.row.subject, self.email["body"]),
+            step="embed", default=None)
+
+    async def read_side(self, db: Any) -> None:
+        """Step 4, in block 2b."""
+        row = self.row
+        await _fill_reply_side(
+            db, self.email, self.account_id, row,
+            lambda: _read_sent_fewshot(
+                db, self.account_id, self.qvec,
+                exclude_thread_id=row.thread_id or ""))
+
+    def on_expiry(self) -> dict[str, Any]:
+        """The context past CONTEXT_STEP_BOUND_S: the body that the step
+        holds, the thread or "", and each side block empty."""
+        self.email["body"] = self.body()
+        self.email.setdefault("thread", "")
+        for key in _SIDE_KEYS:
+            self.email[key] = ""
+        return self.email
+
+
 async def _build_reply_context(
     db: Any, account_id: str, message_id: str, user_email: str,
     *, from_any_owned_mailbox: bool = False,
+    phased: _PhasedReply | None = None,
 ) -> dict[str, Any] | None:
     """Assemble the FULL reply context for one message — the SINGLE source of
     truth every drafting entry point uses (/draft-reply and the compose card's
@@ -1674,7 +1813,12 @@ async def _build_reply_context(
     from A, under the owner predicate. Each item that is the voice of the
     writer still comes from B: the sent examples to that sender, the reply
     memories and the few-shot examples here, and the voice profile and the
-    signature that the caller loads for ``account_id``."""
+    signature that the caller loads for ``account_id``.
+
+    ``phased`` is for compose-assist only (EM-T17 PR-A1). The call is then
+    block 1 of :class:`_PhasedReply`: it loads the provider in place of the
+    hydrate, and it returns before the reads that need the body. With no
+    ``phased``, one session runs each step, as before."""
     row = await _reply_target(
         db, account_id, message_id, user_email,
         from_any_owned_mailbox=from_any_owned_mailbox)
@@ -1687,42 +1831,55 @@ async def _build_reply_context(
     # Ensure the FULL incoming body is present before drafting. Header-only rows
     # (Outlook/Graph sync) store an empty body_text + a ~200-char snippet; without
     # this the drafter sees the message cut off. Hydrate, then fall back to snippet.
-    from gateway.routes.email.core import hydrate_message_body  # noqa: PLC0415
-    hydrated = await hydrate_message_body(db, str(row.id), user_email)
+    # The phased form loads the provider here and fetches with no session.
+    #
+    # Each key has a value BEFORE the next await, so an expiry of the phased
+    # form at any later point leaves a whole context (§17.3.7). The body is
+    # the stored one until the hydrate or the fetch replaces it.
+    email: dict[str, Any] = phased.email if phased is not None else {}
+    email.update({
+        "subject": row.subject or "", "from": frm.get("email", ""),
+        "from_name": frm.get("name", "") or "",
+        "self": "", "self_label": "", "sender_scope": "",
+        "to": _fmt_addr_list(row.to_addresses),
+        "cc": _fmt_addr_list(row.cc_addresses),
+        "attachments": "",
+        "body": (row.body_text or "").strip() or row.snippet or "",
+        "thread_id": row.thread_id or "",
+        "thread": "", "sender_examples": "",
+    })
+    if phased is None:
+        from gateway.routes.email.core import hydrate_message_body  # noqa: PLC0415
+        hydrated = await hydrate_message_body(db, str(row.id), user_email)
+        email["body"] = (hydrated or "").strip() or row.body_text or row.snippet or ""
+    else:
+        phased.row = row
+        phased.fetch = await BodyFetch.load(db, str(row.id), user_email)
+        email["body"] = phased.body()
     # The sending mailbox's address + label, and each mailbox of the member,
     # in one read → direction (self/internal/external) and recipient role.
     me = await resolve_self(db, account_id)
     org_domains = await resolve_org_domains(db, account_id)
-    email: dict[str, Any] = {
-        "subject": row.subject or "", "from": frm.get("email", ""),
-        "from_name": frm.get("name", "") or "",
+    email.update({
         "self": me.address,
         "self_label": me.label,
         "sender_scope": sender_scope(
             frm.get("email", ""), me.address, org_domains,
             self_addresses=me.self_addresses),
-        "to": _fmt_addr_list(row.to_addresses),
-        "cc": _fmt_addr_list(row.cc_addresses),
-        "attachments": (await _attachment_summaries(
-            db, [row.id])).get(str(row.id), ""),
-        "body": (hydrated or "").strip() or row.body_text or row.snippet or "",
-        "thread_id": row.thread_id or "",
-        "thread": await _fetch_thread_context(
-            db, mail_account, row.thread_id or "", row.provider_message_id or ""),
-        "sender_examples": await _fetch_sender_reply_examples(
-            db, account_id, frm.get("email", "")),
-    }
-    email["reply_memories"] = await _fetch_reply_memories(db, account_id, email)
-    # "Draft in my voice": semantically-nearest SENT mail (any recipient) to what
-    # we're replying to. No-op + no cost when semantic search is off.
-    email["sent_examples"] = await _fetch_sent_fewshot(
-        db, account_id, row.subject, email["body"],
-        exclude_thread_id=row.thread_id or "")
-    # Calendar context — ONLY when the message is asking about timing, so an
-    # ordinary reply doesn't carry the user's schedule for no reason.
-    email["calendar"] = (
-        await _fetch_calendar_context(db, account_id)
-        if _asks_about_scheduling(row.subject, email["body"]) else "")
+    })
+    email["attachments"] = (await _attachment_summaries(
+        db, [row.id])).get(str(row.id), "")
+    email["thread"] = await _fetch_thread_context(
+        db, mail_account, row.thread_id or "", row.provider_message_id or "")
+    email["sender_examples"] = await _fetch_sender_reply_examples(
+        db, account_id, frm.get("email", ""))
+    if phased is not None:
+        return email  # block 2b of _PhasedReply reads the rest
+    await _fill_reply_side(
+        db, email, account_id, row,
+        lambda: _fetch_sent_fewshot(
+            db, account_id, row.subject, email["body"],
+            exclude_thread_id=row.thread_id or ""))
     return email
 
 
@@ -1832,6 +1989,93 @@ class ComposeAssistRequest(BaseModel):
     subject: str = ""
 
 
+class _ComposeStep:
+    """What the context step of ``_compose_assist_run`` holds (WS-17 EM-T17
+    PR-A1, ``email_app_master_plan.md`` §17.3.7). Each session block stays
+    in ``_compose_assist_run``. This object holds the state between them."""
+
+    def __init__(self, req: ComposeAssistRequest) -> None:
+        self.phased = (_PhasedReply(req.account_id)
+                       if req.message_id and req.mode in ("reply", "forward")
+                       else None)
+        self.about: str | None = None
+        self.signature: str | None = None
+        self.ctx: dict[str, Any] | None = None
+        self.me: Any = None
+        self.expired = False
+
+    async def block_1(
+        self, db: Any, req: ComposeAssistRequest, user_email: str,
+        on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        """Block 1: reads only. It also loads the provider of the target."""
+        await _assert_account_owner(db, req.account_id, user_email or "anonymous")
+        await _emit_activity(
+            on_activity, kind="stage", id="context", status="start")
+        # Rank the KB by what's being composed, not recency (3.5).
+        self.about, self.signature = await _load_assistant_about(
+            db, req.account_id,
+            query=f"{req.subject or ''} {req.body or ''}")
+        # Reply/forward: load the FULL reply context (the message being replied
+        # to + thread + direction/recipients) via the ONE shared builder — the
+        # same one /draft-reply uses — in its phased form. This is what was
+        # missing: the compose card never loaded the replied-to message body,
+        # so "Draft with AI" couldn't apply a template the trailing email
+        # provided.
+        #
+        # The mail can sit in ANOTHER mailbox of the member: the member changed
+        # From on a reply (EM-T8e-1 item 3). The mail and its thread then come
+        # from the mailbox of the mail, under the owner predicate, and the
+        # voice items from the sending mailbox ``req.account_id``.
+        if self.phased is not None:
+            self.ctx = await _build_reply_context(
+                db, req.account_id, req.message_id or "", user_email,
+                from_any_owned_mailbox=True, phased=self.phased)
+        if self.ctx is None:
+            # The prompt names the SENDING mailbox (MB-14). The reply context
+            # carries it, and new mail reads it here.
+            self.me = await resolve_self(db, req.account_id)
+
+    def expire(self, bound: asyncio.Timeout, *, stage: str) -> bool:
+        """True when ``CONTEXT_STEP_BOUND_S`` ended the step and the draft
+        may go on. False for any other ``TimeoutError``, and False before
+        block 1 has the owner check and the target row (B3). The caller then
+        raises, and the stream route sends its ``error`` event."""
+        if not bound.expired():
+            return False
+        ready = self.signature is not None and (
+            self.phased is None or self.phased.row is not None)
+        _log.warning("email.context_step_timeout", stage=stage, ready=ready,
+                     bound_s=CONTEXT_STEP_BOUND_S)
+        self.expired = ready
+        return ready
+
+    def body_fetch(self) -> BodyFetch | None:
+        """The fetch that block 2a writes, or None with nothing to write."""
+        fetch = self.phased.fetch if self.phased is not None else None
+        return fetch if fetch is not None and fetch.needs_store() else None
+
+    def needs_side(self) -> bool:
+        """True when block 2b has reads to run."""
+        return (self.phased is not None and self.phased.row is not None
+                and not self.expired)
+
+    def context(self) -> dict[str, Any] | None:
+        """The reply context, or None for new mail."""
+        if self.expired and self.phased is not None and self.phased.row is not None:
+            return self.phased.on_expiry()
+        return self.ctx
+
+    def sender(self, ctx: dict[str, Any] | None) -> str:
+        """The sending mailbox line (MB-14)."""
+        if ctx is not None:
+            return _sending_mailbox_line(
+                ctx.get("self") or "", ctx.get("self_label") or "")
+        if self.me is not None:
+            return _sending_mailbox_line(self.me.address, self.me.label)
+        return ""
+
+
 async def _compose_assist_run(
     req: ComposeAssistRequest, user: UserContext,
     on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -1841,125 +2085,162 @@ async def _compose_assist_run(
     the SSE streaming endpoint. Returns {"draft": ...} or
     {"draft": "", "skipped": "low_confidence"}.
 
-    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): one ``_tenant_session()``
-    block with the ambient tenant, and no ``commit()``. The JSON route runs
-    this inside its request. The stream route runs it in a task that
-    ``asyncio.create_task`` starts inside the response, and that task copies
-    the context of the request, so the ambient tenant is the organization of
-    the member. With no tenant bound the block raises ``TenantUnbound``
-    before it opens a session. The model call stays inside the block, as it
-    did before, and EM-T4a-4 owns that I/O."""
-    async with _tenant_session() as db:
-        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
-        await _emit_activity(
-            on_activity, kind="stage", id="context", status="start")
-        # Rank the KB by what's being composed, not recency (3.5).
-        about, signature = await _load_assistant_about(
-            db, req.account_id,
-            query=f"{req.subject or ''} {req.body or ''}")
-        # The tier is the COMPOSE tier. Our code chooses it, and no stored
-        # choice changes it (D-EM-61).
-        compose_tier = EMAIL_TASK_TIERS["compose"]
-        # The composer body CARRIES the signature now (it's part of the draft,
-        # visible upstream). The AI must never see it: a signature-only body is
-        # an EMPTY draft — it routes to the full reply drafter, not improve —
-        # and improve mode works on the owner's words alone. Strip it here; the
-        # result is re-signed before returning.
-        req_body = strip_signature_text(signature, req.body or "")
-        recipient = ""
-        subject = req.subject or ""
-        thread = ""
-        reply_to_body = ""
-        # Reply/forward: load the FULL reply context (the message being replied to
-        # + thread + direction/recipients) via the ONE shared builder — the same
-        # one /draft-reply uses. This is what was missing: the compose card never
-        # loaded the replied-to message body, so "Draft with AI" couldn't apply a
-        # template the trailing email provided.
-        #
-        # The mail can sit in ANOTHER mailbox of the member: the member changed
-        # From on a reply (EM-T8e-1 item 3). The mail and its thread then come
-        # from the mailbox of the mail, under the owner predicate, and the
-        # voice items from the sending mailbox ``req.account_id``.
-        ctx = None
-        if req.message_id and req.mode in ("reply", "forward"):
-            ctx = await _build_reply_context(
-                db, req.account_id, req.message_id, user.email or "",
-                from_any_owned_mailbox=True)
-        if ctx is not None:
-            # Draft-from-scratch REPLY → route through the SAME reply drafter as
-            # /draft-reply, so full context + identical rules apply (one method,
-            # not a separate lighter one). Improve-in-place and forward keep the
-            # compose path, now WITH the replied-to body in view.
-            if req.mode == "reply" and not req_body.strip():
-                # The user's AI-bar prompt must steer this draft. This path used
-                # to drop req.instruction entirely, so typing an instruction and
-                # hitting Draft on an empty reply changed nothing.
-                # Interactive → the COMPOSE tier.
-                # EM-T17 A7: this path returns before the shared "context
-                # done" below, so it sends its own here.
-                await _emit_activity(
-                    on_activity, kind="stage", id="context", status="done",
-                    detail="thread and recipient loaded")
-                draft = await _agent_draft_reply(
-                    ctx, about, signature, user.email or "",
-                    max_agents=1, agent_timeout=18.0,
-                    model=compose_tier, account_id=req.account_id,
-                    interactive_fallback=True,
-                    extra_instructions=(req.instruction or "").strip(),
-                    on_activity=on_activity, on_delta=on_delta,
-                )
-                if _is_no_draft(draft):
-                    return {"draft": "", "skipped": "low_confidence"}
-                # The signature rides in the returned body (the composer shows
-                # it as part of the draft; autosave syncs it upstream).
-                draft = append_signature_text(signature, draft)
-                # Remember this draft (same as /draft-reply) so when the user
-                # edits it in the composer and sends, _learn_from_sent can diff
-                # the sent body against what the AI wrote. Without this the
-                # highest-traffic "Draft with AI" entry point taught nothing.
-                # commit=False: the block commits on its clean exit.
-                if ctx.get("thread_id"):
-                    await _store_ai_draft(
-                        db, req.account_id, ctx["thread_id"], draft,
-                        commit=False)
-                return {"draft": draft}
-            subject = subject or ctx.get("subject", "")
-            thread = ctx.get("thread", "")
-            reply_to_body = ctx.get("body", "")
-            if req.mode != "forward":  # reply recipient is the original sender
-                nm, addr = ctx.get("from_name", ""), ctx.get("from", "")
-                recipient = (f"{nm} <{addr}>" if nm else addr).strip()
-        if not recipient and req.to:
-            recipient = ", ".join([a for a in req.to if a])
-        # The prompt names the SENDING mailbox (MB-14). The reply context
-        # already carries it; new mail reads it here.
-        if ctx is not None:
-            sender = _sending_mailbox_line(
-                ctx.get("self") or "", ctx.get("self_label") or "")
-        else:
-            me = await resolve_self(db, req.account_id)
-            sender = _sending_mailbox_line(me.address, me.label)
+    EM-T4a-0 (``email_app_master_plan.md`` §10.4.6): each block is a
+    ``_tenant_session()`` with the ambient tenant, and no ``commit()``. The
+    JSON route runs this inside its request. The stream route runs it in a
+    task that ``asyncio.create_task`` starts inside the response, and that
+    task copies the context of the request, so the ambient tenant is the
+    organization of the member. With no tenant bound the first block raises
+    ``TenantUnbound`` before it opens a session.
 
-        # Refinement rounds (the user is iterating on an existing draft) reuse
-        # the improve-in-place path — no memory/consult sweep, so each edit
-        # round is a single fast model call.
-        await _emit_activity(
-            on_activity, kind="stage", id="context", status="done",
-            detail="thread and recipient loaded")
-        await _emit_activity(
-            on_activity, kind="stage", id="draft", status="start",
-            detail=("refining your draft" if req_body.strip()
-                    else "writing a new draft"))
-        draft = await _llm_compose_assist(
-            about=about, signature=signature, current_body=req_body,
-            instruction=req.instruction, mode=req.mode, recipient=recipient,
-            subject=subject, thread=thread, reply_to_body=reply_to_body,
-            user_email=user.email or "", model=compose_tier,
-            on_delta=on_delta, sender=sender,
-        )
-        if _is_no_draft(draft):
-            return {"draft": "", "skipped": "low_confidence"}
-        return {"draft": append_signature_text(signature, draft)}
+    EM-T17 PR-A1 (§17.3.7) takes EM-T4a-4 for this function. No session is
+    open during the provider fetch, the embed or the model call. Block 1
+    reads, the fetch and the embed run with no session, block 2a writes the
+    body and the rotated creds, and block 2b reads the rest. The session
+    closes before the model call, and a short new block runs
+    ``_store_ai_draft``. ``CONTEXT_STEP_BOUND_S`` bounds the context step,
+    and past it the draft goes on with what the step holds. Block 2a runs
+    outside that bound, so an expiry never rolls back a refreshed token (B2).
+    An expiry before block 1 has the owner check and the target row raises
+    (B3).
+    """
+    user_email = user.email or ""
+    step = _ComposeStep(req)
+    deadline = asyncio.get_running_loop().time() + CONTEXT_STEP_BOUND_S
+    phase_a = asyncio.timeout_at(deadline)
+    try:
+        async with phase_a:
+            async with _tenant_session() as db:
+                await step.block_1(db, req, user_email, on_activity)
+            # No session: the body fetch and the embed.
+            if step.phased is not None:
+                await step.phased.fetch_and_embed()
+    except TimeoutError:
+        if not step.expire(phase_a, stage="block_1"):
+            raise
+
+    # Block 2a: the body and the rotated creds. Outside the context bound, so
+    # an expiry cannot roll back a token that authenticate() refreshed (B2).
+    fetch = step.body_fetch()
+    if fetch is not None:
+        try:
+            async with _tenant_session() as db:
+                await fetch.store(db)
+        except Exception as exc:  # a draft goes on without it
+            _log.warning("email.draft_body_store_failed", error=str(exc)[:160])
+
+    # Block 2b: the reads that need the body, in what is left of the bound.
+    if step.needs_side() and step.phased is not None:
+        phase_b = asyncio.timeout_at(deadline)
+        try:
+            async with phase_b, _tenant_session() as db:
+                await step.phased.read_side(db)
+        except TimeoutError:
+            if not step.expire(phase_b, stage="block_2"):
+                raise
+
+    # No session is open from here until the store of the draft. The tier is
+    # the COMPOSE tier. Our code chooses it, and no stored choice changes it
+    # (D-EM-61).
+    ctx = step.context()
+    result, store_thread = await _compose_draft(
+        req, user_email, ctx, step.about or "", step.signature or "",
+        sender=step.sender(ctx), model=EMAIL_TASK_TIERS["compose"],
+        on_activity=on_activity, on_delta=on_delta)
+    # Remember this draft (same as /draft-reply) so when the user edits it in
+    # the composer and sends, _learn_from_sent can diff the sent body against
+    # what the AI wrote. Without this the highest-traffic "Draft with AI"
+    # entry point taught nothing. A short block of its own (EM-T17 PR-A1).
+    # commit=False: the block commits on its clean exit.
+    if store_thread:
+        try:
+            async with _tenant_session() as db:
+                await _store_ai_draft(
+                    db, req.account_id, store_thread, result["draft"],
+                    commit=False)
+        except Exception as exc:  # the member still gets the draft
+            _log.warning("email.store_ai_draft_failed", error=str(exc)[:160])
+    return result
+
+
+async def _compose_draft(
+    req: ComposeAssistRequest, user_email: str, ctx: dict[str, Any] | None,
+    about: str, signature: str, *, sender: str, model: str,
+    on_activity: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    on_delta: Callable[[str, str], Awaitable[None]] | None,
+) -> tuple[dict[str, str], str]:
+    """The model step of ``_compose_assist_run``. It opens no session.
+
+    Returns the result and the thread whose draft to store, or "" when no
+    draft is to be stored."""
+    # The composer body CARRIES the signature now (it's part of the draft,
+    # visible upstream). The AI must never see it: a signature-only body is
+    # an EMPTY draft — it routes to the full reply drafter, not improve —
+    # and improve mode works on the owner's words alone. Strip it here; the
+    # result is re-signed before returning.
+    req_body = strip_signature_text(signature, req.body or "")
+    recipient = ""
+    subject = req.subject or ""
+    thread = ""
+    reply_to_body = ""
+    if ctx is not None:
+        # Draft-from-scratch REPLY → route through the SAME reply drafter as
+        # /draft-reply, so full context + identical rules apply (one method,
+        # not a separate lighter one). Improve-in-place and forward keep the
+        # compose path, now WITH the replied-to body in view.
+        if req.mode == "reply" and not req_body.strip():
+            # The user's AI-bar prompt must steer this draft. This path used
+            # to drop req.instruction entirely, so typing an instruction and
+            # hitting Draft on an empty reply changed nothing.
+            # Interactive → the COMPOSE tier.
+            # EM-T17 A7: this path returns before the shared "context
+            # done" below, so it sends its own here.
+            await _emit_activity(
+                on_activity, kind="stage", id="context", status="done",
+                detail="thread and recipient loaded")
+            draft = await _agent_draft_reply(
+                ctx, about, signature, user_email,
+                max_agents=1, agent_timeout=18.0,
+                model=model, account_id=req.account_id,
+                interactive_fallback=True,
+                extra_instructions=(req.instruction or "").strip(),
+                on_activity=on_activity, on_delta=on_delta,
+            )
+            if _is_no_draft(draft):
+                return {"draft": "", "skipped": "low_confidence"}, ""
+            # The signature rides in the returned body (the composer shows
+            # it as part of the draft; autosave syncs it upstream).
+            draft = append_signature_text(signature, draft)
+            return {"draft": draft}, str(ctx.get("thread_id") or "")
+        subject = subject or ctx.get("subject", "")
+        thread = ctx.get("thread", "")
+        reply_to_body = ctx.get("body", "")
+        if req.mode != "forward":  # reply recipient is the original sender
+            nm, addr = ctx.get("from_name", ""), ctx.get("from", "")
+            recipient = (f"{nm} <{addr}>" if nm else addr).strip()
+    if not recipient and req.to:
+        recipient = ", ".join([a for a in req.to if a])
+
+    # Refinement rounds (the user is iterating on an existing draft) reuse
+    # the improve-in-place path — no memory/consult sweep, so each edit
+    # round is a single fast model call.
+    await _emit_activity(
+        on_activity, kind="stage", id="context", status="done",
+        detail="thread and recipient loaded")
+    await _emit_activity(
+        on_activity, kind="stage", id="draft", status="start",
+        detail=("refining your draft" if req_body.strip()
+                else "writing a new draft"))
+    draft = await _llm_compose_assist(
+        about=about, signature=signature, current_body=req_body,
+        instruction=req.instruction, mode=req.mode, recipient=recipient,
+        subject=subject, thread=thread, reply_to_body=reply_to_body,
+        user_email=user_email, model=model,
+        on_delta=on_delta, sender=sender,
+    )
+    if _is_no_draft(draft):
+        return {"draft": "", "skipped": "low_confidence"}, ""
+    return {"draft": append_signature_text(signature, draft)}, ""
 
 
 @router.post("/compose-assist")

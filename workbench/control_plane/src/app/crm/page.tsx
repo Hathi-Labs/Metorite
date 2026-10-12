@@ -114,13 +114,21 @@ import {
   parseView,
   selectLayout,
   selectPipeline,
+  selectRecordTab,
   selectTab,
   viewHref,
   type CrmLayout,
   type CrmView,
   type SheetParam,
 } from "./lib/urlState";
-import { invalidateCrmMode, useCrmMode, useFieldDefs, usePipelines, useSyncStatus } from "./lib/useCrmMode";
+import {
+  invalidateCrmMode,
+  useCrmMode,
+  useFieldDefs,
+  useOwners,
+  usePipelines,
+  useSyncStatus,
+} from "./lib/useCrmMode";
 import { boundaryKey } from "./lib/boundary";
 import { viewLabel } from "./lib/views";
 
@@ -167,6 +175,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   /** The collection whose records the filters narrow: a list or a board. */
   const filterEntity: EntitySlug | null = isEntity(view.tab) ? view.tab : null;
   const { defs: filterDefs, loading: defsLoading } = useFieldDefs(filterEntity);
+  /** The owner filter's choices: every member and record owner (CRM-X1). */
+  const owners = useOwners(filterEntity !== null);
   // A filter the gateway would refuse is dropped before the fetch (CRM-Q8):
   // a saved view can name a custom field that is gone, and one 422 would
   // empty the whole list.
@@ -217,6 +227,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
    *  not the collection's, and reusing `saving` would grey out the sheet. */
   const [exporting, setExporting] = useState(false);
   const [converting, setConverting] = useState<Lead | null>(null);
+  /**
+   * Where the open record came from, for `j` and `k` (CRM-X4 item 5): the
+   * list on screen, or one lane of the board. Null for a record opened from
+   * a link, from Cmd-K or from a related list, which has no list behind it.
+   */
+  const [cameFrom, setCameFrom] = useState<
+    { param: SheetParam; lane: string | null } | null
+  >(null);
   /** A move the gateway would refuse as sent — held until the modal answers. */
   const [pendingMove, setPendingMove] = useState<{
     entity: "deals" | "leads";
@@ -311,11 +329,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         : [];
 
   const barDefs = filterDefs;
-  const barRows: Array<Record<string, unknown>> = boardOn
-    ? (view.tab === "leads" ? store.leadLanes : store.lanes).flatMap(
-        (lane) => lane.rows as Array<Record<string, unknown>>,
-      )
-    : store.rows;
 
   /** The custom columns in effect: the view's own, or this browser's. */
   const draftOfView = draftColumns?.viewId === view.viewId ? draftColumns?.keys : undefined;
@@ -455,6 +468,29 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     if (view.record) store.loadRecord(view.record.entity, view.record.id);
   }
 
+  /**
+   * The ids of the list the open record came from, in the order on screen.
+   * Null when no list is behind it, or when the list no longer holds it (a
+   * deal moved to another lane), so the arrows hide and the keys do nothing.
+   */
+  function recordOrder(): string[] | null {
+    if (!cameFrom || !view.record || cameFrom.param !== view.record.param) return null;
+    const rows: Array<Record<string, unknown>> =
+      cameFrom.lane === null
+        ? store.rows
+        : ((view.tab === "leads" ? store.leadLanes : dealLanes).find(
+            (lane) => lane.status.id === cameFrom.lane,
+          )?.rows ?? []);
+    const ids = rows.map((row) => String(row.id));
+    return ids.includes(view.record.id) ? ids : null;
+  }
+
+  /** Open a record and forget the list: it came from a link or a related row. */
+  function openAlone(next: CrmView): void {
+    setCameFrom(null);
+    go(next);
+  }
+
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
     const dealId = await store.convertLead(converting.id, body);
@@ -462,7 +498,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     if (dealId) {
       // Land on the deal that was just made: the conversion's whole point is
       // that the work continues there.
-      go(openRecord(selectTab(view, "deals"), "deal", dealId));
+      openAlone(openRecord(selectTab(view, "deals"), "deal", dealId));
     }
   }
 
@@ -694,7 +730,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               entity={filterEntity}
               view={view}
               onChange={go}
-              rows={barRows}
+              owners={owners}
+              search={!boardOn}
               fieldDefs={barDefs}
               mirror={ctx.mode === "mirror"}
               removed={waitingForDefs ? [] : pruned.removed}
@@ -745,9 +782,14 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                   ? (move, target) => void moveCard("leads", move, target)
                   : moveDeal
               }
-              onOpen={(id) =>
-                go(openRecord(view, view.tab === "leads" ? "lead" : "deal", id))
-              }
+              onOpen={(id) => {
+                // `j` and `k` walk the cards of this lane (CRM-X4 item 5).
+                const lanes = view.tab === "leads" ? store.leadLanes : dealLanes;
+                const lane = lanes.find((l) => l.rows.some((row) => row.id === id));
+                const param = view.tab === "leads" ? "lead" : "deal";
+                setCameFrom({ param, lane: lane?.status.id ?? null });
+                go(openRecord(view, param, id));
+              }}
               onCreate={mayCreate ? () => setCreating(view.tab === "leads" ? "leads" : "deals") : undefined}
             />
           ) : view.tab === "reports" ? (
@@ -802,10 +844,18 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
                 rows={store.rows}
                 total={store.total}
                 loading={store.loading}
+                statuses={statusesFor(listEntity)}
+                onLoadMore={() => void store.loadMore()}
+                loadingMore={store.loadingMore}
+                hasMore={store.hasMore}
                 sort={view.sort}
                 direction={view.dir}
                 onSort={(key) => go(applySort(view, key))}
-                onOpen={(id) => go(openRecord(view, PARAM_FOR[listEntity], id))}
+                onOpen={(id) => {
+                  // `j` and `k` walk the rows of this list (CRM-X4 item 5).
+                  setCameFrom({ param: PARAM_FOR[listEntity], lane: null });
+                  go(openRecord(view, PARAM_FOR[listEntity], id));
+                }}
               />
             )
           )}
@@ -839,8 +889,21 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             // still while a dialog above it is up: that key, or a click on
             // that dialog, closes the dialog and not the record.
             if (converting || pendingMove) return;
+            setCameFrom(null);
             go(closeRecord(view));
           }}
+          tab={view.recordTab ?? "overview"}
+          // A tab replaces the URL, so Back still closes the sheet.
+          onTab={(tab) =>
+            router.replace(viewHref(selectRecordTab(view, tab)), { scroll: false })
+          }
+          // No step while a dialog is open over the sheet.
+          order={converting || pendingMove ? null : recordOrder()}
+          // The step replaces the URL too: Back closes the sheet, and does not
+          // walk back through every record the keys passed.
+          onStep={(id) =>
+            router.replace(viewHref(openRecord(view, view.record!.param, id)), { scroll: false })
+          }
           onPatch={(body) =>
             store.patchRecord(view.record!.entity, view.record!.id, body)
           }
@@ -885,10 +948,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onDetach={(contactId) =>
             store.detachContact(view.record!.id, contactId)
           }
-          onOpenContact={(contactId) => go(openRecord(view, "contact", contactId))}
+          onOpenContact={(contactId) => openAlone(openRecord(view, "contact", contactId))}
           related={store.related}
           onRetryRelated={() => void store.loadRelated(view.record!.entity, view.record!.id)}
-          onOpenRelated={(entity, id) => go(openRecord(view, PARAM_FOR[entity], id))}
+          onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
         />
       )}
 
@@ -910,7 +973,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             const entity = creating;
             const id = await store.createRecord(entity, body);
             setCreating(null);
-            if (id) go(openRecord(view, PARAM_FOR[entity], id));
+            if (id) openAlone(openRecord(view, PARAM_FOR[entity], id));
           }}
         />
       )}

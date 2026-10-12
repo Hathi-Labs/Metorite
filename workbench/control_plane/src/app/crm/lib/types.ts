@@ -264,6 +264,8 @@ export type Lead = Provenance & {
   industry?: string | null;
   annual_revenue?: number | null;
   status_id?: string | null;
+  /** The status by name, projected by the gateway (CRM-X1). */
+  status_name?: string | null;
   lead_source?: string | null;
   description?: string | null;
   lost_reason_id?: string | null;
@@ -299,6 +301,8 @@ export type Deal = Provenance & {
   /** Projected by the gateway's LEFT JOIN — never client-side joined. */
   organization_name?: string | null;
   status_id?: string | null;
+  /** The stage by name, projected by the gateway (CRM-X1). */
+  status_name?: string | null;
   status_changed_at?: string | null;
   amount?: number | null;
   currency?: string;
