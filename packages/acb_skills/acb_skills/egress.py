@@ -49,6 +49,7 @@ _log = get_logger("acb_skills.egress")
 __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
+    "MCP_LOADER_KEY",
     "NO_EGRESS_KEY",
     "STORE_WRITES",
     "EgressGuardProvider",
@@ -104,12 +105,23 @@ def _mcp_classes() -> tuple[type, ...]:
     return (MCPStdioTool, MCPStreamableHTTPTool, MCPWebsocketTool)
 
 
+#: The key that marks a loader tool of an MCP server (WS-8c item 26). MAF
+#: builds the three loaders of progressive disclosure (``<prefix>_list_mcp_tools``,
+#: ``_load_tool`` and ``_unload_tool``) with no ``_mcp_is_tool`` key, so the
+#: orchestrator marks each one with this key (``orchestrator._maf_mcp``). The
+#: key is Metorite's own, so the loops of MAF that read ``_mcp_is_tool`` do not
+#: change. Fence: ``tests/unit/test_maf_mcp_budget.py``.
+MCP_LOADER_KEY = "_acb_mcp_loader"
+
+
 def _from_mcp(item: Any) -> bool:
-    """A MAF MCP tool, or a FunctionTool that MAF made from an MCP server."""
+    """A MAF MCP tool, a FunctionTool that MAF made from an MCP server, or a
+    loader tool of an MCP server (:data:`MCP_LOADER_KEY`)."""
     if isinstance(item, _mcp_classes()):
         return True
     props = getattr(item, "additional_properties", None)
-    return isinstance(props, Mapping) and bool(props.get("_mcp_is_tool"))
+    return isinstance(props, Mapping) and (
+        bool(props.get("_mcp_is_tool")) or props.get(MCP_LOADER_KEY) is True)
 
 
 #: The platform's own tool callables, by IDENTITY, and the tool names each one
