@@ -18,6 +18,11 @@
 > the Zoho connection (CRM-Z2). This file owns the registry as a whole, the
 > console, and the retirement of the old Integrations page.
 
+> **IN-8 (added 2026-10-12):** 📝 PLAN. MCP OAuth for an org connection, under
+> D98. The design is §3.6, and the slices are in §7.2. It ships dark behind
+> `MCP_OAUTH_ENABLED`. Verified against code on 2026-10-12 at `origin/main`
+> `713dc84ac`, and against the six providers on the same day.
+
 ---
 
 ## 0. The answer in one paragraph
@@ -52,6 +57,7 @@ the answer: both, over one registry.
 - MCP servers in the registry (IN-4). The MCP client for MAF agents is WS-8c.
 - A decision on custom APIs and plugins, which store data that nothing reads (IN-6).
 - GitHub per org (IN-7).
+- MCP servers that need an OAuth consent, for an org connection (IN-8, D98).
 
 ### 1.3 Non-goals
 
@@ -64,6 +70,8 @@ the answer: both, over one registry.
   stay unstarted.
 - **A connector for a new provider.** Each provider comes with the app that
   needs it, as Zoho comes with the CRM.
+- **A member connection to an MCP server over OAuth.** The owner put it after
+  the org connections on 2026-10-12 (§3.6.1). IN-8 builds the org scope only.
 
 ---
 
@@ -179,6 +187,326 @@ integration resolvers. IN-5 removes the old writes.
 | Disconnect another member's connection | `integrations:manage`, and the member is told |
 | See a stored value | Nobody |
 
+### 3.6 MCP OAuth for an org connection (IN-8)
+
+> **Decision:** D98 (`work_plan.md` §3), the owner, 2026-10-12. **Flag:**
+> `MCP_OAUTH_ENABLED`, default off. **Verified against code** on 2026-10-12 at
+> `origin/main` `713dc84ac`, and against the six providers of §3.6.2 on
+> 2026-10-12 at 09:43 UTC. **Needs:** IN-4 merged, because the flow writes the
+> registry row of the server.
+
+#### 3.6.1 What it is
+
+Many MCP servers take no static key. They ask for an OAuth consent, and they
+issue a token for one user. An admin connects such a server for the whole
+org. The connection then acts as that admin at the provider (D98).
+
+IN-8 builds org connections only. The owner said on 2026-10-12: "get the
+organization-wide connectors done, and later on we can start working on the
+personal connectors." A member connection over OAuth is a later slice.
+
+#### 3.6.2 The providers, measured 2026-10-12
+
+**Method.** One plain HTTPS GET for each URL below, with no credential, at
+09:43 UTC. "401 names" means the `resource_metadata` value of the
+`WWW-Authenticate` header of the 401 answer. **CIMD** means
+`client_id_metadata_document_supported: true` in the auth-server metadata.
+**DCR** means that the auth-server metadata has a `registration_endpoint`.
+
+| Provider | MCP endpoint, and its answer to a GET | Protected-resource metadata (RFC 9728) | Auth-server metadata (RFC 8414) | Registration | Notes |
+|---|---|---|---|---|---|
+| Notion | `https://mcp.notion.com/mcp` → 401. It names `https://mcp.notion.com/.well-known/oauth-protected-resource/mcp`, with `scope="default"` | `https://mcp.notion.com/.well-known/oauth-protected-resource/mcp` → 200. `resource` is `https://mcp.notion.com/mcp`. The auth server is `https://mcp.notion.com` | `https://mcp.notion.com/.well-known/oauth-authorization-server` → 200. `/authorize`, `/token`, `/register`, and revoke at `/token`. S256. `authorization_response_iss_parameter_supported` is true | **CIMD**. DCR also | Token auth: `none`, `client_secret_basic` or `client_secret_post` |
+| Linear | `https://mcp.linear.app/mcp` → 401. It names `https://mcp.linear.app/.well-known/oauth-protected-resource/mcp`, with `scope="read write"` | `https://mcp.linear.app/.well-known/oauth-protected-resource/mcp` → 200. `resource` is `https://mcp.linear.app/mcp`. The auth server is `https://mcp.linear.app` | `https://mcp.linear.app/.well-known/oauth-authorization-server` → 200. `/authorize`, `/token`, `/register`, and revoke at `/token`. S256. The `iss` flag is true | **CIMD**. DCR also | The same token auth as Notion |
+| Atlassian | `https://mcp.atlassian.com/v1/mcp` → 401, with **no** `resource_metadata` | **Not published.** `https://mcp.atlassian.com/.well-known/oauth-protected-resource/v1/mcp` → 404, and `https://mcp.atlassian.com/.well-known/oauth-protected-resource` → 404 | `https://mcp.atlassian.com/.well-known/oauth-authorization-server` → 200. `/v1/authorize`, `/v1/token`, `/v1/register`, and revoke at `/v1/token`. `plain` and S256. No `iss` flag | **DCR**. No CIMD flag | Discovery needs the fallback of §3.6.4, start step 2 |
+| GitHub | `https://api.githubcopilot.com/mcp/` → 401. It names `https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/` | That URL → 200. The auth server is `https://github.com/login/oauth`, which is **another origin** | `https://github.com/.well-known/oauth-authorization-server/login/oauth` → 200, by path insertion. `https://github.com/.well-known/oauth-authorization-server` → 404. `/login/oauth/authorize` and `/login/oauth/access_token`. S256. The `iss` flag is true. No revoke endpoint | **Pre-registered only** (IN-8d). No CIMD, no DCR | It also offers the device grant. **Not measured:** whether the IN-7 device token works at this server |
+| Slack | `https://mcp.slack.com/mcp` → 401. It names `https://mcp.slack.com/.well-known/oauth-protected-resource` | That URL → 200. `https://mcp.slack.com/.well-known/oauth-protected-resource/mcp` → 404. `resource` is `https://mcp.slack.com`. The auth server is `https://mcp.slack.com` | `https://mcp.slack.com/.well-known/oauth-authorization-server` → 200. The issuer is `https://mcp.slack.com`, but authorize is at `https://slack.com/oauth/v2_user/authorize` and token at `https://slack.com/api/oauth.v2.user.access`. S256. Token auth: `client_secret_post` only. No revoke endpoint | **Pre-registered only** (IN-8d). No CIMD, no DCR | The endpoint names say a user token |
+| HubSpot | `https://mcp.hubspot.com/` → 406 with `Accept: application/json`, and 401 with `Accept: application/json, text/event-stream`. The 401 names `https://mcp.hubspot.com/.well-known/oauth-protected-resource` | That URL → 200. `resource` is `https://mcp.hubspot.com`. The auth server is `https://mcp.hubspot.com`. `scopes_supported` is empty | `https://mcp.hubspot.com/.well-known/oauth-authorization-server` → 200. `/oauth/authorize/user` and `/oauth/v3/token`. S256. Token auth: `client_secret_post` only. No revoke endpoint | **Pre-registered only** (IN-8d). No CIMD, no DCR | Its docs: `https://developers.hubspot.com/mcp` |
+
+**Not measured.** No probe sent a credential, so these facts stay open. The
+owner's consent test (§3.6.10, act 1) and IN-8a measure them.
+
+- The access-token lifetime, the refresh-token lifetime and the rotation rule
+  of each provider.
+- Whether each provider honours the `resource` parameter (RFC 8707).
+- Whether Notion and Linear accept a CIMD URL on `app.metorite.com` in a real
+  consent.
+- What a revoke answers, at the three providers that publish one.
+- Which provider account a token names. The acts-as label names the Metorite
+  admin (§3.6.9), so it does not wait for this fact.
+
+#### 3.6.3 Client registration order
+
+The MCP text sets the order. On 2026-10-12, the client-registration page of
+MCP 2026-07-28 and the authorization page of MCP 2025-11-25 gave one list:
+
+1. **Pre-registered.** Metorite uses its own client for that auth server, when
+   it holds one (IN-8d).
+2. **CIMD**, when the auth server sets `client_id_metadata_document_supported`.
+3. **DCR**, when the auth server has a `registration_endpoint`. MCP
+   2026-07-28 marks DCR deprecated.
+4. Else the connect fails with `no_registration`. Metorite never asks the
+   admin for a client id.
+
+⚠️ **The request for this section, and `external_agent_access.md` §5.3
+(line 131), put CIMD first.** The MCP text puts pre-registration first, and
+this spec follows the MCP text. For the six providers of §3.6.2 the result is
+the same. Metorite holds a pre-registered client only where CIMD and DCR are
+absent. The order changes the result only if the owner registers a client for
+Notion or Linear. WS-55 owns the line in `external_agent_access.md`.
+
+**The CIMD document.** Metorite publishes one JSON document at
+`https://app.metorite.com/oauth/mcp-client.json`. The MCP text requires an
+`https` URL with a path, and a `client_id` that equals that URL exactly. The
+document holds:
+
+- `client_id`: the URL of the document.
+- `client_name`: "Metorite". `client_uri`: `https://app.metorite.com`.
+- `redirect_uris`: the one callback of §3.6.4.
+- `grant_types`: `authorization_code` and `refresh_token`.
+  `response_types`: `code`. `token_endpoint_auth_method`: `none`.
+
+The host comes from `_workbench_public_url()`
+(`routes/email/transport/oauth.py:784`), so staging serves a document of its
+own. A test pins the document against the callback path.
+
+**A DCR client.** The registration answer can hold a `client_secret`. It goes
+in the sealed blob only (§3.6.6).
+
+#### 3.6.4 The flow
+
+`POST /integrations/mcp/{name}/oauth/start` needs `integrations:manage`. The
+callback is `GET /integrations/mcp/oauth/callback`, and it needs
+`integrations:manage` too. Its public URL is
+`https://app.metorite.com/api/integrations/mcp/oauth/callback`, on the proxy
+path that the Zoho callback uses (`REDIRECT_PATH`,
+`routes/crm/connection.py:89`). With `MCP_OAUTH_ENABLED` off, both routes
+answer 404.
+
+**The start.**
+
+1. **Discovery.** Send a GET to the MCP URL with no token, and read
+   `resource_metadata` from the 401. If no header names one, try the RFC 9728
+   well-known URLs, the path-inserted form first.
+   `build_protected_resource_metadata_discovery_urls` of `mcp` 1.30
+   (`mcp/client/auth/utils.py:70`) gives that list.
+2. **The fallback.** If no protected-resource metadata answers, use the
+   origin of the MCP URL as the auth server. Atlassian needs this. MCP
+   2025-03-26 had this rule, and the later texts dropped it. So the fallback
+   applies only when the auth-server metadata is on the origin of the MCP URL.
+3. **Checks.** The `resource` of the protected-resource metadata must equal
+   the MCP URL, or its origin. The `issuer` of the auth-server metadata must
+   equal the auth-server URL (`validate_metadata_issuer`, `utils.py:214`).
+   Each endpoint must be `https` on port 443 (§3.6.5).
+4. **Registration**, in the order of §3.6.3.
+5. **PKCE.** Make a new verifier, and its S256 challenge with `s256`
+   (`acb_auth/agent_oauth.py:137`). Send S256 only, also to an auth server
+   that offers `plain`.
+6. **State.** Call `sign_state(purpose="integrations.mcp.connect", org=…,
+   member=…)` (`routes/email/transport/signing.py:233`). The state binds the
+   org and the member, and it lives ten minutes.
+7. **The pending flow.** Write it to Redis through `TenantRedis`
+   (`acb_common/tenant_redis.py:420`), under the nonce of the state, for ten
+   minutes. It holds the verifier, the issuer, the token endpoint, the client
+   id, the server name, the resource and the scopes. The verifier never goes
+   into the state or into a URL.
+8. **The answer** is the consent URL. It carries `response_type=code`,
+   `client_id`, `redirect_uri`, `state`, `code_challenge`,
+   `code_challenge_method=S256`, `resource` (RFC 8707) and `scope`. The scope
+   comes from the 401 header, else from `scopes_supported` of the
+   protected-resource metadata, as the MCP text says.
+
+**The callback**, in the order of the Zoho callback
+(`routes/crm/connection.py:338`):
+
+1. **The state, before any other work.** Call `verify_state(state,
+   purpose="integrations.mcp.connect")` (`signing.py:261`). A `None`, another
+   org or another member answers 400 `invalid_state`.
+2. **Take the pending flow once.** Read it and delete it in one step. A
+   missing record answers 400 `invalid_state`. So a replayed state fails,
+   because its record is gone.
+3. **`iss` (RFC 9207).** If the answer carries `iss`, or the metadata says
+   that it will, it must equal the recorded issuer. Else answer 400
+   `invalid_issuer`, before the code goes anywhere.
+4. **An `error` from the provider** redirects to the console with a safe code.
+5. **The code for tokens.** Send the code, the verifier, `redirect_uri` and
+   `resource` to the token endpoint. The request goes through the guard
+   (§3.6.5).
+6. **Save** the credential on the registry row of the server, under the row
+   lock. Set `connected_by` to the member (§3.6.6).
+7. **A reconnect** revokes the old refresh token, best effort, after the
+   commit. Only a provider that publishes a revoke endpoint gets the call.
+
+#### 3.6.5 Every fetch goes through the guard
+
+Every discovery, registration, token and revoke request goes through
+`gateway/outbound_guard.py`, with `https` on port 443 only.
+
+- **Do not use `mcp_client` (`outbound_guard.py:415`) for these.** Its
+  transport refuses a request to another origin (`:392-393`), by design. The
+  auth server often sits on another origin. GitHub sends the client to
+  `github.com`, and Slack sends it to `slack.com`.
+- **Do not use `request` (`:305`) as it is.** It calls `check_url`, which
+  allows `http` (`_SCHEMES`, `:63`).
+- **Use `check_mcp_url` (`:350`) and then `send` (`:268`)**, one pair for each
+  hop. IN-8a adds one helper that does both, `request_https`, and every OAuth
+  fetch calls it. A fence fails when an OAuth module calls `request`,
+  `mcp_client` or `httpx` itself.
+- `send` refuses a 3xx answer, and it caps the answer at 64 KiB and 10 s. A
+  metadata answer and a token answer fit.
+- The guard checks each URL that a metadata document names. A document can
+  name a private address, and the guard refuses it, as it refuses a URL that a
+  customer types.
+- The consent URL goes to the admin's browser, and the gateway never fetches
+  it. It must still be `https`.
+
+#### 3.6.6 Storage
+
+- **Tokens** go in the registry blob, as a `SourceCredential`
+  (`crm_sources/base.py:60`), through `save_credential`
+  (`connections/store.py:361`).
+- ⚠️ **A DCR `client_secret` never goes in `provider_meta`.** `save_credential`
+  and `update_tokens` copy `SourceCredential.provider_meta` into the plain
+  `provider_meta` column (`store.py:380`, `:400`). So a secret there leaves
+  the blob. IN-8a adds a `client_secret` field to `SourceCredential`, with
+  `repr=False`. `_seal` (`store.py:232`) writes it, and no SQL parameter reads
+  it. A sentinel fence plants a secret and reads the column.
+- `provider_meta` holds public facts only:
+  - the issuer, the token endpoint and the revoke endpoint.
+  - the client id and the registration kind (`pre_registered`, `cimd` or
+    `dcr`).
+  - the resource.
+- **Refresh** goes through `fresh_credential`
+  (`connections/shared_token.py:41`). It takes the row with `FOR UPDATE`, so
+  one refresh serves two workers. `invalid_grant` sets `needs_reconnect`
+  (`_STOP_CODES`, `:38`), and nothing retries a dead token.
+- The id and the secret of a pre-registered client are operator keys (D56).
+  They live in the operator plane, never in a customer row (IN-8d).
+
+#### 3.6.7 The runtime
+
+- MAF calls `header_provider` synchronously (`agent_framework/_mcp.py:3744`,
+  MAF 1.19). So the hook cannot refresh a token.
+- Before `connect()`, the injection calls `fresh_credential`. When the token
+  expires within `TOKEN_MARGIN_S`, the call refreshes it first.
+  `TOKEN_MARGIN_S` is a new constant of 900 s.
+- The tool gets a `header_provider` that returns the cached `Authorization`
+  value and nothing else. A changed header makes MAF connect the session again
+  (the `header_provider` docstring, `_mcp.py:3841-3851`). So the value never
+  changes inside a run.
+- **A 401 on connect** drops the server from the run, and the run goes on. The
+  log line `mcp.oauth_unauthorized` names the server only.
+- If the injection refreshed the token in this run, that 401 also sets
+  `needs_reconnect`. Else the next run refreshes, and an `invalid_grant` then
+  sets `needs_reconnect`. So one expired token never asks an admin to connect
+  again. ⚠️ The request for this section said "a 401 marks needs_reconnect".
+  This spec narrows that, for the reason above.
+- A run that outlives the margin can get a 401 on a call. The server drops
+  out of that run.
+- `needs_reconnect` shows in the console, and in the "needs you" item of §5.
+- With `MCP_OAUTH_ENABLED` off, the injection leaves out a row with an OAuth
+  credential, and logs `mcp.oauth_disabled`.
+
+#### 3.6.8 The library
+
+`mcp` 1.30 (`uv.lock`) has `OAuthClientProvider`
+(`mcp/client/auth/oauth2.py:228`). It waits for the code in the same process,
+through `redirect_handler` and `callback_handler` (`:241-242`, `:367-370`). A
+web flow gets the code in a later request, often on another worker. So the
+flow does not use `OAuthClientProvider`.
+
+The flow reuses only the pure helpers of `mcp/client/auth/utils.py` and the
+pydantic models:
+
+- `extract_resource_metadata_from_www_auth` (`:57`)
+- `build_protected_resource_metadata_discovery_urls` (`:70`)
+- `build_oauth_authorization_server_metadata_discovery_urls` (`:132`)
+- `validate_metadata_issuer` (`:214`)
+- `is_valid_client_metadata_url` (`:285`) and `should_use_client_metadata_url`
+  (`:325`)
+
+No helper in this list opens a socket. All I/O goes through §3.6.5. A
+contract test pins these names, so an upgrade of `mcp` fails loud.
+
+#### 3.6.9 Acts as the admin (D98)
+
+- **The console** shows "acts as <admin email> at <provider>" on the
+  connection row and in its side panel. The admin email is `connected_by`.
+- **The Connect dialog** says, before the consent, that the agents of every
+  member use this connection as the admin. It also says that a read-only tool
+  runs with no card, so every member can read what the admin can read at the
+  provider.
+- **The card** (`agent_architecture.md` §12.2 WS-8c, item 14) shows "acts as
+  <admin email> at <provider>" for each tool of an OAuth server. The line sits
+  under the hint line, and the card escapes it as it escapes the names (item
+  19).
+- **A read-only tool runs with no card** (H-299, WS-8c item 13). So a member
+  can read, through an agent, what the admin can read at that provider. The
+  console says so, and this spec says so. The H-300 setting `always_confirm`
+  puts a card on every tool of one server.
+- The label names the Metorite admin, not the provider account. Metorite knows
+  the admin. It does not know yet which provider account a token names
+  (§3.6.2, not measured).
+- A reconnect by another admin changes `connected_by`, and the label follows.
+
+#### 3.6.10 Slices, gates and owner acts
+
+| Slice | What | Gate |
+|---|---|---|
+| **IN-8a** | Discovery, CIMD and DCR, PKCE, the state, the callback and the store (§3.6.3 to §3.6.6). All dark behind `MCP_OAUTH_ENABLED` | 🟢 AGENT-SAFE |
+| **IN-8b** | Refresh at run time, the 401, and `needs_reconnect` (§3.6.7) | 🟢 AGENT-SAFE |
+| **IN-8c** | The console Connect button, the dialog text, the acts-as label and the card line (§3.6.9) | 🟢 AGENT-SAFE. Visual review |
+| **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) |
+
+**The order.** IN-4, then H-300, then IN-8a, IN-8b and IN-8c. IN-8d follows
+IN-8a, when the owner has made the apps.
+
+**The owner's acts.**
+
+1. **A real consent test against a third-party account**, with Notion or
+   Linear, in Fracktal. It reaches a real third party, so it is the owner's act
+   (CLAUDE.md §3a rule 3). It measures the open facts of §3.6.2.
+2. **For IN-8d**, create one OAuth app at GitHub, at Slack and at HubSpot,
+   each with the redirect URI of §3.6.4. Drop each client id and secret into
+   `~/.metorite/secrets`. An agent pushes them with `scripts/secrets.sh`.
+3. **The flip of `MCP_OAUTH_ENABLED` on production** is gate
+   `enforcement-flip`. An agent may do it inside the dev window (CLAUDE.md
+   §3a), after act 1 passes.
+
+#### 3.6.11 Acceptance
+
+Each row has a fence test that fails first. All are new, and none exists yet.
+
+| # | Done when | Fence |
+|---|---|---|
+| O1 | Each hop refuses before a socket opens: an `http` URL, a port that is not 443, `127.0.0.1`, `169.254.169.254`, an RFC 1918 address, and a 3xx answer. The hops are the two metadata fetches, a metadata endpoint that names a private address, registration, token and revoke. | `test_mcp_oauth_guard.py` |
+| O2 | No OAuth module calls `outbound_guard.request`, `mcp_client` or `httpx` itself. | `test_mcp_oauth_guard.py` (an AST fence) |
+| O3 | A replayed state answers 400 and sends no token request. A state of org A, used by a member of org B, answers 400. An expired state answers 400. A state signed for `crm.zoho.connect` answers 400. | `test_mcp_oauth_state.py` |
+| O4 | A code with a wrong verifier fails the exchange and saves nothing. The consent URL carries `code_challenge_method=S256`, also when the server offers `plain`. | `test_mcp_oauth_flow.py` |
+| O5 | An `iss` that differs from the recorded issuer answers 400 before the token request. | `test_mcp_oauth_flow.py` |
+| O6 | A sentinel access token, refresh token and client secret show in no log line, no response body, no redirect URL and no `provider_meta` column. | `test_mcp_oauth_secrets.py` |
+| O7 | Two workers find one token near its expiry. One refresh request goes out, and both workers get the new token. R8. | `test_mcp_oauth_refresh_r8.py` |
+| O8 | A refresh that answers `invalid_grant` sets `needs_reconnect`. The next run sends no refresh, and the console shows the row as `needs_reconnect`. R8. | `test_mcp_oauth_refresh_r8.py` |
+| O9 | Orgs A and B connect one server name. A run in A sends the token of A, and a run in B sends the token of B. The admin of A cannot see or disconnect the row of B. R8, two orgs. | `test_mcp_oauth_org_scope_r8.py` |
+| O10 | The console row and its side panel show "acts as <email> at <provider>". The card for a tool of an OAuth server shows the same line. | A vitest under `src/app/integrations`, and `test_maf_mcp_confirm.py` |
+| O11 | The `client_id` of the CIMD document equals its own URL, and its one redirect URI equals the callback. | `test_mcp_oauth_cimd.py` |
+| O12 | With `MCP_OAUTH_ENABLED` off, start and callback answer 404, and a run leaves out an OAuth row. | `test_mcp_oauth_flow.py` |
+| O13 | A contract test pins the `mcp` helpers of §3.6.8 and the signature of `header_provider`. | `test_mcp_oauth_contract.py` |
+| O14 | A 401 on connect drops the server, and the run goes on. A 401 after a refresh in the same run sets `needs_reconnect`. | `test_mcp_oauth_refresh_r8.py` |
+
+**Verify IN-8.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_mcp_oauth_guard.py tests/unit/test_mcp_oauth_state.py \
+  tests/unit/test_mcp_oauth_flow.py tests/unit/test_mcp_oauth_secrets.py \
+  tests/unit/test_mcp_oauth_refresh_r8.py tests/unit/test_mcp_oauth_org_scope_r8.py \
+  tests/unit/test_mcp_oauth_cimd.py tests/unit/test_mcp_oauth_contract.py \
+  tests/unit/test_maf_mcp_confirm.py -v -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/integrations
+```
+
+No R8 suite may skip.
+
 ---
 
 ## 4. Security and tenancy
@@ -251,6 +579,11 @@ IN-0 comes first and alone, because it closes live holes.
 | **IN-5** | **Retire the old writes.** Remove the env-write code, `_persist_tokens`, the dead OAuth route, and `configure_integrations`'s copy into the environment for customer keys. Move `COPILOT_CHAT_MODEL` out of the deployment `.env` (IN-D17) | 🔴 §6 gate (f) | `os.environ[` with a customer key appears nowhere outside the operator plane (fence) |
 | **IN-6** | **Custom APIs and plugins.** Keep them with a reader and per-org keys, or retire them | 🔴 owner (Q2) | Per the answer |
 | **IN-7** ✅ built 2026-10-11 | **GitHub per org.** The device flow writes a member or org connection, not the deployment token. connect-cli goes. `GET /github/account` shows the org's own connection, never the operator's account (IN-D18). **Built as (2026-10-11):** The device poll saves an org connection (`github`, `integrations`) through `connections/store.py`. The login and the scopes sit in the row. `connections/github.py` is the one reader, `token_for_org(org)`. The agent config fetch reads it, and with no connection it sends no token. `GET /github/account` and `GET /test` read the org row only and run no `gh`. `DELETE /integrations/github` deletes the blob. GitHub cannot revoke a device-flow token without the client secret, so the answer says `revoked_at_github: false`. An old `provider_keys` `github:token` row moves into the store on the next read. That fallback read stays for one release. The slice adds no migration. The operator plane keeps `GITHUB_TOKEN`: the model list, the runtime check, the self-mutation PR, the LiteLLM route, the Copilot SDK runtime and the agent-repo clone in `loader.py`. A clone of a private customer repo waits for IN-3. A token that a member saves through configure or `PUT /keys` still lands in `provider_keys`, and the reader moves it. IN-5 retires that path. Fence: `tests/unit/test_github_per_org_r8.py`. | 🟢 AGENT-SAFE | Two orgs hold two tokens. The server's own `gh` token is never imported |
+| **IN-8** 📝 PLAN 2026-10-12 (D98) | **MCP OAuth for an org connection.** An admin connects an MCP server that needs an OAuth consent. The connection acts as that admin at the provider, and the console and each card say so. Dark behind `MCP_OAUTH_ENABLED`, default off. The design, the provider table and the acceptance are in §3.6. It needs IN-4 merged. A member connection over OAuth is out of scope (§1.3) | See IN-8a to IN-8d | Rows O1 to O14 of §3.6.11 pass, each red first. No R8 suite skips |
+| **IN-8a** | Discovery, CIMD and DCR, PKCE, the signed state, the callback and the store (§3.6.3 to §3.6.6), dark | 🟢 AGENT-SAFE | O1 to O6, O9 and O11 to O13 |
+| **IN-8b** | Refresh at run time, the 401 on connect, and `needs_reconnect` (§3.6.7) | 🟢 AGENT-SAFE | O7, O8 and O14 |
+| **IN-8c** | The console Connect button, the dialog text, the acts-as label and the card line (§3.6.9) | 🟢 AGENT-SAFE | O10. Visual review passes |
+| **IN-8d** | Pre-registered providers: GitHub, Slack and HubSpot (§3.6.2) | 🔴 OWNER-GATE. The owner creates each OAuth app, and its secret goes in the operator plane (D56) | The owner's consent with each provider stores an org connection in Fracktal |
 
 ---
 

@@ -78,6 +78,7 @@ import {
   type RequireableField,
 } from "./lib/board";
 import { readShowEmpty, showEmptyStages, visibleLanes, writeShowEmpty } from "./lib/emptyStages";
+import { readCardSort, writeCardSort, type CardSort } from "./lib/nextActivity";
 import { chatScope } from "@/lib/sessions";
 import { activeChip, applyChip, chipsFor } from "./lib/filters";
 import { readColumns } from "./lib/fields";
@@ -174,9 +175,20 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     () => pruneFilters(view, filterDefs, ctx.mode === "mirror"),
     [view, filterDefs, ctx.mode],
   );
+  // The member, for the choices this browser keeps (`lib/emptyStages.ts`,
+  // `lib/nextActivity.ts`). Each is kept per member and organization.
+  const { access } = useAccess();
+  const memberScope = chatScope(access.email, access.organization?.id);
+  // The order of the cards in a deal lane (CRM-X3): stage age or next activity.
+  const savedSort = useMemo(() => readCardSort(memberScope), [memberScope]);
+  const [pickedSort, setPickedSort] = useState<{ scope: string | null; sort: CardSort } | null>(
+    null
+  );
+  const cardSort: CardSort =
+    pickedSort && pickedSort.scope === memberScope ? pickedSort.sort : savedSort;
   const loadView = useMemo(
-    () => ({ ...pruned.view, pipelineId }),
-    [pruned.view, pipelineId],
+    () => ({ ...pruned.view, pipelineId, cardSort }),
+    [pruned.view, pipelineId, cardSort],
   );
   /** Custom filters wait for the definitions that check them. */
   const hasCustom = Object.keys(view.custom).length > 0;
@@ -276,6 +288,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
     customKey,
     waitingForDefs,
     unchecked,
+    cardSort,
   ]);
 
   useEffect(() => {
@@ -402,8 +415,6 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // Empty stages on the Deals board (lib/emptyStages.ts). The member's choice
   // is kept in this browser per member and organization. With no choice, the
   // board hides them in Mirror mode and shows them in Native mode.
-  const { access } = useAccess();
-  const memberScope = chatScope(access.email, access.organization?.id);
   const savedEmpty = useMemo(() => readShowEmpty(memberScope), [memberScope]);
   const [pickedEmpty, setPickedEmpty] = useState<{ scope: string | null; show: boolean } | null>(
     null
@@ -579,6 +590,30 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           }}
         >
           {isMobile ? null : "Empty stages"}
+        </Button>
+      )}
+      {dealBoard && (
+        // The order of the cards in each lane (CRM-X3). Off: stage age, as
+        // before. On: the soonest next activity first. The gateway sorts,
+        // because a lane returns one page of its cards.
+        <Button
+          variant="ghost"
+          size={isMobile ? "icon-sm" : "sm"}
+          icon="CalendarClock"
+          selected={cardSort === "next_activity"}
+          aria-label="Order cards by next activity"
+          title={
+            cardSort === "next_activity"
+              ? "Cards are in order of next activity. Click to order them by time in stage"
+              : "Cards are in order of time in stage. Click to order them by next activity"
+          }
+          onClick={() => {
+            const next: CardSort = cardSort === "next_activity" ? "stage_age" : "next_activity";
+            writeCardSort(memberScope, next);
+            setPickedSort({ scope: memberScope, sort: next });
+          }}
+        >
+          {isMobile ? null : "Next activity"}
         </Button>
       )}
       {listEntity && (

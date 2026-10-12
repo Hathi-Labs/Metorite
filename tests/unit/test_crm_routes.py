@@ -108,7 +108,10 @@ async def test_an_allowlisted_sort_key_reaches_the_order_by(db: FakeCrmDB) -> No
     db.seed(DEALS.table, name="Printer order")
     await crm_records._list(DEALS, _params(sort="amount", direction="asc"))
 
-    [listing] = [s for s in db.statements if "ORDER BY" in s]
+    # The deal read, not the next-activity read that follows it (CRM-X3).
+    [listing] = [
+        s for s in db.statements if "ORDER BY" in s and "FROM crm_deals" in s
+    ]
     assert "ORDER BY amount ASC" in listing
     assert "LIMIT :limit OFFSET :offset" in listing
 

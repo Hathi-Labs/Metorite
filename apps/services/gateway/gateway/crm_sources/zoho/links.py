@@ -82,6 +82,25 @@ def deep_link(
     return f"https://{host}/crm/{parts[0]}/tab/{parts[1]}/{parts[2]}"
 
 
+def module_link(
+    accounts_server: str | None,
+    domain_name: str | None,
+    tab: str | None,
+    ext_id: str | None,
+) -> str | None:
+    """The link to one record of a generic module (CRM-Q6a), or ``None``.
+
+    The tab is the module's ``module_name`` from the source profile, because a
+    generic module has no entity in :data:`ENTITY_MODULES`. The rules of
+    :func:`deep_link` hold: a checked accounts server and plain words only.
+    """
+    host = crm_host(accounts_server)
+    parts = (domain_name or "", tab or "", str(ext_id or ""))
+    if host is None or not all(_WORD.match(p) for p in parts):
+        return None
+    return f"https://{host}/crm/{parts[0]}/tab/{parts[1]}/{parts[2]}"
+
+
 def tab_link(
     accounts_server: str | None,
     domain_name: str | None,
@@ -99,4 +118,6 @@ def tab_link(
     return f"https://{host}/crm/{domain_name}/tab/{tab}"
 
 
-__all__ = ["DEFAULT_TABS", "ENTITY_MODULES", "crm_host", "deep_link", "tab_link"]
+__all__ = [
+    "DEFAULT_TABS", "ENTITY_MODULES", "crm_host", "deep_link", "module_link", "tab_link",
+]

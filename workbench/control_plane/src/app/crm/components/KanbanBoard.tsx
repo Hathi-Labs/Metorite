@@ -9,7 +9,7 @@
  * Deal lanes are the chosen pipeline's stages in `orderLanes` order, colored.
  * The page may hide the empty ones (`lib/emptyStages.ts`). Lead lanes
  * are the Lead Status values. Cards carry name / company / amount / owner /
- * stage-age. Dragging a card issues a `PATCH` of `status_id`. Each deal lane
+ * stage-age, and the next activity (CRM-X3, `lib/nextActivity.ts`). Dragging a card issues a `PATCH` of `status_id`. Each deal lane
  * header shows its count and ₹ total for the WHOLE lane, not the page of cards
  * returned.
  *
@@ -18,6 +18,9 @@
  */
 
 import Icon from "@/components/Icon";
+import { TaskMeta } from "@/components/TaskMeta";
+import { accentForHue } from "@/lib/statusAccent";
+import type { MetaChip } from "@/lib/taskCard";
 import { useState } from "react";
 import {
   needsLostReason,
@@ -31,6 +34,7 @@ import {
 } from "../lib/board";
 import { isMirrored } from "../lib/connect";
 import { compactMoney, money, shortEmail, stageAgeLabel } from "../lib/format";
+import { nextActivityChip } from "../lib/nextActivity";
 import type { Deal, Lead, Status } from "../lib/types";
 
 type Card = Deal | Lead;
@@ -172,6 +176,9 @@ export default function KanbanBoard({
                       isDeals ? lane.status.max_dwell_days : null,
                     )}
                     maxDwellDays={isDeals ? (lane.status.max_dwell_days ?? null) : null}
+                    // CRM-X3: overdue, today, later or none. A won or lost
+                    // lane gets no chip.
+                    next={nextActivityChip(card.next_activity, lane.status.type)}
                     onDragStart={(e) => {
                       // ⚠️ Firefox refuses to START a drag unless dragstart
                       // sets something on the dataTransfer — without this the
@@ -214,6 +221,7 @@ function RecordCard({
   warnLost,
   rot,
   maxDwellDays,
+  next,
   onDragStart,
   onDragEnd,
   onOpen,
@@ -225,6 +233,8 @@ function RecordCard({
   warnLost: boolean;
   rot: RotLevel;
   maxDwellDays: number | null;
+  /** The next-activity chip, or null for none (`lib/nextActivity.ts`). */
+  next: MetaChip | null;
   onDragStart: (e: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
   onOpen: () => void;
@@ -233,6 +243,7 @@ function RecordCard({
   const lead = entity === "leads" ? (card as Lead) : null;
   const title = deal ? deal.name : (lead?.lead_name ?? "");
   const detail = deal ? deal.organization_name : (lead?.organization_name ?? lead?.email);
+  const overdue = next?.tone === "danger";
   return (
     <article
       // A record that Zoho owns does not move here (CRM-Z7): the write would
@@ -242,7 +253,12 @@ function RecordCard({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onOpen}
-      className="cursor-pointer rounded-lg border border-border bg-card p-2.5 hover:border-primary/40 hover:bg-secondary/30 tech-transition"
+      // An overdue card wears a red left edge, from the shared status colours.
+      className={`cursor-pointer rounded-lg border border-border bg-card p-2.5 hover:border-primary/40 hover:bg-secondary/30 tech-transition ${
+        // The hover border recolours all four sides, so the red edge repeats
+        // it. A literal class, because Tailwind cannot see a built one.
+        overdue ? `border-l-2 ${accentForHue("red").bar} hover:border-l-destructive` : ""
+      }`}
     >
       <h3 className="truncate text-xs font-medium text-foreground">{title}</h3>
       {/* organization_name is projected by the gateway's LEFT JOIN — the
@@ -253,6 +269,7 @@ function RecordCard({
           {detail}
         </p>
       )}
+      {next && <TaskMeta chips={[next]} className="mt-1.5" />}
       {deal ? (
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-foreground">
