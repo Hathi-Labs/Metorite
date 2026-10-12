@@ -81,6 +81,10 @@ async def test_a_state_of_another_member_is_400(world, reg) -> None:
     _, code, state = await f.start_and_consent(_admin(), world)
     await _refused(_admin("other-admin@a.test", ORG_A), code, state, world)
     assert reg.attached == []
+    # The refusal came before the pending flow was taken, so the admin who
+    # started the consent still finishes it.
+    res = await f.finish(_admin(), code, state, iss=f.ISSUER)
+    assert res.status_code == 302 and reg.attached[0]["connected_by"] == ADMIN
 
 
 async def test_an_expired_state_is_400(monkeypatch, world, reg) -> None:

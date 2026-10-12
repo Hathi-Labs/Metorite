@@ -20,7 +20,7 @@ This table is committed BEFORE the code, so it names the fence first.
 | M10 | the store write of the credential loses its org predicate | ``test_mcp_oauth_org_scope_r8.py::test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` |
 | M11 | the ``client_id`` of the CIMD document is not its own URL | ``test_mcp_oauth_cimd.py::test_the_client_id_is_the_url_of_the_document`` |
 | M12 | the callback does not compare the member of the state with the session | ``test_mcp_oauth_state.py::test_a_state_of_another_member_is_400`` |
-| M13 | the code exchange sends no ``code_verifier`` | ``test_mcp_oauth_flow.py::test_a_wrong_verifier_fails_and_saves_nothing`` |
+| M13 | the code exchange sends no ``code_verifier`` | ``test_mcp_oauth_flow.py::test_the_whole_flow_saves_the_credential_as_the_admin`` |
 """
 
 from __future__ import annotations
