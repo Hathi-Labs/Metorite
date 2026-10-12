@@ -1408,11 +1408,11 @@ MD-1a, against the shape of §14.1a.
 
 Done when:
 
-1. With the flag on, `/` renders the feed column: the groups in the order of
-   `groups`, the cards in server order inside each group, `TodayCard` on the
-   `xl` rail, and no Next actions card. One request at the default limit,
-   and the client shows 20 cards at a time. With the flag off, `/` renders
-   today's page.
+1. With the flag on, `/` renders the feed column. The groups come in the
+   order of `groups`, and the cards keep the server order inside each group.
+   `TodayCard` sits on the `xl` rail, and the Next actions card is gone. The
+   page makes one request at the default limit, and shows 20 cards at a
+   time. With the flag off, `/` renders today's page.
 2. The feed answer fills the needs cache key, and the shared poll calls each
    key (§14.1). Fence: `shellBell.test.ts`.
 3. Done and mark read run through the owning app's code, as NS-3 does. Every
