@@ -69,7 +69,9 @@ import * as api from "./api";
 import { useCrmStore } from "./store";
 
 const BASE: CrmView = {
-  tab: "board",
+  tab: "deals",
+  layout: "board",
+  pipelineId: null,
   record: null,
   q: "",
   statusId: null,
@@ -139,13 +141,13 @@ describe("moveDeal re-reads what is on screen", () => {
       .getState()
       .moveDeal(MOVE)
       .then(() => {
-        expect(api.getPipeline).toHaveBeenCalledWith("vj@fracktal.in");
+        expect(api.getPipeline).toHaveBeenCalledWith("vj@fracktal.in", null);
         expect(reportCallCounts()).toEqual([0, 0, 0, 0]);
       });
   });
 
   it("re-reads the list when the move came from a list tab's sheet", () => {
-    useCrmStore.setState({ lastView: { ...BASE, tab: "deals" } });
+    useCrmStore.setState({ lastView: { ...BASE, tab: "deals", layout: "list" } });
     return useCrmStore
       .getState()
       .moveDeal(MOVE)

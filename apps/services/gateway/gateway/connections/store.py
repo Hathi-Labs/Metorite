@@ -109,7 +109,15 @@ _UPSERT_SQL = (
 
 _UPDATE_TOKENS_SQL = (
     "UPDATE integration_connections SET credentials_encrypted = :blob, "
-    "provider_meta = CAST(:provider_meta AS jsonb), updated_at = now() "
+    "provider_meta = provider_meta || CAST(:provider_meta AS jsonb), "
+    "updated_at = now() "
+    "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
+    "AND status <> 'disconnected'"
+)
+
+_MERGE_META_SQL = (
+    "UPDATE integration_connections SET "
+    "provider_meta = provider_meta || CAST(:extra AS jsonb), updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     "AND status <> 'disconnected'"
 )
@@ -127,8 +135,18 @@ _MARK_SYNCED_SQL = (
     "AND status <> 'disconnected'"
 )
 
+#: What the sync learned about the account. A new consent or a disconnect drops
+#: it, because the next connection may be another Zoho org (CRM-Q1 review).
+_DISCOVERED_KEYS = ("domain_name", "edition", "tabs")
+
+_DROP_PROFILES_SQL = (
+    "DELETE FROM crm_source_profiles WHERE connection_id = CAST(:id AS uuid) "
+    "AND organization_id = CAST(:org AS uuid)"
+)
+
 _DISCONNECT_SQL = (
     "UPDATE integration_connections SET status = 'disconnected', "
+    "provider_meta = provider_meta - 'domain_name' - 'edition' - 'tabs', "
     "credentials_encrypted = NULL, last_error = NULL, updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND organization_id = CAST(:org AS uuid) "
     f"RETURNING {_PUBLIC_COLUMNS}"
@@ -365,6 +383,9 @@ async def save_credential(
         connected_by=(connected_by or "").strip().lower() or None,
     )
     row = (await db.execute(text(_UPSERT_SQL), params)).first()
+    # A new consent may be another org or data centre: the profile and the
+    # discovered keys are the old account's. Discovery runs again at the next run.
+    await db.execute(text(_DROP_PROFILES_SQL), {"id": str(row.id), "org": str(row.organization_id)})
     return _connection(row)
 
 
@@ -377,6 +398,24 @@ async def update_tokens(
         "org": str(org),
         "blob": _seal(credential),
         "provider_meta": json.dumps(dict(credential.provider_meta)),
+    })
+
+
+async def merge_provider_meta(
+    db: Any, org: str, connection_id: str, extra: dict[str, Any],
+) -> None:
+    """Add keys to ``provider_meta`` of one connection and keep the others.
+
+    The sync writes what it learned about the account here (``domain_name``,
+    ``edition``, ``tabs``). The row holds no token, so the keys are plain
+    metadata. A refresh and a reconnect keep them, because both merge into the
+    column and never replace it. A key with a ``None`` value is dropped.
+    """
+    kept = {str(k): v for k, v in extra.items() if v is not None}
+    if not kept:
+        return
+    await db.execute(text(_MERGE_META_SQL), {
+        "id": str(connection_id), "org": str(org), "extra": json.dumps(kept),
     })
 
 
@@ -404,6 +443,8 @@ async def disconnect(db: Any, org: str, connection_id: str) -> Connection | None
     row = (await db.execute(
         text(_DISCONNECT_SQL), {"id": str(connection_id), "org": str(org)},
     )).first()
+    if row is not None:
+        await db.execute(text(_DROP_PROFILES_SQL), {"id": str(connection_id), "org": str(org)})
     return _connection(row) if row is not None else None
 
 

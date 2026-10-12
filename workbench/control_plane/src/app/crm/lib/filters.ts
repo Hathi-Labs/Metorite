@@ -32,6 +32,12 @@ export type ListQuery = {
   owner?: string;
   source?: string;
   include_converted?: boolean;
+  /** Deals only (CRM-Q2). Sent only when the org has two pipelines or more. */
+  pipeline_id?: string;
+  /** Related lists (CRM-Q3): the contacts and deals of one company. */
+  company_id?: string;
+  /** Related lists (CRM-Q3): the deals one contact is attached to. */
+  contact_id?: string;
 };
 
 /**
@@ -60,6 +66,7 @@ export function listQuery(
   if (view.q.trim()) query.q = view.q.trim();
   if (view.statusId && hasPipeline(entity)) query.status_id = view.statusId;
   if (view.owner) query.owner = view.owner;
+  if (entity === "deals" && view.pipelineId) query.pipeline_id = view.pipelineId;
   if (entity === "leads" && view.includeConverted) {
     query.include_converted = true;
   }

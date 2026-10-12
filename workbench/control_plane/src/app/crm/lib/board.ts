@@ -7,7 +7,7 @@
 // Spec: project-docs/specs/crm_app.md §5 surface 1.
 
 import { stageAgeDays } from "./format";
-import type { Deal, Pipeline, PipelineLane, Status, StatusType } from "./types";
+import type { Deal, Lead, Pipeline, PipelineLane, Status, StatusType } from "./types";
 
 /** A lane as the board renders it — the wire lane plus its display totals. */
 export type BoardLane = PipelineLane & {
@@ -86,6 +86,66 @@ export function toBoardLanes(pipeline: Pipeline | null): BoardLane[] {
     .map((lane) => ({ ...lane, tone: statusTone(lane.status) }));
 }
 
+// ── The Leads board (CRM-Q3) ──────────────────────────────────────────────
+//
+// The columns are the Lead Status values, in order. A lead has no amount and no
+// forecast, so a lane carries a count and nothing else. The card and the drop
+// are the same as on the deals board, so one `KanbanBoard` draws both.
+
+/** A Leads board column. */
+export type LeadLane = Omit<PipelineLane, "rows"> & {
+  rows: Lead[];
+  tone: string;
+};
+
+/**
+ * Lanes from the Lead Status list and one page of leads for each status.
+ *
+ * `total` is the count of the WHOLE status. `rows` is one page of it, as on the
+ * deals board. A status with no page reads as an empty lane.
+ */
+export function toLeadLanes(
+  statuses: readonly Status[],
+  pages: Readonly<Record<string, { rows: Lead[]; total: number } | undefined>>,
+): LeadLane[] {
+  return [...statuses]
+    .sort((a, b) => a.position - b.position)
+    .map((status) => {
+      const page = pages[status.id];
+      return {
+        status,
+        rows: page?.rows ?? [],
+        count: page?.total ?? 0,
+        amount: 0,
+        weighted: 0,
+        tone: statusTone(status),
+      };
+    });
+}
+
+/** The leads board as it should look the instant a card is dropped. */
+export function applyLeadMove(lanes: LeadLane[], move: DealMove): LeadLane[] {
+  const moving = lanes.flatMap((lane) => lane.rows).find((lead) => lead.id === move.dealId);
+  if (!moving) return lanes;
+  return lanes.map((lane) => {
+    if (lane.status.id === move.fromStatusId) {
+      return {
+        ...lane,
+        rows: lane.rows.filter((lead) => lead.id !== move.dealId),
+        count: Math.max(0, lane.count - 1),
+      };
+    }
+    if (lane.status.id === move.toStatusId) {
+      return {
+        ...lane,
+        rows: [{ ...moving, status_id: move.toStatusId }, ...lane.rows],
+        count: lane.count + 1,
+      };
+    }
+    return lane;
+  });
+}
+
 // ── Weighted ₹ (WS-26f f3, spec §5.1) ─────────────────────────────────────
 //
 // Weighted pipeline = Σ(amount × probability/100) over deals in open/ongoing
@@ -153,7 +213,11 @@ export function boardTotals(lanes: BoardLane[]): {
   );
 }
 
-/** The move a drop asks for, or null when the drop changes nothing. */
+/**
+ * The move a drop asks for, or null when the drop changes nothing.
+ *
+ * `dealId` names the record that moves. On the Leads board it holds a lead id.
+ */
 export type DealMove = {
   dealId: string;
   fromStatusId: string | null;

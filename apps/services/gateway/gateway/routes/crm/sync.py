@@ -102,7 +102,7 @@ async def get_sync_status(
     user: UserContext = Depends(get_current_user),
 ) -> SyncStatusModel:
     """The latest run of the org, as the UI shows it. No token, no Zoho payload."""
-    from gateway.crm_sync import engine, runs
+    from gateway.crm_sync import engine, profiles, runs
 
     org = _organization(user)
     async with _tenant_session() as db:
@@ -111,6 +111,7 @@ async def get_sync_status(
             return SyncStatusModel()
         last_ok = await runs.last_success_at(db, org)
         connection = await store.get(db, org, engine.PROVIDER, engine.OWNING_APP)
+        budget = await profiles.budget_for(db, org)
     # A running row with an old heartbeat is dead. The next run takes it over.
     live = (
         latest.status == runs.STATUS_RUNNING
@@ -126,7 +127,7 @@ async def get_sync_status(
         and connection.status == store.STATUS_CONNECTED
     ):
         next_run = latest.finished_at + timedelta(
-            seconds=engine.next_interval(latest.credits_used))
+            seconds=engine.next_interval(latest.credits_used, budget))
     return SyncStatusModel(
         state="running" if live else "idle",
         kind=latest.kind,  # type: ignore[arg-type]

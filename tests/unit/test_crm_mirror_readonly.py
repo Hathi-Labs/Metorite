@@ -436,7 +436,8 @@ async def test_the_wire_carries_the_mirror_fields(ns, app_engine) -> None:  # no
 
 _RAW_WRITE = re.compile(
     r"(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(\{[a-z_.]+\}|crm_(leads|deals|contacts|"
-    r"companies|activities|deal_statuses|lead_statuses|lost_reasons))",
+    r"companies|activities|deal_statuses|lead_statuses|lost_reasons|pipelines|"
+    r"pipeline_stages))",
     re.IGNORECASE,
 )
 #: Functions that write raw SQL to a guarded table and are not guarded. Each has
@@ -451,11 +452,17 @@ _RAW_ALLOW = {
     # and `test_crm_upsert_from_source_fence.py` keeps routes, agents and
     # skills from naming it.
     "core.py::delete_from_source",
+    # CRM-Q2: the stages of a mirrored pipeline. The third door of the same
+    # bypass, fenced by name in `test_crm_upsert_from_source_fence.py`.
+    "core.py::set_pipeline_stages_from_source",
     "core.py::insert_row", "core.py::update_row",
     # The legacy importer, the sync and the stage repair refuse Mirror mode.
     "import_zoho.py", "sync_zoho.py",
     # The seed runs when the mode becomes Native only.
     "seed.py",
+    # CRM-U5b: Change CRM setup. Deletes the org's stages and lost reasons
+    # only after the route proved 0 records and no connected Zoho.
+    "settings.py::_reset_setup",
 }
 _REFUSES = {"assert_writable", "refuse_in_mirror_mode"}
 

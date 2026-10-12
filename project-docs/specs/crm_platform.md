@@ -24,7 +24,10 @@
 > CRM-Z7, narrowed (2026-10-11): the Zoho connect flow, the sync progress, the
 > title bar mode and the mirror marks. CRM-L2, the promotion of `/crm` to live,
 > with the per-org list `CRM_MIRROR_ORGS` (2026-10-11, owner decision in chat).
-> The other slices are not built yet.
+> CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
+> (2026-10-12, migration 247). The other slices are not built yet.
+>
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -203,6 +206,7 @@ boundary, and the UI is a courtesy.
 | no mode | Native or Mirror | Yes | The setup choice |
 | Mirror | Native | Yes | "Make Metorite your CRM": a final sync, then the mode flips and the connection closes. This is WS-26e's cutover, made a per-org action (CRM-Z10) |
 | Native | Mirror | Only while the org has 0 native records | A mirror over native data is a merge, and v1 has no merge |
+| Native or Mirror | no mode | Yes, with 0 records and no live connection | Change CRM setup (CRM-U5b) |
 
 ### 3.5 The architecture: one store, two writers
 
@@ -875,6 +879,7 @@ The U, Z and L slices are milestone **M4** (the apps we sell).
 | **CRM-U3** | Stage colour through `statusAccent`, categories through `categoricalAccent`, drops through `boardDrop.ts` | 🟢 AGENT-SAFE | `TONES` is gone. The `SCOPE` regex in `sharedTaskUi.test.ts:479` includes `app/crm/`, the comment at lines 467-477 is deleted, and the suite passes |
 | **CRM-U4** | Reads through `useCachedResource`. Skeletons and `EmptyState` | 🟢 AGENT-SAFE | `dataCache.test.ts` patterns hold. No "Loading…" text remains |
 | **CRM-U5** ✅ built 2026-10-11 | The first-open choice (§8.3). Built as: an admin sees two cards, and a member sees "An admin must set up the CRM first." With `CRM_MIRROR` off, only the Native card shows. `GET /crm/connection` now carries `mode`, because `GET /crm/settings` is for admins only | 🟢 AGENT-SAFE | An org with no mode sees the two cards. Native sets the mode and opens the pipeline |
+| **CRM-U5b** ✅ built 2026-10-11 | Change CRM setup (§3.4). `PATCH /crm/settings {"mode": null}` returns the org to no mode. It needs 0 rows in the five record tables and no Zoho connection that is `connected`, else 409 `crm_has_records` or `crm_connected`. The same transaction clears `mode` and `connection_id` and deletes the stages and lost reasons. `access` stays. An admin sees a "CRM setup" card in Settings with a "Change CRM setup" button and a confirm | 🟢 AGENT-SAFE | `test_crm_u5b_r8.py` on a real database. Reset removes the 17 rows, and Native again seeds them. A lead or a connected Zoho gives 409 |
 | **CRM-U6** | Settings → CRM. `PipelineSettings` moves there | 🟢 AGENT-SAFE | Only an admin sees the page. Stages, lost reasons and the mode work from it |
 
 ### 13.5 Phase 3 — the Zoho mirror (§5)
@@ -1014,3 +1019,186 @@ Zoho and Gmail. D95.3 stays inside that.
   must do that first.
 - **It read one key in the box `.env`.** `CRM_ZOHO_SYNC=false`, and no Zoho
   refresh token is set. It printed no secret.
+
+---
+
+## 18. Zoho parity and the adaptive mirror (2026-10-12)
+
+**Bottom line.** The mirror must work for every Zoho edition, from Free to
+Enterprise and Ultimate, and for every customer's own modules and fields. So
+the mirror reads the shape of the customer's Zoho first, then maps what it
+knows by fixed rules. A generic store holds the rest. An AI assistant proposes
+a mapping where the rules do not know, and an admin approves it. The sync
+applies saved rules only.
+
+**The layout.** The CRM uses the words that Zoho users know: one **Deals**
+view with a board or list switch and a pipeline picker. A separate "Pipeline"
+row does not exist.
+
+**Why.** On 2026-10-12 the owner reported three things. Pipeline settings did
+not open. "Pipeline" read as a third object beside Leads and Deals. The CRM
+did not have the views and settings that a Zoho mirror needs.
+
+The owner then asked for comprehensive research. They also asked for a mirror
+that adapts to each customer's Zoho tier, with AI help where the mapping is not
+clear.
+
+### 18.1 What the research found
+
+The research was done on 2026-10-12. It read the documentation of Zoho CRM, the
+Zoho API v8, HubSpot, Salesforce, Pipedrive, Attio, Close and Freshsales, and
+buyer guides. The full note stays outside the repository, because it is a
+working note.
+
+1. **A pipeline is not an object in Zoho.** It is a property of a Deal. A Deal
+   has a `Pipeline` field and a `Stage` field. A pipeline is an ordered subset
+   of the one Stage picklist, attached to a layout. Leads have no pipeline.
+   They have one flat `Lead_Status` picklist.
+2. **The layout of our CRM shows one entity twice.** The rail row "Pipeline"
+   is the deal board, and the rail row "Deals" is the deal list.
+3. **The mirror flattens the customer's Zoho.** We keep one list of deal
+   stages, with no pipeline. `crm_field_defs` (migration 244) is written and
+   never read. Tasks, converted leads, deal contact roles, Products, Quotes,
+   attachments and custom modules are not mirrored. A record shows no related
+   lists. The list views have no saved views, and no filter on a custom field.
+4. **Zoho differs by edition.** The modules, the number of pipelines, the
+   custom modules, the API credits and the concurrency all change with the
+   edition. A mirror that assumes one edition breaks on another.
+
+### 18.2 Owner answers (2026-10-12, in chat)
+
+| Question | Answer | Effect |
+|---|---|---|
+| Fracktal's Zoho edition | Professional | Products and Quotes exist to mirror. Pipelines stay P0, because the mirror must not assume one edition |
+| Does Fracktal rely on Zoho sharing rules? | No. Everyone sees all | Per-owner visibility in the mirror stays P1 |
+| Deal currencies | INR only | Currency conversion in totals moves to P1 |
+| "Accounts" or "Companies" in Mirror mode | "Companies" everywhere | No label alias. D95.2 holds |
+
+### 18.3 The adaptive mirror
+
+**Step 1: discovery.** At connect, and once a day after that, the sync reads
+the shape of the customer's Zoho. It reads metadata only, never a record:
+
+| Read | Zoho API | What it gives |
+|---|---|---|
+| Org | `GET /org` | Edition, home currency, multi-currency, time zone, `domain_name` (for the deep link) |
+| Modules | `GET /settings/modules` | Each module, standard or custom, with its labels, `api_supported` and visibility |
+| Layouts | `GET /settings/layouts?module=` | Sections and the fields in each section |
+| Fields | `GET /settings/fields?module=` | Type, picklist values, lookup target, custom or standard |
+| Pipelines | `GET /settings/pipeline?layout_id=` | Each deal pipeline and its stages |
+| Users | `GET /users` | The owner map |
+
+The result is one **source profile** for each connection. It is versioned, so
+a change in the customer's Zoho shows as a new version.
+
+**Step 2: three mapping layers, in this order.**
+
+1. **Known modules go to our tables, by fixed rules.** Leads, Contacts,
+   Accounts, Deals, Notes, Calls, Events and Tasks.
+2. **The other modules go to one generic record store.** It holds the
+   standard modules that we do not model yet. They are Products, Quotes, Sales
+   Orders, Invoices, Vendors, Price Books, Campaigns and Cases. It also covers each
+   custom module. A generic record keeps its fields in JSON, described by
+   `crm_field_defs`. Its lookups become links. The UI shows a generic list and
+   a generic record page for each module. A later slice can give a module its
+   own table. The generic store then hands its rows over.
+3. **Fields.** A field that maps to one of our columns goes there, by a fixed
+   rule. Every other field goes to `custom`, described by `crm_field_defs`.
+
+**Step 3: the AI mapping assistant, for unclear cases only.** It proposes a
+mapping where the fixed rules do not decide. Two examples: a custom deal field
+that is a product reference, or a custom module that is an install base linked
+to Accounts.
+
+- It reads metadata only: module and field names, types, labels and picklist
+  values. It never reads a customer record.
+- It goes through the Router, so the AI spend is metered.
+- Each proposal has a target, a confidence and one sentence of reason.
+- A proposal becomes a **mapping rule** only when an admin approves it in
+  **CRM settings → Field map**. The sync applies rules and never calls the
+  model for a record. So each record maps the same way, and a re-sync gives
+  the same result.
+- With no approved rule, the data stays in the generic store or in `custom`.
+  Nothing is lost while the admin decides.
+
+**Step 4: the app follows the profile.**
+
+- The rail shows the modules that the customer has. A module that the edition
+  does not have does not show.
+- A deal pipeline picker shows only when the org has more than one pipeline.
+- The default sync budget follows the edition's daily API credits, read from
+  the profile. The 500-credit default of CRM-Z5 stays as the floor for an
+  unknown edition.
+- The CRM settings page shows what the mirror leaves out. Examples: a module
+  that the API does not support, records skipped, and the Notes that a
+  non-admin Zoho user cannot read.
+
+### 18.4 The layout of the CRM
+
+| Rail row | Opens |
+|---|---|
+| Leads | List, with a list or board switch. The board columns are the Lead Status values |
+| Contacts | List |
+| Companies | List |
+| Deals | List, with a list or board switch. A pipeline picker shows when there are two or more pipelines |
+| Activities | Tasks, calls and meetings |
+| *A row for each mirrored generic module* | Generic list and record page, for example Products and Quotes |
+| Reports | Forecast, funnel, win and loss, owners |
+| CRM settings | Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Field map, Sync health |
+
+The row "Pipeline" goes. The record page gets **related lists**. A company
+shows its contacts and deals. A contact shows its deals. A deal shows its
+contacts with their roles.
+
+### 18.5 Tickets
+
+Each migration takes the next free number at build time (R1). Each new table
+has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
+
+| Id | What | Priority |
+|---|---|---|
+| **CRM-Q1** ✅ built 2026-10-12. Built as: migration 247 adds `crm_source_profiles`. A discovery step runs at the first import and once in 24 hours. It reads `GET org`, the modules, the layouts and fields of four modules, and the Deals pipelines. That costs about 11 credits and reads no record. A new profile version is kept only when the hash changes. The org domain, the edition and the tab of each module go into `provider_meta`. The default budget is 10 % of the edition credits, and 500 credits for an unknown edition. `deep_link` is built, and every mirrored record carries `ext_url`. `GET /crm/source-profile` returns no record and no token | Discovery and the source profile. The edition-aware budget. `domain_name` and the deep link ("Open in Zoho") | P0 |
+| **CRM-Q2** ✅ built 2026-10-12. Built as: migration 247 adds `crm_pipelines`, `crm_pipeline_stages`, `crm_deals.pipeline_id` and `crm_deal_statuses.forecast_category`. Discovery writes the Zoho pipelines through the mirror bypass. A deal finds its pipeline by id, by name, or the default. A Native org gets one "Sales pipeline" from the seed, and the migration backfills the same for existing orgs. The U5b reset deletes the pipelines. `GET /crm/pipelines` and `?pipeline_id=` serve the UI. An admin renames a pipeline and adds or removes its stages in Native mode only | Deal pipelines: `crm_pipelines`, the stages of each pipeline, `crm_deals.pipeline_id`, and the forecast category | P0 |
+| **CRM-Q3** | ✅ built 2026-10-12. The new layout of §18.4: no "Pipeline" row, the list or board switch, the pipeline picker, the Leads board, "CRM settings", and related lists | P0 |
+| **CRM-Q4** | ✅ built 2026-10-12. Field definitions in the UI: `GET /crm/fields/{entity}`, custom fields with label, type and order on the record page | P0 |
+| **CRM-Q5** | Data that the mirror loses: converted leads (`converted=both`), Zoho Tasks, and deal contact roles | P0 |
+| **CRM-Q6** | The generic record store and its views. Products and Quotes first, then each custom module | P0 |
+| **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
+| **CRM-Q8** | Filters on pipeline, stage, owner, source, dates and custom picklists. Saved views (`crm_views`) | P0 |
+| **CRM-Q9** | Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
+| **CRM-Q10** | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
+| **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
+| **CRM-Q12** | Per-owner visibility in the mirror | P1 |
+| **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
+
+**CRM-Q4 built as (2026-10-12).**
+
+- `GET /crm/fields/{entity}` serves leads, contacts, organizations and deals. It maps them to the `crm_field_defs.entity` values `lead`, `contact`, `company` and `deal`. Any member that the CRM access rule admits may read it. An unknown entity gives 422. It returns `key`, `label`, `type`, `options`, `position`, `visible`, `source` and `api_name`, in the order of `position`. It adds no write route and no migration. Fences: `tests/unit/test_crm_fields.py` and `tests/unit/test_crm_fields_r8.py`.
+- The record page draws each custom field from its definition: the label, the order, and only visible fields. The rules for each type are in `src/app/crm/lib/fields.ts`. A key with no definition keeps its humanised key. In Mirror mode the fields stay read only.
+- A URL becomes a link only for an http or https address, with `rel="noopener noreferrer"`. Any other value stays text.
+- The Fields card on CRM settings lists the fields of each entity. It says "Fields come from Zoho." in Mirror mode and "Field editing comes later." in Native mode. It has no editor. CRM-S6 builds the editor.
+- Each list has a Columns control. A member picks up to 5 custom fields. The browser keeps the choice for each entity in local storage. Saved views on the server stay with CRM-Q8.
+
+**CRM-Q3 built as (2026-10-12).**
+
+- The rail reads Leads, Contacts, Companies, Deals, Reports and CRM settings. It has no Activities row, because no Activities view exists yet.
+- `?tab=pipeline` and `?tab=board` open Deals as a board. `?tab=settings` opens CRM settings. Deals opens as a board, and `?layout=list` shows the list.
+- Deals and Leads have a list or board switch in the title bar. The Leads board has one column for each Lead Status. A card does not drag in Mirror mode or with an `ext_source`.
+- In Mirror mode no card drags, including a native card (§18.4).
+- The pipeline picker shows for two pipelines or more. It needs `GET /crm/pipelines` from CRM-Q2. A 404 gives one implicit pipeline and no picker. The browser keeps the last choice.
+- The record page shows related lists. The list routes take `?company_id=` for contacts and deals, and `?contact_id=` for deals. A filter on another entity gives 422. Fence: `tests/unit/test_crm_related_r8.py`.
+- CRM settings is one page of cards in this order: Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health. Fields and Sync health say "Coming soon" until CRM-Q4 and CRM-Q9.
+- §18.6: an error boundary wraps the CRM views. It shows "Something went wrong on this page. Reload to get the newest version." The Access card reads the group list only for the rule "groups".
+- The UI does not yet call the CRM-Q2 routes that rename a pipeline or add and remove its stages. So a second pipeline shows its stages read-only.
+
+The earlier native gaps of §6 (CRM-S1 to CRM-S12) and the insights of §9 keep
+their own rows. CRM-Q8 builds the saved views of CRM-S2.
+
+### 18.6 The settings page that did not open
+
+The owner saw the CRM stop when they opened Pipeline settings on 2026-10-11. A
+local run of the same code, in a production build, did not reproduce it. The
+gateway logged no error and no request for the groups list. The most likely
+cause is a browser tab that stayed open across several deploys and held old
+script files. CRM-Q3 replaces that view. If it happens again, capture the
+browser console and the network tab.

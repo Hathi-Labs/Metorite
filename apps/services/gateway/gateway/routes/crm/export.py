@@ -94,6 +94,7 @@ from gateway.routes.crm.core import (
     list_contract,
     project_joined,
     qualify,
+    related_filters,
     router,
     row_to_dict,
 )
@@ -180,6 +181,9 @@ class ExportParams:
         owner: str | None = None,
         source: str | None = None,
         include_converted: bool = False,
+        pipeline_id: str | None = None,
+        company_id: str | None = None,
+        contact_id: str | None = None,
     ) -> None:
         self.q = q
         self.sort = sort
@@ -188,6 +192,9 @@ class ExportParams:
         self.owner = owner
         self.source = source
         self.include_converted = include_converted
+        self.pipeline_id = pipeline_id
+        self.company_id = company_id
+        self.contact_id = contact_id
 
 
 def _cell(entity: Entity, key: str, row: dict[str, Any]) -> Any:
@@ -242,6 +249,12 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         # §3.3/B6, `records._list`'s clause verbatim: a lead is "converted"
         # while the deal it became still exists.
         extra = ("converted_deal_id IS NULL",)
+    # CRM-Q3: the related-list filters travel with the export, so the file is
+    # the list that is on screen.
+    related_where, related_params = related_filters(
+        entity, company_id=params.company_id, contact_id=params.contact_id,
+    )
+    extra = (*extra, *related_where)
     # Reused for the WHERE clause and the ORDER BY — and for the 422s it raises
     # on an unknown sort key, an unknown direction and a status filter on an
     # entity with no pipeline. Its `limit` is the PAGE clamp and is never read
@@ -250,7 +263,7 @@ async def _export(entity: Entity, params: ExportParams) -> Response:
         entity,
         q=params.q, sort=params.sort, direction=params.direction,
         status_id=params.status_id, owner=params.owner, source=params.source,
-        extra_where=extra,
+        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=related_params,
     )
 
     async with _tenant_session() as db:
