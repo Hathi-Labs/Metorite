@@ -3,8 +3,8 @@
 /**
  * The small cards of the CRM settings page (WS-53 CRM-Q3, spec section 18.4).
  *
- * The page is one column of cards in a fixed order: Setup, Access, Connection,
- * Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health.
+ * The page is one column of cards in a fixed order: Setup (with the Zoho
+ * connection, CRM-X0), Access, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health.
  * `PipelineSettings` composes them. The editable grids stay in that file, and
  * these are the cards that only read or only wait.
  */

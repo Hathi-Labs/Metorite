@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -141,6 +142,9 @@ FIELDS_SCOPE = "ZohoCRM.settings.fields.READ"
 ORG_SCOPE = "ZohoCRM.org.READ"
 MODULES_SCOPE = "ZohoCRM.settings.modules.READ"
 
+#: The modules that :meth:`ZohoSource.record_exists` may read (CRM-X0).
+PROBE_MODULES = frozenset({"Deals", "Leads", "Contacts", "Accounts"})
+
 #: The ``provider_meta`` key that holds the org domain name (``GET org``).
 META_DOMAIN_NAME = "domain_name"
 
@@ -246,11 +250,37 @@ def _parse_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+#: A generic module entity is ``module:<ApiName>`` (CRM-Q6a). The API name
+#: goes into a URL path, so it must be a plain identifier.
+_GENERIC_PREFIX = "module:"
+_GENERIC_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+
 def _module(entity: str) -> str:
+    """The Zoho module API name of a canonical entity or a generic module."""
+    if entity.startswith(_GENERIC_PREFIX):
+        name = entity[len(_GENERIC_PREFIX):]
+        if not _GENERIC_NAME.match(name):
+            raise ValueError(f"{name!r} is not a Zoho module API name")
+        return name
     try:
         return ZOHO_MODULES[entity]
     except KeyError:
         raise ValueError(f"Zoho has no module for the entity {entity!r}") from None
+
+
+def _read_scope(entity: str) -> str:
+    """The published read scope of an entity's module, for a scope refusal.
+
+    The one rule is ``mapping.module_read_scope`` (``Sales_Orders`` gives
+    ``salesorders``). A generic module that is not a standard module is a
+    custom module, and takes ``ZohoCRM.modules.custom.READ``.
+    """
+    from gateway.crm_sources.zoho.mapping import GENERIC_STANDARD_MODULES, module_read_scope
+
+    module = _module(entity)
+    custom = entity.startswith(_GENERIC_PREFIX) and module not in GENERIC_STANDARD_MODULES
+    return module_read_scope(module, custom=custom)
 
 
 def _page_params(cursor: SourceCursor, extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -649,10 +679,8 @@ class ZohoSource:
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
         if _is_scope_refusal(r):
-            module = _module(entity)
             raise ZohoScopeError(
-                f"ZohoCRM.modules.{module.lower()}.READ",
-                str(_error_body(r).get("message") or "")[:200],
+                _read_scope(entity), str(_error_body(r).get("message") or "")[:200],
             )
         self._raise_for_status(r, path)
         body = _error_body(r)
@@ -913,6 +941,50 @@ class ZohoSource:
 
     # ── 3b. Discovery (CRM-Q1) ──────────────────────────────────────────────
 
+    async def read_org(self) -> dict[str, Any] | None:
+        """``GET org``: the raw row of the account, or ``None``. One credit.
+
+        Discovery reads it, and the consent callback reads it to compare the
+        account with the one the CRM records came from (CRM-X0).
+        """
+        body = await self._settings_json("org", {}, scope=ORG_SCOPE)
+        rows = body.get("org")
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
+
+    async def record_exists(self, module: str, ext_id: str) -> bool:
+        """``GET {module}/{id}``: does this account hold the record? One credit.
+
+        The consent callback reads one mirrored record with the new token, to
+        tell the same Zoho account from another one (CRM-X0 review P1-2).
+        True only for a 200 whose ``data`` names the same id. A 204 or a 404
+        is False. A version refusal (``INVALID_URL_PATTERN``,
+        ``INVALID_MODULE``) says nothing about the account, so it raises, as
+        any other answer does, and the caller fails closed.
+        """
+        if module not in PROBE_MODULES or not str(ext_id).isdigit():
+            raise SourceError("A record read needs a known module and a numeric id")
+        path = f"/crm/{RECORDS_API_VERSION}/{module}/{ext_id}"
+        r = await self._get(path, params={})
+        if r.status_code == 204:
+            return False
+        code = str(_error_body(r).get("code") or "")
+        if code in _VERSION_ERROR_CODES:
+            raise ZohoApiVersionError(RECORDS_API_VERSION, path, code)
+        if r.status_code == 404:
+            return False
+        if _is_scope_refusal(r):
+            raise ZohoScopeError(
+                f"ZohoCRM.modules.{module.lower()}.READ",
+                str(_error_body(r).get("message") or "")[:200],
+            )
+        self._raise_for_status(r, path)
+        rows = _error_body(r).get("data")
+        return isinstance(rows, list) and any(
+            isinstance(row, dict) and str(row.get("id")) == str(ext_id) for row in rows
+        )
+
     async def discover(self) -> dict[str, Any]:  # noqa: C901 - one linear read of five sections
         """Read the shape of the customer's Zoho. METADATA ONLY, never a record.
 
@@ -949,10 +1021,7 @@ class ZohoSource:
                     out["failed"].append(name)
 
         async def read_org() -> None:
-            body = await self._settings_json("org", {}, scope=ORG_SCOPE)
-            rows = body.get("org")
-            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-                out["org"] = rows[0]
+            out["org"] = await self.read_org()
 
         async def read_modules() -> None:
             body = await self._settings_json("settings/modules", {}, scope=MODULES_SCOPE)

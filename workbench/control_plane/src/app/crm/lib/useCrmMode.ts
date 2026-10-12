@@ -15,6 +15,8 @@ import { denialOf, isNotFound, type Denial } from "./access";
 import { startPoller } from "./poller";
 import { isRunning, type SyncHealth } from "./syncHealth";
 import type { FieldDef } from "./fields";
+import type { CrmOwner } from "./filterBar";
+import type { RecordCounts } from "./setup";
 import type { DealPipeline, EntitySlug } from "./types";
 import {
   POLL_MS,
@@ -28,6 +30,7 @@ import {
   type FirstOpen,
   type SyncStatus,
 } from "./connect";
+import type { CrmModule } from "./modules";
 
 const KEY_CONNECTION = "crm:connection";
 const KEY_SETTINGS = "crm:settings";
@@ -191,6 +194,21 @@ export function useSyncHealth(enabled: boolean): SyncHealthState {
   return { health, loading: enabled && res.loading, error: res.error, refresh };
 }
 
+export type ModulesState = { modules: CrmModule[] | null; loading: boolean };
+
+/**
+ * The mirrored generic modules (WS-53 CRM-Q6b), for the rail. Every failure
+ * reads as "no modules": the rail then shows the known views only. A rail
+ * that fails to draw because one read failed is worse.
+ */
+export function useModules(enabled: boolean): ModulesState {
+  const res = useCachedResource<CrmModule[] | null>(
+    enabled ? "crm:modules" : null,
+    () => api.listModules().catch(() => null),
+  );
+  return { modules: res.data ?? null, loading: enabled && res.loading };
+}
+
 const KEY_PIPELINES = "crm:pipelines";
 
 export type PipelinesState = {
@@ -213,6 +231,18 @@ export function usePipelines(enabled: boolean): PipelinesState {
   return { pipelines: res.data ?? null, loading: enabled && res.loading };
 }
 
+/**
+ * The owners the owner filter offers (CRM-X1). A failure reads as "no list":
+ * the filter then offers Anyone and Me, and the list still loads.
+ */
+export function useOwners(enabled: boolean): CrmOwner[] | null {
+  const res = useCachedResource<CrmOwner[] | null>(
+    enabled ? "crm:owners" : null,
+    () => api.listOwners().catch(() => null),
+  );
+  return res.data ?? null;
+}
+
 export type FieldDefsState = { defs: FieldDef[] | null; loading: boolean };
 
 /**
@@ -226,4 +256,24 @@ export function useFieldDefs(entity: EntitySlug | null): FieldDefsState {
     () => api.listFields(entity!).catch(() => null),
   );
   return { defs: res.data ?? null, loading: entity !== null && res.loading };
+}
+
+const KEY_RECORD_COUNTS = "crm:record-counts";
+
+export type RecordCountsState = {
+  counts: RecordCounts | null;
+  loading: boolean;
+  refresh: () => void;
+};
+
+/**
+ * The record counts of the setup hub (CRM-X0). Admin only. `invalidateCrmMode`
+ * wakes it with every other CRM read, so a start over shows 0 at once.
+ */
+export function useRecordCounts(enabled: boolean): RecordCountsState {
+  const res = useCachedResource<RecordCounts>(
+    enabled ? KEY_RECORD_COUNTS : null,
+    api.getRecordCounts,
+  );
+  return { counts: res.data ?? null, loading: enabled && res.loading, refresh: res.refresh };
 }

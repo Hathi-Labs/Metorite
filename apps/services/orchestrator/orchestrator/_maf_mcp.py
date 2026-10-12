@@ -35,26 +35,50 @@ The rules:
    card, so such a tool is refused there. The hints are the server's claim,
    and a hostile server can lie. Each attach logs them as
    ``mcp.tool_annotations``, so an admin can audit them.
+   **Always confirm** (H-300): an admin can set a server to "always
+   confirm" (``provider_meta.always_confirm`` on its registry row). Then
+   EVERY tool of that server needs the card, whatever its hints say. The flag
+   goes from the row to :class:`McpServer`, onto the tool at the attach
+   (:func:`server_always_confirms`), and to ``decide()`` as the fact
+   ``mcp_always_confirm``. ``decide()`` stays the one gate.
 7. **No stdio.** Nothing here builds an ``MCPStdioTool`` (D85). Fence:
    ``tests/unit/test_no_mcp_stdio.py``.
+8. **Tools on demand** (WS-8c items 22 to 30). Each tool is built with MAF's
+   own progressive disclosure on. So the model sees three loaders
+   (``<prefix>_list_mcp_tools``, ``_load_tool`` and ``_unload_tool``) in
+   place of the full schemas. A Metorite meta-tool would be a second seam.
+   After the connect, a server with :data:`DIRECT_TOOLS_MAX` tools or fewer
+   whose schemas fit :data:`SERVER_SCHEMA_TOKENS` shows its tools directly.
+   When the servers of a run pass :data:`RUN_SCHEMA_TOKENS`, the largest
+   server that still shows full schemas changes to the loaders, until the
+   sum fits. The list loader returns an index only (:func:`mcp_index`). The
+   loaders carry ``egress.MCP_LOADER_KEY``, so they are egress, and the gate
+   lets them pass with no card. A loaded tool is an MCP function, and its
+   card rule holds. A run attaches :data:`MAX_SERVERS` servers or fewer.
 
 Fences: ``tests/unit/test_maf_mcp_injection.py``,
-``tests/unit/test_maf_mcp_org_scope_r8.py`` and
-``tests/unit/test_maf_mcp_confirm.py`` (H-299).
+``tests/unit/test_maf_mcp_org_scope_r8.py``,
+``tests/unit/test_maf_mcp_confirm.py`` (H-299) and
+``tests/unit/test_maf_mcp_budget.py`` (items 22 to 30).
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import functools
+import itertools
 import json
 import re
 import unicodedata
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from acb_common import get_logger, get_settings
+
+if TYPE_CHECKING:
+    from agent_framework import FunctionInvocationContext
 
 _log = get_logger("orchestrator.maf_mcp")
 
@@ -75,6 +99,19 @@ MAX_TOOL_PAGES = 10
 #: The most tools that one server may expose. A server past it is left out,
 #: because hundreds of tools crowd the model and each one is egress.
 MAX_TOOLS = 128
+#: A server with this many tools or fewer may show its full schemas (WS-8c
+#: item 23). A server with more shows the three MAF loaders only.
+DIRECT_TOOLS_MAX = 12
+#: The most MCP schema tokens that one server may cost at run start (item 24).
+SERVER_SCHEMA_TOKENS = 1500
+#: The most MCP schema tokens that all servers of one run may cost (item 24).
+RUN_SCHEMA_TOKENS = 4000
+#: The most servers that one run attaches, in name order (item 28).
+MAX_SERVERS = 8
+#: The longest line of one tool in the index (item 25).
+INDEX_LINE_CHARS = 80
+#: The action of each MAF loader, in the order that MAF builds them.
+LOADER_ACTIONS = ("list", "load", "unload")
 #: The longest reason that a log line carries.
 _REASON_CHARS = 80
 #: The MCP hint names, from the ``annotations`` of one tool (MCP 2025-03-26).
@@ -92,6 +129,8 @@ class McpServer:
     name: str
     url: str
     headers: dict[str, str] = field(default_factory=dict, repr=False)
+    #: H-300: every tool of this server needs the card. False keeps H-299.
+    always_confirm: bool = False
 
 
 #: An open server: the tool and the client that the run must close.
@@ -371,6 +410,18 @@ def _record_tool_list(meta: dict[str, ToolMeta], result: Any, server: str = "") 
         meta[remote] = ToolMeta(hints=hints, description=description)
 
 
+#: The key on a tool's ``__dict__`` that holds its server's H-300 flag.
+_ALWAYS_CONFIRM_KEY = "_ws8c_always_confirm"
+
+
+def server_always_confirms(tool: Any) -> bool:
+    """True when an admin set the server of *tool* to "always confirm" (H-300).
+
+    The attach writes the flag from the registry row. A tool with no flag
+    reads as false, as a row with no key does."""
+    return getattr(tool, "__dict__", {}).get(_ALWAYS_CONFIRM_KEY) is True
+
+
 def tool_meta(tool: Any, remote_name: str) -> ToolMeta | None:
     """What the server of *tool* said about its tool *remote_name*, or None."""
     meta = getattr(tool, "__dict__", {}).get("_ws8c_tool_meta")
@@ -386,6 +437,102 @@ def _log_tool_hints(tool: Any) -> None:
     for remote, info in sorted(meta.items())[:MAX_TOOLS]:
         _log.info("mcp.tool_annotations", server=getattr(tool, "name", ""),
                   tool=str(remote)[:100], hints=info.hints)
+
+
+# ── Tools on demand (WS-8c items 22 to 30) ───────────────────────────────────
+
+
+def schema_tokens(functions: Any) -> int:
+    """What the schemas of *functions* cost the model, in tokens.
+
+    Measured as ``tests/unit/test_tool_schema_diet.py`` measures the platform
+    tools: ``skill_families.tool_json_schema`` and the tokenizer of
+    ``acb_llm.context.count_message_tokens``, one schema at a time."""
+    from acb_llm.context import count_message_tokens
+    from acb_skills.skill_families import tool_json_schema
+
+    return sum(
+        count_message_tokens([{"role": "system", "content": json.dumps(tool_json_schema(fn))}])
+        for fn in list(functions or [])
+    )
+
+
+def _loader_functions(tool: Any) -> list[Any]:
+    """The MAF loaders of *tool* that exist now. It never builds them."""
+    return list(getattr(tool, "__dict__", {}).get("_progressive_loader_functions") or [])
+
+
+def is_mcp_loader(function: Any) -> bool:
+    """True for a loader tool that :func:`_mark_loaders` marked."""
+    from acb_skills.egress import MCP_LOADER_KEY
+
+    props = getattr(function, "additional_properties", None)
+    return isinstance(props, Mapping) and props.get(MCP_LOADER_KEY) is True
+
+
+def _mark_loaders(loaders: list[Any]) -> list[Any]:
+    """Mark each MAF loader with ``egress.MCP_LOADER_KEY`` (item 26).
+
+    MAF builds the loaders with no ``_mcp_is_tool`` key, so the egress rule
+    and the gate would not see them as MCP tools. The key is Metorite's, so
+    the loops of MAF that read ``_mcp_is_tool`` do not change."""
+    from acb_skills.egress import MCP_LOADER_KEY
+
+    for fn in loaders:
+        props = dict(getattr(fn, "additional_properties", None) or {})
+        if props.get(MCP_LOADER_KEY) is not True:
+            props[MCP_LOADER_KEY] = True
+            fn.additional_properties = props
+    return loaders
+
+
+def _index_line(text: Any) -> str:
+    """The first line of *text* that holds a character, for the index.
+
+    Each control, format and line separator character is written as
+    ``\\uXXXX``, so a description cannot reorder the line or start a fake
+    one. The line is cut at :data:`INDEX_LINE_CHARS`."""
+    first = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    shown = "".join(
+        f"\\u{ord(ch):04x}" if unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs", "Zl", "Zp")
+        else ch
+        for ch in first
+    )
+    return shown if len(shown) <= INDEX_LINE_CHARS else shown[: INDEX_LINE_CHARS - 1] + "…"
+
+
+def mcp_index(tool: Any) -> list[dict[str, Any]]:
+    """The index that the list loader of *tool* returns (item 25).
+
+    Each entry holds the name to load, one line of the server's description
+    (:func:`_index_line`), and ``read_only``, and nothing else. MAF's own list
+    returns the full ``parameters()`` of each tool, so one list call cost what
+    the disclosure saved. ``read_only`` is true only when the gate would
+    answer ``mcp_read_only`` (item 13): the hints say read-only and not
+    destructive, and the server is not set to always confirm (H-300). The
+    model gets the full schema when it loads the tool. This is the two-tier
+    model of ``acb_skills.artifact_kit``."""
+    from acb_skills.permission_policy import mcp_needs_confirmation
+
+    always = server_always_confirms(tool)
+    loaders = {getattr(f, "name", "") for f in _loader_functions(tool)}
+    out: list[dict[str, Any]] = []
+    for fn in list(getattr(tool, "_functions", None) or []):
+        name = str(getattr(fn, "name", "") or "")
+        if not name or name in loaders:
+            continue
+        props = getattr(fn, "additional_properties", None) or {}
+        remote = str(props.get("_mcp_remote_name") or name)
+        meta = tool_meta(tool, remote)
+        text = (meta.description if meta is not None else "") or str(
+            getattr(fn, "description", "") or "")
+        out.append({
+            "name": name,
+            "description": _index_line(text),
+            "read_only": not always and not mcp_needs_confirmation(
+                meta.hints if meta is not None else None),
+        })
+    return out
 
 
 @functools.lru_cache(maxsize=1)
@@ -406,10 +553,23 @@ def _run_scoped_tool_class() -> type:
 
     Each session it opens gets the ``tools/list`` caps (:func:`_cap_list_tools`),
     and the tool keeps the hints of each listed tool (:func:`tool_meta`).
+
+    With progressive disclosure on (WS-8c items 25 and 26), each loader that
+    MAF builds is marked (:func:`_mark_loaders`), and the list loader returns
+    the index of :func:`mcp_index`, not the full schemas.
     """
     from agent_framework import MCPStreamableHTTPTool
 
     class RunScopedMCPTool(MCPStreamableHTTPTool):
+        def _progressive_loader_tools(self) -> list[Any]:
+            return _mark_loaders(super()._progressive_loader_tools())
+
+        def _list_progressive_mcp_tools(  # type: ignore[override]
+            self, ctx: FunctionInvocationContext,
+        ) -> list[dict[str, Any]]:
+            # The annotation names the class, so MAF passes the context in.
+            return mcp_index(self)
+
         @property
         def session(self) -> Any:
             return self.__dict__.get("_ws8c_session")
@@ -451,7 +611,43 @@ def _names_held(agent: Any) -> set[str]:
     held = {tool_name(t) for t in (opts.get("tools") or [])} if isinstance(opts, dict) else set()
     for tool in getattr(agent, "mcp_tools", None) or []:
         held |= {tool_name(f) for f in getattr(tool, "functions", None) or []}
+        held |= {tool_name(f) for f in getattr(tool, "_functions", None) or []}
     return {n for n in held if n}
+
+
+def _choose_disclosure(tool: Any) -> None:
+    """Turn the loaders off for a small server, after its connect (item 23).
+
+    A server with :data:`DIRECT_TOOLS_MAX` tools or fewer, whose full
+    schemas fit :data:`SERVER_SCHEMA_TOKENS`, shows its tools directly. Each
+    other server keeps the loaders. MAF reads the attribute each time it
+    reads ``functions``, so the change holds."""
+    functions = list(getattr(tool, "_functions", None) or [])
+    direct = (len(functions) <= DIRECT_TOOLS_MAX
+              and schema_tokens(functions) <= SERVER_SCHEMA_TOKENS)
+    tool.use_progressive_disclosure = not direct
+
+
+def _fit_run_budget(tools: list[Any]) -> None:
+    """Keep the MCP schemas of one run within :data:`RUN_SCHEMA_TOKENS` (item 24).
+
+    While the sum passes the budget, the largest server that still shows
+    full schemas changes to the loaders. Logs ``mcp.schema_budget`` with the
+    cost of each server, the servers that show the index, and the total."""
+    cost = {id(t): schema_tokens(t.functions) for t in tools}
+    while sum(cost.values()) > RUN_SCHEMA_TOKENS:
+        direct = [t for t in tools if not t.use_progressive_disclosure]
+        if not direct:
+            break
+        largest = max(direct, key=lambda t: cost[id(t)])
+        largest.use_progressive_disclosure = True
+        cost[id(largest)] = schema_tokens(largest.functions)
+    total = sum(cost.values())
+    _log.info("mcp.schema_budget", total=total,
+              servers={t.name: cost[id(t)] for t in tools},
+              index=[t.name for t in tools if t.use_progressive_disclosure])
+    if total > RUN_SCHEMA_TOKENS:
+        _log.warning("mcp.schema_over_budget", total=total, budget=RUN_SCHEMA_TOKENS)
 
 
 async def attach_mcp_tools(
@@ -471,17 +667,35 @@ async def attach_mcp_tools(
 
     *member_present* says that a member can answer a card in this run
     (H-299). It goes to the run's :class:`McpPermissionGate`. False, the
-    default, refuses each tool that needs a card."""
+    default, refuses each tool that needs a card.
+
+    WS-8c items 23 to 30: the run attaches :data:`MAX_SERVERS` servers or
+    fewer, in name order, and logs ``mcp.server_cap`` with the rest. The cap
+    counts the servers that ATTACH. A server that is refused, unreachable or
+    in a clash takes no slot (review of #922, P2). Each
+    tool is built with progressive disclosure on, and
+    :func:`_choose_disclosure` and :func:`_fit_run_budget` keep the schemas
+    within the budget. The clash check reads every tool of the server, also
+    the tools that the loaders hide."""
     try:
         tool_cls = _run_scoped_tool_class()
+        from agent_framework._feature_stage import ExperimentalWarning
         from gateway import outbound_guard
     except ImportError as exc:
         _log.warning("mcp.client_unavailable", reason=type(exc).__name__)
         return []
 
+    # WS-8c item 28: 8 servers or fewer, in name order. The cap counts the
+    # servers that attach, so a server that fails takes no slot. The rest
+    # never open.
+    servers = sorted(servers, key=lambda s: s.name)
     held = _names_held(agent)
     tools: list[Any] = []
-    for server in servers:
+    for index, server in enumerate(servers):
+        if len(tools) >= MAX_SERVERS:
+            _log.warning("mcp.server_cap", cap=MAX_SERVERS,
+                         left_out=[s.name for s in servers[index:]])
+            break
         host = _host(server.url)
         try:
             client = await outbound_guard.mcp_client(server.url)
@@ -493,15 +707,23 @@ async def attach_mcp_tools(
             continue
         tool = None
         try:
-            tool = tool_cls(
-                name=server.name,
-                url=server.url,
-                tool_name_prefix=server.name,
-                http_client=client,
-                static_headers=dict(server.headers) or None,
-                load_prompts=False,
-                request_timeout=REQUEST_TIMEOUT_S,
-            )
+            # WS-8c item 30: progressive disclosure is experimental in MAF, and
+            # its constructor raises ExperimentalWarning. Only that class is
+            # ignored, and only here. Nothing filters it for the process.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ExperimentalWarning)
+                tool = tool_cls(
+                    name=server.name,
+                    url=server.url,
+                    tool_name_prefix=server.name,
+                    http_client=client,
+                    static_headers=dict(server.headers) or None,
+                    load_prompts=False,
+                    request_timeout=REQUEST_TIMEOUT_S,
+                    use_progressive_disclosure=True,
+                )
+            # H-300: the gate reads the server's flag from the tool.
+            tool.__dict__[_ALWAYS_CONFIRM_KEY] = server.always_confirm is True
             async with asyncio.timeout(CONNECT_BUDGET_S):
                 await tool.connect()
         except asyncio.CancelledError:
@@ -512,7 +734,13 @@ async def attach_mcp_tools(
             _log.warning("mcp.unreachable", name=server.name, host=host, reason=_reason(exc))
             await _close_one(tool, client, client_first=True)
             continue
-        exposed = {getattr(f, "name", "") for f in tool.functions}
+        _choose_disclosure(tool)
+        # WS-8c item 29: with disclosure on, ``functions`` holds the loaders
+        # only. So the check reads every tool of the server, and the names of
+        # the loaders, which the budget below may still turn on.
+        exposed = {getattr(f, "name", "") for f in (
+            *tool._functions, *tool.functions, *tool._progressive_loader_tools())}
+        exposed.discard("")
         clash = exposed & held
         if clash:
             _log.warning("mcp.name_collision", name=server.name, tools=sorted(clash)[:5])
@@ -525,6 +753,7 @@ async def attach_mcp_tools(
 
     if not tools:
         return []
+    _fit_run_budget(tools)
     # New lists, so an agent object that another run holds never changes.
     agent.mcp_tools = [*list(getattr(agent, "mcp_tools", None) or []), *tools]
     # One gate, with the facts of THIS attach. An older gate is replaced, so
@@ -535,22 +764,31 @@ async def attach_mcp_tools(
         tools=list(agent.mcp_tools), member_present=member_present,
     )]
     names = [t.name for t in tools]
-    _log.info("mcp.attached", servers=names)
+    _log.info("mcp.attached", servers=names,
+              always_confirm=[t.name for t in tools if server_always_confirms(t)])
     return names
 
 
-def _arguments(context: Any) -> dict[str, Any]:
-    """The call arguments of a MAF function invocation, as a dict."""
+def _arguments(context: Any) -> dict[str, Any] | None:
+    """The call arguments of a MAF function invocation, as a dict.
+
+    No arguments is an empty call. A shape that the gate cannot read gives
+    None, and the gate refuses the call, so the card never shows less than
+    what runs (review of PR #888)."""
     args = getattr(context, "arguments", None)
+    if args is None:
+        return {}
     if isinstance(args, Mapping):
         return dict(args)
     dump: Callable[[], Any] | None = getattr(args, "model_dump", None)
     if callable(dump):
-        with contextlib.suppress(Exception):
+        try:
             out = dump()
-            if isinstance(out, Mapping):
-                return dict(out)
-    return {}
+        except Exception:
+            return None
+        if isinstance(out, Mapping):
+            return dict(out)
+    return None
 
 
 # ── The confirmation card (H-299) ────────────────────────────────────────────
@@ -566,7 +804,8 @@ NO_MEMBER_TEXT = (
     "card, and no member can confirm in this run. Do not call it again in "
     "this run.]"
 )
-#: What the model reads in a chat that cannot show a card (WhatsApp).
+#: What the model reads in a chat that cannot show a card (WhatsApp, and
+#: each stream that does not say ``shows_cards=True``).
 NO_CARD_CHANNEL_TEXT = (
     "[not run: {tool} can change data, so a member must confirm it on a "
     "card, and this chat cannot show that card. Tell the member to run it "
@@ -579,26 +818,81 @@ CARD_TOO_LONG_TEXT = (
     "for the member to see them all on the card, and a card that hides part "
     "of a call is not consent. Make a smaller call, or split it.]"
 )
+#: What the model reads when it calls a loader that no server of this run holds.
+LOADER_REFUSED_TEXT = (
+    "[not run: {tool} is not a loader of an MCP server of this run.]"
+)
+#: What the model reads when the gate cannot read the arguments at all.
+UNREADABLE_ARGUMENTS_TEXT = (
+    "[not run: Metorite could not read the arguments of {tool}, so it cannot "
+    "check the call or show it to the member.]"
+)
 
 #: The value that takes the place of a sensitive argument on the card.
 REDACTED = "[redacted]"
-#: Parts of an argument name that mark its value as sensitive. The name is
-#: compared in lower case with no separators, so ``api_key`` is ``apikey``.
-_SENSITIVE_NAME_PARTS = (
-    "password", "passwd", "passphrase", "secret", "token", "apikey",
-    "accesskey", "privatekey", "credential", "authorization", "cookie",
-    "signature", "sessionid", "bearer",
+#: Name parts that mark a value as sensitive. A name is split on ``_``, ``-``,
+#: ``.``, a space and camelCase, and each WHOLE part is compared. So
+#: ``access_token`` and ``refreshToken`` match, and ``max_tokens`` and
+#: ``keyword`` do not (review of PR #888, P2).
+_SECRET_WORDS = frozenset({
+    "password", "passwd", "passphrase", "passcode", "pwd", "pass", "secret", "token",
+    "credential", "credentials", "authorization", "auth", "cookie", "bearer",
+    "apikey", "pin", "otp", "cvv", "cvc", "ssn", "jwt",
+})
+#: A part that ENDS with one of these is sensitive too, so a name with no
+#: separator (``accesstoken``, ``dbpassword``, ``clientsecret``) is hidden
+#: (review of PR #897). ``tokens`` does not end with ``token``, so
+#: ``max_tokens`` stays.
+_SECRET_SUFFIXES = (
+    "token", "password", "passwd", "pwd", "secret", "credential", "credentials", "passphrase",
 )
-#: Whole argument names that mark the value as sensitive.
-_SENSITIVE_NAMES = frozenset({"auth", "key", "pin", "otp", "cvv", "cvc", "ssn", "pwd", "jwt"})
-#: Values that look like a credential, whatever the argument is called.
-_SECRET_VALUES = (
-    re.compile(r"\bBearer\s+\S+", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*"),
+#: Joined pairs with no separator. Each one is a whole part.
+_SECRET_JOINED = frozenset({
+    "privatekey", "accesskey", "secretkey", "clientsecret", "apikey", "sessionid", "sessionkey",
+})
+#: Two parts in a row that mark a value as sensitive. A bare ``key`` is a
+#: call target (``delete_object(bucket, key)``), so it is not one.
+_SECRET_PAIRS = frozenset({
+    ("api", "key"), ("access", "key"), ("private", "key"), ("secret", "key"),
+    ("session", "id"), ("session", "key"), ("client", "secret"),
+})
+#: A value that IS one of these, whole, is hidden. Prose that holds the word
+#: "bearer" stays, because only the WHOLE value is compared.
+_WHOLE_SCHEMES = (
+    re.compile(r"bearer\s+[A-Za-z0-9._~+/=\-]+", re.IGNORECASE),
+    re.compile(r"basic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE),
+)
+#: Keys with a known prefix, hidden wherever they stand in a value: OpenAI,
+#: Stripe and GitHub (review of PR #897).
+_KEY_PREFIXES = (
+    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{6,}"),
+    re.compile(r"(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9_])pk_live_[A-Za-z0-9]{16,}"),
+    re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,}"),
+)
+#: Tokens with a known shape, hidden wherever they stand in a value: Slack,
+#: AWS, Google and a JWT (three base64url segments).
+_TOKEN_SHAPES = (
+    re.compile(r"(?<![A-Za-z0-9_])xox[abprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
+    re.compile(r"(?<![A-Za-z0-9_])AIza[0-9A-Za-z_\-]{30,}"),
+    re.compile(r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]+"),
+)
+#: A PEM private key, from its BEGIN line through its END line (or to the
+#: end of the value, when the END line is missing).
+_PEM_KEY = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY-----|.*)",
+    re.DOTALL,
+)
+#: The password in the user-info of a URL or a DSN: ``scheme://user:PASS@``.
+_URL_PASSWORD = re.compile(r"(?P<head>[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]+:)[^\s@/]+(?=@)")
+#: A ``key=value`` or ``key: value`` pair. The value is hidden only when the
+#: key is a secret name (``Password=...``, ``api_key=...``).
+_KEY_VALUE = re.compile(
+    r"(?<![A-Za-z0-9_.\-])(?P<key>[A-Za-z][A-Za-z0-9_.\-]*)(?P<sep>\"?\s*[=:]\s*)"
+    r"(?P<value>(?:(?:bearer|basic|token)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s;&,\"']+))",
+    re.IGNORECASE,
 )
 #: The deepest nesting that a card shows. A deeper call is refused, never cut.
 _ARG_DEPTH = 8
@@ -608,6 +902,10 @@ _ARG_DEPTH = 8
 _ARGS_CHARS = 2800
 #: The most characters of the whole card body (``ask_tools.request_confirmation``).
 _BODY_CHARS = 4000
+#: The longest server name or tool name that a card shows.
+NAME_CHARS = 64
+#: The most names that the line of hidden values lists.
+_HIDDEN_NAMES = 20
 #: The label above the server's description on the card.
 DESCRIPTION_LABEL = "Description from the MCP server (Metorite did not check this text):"
 
@@ -617,9 +915,47 @@ class CardTooLong(ValueError):
     not consent, so the gate refuses the call."""
 
 
+def _name_parts(name: Any) -> list[str]:
+    """*name* in lower-case parts, split on separators and camelCase."""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name))
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    return [p for p in re.split(r"[^a-z0-9]+", text.lower()) if p]
+
+
+def _secret_part(part: str) -> bool:
+    return (part in _SECRET_WORDS or part in _SECRET_JOINED
+            or part.endswith(_SECRET_SUFFIXES))
+
+
 def _sensitive_name(name: Any) -> bool:
-    flat = re.sub(r"[^a-z0-9]", "", str(name).lower())
-    return flat in _SENSITIVE_NAMES or any(part in flat for part in _SENSITIVE_NAME_PARTS)
+    parts = _name_parts(name)
+    return (any(_secret_part(p) for p in parts)
+            or any(pair in _SECRET_PAIRS for pair in itertools.pairwise(parts)))
+
+
+def _secret_value(text: str) -> bool:
+    """True when the WHOLE value is a credential."""
+    stripped = text.strip()
+    return any(p.fullmatch(stripped) for p in (
+        *_WHOLE_SCHEMES, *_KEY_PREFIXES, *_TOKEN_SHAPES, _PEM_KEY))
+
+
+def _key_value(match: re.Match[str]) -> str:
+    if not _sensitive_name(match.group("key")):
+        return match.group(0)
+    return match.group("key") + match.group("sep") + REDACTED
+
+
+def _mask_secrets(text: str) -> str:
+    """*text* with each credential INSIDE it replaced by :data:`REDACTED`.
+
+    The rest of the value stays, so a member still reads the call."""
+    text = _PEM_KEY.sub(REDACTED, text)
+    text = _URL_PASSWORD.sub(lambda m: m.group("head") + REDACTED, text)
+    text = _KEY_VALUE.sub(_key_value, text)
+    for pattern in (*_KEY_PREFIXES, *_TOKEN_SHAPES):
+        text = pattern.sub(REDACTED, text)
+    return text
 
 
 def _visible(text: str) -> str:
@@ -632,34 +968,102 @@ def _visible(text: str) -> str:
     )
 
 
-def redact_arguments(value: Any, depth: int = 0) -> Any:
-    """*value* with each sensitive value replaced by :data:`REDACTED`.
+def _shown_name(name: Any) -> str:
+    """A server or tool name as the card shows it: escaped and capped.
 
-    A value is sensitive when its argument name says so (``password``,
-    ``api_key``, ``token``) or when it looks like a credential (a bearer
-    token, a key with a known prefix, a JWT). Nothing else is cut: a call
-    nested deeper than :data:`_ARG_DEPTH` raises :class:`CardTooLong`. No
-    shared redaction helper fits structured arguments, so this one is local
-    to the card."""
+    The server writes its tool names. Each control, format, private or line
+    separator character is written as ``\\uXXXX``, so a name cannot reorder
+    the card or start a fake line (review of PR #888, P2). The name is cut
+    at :data:`NAME_CHARS`. A cut name hides nothing that runs."""
+    text = "".join(
+        f"\\u{ord(ch):04x}" if unicodedata.category(ch)[0] in "CZ" and ch != " " else ch
+        for ch in str(name)
+    )
+    return text if len(text) <= NAME_CHARS else text[: NAME_CHARS - 1] + "…"
+
+
+def _local_name(name: Any) -> str:
+    """The local tool name for the title: ``[A-Za-z0-9_.-]`` only, capped.
+
+    MAF already normalises the local name. This keeps the title safe when a
+    caller passes another name."""
+    text = re.sub(r"[^A-Za-z0-9_.\-]", "-", str(name))
+    return text if len(text) <= NAME_CHARS else text[: NAME_CHARS - 1] + "…"
+
+
+def _redact(value: Any, depth: int, path: str, hidden: list[str], partly: list[str]) -> Any:
     if depth > _ARG_DEPTH:
         raise CardTooLong("depth")
     if isinstance(value, Mapping):
-        return {
-            _visible(str(name)): (REDACTED if _sensitive_name(name)
-                                  else redact_arguments(inner, depth + 1))
-            for name, inner in value.items()
-        }
+        out: dict[str, Any] = {}
+        for name, inner in value.items():
+            where = f"{path}.{name}" if path else str(name)
+            if _sensitive_name(name):
+                hidden.append(where)
+                out[_visible(str(name))] = REDACTED
+            else:
+                out[_visible(str(name))] = _redact(inner, depth + 1, where, hidden, partly)
+        return out
     if isinstance(value, list | tuple):
-        return [redact_arguments(v, depth + 1) for v in value]
+        return [_redact(v, depth + 1, f"{path}[{i}]", hidden, partly)
+                for i, v in enumerate(value)]
     if value is None or isinstance(value, bool | int | float):
         return value
     text = str(value)
-    for pattern in _SECRET_VALUES:
-        text = pattern.sub(REDACTED, text)
-    return _visible(text)
+    if _secret_value(text):
+        hidden.append(path or "(value)")
+        return REDACTED
+    masked = _mask_secrets(text)
+    if masked != text:
+        partly.append(path or "(value)")
+    return _visible(masked)
 
 
-def _hint_line(hints: dict[str, bool] | None) -> str:
+def redact_arguments(value: Any, hidden: list[str] | None = None,
+                     partly: list[str] | None = None) -> Any:
+    """*value* with each sensitive value replaced by :data:`REDACTED`.
+
+    A value is hidden whole when a part of its argument name is a secret
+    word (``password``, ``api_key``, ``accesstoken``), or when the WHOLE
+    value is a credential (a bearer token, a key with a known prefix, a
+    JWT). A credential INSIDE a value is hidden in place: a key with a known
+    prefix, a PEM key, the password of a URL, and ``Password=...``. *hidden*
+    gets the path of each value hidden whole, and *partly* of each value
+    hidden in part. Nothing else is cut: a call nested deeper than
+    :data:`_ARG_DEPTH` raises :class:`CardTooLong`. No shared redaction
+    helper fits structured arguments, so this one is local to the card."""
+    return _redact(value, 0, "", hidden if hidden is not None else [],
+                   partly if partly is not None else [])
+
+
+def _count_line(paths: list[str], one: str, many: str) -> str:
+    if not paths:
+        return ""
+    names = ", ".join(_shown_name(h) for h in paths[:_HIDDEN_NAMES])
+    if len(paths) > _HIDDEN_NAMES:
+        names += f", and {len(paths) - _HIDDEN_NAMES} more"
+    if len(paths) == 1:
+        return f"1 value {one}: {names}\n"
+    return f"{len(paths)} values {many}: {names}\n"
+
+
+def _hidden_line(hidden: list[str], partly: list[str] | None = None) -> str:
+    """The card lines that say how many values are hidden, and which."""
+    return (_count_line(hidden, "is hidden", "are hidden")
+            + _count_line(list(partly or []), "is partly hidden", "are partly hidden"))
+
+
+#: The first sentence of the card of a server that is set to always confirm.
+ALWAYS_CONFIRM_LINE = "This server is set to always confirm."
+
+
+def _hint_line(hints: dict[str, bool] | None, always_confirm: bool = False) -> str:
+    if always_confirm:
+        from acb_skills.permission_policy import mcp_needs_confirmation
+
+        if not mcp_needs_confirmation(hints):
+            return f"{ALWAYS_CONFIRM_LINE} The server marks this tool as read-only."
+        return f"{ALWAYS_CONFIRM_LINE} {_hint_line(hints)}"
     if not hints:
         return "The server sent no hints for this tool."
     if hints.get("destructiveHint") is True:
@@ -668,26 +1072,36 @@ def _hint_line(hints: dict[str, bool] | None) -> str:
 
 
 def card_text(server: str, tool: str, arguments: dict[str, Any],
-              meta: ToolMeta | None, fallback_description: str = "") -> tuple[str, str, str]:
+              meta: ToolMeta | None, fallback_description: str = "",
+              local: str = "", always_confirm: bool = False) -> tuple[str, str, str]:
     """The title, detail and body of the card for one MCP call.
 
-    The body shows EVERY argument, with :func:`redact_arguments`, and then
-    the server's description of the tool under :data:`DESCRIPTION_LABEL`.
-    Only the description is cut to fit. Arguments that do not fit raise
-    :class:`CardTooLong`, because a member must see the whole call that
-    Approve runs."""
-    shown = json.dumps(redact_arguments(arguments), indent=2, ensure_ascii=False,
-                       default=str)
+    The title names the LOCAL tool name of MAF (*local*), in
+    ``[A-Za-z0-9_.-]`` only. The detail starts with the real hint line, and
+    only then names the server and the remote tool, each through
+    :func:`_shown_name`. So a tool name cannot spoof the hint line. The body
+    shows EVERY argument, with :func:`redact_arguments`, then the lines that
+    name each hidden value, and then the server's description under
+    :data:`DESCRIPTION_LABEL`. Only the description is cut to fit.
+    Arguments that do not fit raise :class:`CardTooLong`, because a member
+    must see the whole call that Approve runs. With *always_confirm* (H-300)
+    the detail first says that the server is set to always confirm."""
+    hidden: list[str] = []
+    partly: list[str] = []
+    shown = json.dumps(redact_arguments(arguments, hidden, partly), indent=2,
+                       ensure_ascii=False, default=str)
     if len(shown) > _ARGS_CHARS:
         raise CardTooLong("size")
-    head = f"Arguments:\n{shown}\n\n{DESCRIPTION_LABEL}\n"
+    head = f"Arguments:\n{shown}\n{_hidden_line(hidden, partly)}\n{DESCRIPTION_LABEL}\n"
     description = (meta.description if meta is not None else fallback_description) or ""
     description = _visible(description.strip()) or "(no description)"
     room = max(0, _BODY_CHARS - len(head))
     if len(description) > room:
         description = description[: max(0, room - 1)] + "…"
-    title = f"Run the MCP tool {tool} from {server}?"
-    detail = f"Server: {server} · Tool: {tool} · {_hint_line(meta.hints if meta else None)}"
+    shown_server, shown_tool = _shown_name(server), _shown_name(tool)
+    title = f"Run the MCP tool {_local_name(local or tool)}?"
+    detail = (f"{_hint_line(meta.hints if meta else None, always_confirm)} "
+              f"Server: {shown_server} · Tool: {shown_tool}")
     return title, detail, head + description
 
 
@@ -717,22 +1131,66 @@ def _tool_functions(tool: Any) -> list[Any]:
     return list(getattr(tool, "_functions", None) or getattr(tool, "functions", None) or [])
 
 
-def _owner_of(tools: list[Any], function: Any) -> tuple[str, str, ToolMeta | None]:
-    """The server name, the remote tool name and its hints, for *function*.
+def _owner_tool(tools: list[Any], function: Any) -> Any | None:
+    """The MCP tool (the server) that holds *function*, or None.
 
-    The same object first. Else a name that exactly ONE tool holds. Else an
-    unknown server with no hints, which needs the card."""
+    The same object first. Else a name that exactly ONE tool holds."""
     name = str(getattr(function, "name", "") or "")
-    props = getattr(function, "additional_properties", None) or {}
-    remote = str(props.get("_mcp_remote_name") or name)
     same = [t for t in tools if any(f is function for f in _tool_functions(t))]
     if not same:
         same = [t for t in tools
                 if any(getattr(f, "name", None) == name for f in _tool_functions(t))]
-    if len(same) != 1:
+    return same[0] if len(same) == 1 else None
+
+
+def _owner_of(tools: list[Any], function: Any) -> tuple[str, str, ToolMeta | None]:
+    """The server name, the remote tool name and its hints, for *function*.
+
+    The owner is :func:`_owner_tool`. With none, an unknown server with no
+    hints, which needs the card."""
+    name = str(getattr(function, "name", "") or "")
+    props = getattr(function, "additional_properties", None) or {}
+    remote = str(props.get("_mcp_remote_name") or name)
+    owner = _owner_tool(tools, function)
+    if owner is None:
         return "(unknown server)", remote, None
-    owner = same[0]
     return str(getattr(owner, "name", "") or ""), remote, tool_meta(owner, remote)
+
+
+def _loader_owner(tools: list[Any], function: Any) -> tuple[str, str] | None:
+    """The server and the action of the loader *function*, or None.
+
+    The match is BY IDENTITY among the loaders of *tools*, so a loader of
+    another run, or a function that only carries the key, matches nothing."""
+    for tool in tools:
+        for index, loader in enumerate(_loader_functions(tool)):
+            if loader is function:
+                action = LOADER_ACTIONS[index] if index < len(LOADER_ACTIONS) else "?"
+                return str(getattr(tool, "name", "") or ""), action
+    return None
+
+
+async def _pass_or_refuse_loader(tools: list[Any], context: Any, function: Any,
+                                 call_next: Callable[[], Any]) -> None:
+    """The gate's path for a function that is not an MCP tool, and for a loader.
+
+    A function that is not a loader passes, because its own wrapper gates
+    it. List, load and unload show no card (WS-8c item 27): the gate finds
+    the loader BY IDENTITY among the loaders of an MCP tool of this run, and
+    logs ``mcp.loader`` with the server and the action. A loader that no tool
+    of the run holds is refused. A loaded tool is an MCP function, so its own
+    card rule decides each call to it."""
+    if function is None or not is_mcp_loader(function):
+        await call_next()
+        return
+    found = _loader_owner(tools, function)
+    if found is not None:
+        _log.info("mcp.loader", server=found[0], action=found[1])
+        await call_next()
+        return
+    name = _shown_name(getattr(function, "name", "") or "")
+    _log.warning("mcp.loader", server="(unknown server)", action="refused", tool=name)
+    context.result = LOADER_REFUSED_TEXT.format(tool=name)
 
 
 def _make_gate_class() -> type:
@@ -746,10 +1204,16 @@ def _make_gate_class() -> type:
 
         H-299: ``decide()`` gets the server's hints, and every code but
         ``mcp_read_only`` needs the member's card before the call reaches
-        the server (``ask_tools.request_confirmation``). *tools* are the MCP
+        the server (``ask_tools.request_confirmation``). H-300: it also gets
+        the server's "always confirm" flag, and then ``decide()`` never
+        answers ``mcp_read_only``. *tools* are the MCP
         tools of the run, so the gate can find the server of a function.
         *member_present* is False for a run with no member, and then a tool
-        that needs a card is refused."""
+        that needs a card is refused.
+
+        WS-8c item 27: a loader of progressive disclosure passes with no
+        card, when it is a loader of a tool of this run
+        (:func:`_pass_or_refuse_loader`)."""
 
         def __init__(self, tools: list[Any] | None = None,
                      member_present: bool = False) -> None:
@@ -768,16 +1232,24 @@ def _make_gate_class() -> type:
             from orchestrator._tool_injection import _permission_gate
 
             function = getattr(context, "function", None)
-            if function is None or not _from_mcp(function):
-                await call_next()
+            if function is None or not _from_mcp(function) or is_mcp_loader(function):
+                # Not an MCP function, or a loader (WS-8c item 27).
+                await _pass_or_refuse_loader(self.tools, context, function, call_next)
                 return
             name = tool_name(function)
             arguments = _arguments(context)
+            if arguments is None:
+                _log.info("mcp.confirm", tool=name, outcome="unreadable_arguments")
+                context.result = UNREADABLE_ARGUMENTS_TEXT.format(tool=_shown_name(name))
+                return
             server, remote, meta = self.owner_of(function)
+            # H-300: the admin's switch on the server. The owner holds it.
+            always = server_always_confirms(_owner_tool(self.tools, function))
             allowed, reason = _permission_gate(
                 name, arguments, surface="mcp_tool",
                 facts={"mcp_tool": True,
-                       "mcp_annotations": meta.hints if meta is not None else None},
+                       "mcp_annotations": meta.hints if meta is not None else None,
+                       "mcp_always_confirm": always},
             )
             if not allowed:
                 context.result = f"[blocked by permission policy: {reason}]"
@@ -793,7 +1265,8 @@ def _make_gate_class() -> type:
                 return
             try:
                 card = card_text(server, remote, arguments, meta,
-                                 str(getattr(function, "description", "") or ""))
+                                 str(getattr(function, "description", "") or ""),
+                                 local=name, always_confirm=always)
             except Exception:  # CardTooLong, or a fault: no whole card, no call
                 _log.info("mcp.confirm", server=server, tool=name, outcome="card_too_long")
                 context.result = CARD_TOO_LONG_TEXT.format(tool=name)
@@ -827,20 +1300,30 @@ __all__ = [
     "ALL_ORGS",
     "CARD_TOO_LONG_TEXT",
     "DENIED_TEXT",
+    "DIRECT_TOOLS_MAX",
+    "LOADER_REFUSED_TEXT",
+    "MAX_SERVERS",
     "NO_CARD_CHANNEL_TEXT",
     "NO_MEMBER_TEXT",
     "REDACTED",
+    "RUN_SCHEMA_TOKENS",
+    "SERVER_SCHEMA_TOKENS",
+    "UNREADABLE_ARGUMENTS_TEXT",
     "McpPermissionGate",
     "McpServer",
     "ToolMeta",
     "attach_mcp_tools",
     "card_text",
     "close_mcp_tools",
+    "is_mcp_loader",
     "is_native_maf_agent",
     "maf_mcp_org_allowed",
     "maf_mcp_orgs",
+    "mcp_index",
     "mcp_service",
     "redact_arguments",
+    "schema_tokens",
+    "server_always_confirms",
     "tool_hints",
     "tool_meta",
 ]

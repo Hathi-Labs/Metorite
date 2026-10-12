@@ -147,6 +147,167 @@ export async function removeAccount(slot: number): Promise<boolean> {
 }
 
 /**
+ * What `signOutThis` did: this account alone, every account, or a reload as
+ * the account the cookie names after the fallback itself failed.
+ */
+export type SignOutResult = "one" | "all" | "reload";
+
+/**
+ * The words of the fallback, shown on `/signin` after the full sign-out
+ * (`SignOutNotice.tsx`). The page reloads in between, so the flag waits in
+ * this tab's `sessionStorage`. It is one word, never an account or a row.
+ */
+export const SIGN_OUT_ALL_NOTICE =
+  "Couldn't sign out of that account alone, so we signed out of all accounts on this browser.";
+export const SIGN_OUT_NOTICE_KEY = "cc-signout-notice";
+/** How long the notice must be on screen before a reload stops showing it. */
+export const NOTICE_SEEN_MS = 3_000;
+/**
+ * The flag's whole life. The fallback reaches `/signin` in a second or two,
+ * so an older flag is left over from a sign-out that never showed it, and it
+ * must not tell a later `/signin?add=1` a false story (review of 2026-10-12).
+ */
+export const NOTICE_MAX_AGE_MS = 60_000;
+
+function markSignOutNotice(now: number = Date.now()): void {
+  try {
+    // The time it was set, so a stale flag can be told apart.
+    sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, String(now));
+  } catch {
+    /* no storage: the sign-out still runs, with no notice */
+  }
+}
+
+/**
+ * The notice, if a fallback left one. Reading does NOT clear it: a remount
+ * of the page after the first read (Fast Refresh in dev, a hydration retry)
+ * would lose it. `clearSignOutNotice` ends it.
+ */
+export function peekSignOutNotice(now: number = Date.now()): string | null {
+  try {
+    const raw = sessionStorage.getItem(SIGN_OUT_NOTICE_KEY);
+    if (raw === null) return null;
+    const at = Number(raw);
+    // Not a time (the "all" of the first version), from the future, or older
+    // than its life: a leftover. Clear it and show nothing.
+    if (!Number.isFinite(at) || at > now || now - at > NOTICE_MAX_AGE_MS) {
+      sessionStorage.removeItem(SIGN_OUT_NOTICE_KEY);
+      return null;
+    }
+    return SIGN_OUT_ALL_NOTICE;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSignOutNotice(): void {
+  try {
+    sessionStorage.removeItem(SIGN_OUT_NOTICE_KEY);
+  } catch {
+    /* no storage: nothing to clear */
+  }
+}
+
+/** One `remove`, true only for a 2xx. A network error is false. */
+async function removed(slot: number): Promise<boolean> {
+  try {
+    return (await act("remove", { slot })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sign out of the ACTIVE account only, and keep the others (owner,
+ * 2026-10-12, the top-right account menu). It uses the two server actions
+ * that exist, so no new route moves a token:
+ *
+ *   1. `switch` to `next`. The server puts the active session in `next`'s
+ *      slot and makes `next` the active one.
+ *   2. `remove` that slot, which now holds the account that signs out.
+ *
+ * ⚠️ **It fails CLOSED** (review of 2026-10-12). A sign-out that leaves the
+ * account one click away, with no password, while the screen says it left,
+ * is worse than one that signs out too much. So:
+ *
+ * - `switch` refused (a 409 when another tab removed `next`, an expired
+ *   token, any non-2xx) or thrown: sign out of EVERY account (`all`).
+ * - `remove` refused or thrown: one retry. A second failure signs out of
+ *   every account, so this tab never lands on `/` with the leaving
+ *   account's slot still held.
+ *
+ * The fallback leaves `SIGN_OUT_ALL_NOTICE` for `/signin`. After a good
+ * switch it tells the other tabs and points the appearance at once, as
+ * `switchTo` does: the cookie already names `next`. Then it clears the
+ * leaving account's browser storage (rule 4) and reloads at `/`.
+ * ⚠️ With only one account, call `signOutAll`: there is no other to land on.
+ */
+export async function signOutThis(
+  activeEmail: string,
+  next: { slot: number },
+  go: (url: string) => void = (u) => window.location.assign(u),
+  all: () => Promise<void> = signOutAll,
+): Promise<SignOutResult> {
+  // This tab leaves, by one path or the other. Its own channel listener must
+  // not start a second navigation (see `switchTo`).
+  leaving = true;
+  // True once the server swapped the cookie to `next`. From then on this tab
+  // must never stay on the leaving account's page.
+  let switched = false;
+  const fallBack = async (): Promise<SignOutResult> => {
+    markSignOutNotice();
+    await all();
+    return "all";
+  };
+  try {
+    let res: Response;
+    try {
+      res = await act("switch", { slot: next.slot });
+    } catch {
+      return await fallBack();
+    }
+    if (!res.ok) return await fallBack();
+    switched = true;
+    let email: string | undefined;
+    try {
+      ({ email } = (await res.json()) as { email?: string });
+    } catch {
+      /* no body: the announcement on mount still runs */
+    }
+    // NOW, before the remove: the cookie already names `next`, so a stale
+    // tab must not write as the leaving account meanwhile (security review
+    // round 2, P2, the rule `switchTo` follows).
+    if (email) {
+      announceAccount(email);
+      pointAppearanceAt(email);
+    }
+    // The switch moved the leaving account into `next.slot`. Forget it there.
+    if (!(await removed(next.slot)) && !(await removed(next.slot))) return await fallBack();
+    clearAccountNamespaces([activeEmail]);
+    clearAppearanceForAccounts([activeEmail]);
+    clearOrgScopedStorage();
+    go("/");
+    return "one";
+  } catch (e) {
+    // Only the fallback itself can throw here. Its notice was never shown,
+    // so it must not wait for a later `/signin` (review of 2026-10-12).
+    clearSignOutNotice();
+    if (switched) {
+      // ⚠️ The cookie already names `next`. Staying on this page would let a
+      // later write go as `next` under the leaving account's screen, so load
+      // `/` as the account the cookie names. The leaving account may still
+      // sit in a slot, and the menu there lists it with its remove control.
+      go("/");
+      return "reload";
+    }
+    // No switch: the cookie still names this account, so this tab stays and
+    // must hear the other tabs again.
+    leaving = false;
+    throw e;
+  }
+}
+
+/**
  * Sign out of every account in this browser: empty the slots, clear each
  * account's chat namespace (rule 4), then end the active session.
  */

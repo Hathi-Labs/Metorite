@@ -6,18 +6,23 @@ Spec: ``project-docs/specs/integrations_console.md`` §3.2, §3.5, §4 and §7.2
     POST  /integrations/connections/{id}/disconnect
     POST  /integrations/mcp/{name}/test
 
-**One row shape over five sources.** the registry table (Zoho, and
-the next providers), ``email_accounts``, ``wa_accounts``, ``mcp_servers`` and
+**One row shape over five sources.** the registry table (Zoho, GitHub, and
+the next providers), ``email_accounts``, ``wa_accounts``, the MCP servers and
 ``provider_keys``. The console never sees a credential. Each SELECT below names
 its columns, and none names a blob, a header value, a key value or a message
 column (D-EM-4). A free text from a provider never reaches ``last_error``:
 only a short code does.
 
+**MCP (IN-4).** The MCP servers are rows of the registry too, with the
+provider ``mcp:<name>``. ``gateway.connections.mcp`` reads them, and their
+headers stay in the encrypted blob. The registry source skips them, so each
+server is listed once, in the MCP row shape.
+
 **Tenancy (R5).** The organization comes from the server-side ``UserContext``,
 never from the request. the registry table, ``email_accounts`` and
 ``wa_accounts`` are read inside ``tenant_session(org)`` (FORCE RLS binds the
-tenant). ``mcp_servers`` and ``provider_keys`` are RLS-exempt, so their
-``organization_id`` predicate is the boundary.
+tenant). ``provider_keys`` is RLS-exempt, so its ``organization_id`` predicate
+is the boundary.
 
 **Who may do what (§3.5).** The read needs ``admin:members:read``. Each write
 needs ``integrations:manage``. A mailbox and a WhatsApp number belong to a
@@ -152,7 +157,13 @@ def _registry_row(conn: store.Connection, user: UserContext) -> Row:
         owning_app=app,
         scope=conn.scope_kind,
         owner=(conn.member_email if not org_scope else conn.connected_by) or None,
-        status=conn.status,
+        # CRM-X0: `needs_reset` is the CRM's own state. The console has one
+        # word for "an admin must act in the app". Its link opens the CRM,
+        # and the CRM's banner leads to the setup hub and the start over.
+        status=(
+            store.STATUS_NEEDS_RECONNECT if conn.status == store.STATUS_NEEDS_RESET
+            else conn.status
+        ),
         last_sync_at=_iso(conn.last_sync_at),
         last_error=store.safe_error_code(conn.last_error) if conn.last_error else None,
         setup_href=_SETUP_HREF[app],
@@ -221,33 +232,41 @@ def _whatsapp_row(r: Any) -> Row:
     )
 
 
-def _mcp_rows(org: str, user: UserContext) -> list[Row]:
-    """The MCP servers of *org*. Key names only, never a header value."""
-    from acb_graph import get_session
+def _is_mcp(conn: store.Connection) -> bool:
+    """A registry row of an MCP server. :func:`_mcp_rows` lists it, once."""
+    from gateway.connections import mcp as mcp_registry
 
-    with get_session() as s:
-        rows = s.execute(text(integrations._MCP_LIST_SQL), {"org": org}).fetchall()
+    return (
+        conn.provider.startswith(mcp_registry.PREFIX)
+        and conn.owning_app == mcp_registry.OWNING_APP
+    )
+
+
+async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
+    """The MCP servers of *org*, from the registry (IN-4). Never a header."""
+    from gateway.connections import mcp as mcp_registry
+
     out: list[Row] = []
-    for r in rows:
-        name, label, _desc, transport, _cmd, url = r[0], r[1], r[2], r[3], r[4], r[5]
-        scope = r[8] or ["*"]
+    for srv in await mcp_registry.list_servers(org):
         detail = {
-            "name": str(name),
-            "transport": str(transport or ""),
-            "agent_scope": ", ".join(str(a) for a in scope),
+            "name": srv.name,
+            "transport": srv.transport,
+            "agent_scope": ", ".join(srv.agent_scope),
+            # H-300: the console draws this key as a switch, not as text.
+            "always_confirm": "true" if srv.always_confirm else "false",
         }
-        host = _host_only(url)
+        host = _host_only(srv.url)
         if host:
             detail["host"] = host
         out.append(Row(
-            id=f"mcp:{name}",
+            id=f"mcp:{srv.name}",
             kind="mcp",
             provider="mcp",
-            label=str(label or name),
+            label=srv.label or srv.name,
             owning_app="integrations",
             scope="org",
             owner=None,
-            status="connected" if r[9] else "disconnected",
+            status="connected" if srv.enabled else "disconnected",
             setup_href=_SETUP_HREF["integrations"],
             can_disconnect=_can_manage(user),
             detail=detail,
@@ -321,7 +340,9 @@ async def build_rows(org: str, user: UserContext) -> tuple[list[Row], list[str]]
 
     async def _registry() -> list[Row]:
         async with tenant_session(org) as db:
-            return [_registry_row(c, user) for c in await store.list_all(db, org)]
+            conns = await store.list_all(db, org)
+        # An MCP server is listed by ``_mcp`` in its own row shape (H).
+        return [_registry_row(c, user) for c in conns if not _is_mcp(c)]
 
     async def _mailboxes() -> list[Row]:
         async with tenant_session(org) as db:
@@ -332,7 +353,7 @@ async def build_rows(org: str, user: UserContext) -> tuple[list[Row], list[str]]
             return [_whatsapp_row(r) for r in (await db.execute(text(_WHATSAPP_SQL))).fetchall()]
 
     async def _mcp() -> list[Row]:
-        return _mcp_rows(org, user)
+        return await _mcp_rows(org, user)
 
     async def _keys() -> list[Row]:
         return await _key_rows(org, user)
@@ -368,19 +389,10 @@ async def list_connections(
 
 
 def _audit(user: UserContext, org: str, target: str, **payload: Any) -> None:
-    """One audit event: who, what, when, which organization (spec §4.4)."""
-    try:
-        from acb_audit import AuditEvent, record
-
-        record(AuditEvent(
-            actor=f"user:{user.email}",
-            action="integration.disconnect",
-            target=target,
-            payload={"organization_id": org, **payload},
-            organization_id=org,
-        ))
-    except Exception as exc:  # an audit backend that is down must not block this
-        _log.warning("connections.audit_failed", error=type(exc).__name__)
+    """One audit event of a disconnect (spec §4.4), through the one helper."""
+    integrations.audit_integration(
+        user, org, target, action="integration.disconnect", **payload,
+    )
 
 
 def _member_refusal(app: str) -> HTTPException:
@@ -422,6 +434,15 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
         from gateway.routes.crm.connection import disconnect_zoho
 
         after = await disconnect_zoho(org)
+    elif conn.provider == "github" and conn.owning_app == "integrations":
+        # IN-7: GitHub deletes the blob AND the old `provider_keys` row. GitHub
+        # cannot revoke a device-flow token without the client secret, so there
+        # is no revoke call to make.
+        from gateway.connections import github as github_connection
+
+        await github_connection.disconnect(org)
+        async with tenant_session(org) as db:
+            after = await store.get_by_id(db, org, conn.id)
     else:
         async with tenant_session(org) as db:
             after = await store.disconnect(db, org, conn.id)
@@ -485,7 +506,11 @@ async def disconnect_connection(
             raise _not_found()
         raise _member_refusal("whatsapp")
     if provider == "mcp":
-        await integrations.remove_mcp_server(key, user=user)
+        # IN-4: the registry row and any old ``mcp_servers`` row of the org.
+        from gateway.connections import mcp as mcp_registry
+
+        if not await mcp_registry.remove(org, key):
+            raise _not_found()
         result: Any = {"removed": True}
     elif provider == "key":
         result = await _disconnect_keys(org, key, user)
@@ -496,11 +521,6 @@ async def disconnect_connection(
 
 
 # ── MCP test, with the stored headers ───────────────────────────────────────
-
-_MCP_STORED_SQL = (
-    "SELECT transport, url, headers FROM mcp_servers "
-    "WHERE organization_id = :org AND name = :name"
-)
 
 
 @router.post(
@@ -514,23 +534,28 @@ async def run_stored_mcp_test(
     """Test an MCP server of the caller's organization with its STORED headers.
 
     The list returns no header since IN-0, so the browser cannot send them.
+    Since IN-4 the headers come out of the encrypted registry blob, through
+    ``gateway.connections.mcp.get_one`` inside ``tenant_session(org)``.
     The GET goes through the one URL guard (``gateway/outbound_guard.py``). A
     refused URL sends no request. The answer holds a short code and never a
     header, a URL or a provider message.
     """
-    from acb_graph import get_session
+    from gateway.connections import mcp as mcp_registry
 
     org = _org(user)
-    with get_session() as s:
-        row = s.execute(text(_MCP_STORED_SQL), {"org": org, "name": name}).first()
-    if row is None:
+    try:
+        srv = await mcp_registry.get_one(org, name)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.test_read_failed", name=name, error=type(exc).__name__)
+        return McpTestOut(ok=False, error="request_failed")
+    if srv is None:
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found.")
-    transport, url, stored = row[0], row[1], row[2]
-    if transport == "stdio":
+    url = srv.url
+    if srv.transport == "stdio":
         return McpTestOut(ok=False, error="stdio_unsupported")
     if not url:
         return McpTestOut(ok=False, error="no_url")
-    headers = {str(k): str(v) for k, v in (stored or {}).items()} if isinstance(stored, dict) else {}
+    headers = dict(srv.headers)
     headers.setdefault("Accept", "application/json")
     headers["Accept-Encoding"] = "identity"  # the guard keeps raw bytes
     try:

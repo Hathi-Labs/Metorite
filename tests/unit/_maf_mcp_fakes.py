@@ -1,9 +1,10 @@
 """Shared fakes for the WS-8c fences (MCP servers on a native MAF agent).
 
-* :class:`RegistrySpy` replaces ``acb_graph.get_session`` for the registry
-  read of ``_tool_injection._inject_mcp_servers``. It records each statement
-  and its binds, and answers the rows of the org that the binds name. So a
-  test proves both "the run read no row" and "the filter named the org".
+* :class:`RegistrySpy` replaces ``gateway.connections.mcp.servers_for_org``,
+  the one registry read of ``_tool_injection._inject_mcp_servers`` (WS-54
+  IN-4). It records each call and its org, and answers the servers of that
+  org. So a test proves both "the run read nothing" and "the read named the
+  org".
 * :func:`native_agent` builds a real MAF ``Agent`` that never reaches a model.
 * :class:`CopilotStub` has the one field the Copilot path writes.
 * :func:`local_mcp_server` runs a real streamable-HTTP MCP server on
@@ -22,66 +23,75 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-#: The columns of ``_tool_injection._MCP_ROWS_SQL``, in order.
-COLUMNS = ("name", "transport", "url", "headers", "agent_scope")
-
-
 def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,
-        scope: list[str] | None = None) -> dict[str, Any]:
-    """One ``mcp_servers`` row, with its org."""
-    return {
+        scope: list[str] | None = None,
+        always_confirm: bool | None = None) -> dict[str, Any]:
+    """One registered MCP server, with its org.
+
+    *always_confirm* None stands for a row with no H-300 key, which reads as
+    false."""
+    out = {
         "org": org, "name": name, "transport": transport, "url": url,
         "headers": headers or {}, "agent_scope": scope or ["*"],
     }
+    if always_confirm is not None:
+        out["always_confirm"] = always_confirm
+    return out
+
+
+#: The one reader call that the spy records, with the org it was given.
+READ = "servers_for_org"
 
 
 @dataclass
 class RegistrySpy:
-    """A fake ``get_session`` over a list of rows of several orgs."""
+    """A fake ``gateway.connections.mcp.servers_for_org`` over several orgs.
+
+    WS-54 IN-4 moved the servers into the connection registry, and the
+    orchestrator reads them through that one function. The spy answers the
+    servers of the org that the call names, and records each call. The R8
+    half (``tests/unit/test_mcp_registry_r8.py``) proves the real reader.
+    """
 
     rows: list[dict[str, Any]] = field(default_factory=list)
     statements: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     def install(self, monkeypatch: Any) -> RegistrySpy:
-        import acb_graph
+        from gateway.connections import mcp
 
-        monkeypatch.setattr(acb_graph, "get_session", self._session)
+        monkeypatch.setattr(mcp, READ, self._servers_for_org)
         return self
 
-    @contextlib.contextmanager
-    def _session(self) -> Iterator[Any]:
-        spy = self
+    async def _servers_for_org(self, org: str) -> list[Any]:
+        from gateway.connections.mcp import StoredServer
 
-        class _Result:
-            def __init__(self, rows: list[tuple[Any, ...]]) -> None:
-                self._rows = rows
-
-            def fetchall(self) -> list[tuple[Any, ...]]:
-                return self._rows
-
-        class _Session:
-            def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
-                sql = str(stmt)
-                binds = dict(params or {})
-                if "mcp_servers" not in sql:
-                    # Another read of the run (skill settings, for example).
-                    return _Result([])
-                spy.statements.append((sql, binds))
-                org = binds.get("org")
-                if "organization_id = :org" not in sql:
-                    # An unfiltered read answers every org: that is the leak.
-                    picked = spy.rows
-                else:
-                    picked = [r for r in spy.rows if r["org"] == org]
-                return _Result([tuple(r[c] for c in COLUMNS) for r in picked])
-
-        yield _Session()
+        self.statements.append((READ, {"org": org}))
+        return [
+            StoredServer(
+                name=r["name"], label=r["name"], description="",
+                transport=r["transport"], url=r["url"],
+                agent_scope=tuple(r["agent_scope"]), enabled=True,
+                header_names=tuple(sorted(r["headers"])), headers=dict(r["headers"]),
+                **({"always_confirm": r["always_confirm"]} if "always_confirm" in r else {}),
+            )
+            for r in self.rows if r["org"] == org
+        ]
 
     @property
     def reads(self) -> int:
         return len(self.statements)
+
+
+def refuse_registry(monkeypatch: Any, message: str) -> None:
+    """Make every MCP registry call fail, for a path that must not reach it."""
+    from gateway.connections import mcp
+
+    def _refuse(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError(message)
+
+    monkeypatch.setattr(mcp, "tenant_session", _refuse)
 
 
 def native_agent(name: str = "probe") -> Any:
@@ -140,13 +150,36 @@ class LocalServer:
     headers_seen: list[dict[str, str]]
 
 
+#: The description of each filler tool of a large server. It has two lines,
+#: and the first is longer than the 80 characters of an index line.
+FILLER_DESCRIPTION = (
+    "Search the bulk store {i} for the records that match a query, and return "
+    "them with their fields.\n"
+    "Returns at most limit records, and a cursor for the next page. Each record "
+    "holds its id, its title, its owner, its stage and the time it changed last."
+)
+
+
+def _filler_tool(i: int, calls: list[str]) -> Any:
+    def bulk(query: str, limit: int = 10, cursor: str = "",
+             fields: list[str] | None = None, owner: str = "") -> str:
+        calls.append(f"bulk_{i:02d}:{query}")
+        return f"bulk_{i:02d}:{query}"
+
+    return bulk
+
+
 @contextlib.contextmanager
-def local_mcp_server() -> Iterator[LocalServer]:
+def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
     * ``echo`` says it is read-only, so it runs with no card (H-299).
     * ``delete_record`` says it is destructive, so it needs the card.
     * ``plain_note`` sends no hints, so it needs the card too.
+
+    *filler* adds that many read-only tools ``bulk_00``, ``bulk_01`` and so
+    on, each with a long description and five arguments. With 10 or more,
+    the server has more than 12 tools, so it gets the index (WS-8c item 23).
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
@@ -155,6 +188,12 @@ def local_mcp_server() -> Iterator[LocalServer]:
     calls: list[str] = []
     headers_seen: list[dict[str, str]] = []
     server = FastMCP("probe", stateless_http=True, json_response=True)
+    for i in range(filler):
+        server.add_tool(
+            _filler_tool(i, calls), name=f"bulk_{i:02d}",
+            description=FILLER_DESCRIPTION.format(i=i),
+            annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+        )
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def echo(text: str) -> str:

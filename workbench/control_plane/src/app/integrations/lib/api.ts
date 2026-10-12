@@ -60,6 +60,16 @@ export async function testMcp(name: string): Promise<McpTestResult> {
   return (await res.json()) as McpTestResult;
 }
 
+/** H-300: turn the "always confirm" switch of one MCP server on or off. */
+export async function setMcpAlwaysConfirm(name: string, value: boolean): Promise<void> {
+  const res = await fetch(`/api/integrations/mcp/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ always_confirm: value }),
+  });
+  if (!res.ok) return fail(res);
+}
+
 export async function addMcp(body: Record<string, unknown>): Promise<void> {
   const res = await fetch("/api/integrations/mcp", {
     method: "POST",

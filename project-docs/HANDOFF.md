@@ -1366,29 +1366,33 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-01 · the Outlook onboarding session
 
 ### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
-- **Check:** `rg -n "Q-GM-6 \(answered" project-docs/specs/email_app_master_plan.md`
-  → no hit means open. The owner closes it. The owner confirms that the client on
-  the box is the mail app of §12.4. An agent then writes
-  `**Q-GM-6 (answered, <date>).**` under §12.5.
-- ⚠️ **Do not count the keys on the box.** The box holds a Google client since
-  2026-10-05, and nobody in the plan set it (Q-GM-6). So a key count of 1 does
-  not show that the owner registered the app. The old Check counted
-  `GMAIL_OAUTH_CLIENT_ID=` lines. The orchestrator found that key by name on
-  2026-10-05 (§12.1), so a `/handoff` run can delete this entry too early.
-  The EM-G9 session wrote this Check on 2026-10-05.
+- **Check:** `rg -n "^\*\*Step 9 done \(20[0-9][0-9]-" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. Only §12.4 step 9 writes that line, after an agent puts
+  the client of the owner on the box and both values measure non-empty.
+- ⚠️ **The Check changed on 2026-10-12.** The old Check keyed on the answer to
+  Q-GM-6. PR-D0 answered Q-GM-6 on 2026-10-12: the box holds no client. So the
+  old Check would delete this OWNER entry while the app still does not exist.
+- ⚠️ **Do not count the key lines on the box.** The box holds both
+  `GMAIL_OAUTH_*` names with EMPTY values (measured by length, 2026-10-12,
+  §12.1). A count of the names gives 1 with no client. Count by length only,
+  with the command of §12.4 step 9, and never print a value.
 - **Why.** On 2026-10-04 the owner amended D-EM-5: Gmail and Google Workspace
   mailboxes join Outlook. The code needs ONE Google OAuth app that Metorite
   owns. An agent cannot create it, because it needs a Google account of
   Metorite (`work_plan.md` §6.0 B).
 - **Do.**
   1. Do steps 1 to 8 of `specs/email_app_master_plan.md` §12.4, in Testing mode.
+     The owner chose path A on 2026-10-12: one Metorite-owned app, External,
+     in Testing (§12.4).
   2. Give the client ID and the secret to an agent through a one-time channel.
      Do not paste the secret into a chat.
-  3. The agent writes the two keys on the box under gate `env-write`.
-  4. Answer Q-GM-1 to Q-GM-6 (§12.5).
-- **Then.** The owner's test (EM-G10) runs after EM-G5a, EM-G9 and EM-G7b
-  merge (D-EM-36, amended 2026-10-05). EM-G5b, EM-G3b and EM-G3c come before
-  customers, with Google verification and CASA (§12.4 steps 10 to 15).
+  3. The agent writes the two keys on the box under gate `env-write`, and
+     writes the line of §12.4 step 9.
+  4. Answer Q-GM-1 to Q-GM-5 (§12.5). PR-D0 answered Q-GM-6.
+- **Then.** The owner's test (EM-G10) runs. EM-G5a, EM-G9 and EM-G7b are
+  merged (D-EM-36, amended 2026-10-05). Before customers: the six slices of
+  §12.3.12, Google verification and CASA (§12.4 steps 10 to 15), and the
+  privacy draft after §12.4 step 15.
 - **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
@@ -4859,25 +4863,6 @@ line — never reclaim a number by deleting the other entry.
   `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
 
-### H-217 · Registry MCP servers no longer reach apis-config · [AGENT]
-- **Check:** run two commands. First,
-  `uv run pytest tests/unit/test_maf_mcp_injection.py -q -k native_agent_gets_the_server_tools`.
-  Then `ssh metorite 'grep -c "^MAF_MCP_ORGS=." /opt/acb/app/.env'`. The entry
-  closes only when the test passes AND the count is 1 or more. A missing test
-  file means WS-8c has not merged. A count of 0 means the flag allows no org,
-  so a `*` server still reaches no MAF agent.
-  ⚠️ Do not use a grep for `MCPStreamableHTTPTool` here. It matches
-  `acb_skills/egress.py:101`, which only names the class, and it gives a
-  false pass.
-- **Why:** `merge_mcp_servers` writes the field that only the Copilot agent
-  class reads (WS-8c). apis-config was a Copilot agent until PR #585. So an
-  `mcp_servers` row with agent scope `*` reached it before, and reaches only
-  Copilot agents now. WS-8c owns the real fix. Until it lands, do not expect
-  a `*` server to show up in apis-config. The same gap waits for task-manager
-  when H-215 moves it.
-- **Authority:** `specs/agent_architecture.md` §11.3.1 and §12.2 WS-8c · PR #585 review
-- **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
-
 ### H-219 · A steer note shows as extra detail rows on a tool card · [AGENT]
 - **Check:** `grep -rn "arrived from a participant" workbench/control_plane/src/`
   → no hit means the cards still show the note as rows, and the entry is still open.
@@ -5184,20 +5169,29 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner ask, 2026-10-10 · `src/lib/personName.ts`
 - **Added:** 2026-10-10 · the person names session
 
-### H-300 · Decide on an "always confirm" setting for each MCP server · [OWNER]
-- **Check:** `grep -n "always_confirm" apps/services/orchestrator/orchestrator/_maf_mcp.py`
-  → no hit means this is open.
-- **Why:** an MCP tool that says it is read-only runs with no card (H-299,
-  WS-8c item 13). The server writes that hint, and a hostile server can mark
-  a tool that deletes as read-only. The log line `mcp.tool_annotations` lets
-  an admin audit the hints. It does not stop the call.
-- **Do:** decide if an admin may set "always confirm" on one MCP server, so
-  that every tool of that server needs the card, whatever its hints say. If
-  yes, add a column to `mcp_servers`, default `true` for a new row, and pass
-  it to `McpPermissionGate`. Do not build it before the owner decides.
-- **When:** before the first org outside Fracktal gets `MAF_MCP_ORGS`.
-- **Authority:** `specs/agent_architecture.md` §12.2 WS-8c (the known limit)
-- **Added:** 2026-10-12 · H-299
+### H-301 · Drop `mcp_servers` one release after IN-4 · [AGENT]
+- **Check:** `grep -c "FROM mcp_servers" apps/services/gateway/gateway/connections/mcp.py`
+  → a count above `0` means this is open.
+- **Why:** IN-4 (WS-54) moved the org MCP servers into
+  `integration_connections`, with the headers in the encrypted blob. For one
+  release `mcp_servers` stays readable (R6 expand), and an old row there still
+  holds its headers as plain JSONB. `connections/mcp.py` moves an old row on
+  the first read of its org, and leaves the old row.
+- **Do:** the contract step, after one release on production.
+  1. Count the rows of `mcp_servers` on production again. On 2026-10-12 it
+     held 0 rows.
+  2. Remove `_LEGACY_SQL`, `_LEGACY_DELETE_SQL`, `migrate_legacy` and the
+     old-row delete in `remove` from `connections/mcp.py`.
+  3. Add a migration that drops `mcp_servers`. Take its number at build time,
+     and check it again at merge (R1).
+  4. In the same PR, remove `mcp_servers` from the `EXEMPT` list of
+     `scripts/gen_tenant_migration.py` (:105).
+  5. Update the suites that seed an old row: the F tests of
+     `test_mcp_registry_r8.py` and the seed of
+     `test_integrations_connections_r8.py`.
+- **When:** one release after IN-4 merges.
+- **Authority:** `specs/integrations_console.md` §7.2 (IN-4) · R6
+- **Added:** 2026-10-12 · IN-4
 
 ### H-301 · Put the MCP edge signing key on both units, and strip identity headers at Caddy · [OWNER]
 - **Check:** two parts. This entry is done only when both pass.

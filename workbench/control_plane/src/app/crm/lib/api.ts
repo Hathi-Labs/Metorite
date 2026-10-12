@@ -9,12 +9,16 @@
 // flattened them all to "request failed" would leave the UI unable to explain
 // a refusal, which is the difference between a rule and a bug.
 
-import { filenameFromDisposition, saveCsv } from "@/lib/export";
+import { filenameFromDisposition, saveBlob, saveCsv } from "@/lib/export";
 import { moveRequest, type DealMove, type MoveExtras } from "./board";
 import { queryString, type ListQuery } from "./filters";
 import type { ConnectionInfo, CrmSettings, SyncStatus } from "./connect";
 import type { FieldDef } from "./fields";
+import type { CrmOwner } from "./filterBar";
+import type { SavedView, SavedViewBody } from "./savedViews";
 import type { SyncHealth } from "./syncHealth";
+import type { RecordCounts, ResetThen } from "./setup";
+import type { ResetResult } from "./startOver";
 import type {
   Activity,
   Contact,
@@ -37,6 +41,7 @@ import type {
   TimelineEntry,
   WinLossReport,
 } from "./types";
+import type { CrmModule, ModuleListResponse, ModuleRecordPage } from "./modules";
 
 export class CrmError extends Error {
   status: number;
@@ -154,6 +159,13 @@ export function listFields(entity: EntitySlug): Promise<FieldDef[]> {
   return call<FieldDef[]>(`/fields/${entity}`);
 }
 
+// ── The owner filter (CRM-X1) ─────────────────────────────────────────────
+
+/** Each active member, and each record owner who is not a member. */
+export async function listOwners(): Promise<CrmOwner[]> {
+  return (await call<{ owners: CrmOwner[] }>("/owners")).owners;
+}
+
 // ── The CSV export (WS-26i-export) ────────────────────────────────────────
 
 /** What a download is called when the proxy dropped the server's header. */
@@ -201,10 +213,15 @@ export async function exportRecords(
 export function getPipeline(
   owner?: string | null,
   pipelineId?: string | null,
+  extra?: ListQuery,
 ): Promise<Pipeline> {
   const params = new URLSearchParams();
   if (owner) params.set("owner", owner);
   if (pipelineId) params.set("pipeline_id", pipelineId);
+  // CRM-Q8: the board takes the same filters as the list.
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
   const qs = params.toString();
   return call<Pipeline>(`/pipeline${qs ? `?${qs}` : ""}`);
 }
@@ -347,6 +364,33 @@ export function getWinLossReport(): Promise<WinLossReport> {
 
 export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
   return call<OwnerLeaderboard>("/reports/owners");
+}
+
+// ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────
+
+/** The mirrored generic modules, in the profile order. Empty in Native mode. */
+export function listModules(): Promise<CrmModule[]> {
+  return call<CrmModule[]>("/modules");
+}
+
+/**
+ * One page of a module's records. The module name goes into the path encoded,
+ * and the gateway checks it against the profile before it reads a record.
+ */
+export function listModuleRecords(
+  module: string,
+  query: ListQuery = {},
+): Promise<ModuleListResponse> {
+  return call<ModuleListResponse>(
+    `/modules/${encodeURIComponent(module)}/records${queryString(query)}`,
+  );
+}
+
+/** One generic record, with its field definitions and its lookup links. */
+export function getModuleRecord(module: string, id: string): Promise<ModuleRecordPage> {
+  return call<ModuleRecordPage>(
+    `/modules/${encodeURIComponent(module)}/records/${encodeURIComponent(id)}`,
+  );
 }
 
 // ── Mode, connection and sync (WS-53 CRM-U5, CRM-Z7) ───────────────────────
@@ -498,10 +542,59 @@ export function convertLead(
 
 export type { Contact, Deal, Lead, Organization };
 
-/** Admin only. Back to "no mode" (CRM-U5b). A 409 carries a `message` to show. */
-export function resetMode(): Promise<CrmSettings> {
-  return call<CrmSettings>("/settings", {
-    method: "PATCH",
-    body: JSON.stringify({ mode: null }),
-  });
+// ── The setup hub and the start over (WS-53 CRM-X0) ───────────────────────
+
+/** Admin only. The records of the org, by entity. */
+export function getRecordCounts(): Promise<RecordCounts> {
+  return call<RecordCounts>("/settings/counts");
+}
+
+/**
+ * Admin only. Remove every record and set the mode from `then`. A wrong
+ * `confirm` is a 422 with a sentence. `then = "mirror"` gives the consent URL.
+ */
+export function resetCrm(body: { confirm: string; then: ResetThen }): Promise<ResetResult> {
+  return call<ResetResult>("/reset", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** The ZIP of every record, through the proxy. The server names the file. */
+export const ALL_RECORDS_ZIP = "/api/crm/export/all.zip";
+
+/**
+ * Get the whole ZIP, then save it (review P2). A refusal or a proxy error is
+ * a `CrmError` with the server's words, and nothing is saved, so a JSON body
+ * never lands on disk as `crm-export.zip`. It resolves only after the save.
+ */
+export async function downloadAllRecords(
+  deps: { fetch: typeof fetch; save: (body: Blob, filename: string) => void } = {
+    fetch: (input, init) => fetch(input, init),
+    save: saveBlob,
+  },
+): Promise<void> {
+  const res = await deps.fetch(ALL_RECORDS_ZIP, { cache: "no-store" });
+  const type = res.headers.get("content-type") ?? "";
+  if (!res.ok || !type.includes("application/zip")) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown; error?: string };
+    throw new CrmError(detailOf(body) || `The copy did not download (${res.status}).`, res.status);
+  }
+  const blob = await res.blob();
+  deps.save(blob, filenameFromDisposition(res.headers.get("content-disposition"), "crm-export.zip"));
+}
+
+// ── Saved views (CRM-Q8) ──────────────────────────────────────────────────
+
+export function listViews(entity: EntitySlug): Promise<SavedView[]> {
+  return call<SavedView[]>(`/views?entity=${entity}`);
+}
+
+export function createView(body: SavedViewBody): Promise<SavedView> {
+  return call<SavedView>("/views", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function patchView(id: string, body: Partial<SavedViewBody>): Promise<SavedView> {
+  return call<SavedView>(`/views/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteView(id: string): Promise<{ deleted: string }> {
+  return call<{ deleted: string }>(`/views/${id}`, { method: "DELETE" });
 }

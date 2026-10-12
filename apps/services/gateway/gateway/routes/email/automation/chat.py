@@ -227,6 +227,9 @@ async def ai_chat(
         run_id=run_id,
         thread_id=f"email-chat:{user_id}:{thread_key}",
         model=chat_tier,
+        # `event_stream` below forwards no CUSTOM event, so no card can reach
+        # the member. Each card answers "no" at once (review of PR #888, P2).
+        shows_cards=False,
     )
 
     async def event_stream():

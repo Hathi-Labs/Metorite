@@ -126,10 +126,29 @@ def test_no_query_in_the_module_names_a_credential_or_message_column() -> None:
     assert bad == [], f"the read model must never select these: {bad}"
 
 
-def test_the_mcp_list_sql_it_reuses_names_no_value() -> None:
-    sql = integrations._MCP_LIST_SQL.lower()
-    assert "jsonb_object_keys(headers)" in sql and "jsonb_object_keys(env_vars)" in sql
-    assert "select name, label, description, transport, command, url," in sql
+def test_the_mcp_list_shape_names_no_value() -> None:
+    """IN-4: the list reads the registry, and keeps the shape of IN-0.
+
+    Header names, never a value. No stdio server is stored, so no command
+    and no env var name is listed.
+    """
+    from gateway.connections.mcp import StoredServer
+
+    secret = "Bearer sentinel-in4-shape"
+    srv = StoredServer(
+        name="srv", label="Srv", description="", transport="http-sse",
+        url="https://mcp.example.com/mcp", agent_scope=("*",), enabled=True,
+        header_names=("Authorization",), headers={"Authorization": secret},
+    )
+    out = integrations.mcp_out(srv)
+    assert set(out) == {
+        "name", "label", "description", "transport", "command", "url",
+        "env_var_names", "header_names", "agent_scope", "enabled",
+        "always_confirm", "created_at", "updated_at",
+    }
+    assert out["header_names"] == ["Authorization"] and out["env_var_names"] == []
+    assert out["command"] is None
+    assert secret not in repr(out) and secret not in repr(srv)
 
 
 def test_the_row_model_has_no_field_that_can_hold_a_secret() -> None:

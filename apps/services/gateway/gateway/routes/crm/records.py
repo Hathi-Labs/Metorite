@@ -7,6 +7,10 @@ Spec: ``project-docs/specs/crm_app.md`` §4 (``records.py`` row).
     GET    /crm/<entity>/{id}
     PATCH  /crm/<entity>/{id}
     DELETE /crm/<entity>/{id}                                 → what cascaded
+    GET    /crm/owners                                        → {owners}
+
+``search_records`` is no route. The command bar's CRM provider calls it
+(WS-53 CRM-X2), after the gates of this router.
 
 **Every path here is written out literally**, one route per entity, rather than
 served by a single ``/crm/{entity}`` template. That is not verbosity for its own
@@ -23,10 +27,11 @@ functions below, so there is exactly one implementation of each rule.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.core import (
     CLOSING_TYPES,
     CONTACTS,
@@ -38,6 +43,7 @@ from gateway.routes.crm.core import (
     ContactIn,
     DealIn,
     Entity,
+    ExtraFilterInput,
     LeadIn,
     ListResponse,
     OrganizationIn,
@@ -49,7 +55,9 @@ from gateway.routes.crm.core import (
     compute_lead_name,
     count_where,
     current_tenant,
+    custom_pairs,
     default_pipeline_id,
+    extra_filters,
     has_column,
     insert_row,
     lead_name_is_derived,
@@ -59,6 +67,7 @@ from gateway.routes.crm.core import (
     record_zoho_tombstone,
     related_filters,
     require_row,
+    resolve_owner,
     router,
     row_to_dict,
     run_list,
@@ -98,6 +107,13 @@ class ListParams:
         pipeline_id: str | None = None,
         company_id: str | None = None,
         contact_id: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        updated_from: str | None = None,
+        updated_to: str | None = None,
+        close_from: str | None = None,
+        close_to: str | None = None,
+        request: Request = None,  # type: ignore[assignment]
     ) -> None:
         self.q = q
         self.sort = sort
@@ -112,6 +128,17 @@ class ListParams:
         self.pipeline_id = pipeline_id
         self.company_id = company_id
         self.contact_id = contact_id
+        #: CRM-Q8. ISO dates. A bad one is a 422 before any SQL.
+        self.created_from = created_from
+        self.created_to = created_to
+        self.updated_from = updated_from
+        self.updated_to = updated_to
+        #: Deals only.
+        self.close_from = close_from
+        self.close_to = close_to
+        #: ``custom.<key>=<value>`` and ``custom.<key>.in=a,b``, read off the
+        #: request because the key names are not known up front.
+        self.custom = tuple(custom_pairs(request.query_params if request else None))
 
 
 class DeleteResponse(BaseModel):
@@ -128,7 +155,9 @@ class DeleteResponse(BaseModel):
 
 # ── Shared behaviour ────────────────────────────────────────────────────────
 
-async def _list(entity: Entity, params: ListParams) -> ListResponse:
+async def _list(
+    entity: Entity, params: ListParams, user: Any = None,
+) -> ListResponse:
     extra: tuple[str, ...] = ()
     if entity.hides_converted and not params.include_converted:
         # §3.3/B6 — a lead is "converted" while the deal it became still
@@ -142,14 +171,26 @@ async def _list(entity: Entity, params: ListParams) -> ListResponse:
     )
     extra = (*extra, *related_where)
     extra_params.update(related_params)
-    query = list_contract(
-        entity,
-        q=params.q, sort=params.sort, direction=params.direction,
-        page=params.page, page_size=params.page_size,
-        status_id=params.status_id, owner=params.owner, source=params.source,
-        pipeline_id=params.pipeline_id, extra_where=extra, extra_params=extra_params,
-    )
+    params.owner = resolve_owner(params.owner, user)
     async with _tenant_session() as db:
+        # CRM-Q8: the date ranges and the custom field filters. They validate
+        # first, so a bad value is a 422 before the list query runs.
+        more_where, more_params = await extra_filters(
+            db, entity, ExtraFilterInput(
+                created_from=params.created_from, created_to=params.created_to,
+                updated_from=params.updated_from, updated_to=params.updated_to,
+                close_from=params.close_from, close_to=params.close_to,
+                custom=params.custom,
+            ),
+        )
+        query = list_contract(
+            entity,
+            q=params.q, sort=params.sort, direction=params.direction,
+            page=params.page, page_size=params.page_size,
+            status_id=params.status_id, owner=params.owner, source=params.source,
+            pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
+            extra_params={**extra_params, **more_params},
+        )
         return await run_list(db, entity, query)
 
 
@@ -413,6 +454,132 @@ async def delete_record(
         )
 
 
+# ── Owners (WS-53 CRM-X1) ──────────────────────────────────────────────────
+
+#: The most owners one answer holds.
+MAX_OWNERS = 500
+
+#: The active members of the tenant, then each record owner that no active
+#: member holds. ``app_user`` and the four CRM tables force row level
+#: security, so the bound session reads the caller's tenant only. The member
+#: rule is the one ``rooms._directory`` uses.
+_OWNERS_SQL = """
+WITH members AS (
+    SELECT email, display_name AS name FROM app_user
+    WHERE COALESCE(status, 'active') = 'active'
+),
+record_owners AS (
+    SELECT DISTINCT lower(owner_email) AS email FROM (
+        SELECT owner_email FROM crm_leads
+        UNION ALL SELECT owner_email FROM crm_deals
+        UNION ALL SELECT owner_email FROM crm_contacts
+        UNION ALL SELECT owner_email FROM crm_companies
+    ) o
+    WHERE btrim(COALESCE(owner_email, '')) <> ''
+)
+SELECT email, name, member FROM (
+    SELECT email, name, true AS member FROM members
+    UNION ALL
+    SELECT r.email, NULL AS name, false AS member FROM record_owners r
+    WHERE NOT EXISTS (SELECT 1 FROM members m WHERE lower(m.email) = r.email)
+) owners
+ORDER BY lower(name) NULLS LAST, lower(email)
+LIMIT :limit
+"""
+
+
+class OwnerModel(BaseModel):
+    """One choice of the owner filter. It holds nothing else (R5)."""
+
+    email: str
+    name: str | None = None
+    member: bool
+
+
+class OwnersResponse(BaseModel):
+    owners: list[OwnerModel]
+
+
+@router.get("/owners", response_model=OwnersResponse)
+async def list_owners(
+    user: UserContext = Depends(get_current_user),
+) -> OwnersResponse:
+    """Each owner the filter offers, for the caller's tenant only.
+
+    A CRM route and not the member list of Chat, for two reasons: that list
+    needs ``feature:chat``, and it cannot name a Zoho owner who is not a
+    member. The router's kill switch, ``feature:crm`` and the access rule
+    apply here as on every ``/crm`` route.
+    """
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(_OWNERS_SQL), {"limit": MAX_OWNERS})).fetchall()
+    return OwnersResponse(owners=[
+        OwnerModel(email=r.email, name=r.name, member=bool(r.member)) for r in rows
+    ])
+
+
+# ── The shell's search (WS-53 CRM-X2) ──────────────────────────────────────
+
+#: The entities the command bar searches, and the kind each one names in the
+#: answer. The order breaks a tie of ``last_activity_at``.
+SEARCH_KINDS: tuple[tuple[Entity, str], ...] = (
+    (DEALS, "deal"), (LEADS, "lead"), (CONTACTS, "contact"), (ORGANIZATIONS, "company"),
+)
+
+
+async def search_records(
+    user: UserContext, q: str, limit: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    """The records that match *q*, newest activity first, as ``(kind, row)``.
+
+    Spec: ``crm_platform.md`` §19.6 and §19.10. The command bar's CRM provider
+    (``routes/shell/search.py::_crm``) calls it after the CRM router's gates,
+    so it writes no SQL of its own. Each entity is read with the list contract
+    of its route: the same ``?q=`` match, and the converted-lead rule of
+    ``_list``. The reads share one ``_tenant_session()``, so row level
+    security keeps them in the caller's tenant.
+
+    ⚠️ It builds no ``ListParams``. That class declares its defaults with
+    ``Query(...)``, so a direct call that leaves out an argument passes the
+    ``Query`` object itself. It also reads no next activity and no count
+    (``rows_only``), because the bar has 1.5 seconds for every app.
+    """
+    words = (q or "").strip()
+    if not words:
+        return []
+    found: list[tuple[str, dict[str, Any]]] = []
+    async with _tenant_session() as db:
+        for entity, kind in SEARCH_KINDS:
+            query = list_contract(
+                entity,
+                q=words, sort="last_activity_at", direction="desc",
+                page=1, page_size=limit,
+                extra_where=(OPEN_LEAD_SQL,) if entity.hides_converted else (),
+            )
+            answer = await run_list(db, entity, query, rows_only=True)
+            found += [(kind, row) for row in answer.rows]
+    # Newest first. A record with no activity yet goes last. `sort` is stable,
+    # so a tie keeps the order of `SEARCH_KINDS`.
+    found.sort(key=lambda pair: _activity_instant(pair[1]), reverse=True)
+    return found[:limit]
+
+
+def _activity_instant(row: dict[str, Any]) -> datetime:
+    """The row's ``last_activity_at`` as an instant, or the earliest one."""
+    value = row.get("last_activity_at")
+    if not value:
+        return _NO_ACTIVITY
+    try:
+        instant = datetime.fromisoformat(str(value))
+    except ValueError:
+        return _NO_ACTIVITY
+    return instant if instant.tzinfo else instant.replace(tzinfo=UTC)
+
+
+#: The sort key of a record with no activity: before every real instant.
+_NO_ACTIVITY = datetime.min.replace(tzinfo=UTC)
+
+
 # ── Leads ───────────────────────────────────────────────────────────────────
 
 @router.get("/leads", response_model=ListResponse)
@@ -421,7 +588,7 @@ async def list_leads(
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
     """Leads, newest first. Converted leads are hidden unless asked for."""
-    return await _list(LEADS, params)
+    return await _list(LEADS, params, user)
 
 
 @router.post("/leads", status_code=201)
@@ -460,7 +627,7 @@ async def list_deals(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(DEALS, params)
+    return await _list(DEALS, params, user)
 
 
 @router.post("/deals", status_code=201)
@@ -499,7 +666,7 @@ async def list_contacts(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(CONTACTS, params)
+    return await _list(CONTACTS, params, user)
 
 
 @router.post("/contacts", status_code=201)
@@ -538,7 +705,7 @@ async def list_organizations(
     params: ListParams = Depends(),
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
-    return await _list(ORGANIZATIONS, params)
+    return await _list(ORGANIZATIONS, params, user)
 
 
 @router.post("/organizations", status_code=201)

@@ -25,6 +25,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon, type ThemedIcon } from "@/components/Icon";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import { MyTask } from "../lib/types";
@@ -99,6 +100,12 @@ function FocusRoom({ itemId }: { itemId: string }) {
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const loadSubtasks = useTaskStore((s) => s.loadSubtasks);
   const quickCaptureOpen = useTaskStore((s) => s.quickCaptureOpen);
+  const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
+  // Quick Capture is mounted by the My Tasks page only, and this room runs on
+  // every route (AppShell). Off /tasks a click would set `quickCaptureOpen`
+  // with no panel to show it, and Escape would stop minimizing. So the
+  // capture button shows on /tasks only (review of #934).
+  const captureHere = usePathname()?.startsWith("/tasks") ?? false;
   const minimized = useTaskStore((s) => s.focusMinimized);
   const minimize = useTaskStore((s) => s.minimizeFocusSession);
   const expand = useTaskStore((s) => s.expandFocusSession);
@@ -672,12 +679,22 @@ function FocusRoom({ itemId }: { itemId: string }) {
             {fmtClock(nextBlock.start)}
           </span>
         )}
-        <span className="hidden sm:inline">
-          <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>{" "}
-          capture a stray thought ·{" "}
-          <kbd className="rounded border border-border px-1 text-[9px]">esc</kbd>{" "}
-          minimize
-        </span>
+        {/* A button, not the `C` key it used to name: the Tasks letter
+            shortcuts were removed (owner, 2026-10-13). Quick Capture opens
+            above this room (z-[80] over z-[70]). */}
+        {captureHere ? (
+        <Button
+          variant="text"
+          size="none"
+          layout="inline-flex items-center"
+          type="button"
+          icon="Plus"
+          onClick={() => openQuickCapture("single")}
+          className="gap-1 text-[11px]"
+        >
+          Capture a thought
+        </Button>
+        ) : null}
       </div>
     </div>
   );

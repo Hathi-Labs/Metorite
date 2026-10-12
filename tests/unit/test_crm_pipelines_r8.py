@@ -215,7 +215,7 @@ def _age_profile(p: Any, org: str, hours: int = 48) -> None:
 
 
 def _deal(z: Q1Zoho, ident: str, minute: int, **fields: Any) -> None:
-    z.add("Deals", ident, minute, Deal_Name=f"Deal {ident}", Stage="Qualify", **fields)
+    z.add("Deals", ident, minute, **{"Deal_Name": f"Deal {ident}", "Stage": "Qualify", **fields})
 
 
 async def _sync(q: Any, org: str, z: Q1Zoho) -> Any:
@@ -898,7 +898,9 @@ async def test_a_reconnect_to_another_zoho_org_drops_the_old_profile(q) -> None:
     meta = _q(q.p, "SELECT provider_meta FROM integration_connections WHERE "
                    "organization_id = CAST(:o AS uuid)", o=q.org_a)[0][0]
     assert not {"domain_name", "edition", "tabs"} & set(meta)
-    assert _count(q.p, "crm_source_profiles", q.org_a) == 0
+    # CRM-X0: a disconnect keeps the profile, so the next consent can compare
+    # its account with this one. The new consent below drops it.
+    assert _count(q.p, "crm_source_profiles", q.org_a) == 1
 
     # Connect again, to the other Zoho org on another data centre.
     other = SourceCredential(
@@ -977,3 +979,179 @@ async def test_native_writes_refuse_a_pipeline_that_a_provider_owns(q) -> None:
         r = await _req(admin, method, path, body)
         assert r.status_code == 409, (method, r.text)
         assert r.json()["detail"]["code"] == "mirrored_pipeline"
+
+
+# ── 7. Deals board stages (owner report, 2026-10-12) ─────────────────────────
+
+
+def _status(p: Any, org: str, name: str, kind: str, position: int) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_deal_statuses (organization_id, name, position, type) "
+            "VALUES (CAST(:o AS uuid), :n, :p, :t)"),
+            {"o": org, "n": name, "p": position, "t": kind})
+
+
+async def _store_profile(org: str, connection_id: str, stages: list[Any]) -> None:
+    from acb_common.db import tenant_session
+    from gateway.crm_sync import profiles
+
+    profile = {"pipelines": [{
+        "ext_id": "p1", "name": "Standard", "default": True, "layout_ext_id": None,
+        "stages": [
+            {"name": name, "sequence": i + 1, "forecast_category": None, "type": kind}
+            for i, (name, kind) in enumerate(stages)
+        ],
+    }]}
+    async with tenant_session(org) as db:
+        await profiles.store(db, org, connection_id, profile)
+
+
+def _types(p: Any, org: str) -> dict[str, str]:
+    return {r[0]: r[1] for r in _q(
+        p, "SELECT name, type FROM crm_deal_statuses WHERE "
+           "organization_id = CAST(:o AS uuid)", o=org)}
+
+
+async def test_a_stored_profile_retypes_an_existing_stage_with_no_zoho_call(q) -> None:
+    """Payment Complete was mirrored as ``open`` before the pipeline said ``won``.
+
+    The insert keeps an existing row, so only the type pass can fix it. It runs
+    from the stored profile at the start of the run: this run stops before its
+    first provider call, and the type is still fixed. A Native org with the
+    same rows and the same profile is never touched.
+    """
+    from gateway.crm_sync import engine
+
+    stages = [("Qualify", None), ("Payment Complete", "won"),
+              ("Re-Evaluate", "lost"), ("Held By Hand", None)]
+    conn_a = await _connect(q.p, q.org_a, q.a)
+    conn_b = await _connect(q.p, q.org_b, q.b, mode="native")
+    for org, conn in ((q.org_a, conn_a), (q.org_b, conn_b)):
+        _status(q.p, org, "Qualify", "open", 0)
+        _status(q.p, org, "Payment Complete", "open", 1)
+        _status(q.p, org, "Re-Evaluate", "open", 2)
+        # A type that the pipeline does not state stays as it is.
+        _status(q.p, org, "Held By Hand", "won", 3)
+        await _store_profile(org, conn, stages)
+    q.a.requests.clear()
+
+    result = await engine.run_org(q.org_a, should_stop=lambda: True)
+    assert result.status == "stopped", result
+    assert q.a.requests == []  # no Zoho call at all
+    assert _types(q.p, q.org_a) == {
+        "Qualify": "open", "Payment Complete": "won",
+        "Re-Evaluate": "lost", "Held By Hand": "won",
+    }
+
+    with pytest.raises(engine.NotConnected):
+        await engine.run_org(q.org_b)
+    assert _types(q.p, q.org_b) == {
+        "Qualify": "open", "Payment Complete": "open",
+        "Re-Evaluate": "open", "Held By Hand": "won",
+    }
+
+
+async def test_discovery_retypes_an_existing_stage_too(q) -> None:
+    """The same rule on the discovery path: ``Won It`` already exists as open."""
+    _status(q.p, q.org_a, "Won It", "open", 0)
+    await _sync(q, q.org_a, q.a)
+    assert _types(q.p, q.org_a)["Won It"] == "won"
+
+
+async def test_no_deal_disappears_from_a_pipeline_board(q) -> None:
+    """A deal in a stage its pipeline does not list still has a column.
+
+    The lane counts add up to the deals of the pipeline, with and without an
+    owner filter. A stage that holds no deal of the pipeline is not added.
+    """
+    _deal(q.a, "s1", 1, Pipeline="Standard")
+    _deal(q.a, "s2", 2, Pipeline="Standard")
+    _deal(q.a, "d1", 3, Pipeline="Standard", Stage="Delivered & Installed")
+    _deal(q.a, "d2", 4, Pipeline="Standard", Stage="Delivered & Installed")
+    _deal(q.a, "n1", 5, Pipeline="Standard", Stage="New Lead")
+    _deal(q.a, "r1", 6, Pipeline="Renewals", Stage="Meeting Scheduled")
+    await _sync(q, q.org_a, q.a)
+    with q.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE crm_deals SET owner_email = 'x@crm-sync.test' WHERE "
+            "organization_id = CAST(:o AS uuid) AND ext_id IN ('s1', 'd1')"),
+            {"o": q.org_a})
+    admin = _admin(q.org_a)
+    std = _pid(q)
+
+    board = (await _req(admin, "GET", f"/crm/pipeline?pipeline_id={std}")).json()
+    lanes = [(lane["status"]["name"], lane["count"], lane["pipeline_position"])
+             for lane in board["lanes"]]
+    assert lanes == [
+        ("Qualify", 2, 0), ("Won It", 0, 1),
+        ("Delivered & Installed", 2, None), ("New Lead", 1, None),
+    ]
+    held = _count(q.p, "crm_deals", q.org_a,
+                  f"pipeline_id = CAST('{std}' AS uuid)")
+    assert held == 5
+    assert sum(lane["count"] for lane in board["lanes"]) == held
+
+    mine = (await _req(
+        admin, "GET", f"/crm/pipeline?pipeline_id={std}&owner=x@crm-sync.test",
+    )).json()
+    assert [(lane["status"]["name"], lane["count"]) for lane in mine["lanes"]] == [
+        ("Qualify", 1), ("Won It", 0), ("Delivered & Installed", 1),
+    ]
+    assert sum(lane["count"] for lane in mine["lanes"]) == 2
+
+    # The whole-org board has no pipeline position and every stage.
+    whole = (await _req(admin, "GET", "/crm/pipeline")).json()
+    assert {lane["pipeline_position"] for lane in whole["lanes"]} == {None}
+    assert sum(lane["count"] for lane in whole["lanes"]) == 6
+
+
+async def test_held_lanes_follow_every_board_filter(q) -> None:
+    """CRM-Q8's filters reach the held-lane read with the same binds.
+
+    ``owner=me`` binds the caller, never the word ``me``. A held lane shows
+    only while it holds a deal that passes every filter, and the lane counts
+    add up to the filtered deals of the pipeline.
+    """
+    _deal(q.a, "s1", 1, Pipeline="Standard")
+    _deal(q.a, "h1", 2, Pipeline="Standard", Stage="Delivered & Installed")
+    _deal(q.a, "h2", 3, Pipeline="Standard", Stage="Delivered & Installed")
+    _deal(q.a, "n1", 4, Pipeline="Standard", Stage="New Lead")
+    await _sync(q, q.org_a, q.a)
+    me, other = "admin@crm-sync.test", "other@crm-sync.test"
+    with q.p.admin_engine.begin() as c:
+        for ext, owner, source, close in (
+            ("s1", me, "manual", "2026-03-15"), ("h1", me, "manual", "2026-03-10"),
+            ("h2", other, "email", "2026-06-10"), ("n1", other, "email", "2026-06-20"),
+        ):
+            c.execute(text(
+                "UPDATE crm_deals SET owner_email = :w, source = :s, "
+                "expected_close_date = CAST(:d AS date) WHERE ext_id = :e "
+                "AND organization_id = CAST(:o AS uuid)"),
+                {"w": owner, "s": source, "d": close, "e": ext, "o": q.org_a})
+    admin = _admin(q.org_a)
+    std = _pid(q)
+
+    cases = (
+        ("owner=me", f"lower(owner_email) = '{me}'", {"Delivered & Installed"}),
+        ("source=email", "source = 'email'", {"Delivered & Installed", "New Lead"}),
+        ("source=manual", "source = 'manual'", {"Delivered & Installed"}),
+        ("close_from=2026-06-01&close_to=2026-06-30",
+         "expected_close_date BETWEEN '2026-06-01' AND '2026-06-30'",
+         {"Delivered & Installed", "New Lead"}),
+        ("close_from=2026-03-01&close_to=2026-03-31",
+         "expected_close_date BETWEEN '2026-03-01' AND '2026-03-31'",
+         {"Delivered & Installed"}),
+        ("owner=me&source=email", f"lower(owner_email) = '{me}' AND source = 'email'",
+         set()),
+    )
+    for query, predicate, held_names in cases:
+        res = await _req(admin, "GET", f"/crm/pipeline?pipeline_id={std}&{query}")
+        assert res.status_code == 200, (query, res.text)
+        lanes = res.json()["lanes"]
+        expected = _count(q.p, "crm_deals", q.org_a,
+                          f"pipeline_id = CAST('{std}' AS uuid) AND {predicate}")
+        assert sum(lane["count"] for lane in lanes) == expected, query
+        held = [lane for lane in lanes if lane["pipeline_position"] is None]
+        assert {lane["status"]["name"] for lane in held} == held_names, query
+        assert all(lane["count"] > 0 for lane in held), query

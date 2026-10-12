@@ -43,6 +43,7 @@ from acb_common.child_env import child_env
 from fastapi import (APIRouter, BackgroundTasks, Depends, Header,
                      HTTPException, Request, status)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from gateway.connections import github as github_connection
 from gateway.db import TenantUnbound, current_tenant
 from gateway.room_stream import publish_room_event
 from pydantic import BaseModel
@@ -1300,6 +1301,23 @@ class RegisterAgentRequest(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+async def _org_github_token() -> str:
+    """The GitHub token of the caller's organization, or ``""``.
+
+    WS-54 IN-7. A request for a customer reads the org connection only. It
+    never reads the deployment ``GITHUB_TOKEN``, which is the operator's. With
+    no connection the fetch goes out with no token, so it reads a public repo.
+    """
+    org = current_tenant()
+    if not org:
+        return ""
+    try:
+        return await github_connection.token_or_none(str(org)) or ""
+    except Exception as exc:
+        _log.warning("agent.github_token_unreadable", error=type(exc).__name__)
+        return ""
+
+
 @router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
 async def get_agent_config(
     repo: str,
@@ -1335,9 +1353,8 @@ async def get_agent_config(
     # ── GitHub ──────────────────────────────────────────────────────────────
     slug = raw.removeprefix("https://github.com/").removeprefix("http://github.com/")
 
-    settings = get_settings()
     headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
-    token: str = getattr(settings, "github_token", "") or ""
+    token: str = await _org_github_token()
     if token:
         headers["Authorization"] = f"token {token}"
 
@@ -1754,8 +1771,7 @@ async def register_agent(
         # nothing. A 404 means the repo declares nothing, so it gets "maf".
         # A 403 also registers as before, because the loader cannot clone a
         # repo that the token cannot read.
-        settings = get_settings()
-        gh_token: str = getattr(settings, "github_token", "") or ""
+        gh_token: str = await _org_github_token()
         headers: dict[str, str] = {"Accept": "application/vnd.github.raw+json"}
         if gh_token:
             headers["Authorization"] = f"token {gh_token}"
@@ -2911,6 +2927,9 @@ async def run_agent_stream_endpoint(
         organization_id=_organization_id,
         # H-73: WHO pays is the session's answer, never the body's.
         session_user=_session_member(user),
+        # The web chat draws each card (`AgentChat`, `useAgentChat` and
+        # `confirmationQueue.ts` read the CUSTOM card events of this stream).
+        shows_cards=True,
     )
 
     # The roster this run's authority intersection is folded over, recorded so a

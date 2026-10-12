@@ -21,15 +21,34 @@
  * `timelineBranch` rather than a ternary, because a ternary makes "not a
  * status change" mean "an activity" and `ActivityEntry` reads `entry.activity!`
  * — a `!` tsc cannot see past.
+ *
+ * WS-53 CRM-X4 (`crm_platform.md` section 19.8) adds a filter over the stream
+ * (`filterTimeline`), the due date of a task with its "Overdue" chip
+ * (`taskDueChips`, drawn by `TaskMeta`), and the shared field primitives in
+ * the composer. `TimelineItem` is one row, and the Overview tab draws the next
+ * open activities with it.
  */
 
+import FilterPills from "@/components/FilterPills";
 import Icon from "@/components/Icon";
+import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
-import { useState } from "react";
+import { Input, Textarea } from "@/components/ui/Input";
+import { useEffect, useRef, useState } from "react";
 import Badge from "@/components/ui/Badge";
 import { ONLY_IN_METORITE, onlyInMetorite } from "../lib/connect";
 import { dateTime, dwellLabel } from "../lib/format";
-import { threadStatusLabel, timelineBranch, timelineKey } from "../lib/timeline";
+import { afterDialogsClose, browserHost } from "../lib/shellJobs";
+import {
+  entryKind,
+  filterTimeline,
+  TIMELINE_FILTERS,
+  taskDueChips,
+  threadStatusLabel,
+  timelineBranch,
+  timelineKey,
+  type TimelineFilter,
+} from "../lib/timeline";
 import type { TimelineEntry } from "../lib/types";
 
 type Composable = "note" | "call" | "meeting" | "task";
@@ -47,9 +66,18 @@ export default function Timeline({
   onToggleTask,
   saving,
   parentMirrored = false,
+  now,
+  callRequest = 0,
 }: {
+  /**
+   * The `log-call` job of the command bar (CRM-X2). A number other than 0
+   * sets the composer to Call and focuses it. Each new number asks again.
+   */
+  callRequest?: number;
   /** The record is owned by Zoho, so Metorite-only entries get a badge. */
   parentMirrored?: boolean;
+  /** Today, for the due dates. A test passes a fixed one. */
+  now?: Date;
   entries: TimelineEntry[];
   onLog: (body: {
     type: Composable;
@@ -60,9 +88,29 @@ export default function Timeline({
   onToggleTask: (activityId: string, completed: boolean) => void;
   saving: boolean;
 }) {
-  const [kind, setKind] = useState<Composable>("note");
+  const [kind, setKind] = useState<Composable>(callRequest ? "call" : "note");
+  // A new ask while the Timeline is already open. React's rule for state that
+  // follows a prop: compare during the render, not in an effect.
+  const [askSeen, setAskSeen] = useState(callRequest);
+  if (callRequest !== askSeen) {
+    setAskSeen(callRequest);
+    if (callRequest) setKind("call");
+  }
+  const composer = useRef<HTMLTextAreaElement>(null);
+  // The command bar gives focus back when it has closed, so the composer
+  // waits for it. Its own record sheet is a dialog too, and does not count.
+  useEffect(() => {
+    if (!callRequest) return;
+    return afterDialogsClose(
+      () => composer.current?.focus(),
+      browserHost(composer.current),
+    );
+  }, [callRequest]);
   const [draft, setDraft] = useState("");
   const [due, setDue] = useState("");
+  const [filter, setFilter] = useState<TimelineFilter>("all");
+  const shown = filterTimeline(entries, filter);
+  const filterLabel = TIMELINE_FILTERS.find((f) => f.id === filter)?.label ?? "";
 
   function submit() {
     const value = draft.trim();
@@ -98,22 +146,26 @@ export default function Timeline({
             </button>
           ))}
         </div>
-        <textarea
+        {/* The shared primitives, never raw fields (design rule 3, CRM-X4). */}
+        <Textarea
+          ref={composer}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={2}
+          aria-label={kind === "task" ? "The task" : "What happened"}
           placeholder={
             kind === "task" ? "What needs doing?" : "What happened?"
           }
-          className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/40 focus:outline-none"
         />
         <div className="mt-2 flex items-center gap-2">
           {kind === "task" && (
-            <input
+            <Input
               type="date"
+              inputSize="sm"
+              aria-label="Due date"
               value={due}
               onChange={(e) => setDue(e.target.value)}
-              className="rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground"
+              className="w-40"
             />
           )}
           <Button
@@ -129,16 +181,34 @@ export default function Timeline({
         </div>
       </div>
 
+      {/* The filter of the stream (CRM-X4 item 3). Each kind shows its count. */}
+      <FilterPills
+        items={TIMELINE_FILTERS.map((f) => ({
+          id: f.id,
+          label: f.label,
+          count: f.id === "all" ? entries.length : entries.filter((e) => entryKind(e) === f.id).length,
+        }))}
+        activeId={filter}
+        onChange={(id) => setFilter(id as TimelineFilter)}
+      />
+
       <div className="flex-1 overflow-y-auto p-3">
-        {entries.length === 0 && (
+        {shown.length === 0 && (
           <p className="py-8 text-center text-xs text-muted-foreground">
-            Nothing logged yet.
+            {entries.length === 0
+              ? "Nothing logged yet."
+              : `No ${filterLabel.toLowerCase()} on this record.`}
           </p>
         )}
         <ol className="space-y-3">
-          {entries.map((entry, index) => (
+          {shown.map((entry, index) => (
             <li key={timelineKey(entry, index)}>
-              <Entry entry={entry} onToggleTask={onToggleTask} parentMirrored={parentMirrored} />
+              <TimelineItem
+                entry={entry}
+                onToggleTask={onToggleTask}
+                parentMirrored={parentMirrored}
+                now={now}
+              />
             </li>
           ))}
         </ol>
@@ -156,14 +226,16 @@ export default function Timeline({
  * loss on a record somebody is trying to trust, and falling through to
  * `ActivityEntry` throws on `entry.activity!`.
  */
-function Entry({
+export function TimelineItem({
   entry,
   onToggleTask,
   parentMirrored,
+  now,
 }: {
   parentMirrored: boolean;
   entry: TimelineEntry;
   onToggleTask: (activityId: string, completed: boolean) => void;
+  now?: Date;
 }) {
   switch (timelineBranch(entry)) {
     case "status_change":
@@ -171,7 +243,14 @@ function Entry({
     case "email_thread":
       return <EmailEntry entry={entry} />;
     case "activity":
-      return <ActivityEntry entry={entry} onToggleTask={onToggleTask} parentMirrored={parentMirrored} />;
+      return (
+        <ActivityEntry
+          entry={entry}
+          onToggleTask={onToggleTask}
+          parentMirrored={parentMirrored}
+          now={now}
+        />
+      );
     default:
       return null;
   }
@@ -283,10 +362,12 @@ function ActivityEntry({
   entry,
   onToggleTask,
   parentMirrored,
+  now,
 }: {
   parentMirrored: boolean;
   entry: TimelineEntry;
   onToggleTask: (activityId: string, completed: boolean) => void;
+  now?: Date;
 }) {
   const activity = entry.activity!;
   const iconName = ACTIVITY_ICONS[activity.type] ?? "Circle";
@@ -325,6 +406,8 @@ function ActivityEntry({
             {activity.body}
           </p>
         )}
+        {/* The due date of a task, and "Overdue" when it is late (CRM-X4 item 4). */}
+        <TaskMeta chips={taskDueChips(activity, now)} className="mt-0.5" />
         <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
           <span className="uppercase">{activity.type}</span>
           <span>·</span>

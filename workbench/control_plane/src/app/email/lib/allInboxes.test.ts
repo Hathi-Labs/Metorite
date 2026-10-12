@@ -827,7 +827,7 @@ describe("email-storage-mailbox (A5, A6, D3)", () => {
     // The notice sits below the reconnect banner and the sync banner (EM-S9),
     // and above the import panel.
     const notice = page.indexOf("<StorageNotice");
-    expect(notice).toBeGreaterThan(page.indexOf("{RECONNECT_LABEL[provider]}"));
+    expect(notice).toBeGreaterThan(page.indexOf("{action.label}"));
     expect(notice).toBeGreaterThan(page.indexOf("<SyncBanner"));
     expect(notice).toBeLessThan(page.indexOf("<OnboardingPanel"));
     // An open dialog stops the page shortcuts, so "#" cannot delete the mail behind it.

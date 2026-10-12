@@ -39,11 +39,24 @@ rides `NEXT_PUBLIC_SHELL_NAV`, which is on in production. So the merge is its
 release, by owner decision of 2026-10-10. §11 records this exception, and
 §8 holds the table that the owner approved.
 
+**BUILT 2026-10-12, by owner direction: the account moves to the top
+right.** With the shell bar on, the bar's right end is the account: an
+avatar, the email, and a menu to switch, add or sign out. The sidebar's
+foot is our comet and the word "Metorite", and it opens the member's pages
+and settings. This replaces the comet signature of 2026-10-11. It rides the
+shell bar flag, which is on, so the merge is its release. §3.1 and §3.3
+hold the shape.
+
 **BUILT 2026-10-11, by owner direction: the star model.** The sidebar has no
 "My apps" group now. Each category lists only the apps that the member
 starred. The first sign-in dialog has a second step to choose them. A row
 menu hides an app, and a category folds. It rides the same flag, so the
 merge is its release. §3.2b holds the model.
+
+**BUILT 2026-10-11, by owner direction: row counts.** Each app row in the
+sidebar and the phone drawer shows a quiet count of what needs the member
+there. The count comes from the needs feed of My Day and the bell. It rides
+the same flag, so the merge is its release. §3.2c holds the rules.
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -223,20 +236,32 @@ sees whose workspace this is at all times (D51).
   name. The comet replaced a ⌘ glyph on 2026-10-11, and no accent recolours it.
 - The customer's logo stands alone, with no words of ours beside it (owner,
   2026-10-11). It has the whole 176px slot (`BAR_LOCKUP`).
-- Our comet signs the bar's right end (owner, 2026-10-11). It is the last
-  item, after the activity control and a thin divider, at 20px.
-- The comet is not a control. It has no link, no button and no focus stop.
-  `BarSignature` in `src/lib/shell/ShellBar.tsx` draws it.
-- It shows from the `xl` width (1280px) up. Below that, with the bell on,
-  it pushed the bell over the command bar (measured 2026-10-11).
-- With no logo, the left end already shows our comet. Then the right end
-  shows none, so the bar shows one comet only (`ourMarkLeads`).
-- The phone has no shell row, so it shows no signature. The sidebar and the
-  phone drawer show no signature either.
-- A phone drawer with no logo shows our comet as its workspace badge, in the
-  drawer's head. That is the owner's no-logo badge decision of 2026-10-11.
-- Fences: `shellSignature.test.ts`, `metoriteMark.test.ts`,
-  `orgBrandLockup.mode.test.ts` and `e2e/shell-signature.spec.ts`.
+- ~~Our comet signs the bar's right end~~ (owner, 2026-10-11,
+  `BarSignature`). **Superseded on 2026-10-12.** The bar draws no comet of
+  its own now. Our comet is the sidebar's foot (§3.3).
+- **The account is the bar's last item** (owner, 2026-10-12). It comes after
+  the bell and the activity control. `BarAccount` in
+  `src/components/AccountSwitcher.tsx` draws it.
+- The trigger is quiet, as Google's and GitHub's are: the avatar, then the
+  email in muted text. It has no border and no fill at rest. It has the
+  height of the bar's other controls and the bar's focus ring. Its name is
+  "Account: <email>", and its tip gives the name, the email and the
+  organization.
+- The email shows from 1400px up. At 1280px and below, the avatar shows
+  alone. The brief named the `xl` step (1280px), and it also named the avatar
+  alone at 1280px. Those two disagree at 1280px. At that width the email took
+  too much of the bar, so the step is 1400px (measured 2026-10-12).
+- The right group keeps the width of its content, with no `min-w-0`. So the
+  bell never sits over the command bar. Where the room is short, the command
+  bar gives way and sits a little off centre. With `min-w-0`, the avatar put
+  the bell over the command bar at 1024px.
+- With no logo, the left end shows our comet, once.
+- The phone has no shell row, so it shows no account widget. Its drawer keeps
+  its account header and foot (§3.3). A phone drawer with no logo shows our
+  comet as its workspace badge, in the drawer's head.
+- Fences: `shellAccount.test.ts`, `metoriteMark.test.ts`,
+  `orgBrandLockup.mode.test.ts`, `e2e/shell-account.spec.ts` and
+  `e2e/shell-signature.spec.ts`.
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
 
@@ -256,7 +281,7 @@ over the page column, as NS-1 built it. `desktopFrame` in
 | New | The shell | The jobs of the apps the member holds, in preset order (§8). Not built |
 | Bell | The shell | "Needs you", from every app (§7.2). BUILT in NS-6 slice 6a, dark behind `NEXT_PUBLIC_SHELL_DOCK`. It sits before Activity (owner, 2026-10-10, §13.3 Q7). An app's own bell never moves into this bar |
 | Assistant | The shell | The dock toggle (§7.1). Not built, NS-6 slice 6b. It goes at the right end beside the bell (owner, 2026-10-10, §13.3 Q7). Today each app's assistant toggle is a tool in its own title bar |
-| ~~Avatar~~ | — | Not in the bar. The account menu is the sidebar's foot (§3.3, NS-2 slice 1) |
+| Account | The shell | The avatar and the email. It opens the account menu: switch, add, sign out (owner, 2026-10-12, §3.3). The last item of the bar. Until 2026-10-12, the account menu was the sidebar's foot (NS-2 slice 1) |
 
 **The command bar's "in <App>" chip stays.** It is the command bar's own
 scope (§6.4 rule 3), not the app's chrome. It is the one place the bar names
@@ -363,7 +388,8 @@ applies. Item 4 is a later owner change, and it does not wait on a ticket.
 and Admin, each only when it has a starred item (§3.2b). "Add apps" is the
 last item of the list. Admin holds
 Approvals, and Organisation for an admin. All apps and the account menu are
-at the foot.
+at the foot. Since 2026-10-12, with the shell bar on, the foot holds All apps
+and the Metorite menu, and the account menu is in the bar (§3.3).
 
 `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
 `shellNav.test.ts` pins five shapes. Two are a full admin and a plain member.
@@ -451,7 +477,8 @@ My Day's cards and the jobs of the empty command bar.
   sidebar" and "Open in new tab". A hide shows a toast with Undo. The folded
   rail has no "···", and a right-click there opens the menu. Home has no
   menu. The phone drawer has no "···", so a phone member uses All apps.
-- **"Change my layout"** in the account menu asks the question again (§8.4).
+- **"Change my layout"** asks the question again (§8.4). It is in the
+  Metorite menu at the sidebar's foot since 2026-10-12 (§3.3).
 
 **Categories fold.** A category heading toggles its list, and a folded
 heading shows its count, such as "Across teams (2)". The browser keeps the
@@ -471,7 +498,129 @@ rule), `shellNav.test.ts` (the order and the dropped category),
 `sidebarFolds.test.ts`, `test_auth_me_shell.py` and
 `test_auth_me_shell_r8.py` (`known`), and `e2e/shell-presets.spec.ts`.
 
+### 3.2c Row counts (owner, 2026-10-11)
+
+The owner said: "Each app row shows what needs you there, from the same feed
+as My Day and the bell. A quiet number, never a red badge storm."
+
+**The source.** The count reads the needs feed (§7.2) through `useNeedsYou`,
+the hook of My Day and the bell. It uses the same cache key and the same
+fetch, so it adds no second route and no second poll. One poll serves the
+bell's host and the sidebar together (`joinNeedsPoll` in `ShellBell.tsx`).
+
+**How often the sidebar reads the feed** (`useNavNeeds`). The sidebar is
+mounted on every page, so it adds reads that My Day alone did not make.
+Before this, the feed was read on My Day only while the bell flag was off.
+
+1. Once when the sidebar mounts.
+2. Once a minute while the tab shows. A hidden tab reads nothing. When it
+   shows again after a missed minute, it reads once.
+3. At most once in 15 seconds because of writes elsewhere (`NAV_WAKE_MS`).
+   Each Projects write drops the feed's key (`NEEDS_CACHE`). With no limit,
+   a drag on a board would read the feed after each burst. The first write reads at
+   once. The writes after it in the window make one read at its end.
+4. On a window focus, when the answer is older than 5 seconds.
+
+An act in My Day or the bell needs no read. It takes the row out of the
+count through the one store (`needsActs.ts`).
+
+**Which row counts a feed row.** `NEEDS_APP_HREF` in `needs.ts` is the one
+map. The `email` rows count on My Email, `tasks` on My Tasks, `projects` on
+Projects and `approvals` on Approvals. A new provider adds one line there.
+A task row opens in Projects, but it counts on My Tasks, because it is the
+member's own due task.
+
+**The number** (`countsByApp`).
+
+1. The number comes from `totals` (§7.2), never from `items`. The cut to 30
+   can drop every reply, so a count from `items` would say that Email holds
+   nothing. Each list stops at 15, so `totals` sends the app's own count
+   where its read has one. Projects sends the bell's unread count, and a
+   mailbox whose list is full sends the digest's Needs-reply count. My
+   Tasks and Approvals have no count. So a full list of them is a FLOOR
+   (`capped`). The row shows "15+", and its name says "15 or more need you".
+2. The rows that an act took off do not count (`needsActs.ts`). So a Done
+   in My Day or the bell takes the task out of the count at once.
+3. A source that failed shows no number on its row. It never shows a 0,
+   and it never shows the last number. The whole read can fail too, with
+   a 500, a 502 or a 504. The cache then keeps the last answer. But each
+   row shows no number until a read succeeds. My Day keeps the last answer
+   with its own caveat line.
+4. A source with nothing shows nothing.
+5. An app that the member cannot open has no row, so its count does not
+   show in the sidebar. My Day and the bell still show its rows.
+
+**One slot** (`rowMeta` in `navNeeds.ts`).
+
+1. A run badge wins the slot. That is the amber, blue or green badge of
+   `runBadge`.
+2. Else the needs count shows, as a muted number with no fill.
+3. Else the slot is empty.
+4. On hover or keyboard focus, the "···" takes the slot, as a `RailRow`
+   count does (`rail-row-meta`).
+
+The run badge wins because it is live. It changes while the member looks,
+and the needs count is the quiet signal.
+
+**The words.** The link's name is "My Email, 3 need you" (`rowName`). It
+keeps the count when a run badge holds the slot. My Day's own words are
+"need you", so the row uses them. The number shows "99+" past 99, as the
+bell does (`bellBadge`).
+
+**The other forms.**
+
+- **Folded.** The icon shows a small muted dot. The link's name and its
+  tooltip hold the number.
+- **A hidden app.** Its count adds to "Add apps" (`strayCount`), as a run
+  does. Its name reads "Add apps, 2 need you in hidden apps". With a run
+  badge there too, the name says both: "Add apps, 1 assistant running, 2
+  need you in hidden apps" (`addAppsName`). The open and folded forms use
+  the same name.
+- **The phone drawer.** Its rows show the same counts, by the same rule.
+
+Fences: `src/lib/shell/navNeeds.test.ts` holds the map, the counts, the
+floor, the slot, the stray count and the cap. It also holds the one poll,
+the hidden tab and the write limit. `e2e/sidebar-row-counts.spec.ts` holds
+the browser cases. The `totals` and `capped` tests are in
+`test_shell_needs.py` and `test_shell_needs_r8.py`.
+
 ### 3.3 The account menu
+
+**The shape since 2026-10-12, with the shell bar on** (owner direction). The
+owner said: "place the account selector in the top-right corner." The owner
+gave its old place in the sidebar to "the Metorite logo and text".
+
+1. **The account menu is the bar's top right** (`BarAccount`). It holds
+   account acts only, in this order:
+   - the current account, with a larger avatar, the name, the email, the
+     organization and a "Signed in" mark
+   - the other accounts this browser holds, each with its organization.
+     A pick switches through `switchTo`.
+   - "Add another account"
+   - "Sign out". With one account it signs out. With more, it leaves this
+     account and lands on the next one (`signOutThis`: the `switch` action,
+     then `remove` of the same slot). "Sign out of all accounts" follows.
+   With the switcher flag off, the menu shows the current account and "Sign
+   out".
+2. **The sidebar's foot is the Metorite menu** (`MetoriteFoot.tsx`). Open,
+   it is our comet at 20px and the word "Metorite". Folded, it is the comet
+   alone, on the rail's icon column. Its name is "Metorite settings".
+3. **The Metorite menu** opens upward from the foot. It has two groups:
+   - **You**: My Profile and My access.
+   - **Settings**: Appearance, the colour mode (moved from beside the old
+     foot) and "Change my layout" while the shell nav is on.
+   It holds no account act. `metoriteMenu` in `src/lib/shell/shellNav.ts` is
+   its one list, built from `accountLinks`, so a new option is one line.
+4. **No build version shows.** The browser can reach no version that a
+   member can read. `/api/health` carries the Next build id, a random name,
+   and the gateway's `/version` has no proxy. A version line waits on a
+   decision to expose one.
+5. **The classic frame and the phone do not change.** With the shell bar
+   off, the foot below stays as it was. The phone keeps its drawer.
+
+Fences: `src/lib/shell/shellAccount.test.ts`, `src/lib/accountSwitch.test.ts`
+and `e2e/shell-account.spec.ts`. The text below is the shape of NS-2 slice
+1. It still binds the classic frame and the phone.
 
 It holds My Profile, My access, Appearance and sign-out. These pages describe
 the member. The member does not work in them, so they leave the sidebar.
@@ -483,7 +632,7 @@ pages. Fences: `shellNav.test.ts` and `e2e/account-switcher.spec.ts`.
 until NS-6 builds the bell. The colour-mode toggle sits beside the foot's
 button, not inside the menu. Do not move either one from this paragraph alone.
 
-**The account switcher is in the sidebar foot** (MT-1k slice A2,
+**The account switcher is in the sidebar foot** in the classic frame (MT-1k slice A2,
 `saas_multitenancy.md`, built 2026-10-07). It lists every account this browser
 is signed in to, with its organization, and switches with one click.
 
@@ -1037,6 +1186,18 @@ display order stays as below.
   an email always have a null `act`.
 - `sources` gives each source as `ok`, `failed` or `absent`. `absent` means
   that the member does not hold the feature.
+- `totals` gives how many need the member in each `ok` source (2026-10-11).
+  It is the app's own count where the read has one: the Projects bell's
+  unread count, and the digest's Needs-reply count for a full mailbox.
+  Else it is the rows that the source found. A source that failed or is
+  absent has no entry. The sidebar's row counts read it (§3.2c). An older
+  gateway leaves it out, and the client then counts the rows in `items`.
+- `capped` lists the sources whose `totals` entry is a floor: the read
+  stopped at 15 and has no count. Today that is `tasks` or `approvals` with
+  15 rows. It is also `email` when the count of a full mailbox failed, or
+  when one mailbox failed and the others answered.
+- `total` is unchanged. It counts the rows before the cut, so the bell's
+  number is still a floor of 60 at most.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent
@@ -1546,7 +1707,8 @@ Done when:
 - `src/lib/shell/shellNav.ts` builds the sidebar, the account menu and All
   apps from `visibleSections`. `AppLauncher.tsx` is All apps.
 - The sidebar, the folded rail and the phone drawer take the shape of §3.2a.
-  The account menu is the sidebar's foot (§3.3).
+  The account menu is the sidebar's foot (§3.3). With the shell bar on, it
+  moved to the bar's top right on 2026-10-12 (§3.3).
 - Fences: `nav.test.ts` and `shellNav.test.ts`. The first fails on a live
   pane with no team or no purpose. It also fails when a page other than the
   three member and organization pages opens from the account menu. The second
@@ -1979,6 +2141,10 @@ uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.
 
 # The one bell (NS-6 slice 6a), in a browser
 npx playwright test e2e/shell-bell.spec.ts --project=chromium
+
+# Row counts (§3.2c)
+npx vitest run src/lib/shell/navNeeds.test.ts
+npx playwright test e2e/sidebar-row-counts.spec.ts --project=chromium
 
 # Gateway — needs a real database (R8)
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"

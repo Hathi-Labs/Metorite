@@ -296,8 +296,11 @@ async def test_the_rows_carry_the_contract_fields_and_sort(ns, app_engine) -> No
     assert (wa["kind"], wa["status"], wa["label"], wa["setup_href"]) == (
         "whatsapp", "connected", "Shop a", "/whatsapp")
     mcp = by_id[f"mcp:{a.mcp}"]
+    # H-300: a server moved from mcp_servers keeps its behaviour, so the
+    # switch reads "false".
     assert mcp["detail"] == {
-        "name": a.mcp, "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com"}
+        "name": a.mcp, "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com",
+        "always_confirm": "false"}
     key = by_id["key:apollo"]
     assert (key["kind"], key["status"], key["scope"]) == ("api_key", "configured", "org")
 
@@ -362,9 +365,10 @@ async def test_the_floors_hold_against_the_real_router(ns, app_engine) -> None: 
     rows = (await _call(ns, reader, "GET", "/integrations/connections")).json()["connections"]
     assert rows and not any(r["can_disconnect"] for r in rows), (
         "a reader without integrations:manage must not be offered a disconnect")
+    # Zoho, and the MCP server that the first read moved from mcp_servers (IN-4).
     assert _count(ns, "SELECT count(*) FROM integration_connections "
                       "WHERE organization_id = CAST(:o AS uuid) AND status = 'connected'",
-                  o=ns.org_a) == 1
+                  o=ns.org_a) == 2
 
 
 # -- Disconnect ------------------------------------------------------------------

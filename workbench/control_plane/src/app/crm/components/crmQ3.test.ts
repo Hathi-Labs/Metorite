@@ -12,6 +12,7 @@ import { BOUNDARY_COPY, boundaryMessage } from "../lib/boundary";
 import { wantsGroups } from "../lib/access";
 import { zohoLink } from "../lib/connect";
 import { NO_RELATED, relatedSections } from "../lib/related";
+import { CRM_JOB_IDS } from "../lib/shellJobs";
 import type { DealPipeline, Lead, Status } from "../lib/types";
 import CrmBoundary, { CrmFallback } from "./CrmBoundary";
 import FieldsPanel from "./FieldsPanel";
@@ -178,7 +179,9 @@ describe("related lists", () => {
 
   it("opens the record from the sheet with the existing sheet parameter", () => {
     const page = read("../page.tsx");
-    expect(page).toMatch(/onOpenRelated=\{\(entity, id\) => go\(openRecord\(view, PARAM_FOR\[entity\], id\)\)\}/);
+    // `openAlone` is `go` that also forgets the list behind the sheet: a
+    // record opened from a related list has no `j` and `k` (CRM-X4 item 5).
+    expect(page).toMatch(/onOpenRelated=\{\(entity, id\) => openAlone\(openRecord\(view, PARAM_FOR\[entity\], id\)\)\}/);
     expect(page).toMatch(/related=\{store\.related\}/);
   });
 
@@ -192,8 +195,8 @@ describe("related lists", () => {
           { contact: { id: "c1", first_name: "Anitha", last_name: "Kumar" }, role: "Procurement", is_primary: true },
         ],
         saving: false,
+        part: "related",
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -205,16 +208,16 @@ describe("related lists", () => {
     expect(html).toContain("Procurement");
   });
 
-  it("mounts the sections in the fields panel for a company", () => {
+  it("mounts the sections in the Related tab of a company", () => {
     const html = renderToStaticMarkup(
       createElement(FieldsPanel, {
+        part: "related",
         entity: "organizations",
         record: { id: "o1", name: "Bosch" },
         statuses: [],
         dealContacts: [],
         saving: false,
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -240,9 +243,10 @@ describe("the Open in Zoho link", () => {
   });
 
   it("sits in the record header", () => {
-    const src = read("./RecordSheet.tsx");
-    expect(src).toContain("Open in Zoho");
-    expect(src).toMatch(/zohoLink\(record\)/);
+    // The drawer of both record pages is one frame since CRM-Q6b.
+    expect(read("./RecordShell.tsx")).toContain("Open in Zoho");
+    expect(read("./RecordSheet.tsx")).toMatch(/zohoLink\(record\)/);
+    expect(read("./ModuleRecordSheet.tsx")).toMatch(/zohoLink\(page\.record\)/);
   });
 });
 
@@ -273,7 +277,6 @@ describe("CRM settings", () => {
       createElement(PipelineSettings, {
         setup: createElement("section", { "aria-label": "Setup" }, "SETUP"),
         access: createElement("section", { "aria-label": "Access" }, "ACCESS"),
-        connection: createElement("section", { "aria-label": "Connection" }, "CONNECTION"),
         showAdminCards: true,
         dealStatuses: deal,
         leadStatuses: [status("l1", "New", 0)],
@@ -294,7 +297,6 @@ describe("CRM settings", () => {
     const order = [
       "SETUP",
       "ACCESS",
-      "CONNECTION",
       "Pipelines and stages",
       "Lead Status",
       "Lost reasons",
@@ -402,7 +404,11 @@ describe("the access section reads groups late", () => {
 describe("the shell jobs", () => {
   it("keeps /crm?do=new-lead working", () => {
     const page = read("../page.tsx");
-    expect(page.match(/<ShellJob\s+id="new-lead"/g)).toHaveLength(2);
+    // The page mounts it by name. Since CRM-X2 the gate mounts every CRM job,
+    // `new-lead` among them, through one list.
+    expect(page.match(/<ShellJob\s+id="new-lead"/g)).toHaveLength(1);
+    expect(CRM_JOB_IDS).toContain("new-lead");
+    expect(page.slice(page.indexOf("function CrmGate"))).toMatch(/CRM_JOB_IDS\.map\(\(id\) =>/);
     expect(page).toContain("setCreating(\"leads\")");
   });
 });

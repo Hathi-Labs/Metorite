@@ -128,8 +128,8 @@ async def test_a_copilot_agent_gets_no_registry_server(monkeypatch, flag, caplog
     skipped = [e for e in logs if e["event"] == "mcp.copilot_registry_skipped"]
     assert skipped == [{"event": "mcp.copilot_registry_skipped", "name": "srv-a",
                         "log_level": "info"}]
-    sql, binds = spy.statements[0]
-    assert "organization_id = :org" in sql and binds == {"org": ORG_A}
+    # IN-4: the one registry read, for the run's org only.
+    assert spy.statements == [("servers_for_org", {"org": ORG_A})]
     text = logged_text(logs, caplog)
     assert SENTINEL not in text and "169.254" not in text
 
@@ -374,7 +374,9 @@ async def test_a_server_whose_names_collide_is_left_out(monkeypatch, offline):
     with structlog.testing.capture_logs() as logs:
         await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
     assert _names(agent) == ["crm"]
-    assert offline["closed"] == ["web"] and offline["clients"][0].closed
+    # The attach opens the servers in name order (WS-8c item 28): crm, web.
+    assert offline["closed"] == ["web"]
+    assert [c.closed for c in offline["clients"]] == [False, True]
     clash = [e for e in logs if e["event"] == "mcp.name_collision"]
     assert clash and clash[0]["name"] == "web" and clash[0]["tools"] == ["web_search"]
 

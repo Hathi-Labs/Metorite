@@ -21,6 +21,7 @@ import {
   RuleActionType,
 } from "../../../lib/types";
 import { useEmailStore } from "../../../lib/emailStore";
+import { moveFieldCopy, moveTargets } from "../../../lib/connect";
 import { guardedLoad, loadGuard } from "../../../lib/mailboxSettings";
 import { PROCESS_PAST_MAX_SPAN_DAYS } from "../../../lib/onboarding";
 import { isPendingReview, PatternRow } from "./SettingsTab";
@@ -1102,11 +1103,17 @@ function RuleEditor({
 }
 
 /**
- * MOVE_FOLDER destination picker: a combobox of the account's real folders
- * (user folders + Archive/Junk) with an inline "Create folder" affordance when
- * the typed name doesn't exist yet. The stored value is the folder's display
- * name, which the backend resolves (system folders by key, user folders via
- * get-or-create) — inbox-zero parity for filing mail into folders.
+ * MOVE_FOLDER destination picker: a combobox of the places a rule can move
+ * mail into, with an inline create button when the typed name doesn't exist
+ * yet. The stored value is the display name, which the backend resolves
+ * (system folders by key, user folders via get-or-create) — inbox-zero parity
+ * for filing mail into folders.
+ *
+ * WS-17 EM-G8-f1 (§12.3.12.7): a Gmail mailbox has labels, not folders
+ * (O-GM-1). `moveTargets` gives its labels, and `moveFieldCopy` gives the
+ * words, so the field says "label". The create route is the same, and for
+ * Gmail it makes a user label. ⚠️ Outlook is LIVE: its list and its words
+ * match main (fence: `connect.test.ts`).
  */
 function MoveFolderField({
   value,
@@ -1118,16 +1125,29 @@ function MoveFolderField({
   idx: number;
 }) {
   const folders = useEmailStore((s) => s.folders);
+  const labels = useEmailStore((s) => s.availableLabels);
   const accountId = useEmailStore((s) => s.selectedAccountId);
+  const provider = useEmailStore((s) => s.accounts.find((a) => a.id === s.selectedAccountId)?.provider);
   const fetchFolders = useEmailStore((s) => s.fetchFolders);
+  const fetchLabels = useEmailStore((s) => s.fetchLabels);
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const gmail = provider === "gmail";
+  const copy = moveFieldCopy(provider);
 
-  // Folders a message can be moved into: user folders + the Archive/Junk system
-  // targets (inbox/sent/drafts/trash aren't sensible rule destinations).
-  const targets = folders.filter(
-    (f) => f.type === "user" || f.key === "archive" || f.key === "junk",
-  );
+  // D-G8-f1-1: the labels of a Gmail mailbox come from the store. When it has
+  // not read them, the field asks once. A read always holds the standard
+  // categories, so an empty list means no read.
+  const labelsAsked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!gmail || !accountId || labels.length > 0 || labelsAsked.current === accountId) return;
+    labelsAsked.current = accountId;
+    void fetchLabels(accountId);
+  }, [gmail, accountId, labels.length, fetchLabels]);
+
+  // Places a message can be moved into: Archive and Junk, and the user folders
+  // or the Gmail labels (inbox/sent/drafts/trash aren't sensible destinations).
+  const targets = moveTargets(provider, folders, labels);
   const typed = value.trim();
   const exists = targets.some(
     (t) => t.label.toLowerCase() === typed.toLowerCase(),
@@ -1140,10 +1160,10 @@ function MoveFolderField({
     setErr(null);
     try {
       const folder = await createEmailFolder(accountId, typed);
-      await fetchFolders(accountId);
+      await (gmail ? fetchLabels(accountId) : fetchFolders(accountId));
       onChange(folder.name);
     } catch {
-      setErr("Couldn't create that folder. Try again.");
+      setErr(copy.createError);
     } finally {
       setCreating(false);
     }
@@ -1155,7 +1175,7 @@ function MoveFolderField({
         list={dlId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Choose or type a folder name"
+        placeholder={copy.placeholder}
         className={INPUT_CLS}
       />
       <datalist id={dlId}>
@@ -1170,8 +1190,8 @@ function MoveFolderField({
           disabled={creating || !accountId}
           className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border border-dashed border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-50"
         >
-          {creating ? <Icon name="Loader2" size={12} className="animate-spin" /> : <Icon name="FolderPlus" size={12} />}
-          Create folder “{typed}”
+          {creating ? <Icon name="Loader2" size={12} className="animate-spin" /> : <Icon name={copy.createIcon} size={12} />}
+          {copy.createLabel(typed)}
         </button>
       )}
       {err && <p className="text-[11px] text-destructive">{err}</p>}

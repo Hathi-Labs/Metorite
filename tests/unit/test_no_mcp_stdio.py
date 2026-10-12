@@ -34,6 +34,7 @@ from tests.unit._maf_mcp_fakes import (
     CopilotStub,
     RegistrySpy,
     native_agent,
+    refuse_registry,
     row,
     set_flag,
 )
@@ -102,12 +103,8 @@ def tenant():
 
 @pytest.fixture
 def no_db(monkeypatch):
-    import acb_graph
-
-    def _refuse():
-        raise AssertionError("a stdio request reached the database")
-
-    monkeypatch.setattr(acb_graph, "get_session", _refuse)
+    # IN-4: the registry reader is the only way to the store.
+    refuse_registry(monkeypatch, "a stdio request reached the database")
 
 
 @pytest.mark.usefixtures("tenant", "no_db")

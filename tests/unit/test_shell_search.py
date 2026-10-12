@@ -18,8 +18,10 @@ only what the shell adds, and each case is written so a wrong build fails it:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -174,6 +176,223 @@ class TestTheAnswer:
         answer = run("  priya    rao  " + "x" * 500, member(*ALL))
         assert answer["query"].startswith("priya rao ")
         assert len(answer["query"]) == 200
+
+
+# ── The CRM provider (WS-53 CRM-X2, crm_platform.md §19.6) ──────────────────
+#
+# The CRM router has THREE gates: the kill switch, `feature:crm` and the
+# access rule. The loop tests the feature. `_crm` must apply the other two,
+# in the order of the router, before `search_records` runs.
+
+CRM_ORG = "0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0001"
+
+
+def crm_member(*features: str, org: str | None = CRM_ORG) -> UserContext:
+    return UserContext(
+        email="rep@customer.example",
+        role=UserRole.EMPLOYEE,
+        access=EffectiveAccess(role_granted=frozenset(f"feature:{f}" for f in features)),
+        organization_id=org,
+    )
+
+
+class CrmFakes:
+    """`search_records` and the access rule, recorded."""
+
+    def __init__(self) -> None:
+        self.searched: list[tuple[object, str, int]] = []
+        self.access_checked: list[object] = []
+        self.refuse = False
+        self.fail: BaseException | None = None
+        self.rows: list[tuple[str, dict]] = [
+            ("deal", {"id": "d-1", "name": "Extruder order", "organization_name": "Zephyr Labs"}),
+            ("lead", {"id": "l-1", "lead_name": "Ravi Kumar", "organization_name": "Bosch",
+                      "email": "ravi@bosch.test"}),
+            ("lead", {"id": "l-2", "lead_name": "Anu", "organization_name": None,
+                      "email": "anu@x.test"}),
+            ("contact", {"id": "c-1", "first_name": "Priya", "last_name": "Rao",
+                         "email": "priya@zephyr.test"}),
+            ("company", {"id": "o-1", "name": "Zephyr Labs", "industry": "Robotics"}),
+        ]
+
+    async def search_records(self, user, q, limit):
+        self.searched.append((user, q, limit))
+        if self.fail is not None:
+            raise self.fail
+        return list(self.rows)
+
+    async def require_crm_access(self, user):
+        self.access_checked.append(user)
+        if self.refuse:
+            raise HTTPException(status_code=403, detail="no access")
+
+
+@pytest.fixture()
+def crm(fakes, monkeypatch) -> CrmFakes:
+    from acb_common import get_settings
+    from gateway.routes.crm import access, records
+
+    f = CrmFakes()
+    monkeypatch.setattr(records, "search_records", f.search_records, raising=False)
+    monkeypatch.setattr(access, "require_crm_access", f.require_crm_access)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "crm_orgs", CRM_ORG, raising=False)
+    return f
+
+
+def crm_group(answer: dict) -> dict | None:
+    return next((g for g in answer["groups"] if g["app"] == "crm"), None)
+
+
+class TestTheCrmProvider:
+    def test_a_member_with_the_crm_gets_a_crm_group(self, crm):
+        user = crm_member("crm")
+        group = crm_group(run("zephyr", user))
+        assert group is not None and group["label"] == "CRM"
+        # The member travels unchanged, with the words and the bar's handful.
+        assert crm.searched == [(user, "zephyr", shell.PER_APP)]
+
+    def test_without_feature_crm_no_group_and_no_search(self, crm):
+        answer = run("zephyr", crm_member("projects"))
+        assert crm_group(answer) is None
+        assert crm.searched == [] and crm.access_checked == []
+
+    def test_an_org_outside_crm_orgs_gets_no_group(self, crm):
+        answer = run("zephyr", crm_member("crm", org="0b0e8c1e-5c7a-4f6e-9a35-c3d0c0de0002"))
+        assert crm_group(answer) is None
+        # The kill switch answers first, as on the router: no access read.
+        assert crm.searched == [] and crm.access_checked == []
+
+    def test_with_the_kill_switch_off_no_group(self, crm, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "crm_enabled", False, raising=False)
+        assert crm_group(run("zephyr", crm_member("crm"))) is None
+        assert crm.searched == [] and crm.access_checked == []
+
+    def test_a_member_with_no_organization_gets_no_group(self, crm, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "crm_orgs", "*", raising=False)
+        assert crm_group(run("zephyr", crm_member("crm", org=None))) is None
+        assert crm.searched == []
+
+    def test_a_member_the_access_rule_refuses_gets_no_group(self, crm):
+        crm.refuse = True
+        user = crm_member("crm", "projects")
+        answer = run("zephyr", user)
+        assert crm_group(answer) is None
+        assert crm.access_checked == [user]
+        assert crm.searched == []
+        # The other apps still answer.
+        assert [g["app"] for g in answer["groups"]] == ["tasks"]
+
+    def test_inside_the_crm_the_crm_group_comes_first(self, crm):
+        order = [g["app"] for g in run("zephyr", crm_member("crm", *ALL), scope="/crm")["groups"]]
+        assert order[0] == "crm"
+        # Elsewhere it follows the three providers of before.
+        order = [g["app"] for g in run("zephyr", crm_member("crm", *ALL))["groups"]]
+        assert order == ["tasks", "email", "people", "crm"]
+
+    @pytest.mark.parametrize("error", [RuntimeError("db down"), TimeoutError()])
+    def test_a_failing_crm_leaves_the_other_groups(self, crm, error):
+        crm.fail = error
+        groups = [g["app"] for g in run("zephyr", crm_member("crm", *ALL))["groups"]]
+        assert groups == ["tasks", "email", "people"]
+
+    def test_a_slow_crm_is_left_out(self, crm, monkeypatch):
+        from gateway.routes.crm import records
+
+        async def slow(user, q, limit):
+            await asyncio.sleep(0.2)
+            return list(crm.rows)
+
+        monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(records, "search_records", slow, raising=False)
+        groups = [g["app"] for g in run("zephyr", crm_member("crm", "projects"))["groups"]]
+        assert groups == ["tasks"]
+
+    def test_plain_words_and_links(self, crm):
+        items = crm_group(run("zephyr", crm_member("crm")))["items"]
+        assert items == [
+            {"kind": "deal", "title": "Extruder order", "hint": "Deal · Zephyr Labs",
+             "href": "/crm?tab=deals&deal=d-1"},
+            {"kind": "lead", "title": "Ravi Kumar", "hint": "Lead · Bosch",
+             "href": "/crm?tab=leads&lead=l-1"},
+            # No company: the email says who it is.
+            {"kind": "lead", "title": "Anu", "hint": "Lead · anu@x.test",
+             "href": "/crm?tab=leads&lead=l-2"},
+            {"kind": "contact", "title": "Priya Rao", "hint": "Contact · priya@zephyr.test",
+             "href": "/crm?tab=contacts&contact=c-1"},
+            {"kind": "company", "title": "Zephyr Labs", "hint": "Company · Robotics",
+             "href": "/crm?tab=organizations&organization=o-1"},
+        ]
+
+    def test_a_record_with_nothing_to_add_says_only_its_kind(self, crm):
+        crm.rows = [
+            ("deal", {"id": "d-2", "name": "Bare", "organization_name": None}),
+            ("contact", {"id": "c-2", "first_name": "Solo", "last_name": None, "email": None}),
+            ("company", {"id": "o-2", "name": "Plain", "industry": ""}),
+        ]
+        items = crm_group(run("bare", crm_member("crm")))["items"]
+        assert [i["hint"] for i in items] == ["Deal", "Contact", "Company"]
+        assert [i["title"] for i in items] == ["Bare", "Solo", "Plain"]
+
+    def test_no_id_reaches_the_eye(self, crm):
+        for item in crm_group(run("zephyr", crm_member("crm")))["items"]:
+            for word in ("d-1", "l-1", "l-2", "c-1", "o-1"):
+                assert word not in item["title"] and word not in item["hint"]
+
+
+class TestSearchRecordsStaysOffTheRouteContract:
+    """§19.6 ⚠️ and §19.10: `search_records` builds no `ListParams` (its
+    `Query(...)` defaults are the trap of the email call), and it reads by
+    `last_activity_at` with no next activity (the 1.5 s budget)."""
+
+    def test_it_builds_no_list_params(self):
+        from gateway.routes.crm import records
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(records.search_records)))
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        # The docstring may name the trap. The code may not use it.
+        assert "ListParams" not in names
+        assert "_list" not in names
+        assert "list_contract" in names  # non-vacuity: the walk sees the calls
+
+    def test_each_read_sorts_by_last_activity_and_skips_the_next_activity(self, monkeypatch):
+        from contextlib import asynccontextmanager
+
+        from gateway.routes.crm import core, records
+
+        contracts: list[dict] = []
+        lists: list[dict] = []
+        real_contract = core.list_contract
+
+        def spy_contract(entity, **kw):
+            contracts.append({"entity": entity.slug, **kw})
+            return real_contract(entity, **kw)
+
+        async def spy_run_list(db, entity, query, **kw):
+            lists.append({"entity": entity.slug, **kw})
+            return core.ListResponse(rows=[], total=0)
+
+        @asynccontextmanager
+        async def session():
+            yield object()
+
+        monkeypatch.setattr(records, "list_contract", spy_contract)
+        monkeypatch.setattr(records, "run_list", spy_run_list)
+        monkeypatch.setattr(records, "_tenant_session", session)
+        asyncio.run(records.search_records(crm_member("crm"), "zephyr", 5))
+        assert sorted(c["entity"] for c in contracts) == [
+            "contacts", "deals", "leads", "organizations"]
+        assert all(c["sort"] == "last_activity_at" and c["page_size"] == 5 for c in contracts)
+        # The converted-lead rule of the Leads list.
+        leads = next(c for c in contracts if c["entity"] == "leads")
+        assert core.OPEN_LEAD_SQL in leads["extra_where"]
+        assert len(lists) == 4 and all(entry.get("rows_only") is True for entry in lists)
 
 
 # The REAL route signature, read at import time, before any fixture swaps it.

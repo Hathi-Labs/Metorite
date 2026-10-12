@@ -10,11 +10,10 @@ import type { BoardLane } from "../lib/board";
 import { modeLine, type ConnectionInfo, type SyncStatus } from "../lib/connect";
 import AccessPanel from "./AccessPanel";
 import PipelineSettings from "./PipelineSettings";
-import ConnectionPanel from "./ConnectionPanel";
 import FieldsPanel from "./FieldsPanel";
 import FirstOpen from "./FirstOpen";
 import KanbanBoard from "./KanbanBoard";
-import { ImportProgress, ReconnectBanner } from "./MirrorBanner";
+import { ImportProgress, StalledBanner } from "./MirrorBanner";
 import Timeline from "./Timeline";
 
 const noop = () => undefined;
@@ -73,16 +72,16 @@ describe("the first open", () => {
 });
 
 describe("the banners", () => {
-  it("offers an admin Connect Zoho again", () => {
+  it("sends an admin to the setup hub (CRM-X0)", () => {
     const html = renderToStaticMarkup(
-      createElement(ReconnectBanner, { isAdmin: true, busy: false, onReconnect: noop }),
+      createElement(StalledBanner, { isAdmin: true, status: "needs_reconnect", onOpenSetup: noop }),
     );
-    expect(html).toContain("Connect Zoho again");
+    expect(html).toContain("Open CRM setup");
     expect(html).toContain('role="alert"');
   });
   it("tells a member to ask an admin", () => {
     const html = renderToStaticMarkup(
-      createElement(ReconnectBanner, { isAdmin: false, busy: false, onReconnect: noop }),
+      createElement(StalledBanner, { isAdmin: false, status: "needs_reconnect", onOpenSetup: noop }),
     );
     expect(html).toContain("Ask an admin to connect Zoho again");
     expect(html).not.toContain("<button");
@@ -106,44 +105,17 @@ describe("the banners", () => {
   });
 });
 
-describe("the connection panel", () => {
-  const draw = (over: Partial<ConnectionInfo> = {}) =>
-    renderToStaticMarkup(
-      createElement(ConnectionPanel, {
-        mode: "mirror",
-        connection: { ...conn, ...over },
-        sync: null,
-        syncing: false,
-        connecting: false,
-        onSyncNow: noop,
-        onConnect: noop,
-        onDisconnect: async () => undefined,
-      }),
-    );
-  it("shows the facts and the two verbs for a live connection", () => {
-    const html = draw({ last_error: "invalid_grant" });
-    for (const word of ["Mirror", "Zoho CRM", "Connected", "dana@x.test", "Sync now", "Disconnect", "invalid_grant"]) {
-      expect(html).toContain(word);
-    }
-  });
-  it("offers a new consent when the old one lapsed", () => {
-    const html = draw({ status: "needs_reconnect" });
-    expect(html).toContain("Connect Zoho again");
-    expect(html).not.toContain("Sync now");
-  });
-});
-
 describe("the locked fields", () => {
-  const draw = (record: Record<string, unknown>) =>
+  const draw = (record: Record<string, unknown>, part: "overview" | "fields" = "overview") =>
     renderToStaticMarkup(
       createElement(FieldsPanel, {
+        part,
         entity: "organizations",
         record,
         statuses: [],
         dealContacts: [],
         saving: false,
         onPatch: noop,
-        onMoveStatus: noop,
         onConvert: noop,
         onSetPrimary: noop,
         onDetach: noop,
@@ -166,7 +138,7 @@ describe("the locked fields", () => {
   });
 
   it("shows custom fields as read-only rows", () => {
-    const html = draw({ id: "1", name: "Acme", ext_source: "zoho", custom: { Lead_Source: "Web" } });
+    const html = draw({ id: "1", name: "Acme", ext_source: "zoho", custom: { Lead_Source: "Web" } }, "fields");
     expect(html).toContain("Lead Source");
     expect(html).toContain("Web");
   });
@@ -330,11 +302,11 @@ describe("the other refusals and the reconnect marks (CRM-L2)", () => {
   it("tells an org with the CRM off", () => {
     expect(draw("off")).toContain("The CRM is not turned on for your organization yet.");
   });
-  it("draws Connect Zoho again as a primary button", () => {
+  it("draws Open CRM setup as a primary button", () => {
     const html = renderToStaticMarkup(
-      createElement(ReconnectBanner, { isAdmin: true, busy: false, onReconnect: noop }),
+      createElement(StalledBanner, { isAdmin: true, status: "needs_reconnect", onOpenSetup: noop }),
     );
-    expect(html).toContain("Connect Zoho again");
+    expect(html).toContain("Open CRM setup");
     expect(html).toContain("bg-primary");
   });
   it("names the disconnected state in the title bar line", () => {

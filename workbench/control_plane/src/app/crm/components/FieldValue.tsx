@@ -3,7 +3,8 @@
 /**
  * One custom field value, drawn by the rules of `../lib/fields.ts`
  * (WS-53 CRM-Q4). The record sheet and the list cells share it, so a date or
- * a link reads the same in both.
+ * a link reads the same in both. Since CRM-X4 it also draws the fixed email
+ * and phone fields and the facts of the record header.
  */
 
 import { fieldText, type FieldValue as Value } from "../lib/fields";
@@ -52,6 +53,9 @@ export default function FieldValue({
         </a>
       );
     case "mailto":
+    case "tel":
+      // A mail or a call opens the member's own app, so the link stays in
+      // this tab (CRM-X4 item 6).
       return (
         <a
           href={value.href}

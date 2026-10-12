@@ -8,9 +8,12 @@ package (it is the leaf), so importing it never pulls in a feature layer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -375,6 +378,190 @@ async def _savepoint(db: Any):
         yield
 
 
+#: One provider body fetch of `hydrate_message_body` (WS-17 EM-T17 PR-A,
+#: `email_app_master_plan.md` §17.3.7). The httpx bound of the provider is 30 s
+#: for each phase, not a total. Fence: tests/unit/test_email_draft_no_stall.py.
+BODY_FETCH_TIMEOUT_S = 8.0
+
+#: The times, in ms, of each provider body fetch of `hydrate_message_body` in
+#: this context. The stream route sets a list, and `email.draft_timing` sums it
+#: as `fetch_ms`. With no list set (each other caller) nothing is recorded. A
+#: hydrate that finds the body stored makes no fetch and records nothing.
+body_fetch_times: ContextVar[list[int] | None] = ContextVar(
+    "email_body_fetch_times", default=None)
+
+
+def _note_body_fetch(started: float) -> None:
+    """Record the time of one provider body fetch, if a caller asked for it."""
+    times = body_fetch_times.get()
+    if times is not None:
+        times.append(int((time.monotonic() - started) * 1000))
+
+
+# ── The write rules of a hydrate (one seam, two callers) ────────────────────
+# `hydrate_message_body` runs the three steps in one session. `BodyFetch` runs
+# them with no session across the provider (WS-17 EM-T17 PR-A1, §17.3.7). Both
+# read the row, shape the columns and write them through the helpers below, so
+# the storage limit and the cold-HTML rule are written once.
+
+
+async def _hydrate_row(db: Any, message_id: str) -> Any:
+    """The stored body columns of one message, and the meter of its mailbox."""
+    return (await db.execute(
+        text(
+            """SELECT em.body_text, em.body_html, em.snippet, em.received_at,
+                      ea.stored_bytes
+                 FROM email_messages em
+                 LEFT JOIN email_accounts ea ON ea.id = em.account_id
+                WHERE em.id = :id"""
+        ),
+        {"id": message_id},
+    )).fetchone()
+
+
+def _hydrated_columns(full: Any, received_at: Any) -> tuple[str, str | None]:
+    """The ``body_text`` and ``body_html`` to keep from a provider body.
+
+    🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 4). With `html_tier.hot_only()`
+    true, a cold row stores its text only, and keeps the HTML that it holds.
+    An HTML-only mail gets a text made from its HTML first, as the upsert
+    does, so the drafter reads a body and the next call fetches nothing
+    (fix round 1).
+    """
+    body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
+    body_html = (
+        _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
+        if full.body_html else None
+    )
+    if (full.body_html and not body_text.strip()
+            and html_tier.drops_html(received_at)):
+        body_text = _truncate_body(
+            _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
+    return body_text, body_html
+
+
+async def _store_hydrated_body(
+    db: Any, message_id: str, body_text: str, body_html: str | None,
+    *, stored_bytes: Any,
+) -> None:
+    """Write a fetched body. At the storage limit, write none (EM-T6c G2)."""
+    if ingest_storage.at_limit(stored_bytes):
+        _log.info("hydrate_message_body.not_stored_at_limit",
+                  message_id=message_id)
+        return
+    await db.execute(
+        text(
+            f"""UPDATE email_messages
+               SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
+                   updated_at = now()
+               WHERE id = :id"""
+        ),
+        {"id": message_id, "bt": body_text, "bh": body_html,
+         "html_cold_before": html_tier.cold_before()},
+    )
+
+
+@dataclass
+class BodyFetch:
+    """``hydrate_message_body`` in three steps, with no session across the
+    provider (WS-17 EM-T17 PR-A1, ``email_app_master_plan.md`` §17.3.7).
+
+    1. :meth:`load` runs in a session block. It reads the row and loads the
+       provider of the mailbox. It returns None when the body is stored.
+    2. :meth:`fetch` runs with no session. One bound covers ``authenticate()``
+       and ``get_message_body``.
+    3. :meth:`store` runs in a later block. It writes the body and the rotated
+       creds (the EM-T4c idiom), each in its own savepoint.
+
+    Only ``_compose_assist_run`` uses it. Each other caller keeps
+    ``hydrate_message_body(db, message_id, user_email)``.
+    """
+
+    message_id: str
+    row: Any
+    provider: Any
+    provider_message_id: str
+    account_id: str
+    store_handle: Any
+    body_text: str | None = None
+    body_html: str | None = None
+
+    @classmethod
+    async def load(cls, db: Any, message_id: str, user_email: str) -> BodyFetch | None:
+        """Step 1, in a block. A 404 of the owner check raises, as the
+        hydrate does. Any other failure logs and fetches nothing.
+
+        The reads run in a savepoint, as the hydrate's provider step does. A
+        failed statement (a lock or statement timeout) then rolls back only
+        the savepoint, and the caller's block goes on."""
+        try:
+            async with _savepoint(db):
+                row = await _hydrate_row(db, message_id)
+                if row is None or (row.body_text or "").strip():
+                    return None
+                provider, pmid, account_id, store = await _provider_for_message(
+                    db, message_id, user_email)
+        except HTTPException:
+            raise
+        except Exception as exc:  # a draft goes on without it
+            _log.warning("hydrate_message_body.failed", message_id=message_id,
+                         error=str(exc)[:200])
+            return None
+        return cls(message_id=message_id, row=row, provider=provider,
+                   provider_message_id=pmid, account_id=account_id,
+                   store_handle=store)
+
+    async def fetch(self, *, bound_s: float) -> None:
+        """Step 2, with NO session open. It sets :attr:`body_text` and
+        :attr:`body_html`, and leaves them None past the bound or on a
+        failure. A token that ``authenticate()`` refreshed stays on the
+        provider, and :meth:`store` writes it."""
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(bound_s):
+                if not await self.provider.authenticate():
+                    return
+                # The body only, never `get_message` (EM-T17 PR-A).
+                full = await self.provider.get_message_body(
+                    self.provider_message_id)
+        except TimeoutError:
+            _log.warning("hydrate_message_body.timeout",
+                         message_id=self.message_id, bound_s=bound_s)
+            return
+        except Exception as exc:  # never break the draft
+            _log.warning("hydrate_message_body.failed",
+                         message_id=self.message_id, error=str(exc)[:200])
+            return
+        finally:
+            _note_body_fetch(started)
+        self.body_text, self.body_html = _hydrated_columns(
+            full, getattr(self.row, "received_at", None))
+
+    def needs_store(self) -> bool:
+        """True when step 3 has a body or a rotated token to write."""
+        return self.body_text is not None or bool(self.provider.credentials_dirty())
+
+    async def store(self, db: Any) -> None:
+        """Step 3, in a block. Each write runs in a savepoint and logs its own
+        failure, so a failed body write still keeps the rotated token."""
+        if self.body_text is not None:
+            try:
+                async with _savepoint(db):
+                    await _store_hydrated_body(
+                        db, self.message_id, self.body_text, self.body_html,
+                        stored_bytes=getattr(self.row, "stored_bytes", None))
+            except Exception as exc:  # a cache write
+                _log.warning("hydrate_message_body.store_failed",
+                             message_id=self.message_id, error=str(exc)[:200])
+        try:
+            async with _savepoint(db):
+                await _persist_rotated_creds(
+                    db, self.store_handle, self.account_id, self.provider)
+        except Exception as exc:
+            _log.warning("hydrate_message_body.creds_failed",
+                         account_id=self.account_id, error=str(exc)[:200])
+
+
 async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str:
     """Ensure a message's full ``body_text`` is present, fetching it if needed.
 
@@ -395,23 +582,23 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
     (WS-17 EM-T6c gap G2, owner answer Q4). The reply drafter and the
     follow-up path then load the body live again at each call. The same read
     returns the meter, so the check costs no query.
+
+    The fetch reads the body alone (``get_message_body``), and it ends at
+    ``BODY_FETCH_TIMEOUT_S`` (WS-17 EM-T17 PR-A, §17.3.7). Each caller gets
+    this: the reply drafter, the rule draft and the follow-up nudge.
+
+    Compose-assist holds no session across the provider, so it runs the same
+    steps through :class:`BodyFetch` (EM-T17 PR-A1). Both write through
+    ``_hydrated_columns`` and ``_store_hydrated_body``.
     """
-    row = (await db.execute(
-        text(
-            """SELECT em.body_text, em.body_html, em.snippet, em.received_at,
-                      ea.stored_bytes
-                 FROM email_messages em
-                 LEFT JOIN email_accounts ea ON ea.id = em.account_id
-                WHERE em.id = :id"""
-        ),
-        {"id": message_id},
-    )).fetchone()
+    row = await _hydrate_row(db, message_id)
     if row is None:
         return ""
     if (row.body_text or "").strip():
         return row.body_text  # already hydrated
-    store_body = not ingest_storage.at_limit(getattr(row, "stored_bytes", None))
     # Header-only row: fetch the full body from the provider and persist it.
+    # `email.draft_timing` reads the time of this path as `fetch_ms`.
+    fetch_started = time.monotonic()
     try:
         # The savepoint covers the UPDATE and the creds persist on exit, so a
         # failed write here never aborts the caller's transaction.
@@ -420,35 +607,21 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
         ) as sess:
             if not sess.authed:
                 return row.body_text or ""
-            full = await sess.provider.get_message(sess.provider_message_id)
-            body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
-            body_html = (
-                _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
-                if full.body_html else None
-            )
-            # 🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 4). With
-            # `html_tier.hot_only()` true, a cold row stores its text only,
-            # and keeps the HTML that it holds. An HTML-only mail gets a text
-            # made from its HTML first, as the upsert does, so the drafter
-            # reads a body and the next call fetches nothing (fix round 1).
-            if (full.body_html and not body_text.strip()
-                    and html_tier.drops_html(getattr(row, "received_at", None))):
-                body_text = _truncate_body(
-                    _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
-            if store_body:
-                await db.execute(
-                    text(
-                        f"""UPDATE email_messages
-                           SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
-                               updated_at = now()
-                           WHERE id = :id"""
-                    ),
-                    {"id": message_id, "bt": body_text, "bh": body_html,
-                     "html_cold_before": html_tier.cold_before()},
-                )
-            else:
-                _log.info("hydrate_message_body.not_stored_at_limit",
-                          message_id=message_id)
+            # EM-T17 PR-A (§17.3.7): the body only, never `get_message`, which
+            # makes Graph send each file in base64. One bound for the fetch.
+            try:
+                full = await asyncio.wait_for(
+                    sess.provider.get_message_body(sess.provider_message_id),
+                    timeout=BODY_FETCH_TIMEOUT_S)
+            except TimeoutError:
+                _log.warning("hydrate_message_body.timeout",
+                             message_id=message_id, bound_s=BODY_FETCH_TIMEOUT_S)
+                return row.body_text or ""
+            body_text, body_html = _hydrated_columns(
+                full, getattr(row, "received_at", None))
+            await _store_hydrated_body(
+                db, message_id, body_text, body_html,
+                stored_bytes=getattr(row, "stored_bytes", None))
         # No commit here: the CALLER owns the transaction boundary. Converted
         # request handlers pass a `_tenant_session` session, and a mid-block
         # commit would end that transaction and silently drop the tenant GUC
@@ -464,6 +637,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
             "hydrate_message_body.failed", message_id=message_id, error=str(exc)[:200],
         )
         return row.body_text or ""
+    finally:
+        _note_body_fetch(fetch_started)
 
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────

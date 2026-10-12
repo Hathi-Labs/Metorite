@@ -264,6 +264,8 @@ export type Lead = Provenance & {
   industry?: string | null;
   annual_revenue?: number | null;
   status_id?: string | null;
+  /** The status by name, projected by the gateway (CRM-X1). */
+  status_name?: string | null;
   lead_source?: string | null;
   description?: string | null;
   lost_reason_id?: string | null;
@@ -273,6 +275,21 @@ export type Lead = Provenance & {
   converted_organization_id?: string | null;
   /** The link that decides "converted", never the timestamp (§3.3 / B6). */
   converted_deal_id?: string | null;
+  /** CRM-X3. Null: nothing is planned. Absent: an older gateway. */
+  next_activity?: NextActivity | null;
+};
+
+/**
+ * The next open activity of a deal or a lead (CRM-X3, `core.attach_next_activity`):
+ * the open task with the soonest due date, or the next call or meeting.
+ * `all_day` is true for a task, whose `at` is a date at 00:00 UTC.
+ */
+export type NextActivity = {
+  id: string;
+  type: string;
+  subject: string | null;
+  at: string;
+  all_day: boolean;
 };
 
 export type Deal = Provenance & {
@@ -284,6 +301,8 @@ export type Deal = Provenance & {
   /** Projected by the gateway's LEFT JOIN — never client-side joined. */
   organization_name?: string | null;
   status_id?: string | null;
+  /** The stage by name, projected by the gateway (CRM-X1). */
+  status_name?: string | null;
   status_changed_at?: string | null;
   amount?: number | null;
   currency?: string;
@@ -295,6 +314,8 @@ export type Deal = Provenance & {
   next_step?: string | null;
   lead_id?: string | null;
   description?: string | null;
+  /** CRM-X3. Null: nothing is planned. Absent: an older gateway. */
+  next_activity?: NextActivity | null;
 };
 
 export type CrmRecord = Deal | Lead | Contact | Organization;
@@ -318,6 +339,12 @@ export type PipelineLane = {
    * Zero on lanes whose type is not open/ongoing (D-CRM-10).
    */
   weighted: number;
+  /**
+   * The stage's place in the chosen pipeline. Null with no pipeline chosen,
+   * and for a stage the pipeline does not list that still holds its deals.
+   * Optional for the R6 window, when a new bundle meets an older gateway.
+   */
+  pipeline_position?: number | null;
 };
 
 export type Pipeline = { lanes: PipelineLane[] };

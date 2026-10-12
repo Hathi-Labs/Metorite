@@ -30,7 +30,7 @@
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
-> 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs.
+> 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -636,7 +636,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **EM-T15** | 🟢 AGENT-SAFE | ✅ **MERGED #759 (`cc0e5ba4d`, 2026-10-09).** **No member chooses the tier of an email AI task (D-EM-61).** The three model rows leave the AI settings. The backend reads no stored choice, and the agent tool loses its two tier arguments. No migration and no flag. The columns and the request fields stay for one release (R6). See §10.4.16. | See §10.4.16. |
 | **EM-T16** | 🟢 AGENT-SAFE build · 🔴 OWNER-GATE for `shadow` or `on` of the two draft features on a live box | 📝 **SPECIFIED 2026-10-09 (D-EM-62).** ✅ PR-0 MERGED (#783). ✅ **PR-A MERGED (#793), dark behind `EMAIL_TRIAGE_ONCE_PER_CYCLE`.** 🔨 **PR-B BUILT, NOT MERGED (2026-10-09, branch `email-em-t16-prb`), dark behind `EMAIL_STATUS_SKIPS_RULE_MATCH`.** **Cheaper triage decisions.** Five PRs in order: PR-0 (EM-T4a-2 PR-B3), PR-A (one classify for each sync cycle), PR-B (no rule match when the status decides), PR-C (keep the "no" verdicts) and PR-D (two draft features, `off`). No migration. See §10.4.17. | See §10.4.17. |
-| **EM-T17** | 🟢 AGENT-SAFE build · `enforcement-flip` for `EMAIL_CONTEXT_SELECT` and `email.context_select` on a live box · 🔴 OWNER-GATE if the `decide` state ever holds a body | 📝 **SPECIFIED 2026-10-12 (D-EM-63), not built.** **The AI context of a conversation is chosen, not cut, and drafting never hangs.** Seven PRs: PR-A, PR-A1 and PR-A2 (no stall, no flag), PR-B (the selector seam and the fixed fallback), PR-C (`decide` chooses the earlier bodies), PR-D (the model asks for more) and PR-E (insights across inboxes). No migration. See §17. | See §17.8. |
+| **EM-T17** | 🟢 AGENT-SAFE build · `enforcement-flip` for `EMAIL_CONTEXT_SELECT` and `email.context_select` on a live box · 🔴 OWNER-GATE if the `decide` state ever holds a body | 📝 **SPECIFIED 2026-10-12 (D-EM-63).** 🔨 **PR-A built, not merged** (branch `email-stall-pra`, no flag, no migration). **The AI context of a conversation is chosen, not cut, and drafting never hangs.** Seven PRs: PR-A, PR-A1 and PR-A2 (no stall, no flag), PR-B (the selector seam and the fixed fallback), PR-C (`decide` chooses the earlier bodies), PR-D (the model asks for more) and PR-E (insights across inboxes). No migration. See §17. | See §17.8. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -8852,14 +8852,35 @@ and the AI context stay per mailbox (D-EM-18, D-EM-24). Each triage decision sti
 
 **Production.** D-EM-5 hid Gmail from the connect flow since 2026-10-01. EM-T8c removed the Gmail
 leg of Integrations (§11.7.3). No deploy template sets `GMAIL_OAUTH_CLIENT_ID` or
-`GMAIL_OAUTH_CLIENT_SECRET`, and `.env.example:98-99` leaves both empty. So this plan assumes no
+`GMAIL_OAUTH_CLIENT_SECRET`, and `.env.example:106-107` leaves both empty. So this plan assumes no
 Gmail mailbox in production, and EM-G10 checks it first.
 
-⚠️ **Measured again on 2026-10-05, by name only.** The orchestrator found `GMAIL_OAUTH_CLIENT_ID`
+~~⚠️ **Measured again on 2026-10-05, by name only.** The orchestrator found `GMAIL_OAUTH_CLIENT_ID`
 and `GMAIL_OAUTH_CLIENT_SECRET` in the box `.env`. Nobody in this plan set them (Q-GM-6). So
 `oauth_app("gmail")` is configured in production, and a call to the authorize route by URL could
-connect Gmail. Production holds 0 Gmail mailboxes. D-EM-36 keeps the Gmail connect dark until
+connect Gmail.~~ Production holds 0 Gmail mailboxes. D-EM-36 keeps the Gmail connect dark until
 EM-G10.
+
+⚠️ **Corrected on 2026-10-12. The box holds no Google client.** The 2026-10-05 measure found the
+two names, and it did not read their length. The names are present, and each value is EMPTY. The
+measure of 2026-10-12 counts the lines by length only, and it reads no value:
+
+```bash
+ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=$" /opt/acb/app/.env; sudo grep -c "^GMAIL_OAUTH_CLIENT_SECRET=$" /opt/acb/app/.env'
+# 1
+# 1
+ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=..*" /opt/acb/app/.env'
+# 0
+ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_SECRET=..*" /opt/acb/app/.env'
+# 0
+```
+
+Each count of 1 is one line with an empty value. Each count of 0 shows that no line holds a value.
+Neither command prints a value. `OAuthApp.configured`
+(`email_ingestion/providers/app_credentials.py:53`) is False for an empty string. So
+`GET /email/oauth/providers` answers `gmail: false` from the keys alone, and the authorize route
+cannot connect Gmail today, also by URL. The flag of D-EM-36 stays the guard for the time after
+§12.4 step 9 writes the client of the owner (Q-GM-6, answered).
 
 **The provider exists, and much of it works.** `gmail.py` has 1169 lines. These parts work today:
 
@@ -8920,7 +8941,7 @@ reverse it.
 | **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`, `TRASH` and `SPAM`. The audit of EM-G3b added `TRASH` and `SPAM` on 2026-10-05 (E-M5), so a move out of Trash or Spam leaves `archive`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
-| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. ~~The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.~~ **Amended (orchestrator, 2026-10-05): the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge, under gate `enforcement-flip`.** The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. The text below this table holds the reason. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
+| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** ~~The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden.~~ *Corrected 2026-10-12 (§12.1): the box holds the two names with empty values, so the keys alone answer `gmail: false` today. The flag stays the guard, because the client of the owner reaches the box at §12.4 step 9, before the test of the owner.* While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. ~~The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.~~ **Amended (orchestrator, 2026-10-05): the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge, under gate `enforcement-flip`.** The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. The text below this table holds the reason. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
 
 **The amendment of D-EM-36 (orchestrator, 2026-10-05).** The flag flips for the owner's test when
 three slices merge:
@@ -8987,6 +9008,12 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
+| **EM-G4b-f1** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g4b-cursor`). Before customers, PR-B. The history cursor moves at each page | Before PR-A | M | §12.3.12.2 |
+| **EM-G2-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A text part by `attachmentId` fills the body | After PR-B | S | §12.3.12.3 |
+| **EM-G4a-f1** | 🟢 AGENT-SAFE | Before customers, PR-A. A rate limit in `batchModify` makes no call for each message | After PR-B | S | §12.3.12.4 |
+| **EM-G3a-f7** | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | Before customers, PR-C1a, then PR-C1b, then PR-C2. A Gmail-web draft keeps its HTML and its inline images when a save or a signed send leaves the text as it was | Any time | M + M + M | §12.3.12.5 |
+| **EM-G3b-f7** | 🟢 AGENT-SAFE · R8 | 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`). Before customers, PR-E. The thread health finds a Gmail custom move. Live for Outlook | Any time | S | §12.3.12.6 |
+| **EM-G8-f1** | 🟢 AGENT-SAFE · visual review | Before customers, PR-F. The move field, the reconnect banner and `provider_unavailable`. Live for Outlook | Any time | S | §12.3.12.7 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
 order, and EM-G3b can go at any time after EM-G2. EM-G5a follows, then EM-G5b after its new
@@ -8997,8 +9024,9 @@ them (D-EM-32).
 estimate counts code and tests.
 
 **Live tests.** EM-G7 and EM-G8 need the Google app of the owner (§12.4) for a live test. Each one
-can merge dark before that. The box holds a Google client today (§12.1), so the flag of D-EM-36
-keeps Gmail hidden, not the app (E-D1).
+can merge dark before that. The box holds the two names with empty values (§12.1, measured
+2026-10-12), so the keys alone keep Gmail hidden today. When §12.4 step 9 writes the client, the
+flag of D-EM-36 keeps Gmail hidden, not the app (E-D1).
 
 #### 12.3.1 EM-G1 — the reclaim gate (D-EM-34)
 
@@ -9355,8 +9383,8 @@ has a fence.
 
 **Known limit EM-G2-f1 (P3d, on main before EM-G2).** Gmail can send a large text part with
 `body.attachmentId` and no `body.data`. The body walk then reads nothing for that part, and the body
-stays empty. The fix needs a call of `users.messages.attachments.get` for that part. A later slice
-owns it, and it needs its own audit.
+stays empty. The fix needs a call of `users.messages.attachments.get` for that part. §12.3.12.3
+owns it.
 
 #### 12.3.3 EM-G3a — send and drafts
 
@@ -9701,7 +9729,8 @@ and it sends no file of the draft.
 
 **Known limit EM-G3a-f7.** Each Gmail update reads each file of the draft and sends it again, and
 an autosave is an update. An inline image (`cid:`) of a draft made in Gmail web is no file in that
-read, so an update drops it.
+read, so an update drops it. §12.3.12.5 owns the fix, and its measure of 2026-10-12 found a wider
+loss: the update also drops the whole HTML body.
 
 **Known limit EM-G3a-f8, a precondition of customers.** ~~A precondition of EM-G10 and of the Gmail
 go-live.~~ The amendment of D-EM-36 (§12.2, 2026-10-05) moved it, and EM-G3c owns it.
@@ -10759,7 +10788,7 @@ the row in `archive`, so the SQL finds no match for it. So for a Gmail mailbox w
 
 Only a custom Gmail rule hits it, because each Gmail preset uses `LABEL`
 (`rules.py::_actions_for_preset`). The repair changes SQL text, so it needs an R8 test on a real
-database. A later slice owns it, before Gmail goes live. §12.3.12 lists it under "Before
+database. §12.3.12.6 owns it, before Gmail goes live. §12.3.12 lists it under "Before
 customers".
 
 #### 12.3.5 EM-G4 — the history cursor, in two slices
@@ -10792,6 +10821,13 @@ holds no Gmail mailbox, and D-EM-35 keeps the Gmail connect hidden on a box with
    counts that error as a failed sync, backs off, and keeps the cursor.
 10. **No silent skip.** A fetch that still fails logs `gmail.fetch_failed` with the message id. It
     goes into `SyncResult.errors` on the history path.
+
+> **Item 9 amended for the history path (orchestrator, 2026-10-12, EM-G4b-f1, §12.3.12.2).** On the
+> history path, "a rate limit fails the sync" becomes "a rate limit ends the cycle with partial
+> progress kept and backs off". The cycle keeps the messages of each page that it finished, and
+> the cursor moves to the last history record of the last finished page. The scheduler still backs
+> off. The sweep, the deep sync, the import and the seed do not change: a rate limit there still
+> fails the sync. The amendment binds when EM-G4b-f1 merges.
 
 **The rules of the helper (the dispatch of 2026-10-05).**
 
@@ -10956,8 +10992,8 @@ went red on the missing typed error, not on a hang.
 **Known limit EM-G4a-f1.** When a `batchModify` stops on a rate limit, `bulk_apply` falls back to
 one `modify` for each message, as it did before EM-G4a. With the budget spent, each `modify` stops
 at its first refusal. So a large bulk act can send many quick requests to a mailbox that Gmail
-limits. EM-G5 does not own the fix (E-G5-8, 2026-10-05). A later slice owns it, with its own
-audit, and §12.4 lists it before customers.
+limits. EM-G5 does not own the fix (E-G5-8, 2026-10-05). §12.3.12.4 owns it, and §12.3.12 lists
+it before customers.
 
 **Known limit EM-G4a-f2.** On the history path, a fetch that fails with a 5xx leaves a record, and
 the cursor still moves past that message. Only a rate limit holds the cursor. EM-G4b decides
@@ -11165,8 +11201,8 @@ and the bullets above give the rules that apply now.
 
 **Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
 cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
-The next cycle then starts again at the old cursor. A later slice can move the cursor at each
-history record.
+The next cycle then starts again at the old cursor. §12.3.12.2 owns the fix: the cursor moves at
+the end of each finished page. 🔨 The fix is built, not merged (2026-10-12).
 
 **The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
 on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
@@ -12105,8 +12141,10 @@ as-built notes, the fences and the mutation table are at the end of this section
 **Gate.** 🟢 AGENT-SAFE · visual review. It merges dark.
 
 **The guard is the flag (E-D1, orchestrator, 2026-10-05).** The guard is `EMAIL_GMAIL_CONNECT`
-(D-EM-36), not a box with no Google app. The box holds `GMAIL_OAUTH_*` today (§12.1, measured on
-2026-10-05, by name only). The UI offers Gmail only when the capability read answers
+(D-EM-36), not a box with no Google app. ~~The box holds `GMAIL_OAUTH_*` today (§12.1, measured on
+2026-10-05, by name only).~~ The box holds the two `GMAIL_OAUTH_*` names with empty values (§12.1,
+measured by length on 2026-10-12). After §12.4 step 9 the box holds the client of the owner, and
+then only the flag keeps Gmail hidden. The UI offers Gmail only when the capability read answers
 `gmail: true`. That answer needs the Google app on the box and the flag on. The flag flips at
 EM-G10 only, under gate `enforcement-flip`, after the slices that D-EM-36 names.
 
@@ -12273,6 +12311,8 @@ then went back to its exact SHA-256.
   Gmail mailbox bounces `provider_unavailable` (EM-G7), and production holds no Gmail mailbox.
 - `provider_unavailable` shows the generic failure, with its code as the reference.
 
+§12.3.12.7 owns the fix of these three limits.
+
 #### 12.3.11 EM-G9 — parity of a Gmail and Outlook pair
 
 **Status.** ✅ MERGED #640 (2026-10-05). The as-built notes, the
@@ -12428,36 +12468,1024 @@ production act in the same message (CLAUDE.md §3a rule 2).
 **Non-goals.** Google verification and CASA (§12.4 steps 10 to 15). They come before customers,
 not before this check.
 
-**Before customers.** The amendment of D-EM-36 (§12.2) moves the first three items past the
-owner's test. The other items are known limits of merged slices. Each item must close before a
-customer connects Gmail, and no item has an owner yet.
+**Before customers.** The amendment of D-EM-36 (§12.2) moved the first three items past the
+owner's test, and all three are merged. The other items are known limits of merged slices. Each
+item must close before a customer connects Gmail. WS-17 owns the set (`work_plan.md` §2, the WS-17
+row), and §12.3.12.1 to §12.3.12.7 hold one slice for each open item.
 
-1. **EM-G5b**, the reconcile half of EM-G5 (§12.3.6). It needs a confirm by message id (E-G5-9).
-   🔨 Built, not merged (2026-10-05): the confirm asks Gmail by the provider id (§12.3.6.2).
-2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
+1. **EM-G5b**, the reconcile half of EM-G5 (§12.3.6). ✅ MERGED #647 (2026-10-05). The confirm asks
+   Gmail by the provider id (§12.3.6.2).
+2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4). ✅ MERGED #645 (2026-10-05).
 3. **EM-G3c**, the size of a Gmail mail with files, and the autosave of a draft with files
    (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). ✅ EM-G3c-1 merged as #649 (2026-10-05). A Gmail
    write with a file goes to the upload URI, and a mail over the limit answers 413. ✅ EM-G3c-2 is
    merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
    file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
-   the old cursor (§12.3.5.2).
+   the old cursor (§12.3.5.2). Slice: §12.3.12.2. 🔨 Built 2026-10-12, not merged (branch
+   `gmail-g4b-cursor`).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
-   (§12.3.2).
-6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3).
+   (§12.3.2). Slice: §12.3.12.3.
+6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3). The
+   measure of 2026-10-12 found that the update drops the whole HTML body too. Slice: §12.3.12.5.
 7. **EM-G4a-f1.** A `batchModify` that stops on a rate limit falls back to one `modify` for each
-   message (§12.3.5.1).
+   message (§12.3.5.1). Slice: §12.3.12.4.
 8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
    reconnect banner does not read the capability read. `provider_unavailable` shows the generic
-   failure.
+   failure. Slice: §12.3.12.7.
 9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
    `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
-   folder. The fix changes SQL text and needs an R8 test (§12.3.4).
+   folder. The fix changes SQL text and needs an R8 test (§12.3.4). Slice: §12.3.12.6.
+10. **EM-G3b-f8 (follow-up, reviewer P2 of PR-E, 2026-10-12).** On Gmail, the alarm and the
+    repair cannot tell a message that keeps the rule label from a message that the member filed
+    under another label. Both sit in `archive`. So a repair puts a re-filed message back in the
+    inbox, and that breaks "their move wins" (`_restore_conversation_messages`, the docstring and
+    the `continue` at `replyzero.py:1158-1159` of main). The fix changes the restore and the SQL
+    together, and keeps one definition. On Gmail, a message counts only when the rule label is
+    still in `em.categories`. A Gmail user label lands in `categories` (`gmail.py:57`), and
+    `mirror_label` (`automation/actions.py:114-125`) writes it there on a rule move. The slice
+    must decide how to compare the case of the label. 🟢 AGENT-SAFE · R8. Size S/M. Not
+    specified yet. The dispatch cited `_determined_matches` at `:1267` for the `categories` test.
+    That function is at `:1227` of main and reads no `categories`, so the anchors above replace it.
+
+#### 12.3.12.1 The before-customers slices: the PRs and the order
+
+**Owner.** WS-17. This spec is the scope of record. The orchestrator took the engineering decisions
+of §12.3.12.2 to §12.3.12.7 on 2026-10-12. Each one is an agent decision, and the owner can
+reverse it.
+
+**Anchors.** Each anchor in §12.3.12.2 to §12.3.12.7 was read at `origin/main` `3d73313a4`
+(2026-10-12). Read each one again at dispatch, because the code is the fact.
+
+| Slice | PR | Gate | Size | Section |
+|---|---|---|---|---|
+| **EM-G4a-f1** | PR-A | 🟢 AGENT-SAFE | S | §12.3.12.4 |
+| **EM-G2-f1** | PR-A | 🟢 AGENT-SAFE | S | §12.3.12.3 |
+| **EM-G4b-f1** | PR-B | 🟢 AGENT-SAFE · R8 | M | §12.3.12.2 |
+| **EM-G3a-f7** | PR-C1a, then PR-C1b, then PR-C2 | 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2) | M + M + M | §12.3.12.5 |
+| **EM-G3b-f7** | PR-E | 🟢 AGENT-SAFE · R8 | S | §12.3.12.6 |
+| **EM-G8-f1** | PR-F | 🟢 AGENT-SAFE · visual review | S | §12.3.12.7 |
+
+**The order.**
+
+1. PR-B merges before PR-A. Both change the fetch paths of `gmail.py`. PR-B changes
+   `_history_sync` and `_fetch_into`. PR-A changes `get_message` and `bulk_apply`. One order
+   gives one rebase, not two.
+2. PR-C1a, PR-E and PR-F can run in parallel with PR-B and with each other. PR-C1a touches the
+   drafts path, PR-E touches the Reply Zero SQL, and PR-F touches the UI only.
+3. PR-C1b merges after PR-C1a, and PR-C2 after PR-C1b. The UI sends the fields that the two
+   backend PRs add.
+4. There is no PR-D. The id stays free, because this PR is PR-D0.
+
+**What binds each PR.** No migration and no new flag. Gmail stays dark until EM-G10 (D-EM-36). A
+PR that merges updates its status here and the WS-17 row in the same PR (R4). ⚠️ PR-C1a, PR-C1b, PR-E
+and PR-F change code that is live for Outlook: the draft save and the signed send, the Reply Zero SQL,
+and the rule editor and the banner. So each one carries an Outlook acceptance item.
+
+#### 12.3.12.2 EM-G4b-f1 — the history cursor moves at each page
+
+**Status.** 🔨 Built 2026-10-12, not merged. PR-B, branch `gmail-g4b-cursor`. Specified
+2026-10-12.
+
+**As built (2026-10-12).**
+
+- `GmailProvider._history_sync` is the one loop over the pages. `_history_page` reads one page,
+  and `_apply_history_page` adds its markers and then fetches its messages. `_read_history` is
+  gone. `_page_end` gives the page position, and `_cursor_after_read` takes the held position.
+- **The auditor note P3.** A rate limit inside page P drops the messages that page P fetched
+  before the limit, and the markers of page P too. The cursor stays at the end of page P-1, so
+  the next cycle fetches them again (D-G4b-f1-7). The fence is
+  `test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page`.
+- A page with no record `id` keeps the position of the page before it. So the next read starts
+  earlier, never later.
+- `scheduler._next_cursor` reads `rate_limited` before `cursor_reset`. The reset sweep never
+  sets the flag, because the sweep still raises on a rate limit.
+- Four more fences beside the seven of the list below:
+  `test_a_rate_limit_inside_a_page_drops_the_fetches_of_that_page`,
+  `test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched` (scope item 2, as
+  amended), `test_a_stale_cursor_on_a_later_page_keeps_the_finished_pages` (scope item 6) and
+  `test_a_partial_cycle_keeps_the_watermark_and_backs_off` (scope item 5, hermetic).
+  `test_a_result_that_is_not_rate_limited_keeps_its_catch_up` covers acceptance 8.
+- The R8 fence drives `_account_sync_loop` for one cycle at a time. It reads the real back-off
+  of the loop, and it does not trust the result dict alone.
+
+**Fix round 1 (2026-10-12, review P1).** The reviewer found that the per-page fetch makes a read
+last minutes. Under GM-17 each answer carries the mailbox `historyId` of its own time. So two old
+rules were no longer safe. The orchestrator took two decisions, and they amend D-G4b-f1-4, scope
+item 2 and acceptance 5 and 6 below.
+
+- **(a) A later page fetches again.** A later page can carry a label event for a message that an
+  earlier page fetched. The event can be newer than that fetch. A skip then leaves the read mark
+  or the folder of the row stale. The build fetches the id again on the later page. It dedupes
+  within one page only. This is the simpler of the two choices that stay correct, because a label
+  delta on the stored row needs a second write path. A marked id still gets no fetch. The fence is
+  `test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched`. It replaces
+  `test_a_message_that_two_pages_name_is_fetched_once`, which pinned the drop. Mutation M6
+  (the cross-page skip comes back) turns it red.
+- **(b) The end of a full read.** The cursor is the larger of the last record `id` that the read
+  saw and the `historyId` of the FIRST answer (`gmail._read_end`). The `historyId` of the last
+  answer can be past a change made between the reads of page 1 and page N, which no page
+  carried. A read of one page ends as before. The fence is
+  `test_the_end_of_a_long_read_is_never_past_the_first_answer`. Mutation M7 (the end is the last
+  answer again) turns it red. The EM-G4b case `test_the_new_cursor_is_the_id_of_the_last_answer`
+  becomes `test_the_new_cursor_is_the_id_of_the_answer_of_a_one_page_read`.
+- The cost of (a) is more fetches. When N pages name one message, the read fetches it N times.
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
+`email_accounts.last_history_id` holds the cursor, as in EM-G4b.
+
+**Size.** M. About 150 lines in `gmail.py` and `scheduler.py`, with tests of about 300 lines.
+
+**Anchors (at `3d73313a4`).** `gmail.py`: `GMAIL_FETCH_HOLD_CYCLES` at `:412`, `_collect_history`
+at `:459`, `_cursor_after_read` at `:497`, `_fetch_into` at `:2136`, `_read_history` at `:2156`,
+`_history_sync` at `:2184`. `base.py`: `SyncResult` at `:407`. `scheduler.py`: `_CatchUp.back_off`
+at `:597`, the result at `:676`, `_next_cursor` at `:685`, the loop back-off at `:1806`.
+
+**Decisions (orchestrator, 2026-10-12).**
+
+- **D-G4b-f1-1. The provider fetches each history page before it reads the next page.** Today
+  `_read_history` reads every page, and only then does `_history_sync` fetch. *Reason:* the cursor
+  can then move at the end of each finished page. So a rate limit late in a long backlog keeps the
+  work of the pages before it.
+- **D-G4b-f1-2. A rate limit on page P ends the cycle with partial progress kept.** P is 2 or more.
+  The rate limit can come from `history.list` for page P, or from a fetch on that page. The provider
+  returns a `SyncResult` with the messages of pages 1 to P-1. The cursor is the `id` of the last
+  history record of page P-1. The scheduler still backs off. *Reason:* a backlog of 50,000 label
+  events cannot finish in one cycle under the rate limit. Today each cycle then starts again at
+  the old cursor (EM-G4b-f1).
+- **D-G4b-f1-3. A rate limit on page 1 still fails the sync**, as today. No page finished, so no
+  progress exists to keep. *Reason:* the scheduler path for a failed sync stays the one path for a
+  cycle that did nothing.
+- **D-G4b-f1-4. The page cursor is the `id` of the last history record of the page, never the
+  `historyId` of the answer.** Gmail gives the `historyId` of the whole mailbox in each answer.
+  *Reason:* the `historyId` of a middle page is past the records of the later pages, so a cursor
+  set to it loses them. That was the defect GM-17. ~~On the last page the cursor is the
+  `historyId` of the answer, as today.~~ *Amended in fix round 1 (b):* at the end of a full read,
+  the cursor is the larger of the last record `id` and the `historyId` of the FIRST answer. A
+  read of one page still ends at the `historyId` of its answer.
+- **D-G4b-f1-5. The held cursor rule becomes per page.** Let a fetch on page K stop on a 5xx or a
+  transport error. The cursor then holds at the end of page K-1, or at the start when K is 1. The
+  read goes on to the later pages, and their messages land. Each cycle with such a failure adds 1
+  to the count of held cycles. A cycle with none sets it back to 0. The rule of
+  `GMAIL_FETCH_HOLD_CYCLES` (3) stays.
+  *Reason:* the count belongs to the cursor (EM-G4b review round 1 F1). So a new failure on each
+  cycle still holds the cursor for 3 cycles at most.
+- **D-G4b-f1-6. EM-G4a item 9 changes for the history path.** "A rate limit fails the sync"
+  becomes "a rate limit ends the cycle with partial progress kept and backs off". §12.3.5.1 holds
+  the amendment. The sweep, the deep sync, the import and the seed do not change.
+- **D-G4b-f1-7. A record that comes again is safe.** The next cycle can read the last record of a
+  page again, because `startHistoryId` points at it. Each event leads to a full fetch and an
+  upsert, and a delete marker is idempotent. *Reason:* the slice needs no rule about whether Gmail
+  reads `startHistoryId` as inclusive.
+
+**Scope.**
+
+1. `_read_history` and `_history_sync` become one loop over the pages. For each page, the loop
+   collects the events (`_collect_history`) and adds the delete markers. It then fetches the
+   messages of that page through `_fetch_into`, and only then reads the next page.
+2. ~~A message id that two pages name is fetched once, on the first page that names it.~~
+   *Amended in fix round 1 (a):* the read fetches an id once for each page that names it. So a
+   later page fetches again an id that an earlier page fetched. An id that a page marked as deleted
+   gets no later fetch and no second marker.
+3. Each finished page sets the page position (D-G4b-f1-4). `_cursor_after_read` takes the
+   position of the end of the last page before the first page with a held failure.
+4. `SyncResult` gets one new field, `rate_limited: bool = False`. Only Gmail sets it. The provider
+   sets it with the partial result of D-G4b-f1-2, and logs `gmail.history_partial` with the count
+   of finished pages. The line names no message id, no subject and no address.
+5. `scheduler._next_cursor` reads `rate_limited`. It returns the cursor of the partial result and
+   `catch_up._replace(back_off=True, keep_watermark=True)`. The loop then backs off, as for a
+   short catch-up, and phase (d) writes the messages and the cursor. The watermark stays, because
+   the backlog past the cursor is not read yet.
+6. A stale cursor (404) on any page still runs `_recover_stale_cursor`. The messages of the pages
+   before the 404 stay in the result of the reset sweep.
+
+**Non-goals.** No change to Outlook or to IMAP. Neither sets `rate_limited`, so `_next_cursor`
+gives them the same answer as today. No page cap on one read. No change to the sweep with no
+cursor, the deep sync, the import or the seed. No change to the stored cursor forms of EM-G4b.
+
+**Acceptance (done when).**
+
+1. A read of 3 pages with a rate limit on page 3 returns the messages of pages 1 and 2. Its
+   `new_history_id` is the `id` of the last record of page 2, and `rate_limited` is True.
+2. A rate limit on page 1 raises `GmailRateLimited`, and no cursor is written.
+3. The fake Gmail sees the requests in this order. Page 1, then the fetches of page 1. Page 2,
+   then the fetches of page 2.
+4. A 5xx on a fetch of page 2 of 3 holds the cursor at the end of page 1. The cursor is in the
+   JSON form, with `held_cycles` 1. The messages of page 3 land.
+5. On the third held cycle, the cursor moves to the end of the read (D-G4b-f1-4 as amended), and
+   each message that still fails gets `gmail.fetch_abandoned`.
+6. With no failure, the cursor is the end of the read: the larger of the last record `id` and
+   the `historyId` of the first answer (fix round 1 (b)). A read of one page ends at the
+   `historyId` of its answer, as before.
+7. On a real database, a cycle with a rate limit on page 3 writes the page-2 position to
+   `email_accounts.last_history_id`. The loop backs off, and the next cycle sends that position as
+   `startHistoryId`.
+8. Outlook and IMAP: the scheduler tests give the same results as on main.
+
+**Fences (R7).** Extend `tests/unit/test_gmail_history_cursor.py`.
+
+- `test_a_rate_limit_on_a_later_page_keeps_the_finished_pages` (acceptance 1)
+- `test_a_rate_limit_on_the_first_page_fails_the_sync` (acceptance 2)
+- `test_each_page_is_fetched_before_the_next_page_is_read` (acceptance 3)
+- `test_the_page_cursor_is_the_last_record_id_not_the_answer_history_id` (acceptance 1, D-G4b-f1-4)
+- `test_a_5xx_on_page_two_holds_the_cursor_at_the_end_of_page_one` (acceptance 4)
+- `test_the_held_page_cursor_still_passes_after_three_cycles` (acceptance 5)
+- R8 `test_a_partial_cycle_writes_the_page_cursor_and_backs_off` (acceptance 7)
+- `test_a_later_page_fetches_again_a_message_that_an_earlier_page_fetched` (fix round 1 (a))
+- `test_the_end_of_a_long_read_is_never_past_the_first_answer` (fix round 1 (b), acceptance 6)
+
+The case `test_a_rate_limit_on_a_later_history_page_fails_the_sync` of EM-G4b inverts. It becomes
+the first fence above, and the PR says so. The history case of
+`test_a_rate_limit_past_the_tries_fails_the_sync` (`test_gmail_rate_limits.py`) limits page 1, so
+it stays green with no change.
+
+**Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
+
+| Id | Mutation | The fence that fails |
+|---|---|---|
+| M1 | The page cursor takes the `historyId` of the answer | `test_the_page_cursor_is_the_last_record_id_not_the_answer_history_id` |
+| M2 | The loop reads every page before it fetches | `test_each_page_is_fetched_before_the_next_page_is_read` |
+| M3 | A rate limit on a later page raises, as today | `test_a_rate_limit_on_a_later_page_keeps_the_finished_pages` |
+| M4 | `_next_cursor` ignores `rate_limited` | R8 `test_a_partial_cycle_writes_the_page_cursor_and_backs_off` |
+| M5 | A held failure holds the cursor at the start of the read | `test_a_5xx_on_page_two_holds_the_cursor_at_the_end_of_page_one` |
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_provider_401_retry.py -v -rs
+uv run ruff check tests/unit/test_gmail_history_cursor.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. The ruff counts of `gmail.py` and `scheduler.py` must
+stay at or below the counts on main.
+
+#### 12.3.12.3 EM-G2-f1 — a large text part comes by `attachmentId`
+
+**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G4a-f1.
+
+**Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
+
+**Size.** S. About 60 lines in `gmail.py`, with tests of about 120 lines.
+
+**Anchors (at `3d73313a4`), all in `gmail.py`.**
+
+- `_gmail_part_charset` at `:170`, `_decode_gmail_part` at `:182`, `_gmail_bodies` at `:202-223`
+- `_record_fetch_failure` at `:988`, `get_message` at `:1174-1182`, `get_attachment` at `:2512`
+- `_parse_gmail_message` at `:2525`, and its body walk at `:2537`
+
+**The measure of the callers (2026-10-12).** The dispatch named "the 4 callers" of the parse. At
+`3d73313a4` the parse `_parse_gmail_message` has ONE caller in the code: `get_message` at `:1182`.
+The tests call it at `test_email_rekey_reclaim.py:425` and `test_gmail_send_and_drafts.py:1155`.
+`get_message` has these callers:
+
+- in `gmail.py`: `list_messages` at `:1113`, `_fetch_into` at `:2146` and `_import_fetch` at
+  `:2471`
+- in the gateway: `body_backfill.py:187`, and `transport/messages.py:564`, `:720` and `:1153`
+- through `BaseEmailProvider.get_message_body` (`base.py:540-547`), which Gmail does not override:
+  `core.py:456`, `transport/forward.py:477`, and the §14 HTML route at `transport/messages.py:1376`
+
+**Decisions (orchestrator, 2026-10-12).**
+
+- **D-G2-f1-1. The parse stays synchronous.** An async fill step,
+  `_fill_attachment_bodies(client, raw)`, runs before the parse. *Reason:* the parse is pure and
+  its fixtures call it with no client. An async parse changes each test that calls it.
+- **D-G2-f1-2. The fill runs in ONE shared wrapper: `get_message`,** between the fetch and the
+  parse. The dispatch allowed this form. *Reason:* each caller above, the §14 HTML route too,
+  reaches the parse through `get_message`. One call site covers all of them, and no caller can
+  miss it.
+- **D-G2-f1-3. The fill fetches a body part only.** It runs one `users.messages.attachments.get`
+  for each `text/plain` or `text/html` part that has `body.attachmentId` and no `body.data`. It
+  writes the answer into `body.data` of that part. A file part never gets it: the walk uses
+  `_gmail_part_is_file`, as `_gmail_bodies` does. *Reason:* a file can be 25 MB, and the body
+  needs no file bytes.
+- **D-G2-f1-4. The decode uses the charset of the part.** The fill writes the base64url data, and
+  `_decode_gmail_part` decodes it with `_gmail_part_charset`, as for inline data.
+- **D-G2-f1-5. A failed fill leaves that body empty.** The fill logs `gmail.body_part_failed` with
+  the message id, the part id, the class of the error and the status. It adds one record to
+  `fetch_failures`. The sweep paths already put `fetch_failures` into `SyncResult.errors`
+  (`gmail.py:2309`, `:2373`). `_fetch_into` adds the records that its own call added. The record
+  names no subject and no address.
+- **D-G2-f1-6. A spent rate limit raises `GmailRateLimited`.** The fill does not catch it. Each
+  caller handles it as EM-G4a says, and the HTML route answers 503 (§14.4.2 item 7).
+
+**Scope.**
+
+1. `_fill_attachment_bodies(client, raw)` walks the payload with `_iter_gmail_parts` and the same
+   file rule as `_gmail_bodies`.
+2. It fetches each part of D-G2-f1-3 in order, one at a time, through the client seam. So
+   `GmailBearer` and its rate-limit rule apply.
+3. `get_message` calls it once, after `resp.raise_for_status()` and before the parse.
+4. A message with no such part makes no extra request.
+
+**Non-goals.** No change to the parse rules of EM-G2. No change to `_collect_gmail_attachments`. No
+fetch for a file part. No change to Outlook or IMAP. No cache of a filled body.
+
+**Acceptance (done when).**
+
+1. A fixture with a `text/html` part that has `body.attachmentId` and no `body.data` parses to the
+   full HTML body. The fake Gmail sees one `attachments.get`.
+2. A part in ISO-8859-1 decodes with no U+FFFD.
+3. A message with a PDF file and an inline text body makes no `attachments.get`.
+4. A failed `attachments.get` (a 500) gives an empty body for that part. It also gives one
+   `gmail.body_part_failed` line, and one record in `SyncResult.errors` on the history path. The
+   other body part still parses.
+5. A spent rate limit on the fill raises `GmailRateLimited` from `get_message`.
+
+**Fences (R7).** A new fixture, `tests/unit/fixtures/gmail/j_text_part_by_attachment_id.json`, and
+new cases in `tests/unit/test_gmail_parse.py`. The cases drive the real `get_message` on
+`httpx.MockTransport`.
+
+- `test_a_text_part_by_attachment_id_fills_the_body` (acceptance 1)
+- `test_a_filled_part_keeps_its_charset` (acceptance 2)
+- `test_a_file_part_is_never_fetched_for_the_body` (acceptance 3)
+- `test_a_failed_body_part_fetch_leaves_a_record_and_an_empty_body` (acceptance 4)
+- `test_a_rate_limit_on_the_body_part_fetch_raises` (acceptance 5)
+
+**Mutations.** M1: `get_message` skips the fill, and the first fence fails. M2: the fill fetches a
+file part, and the third fence fails. M3: the fill swallows `GmailRateLimited`, and the fifth fence
+fails.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_gmail_parse.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_import.py -v -rs
+uv run ruff check tests/unit/test_gmail_parse.py
+```
+
+#### 12.3.12.4 EM-G4a-f1 — a rate limit in a bulk act
+
+**Status.** 📝 Specified 2026-10-12, not built. PR-A, with EM-G2-f1.
+
+**Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no flag.
+
+**Size.** S. About 20 lines in `gmail.py`, with tests of about 80 lines.
+
+**Anchors (at `3d73313a4`).** `gmail.py`: `GmailRateLimited` at `:320`, `_BATCH_MODIFY_MAX` at
+`:1598`, `bulk_apply` at `:1612-1653`, and its fallback at `:1644-1652`. `base.py`: the
+per-message `bulk_apply` at `:656-701`. The caller: `automation/senders.py:515`, inside
+`_bulk_reconcile_provider` at `:470`.
+
+**Decision (orchestrator, 2026-10-12).**
+
+- **D-G4a-f1-1. A `GmailRateLimited` from `batchModify` makes no call for each message.** The
+  chunk and each later chunk go into `failed_out`, and the function returns `{}`. Any other error
+  keeps the fallback to one `modify` for each message. *Reason:* the client budget of 60 seconds
+  is spent when `GmailRateLimited` raises. So each `modify` of the fallback stops at its first
+  refusal, and up to 1,000 quick requests go to a mailbox that Gmail limits. The caller already
+  retries `failed_out` with a back-off, and reverts what still fails
+  (`_bulk_reconcile_provider`).
+
+**Scope.**
+
+1. In `bulk_apply`, an `except GmailRateLimited` comes before `except Exception`. It logs
+   `gmail.batch_modify_rate_limited` with the action, the count of the chunk and the count of the
+   ids left. It adds the ids of the chunk and of each later chunk to `failed_out`. Then it returns
+   `{}`. With no `failed_out`, it only returns.
+2. The caller does not change. Its retry and its revert path stay as they are.
+
+**Non-goals.** No change to the per-message fallback for any other error. No change to the base
+`bulk_apply`, to Outlook or to IMAP. No change to `senders.py`.
+
+**Acceptance (done when).**
+
+1. A 429 on chunk 1 of 3 (2,500 ids) gives 0 `modify` calls and 2,500 ids in `failed_out`.
+2. A 429 on chunk 2 of 3 gives 0 `modify` calls. The 1,500 ids of chunks 2 and 3 go into
+   `failed_out`, and chunk 1 applied.
+3. A 500 on chunk 1 still falls back to one `modify` for each id of that chunk.
+4. The existing cases of `test_email_bulk_apply.py` pass with no change.
+
+**Fences (R7).** New cases in `tests/unit/test_gmail_rate_limits.py`.
+
+- `test_a_rate_limited_batch_modify_makes_no_per_message_call` (acceptance 1)
+- `test_a_rate_limit_on_a_later_chunk_fails_the_rest` (acceptance 2)
+- `test_a_batch_modify_5xx_still_falls_back_per_message` (acceptance 3)
+
+**Mutations.** M1: remove the new `except`, and the first fence fails. M2: put the current chunk
+only into `failed_out`, and the second fence fails.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_gmail_rate_limits.py tests/unit/test_email_bulk_apply.py -v -rs
+uv run ruff check tests/unit/test_gmail_rate_limits.py
+```
+
+#### 12.3.12.5 EM-G3a-f7 — a Gmail-web draft keeps its HTML and its inline images
+
+**Status.** 🔨 PR-C1b built, not merged (2026-10-12, branch `gmail-c1b-send`). PR-C1a merged as
+#919 (`421eeb8f4`). PR-C2 is not built. Specified 2026-10-12. Re-specified twice on 2026-10-12: after the first re-audit (E1,
+C1 to C4, P3), and after the second re-audit (B1 to B5, NO-GO until these edits). The measure below
+widened the scope, so the fix splits into PR-C1a, PR-C1b and PR-C2.
+
+**Gate.** 🟢 AGENT-SAFE · R8 (PR-C1a, PR-C1b) · visual review (PR-C2). No migration, no flag.
+
+**Size.** ⚠️ After B1 to B5 the backend half is about 685 lines with tests: about 235 lines of code
+and about 450 lines of tests. That is past the bound of about 600 lines. So the backend half splits
+in two, on the line between the save and the send:
+
+- **PR-C1a, the save.** M. About 140 lines in `gmail.py` and `drafting.py`, with tests of about 260
+  lines. Scope items 1 to 3 of PR-C1. Acceptance 1 to 6, 12 and 14, and the save half of 9 and 13.
+- **PR-C1b, the send.** M. About 100 lines in `drafting.py` and `signature.py`, with tests of about
+  200 lines. Scope items 4 and 5 of PR-C1. Acceptance 7, 8, 10 and 11, and the send half of 9 and
+  13.
+- **PR-C2, the UI.** M. About 130 lines in `lib/` and `ConversationView.tsx`, with tests of about
+  180 lines.
+
+**Order.** PR-C1a, then PR-C1b, then PR-C2. Gmail is dark until EM-G10 (D-EM-36), so no member
+sees a backend PR alone. No client sends `keep_html` before PR-C2. A client before PR-C2 sends no
+`allow_text_only`, so a failed read sends the text only, as main does (D-G3a-f7-11a).
+
+**The measure (2026-10-12, at `3d73313a4`). The `cid:` references do NOT survive.** They are lost
+in the composer, and the whole HTML body goes with them. Each hop:
+
+1. **The parse keeps the HTML.** `_gmail_bodies` (`gmail.py:202-223`) stores the HTML with its
+   `src="cid:…"` unchanged. `_collect_gmail_attachments` skips an inline part (`gmail.py:144`,
+   `_gmail_part_is_inline` at `:96-111`). So no row records the inline image.
+2. **The gateway read keeps the HTML.** No gateway code rewrites `cid:`, and no sanitiser runs on
+   this path. `body_html` goes out unchanged (`core.py:1093`, `transport/messages.py:1160`,
+   `:1352-1353`).
+3. **The composer edits text only. The HTML is lost here.** A synced draft opens in `DraftCard`
+   (`components/EmailDetail.tsx:1420`, `components/ConversationView.tsx:161-172`). Its body comes
+   from `draft.bodyText` (`ConversationView.tsx:355`), and its editor is a `<textarea>`
+   (`:681-687`). `saveDraft` (`lib/api.ts:1235-1250`) sends `body` and no HTML field.
+4. **DraftCard saves at two sites.** The autosave calls `saveDraft` at `ConversationView.tsx:483`.
+   The pre-send save in `send` calls it again at `:526`, before `sendDraft`. Both send the text
+   only.
+5. **The update route has no HTML field.** `DraftUpsertRequest` (`automation/drafting.py:2358-2373`)
+   holds `body: str` only. `upsert_draft` calls `provider.update_draft` with `body_text=body` and
+   no `body_html` (`:2422-2427`). `_build_gmail_mail` then builds one `text/plain` part
+   (`gmail.py:796-801`).
+6. **The local row keeps stale HTML.** `_upsert_local_draft` writes `body_text` (`drafting.py:2192`)
+   and never touches `body_html`. So after a text save, the row still holds the HTML of the text
+   from before.
+7. **The signed send drops the HTML.** `send_draft_endpoint` reads no `body_html` (`:2579-2583`).
+   With a signature, it calls `build_signed_bodies(signature, drow.body_text or "", None)`
+   (`:2649-2650`), and then `update_draft` with that pair (`:2658-2664`). So a signed send of a
+   Gmail-web draft goes out with HTML from its text. Its inline images go.
+8. **The files lose their `Content-ID`.** `_draft_files` (`gmail.py:1412-1449`) reads the draft
+   with `iter_attachments`. With `multipart/related` at the top level, the inline image comes back
+   as a plain file with no `Content-ID`. Now let `multipart/mixed` hold `multipart/related` and a
+   PDF. The read then does not return the inline image, so its bytes leave the draft with no
+   warning.
+
+So any save of a Gmail-web draft in Metorite drops its HTML, and so does a signed send. The inline
+images go too, or come back as plain files.
+
+**Decisions (orchestrator, 2026-10-12, from the measure and the re-audit).**
+
+- **D-G3a-f7-1. The composer stays a text editor.** An HTML editor for drafts is a product
+  change, and it is out of scope. *Reason:* an HTML editor is L on its own, and it changes the
+  composer of Outlook too.
+- **D-G3a-f7-2. A save that leaves the text as it was keeps the HTML.** The client says so with
+  one flag, `keep_html: true`, and sends no HTML. The gateway takes the HTML from the row, or from
+  Gmail (D-G3a-f7-6). An edit of the recipients, the subject or the files then keeps the HTML and
+  the inline images. *Reason:* the most common edit of a Gmail-web draft is the recipients or the
+  files. The client cannot hold the HTML after the hot window of §14, and the gateway must read
+  Gmail for D-G3a-f7-6 anyway. So the gateway is the one owner of the HTML (spec writer,
+  2026-10-12, replacing "the composer sends the stored `bodyHtml`").
+- **D-G3a-f7-3. A save that changes the text saves the text only, and the member knows first.**
+  The card shows the notice of the table below before the first edit. *Reason:* a silent loss is
+  the defect. A known loss is a choice of the member.
+- **D-G3a-f7-4. The builder puts an inline part back only when the HTML names its cid.**
+  `_draft_files` returns each inline part with its `Content-ID`, apart from the files. The builder
+  wraps the HTML and those parts in `multipart/related` only when `body_html` holds
+  `cid:<that id>`. With no `body_html`, no inline part goes back, and none becomes a plain file.
+- **D-G3a-f7-5. Gmail only.** `draftSavePayload` sets `keep_html` only for a Gmail draft. The
+  gateway reads `keep_html` only for a Gmail mailbox. *Reason:* an Outlook draft must behave as on
+  main.
+- **D-G3a-f7-6 (C4, amended by B1). With no HTML in the row, the gateway reads it from Gmail.**
+  The §14 hot window can leave a Gmail draft row with no `body_html`. Before a save with
+  `keep_html`, and before a signed send, the gateway then reads the current HTML of the draft
+  through `provider.get_message_body` (`base.py:540`). If the read fails on a save, the save keeps
+  the text-only behaviour, and the answer says `html: "lost"`. D-G3a-f7-12 holds the rule for a
+  failed read at the send.
+- **D-G3a-f7-6a (B1, orchestrator, 2026-10-12). The read runs inside the session that the route
+  holds.** The read runs INSIDE the `_tenant_session` block of `upsert_draft` (`drafting.py:2377`,
+  block at `:2389`) and of `send_draft_endpoint` (`:2568`, block at `:2577`). `update_draft` runs
+  there today too. *Reason:* EM-T4 owns the I/O inside these blocks, and to restructure the two
+  routes is a non-goal. The earlier promise "no session across that read (§14.4.2)" is withdrawn.
+  §14.4.2 binds the HTML route of the reading pane, not these two routes.
+- **D-G3a-f7-7 (C3, option a). The signed send keeps the HTML.** Only for a signed send of a
+  Gmail draft, `send_draft_endpoint` reads the HTML through `_html_to_keep`, with its own
+  `SELECT body_html`. The row read of the route stays as on main, so an Outlook send writes the SQL
+  of main. The send takes the stored HTML, or the HTML of D-G3a-f7-6. It puts the signature into
+  that HTML with a new helper, `sign_html(signature, body_html)`, in `signature.py`. For a draft
+  that has HTML, it no longer sends the HTML of `build_signed_bodies(signature, body_text, None)`.
+  It still takes the text half from that call. *Reason:*
+  `build_signed_bodies` returns the HTML unchanged when the text already holds the signature
+  (`signature.py:137`), and the upsert always puts the signature into the text
+  (`drafting.py:2394`). So the existing helper would send the HTML with no signature.
+  `sign_html` adds the signature HTML above the quote (`split_quoted_html`), and adds nothing when
+  the HTML already holds it.
+- **D-G3a-f7-8 (amended by B4). Only the upsert route clears the stored HTML.**
+  `_upsert_local_draft` (`drafting.py:2152`) gets a keyword parameter `clear_html: bool = False`.
+  With `clear_html`, its write sets `body_html` to NULL. It has three callers, and only one of them
+  passes the parameter:
+  - the upsert route (`:2486`) passes `clear_html=True` only for a Gmail mailbox, and only when
+    `keep_html` is not set
+  - the mirror of the AI drafter (`:1807`) does not pass it
+  - `/drafts/save` (`:2758`) does not pass it
+
+  So the AI drafter, `/drafts/save` and each Outlook row write the same SQL as on main.
+  *Reason:* with D-G3a-f7-7 a stale HTML would send the text from before a text edit. The write
+  clears HTML and stores none, so it agrees with §14 (EM-S3). The other callers make a new draft,
+  so no stale HTML can exist there.
+- **D-G3a-f7-9 (C1). Each UI fence runs in vitest.** `vitest.config.ts` includes only
+  `src/**/*.test.ts`, with `environment: "node"`. The repo has no `.test.tsx` and no testing
+  library. So the UI rules live in pure helpers in `lib/draftSave.ts`, and
+  `lib/draftSave.test.ts` holds their fences. A source-text case, in the pattern of
+  `lib/allInboxes.test.ts:443`, proves that the card uses the helpers.
+- **D-G3a-f7-10 (B2 a, orchestrator, 2026-10-12). A read that finds no HTML changes nothing.** Each
+  draft made in Metorite is `text/plain`, and so is each draft after a text save. For such a draft
+  the read of D-G3a-f7-6 finds no HTML. The signed send then calls
+  `build_signed_bodies(signature, body_text, None)`, exactly as main does, and a save with
+  `keep_html` answers `html: "none"`. *Reason:* the common case must behave as main. **The cost:**
+  one more Gmail read for each signed send of a Gmail draft whose row holds no `body_html`.
+- **D-G3a-f7-11 (B2 b, orchestrator, 2026-10-12). A failed read at the send stops the send.** The
+  send answers 409 with the detail `{"reason": "html_unavailable"}`, and it sends nothing. The card
+  shows the notice. On the next press of the member, the client sends `allow_text_only: true`, and
+  the send goes ahead with the text only. *Reason:* a send is final, so the member chooses the
+  loss. A save is not final, so a save goes ahead and says `lost`.
+- **D-G3a-f7-11a (spec writer, 2026-10-12). PR-C1 alone blocks no send.** `DraftSendRequest` gets
+  `allow_text_only: bool | None = None`. With `None`, which is each client before PR-C2, a failed
+  read sends the text only, as main does. With `false`, the send answers the 409 of D-G3a-f7-11.
+  With `true`, it sends the text only. PR-C2 sends `false` on the first press and `true` on the
+  next. *Reason:* PR-C1 merges first, and a client that does not know the 409 must still send.
+- **D-G3a-f7-12 (B3, orchestrator, 2026-10-12). A `lost` on the pre-send save stops the send.** The
+  pure helper `sendAfterPreSave(answer, confirmed)` in `lib/draftSave.ts` decides. With
+  `html: "lost"` and no confirm, it answers `stop`: the card shows the notice and does not call
+  `sendDraft`. The next press of the member sets `confirmed`, and the helper answers `send`. Each
+  other answer gives `send`. *Reason:* the pre-send save is the last chance to keep the HTML, so
+  the member must see its loss before the mail goes.
+
+**Where the answer gets `html`.** `upsert_draft` ends with
+`return await _fetch_message_dict(db, local_id)` at `drafting.py:2492`. For a Gmail mailbox that
+line becomes `return {**await _fetch_message_dict(db, local_id), "html": html_state}`, where
+`html_state` is `kept`, `none` or `lost`. For any other mailbox the line stays as on main, so the
+answer of an Outlook save does not change. On the client, `saveDraft` (`lib/api.ts:1235`) returns
+`mapEmail(raw)`, and `mapEmail` drops a field that it does not know. So `saveDraft` also returns
+`html` from `raw.html`.
+
+**Scope of PR-C1 (backend).**
+
+1. **`gmail.py`.** `_draft_files` returns two lists: the files, and the inline parts. An inline
+   part has a `Content-ID` and no `attachment` disposition. The read finds it at any depth of the
+   raw mail. Each inline part keeps its bytes, its type and its `Content-ID`.
+2. **`gmail.py`, the builder.** `_build_gmail_mail` takes the inline parts. When `body_html` names
+   a cid, the HTML alternative goes inside `multipart/related` with the parts that it names. The
+   parts that it does not name are dropped.
+3. **`drafting.py`, the save.** `DraftUpsertRequest` gets `keep_html: bool = False`. For a Gmail
+   mailbox with `keep_html`, `upsert_draft` takes the HTML of D-G3a-f7-6 and passes it to
+   `update_draft` as `body_html`. The answer gets `html`, at the line named above.
+   `_upsert_local_draft` follows D-G3a-f7-8.
+4. **`drafting.py`, the send.** `DraftSendRequest` gets `allow_text_only` (D-G3a-f7-11a).
+   For a signed send of a Gmail draft only, `send_draft_endpoint` reads the HTML through
+   `_html_to_keep`, with its own `SELECT body_html`. So the Outlook SQL stays as on main. The send
+   follows D-G3a-f7-6, D-G3a-f7-6a, D-G3a-f7-7, D-G3a-f7-10 and D-G3a-f7-11.
+5. **`signature.py`.** `sign_html(signature, body_html)`, with the rule of D-G3a-f7-7.
+
+⚠️ **The kept HTML has no signature until the send (review round 1 of PR-C1a).** The upsert adds
+the signature to the text only (`append_signature_text`). A save with `keep_html` sends the HTML of
+the draft as it was. So Gmail web shows that draft with no signature in its HTML. `sign_html` adds
+the signature at the send (item 5). PR-C1b must test that a kept draft goes out with the signature
+once.
+
+**Scope of PR-C2 (UI).**
+
+1. **`lib/draftSave.ts`.** Five pure helpers:
+   - `draftSavePayload(draft, openedText, text, provider)` gives the body of `PUT /email/drafts`.
+     It sets `keep_html: true` only for a Gmail draft whose text equals `openedText`.
+   - `showsFormattingNotice(provider, html, htmlReadFailed)` is true for a Gmail draft with HTML,
+     and for a Gmail draft whose HTML read failed.
+   - `noticeAfterSave(answer)` is true when the answer says `html: "lost"`.
+   - `sendAfterPreSave(answer, confirmed)` answers `send` or `stop` (D-G3a-f7-12).
+   - `isHtmlUnavailable(err)` is true for a 409 whose detail has the reason `html_unavailable`. It
+     reads the error as `statusOf` and `detailOf` do (`lib/forward.ts:159-165`).
+2. **`ConversationView.tsx`, the saves.** `DraftCard` keeps the text at open. The autosave
+   (`:483`) and the pre-send save (`:526`) both build their body with `draftSavePayload`. `send`
+   (`:511`) asks `sendAfterPreSave` before `sendDraft`. `sendDraft` (`lib/api.ts:1255`) gets an
+   `allowTextOnly` argument, and the card sends `false` on the first press. After a `stop` or an
+   `isHtmlUnavailable` error, the card shows the notice and sends `true` on the next press.
+3. **`ConversationView.tsx`, the HTML read (B5).** The hydrate effect returns early at `:439` when
+   the draft has `bodyText` or `bodyHtml`. A Gmail-web draft has `bodyText`, so the hydrate never
+   runs for it. So the new read is a separate effect with its own condition: a Gmail draft with no
+   `bodyHtml`. It calls `fetchFullBody` once. The pure helper `needsHtmlRead(provider, bodyHtml,
+   alreadyRead)` in `lib/draftSave.ts` decides. The hydrate effect does not change.
+4. **The notice.** The card shows the notice of the table below, above the text box. It shows it
+   when `showsFormattingNotice` or `noticeAfterSave` is true, or when its send stopped. The notice uses the
+   `warning` tokens of the design system.
+
+**The words (E-D3 form).**
+
+| Item | Where | The words | Test |
+|---|---|---|---|
+| PR-C2 4 | The notice in a Gmail draft with HTML | `This draft has formatting or images from Gmail. If you change the text here, Metorite saves the text only, and the formatting and images go.` | `a-gmail-html-draft-shows-the-notice` |
+
+The words stay true. A save or a send that leaves the text as it was keeps the formatting
+(D-G3a-f7-2, D-G3a-f7-7). A text edit loses it. A failed read on a save keeps the text only, and
+the same notice then tells the member (D-G3a-f7-6). A failed read at the send stops the send until
+the member presses again (D-G3a-f7-11, D-G3a-f7-12).
+
+**Non-goals.** No HTML editor. No change to the send of a draft with no signature: Gmail sends the
+draft that it holds. No change to Outlook or IMAP drafts, or to the create of a draft.
+
+No change to the parse. No change to the session blocks of `upsert_draft` and `send_draft_endpoint`
+(D-G3a-f7-6a).
+
+**Known limit EM-G3a-f7-k1 (P3), the chat tools.** The re-audit noted that chat-tool draft updates
+also call `update_draft` with no `body_html`.
+
+The measure at `3d73313a4` finds two callers of
+`update_draft` in the gateway, both in `drafting.py`: the upsert (`:2422`) and the signed send
+(`:2658`). The assistant tool `send_draft` reaches the signed send through `/email/drafts/send`
+(`agents.py:2965`), so D-G3a-f7-7 covers it. The tool sends no `allow_text_only`, so a failed read
+there sends the text only (D-G3a-f7-11a). The tool card "save" (`EmailToolCards.tsx:588`,
+`:599`) calls `/email/drafts/save` (`drafting.py:2716`), which makes a NEW text draft with
+`create_draft`. The AI drafter trashes an old AI draft and makes a new one
+(`_resolve_existing_thread_draft`, `drafting.py:381`). Neither updates a Gmail-web draft.
+
+The limit that stays: a later caller of `upsert_draft` without `keep_html` saves the text only. A
+Gmail-web draft then loses its HTML, and no card shows the notice.
+
+**Known limit EM-G3a-f7-k2 (review round 1 of PR-C1a), an inline part at the top of
+`multipart/mixed`.** A part with a `Content-ID` and no `Content-Disposition` can sit at the top of
+`multipart/mixed`, beside the body. Since PR-C1a, `_draft_files` counts it as an inline part, not
+as a file. So it goes back only when the HTML names its cid. On main, the update put it back as a
+file. The member does not lose a file that the app showed: the parse already skips such a part
+(`_gmail_part_is_inline`, `gmail.py:97`), so no row lists it as a file.
+
+**Review round 1 of PR-C1a (2026-10-12).** The sync cuts a body over 2 MiB and ends it with
+`persist.TRUNCATION_MARKER`. `_html_to_keep` treats a cut row HTML as absent, and reads Gmail. The
+Gmail read waits `BODY_FETCH_TIMEOUT_S` at most, and a timeout answers `lost`. A comma ends a cid, so
+each entry of a `srcset` names its own cid.
+
+**The build of PR-C1b (2026-10-12).** The send reads the HTML through `_html_to_keep` of PR-C1a,
+with its own `SELECT body_html`. The read runs only for a signed send of a Gmail draft. So the row
+read of `send_draft_endpoint` stays as on main, and an Outlook send writes the SQL text of main. The
+text half still comes from `build_signed_bodies`, because that half is the same for both paths.
+`sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
+signature too, and that copy must not stop the signature.
+
+**Acceptance of PR-C1 (done when).**
+
+1. Fixture `c_related_inline_image.json` as a draft. A save with `keep_html` sends a mail with
+   `multipart/related`. The image part keeps its `Content-ID`, and the HTML keeps `src="cid:…"`.
+2. A save with no `keep_html` sends no inline part, and no plain file named `image.png` or alike.
+3. A draft with an inline image and a PDF keeps the PDF on each update.
+4. An HTML that names no cid sends no inline part.
+5. A save with `keep_html` for a row with no `body_html` reads the HTML from Gmail, keeps it, and
+   answers `html: "kept"`. When that read fails, it saves the text only and answers
+   `html: "lost"`.
+6. A Gmail save with no `keep_html` sets the row `body_html` to NULL. A save with `keep_html`
+   leaves it.
+7. A signed send of a Gmail-web draft keeps its HTML and its cid inline parts. The signature HTML
+   shows once, above the quote. This holds for a row with stored HTML and for a row whose HTML
+   comes from Gmail.
+8. A text save and then a signed send sends the NEW text, and no HTML from before the edit.
+9. ⚠️ An Outlook draft: the upsert and the signed send call the provider with the same arguments
+   as on main.
+10. (B2 a) Take a Gmail draft made in Metorite, with no HTML in the row or in Gmail. Its signed
+    send calls `build_signed_bodies(signature, body_text, None)`, as main does. It costs one more
+    Gmail read. A save with `keep_html` of such a draft answers `html: "none"`.
+11. (B2 b) A failed read at a signed send with `allow_text_only: false` answers 409 with
+    `{"reason": "html_unavailable"}`, and the provider gets no `update_draft` and no `send_draft`.
+    With `allow_text_only: true` the send goes ahead with the text only. With no
+    `allow_text_only` it also sends the text only, as main does.
+12. (B4) ⚠️ On a real database, an Outlook draft save leaves `body_html` as on main. The mirror of
+    the AI drafter and `/drafts/save` write the same row as on main.
+13. (B1) The HTML read runs inside the session block of each route. The R8 fence counts one
+    `_tenant_session` in each route, as on main.
+14. (B3) A Gmail save answers `html`. A save with `keep_html` answers `kept` or `lost`. A save without `keep_html` answers `none`. An Outlook save answers the same keys as on main.
+
+**Acceptance of PR-C2 (done when).**
+
+15. `draftSavePayload` sets `keep_html` for a Gmail draft with the text as it opened, and not after
+    a text edit.
+16. The pre-send save keeps the HTML too: `send` builds its save with `draftSavePayload`, so a send
+    with the text as it opened carries `keep_html`.
+17. An Outlook draft never gets `keep_html`.
+18. `showsFormattingNotice` is true for a Gmail draft with HTML, and for a Gmail draft whose HTML
+    read failed. It is false for an Outlook draft and for a Gmail draft with text only.
+19. `noticeAfterSave` is true for `html: "lost"` only.
+20. (B3) `sendAfterPreSave` answers `stop` for `html: "lost"` with no confirm, and `send` with the
+    confirm. It answers `send` for `kept` and `none`.
+21. (B2 b) `isHtmlUnavailable` is true for the 409 of D-G3a-f7-11 only. The card sends
+    `allowTextOnly: false` on the first press and `true` on the next press after the notice.
+22. (B5) `needsHtmlRead` is true for a Gmail draft with `bodyText` and no `bodyHtml` that the card
+    did not read yet. It is false for an Outlook draft and after one read.
+23. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at
+    compact density, with a changed accent and at 390 px.
+
+**Fences of PR-C1 (R7).**
+
+- `tests/unit/test_gmail_send_and_drafts.py`:
+  - `test_a_kept_html_draft_keeps_its_inline_image` (acceptance 1)
+  - `test_an_update_with_no_html_sends_no_inline_part` (acceptance 2)
+  - `test_an_update_keeps_a_file_beside_an_inline_image` (acceptance 3)
+  - `test_an_inline_part_goes_back_only_when_the_html_names_it` (acceptance 4)
+- `tests/unit/test_email_signature_placement.py`:
+  `test_sign_html_adds_the_signature_once_above_the_quote` (acceptance 7)
+- R8 `tests/unit/test_email_drafts_keep_html.py`, with `pytestmark = _DB_GATE`:
+  - `test_keep_html_with_no_stored_html_reads_gmail` (acceptance 5)
+  - `test_a_failed_html_read_saves_text_and_answers_lost` (acceptance 5)
+  - `test_a_gmail_text_save_clears_the_stored_html` (acceptance 6)
+  - `test_a_signed_send_keeps_the_html_and_the_inline_parts` (acceptance 7)
+  - `test_a_signed_send_after_a_text_edit_sends_the_new_text` (acceptance 8)
+  - `test_an_outlook_draft_calls_the_provider_as_on_main` (acceptance 9)
+  - `test_a_signed_send_with_no_html_anywhere_is_main` (acceptance 10)
+  - `test_a_failed_read_at_the_send_answers_409_and_sends_nothing` (acceptance 11)
+  - `test_allow_text_only_sends_the_text` (acceptance 11)
+  - `test_an_old_client_send_with_a_failed_read_sends_the_text` (acceptance 11)
+  - `test_an_outlook_save_leaves_body_html_as_on_main` (acceptance 12)
+  - `test_the_ai_mirror_and_drafts_save_never_clear_html` (acceptance 12)
+  - `test_the_html_read_runs_inside_the_route_session` (acceptance 13)
+  - `test_only_a_gmail_save_answers_html` (acceptance 14)
+
+**Fences of PR-C2 (R7).** `src/app/email/lib/draftSave.test.ts`:
+
+- `keeps-html-when-the-gmail-text-is-unchanged` and `drops-keep-html-after-a-text-edit`
+  (acceptance 15)
+- `the-pre-send-save-and-the-autosave-both-use-the-payload-helper` (acceptance 16). It reads
+  `ConversationView.tsx` as text, and finds `draftSavePayload(` in each of the two `saveDraft`
+  calls of `DraftCard`.
+- `an-outlook-draft-never-keeps-html` (acceptance 17)
+- `a-gmail-html-draft-shows-the-notice` (acceptance 18)
+- `a-lost-html-answer-shows-the-notice` (acceptance 19)
+- `a-lost-pre-save-stops-the-send-until-the-confirm` (acceptance 20)
+- `a-409-html-unavailable-asks-for-the-next-press` and `the-second-press-allows-text-only`
+  (acceptance 21)
+- `a-gmail-draft-with-text-only-reads-its-html-once` (acceptance 22)
+- `the-send-asks-send-after-pre-save` (acceptance 20). It reads `ConversationView.tsx` as text,
+  and finds `sendAfterPreSave(` between the pre-send `saveDraft` and `sendDraft`.
+
+**Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
+
+| Id | Mutation | The fence that fails |
+|---|---|---|
+| M1 | `_draft_files` drops the `Content-ID` | `test_a_kept_html_draft_keeps_its_inline_image` |
+| M2 | The builder always adds the inline parts | `test_an_inline_part_goes_back_only_when_the_html_names_it` |
+| M3 | The signed send passes `None` as the HTML again | `test_a_signed_send_keeps_the_html_and_the_inline_parts` |
+| M4 | `_upsert_local_draft` keeps the stale HTML | `test_a_signed_send_after_a_text_edit_sends_the_new_text` |
+| M5 | A failed read answers `kept` | `test_a_failed_html_read_saves_text_and_answers_lost` |
+| M6 | The pre-send save builds its body by hand | `the-pre-send-save-and-the-autosave-both-use-the-payload-helper` |
+| M7 | `draftSavePayload` sets `keep_html` for Outlook | `an-outlook-draft-never-keeps-html` |
+| M8 | A failed read at the send sends the text with `allow_text_only: false` | `test_a_failed_read_at_the_send_answers_409_and_sends_nothing` |
+| M9 | `clear_html` is true for each caller of `_upsert_local_draft` | `test_the_ai_mirror_and_drafts_save_never_clear_html` |
+| M10 | `sendAfterPreSave` answers `send` for `lost` with no confirm | `a-lost-pre-save-stops-the-send-until-the-confirm` |
+| M11 | The HTML read joins the hydrate effect, after its early return | `a-gmail-draft-with-text-only-reads-its-html-once` |
+| M12 | A read with no HTML signs with `sign_html("")` | `test_a_signed_send_with_no_html_anywhere_is_main` |
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_send_and_drafts.py tests/unit/test_gmail_mail_size.py \
+  tests/unit/test_email_signature_placement.py tests/unit/test_email_drafts_keep_html.py -v -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.12.6 EM-G3b-f7 — the thread health finds a Gmail custom move
+
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g3b-health`), fix round 1 closed.
+PR-E. The `OR` branch reads `email_accounts.provider` through an `EXISTS` on `em.account_id`, so
+the compare of each provider runs as on main. The four fences of
+`test_email_thread_health_gmail.py` pass on a real Postgres, as `acb_app_h3rls`.
+
+**Fix round 1 (verifier, 2026-10-12).** The first build read the provider through
+`acct.id = ts.account_id`. That reference to the outermost row stopped Postgres from hashing the
+`MOVE_FOLDER` `EXISTS`, so it ran once for each thread. The live Outlook health query ran 2.2x to
+3.1x slower, for example 354 ms to 792 ms at 100k threads, with 4.7x the buffers. The build now
+reads `acct.id = em.account_id`, which is the same value. The plan is a `hashed SubPlan` again.
+
+Fence: `test_the_move_rule_exists_never_correlates_to_the_thread_row` in
+`test_email_thread_health.py`. It reads the source, because an `EXPLAIN` on a small seed is not
+stable.
+
+**Known limit EM-G3b-f7-a.** SQL `TRIM` removes spaces only, and Python `strip` removes each
+whitespace character. So the two sides can differ for a rule label with a tab at an end. No writer
+strips a rule label. The parity fence uses spaces only.
+
+**Known limit EM-G3b-f7-b.** On main and on this branch, a blank rule label with a blank folder
+counts as damage. The compare `LOWER(TRIM(ea.label)) = LOWER(COALESCE(em.folder, ''))` holds for
+two blank values. Production does not reach it: `email_messages.folder` is NOT NULL, and
+`canonical_folder` maps a blank name to `inbox`. This PR does not change it.
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the change is SQL text. No migration, no flag.
+
+**Size.** S. About 15 lines of SQL, with tests of about 130 lines.
+
+**Anchors (at `3d73313a4`).**
+
+- `automation/replyzero.py`: `DAMAGED_CONVERSATION_THREADS_SQL` at `:191-214`, its label compare
+  at `:212-213`, `count_damaged_conversation_threads` at `:217`
+- `automation/replyzero.py`: `_restore_conversation_messages` at `:1118-1167`, and its call of
+  `local_folder_after_move` at `:1153-1156`
+- `base.py`: `_CANONICAL_FOLDERS` at `:207`, `canonical_folder` at `:227`,
+  `local_folder_after_move` at `:984-996`
+- `gmail.py`: `_MOVE_SYSTEM_KEYS` at `:1661`, `_MOVE_REFUSED_KEYS` at `:1664`,
+  `folder_after_move` at `:1678-1689`, `_GMAIL_RESERVED` at `:1750-1753`
+- `scripts/repair_conversation_threads.py:67-77`, and `infra/postgres/17_email_accounts.sql:17`,
+  which holds `provider`
+
+The dispatch cited the compare at `:218-219`. At `3d73313a4` it is at `:212-213`.
+
+**Decisions (orchestrator, 2026-10-12).**
+
+- **D-G3b-f7-1. The damage definition stays in ONE place: the SQL constant.**
+  `test_the_damage_definition_lives_in_exactly_one_place` (`test_email_thread_health.py:68`) guards
+  it. The repair script and the health metric keep their import of the constant.
+- **D-G3b-f7-2. The SQL gets one Gmail rule.** The rule binds a thread of a mailbox whose
+  `email_accounts.provider` is `gmail`. There, an APPLIED `MOVE_FOLDER` to a label that is not a
+  system label expects the local folder `archive`. This mirrors `GmailProvider.folder_after_move`.
+  In SQL, "not a system label" means three tests on the label:
+  - `LOWER(TRIM(ea.label))` is no key of `_CANONICAL_FOLDERS` whose value is not `archive`.
+  - `UPPER(TRIM(ea.label))` is not in `_GMAIL_RESERVED`.
+  - The label does not start with `CATEGORY_`.
+
+  The literals sit in the SQL text.
+- **D-G3b-f7-3. A parity fence pins the SQL rule to `folder_after_move`.** Its name is
+  `test_the_gmail_damage_rule_matches_folder_after_move`. It takes its names from the Python sets,
+  so a name that one side adds and the other does not turns it red. *Reason:* a SQL text built
+  from Python at import hides the definition from a reader and from grep. The fence catches drift
+  with no second definition.
+
+**Scope.**
+
+1. Extend the `MOVE_FOLDER` branch of `DAMAGED_CONVERSATION_THREADS_SQL` with an `OR`. The new
+   branch reads `email_accounts` through an `EXISTS` on `em.account_id`, and needs
+   `provider = 'gmail'`,
+   `LOWER(COALESCE(em.folder, '')) = 'archive'` and the label rule of D-G3b-f7-2.
+2. The existing compare `LOWER(TRIM(ea.label)) = LOWER(COALESCE(em.folder, ''))` stays as it is,
+   for each provider.
+3. No change to the repair script or to `_restore_conversation_messages`. The restore already asks
+   `local_folder_after_move`, so the script heals a Gmail thread once the SQL selects it.
+
+**Non-goals.** No change to the Outlook or IMAP branch. No second copy of the definition. No change
+to the restore. No migration.
+
+**Acceptance (done when).** Each item runs on a real Postgres, as `acb_app_h3rls`.
+
+1. A Gmail `NEEDS_REPLY` thread with one message in `archive` and an APPLIED `MOVE_FOLDER` to the
+   label `Receipts` counts as 1.
+2. Now let the move go to `Archive`, `Spam`, `STARRED` or `CATEGORY_SOCIAL`. `Archive` counts as 1
+   through the existing compare. Each other name counts as 0.
+3. ⚠️ **An Outlook thread counts the same as before.** An Outlook thread with a message in the
+   folder `receipts` and a move to `Receipts` counts as 1. An Outlook thread with a message in
+   `archive` and a move to `Receipts` counts as 0. Both values match main.
+4. The parity fence passes for each name of the Python sets. It also passes for two user labels,
+   one with mixed case and one with spaces at the ends.
+5. `test_the_damage_definition_lives_in_exactly_one_place` passes with no change.
+
+**Fences (R7).** A new R8 file, `tests/unit/test_email_thread_health_gmail.py`, with
+`pytestmark = _DB_GATE`.
+
+- `test_a_gmail_custom_move_counts_as_damage` (acceptance 1)
+- `test_a_gmail_system_label_move_does_not_count` (acceptance 2)
+- `test_an_outlook_thread_counts_the_same_as_before` (acceptance 3)
+- `test_the_gmail_damage_rule_matches_folder_after_move` (acceptance 4, D-G3b-f7-3)
+
+**Mutations.** M1: remove the new `OR`, and the first fence fails. M2: drop the provider check, and
+the Outlook fence fails. M3: add a name to `_GMAIL_RESERVED` and not to the SQL, and the parity
+fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_thread_health_gmail.py tests/unit/test_email_thread_health.py \
+  tests/unit/test_gmail_move_and_filters.py -v -rs
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.12.7 EM-G8-f1 — the known limits of the connect UI
+
+**Status.** 🔨 Built, not merged (2026-10-12, branch `gmail-g8-ux`). PR-F. The fences are in `connect.test.ts`, and the mutations M1 to M4 each fail a fence.
+
+**Gate.** 🟢 AGENT-SAFE · visual review. UI only. No migration, no flag.
+
+**Size.** S. About 80 lines of UI, with tests of about 120 lines.
+
+**Anchors (at `3d73313a4`).**
+
+- `components/automation/ai-settings/RulesTab.tsx`: `availableLabels` at `:867`,
+  `MoveFolderField` at `:1111-1180`, its `targets` at `:1128-1130`, the "Create folder" button at
+  `:1166-1176`, and its use at `:1325`
+- `lib/emailStore.ts`: `mergeFolders` at `:148`, the Gmail rule at `:157` and `:179`,
+  `fetchLabels` at `:1784`
+- `page.tsx`: the reconnect banner at `:1140-1171`
+- `lib/connect.ts`: `liveProviders` at `:96`, `RECONNECT_LABEL` at `:141`, `reconnectProvider` at
+  `:314`, `RETRY_CODES` at `:508`, `callbackView` at `:524`
+- the gateway: `transport/oauth.py:470` bounces `provider_unavailable`
+- the create route at `transport/folders.py:130-200`, and `GmailProvider.create_folder` at
+  `gmail.py:1864`, which makes a Gmail label
+
+**The measure (2026-10-12).** For a Gmail mailbox, `useEmailStore.folders` holds no user label
+since EM-G8. `mergeFolders` adds none (`lib/emailStore.ts:179`, fence M4 of EM-G8). So the user
+labels of a Gmail mailbox are in `availableLabels`, which `fetchLabels` reads from
+`api.listLabels` for the selected mailbox. The dispatch named `useEmailStore.folders`. The decision
+below reads `availableLabels` instead, because `folders` cannot hold them.
+
+**Decisions (orchestrator, 2026-10-12).**
+
+- **D-G8-f1-1. For a Gmail mailbox, the move field suggests the labels of that mailbox,** from
+  `availableLabels`, and Archive and Junk from `folders`. When the store has not read the labels,
+  the field calls `fetchLabels(accountId)` once. An Outlook mailbox keeps `folders` as today.
+- **D-G8-f1-2. "Create folder" creates a Gmail label through the existing route.**
+  `POST /email/accounts/{id}/folders` exists, and for Gmail it makes a user label. For a Gmail
+  mailbox the button says "Create label". *Reason:* a user label is a label and never a folder
+  (O-GM-1). The member reads the word that Gmail uses.
+- **D-G8-f1-3. The reconnect banner reads the capability.** On a Gmail mailbox, while the read says
+  `gmail: false`, the banner shows a line with no button. Outlook keeps its button in each case.
+- **D-G8-f1-4. `provider_unavailable` gets its own view.** It does not offer a retry. The body says
+  "your account", not "your organization". *Reason:* the flag and `EMAIL_GMAIL_CONNECT_MEMBERS`
+  open Gmail for each member, not for each organization (orchestrator, 2026-10-12).
+
+**The words (E-D3 form).** Each line passes `node .claude/hooks/ste-lint.mjs` (2026-10-12).
+
+| Item | Where | The words | Test |
+|---|---|---|---|
+| D-G8-f1-1 | The placeholder of the move field, Gmail | `Choose or type a label name` | `gmail-move-field-suggests-labels` |
+| D-G8-f1-2 | The create button, Gmail | `Create label “{name}”` | `gmail-move-field-creates-a-label` |
+| D-G8-f1-2 | The create error, Gmail | `Couldn't create that label. Try again.` | `gmail-move-field-creates-a-label` |
+| D-G8-f1-3 | The reconnect banner, Gmail, read says no | `Gmail reconnect is not available right now.` | `gmail-reconnect-banner-has-no-button-when-the-read-says-no` |
+| D-G8-f1-4 | The title of `provider_unavailable` | `Gmail is not available yet` | `provider-unavailable-copy` |
+| D-G8-f1-4 | The body of `provider_unavailable` | `Gmail is not available for your account yet.` | `provider-unavailable-copy` |
+
+**Scope.**
+
+1. A pure helper `moveTargets(provider, folders, labels)` in `lib/connect.ts` gives the list of the
+   field. `MoveFolderField` reads the provider of the selected mailbox and calls it.
+2. A pure helper `moveFieldCopy(provider)` in `lib/connect.ts` gives the placeholder, the words of
+   the create button for a name, and the create error. The words come from the table.
+   `MoveFolderField` reads all three from it. The route does not change.
+3. `page.tsx` reads `liveProviders(connectProviders)`. For a Gmail mailbox with Gmail not live, it
+   shows the line of the table in place of the button. A pure helper `reconnectAction(account,
+   live)` in `lib/connect.ts` decides: a button, the line, or the "Disconnect it" text of today.
+4. `callbackView` gets the kind `provider_unavailable`, with the words of the table, and no retry.
+
+**Non-goals.** No change to the gateway. No change to the Microsoft paths. No change to
+`mergeFolders`. No new create route.
+
+**Acceptance (done when).**
+
+1. For a Gmail mailbox, the suggestions are its labels, Archive and Junk.
+2. For a Gmail mailbox, the button says "Create label", and it calls the existing route.
+3. ⚠️ **The field and the banner are live for Outlook.** For an Outlook mailbox, the suggestions,
+   the button words and the banner button match main.
+4. The banner on a Gmail mailbox shows no button while the read says `gmail: false`. It shows
+   "Reconnect Gmail" while the read says `gmail: true`.
+5. The callback page for `provider_unavailable` shows the title `Gmail is not available yet` and
+   the body `Gmail is not available for your account yet.` It shows no retry.
+6. Do a visual review of the rule editor and the banner (§12.3.10 item 8). Look in light mode, at
+   compact density, with a changed accent and at 390 px. Look at the neighbour too: the Outlook
+   banner and the Outlook move field.
+
+**Fences (R7).**
+
+All fences are in `src/app/email/lib/connect.test.ts`. vitest runs only `src/**/*.test.ts` in
+`environment: "node"`, and the repo has no testing library. So each fence tests a pure helper.
+
+- `gmail-move-field-suggests-labels` and `outlook-move-field-keeps-its-folders` (`moveTargets`)
+- `gmail-move-field-creates-a-label` and `outlook-move-field-says-create-folder`
+  (`moveFieldCopy`)
+- `move-field-reads-its-words-from-the-helper`. It reads `RulesTab.tsx` as text, in the pattern of
+  `lib/allInboxes.test.ts:443`. It finds `moveFieldCopy(` in `MoveFolderField`, and no literal
+  `Create folder` in that file.
+- `gmail-reconnect-banner-has-no-button-when-the-read-says-no` and
+  `outlook-reconnect-banner-keeps-its-button` (`reconnectAction`)
+- `provider-unavailable-copy` (`callbackView`)
+
+**Mutations.** M1: `moveTargets` reads `folders` for Gmail, and `gmail-move-field-suggests-labels`
+fails. M2: `reconnectAction` ignores the read, and the Gmail banner fence fails. M3: the Outlook
+branch of `moveFieldCopy` takes the Gmail words, and `outlook-move-field-says-create-folder` fails.
+M4: `MoveFolderField` keeps its literal words, and `move-field-reads-its-words-from-the-helper`
+fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/api/email src/lib/theme
+cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
+```
 
 ### 12.4 Owner runbook — register the Metorite Google mail app (D-EM-5 amended, D-EM-31)
 
 These are one-time owner acts. No customer ever repeats them. An agent cannot do them, because
 each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
+
+> **Path A (owner, 2026-10-12, relayed by the orchestrator).** Metorite owns ONE Google app. Its
+> user type is **External**, and its publishing status is **Testing**. The owner creates the client
+> now. On 2026-10-12 the box holds `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` with
+> empty values (§12.1), so step 9 writes the first client. Q-GM-1 stays open, because the owner has
+> not named the account that owns the project.
 
 **Now, for EM-G10 (Testing mode).**
 
@@ -12482,11 +13510,23 @@ each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
 9. The agent writes `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` to the box under gate
    `env-write`. It confirms `WORKBENCH_PUBLIC_URL`, `GATEWAY_PUBLIC_URL` and
    `GATEWAY_SESSION_SECRET`, which Outlook uses already.
+   - Measure each value by length only, and never print a value. Each count must be 1:
 
-**The dark flag (D-EM-36).** The box holds a Google client today, and nobody in this plan set it
-(Q-GM-6). So `EMAIL_GMAIL_CONNECT` keeps the Gmail connect dark until EM-G10. Set it to `true`
-only for the owner's test, under gate `enforcement-flip`. That test waits for EM-G5a, EM-G9 and
-EM-G7b to merge (D-EM-36, amended 2026-10-05).
+     ```bash
+     ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=..*" /opt/acb/app/.env; sudo grep -c "^GMAIL_OAUTH_CLIENT_SECRET=..*" /opt/acb/app/.env'
+     ```
+
+   - Then write ONE line below this step, at the start of a line. The line starts with the bold
+     words "Step 9 done", the date in brackets, and a full stop, as in
+     `**Step 9 done (YYYY-MM-DD).**`. After it, name the Google Cloud project and the two counts.
+     HANDOFF H-241 keys on this line, so write it only after both counts are 1.
+
+**The dark flag (D-EM-36).** ~~The box holds a Google client today, and nobody in this plan set it
+(Q-GM-6).~~ On 2026-10-12 the box holds the two names with empty values (§12.1), and Q-GM-6 is
+answered. So today the keys alone keep Gmail hidden. After step 9, `EMAIL_GMAIL_CONNECT` keeps the
+Gmail connect dark until EM-G10. Set it to `true` only for the owner's test, under gate
+`enforcement-flip`. That test waits for EM-G5a, EM-G9 and EM-G7b to merge (D-EM-36, amended
+2026-10-05).
 
 **The member list (EM-G7b, gate `enforcement-flip`).** While the app is in Testing, set
 `EMAIL_GMAIL_CONNECT_MEMBERS` with the flag. It holds the Metorite sign-in address of each test
@@ -12515,7 +13555,9 @@ the process loaded at start.
     scope, and say why a narrower scope does not serve. Record a demo video of the OAuth flow and
     of each feature that uses the scopes.
 11. Update `site/privacy.html` and the terms. Today they name Google for sign-in only
-    (`site/privacy.html:107`, `:149`).
+    (`site/privacy.html:107`, `:158`, read at `3d73313a4`). 🔴 A merge publishes the page, because
+    Caddy serves `/opt/acb/app/site`. So the owner approves the text before an agent edits the file.
+    The draft after step 15 is the text to approve.
 12. The privacy text says how Metorite reads, uses, stores and shares Gmail data. It states that
     Metorite meets the Limited Use rules of the Google API Services User Data Policy.
 13. The privacy text names the AI sub-processors of D-EM-9 (TypeSafe, AI/ML API). It states that
@@ -12525,12 +13567,89 @@ the process loaded at start.
 15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
     did not verify shows the warning, and Google caps it at 100 new users.
 
-**Engineering before customers.** These are not owner acts. An agent slice closes each one before
-the app moves to Production.
+**Draft for owner approval — not published.** 🔴 OWNER-GATE to publish. An agent wrote this draft
+on 2026-10-12 for steps 11 to 13. Do NOT copy it into `site/privacy.html` before the owner approves
+it. A merge publishes the page, because Caddy serves `/opt/acb/app/site`. The legal pages have one
+owner (`work_plan.md` §4, the legal pages row).
 
-- **Known limit EM-G4a-f1** (§12.3.5.1). A bulk act that falls back to one `modify` for each
-  message can send many quick requests to a mailbox that Gmail limits. EM-G5 does not own it
-  (E-G5-8). A later slice fixes it, with its own audit.
+**The assumptions of the draft.** Each one hangs on an owner answer. The owner confirms or corrects
+each one before approval.
+
+- **A1, D-EM-9 covers Gmail content (Q-GM-5).** D-EM-9 (§10.2) lets tenant mail go to TypeSafe and
+  to AI/ML API for the triage decisions of D-EM-7. The spec names those two suppliers there, and
+  nowhere else for email triage. The draft assumes that Gmail mail goes there on the terms of
+  Outlook mail.
+- **A2, no training at a sub-processor.** The draft says that no Gmail data trains a general AI
+  model. The owner checks the terms of TypeSafe and of AI/ML API before approval.
+- **A3, the text work.** Drafts, the email assistant and Insights use the LLM tiers, not D-EM-9
+  (D-EM-7, D-EM-61). The draft names their suppliers as a class, "AI model providers", as the page
+  does today. The Google review can ask for each name. The owner names them, or keeps the class.
+
+**The quoted text, for "2. What we collect", after the WhatsApp section.** The words are the page
+text.
+
+```text
+A Gmail or Google Workspace mailbox you connect
+
+How you connect it. You sign in at Google, and you choose to give Metorite
+access. Metorite asks for two permissions: one to read, send and organise your
+mail, and one to manage your mail filters. We never receive or store your
+Google password.
+
+What Metorite reads. Your messages, with their headers and attachments. Your
+labels, your drafts and your mail filters.
+
+How Metorite uses it. We use it only for the features that you see and use in
+Metorite. We show your mail in the Email app, and we keep it in step with Gmail
+in both directions. We send mail and save drafts only when you, or a rule that
+you set, tell us to. We sort your mail. When you turn on the AI features, we
+draft replies and answer your questions about your mail.
+
+What Metorite stores. We keep a copy of the messages in the date range that
+you choose, while the mailbox stays connected. Each mailbox can hold up to
+500 MB in Metorite.
+
+Who can see it. Only you. A mailbox that you connect is private to you. Our
+staff do not read your mail, with three exceptions: you ask us to, for
+support; we must, to keep the service secure; or the law requires it.
+
+What we do not do. We do not use Gmail data for advertising, and we do not
+sell it. We do not use it to develop, improve or train a general AI or
+machine-learning model, and our sub-processors may not use it for that either.
+
+Who we share it with. We share Gmail data only with the suppliers in section 4
+that run these features. We share it with nobody else, unless the law requires
+it.
+
+How to stop it. Disconnect the mailbox in the Email app. Metorite then deletes
+its copy, and your mail stays in Gmail. You can also remove Metorite's access
+at any time in your Google Account, under Security, in your connections to
+third-party apps.
+
+Limited Use. Metorite's use and transfer to any other app of information
+received from Google APIs will adhere to the Google API Services User Data
+Policy, including the Limited Use requirements.
+```
+
+Google gives the words of the last paragraph, so copy them as they are. Link "Google API Services
+User Data Policy" to `https://developers.google.com/terms/api-services-user-data-policy`. A2 binds
+the paragraph "What we do not do". A1 and A3 bind the paragraph "Who we share it with".
+
+**The rows for the supplier table in "4. Who we share it with".** Change the Google row, and add two
+rows (A1).
+
+| Supplier | What they handle |
+|---|---|
+| Google | Sign in with Google, if you choose it. A Gmail or Google Workspace mailbox, if you connect one |
+| TypeSafe | Fast decisions that sort your mail, when the email features are on |
+| AI/ML API | Access to the AI models that make those decisions |
+
+The row "AI model providers" stays, and it covers the drafts and the assistant (A3). The page
+`site/terms.html` gets one line that points to this section for a Google mailbox. The owner
+approves that line with this draft.
+
+**Engineering before customers.** These are not owner acts. §12.3.12 holds the one list, and
+§12.3.12.1 holds the slices and their order. Each one closes before the app moves to Production.
 
 **For push (EM-G6a and EM-G6b), when push is next.**
 
@@ -12551,6 +13670,8 @@ refresh token from Testing still ends after 7 days.
 
 - **Q-GM-1. Which Google account or organization owns the Google Cloud project of the mail app?**
   The proposal is an organization that Metorite owns, apart from the project of Google sign-in.
+  *Open.* On 2026-10-12 the owner chose path A (§12.4): one Metorite-owned app, External, in
+  Testing. The owner has not named the account yet, so this question stays open.
 - **Q-GM-2. Start Google verification now, or after EM-G10 in Testing?** The proposal is to verify
   the domain and the brand now, because that costs nothing and the review takes weeks. Start the
   restricted-scope review and CASA after EM-G10, because the demo video needs the finished flow.
@@ -12561,11 +13682,16 @@ refresh token from Testing still ends after 7 days.
 - **Q-GM-5. Does D-EM-9 cover Gmail content?** Google's Limited Use rules bind each transfer of
   Gmail data, also to TypeSafe and AI/ML API, and the privacy text must name them. The proposal is
   yes, on the same terms as Outlook, with the text of §12.4 steps 12 and 13. This is a legal and
-  third-party call, so the agent does not make it.
+  third-party call, so the agent does not make it. The draft after §12.4 step 15 assumes yes, and
+  marks each place that hangs on this answer.
 - **Q-GM-6. Whose Google client does the box hold today?** The box `.env` holds
   `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` (measured by name, 2026-10-05). Nobody in
   this plan set them. Name its Google Cloud project, its redirect URIs and the scopes it allows. If
   it is not the mail app of §12.4, replace it at step 9 before EM-G10 (D-EM-36).
+
+  **Q-GM-6 (answered, 2026-10-12).** There is no client. The box holds the two names, and each value
+  is empty. The orchestrator measured it by length on 2026-10-12, and each empty-value count was 1
+  (§12.1). So step 9 of §12.4 writes the first Google client, and replaces nothing.
 
 ---
 
@@ -15651,12 +16777,13 @@ or replying to messages but also when the email AI assistant generates insights 
 inboxes, intelligently incorporating relevant body content.
 ```
 
-**Status.** 📝 SPECIFIED 2026-10-12, not built. The spec audit of 2026-10-12 returned
+**Status.** 📝 SPECIFIED 2026-10-12. ✅ PR-A is MERGED as #894 (`52c791d7a`, 2026-10-12).
+🔨 PR-A1 is built, not merged (branch `email-stall-pra1`). The spec audit of 2026-10-12 returned
 GO-NARROWED, and its edits D1 to D14 are in this section. The re-audit of 2026-10-12
 returned GO-NARROWED, and its edits E1 to E6 are in this section too. Slice **EM-T17** has
 seven PRs (§17.7).
 
-🔨 **PR-A2 is built, not merged** (2026-10-12, branch `email-stall-pra2`). The composer
+✅ **PR-A2 is MERGED** as #893 (`0bd098f18`, 2026-10-12). The composer
 has a Stop button and the bound `CLIENT_TOTAL_MS`. An abort never falls back to
 `composeAssist`, and a typed error keeps the preview. The reply path sends the `context`
 `done` event (A7). The fences are `useDraftSession.test.ts` and
@@ -16016,6 +17143,11 @@ with the bound and the step, and no tenant text.
 - **No session across the model.** PR-A1 takes this from EM-T4a-4 (§10.4.6 item 6).
   `_compose_assist_run` closes its session before the model call, and opens a short new one
   for `_store_ai_draft`. Its docstring (`drafting.py:1835-1836`) changes to say so.
+- **A failed draft store does not stop the draft.** PR-A1 makes this choice on purpose. When the new block of
+  `_store_ai_draft` fails, the run logs `email.store_ai_draft_failed` and still returns the
+  draft. The member gets the draft, and only the learning from a later edit is lost.
+- **The rule path gets two of the bounds.** The rule draft also calls `_orchestrate_draft`.
+  So the `SIDE_STEP_BOUND_S` bounds of the Mem0 recall and the consult plan apply there too.
 - **The rule draft keeps its place in Block W.** EM-T4a-3 item 1 owns that move.
 
 - **The log line that measures it.** `email.draft_timing` holds the stage durations in ms
@@ -16039,6 +17171,17 @@ So the context step of `_compose_assist_run` runs in this order:
    (the EM-T4c idiom, `apps/services/gateway/AGENTS.md:73`). Then it reads the memories, the
    few-shot by the embedding, and the calendar.
 
+**Block 2 has two parts (B2, built 2026-10-12).** A cancel by `CONTEXT_STEP_BOUND_S` rolls back
+the block that is open. So block 2a writes the body and the creds in a block of its own, and
+that block runs outside the context bound. Block 2b then reads, in the time that is left.
+Block 2a also writes the creds when the fetch passed `SIDE_STEP_BOUND_S` after
+`authenticate()` refreshed the token. `core.BodyFetch` holds the three steps of the fetch, and
+it shares `_hydrated_columns` and `_store_hydrated_body` with `hydrate_message_body`.
+
+**An expiry in block 1 (B3, built 2026-10-12).** The draft goes on only when block 1 has done
+the owner check and has the target row. An expiry before that point raises, and the stream
+route sends its `error` event. No draft goes on without the owner check.
+
 `_fetch_sent_fewshot` (`drafting.py:199`) splits into the embed (step 2) and the read
 (step 3). The Mem0 recall and the consult plan run in `_orchestrate_draft`
 (`drafting.py:1512`), with no session. They already run at the same time, and PR-A1 gives
@@ -16053,7 +17196,8 @@ each one `SIDE_STEP_BOUND_S`.
 
 **The context step on expiry (before PR-B).** When `CONTEXT_STEP_BOUND_S` ends:
 
-- The target body is the stored `body_text`, or else the snippet.
+- The target body is the stored `body_text`, or else the snippet. A body that the fetch
+  brought before the expiry counts as stored, because block 2a writes it.
 - The thread is the output of `_fetch_thread_context`, or empty.
 - Each other side block is empty: the examples, the few-shot, the memories and the calendar.
 - The open session block exits before the draft goes on.
