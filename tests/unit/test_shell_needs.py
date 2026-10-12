@@ -35,6 +35,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from acb_auth.permissions import EffectiveAccess
@@ -53,11 +54,12 @@ ME = "member@customer.example"
 OTHER = "other@customer.example"
 ORG = "org-mine"
 ORG_OTHER = "org-other"
+#: The one instant of the suite. The ``fakes`` fixture freezes the feed's
+#: clock (``shell._now``) here, so the data and the overdue test agree.
+#: ⚠️ Never let the feed read the wall clock. CI imports this module about 25
+#: minutes before it runs it. Near UTC midnight, "later today" is then in the
+#: past, and a due-today task turns overdue (CI, 2026-10-12 23:46 UTC).
 NOW = datetime.now(UTC)
-#: Later today in UTC, whatever the hour the suite runs at.
-LATER_TODAY = NOW + (datetime.combine(NOW.date() + timedelta(days=1), datetime.min.time(),
-                                      tzinfo=UTC) - NOW) / 2
-TOMORROW = datetime.combine(NOW.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
 
 
 def member(*features: str, email: str = ME) -> UserContext:
@@ -106,9 +108,20 @@ class Fakes:
     """Stand-ins for the app functions. Each answers by the member it is
     handed, as the real one does, and records who called it. The two bounded
     reads keep their real contract: due before tomorrow and the oldest
-    deadline first, and the longest wait first, each up to ``limit``."""
+    deadline first, and the longest wait first, each up to ``limit``.
 
-    def __init__(self) -> None:
+    ``now`` is the frozen instant, and ``zone`` the member's stored zone. The
+    lens bounds its read at the start of the member's tomorrow, so the fake
+    does too, and ``later_today`` sits halfway to that bound."""
+
+    def __init__(self, now: datetime = NOW, zone: str = "UTC") -> None:
+        self.now = now
+        self.zone = zone
+        local = now.astimezone(ZoneInfo(zone))
+        self.today = local.date()
+        self.tomorrow = datetime.combine(self.today + timedelta(days=1), datetime.min.time(),
+                                         tzinfo=ZoneInfo(zone))
+        self.later_today = now + (self.tomorrow - now) / 2
         self.calls: list[tuple[str, object, dict]] = []
         #: The pending actions, by organization. The broker reads the
         #: tenant the request bound, so the fake does too.
@@ -117,16 +130,16 @@ class Fakes:
                 {"id": "pa-new", "actor": "agent:email-assistant",
                  "action": "crm.zoho_update", "target": "lead:z-1",
                  "payload": {"args": {}}, "status": "pending",
-                 "created_at": NOW - timedelta(minutes=10)},
+                 "created_at": now - timedelta(minutes=10)},
                 {"id": "pa-old", "actor": "user:priya@customer.example",
                  "action": "whatsapp.broadcast", "target": "account:wa-1",
                  "payload": {"targets": [{"chat_id": "c1"}, {"chat_id": "c2"}]},
-                 "status": "pending", "created_at": NOW - timedelta(hours=3)},
+                 "status": "pending", "created_at": now - timedelta(hours=3)},
             ],
             ORG_OTHER: [
                 {"id": "pa-theirs", "actor": "agent:other", "action": "crm.zoho_delete",
                  "target": "lead:z-9", "payload": {}, "status": "pending",
-                 "created_at": NOW},
+                 "created_at": now},
             ],
         }
         self.active = 0
@@ -136,25 +149,25 @@ class Fakes:
         self.slow_mailbox: set[str] = set()
         self.tasks: dict[str, list[dict]] = {
             ME: [
-                _task("t-late", "Ship the extruder", NOW - timedelta(hours=2)),
-                _task("t-old", "File the VAT return", NOW - timedelta(days=3)),
-                _task("t-soon", "Call the supplier", LATER_TODAY),
-                _task("t-next", "Plan the launch", NOW + timedelta(days=3)),
+                _task("t-late", "Ship the extruder", now - timedelta(hours=2)),
+                _task("t-old", "File the VAT return", now - timedelta(days=3)),
+                _task("t-soon", "Call the supplier", self.later_today),
+                _task("t-next", "Plan the launch", now + timedelta(days=3)),
             ],
-            OTHER: [_task("t-theirs", "Their private overdue task", NOW - timedelta(days=1))],
+            OTHER: [_task("t-theirs", "Their private overdue task", now - timedelta(days=1))],
         }
         self.notes: dict[str, list[dict]] = {
             ME: [
                 {"id": "n-1", "task_id": "t-9", "kind": "assigned", "actor": "priya@x.test",
                  "task_title": "Fix the hopper", "task_number": 12, "excerpt": None,
-                 "created_at": NOW - timedelta(hours=5)},
+                 "created_at": now - timedelta(hours=5)},
                 {"id": "n-2", "task_id": "t-8", "kind": "mention", "actor": "agent:builder",
                  "task_title": "Wire the sensor", "task_number": None,
-                 "excerpt": "Can you check this?", "created_at": NOW - timedelta(hours=1)},
+                 "excerpt": "Can you check this?", "created_at": now - timedelta(hours=1)},
             ],
             OTHER: [{"id": "n-theirs", "task_id": "t-7", "kind": "comment", "actor": ME,
                      "task_title": "Their notification", "task_number": 3, "excerpt": None,
-                     "created_at": NOW}],
+                     "created_at": now}],
         }
         self.accounts: dict[str, list[dict]] = {
             ME: [{"id": "a-mine", "in_all_inboxes": True},
@@ -163,11 +176,11 @@ class Fakes:
         }
         self.threads: dict[str, list[dict]] = {
             "a-mine": [
-                _thread("th-new", "m-new", "Invoice March", NOW - timedelta(hours=1)),
-                _thread("th-old", "m-old", "Quote for 40 units", NOW - timedelta(days=4)),
+                _thread("th-new", "m-new", "Invoice March", now - timedelta(hours=1)),
+                _thread("th-old", "m-old", "Quote for 40 units", now - timedelta(days=4)),
             ],
-            "a-separate": [_thread("th-sep", "m-sep", "Board papers", NOW)],
-            "a-theirs": [_thread("th-theirs", "m-theirs", "Their secret", NOW)],
+            "a-separate": [_thread("th-sep", "m-sep", "Board papers", now)],
+            "a-theirs": [_thread("th-theirs", "m-theirs", "Their secret", now)],
         }
 
     async def _enter(self, name: str, user: object, kwargs: dict) -> None:
@@ -182,11 +195,12 @@ class Fakes:
     async def my_due_tasks(self, user, *, limit):
         await self._enter("my_due_tasks", user, {"user": user, "limit": limit})
         due = [t for t in self.tasks.get(user.email, [])
-               if t["due_at"] and datetime.fromisoformat(t["due_at"]) < TOMORROW]
+               if t["due_at"] and datetime.fromisoformat(t["due_at"]) < self.tomorrow]
         due.sort(key=lambda t: t["due_at"])
         # ⚠️ No SOMEDAY filter here, on purpose: the provider's own check of
         # the row's disposition is what this suite fences.
-        return {"rows": due[:limit], "today": NOW.date().isoformat(), "timezone": "UTC"}
+        return {"rows": due[:limit], "today": self.today.isoformat(),
+                "timezone": self.zone}
 
     async def list_notifications(self, **kw):
         await self._enter("list_notifications", kw["user"], kw)
@@ -249,7 +263,13 @@ class Fakes:
 
 @pytest.fixture()
 def fakes(monkeypatch) -> Fakes:
-    f = Fakes()
+    return _install(monkeypatch, Fakes(NOW))
+
+
+def _install(monkeypatch, f: Fakes) -> Fakes:
+    """Swap the app functions for ``f``, and freeze the feed's clock at
+    ``f.now``. One instant, so a task due later today is never overdue."""
+    monkeypatch.setattr(shell, "_now", lambda: f.now)
     import gateway.routes.email.transport.accounts as accounts
     import gateway.routes.projects.notifications as notifications
 
@@ -532,6 +552,61 @@ class TestTheAnswer:
                                      "projects": "ok", "email": "ok"}
 
 
+#: Frozen instants, each with the hour it fences.
+CLOCKS = {
+    # 12 minutes before UTC midnight. CI failed here on 2026-10-12.
+    "utc-23:48": datetime(2026, 10, 12, 23, 48, tzinfo=UTC),
+    # 5 minutes after IST midnight (00:05 IST on 13 October).
+    "utc-18:35": datetime(2026, 10, 12, 18, 35, tzinfo=UTC),
+    # Mid-morning UTC, far from both midnights. The control case.
+    "utc-06:00": datetime(2026, 10, 13, 6, 0, tzinfo=UTC),
+}
+
+
+class TestTheClock:
+    """The feed reads ONE instant, through ``shell._now``.
+
+    The suite once took "now" at import and the feed took the wall clock at
+    the call. CI runs this module about 25 minutes after it imports it. Near
+    UTC midnight, "later today" was then already in the past, so the
+    due-today task read as overdue and sorted before the approvals.
+
+    Each case pins a fixed date. A feed that read the wall clock again would
+    see every one of these deadlines in the past, and fail.
+    """
+
+    @pytest.fixture(params=sorted(CLOCKS))
+    def now(self, request) -> datetime:
+        return CLOCKS[request.param]
+
+    @pytest.fixture(params=["UTC", "Asia/Kolkata"])
+    def frozen(self, request, monkeypatch, now) -> Fakes:
+        return _install(monkeypatch, Fakes(now, zone=request.param))
+
+    def test_the_rows_in_the_contracts_order_at_any_hour(self, frozen):
+        assert ids(run(admin(*ALL, "approvals"))) == [
+            "tasks:t-old", "tasks:t-late",
+            "approvals:pa-old", "approvals:pa-new",
+            "tasks:t-soon",
+            "projects:n-2", "projects:n-1",
+            "email:a-mine:th-old", "email:a-mine:th-new",
+        ]
+
+    def test_later_today_is_due_today_and_in_the_members_day(self, frozen):
+        assert frozen.now < frozen.later_today < frozen.tomorrow
+        assert frozen.later_today.astimezone(ZoneInfo(frozen.zone)).date() == frozen.today
+        rows = {i["id"]: i for i in run(member(*ALL))["items"]}
+        assert rows["tasks:t-soon"]["kind"] == "due_today"
+        assert "tasks:t-next" not in rows
+
+    def test_once_its_time_passes_a_task_is_overdue(self, frozen, monkeypatch):
+        # Non-vacuity: the seam is the clock the feed reads. Move it past
+        # the deadline, and the same task is overdue.
+        monkeypatch.setattr(shell, "_now", lambda: frozen.later_today + timedelta(minutes=1))
+        rows = {i["id"]: i for i in run(member(*ALL))["items"]}
+        assert rows["tasks:t-soon"]["kind"] == "overdue"
+
+
 class TestTheCaps:
     def test_one_bounded_task_read_and_the_oldest_overdue_first(self, fakes):
         # 40 overdue tasks, more than the cap. The newest-created is the
@@ -567,7 +642,7 @@ class TestTheCaps:
     def _flood(self, fakes, overdue: int, due_today: int) -> None:
         fakes.tasks[ME] = (
             [_task(f"t-o{n:02}", "x", NOW - timedelta(hours=n + 1)) for n in range(overdue)]
-            + [_task(f"t-d{n:02}", "x", LATER_TODAY) for n in range(due_today)])
+            + [_task(f"t-d{n:02}", "x", fakes.later_today) for n in range(due_today)])
         fakes.pending[ORG] = [
             {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
              "target": "t", "payload": {}, "status": "pending",

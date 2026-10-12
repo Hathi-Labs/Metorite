@@ -198,6 +198,12 @@ def _instant(value: Any) -> datetime | None:
     return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
 
 
+def _now() -> datetime:
+    """The clock of the feed. The suite freezes it here, so the test data and
+    the overdue test read one instant (``test_shell_needs.py`` ``TestTheClock``)."""
+    return datetime.now(UTC)
+
+
 def _iso(value: Any) -> str | None:
     at = _instant(value)
     return at.isoformat() if at is not None else None
@@ -222,7 +228,7 @@ async def _tasks(user: UserContext) -> Found:
     # One bounded read: due before the member's tomorrow, in the member's
     # zone, the oldest deadline first, at most PER_APP rows.
     answer = await my_due_tasks(user, limit=PER_APP)
-    now = datetime.now(UTC)
+    now = _now()
     found = answer.get("rows") or []
 
     overdue: list[Item] = []
