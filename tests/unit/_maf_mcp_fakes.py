@@ -23,7 +23,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-
 def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,

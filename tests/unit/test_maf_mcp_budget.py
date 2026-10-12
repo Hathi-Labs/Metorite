@@ -51,6 +51,7 @@ runs found two survivors, M6 and M12, and the two tests were then fixed.
 | M14 | the gate finds a loader by name, not by identity | ``test_a_loader_that_no_tool_of_the_run_holds_is_refused`` |
 | M15 | the index line escapes no character | ``test_the_index_line_escapes_control_characters_and_fits_80`` |
 | M16 | ``tool_json_schema`` prices a MAF function by its class docstring again | ``test_tool_json_schema_prices_a_maf_function_by_its_own_schema``, ``test_a_small_server_attaches_its_tools_directly`` |
+| M17 | the cap slices the candidates before the connect again (review of #922, P2) | ``test_a_server_that_does_not_attach_takes_no_slot`` (all 4 cases) |
 """
 from __future__ import annotations
 
@@ -155,8 +156,11 @@ class _Fleet:
     """MCP servers by host. Each host answers ``initialize``, ``tools/list``
     and ``tools/call``, and records each request."""
 
-    def __init__(self, servers: dict[str, list[dict[str, Any]]]) -> None:
+    def __init__(self, servers: dict[str, list[dict[str, Any]]],
+                 dead: frozenset[str] = frozenset()) -> None:
         self.servers = servers
+        #: The hosts that answer every request with HTTP 500.
+        self.dead = dead
         self.requests: list[tuple[str, str]] = []
         self.calls: list[tuple[str, str]] = []
 
@@ -165,6 +169,9 @@ class _Fleet:
         # the Host header (and as SNI).
         host = request.headers.get("host", request.url.host).split(":")[0]
         sid = {"mcp-session-id": f"s-{host}"}
+        if host in self.dead:
+            self.requests.append((host, "dead"))
+            return httpx.Response(500)
         if request.method == "DELETE":
             return httpx.Response(204)
         if request.method == "GET":
@@ -209,9 +216,12 @@ def _spec(name: str, *, always_confirm: bool = False) -> _maf_mcp.McpServer:
 
 async def _attach(monkeypatch: pytest.MonkeyPatch, servers: dict[str, list[dict[str, Any]]],
                   *, agent: Any = None, member: bool = True,
-                  always_confirm: frozenset[str] = frozenset()) -> tuple[Any, list, _Fleet, list]:
-    """Attach *servers* (name to tools) to a real native agent, offline."""
-    fleet = _Fleet({f"{n}.example.com": tools for n, tools in servers.items()})
+                  always_confirm: frozenset[str] = frozenset(),
+                  dead: frozenset[str] = frozenset()) -> tuple[Any, list, _Fleet, list]:
+    """Attach *servers* (name to tools) to a real native agent, offline.
+    The servers in *dead* answer every request with HTTP 500."""
+    fleet = _Fleet({f"{n}.example.com": tools for n, tools in servers.items()},
+                   dead=frozenset(f"{n}.example.com" for n in dead))
     fleet.install(monkeypatch)
     agent = agent if agent is not None else native_agent()
     opened: list[Any] = []
@@ -707,6 +717,50 @@ async def test_a_ninth_server_is_left_out_in_name_order_and_logged(monkeypatch):
         assert "s9.example.com" not in fleet.hosts_reached(), "the 9th server was reached"
         cap = [e for e in logs if e["event"] == "mcp.server_cap"]
         assert cap and cap[0]["left_out"] == ["s9"]
+    finally:
+        await _maf_mcp.close_mcp_tools(opened)
+
+
+def _agent_holding(name: str) -> Any:
+    """A real native agent that already holds a platform tool *name*."""
+    from agent_framework import Agent, FunctionTool
+    from agent_framework.openai import OpenAIChatCompletionClient
+
+    def platform(field_0: str) -> str:
+        """A platform tool."""
+        return field_0
+
+    return Agent(
+        client=OpenAIChatCompletionClient(model="m", api_key="k",
+                                          base_url="http://127.0.0.1:9/v1"),
+        name="probe", tools=[FunctionTool(name=name, func=platform)],
+    )
+
+
+@pytest.mark.parametrize("extra", [0, 1], ids=["nine-in-scope", "ten-in-scope"])
+@pytest.mark.parametrize("why", ["dead", "clash"])
+async def test_a_server_that_does_not_attach_takes_no_slot(monkeypatch, why, extra):
+    """The cap counts the servers that ATTACH, not the candidates (review of
+    #922, P2). ``a-bad`` sorts first and never attaches: it answers HTTP 500,
+    or its tool clashes with a platform tool. The 8 healthy servers after it
+    still attach, and only a server past them is left out."""
+    names = ["a-bad", *(f"s{i}" for i in range(1, 9 + extra))]
+    agent = _agent_holding("a-bad_t000") if why == "clash" else None
+    agent, opened, fleet, logs = await _attach(
+        monkeypatch, {n: _many(1, params=1) for n in names}, agent=agent,
+        dead=frozenset({"a-bad"}) if why == "dead" else frozenset())
+    try:
+        assert [t.name for t in agent.mcp_tools] == [f"s{i}" for i in range(1, 9)]
+        event = "mcp.unreachable" if why == "dead" else "mcp.name_collision"
+        assert [e["name"] for e in logs if e["event"] == event] == ["a-bad"]
+        cap = [e for e in logs if e["event"] == "mcp.server_cap"]
+        if extra:
+            assert cap and cap[0]["left_out"] == ["s9"]
+            assert "s9.example.com" not in fleet.hosts_reached(), "the 10th server was reached"
+        else:
+            assert cap == [], "a server was left out with a free slot"
+        budget = [e for e in logs if e["event"] == "mcp.schema_budget"]
+        assert budget and sorted(budget[-1]["servers"]) == [f"s{i}" for i in range(1, 9)]
     finally:
         await _maf_mcp.close_mcp_tools(opened)
 
