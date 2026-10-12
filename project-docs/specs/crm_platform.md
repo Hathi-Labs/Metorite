@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12).
 >
 > **Built later:** CRM-Q5, the data the mirror loses (2026-10-12). Migration 249 adds `crm_deal_contacts.ext_source`.
 
@@ -1167,11 +1167,19 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q6** | The generic record store and its views. Products and Quotes first, then each custom module | P0 |
 | **CRM-Q7** | The AI mapping assistant and CRM settings → Field map | P0 |
 | **CRM-Q8** | Filters on pipeline, stage, owner, source, dates and custom picklists. Saved views (`crm_views`) | P0 |
-| **CRM-Q9** | Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
+| **CRM-Q9** | ✅ built 2026-10-12. Sync health: the Zoho count against ours, skipped records, unsupported modules, last error | P0 |
 | **CRM-Q10** | Layouts and sections on the record page. The move to API v8 with field batches of 50 | P1 |
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
+
+**CRM-Q9 built as (2026-10-12).**
+
+- `GET /crm/sync/health` is read only and needs an admin. It sits behind `CRM_MIRROR` and adds no migration. It returns `last_run`, `last_success_at`, `next_run_at`, `entities`, `modules`, `history` (10 runs) and `credits`. The error is a short code. It holds no token and no record.
+- Each entity row holds `zoho_count` (the last estimate), `ours` (rows with `ext_source = zoho`) and the count keys of the last run. A key in the counts that the route does not know passes through, so a new entity needs no change here. `ours` is null for a key with no local table.
+- `credits.budget_24h` comes from `engine.daily_budget`, and `used_24h` from `runs.credits_used_24h`. The engine is not changed. `runs.recent` is new.
+- The Sync health card shows in Mirror mode for an admin. It shows the status line, a table by entity with a difference badge, an Unavailable chip with "Connect Zoho again to allow this module", the modules in the Zoho account, a credits bar, the last 10 runs and Sync now. It polls every 3 s while a run is running.
+- Fences: `tests/unit/test_crm_sync_health_r8.py` and `src/app/crm/components/crmQ9.test.ts`.
 
 **CRM-Q4 built as (2026-10-12).**
 
@@ -1189,7 +1197,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 - In Mirror mode no card drags, including a native card (§18.4).
 - The pipeline picker shows for two pipelines or more. It needs `GET /crm/pipelines` from CRM-Q2. A 404 gives one implicit pipeline and no picker. The browser keeps the last choice.
 - The record page shows related lists. The list routes take `?company_id=` for contacts and deals, and `?contact_id=` for deals. A filter on another entity gives 422. Fence: `tests/unit/test_crm_related_r8.py`.
-- CRM settings is one page of cards in this order: Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health. Fields and Sync health say "Coming soon" until CRM-Q4 and CRM-Q9.
+- CRM settings is one page of cards in this order: Setup, Access, Connection, Pipelines and stages, Lead Status, Lost reasons, Fields, Sync health. Fields and Sync health no longer say "Coming soon" (CRM-Q4 and CRM-Q9).
 - §18.6: an error boundary wraps the CRM views. It shows "Something went wrong on this page. Reload to get the newest version." The Access card reads the group list only for the rule "groups".
 - The UI does not yet call the CRM-Q2 routes that rename a pipeline or add and remove its stages. So a second pipeline shows its stages read-only.
 
