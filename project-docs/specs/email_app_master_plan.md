@@ -13085,11 +13085,15 @@ once.
 | Item | Where | The words | Test |
 |---|---|---|---|
 | PR-C2 4 | The notice in a Gmail draft with HTML | `This draft has formatting or images from Gmail. If you change the text here, Metorite saves the text only, and the formatting and images go.` | `a-gmail-html-draft-shows-the-notice` |
+| PR-C2 4a | The stopped send, as an alert, in place of the notice above | `Metorite could not keep the formatting and images of this draft. Press Send again to send the text only.` | `a-stopped-send-says-press-send-again` |
 
 The words stay true. A save or a send that leaves the text as it was keeps the formatting
 (D-G3a-f7-2, D-G3a-f7-7). A text edit loses it. A failed read on a save keeps the text only, and
 the same notice then tells the member (D-G3a-f7-6). A failed read at the send stops the send until
 the member presses again (D-G3a-f7-11, D-G3a-f7-12).
+
+Row 4a shows after a stopped send. That is a 409 `html_unavailable`, or a pre-send save that
+answered `lost`. It replaces the words of row 4 until the next send or a text edit.
 
 **Non-goals.** No HTML editor. No change to the send of a draft with no signature: Gmail sends the
 draft that it holds. No change to Outlook or IMAP drafts, or to the create of a draft.
@@ -13131,7 +13135,7 @@ text half still comes from `build_signed_bodies`, because that half is the same 
 `sign_html` reads the new part of the HTML only. A quote of an earlier mail of the member holds the
 signature too, and that copy must not stop the signature.
 
-**The build of PR-C2 (2026-10-13).** Four facts that the scope did not name:
+**The build of PR-C2 (2026-10-13).** Three facts that the scope did not name:
 
 - `gatewayFetch` keeps the raw `detail` on its error. The detail of the 409 is an object, so its
   message reads `[object Object]`. `isHtmlUnavailable` reads `status` and `detail.reason`.
@@ -13139,8 +13143,6 @@ signature too, and that copy must not stop the signature.
   because the card shows the notice.
 - `draftText` is the one rule for the text of the card. The outgoing text and the text at open use
   it, so a card with no edit equals its text at open.
-- The stopped send shows the words of the table, as an alert. The table has no words that tell the
-  member that the next press sends the text only.
 
 The behaviour fence is `e2e/email-gmail-draft-notice.spec.ts`. With `GMAIL_C2_SHOTS` set, it also
 saves the screenshots of acceptance 23.
@@ -13190,6 +13192,8 @@ saves the screenshots of acceptance 23.
     confirm. It answers `send` for `kept` and `none`.
 21. (B2 b) `isHtmlUnavailable` is true for the 409 of D-G3a-f7-11 only. The card sends
     `allowTextOnly: false` on the first press and `true` on the next press after the notice.
+21a. After a stopped send, the card shows the words of E-D3 row 4a as an alert, in place of the
+    words of row 4. The next send and a text edit bring back the words of row 4.
 22. (B5) `needsHtmlRead` is true for a Gmail draft with `bodyText` and no `bodyHtml` that the card
     did not read yet. It is false for an Outlook draft and after one read.
 23. Do a visual review of the card with the notice (§12.3.10 item 8). Look in light mode, at
@@ -13236,6 +13240,10 @@ saves the screenshots of acceptance 23.
 - `a-gmail-draft-with-text-only-reads-its-html-once` (acceptance 22)
 - `the-send-asks-send-after-pre-save` (acceptance 20). It reads `ConversationView.tsx` as text,
   and finds `sendAfterPreSave(` between the pre-send `saveDraft` and `sendDraft`.
+- `a-stopped-send-says-press-send-again` (acceptance 21a). `noticeWords` gives the words of row
+  4a after a stop and the words of row 4 before it. A source-text case finds the alert role and the
+  clear of the stop. `e2e/email-gmail-draft-notice.spec.ts` shows the words of row 4a after a
+  stopped send.
 
 **Mutations.** Each must turn its named fence red. Then the file goes back to its exact SHA-256.
 
@@ -13253,6 +13261,7 @@ saves the screenshots of acceptance 23.
 | M10 | `sendAfterPreSave` answers `send` for `lost` with no confirm | `a-lost-pre-save-stops-the-send-until-the-confirm` |
 | M11 | The HTML read joins the hydrate effect, after its early return | `a-gmail-draft-with-text-only-reads-its-html-once` |
 | M12 | A read with no HTML signs with `sign_html("")` | `test_a_signed_send_with_no_html_anywhere_is_main` |
+| M13 | `noticeWords` gives the words of row 4 after a stop | `a-stopped-send-says-press-send-again` |
 
 **Verify with.**
 

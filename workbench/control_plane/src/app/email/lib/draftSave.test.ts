@@ -15,6 +15,7 @@
 //     `the-second-press-allows-text-only` (acceptance 21)
 //   * `a-gmail-draft-with-text-only-reads-its-html-once` (acceptance 22)
 //   * `the-send-asks-send-after-pre-save` (acceptance 20, source text)
+//   * `a-stopped-send-says-press-send-again` (acceptance 21a)
 //
 // Mutations M6, M7, M10 and M11 of the spec each turn one of these red.
 
@@ -24,11 +25,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveDraft, sendDraft } from "./api";
 import {
   FORMATTING_NOTICE,
+  SEND_STOPPED_NOTICE,
   draftSavePayload,
   draftText,
   isHtmlUnavailable,
   needsHtmlRead,
   noticeAfterSave,
+  noticeWords,
   sendAfterPreSave,
   showsFormattingNotice,
 } from "./draftSave";
@@ -202,7 +205,7 @@ describe("a-gmail-html-draft-shows-the-notice", () => {
 
   it("draws the notice above the text box with the warning tokens", () => {
     const notice = between(card, "{showNotice && (", "<textarea");
-    expect(notice).toContain("{FORMATTING_NOTICE}");
+    expect(notice).toContain("{noticeWords(sendStopped)}");
     expect(notice).toMatch(/border-warning\/30 bg-warning\/10/);
     expect(notice).toContain("text-warning");
     expect(card).toMatch(/showsFormattingNotice\(\s*provider,/);
@@ -263,7 +266,7 @@ describe("a-409-html-unavailable-asks-for-the-next-press", () => {
   it("shows the notice and arms the next press, with no send error", () => {
     const send = between(card, "const send = async", "const discard = async");
     const handler = between(send, "} catch (err) {", "} finally {");
-    expect(handler).toMatch(/if \(isHtmlUnavailable\(err\)\) setTextOnlyConfirmed\(true\);\s*else setSendError\(sendFailureText\(err\)\);/);
+    expect(handler).toMatch(/if \(isHtmlUnavailable\(err\)\) stopSend\(\);\s*else setSendError\(sendFailureText\(err\)\);/);
     expect(card).toMatch(/textOnlyConfirmed\s*\|\|\s*htmlLost|htmlLost\s*\|\|\s*textOnlyConfirmed/);
   });
 });
@@ -283,9 +286,12 @@ describe("the-second-press-allows-text-only", () => {
 
   it("starts false, and only a stop or the 409 sets it true", () => {
     expect(card).toContain("const [textOnlyConfirmed, setTextOnlyConfirmed] = useState(false);");
-    const sets = card.match(/setTextOnlyConfirmed\(true\)/g) ?? [];
-    expect(sets.length).toBe(2);
+    // One setter, inside `stopSend`, and the send calls `stopSend` twice.
+    expect(card.match(/setTextOnlyConfirmed\(true\)/g)?.length).toBe(1);
     expect(card).not.toMatch(/setTextOnlyConfirmed\((?!true\))/);
+    expect(card).toMatch(/const stopSend = \(\) => \{\s*setTextOnlyConfirmed\(true\);\s*setSendStopped\(true\);\s*\};/);
+    const send = between(card, "const send = async", "const discard = async");
+    expect(send.match(/stopSend\(\)/g)?.length).toBe(2);
   });
 });
 
@@ -325,7 +331,34 @@ describe("the-send-asks-send-after-pre-save", () => {
     expect(ask).toBeGreaterThan(save);
     expect(go).toBeGreaterThan(ask);
     expect(between(send, "sendAfterPreSave(", "await sendDraft(")).toMatch(
-      /=== "stop"\)\s*\{\s*setTextOnlyConfirmed\(true\);\s*return;\s*\}/,
+      /=== "stop"\)\s*\{\s*stopSend\(\);\s*return;\s*\}/,
     );
+  });
+});
+
+describe("a-stopped-send-says-press-send-again", () => {
+  it("has the words of the E-D3 row, the stopped send", () => {
+    expect(SEND_STOPPED_NOTICE).toBe(
+      "Metorite could not keep the formatting and images of this draft. Press Send again to send the text only.",
+    );
+  });
+
+  it("says the stop after a stopped send, and the general words before it", () => {
+    expect(noticeWords(false)).toBe(FORMATTING_NOTICE);
+    expect(noticeWords(true)).toBe(SEND_STOPPED_NOTICE);
+    expect(noticeWords(true)).not.toBe(noticeWords(false));
+  });
+
+  it("shows the stop as an alert, until the next send or a text edit", () => {
+    const notice = between(card, "{showNotice && (", "<textarea");
+    expect(notice).toContain('role={sendStopped ? "alert" : "status"}');
+    expect(notice).toContain("{noticeWords(sendStopped)}");
+    // The next press clears the stop before its pre-send save.
+    const send = between(card, "const send = async", "const discard = async");
+    expect(send.indexOf("setSendStopped(false);")).toBeGreaterThanOrEqual(0);
+    expect(send.indexOf("setSendStopped(false);")).toBeLessThan(send.indexOf("saveDraft("));
+    // A text edit of the member, or of the AI, clears it.
+    expect(card).toMatch(/onChange=\{\(e\) => \{ dirty\.current = true; setSendStopped\(false\); setBody\(e\.target\.value\); \}\}/);
+    expect(between(card, "onBody: (next) =>", "setBody(next)")).toContain("setSendStopped(false);");
   });
 });

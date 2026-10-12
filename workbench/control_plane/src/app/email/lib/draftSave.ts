@@ -18,6 +18,20 @@ export const FORMATTING_NOTICE =
   "This draft has formatting or images from Gmail. If you change the text here, " +
   "Metorite saves the text only, and the formatting and images go.";
 
+/** The words after a stopped send (E-D3 table of §12.3.12.5, the stopped send). */
+export const SEND_STOPPED_NOTICE =
+  "Metorite could not keep the formatting and images of this draft. Press Send again to send the text only.";
+
+/**
+ * The words of the notice. After a stopped send (a 409 `html_unavailable`,
+ * or a pre-send save that answered `lost`), the card tells the member that
+ * the next press sends the text only. The next send and a text edit clear
+ * the stop, and the general words come back.
+ */
+export function noticeWords(sendStopped: boolean): string {
+  return sendStopped ? SEND_STOPPED_NOTICE : FORMATTING_NOTICE;
+}
+
 /** The fields of one DraftCard save, other than the text. */
 export type DraftSaveFields = Omit<SaveDraftParams, "body" | "keepHtml">;
 

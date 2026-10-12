@@ -8,10 +8,12 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *
  *   1. A Gmail draft with HTML shows the notice above the text box. A save
  *      with the text as it opened sends `keep_html`.
- *   2. The 409 `html_unavailable` of the send stops the send and shows the
- *      notice. The next press sends `allow_text_only: true`.
+ *   2. The 409 `html_unavailable` of the send stops the send. The card says
+ *      that the next press sends the text only, and that press sends
+ *      `allow_text_only: true`.
  *   3. A pre-send save that answers `html: "lost"` stops the first press, and
- *      sends nothing. The next press sends the text only.
+ *      sends nothing. A text edit brings the general words back. The next
+ *      press sends the text only.
  *   4. An Outlook draft shows no notice, and its save and its send carry the
  *      bodies of main.
  *
@@ -24,6 +26,8 @@ const SHOTS = process.env.GMAIL_C2_SHOTS;
 const NOTICE =
   "This draft has formatting or images from Gmail. If you change the text here, " +
   "Metorite saves the text only, and the formatting and images go.";
+const STOPPED =
+  "Metorite could not keep the formatting and images of this draft. Press Send again to send the text only.";
 
 const INBOUND = "0f8fad5b-d9cb-469f-a165-70867728951a";
 const DRAFT = "0f8fad5b-d9cb-469f-a165-70867728951d";
@@ -181,8 +185,10 @@ test.describe("The DraftCard of a Gmail-web draft", () => {
     await expect.poll(() => sends.length).toBe(1);
     expect(saves[0].keep_html).toBe(true);
     expect(sends[0].allow_text_only).toBe(false);
-    // The card shows the notice as an alert, and no banner names an object.
-    await expect(page.getByRole("alert").filter({ hasText: NOTICE })).toBeVisible();
+    // The card says the stop as an alert, in place of the general words, and
+    // no banner names an object.
+    await expect(page.getByRole("alert").filter({ hasText: STOPPED })).toBeVisible();
+    await expect(page.getByText(NOTICE)).toHaveCount(0);
     await expect(page.getByText("[object Object]")).toHaveCount(0);
     await shot(page, "send-409-dark-1280");
 
@@ -197,8 +203,13 @@ test.describe("The DraftCard of a Gmail-web draft", () => {
 
     await sendButton(page).click();
     await expect.poll(() => saves.length).toBe(1);
-    await expect(page.getByRole("alert").filter({ hasText: NOTICE })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: STOPPED })).toBeVisible();
     expect(sends.length).toBe(0);
+
+    // A text edit clears the stop, and the general words come back.
+    await page.getByPlaceholder("Write your reply…").fill("Thanks Ravi. The plan is below, in text.");
+    await expect(page.getByRole("status").filter({ hasText: NOTICE })).toBeVisible();
+    await expect(page.getByText(STOPPED)).toHaveCount(0);
 
     await sendButton(page).click();
     await expect.poll(() => sends.length).toBe(1);
@@ -254,7 +265,9 @@ test.describe("The notice in other looks (acceptance 23)", () => {
       expect(fits).toBe(true);
       await shot(page, look.name);
       await sendButton(page).click();
-      await expect(page.getByRole("alert").filter({ hasText: NOTICE })).toBeVisible();
+      const stopped = page.getByRole("alert").filter({ hasText: STOPPED });
+      await expect(stopped).toBeVisible();
+      expect(await stopped.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
       await shot(page, `${look.name}-send-409`);
     });
   }

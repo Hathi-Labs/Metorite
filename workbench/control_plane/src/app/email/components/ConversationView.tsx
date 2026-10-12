@@ -24,8 +24,8 @@ import {
   type DraftStatus,
 } from "../lib/draftAutosave";
 import {
-  FORMATTING_NOTICE, draftSavePayload, draftText, isHtmlUnavailable, needsHtmlRead,
-  noticeAfterSave, sendAfterPreSave, showsFormattingNotice,
+  draftSavePayload, draftText, isHtmlUnavailable, needsHtmlRead, noticeAfterSave,
+  noticeWords, sendAfterPreSave, showsFormattingNotice,
 } from "../lib/draftSave";
 
 const isDraft = (m: Email) =>
@@ -424,6 +424,13 @@ export function DraftCard({
   const htmlReadStarted = useRef(false);
   const [htmlLost, setHtmlLost] = useState(false);
   const [textOnlyConfirmed, setTextOnlyConfirmed] = useState(false);
+  // A stopped send shows its own words, until the next send or a text edit.
+  const [sendStopped, setSendStopped] = useState(false);
+  /** Stop the send: the next press sends the text only, and the card says so. */
+  const stopSend = () => {
+    setTextOnlyConfirmed(true);
+    setSendStopped(true);
+  };
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
   // The pending autosave. An unmount and a change of draft run it at once
   // (EM-G3c-2 item 11).
@@ -447,6 +454,7 @@ export function DraftCard({
   const ai = useDraftSession({
     onBody: (next) => {
       dirty.current = true;
+      setSendStopped(false);
       setBody(next);
     },
   });
@@ -551,6 +559,7 @@ export function DraftCard({
     if (!accountId || recipients().length === 0) return;
     setSending(true);
     setSendError(null);
+    setSendStopped(false);
     // The send carries the last edit, so each queued autosave goes. A save
     // that runs settles first, so no older text lands after this save
     // (EM-G3c-2 review round 2). The key gives each draft its own card, so
@@ -575,7 +584,7 @@ export function DraftCard({
       // A `lost` stops the first press, and the card shows the notice. The
       // next press sends the text only (D-G3a-f7-12).
       if (sendAfterPreSave(saved, textOnlyConfirmed) === "stop") {
-        setTextOnlyConfirmed(true);
+        stopSend();
         return;
       }
       // A Gmail send asks for a 409 when the gateway cannot read the HTML,
@@ -611,7 +620,7 @@ export function DraftCard({
       // and a 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
       // The 409 of a Gmail draft whose HTML the gateway cannot read shows the
       // notice, and the next press sends the text only (D-G3a-f7-11).
-      if (isHtmlUnavailable(err)) setTextOnlyConfirmed(true);
+      if (isHtmlUnavailable(err)) stopSend();
       else setSendError(sendFailureText(err));
     } finally {
       setSending(false);
@@ -739,16 +748,16 @@ export function DraftCard({
         )}
         {showNotice && (
           <p
-            role={textOnlyConfirmed ? "alert" : "status"}
+            role={sendStopped ? "alert" : "status"}
             className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] leading-snug text-warning"
           >
             <AppIcon name="AlertTriangle" size={12} className="mt-px flex-shrink-0" />
-            <span>{FORMATTING_NOTICE}</span>
+            <span>{noticeWords(sendStopped)}</span>
           </p>
         )}
         <textarea
           value={body}
-          onChange={(e) => { dirty.current = true; setBody(e.target.value); }}
+          onChange={(e) => { dirty.current = true; setSendStopped(false); setBody(e.target.value); }}
           rows={7}
           placeholder="Write your reply…"
           className={`${INPUT} resize-y leading-relaxed`}
