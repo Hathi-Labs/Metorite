@@ -13,8 +13,9 @@ rehearsal (no superuser, no BYPASSRLS):
    word matches in both, and only row level security keeps A's rows out.
 7. A converted lead does not show, as on the Leads list.
 
-It also proves the §19.10 notes on a real database: the four reads merge by
-``last_activity_at``, newest first, and no read asks for the next activity.
+It also proves the §19.10 notes on a real database: each read sorts by
+``last_activity_at`` (the default sort of leads is ``created_at``), the four
+reads merge newest first, and no read asks for the next activity.
 
 A hermetic fake agrees with any SQL it is handed, so none of these could be
 proved without the database. ⚠️ It SKIPS without
