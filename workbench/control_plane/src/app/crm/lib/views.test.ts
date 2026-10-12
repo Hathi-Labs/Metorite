@@ -8,8 +8,10 @@ describe("the CRM rail (CRM-U1, CRM-Q3)", () => {
   it("draws one row for each tab the URL grammar knows, and no other", () => {
     // A tab with no row cannot be reached by a click. A row with no tab
     // parses back to Deals, so the rail would light the wrong row.
+    // `module` has no fixed row: its rows come from the profile (CRM-Q6b,
+    // `railEntries`, fenced in `components/crmQ6b.test.ts`).
     const ids = CRM_RAIL.map((v) => v.id).sort();
-    expect(ids).toEqual([...NON_ENTITY_TABS, ...ENTITIES].sort());
+    expect(ids).toEqual([...NON_ENTITY_TABS.filter((t) => t !== "module"), ...ENTITIES].sort());
     expect(new Set(ids).size).toBe(ids.length);
   });
 
