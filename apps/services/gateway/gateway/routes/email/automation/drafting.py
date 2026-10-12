@@ -1882,6 +1882,11 @@ async def _compose_assist_run(
                 # to drop req.instruction entirely, so typing an instruction and
                 # hitting Draft on an empty reply changed nothing.
                 # Interactive → the COMPOSE tier.
+                # EM-T17 A7: this path returns before the shared "context
+                # done" below, so it sends its own here.
+                await _emit_activity(
+                    on_activity, kind="stage", id="context", status="done",
+                    detail="thread and recipient loaded")
                 draft = await _agent_draft_reply(
                     ctx, about, signature, user.email or "",
                     max_agents=1, agent_timeout=18.0,

@@ -15656,6 +15656,12 @@ GO-NARROWED, and its edits D1 to D14 are in this section. The re-audit of 2026-1
 returned GO-NARROWED, and its edits E1 to E6 are in this section too. Slice **EM-T17** has
 seven PRs (§17.7).
 
+🔨 **PR-A2 is built, not merged** (2026-10-12, branch `email-stall-pra2`). The composer
+has a Stop button and the bound `CLIENT_TOTAL_MS`. An abort never falls back to
+`composeAssist`, and a typed error keeps the preview. The reply path sends the `context`
+`done` event (A7). The fences are `useDraftSession.test.ts` and
+`tests/unit/test_email_draft_no_stall.py`.
+
 No migration. Each behaviour that changes the context of a model ships dark. The stall bounds
 of PR-A and PR-A2 ship with no flag, because they bound a live defect (as EM-T9 did).
 
@@ -16315,6 +16321,10 @@ than the base finds. After each merge, check the box: the deployed SHA, and one
 - **`shadow` costs one more call.** In `shadow`, each long thread pays one `decide` call
   and keeps the fallback. Run `shadow` for one week at most. `bound_s` on `shadow` keeps the
   added wait at `CONTEXT_DECIDE_BOUND_S` (4 s) or less.
+- **Follow-up of PR-A2: an edit on a streamed preview is lost on Stop.** Stop gives back the
+  text that the member had before the round, so an edit on top of the preview goes. The fix
+  compares the body with the last write of the round, and that needs a body getter in each
+  composer. It is not built.
 
 ### 17.12 Owner questions
 
