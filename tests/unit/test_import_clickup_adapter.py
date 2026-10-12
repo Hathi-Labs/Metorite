@@ -366,7 +366,7 @@ def test_a_long_parent_chain_parses_in_linear_time() -> None:
 
     b = _file(*_chain(20000))
     assert sum(1 for t in b.tasks if t.parent_ref) == 19999
-    assert_linear(lambda k: partial(_file, *_chain(k)), 20000, repeats=3)
+    assert_linear(lambda k: partial(_file, *_chain(k)), 20000)
 
 
 def test_a_subtask_follows_its_parent_into_the_parents_list() -> None:
