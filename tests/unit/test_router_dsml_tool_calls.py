@@ -24,7 +24,6 @@ import json
 import logging
 import os
 import random
-import time
 import uuid
 
 import pytest
@@ -41,6 +40,8 @@ from customer_console.dsml import (
     normalise_stream,
     policy_for,
 )
+
+from tests.unit._linear_time import assert_linear
 
 #: The fullwidth bar, built from its code point so no editor can swap it.
 BAR = chr(0xFF5C)
@@ -791,15 +792,22 @@ class TestABareMarkerIsText:
         assert len(out.tool_calls) == 1
 
     def test_a_LONG_block_streamed_one_character_at_a_time_is_linear(self):
-        """The rescans are bounded, so a long argument costs linear time."""
-        big = block(invoke("create_task", param("title", "y" * 40_000)))
-        st = DsmlStream(TASK_TOOLS)
-        began = time.perf_counter()
-        for ch in big:
-            st.feed(0, ch)
-        _, calls = st.finish(0)
-        assert len(calls) == 1
-        assert time.perf_counter() - began < 10
+        """The rescans are bounded, so a long argument costs linear time. The
+        fence is the ratio of two timings, not a wall clock (``_linear_time``)."""
+
+        def _stream(size: int):
+            big = block(invoke("create_task", param("title", "y" * size)))
+            st = DsmlStream(TASK_TOOLS)
+
+            def _run():
+                for ch in big:
+                    st.feed(0, ch)
+                return st.finish(0)[1]
+
+            return _run
+
+        assert len(_stream(40_000)()) == 1
+        assert_linear(_stream, 40_000)
 
 
 class TestParallelToolCallsFalse:
