@@ -1629,16 +1629,26 @@ decides again.
 - The sync keeps the rules that it applied in the cursor row
   `zoho:field_rules`. Before its first provider call, it undoes each rule that
   is not approved now. Then it backfills each new rule.
+- A rule enters the applied state in the transaction of its first backfill
+  batch, with the mark `backfilling`. The last batch clears the mark. So a
+  stop between two batches, then a reject, still undoes the rule.
+- `map_record` applies only the rules that the backfill step handled, minus
+  the rules that discovery made stale. A rule that an admin approves during
+  a run waits for the next run.
 - A full read for a rule keeps the mark `rule_reread` in the cursor state of
   the entity while it runs. It stamps nothing and deletes nothing.
 - The door `apply_field_rule_from_source` writes only a NULL column of a
   mirrored row, or clears a free column. It refuses to clear a fixed column.
-- ⚠️ The start over of CRM-X0 (`POST /crm/reset`) does not delete the rules
-  yet. A later slice decides it.
+  Each statement names the organization.
+- A rule on `probability` gives NULL for a value outside 0 to 100.
+- The start over of CRM-X0 and the change of setup of CRM-U5b delete the
+  rules. An R8 fence fails when a `crm_` table is in neither `RESET_TABLES`
+  nor `RESET_KEEPS`.
 - Fences: `tests/unit/test_crm_field_rules_r8.py`,
   `tests/unit/test_crm_field_rules.py`,
   `tests/unit/test_crm_upsert_from_source_fence.py`,
-  `tests/unit/test_crm_mirror_readonly.py` and
+  `tests/unit/test_crm_mirror_readonly.py`,
+  `tests/unit/test_crm_reset_r8.py`, `tests/unit/test_crm_u5b_r8.py` and
   `src/app/crm/components/crmQ7a.test.ts`.
 
 #### CRM-Q7b: the proposer
