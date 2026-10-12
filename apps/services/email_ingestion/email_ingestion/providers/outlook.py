@@ -31,6 +31,7 @@ from .base import (
     EmailMessage,
     EstimateCallback,
     InlineImage,
+    InlineRead,
     ProviderAttachmentFailed,
     ProviderMailTooLarge,
     RefreshingBearer,
@@ -2322,7 +2323,8 @@ class OutlookProvider(BaseEmailProvider):
 
     async def get_inline_images(
         self, provider_message_id: str, *, max_count: int, max_bytes: int,
-    ) -> list[InlineImage]:
+        max_total: int,
+    ) -> InlineRead:
         """The inline pictures of one message (WS-17, the inline images fix).
 
         Two steps, so the read never pulls the bytes of a real file:
@@ -2332,13 +2334,17 @@ class OutlookProvider(BaseEmailProvider):
            ``$select`` of it on the list is not a base property. So this
            read gets no bytes and no Content-ID.
         2. One read of each part that can be a picture. That read gives the
-           ``contentId`` and the bytes. It runs for at most *max_count*
-           parts, four at a time.
+           ``contentId`` and the bytes. It runs four at a time.
 
         A part can be a picture when Graph marks it ``isInline`` or its type
         is ``image/*``, and it is a file attachment of *max_bytes* or less.
-        A failed read of one part skips that part. A 429 that remains after
-        the one retry of :meth:`_graph_send` raises, so the route answers 503.
+        The choice stops at *max_count* parts, or when the listed sizes reach
+        *max_total*, before any byte is read (review P2-3).
+
+        A failed read of one part skips that part and makes the read
+        incomplete (review P2-4). A 429 that remains after the one retry of
+        :meth:`_graph_send` raises, so the route answers 503. It also cancels
+        the reads that still run (review P3-5).
         """
         base = f"/me/messages/{provider_message_id}/attachments"
         listed: list[dict[str, Any]] = []
@@ -2352,17 +2358,34 @@ class OutlookProvider(BaseEmailProvider):
             data = resp.json()
             listed.extend(data.get("value", []) or [])
             url, params = data.get("@odata.nextLink"), None
-        picks = [a for a in listed if _inline_candidate(a, max_bytes)][:max_count]
+        picks: list[dict[str, Any]] = []
+        chosen = 0
+        for att in listed:
+            if len(picks) >= max_count:
+                break
+            if not _inline_candidate(att, max_bytes):
+                continue
+            size = _listed_size(att)
+            if chosen + size > max_total:
+                break
+            chosen += size
+            picks.append(att)
         if not picks:
-            return []
+            return InlineRead()
         gate = asyncio.Semaphore(4)
+        failed: list[str] = []
 
         async def _one(att: dict[str, Any]) -> InlineImage | None:
-            async with gate:
-                resp = await self._graph_send("GET", f"{base}/{att['id']}")
+            try:
+                async with gate:
+                    resp = await self._graph_send("GET", f"{base}/{att['id']}")
+            except httpx.TransportError:
+                failed.append(att["id"])
+                return None
             if resp.status_code == 429:
                 resp.raise_for_status()
             if resp.status_code != 200:
+                failed.append(att["id"])
                 return None
             data = resp.json()
             cid = normalize_content_id(data.get("contentId"))
@@ -2380,8 +2403,18 @@ class OutlookProvider(BaseEmailProvider):
                 mime_type=str(data.get("contentType") or att.get("contentType") or ""),
             )
 
-        found = await asyncio.gather(*(_one(a) for a in picks))
-        return [img for img in found if img is not None]
+        # A TaskGroup cancels each read that still runs when one raises, so a
+        # 429 stops the burst at once. The first error goes out by itself,
+        # so the route still reads its status.
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = [group.create_task(_one(a)) for a in picks]
+        except ExceptionGroup as errors:
+            raise errors.exceptions[0] from None
+        found = [t.result() for t in tasks]
+        return InlineRead(
+            images=[img for img in found if img is not None], complete=not failed,
+        )
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -2491,6 +2524,14 @@ _NO_BYTES_TYPES = frozenset({
 _SIZE_SLACK = 64 * 1024
 
 
+def _listed_size(att: dict[str, Any]) -> int:
+    """The ``size`` of a listed part, or 0 when Graph gives none."""
+    try:
+        return max(0, int(att.get("size") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _inline_candidate(att: dict[str, Any], max_bytes: int) -> bool:
     """True when a listed part can be an inline picture of the body.
 
@@ -2500,11 +2541,7 @@ def _inline_candidate(att: dict[str, Any], max_bytes: int) -> bool:
     """
     if not att.get("id") or att.get("@odata.type") in _NO_BYTES_TYPES:
         return False
-    try:
-        size = int(att.get("size") or 0)
-    except (TypeError, ValueError):
-        size = 0
-    if size > max_bytes + _SIZE_SLACK:
+    if _listed_size(att) > max_bytes + _SIZE_SLACK:
         return False
     kind = str(att.get("contentType") or "").lower()
     return bool(att.get("isInline")) or kind.startswith("image/")

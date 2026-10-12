@@ -42,6 +42,7 @@ from .base import (
     EmailMessage,
     EstimateCallback,
     InlineImage,
+    InlineRead,
     ProviderMailTooLarge,
     ProviderRateLimited,
     RefreshingBearer,
@@ -128,6 +129,16 @@ def _iter_gmail_parts(
         return
     for sub in part.get("parts", []) or []:
         yield from _iter_gmail_parts(sub, descend=descend)
+
+
+def _gmail_part_is_inline_image(part: dict) -> bool:
+    """An inline part with an ``image/*`` type: a ``cid:`` picture.
+
+    ``_gmail_part_is_inline`` alone also takes a PDF that a sender gave a
+    ``Content-ID``, and the inline read must never download a real file.
+    """
+    kind = str(part.get("mimeType") or "").lower()
+    return kind.startswith("image/") and _gmail_part_is_inline(part)
 
 
 def _gmail_opens_part(part: dict) -> bool:
@@ -2745,14 +2756,20 @@ class GmailProvider(BaseEmailProvider):
 
     async def get_inline_images(
         self, provider_message_id: str, *, max_count: int, max_bytes: int,
-    ) -> list[InlineImage]:
+        max_total: int,
+    ) -> InlineRead:
         """The inline pictures of one message (WS-17, the inline images fix).
 
-        One read of the whole MIME tree (``format=full``), then each part
-        with a ``Content-ID``. A small part carries its bytes in the tree, and
-        a larger one is read by its ``attachmentId``. The walk never opens an
-        attached mail, because its parts belong to that mail. A failed read
-        of one part skips that part.
+        One read of the whole MIME tree (``format=full``). Then each part
+        that is an inline picture: ``_gmail_part_is_inline`` and an
+        ``image/*`` type (review P2-3). So a PDF with a ``Content-ID`` is
+        never downloaded. A small part carries its bytes in the tree, and a
+        larger one is read by its ``attachmentId``. The choice stops at
+        *max_count* parts, or when the sizes in the tree reach *max_total*.
+
+        The walk never opens an attached mail, because its parts belong to
+        that mail. A failed read of one part skips that part and makes the
+        read incomplete (review P2-4). A rate limit raises.
         """
         client = await self._get_client()
         resp = await client.get(
@@ -2761,15 +2778,21 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         payload = resp.json().get("payload", {}) or {}
         out: list[InlineImage] = []
+        chosen = 0
+        complete = True
         for part in _iter_gmail_parts(payload, descend=_gmail_opens_part):
             if len(out) >= max_count:
                 break
-            if part.get("parts"):
+            if part.get("parts") or not _gmail_part_is_inline_image(part):
                 continue
             cid = normalize_content_id(_gmail_part_header(part, "Content-ID"))
             body = part.get("body", {}) or {}
-            if not cid or int(body.get("size", 0) or 0) > max_bytes:
+            size = int(body.get("size", 0) or 0)
+            if not cid or size > max_bytes:
                 continue
+            if chosen + size > max_total:
+                break
+            chosen += size
             try:
                 if body.get("data"):
                     raw = str(body["data"])
@@ -2781,14 +2804,20 @@ class GmailProvider(BaseEmailProvider):
                     continue
             except ProviderRateLimited:
                 raise
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    raise
+                complete = False
+                continue
             except Exception:  # one part fails, and the rest still show
+                complete = False
                 continue
             if content and len(content) <= max_bytes:
                 out.append(InlineImage(
                     content_id=cid, content=content,
                     mime_type=str(part.get("mimeType") or ""),
                 ))
-        return out
+        return InlineRead(images=out, complete=complete)
 
     # ── Helpers ──────────────────────────────────────────────────────────
 

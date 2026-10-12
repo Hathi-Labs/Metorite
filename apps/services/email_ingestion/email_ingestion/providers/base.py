@@ -335,6 +335,21 @@ class InlineImage:
     mime_type: str = ""
 
 
+@dataclass(frozen=True)
+class InlineRead:
+    """The answer of :meth:`BaseEmailProvider.get_inline_images`.
+
+    ``complete`` is false when the read of one or more parts failed for a
+    reason other than a rate limit. The gateway then keeps the list of names
+    for a short time only, so a part that failed once is read again soon
+    (security review of 2026-10-13, P2-4). A part that a cap leaves out does
+    not make the read incomplete, because no later read can give it.
+    """
+
+    images: list[InlineImage] = field(default_factory=list)
+    complete: bool = True
+
+
 def normalize_content_id(value: str | None) -> str:
     """The one form of a Content-ID that a ``cid:`` URL and a part share.
 
@@ -1013,20 +1028,22 @@ class BaseEmailProvider(ABC):
 
     async def get_inline_images(
         self, provider_message_id: str, *, max_count: int, max_bytes: int,
-    ) -> list[InlineImage]:
+        max_total: int,
+    ) -> InlineRead:
         """The inline parts of one message that can be pictures.
 
         The reading pane shows ``<img src="cid:...">`` through the gateway
         route ``GET /email/messages/{id}/inline`` (WS-17, the inline images
         fix, ``email_app_master_plan.md`` §16.6). The route calls this once
         for each message and caches each part. It reads at most *max_count*
-        parts, and it skips a part over *max_bytes*. A part with no
-        Content-ID is not in the list.
+        parts, and it skips a part over *max_bytes*. It stops choosing parts
+        when their sizes reach *max_total*, before it reads any bytes. A part
+        with no Content-ID is not in the list.
 
         The default gives no part, so a provider with no override (IMAP)
         shows the alt text, as before.
         """
-        return []
+        return InlineRead()
 
 
 def local_folder_after_move(provider: Any, name: str) -> str | None:
