@@ -259,12 +259,17 @@ def test_the_discovered_field_types_use_the_field_def_words() -> None:
     assert kept["custom_field_types"] == profile["custom_field_types"]
 
 
+ORG = "11111111-1111-1111-1111-111111111111"
+
+
 class _FakeDb:
     def __init__(self) -> None:
         self.sql: list[str] = []
+        self.params: list[Any] = []
 
     async def execute(self, statement: Any, params: Any = None) -> Any:
         self.sql.append(str(statement))
+        self.params.append(params)
 
         class _Result:
             rowcount = 1
@@ -272,11 +277,12 @@ class _FakeDb:
         return _Result()
 
 
-def _door(*args: Any) -> Any:
+def _door(*args: Any, organization_id: str = ORG) -> Any:
     from gateway.routes.crm.core import apply_field_rule_from_source
 
     db = _FakeDb()
-    return db, asyncio.run(apply_field_rule_from_source(db, *args))
+    return db, asyncio.run(
+        apply_field_rule_from_source(db, *args, organization_id=organization_id))
 
 
 def test_the_door_refuses_a_column_that_is_not_a_target() -> None:
@@ -305,3 +311,27 @@ def test_the_door_fills_only_a_null_column_of_a_mirrored_row() -> None:
     ])
     assert written == 1, "a value that did not coerce writes nothing"
     assert "industry IS NULL" in db.sql[0] and "ext_source = :src" in db.sql[0]
+
+
+def test_the_door_names_the_organization_in_each_statement() -> None:
+    """Review: like ``reset_crm_from_admin``, each statement names the org, so
+    a session with row level security off still writes one organization."""
+    db, _ = _door("crm_leads", "lost_note", "zoho", None)
+    assert db.sql[0].count("organization_id = CAST(:org AS uuid)") == 2
+    assert db.params[0]["org"] == ORG
+    db, _ = _door("crm_leads", "industry", "zoho", [
+        ("00000000-0000-0000-0000-000000000001", "Robotics")])
+    assert "organization_id = CAST(:org AS uuid)" in db.sql[0]
+    assert db.params[0]["org"] == ORG
+    with pytest.raises(ValueError):
+        _door("crm_leads", "lost_note", "zoho", None, organization_id="")
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (55, 55), ("100", 100), (0, 0), (150, None), (101, None), (-5, None), ("x", None),
+])
+def test_a_rule_never_pushes_probability_past_100(value: Any, expected: Any) -> None:
+    """Review: a custom score of 150 would forecast more than the amount."""
+    deal: dict[str, Any] = {"probability": None}
+    apply_field_rules("deal", {"Score": value}, deal, {"probability": "Score"})
+    assert deal["probability"] == expected

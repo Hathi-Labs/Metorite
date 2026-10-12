@@ -132,6 +132,7 @@ _BACKFILL_SQL = (
 
 async def backfill_batch(
     db: Any, mapping: ModuleType, rule: Rule, ext_source: str, after: str | None,
+    *, organization_id: str,
 ) -> tuple[str | None, int, int]:
     """Copy one batch of ``custom -> field`` into the rule's column.
 
@@ -154,17 +155,18 @@ async def backfill_batch(
     if not rows:
         return None, 0, 0
     pairs = [
-        (str(r.id), mapping.coerce_rule_value(target.column_type, r.value))
+        (str(r.id), mapping.coerce_target_value(target, r.value))
         for r in rows
     ]
     written = await apply_field_rule_from_source(
-        db, table, target.column, ext_source, pairs,
+        db, table, target.column, ext_source, pairs, organization_id=organization_id,
     )
     return str(rows[-1].id), len(rows), written
 
 
 async def clear_batch(
     db: Any, mapping: ModuleType, rule: Rule, ext_source: str,
+    *, organization_id: str,
 ) -> int:
     """Set a free column to NULL on one batch of mirrored rows. Returns the
     rows written. The caller repeats it until it gives 0."""
@@ -173,6 +175,7 @@ async def clear_batch(
         return 0
     return await apply_field_rule_from_source(
         db, mapping.ENTITY_TABLES[rule.entity], target.column, ext_source, None,
+        organization_id=organization_id,
     )
 
 

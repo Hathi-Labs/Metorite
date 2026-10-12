@@ -507,10 +507,21 @@ class RuleTarget:
     column: str
     column_type: str
     standard_field: str | None = None
+    #: The inclusive range of a number column, or ``None``. A value outside it
+    #: gives NULL.
+    limits: tuple[int, int] | None = None
+
+
+#: ``probability`` is a percent. A custom score above 100 would make the
+#: weighted forecast larger than the amount (CRM-Q7a review).
+_LIMITS: Mapping[str, tuple[int, int]] = {"probability": (0, 100)}
 
 
 def _targets(*rows: tuple[str, str, str | None]) -> Mapping[str, RuleTarget]:
-    return {column: RuleTarget(column, kind, std) for column, kind, std in rows}
+    return {
+        column: RuleTarget(column, kind, std, _LIMITS.get(column))
+        for column, kind, std in rows
+    }
 
 
 #: The legal targets of a field rule: the free columns, then the fixed columns
@@ -607,6 +618,17 @@ def coerce_rule_value(column_type: str, value: Any) -> Any:
     return None
 
 
+def coerce_target_value(target: RuleTarget, value: Any) -> Any:
+    """A field value for one target: :func:`coerce_rule_value`, then the
+    target's ``limits``. A value outside the limits is ``None``."""
+    coerced = coerce_rule_value(target.column_type, value)
+    if coerced is not None and target.limits is not None:
+        low, high = target.limits
+        if not low <= coerced <= high:
+            return None
+    return coerced
+
+
 def apply_field_rules(
     entity: str,
     fields: Mapping[str, Any],
@@ -620,7 +642,7 @@ def apply_field_rules(
         target = rule_target(entity, column)
         if target is None or values.get(column) is not None:
             continue
-        values[column] = coerce_rule_value(target.column_type, fields.get(field_api_name))
+        values[column] = coerce_target_value(target, fields.get(field_api_name))
     return values
 
 
@@ -1406,6 +1428,7 @@ __all__ = [
     "apply_field_rules",
     "build_profile",
     "coerce_rule_value",
+    "coerce_target_value",
     "custom_field_keys",
     "custom_fields",
     "daily_credits",

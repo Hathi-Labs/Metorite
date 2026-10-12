@@ -2044,6 +2044,8 @@ async def apply_field_rule_from_source(
     column: str,
     ext_source: str,
     values: Sequence[tuple[str, Any]] | None,
+    *,
+    organization_id: str,
 ) -> int:
     """Write one batch of an approved field rule into a mirror table, or clear
     a free column. Returns the rows written (WS-53 CRM-Q7a).
@@ -2064,21 +2066,28 @@ async def apply_field_rule_from_source(
       A fixed column is refused: a full read restores it.
 
     *column* must be a legal target of the table's entity. The tenant policy
-    binds the organization.
+    binds the organization, and each statement also names *organization_id*,
+    as :func:`reset_crm_from_admin` does. So a session with row level
+    security off still writes one organization.
     """
     target = _field_rule_target(table, column)
     if not ext_source:
         raise ValueError("field rules: 'ext_source' is required")
+    if not organization_id:
+        raise ValueError("field rules: 'organization_id' is required")
+    org = str(organization_id)
     if values is None:
         if target.standard_field is not None:
             raise ValueError(f"field rules: {column} is a fixed column, read it again")
         result = await db.execute(
             text(
-                f"UPDATE {table} SET {column} = NULL WHERE id IN ("
-                f"SELECT id FROM {table} WHERE ext_source = :src "
-                f"AND {column} IS NOT NULL ORDER BY id LIMIT {FIELD_RULE_BATCH})"
+                f"UPDATE {table} SET {column} = NULL "
+                f"WHERE organization_id = CAST(:org AS uuid) AND id IN ("
+                f"SELECT id FROM {table} WHERE organization_id = CAST(:org AS uuid) "
+                f"AND ext_source = :src AND {column} IS NOT NULL "
+                f"ORDER BY id LIMIT {FIELD_RULE_BATCH})"
             ),
-            {"src": ext_source},
+            {"src": ext_source, "org": org},
         )
         return int(result.rowcount or 0)
     rows = [(str(row_id), value) for row_id, value in values if value is not None]
@@ -2089,9 +2098,10 @@ async def apply_field_rule_from_source(
         result = await db.execute(
             text(
                 f"UPDATE {table} SET {column} = :value WHERE id = CAST(:id AS uuid) "
+                f"AND organization_id = CAST(:org AS uuid) "
                 f"AND ext_source = :src AND {column} IS NULL"
             ),
-            {"value": value, "id": row_id, "src": ext_source},
+            {"value": value, "id": row_id, "src": ext_source, "org": org},
         )
         written += int(result.rowcount or 0)
     return written

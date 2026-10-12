@@ -2153,7 +2153,9 @@ async def _field_rules(ctx: _Ctx) -> None:
         while True:
             async with ctx.page() as db:
                 written = (
-                    await field_rules.clear_batch(db, ctx.mapping, rule, EXT_SOURCE)
+                    await field_rules.clear_batch(
+                        db, ctx.mapping, rule, EXT_SOURCE, organization_id=ctx.org,
+                    )
                     if free else 0
                 )
                 cleared += written
@@ -2176,7 +2178,7 @@ async def _field_rules(ctx: _Ctx) -> None:
         while True:
             async with ctx.page() as db:
                 after, seen, written = await field_rules.backfill_batch(
-                    db, ctx.mapping, rule, EXT_SOURCE, after,
+                    db, ctx.mapping, rule, EXT_SOURCE, after, organization_id=ctx.org,
                 )
                 filled += written
                 finished = seen < field_rules.BATCH
