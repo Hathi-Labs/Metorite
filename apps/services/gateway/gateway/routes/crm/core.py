@@ -2125,6 +2125,9 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_sync_cursors", "crm_source_profiles",
     # The push queue of the old two-way sync names records that are gone.
     "crm_zoho_tombstones",
+    # CRM-Q7a: a field rule names a field of the old account. It must not
+    # apply to the next one.
+    "crm_field_rules",
 )
 
 #: What the start over keeps: the access rule and the mode row, the saved
