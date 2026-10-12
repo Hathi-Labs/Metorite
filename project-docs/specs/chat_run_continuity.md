@@ -361,6 +361,29 @@ approved a "Create 9 tasks" card. His bubble then showed the fenced envelope,
 The notice now says what has happened: "Your answer went to it as a new
 message."
 
+**Review of #942 (2026-10-13).** One fix round closed four P2 findings:
+
+- **The neutralising pass sees look-alikes.** Before its ASCII patterns, it
+  applies NFKC, removes each format character (zero width, bidi), and maps
+  each Unicode dash to `-`. A row label keeps 500 characters, the card's own
+  `ROW_LABEL_MAX`, so the next run reads the title the member approved.
+- **A display must agree with its words.** A `card_answer` display stays only
+  on an envelope that has the same question, decision, rows and words. The
+  gateway checks it on both writes (`card_answer_marker`). The chat checks it
+  again on read and draws a mismatch as plain text. A generative UI card
+  locks only from the viewer's own turns.
+- **A busy resend waits, and is not lost.** `sendMessage` now reports what
+  became of a send (`onSettled`). A resend that meets a live run in this tab
+  waits in the composer queue, and the notice says "Your answer goes as a new
+  message when this reply ends." The notice says "went" only for a send that
+  the server took. A refused resend keeps its card open.
+- **An answer whose card left the stream** draws as "Approved" with its row
+  count, never as the raw `APPROVE` JSON.
+
+Nine more mutants, nine killed. Known limit: a resend that the run cap refuses
+keeps its card open. But the durable row is already `answered`, so a second
+answer to a parked card gets the old 409.
+
 **Fences (R7).** `src/lib/cardAnswer.test.ts`,
 `tests/unit/test_card_answer_display.py`, the R8 case in
 `tests/unit/test_chat_prompt_saved_at_start.py`, and
