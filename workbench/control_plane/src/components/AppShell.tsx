@@ -590,7 +590,8 @@ function MobileBottomNavInner({
           </div>
         ))}
         {/* "Add apps" (owner, 2026-10-11): the last item of the list, always,
-            as on the desktop sidebar. The drawer closes first. */}
+            as on the desktop sidebar. The drawer closes first. It and All
+            apps wear `cc-link`, the house focus ring of the Metorite foot. */}
         {shellNav && !navWaiting && (
           <div className="px-2 pb-1">
             <button
@@ -603,7 +604,7 @@ function MobileBottomNavInner({
               aria-haspopup="dialog"
               aria-label={strayNeeds > 0 ? addAppsName(strayNeeds, undefined, strayFloor) : undefined}
               data-nav-add-apps=""
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+              className="cc-link flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
             >
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground">
                 <AppIcon name="Plus" size={15} />
@@ -627,7 +628,8 @@ function MobileBottomNavInner({
                 setLauncherHint(undefined);
                 setLauncherOpen(true);
               }}
-              className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
+              data-nav-all-apps=""
+              className="cc-link flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
             >
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
                 <AppIcon name="LayoutGrid" size={15} />
