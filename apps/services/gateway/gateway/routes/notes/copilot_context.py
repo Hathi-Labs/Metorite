@@ -54,7 +54,7 @@ _AGENT_TIMEOUT_S = 45.0
 _AGENT_QUERIES: tuple[tuple[str, str, str], ...] = (
     (
         "crm",
-        "agent-sales-assistant",
+        "crm-assistant",
         "For the upcoming meeting with {people}, summarise in under 80 words: "
         "the company, deal stage/value if any, and the single most important "
         "open point. If you find nothing, reply exactly: NONE.",
@@ -258,7 +258,7 @@ async def _system_context(people: list[str]) -> dict[str, str]:
 #: registry names as the pre-meeting fan-out; kept separate because a live
 #: meeting needs terse, immediately-usable answers, not summaries.
 _CONSULT_AGENTS: tuple[tuple[str, str], ...] = (
-    ("crm", "agent-sales-assistant"),
+    ("crm", "crm-assistant"),
     ("tasks", "task-manager"),
 )
 

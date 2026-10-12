@@ -143,7 +143,7 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
     "Create a new high-priority task",
     "What's due this week?",
   ],
-  "sales-assistant": [
+  "crm-assistant": [
     "Show pipeline summary",
     "Create a new lead",
     "What deals are closing this month?",

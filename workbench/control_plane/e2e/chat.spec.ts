@@ -31,9 +31,9 @@ type ChatMockResponse = {
 
 const AGENTS: AgentEntry[] = [
   {
-    name: "sales-assistant",
-    description: "Follows up with deals and drafts sales actions",
-    tags: ["sales", "copilot"],
+    name: "crm-assistant",
+    description: "Works the CRM and reads the deal pipeline",
+    tags: ["crm", "copilot"],
     integrations: ["zoho"],
   },
   {
@@ -209,9 +209,9 @@ test.describe("Unified chat interface", () => {
 
     await gotoChat(page);
     await openAgentPicker(page);
-    await page.getByRole("button", { name: /sales-assistant/i }).click();
+    await page.getByRole("button", { name: /crm-assistant/i }).click();
 
-    await expect(page.getByPlaceholder(/Message sales-assistant/i)).toBeVisible();
+    await expect(page.getByPlaceholder(/Message crm-assistant/i)).toBeVisible();
     await expect(page.getByText(/1 integration not configured/i)).toBeVisible();
     await page.getByRole("button", { name: /Zoho CRM \+ set up/i }).click();
 
@@ -219,7 +219,7 @@ test.describe("Unified chat interface", () => {
     await expect(
       page.getByRole("paragraph").filter({ hasText: /Guidance for I need to configure the Zoho CRM integration/i }),
     ).toBeVisible();
-    expect(requests.at(-1)?.agentName).toBe("sales-assistant");
+    expect(requests.at(-1)?.agentName).toBe("crm-assistant");
   });
 
   test("switches model runtime and sends LiteLLM-routed requests", async ({ page }) => {

@@ -761,7 +761,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // ── Copilot/AG-UI path — ORCHESTRATOR ONLY ────────────────────────────────
   // The /copilot/chat endpoint is hardwired at gateway startup to the single
-  // built-in orchestrator agent. Named agents (task-manager, sales-assistant,
+  // built-in orchestrator agent. Named agents (task-manager, crm-assistant,
   // any GitHub-registered agent) must go through /agent/run so the executor
   // can clone the repo, import agents.py, resolve integrations, and run via MAF.
   // The orchestrator is now a REGISTERED agent (gateway _AGENT_REGISTRY), so it

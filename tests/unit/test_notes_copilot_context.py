@@ -116,7 +116,7 @@ def test_a_missing_agent_contributes_nothing(monkeypatch) -> None:
         raise RuntimeError("no such agent")
 
     monkeypatch.setattr("acb_skills.call_agent", boom, raising=False)
-    label, body = asyncio.run(cc._ask_agent("crm", "agent-sales-assistant", "q"))
+    label, body = asyncio.run(cc._ask_agent("crm", "crm-assistant", "q"))
     assert (label, body) == ("crm", "")
 
 

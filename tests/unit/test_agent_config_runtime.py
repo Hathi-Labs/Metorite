@@ -92,12 +92,6 @@ _ALLOWLIST: dict[tuple[str, str], tuple[str, str]] = {
         "(root agents.py)",
         "WS-43m",
     ),
-    (P_AGENTS_JSON, "agent-sales-assistant"): (
-        "Lives in FracktalWorks/agent-sales-assistant, which still builds a "
-        "Copilot agent. Its own repo must change first (WS43-G11). The "
-        "label stays until then, because the sub-agent path reads it",
-        "WS-43q, after WS43-G11",
-    ),
 }
 
 #: The allowlist at build time (WS-43n, 2026-10-08). Frozen on purpose: a
@@ -107,7 +101,9 @@ _AT_BUILD: frozenset[tuple[str, str]] = frozenset(
         (P_REGISTRY, "task-manager"),
         (P_REGISTRY, "app-builder"),
         (P_ROOT_CONFIG, "metorite"),
-        (P_AGENTS_JSON, "agent-sales-assistant"),
+        # WS-53 CRM-C7 (2026-10-13) removed the last agents.json entry, an
+        # outside agent that the owner said no longer exists. Its allowlist
+        # entry went with it, and WS43-G11 is moot.
     }
 )
 
@@ -199,10 +195,16 @@ def test_each_place_is_read() -> None:
     # the glob stopped matching, not that the agents went.
     assert len(found[P_AGENT_CONFIG]) >= 8, found[P_AGENT_CONFIG]
     assert "metorite" in found[P_ROOT_CONFIG], found[P_ROOT_CONFIG]
-    assert found[P_AGENTS_JSON], f"nothing read from {_AGENTS_JSON}"
+    # agents.json holds no entry since WS-53 CRM-C7. The file must still be
+    # a list that the scan reads, and the synthetic tests below prove that
+    # the scan reads an entry there.
+    assert isinstance(_read_json(_REPO / _AGENTS_JSON), list), _AGENTS_JSON
     assert len(found[P_REGISTRY]) >= 8, found[P_REGISTRY]
-    # Each place yields a label, so the key read is the right one.
+    # Each place that holds an entry yields a label, so the key read is the
+    # right one.
     for place, agents in found.items():
+        if place == P_AGENTS_JSON and not agents:
+            continue
         assert any(agents.values()), f"no runtime label read from {place}"
 
 
