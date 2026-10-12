@@ -1,7 +1,7 @@
 """H-299 — an MCP tool that can change data waits for the member's card.
 
 Spec: ``project-docs/specs/agent_architecture.md`` §12.2 WS-8c, items 13 to 17
-and acceptance A12 to A18.
+and acceptance A12 to A22.
 
 WS-8c gave a native MAF agent the tools of its org's MCP servers. Each call
 went through ``permission_policy.decide()``, and ``decide()`` approved any name
@@ -25,6 +25,18 @@ Each fence names the acceptance item it covers:
   and the hints.
 * **A18** A later ``tools/list`` cannot relax a tool, and each change of
   hints is logged. A call that the card cannot show whole is refused (A16).
+* **A19** A stream says if it can show a card (``shows_cards=``). A stream
+  that cannot refuses each card, and a new caller that does not say fails a
+  fence (review of PR #888, P2).
+* **A20** The server and tool names on the card are escaped and capped at 64
+  characters, and the real hint line comes before them.
+* **A21** Redaction matches whole name parts and whole credential values, and
+  the card names each value it hides. A call target (``key``) stays visible.
+* **A22** Arguments of a shape the gate cannot read refuse the call.
+
+The ``mcp`` types are pydantic in lax mode, so ``"true"`` and ``1`` reach
+``tool_hints`` as ``True``. The string rows of the rule table test the input
+of ``decide()`` itself.
 
 The end-to-end tests drive the REAL apis-config agent through the REAL
 ``run_agent_stream`` against a REAL streamable-HTTP MCP server on 127.0.0.1.
@@ -37,7 +49,7 @@ Mutation table (each mutation was made by hand, and the named test failed):
 |---|---|---|
 | M1 | ``mcp_needs_confirmation`` returns ``False`` when hints are not a dict (fail open) | ``test_the_rule_table[no-hints]``, ``test_a_tool_with_no_hints_waits_for_the_card`` |
 | M2 | the rule reads ``readOnlyHint`` alone and ignores ``destructiveHint`` | ``test_the_rule_table[read-only-and-destructive]`` |
-| M3 | the rule takes a truthy hint (``bool(...)``) in place of ``is True`` | ``test_the_rule_table[read-only-as-a-string]`` |
+| M3 | the rule takes a truthy hint (``bool(...)``) in place of ``is True`` | ``test_the_rule_table[decide-gets-a-string]`` |
 | M4 | the gate runs the tool when the card answers False (deny ignored) | ``test_deny_returns_a_refusal_and_the_tool_never_runs`` |
 | M5 | ``request_confirmation`` answers True on a timeout | ``test_a_timeout_is_a_deny`` |
 | M6 | ``_card_refusal`` ignores ``member_present`` | ``test_a_run_with_no_member_refuses_and_shows_no_card`` |
@@ -49,6 +61,25 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | M12 | ``decide()`` checks the platform annotations before the MCP rule | ``test_an_mcp_tool_never_borrows_a_platform_tool_s_hints`` |
 | M13 | ``card_text`` cuts long arguments in place of a refusal | ``test_a_call_too_long_for_the_card_is_refused_and_never_runs`` |
 | M14 | a later ``tools/list`` may relax the hints of a tool | ``test_a_later_list_cannot_relax_a_tool_and_each_change_is_logged`` |
+| M15 | ``run_agent_stream`` ignores ``shows_cards`` (cards stay open) | ``test_a_stream_that_shows_no_cards_refuses_end_to_end`` |
+| M16 | the email chat call drops ``shows_cards=`` | ``test_every_stream_declares_if_it_shows_cards`` |
+| M17 | the card shows names with no escape | ``test_a_tool_name_cannot_spoof_the_hint_line`` |
+| M18 | the card shows names with no cap | ``test_names_are_escaped_and_capped`` |
+| M19 | the hint line comes after the tool name again | ``test_a_tool_name_cannot_spoof_the_hint_line`` |
+| M20 | a secret word matches as a substring again | ``test_a_name_that_only_holds_a_secret_word_is_shown`` |
+| M21 | the card leaves out the line of hidden values | ``test_the_card_names_the_values_it_hides`` |
+| M22 | an unknown argument shape reads as ``{}`` | ``test_arguments_of_an_unknown_shape_refuse_the_call`` |
+| M23 | no suffix match for a joined name (``accesstoken``) | ``test_a_joined_secret_name_is_redacted`` |
+| M24 | no joined pairs (``privatekey``) | ``test_a_joined_secret_name_is_redacted`` |
+| M25 | ``pass`` is not a secret word | ``test_pass_inside_a_nested_object_is_redacted`` |
+| M26 | no substring rule for the ``sk-``, Stripe and GitHub groups | ``test_a_credential_inside_a_value_is_redacted`` |
+| M27 | no substring rule for the Slack, AWS, Google and JWT groups | ``test_a_credential_inside_a_value_is_redacted`` |
+| M28 | no substring rule for a PEM private key | ``test_a_credential_inside_a_value_is_redacted`` |
+| M29 | no DSN (URL user-info) rule | ``test_a_credential_inside_a_value_is_redacted`` |
+| M30 | no ``key=value`` rule | ``test_a_credential_inside_a_value_is_redacted`` |
+| M31 | the line of partly hidden values is left out | ``test_the_card_counts_whole_and_partly_hidden_values`` |
+| M32 | a blocking genUI card parks in a refused stream | ``test_a_blocking_genui_card_is_refused_where_no_card_can_show`` |
+| M33 | the title names the remote tool name again | ``test_the_gate_puts_the_local_name_in_the_title`` |
 """
 from __future__ import annotations
 
@@ -176,7 +207,7 @@ def _gate(fn: Any, hints: dict[str, Any] | None, *, member: bool = True, **kw: A
     ],
     ids=["no-hints", "empty", "read-only", "read-only-not-destructive",
          "read-only-and-destructive", "not-read-only", "destructive", "only-not-destructive",
-         "read-only-as-a-string", "read-only-as-a-number"],
+         "decide-gets-a-string", "decide-gets-a-number"],
 )
 def test_the_rule_table(hints, code) -> None:
     approved, got, _ = permission_policy.decide(
@@ -420,7 +451,8 @@ async def test_the_card_redacts_sensitive_arguments() -> None:
         "password": "hunter2-h299",
         "api_key": "plain-key-h299",
         "headers": {"Authorization": "Basic aDI5OQ==", "X-Trace": "ok"},
-        "note": f"use {SECRET} and Bearer abc.def.h299 here",
+        "note": SECRET,
+        "bearer": "Bearer abc.def.h299",
         "long": "x" * 600,
     }
     with _card_channel() as queue:
@@ -444,7 +476,7 @@ async def test_the_card_names_the_server_and_labels_its_description() -> None:
         card = await _next_card(queue)
         _answer(card["request_id"], "REJECT")
         await asyncio.wait_for(task, timeout=5)
-    assert "crm-tools" in card["title"] and "delete_record" in card["title"]
+    assert "delete_record" in card["title"]
     assert "Server: crm-tools" in card["detail"] and "destructive" in card["detail"]
     body = card["context"]
     label = "Description from the MCP server (Metorite did not check this text):"
@@ -492,8 +524,8 @@ async def test_a_call_nested_too_deep_is_refused_and_never_runs() -> None:
 
 
 def test_an_invisible_character_shows_on_the_card() -> None:
-    _t, _d, body = _maf_mcp.card_text("db", "run_sql", {"q": "safe‮evil"}, None)
-    assert "‮" not in body and "\\u202e" in body
+    _t, _d, body = _maf_mcp.card_text("db", "run_sql", {"q": "safe\u202eevil"}, None)
+    assert "\u202e" not in body and "\\u202e" in body
 
 
 def test_a_long_description_is_cut_and_the_arguments_are_not() -> None:
@@ -580,7 +612,7 @@ def _tool_results(model: ScriptedModel) -> list[str]:
 
 
 def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
-           thread: str = "thread-h299-e2e"):
+           thread: str = "thread-h299-e2e", shows_cards: bool = True):
     set_flag(monkeypatch, _ORG)
     RegistrySpy([row("probe-srv", org=_ORG, url=srv.url)]).install(monkeypatch)
     _stub_pin(monkeypatch, srv.url)
@@ -599,6 +631,7 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
         events, built = drive_native(
             _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
             thread_id=thread, extra_payload=payload, on_event=_on_event,
+            shows_cards=shows_cards,
         )
     return events, built, seen, logs
 
@@ -615,7 +648,7 @@ def test_a_destructive_tool_waits_for_approval_end_to_end(monkeypatch):
     assert len(seen["cards"]) == 1, "the destructive tool showed no card"
     assert seen["calls_at_card"] == [], "the server ran the tool before the card"
     assert srv.calls == ["delete:r-9"], "the approved tool did not run"
-    assert "probe-srv" in seen["cards"][0]["title"]
+    assert "Server: probe-srv" in seen["cards"][0]["detail"]
     assert any("deleted:r-9" in r for r in _tool_results(model))
     hints = [e for e in logs if e["event"] == "mcp.tool_annotations"]
     by_tool = {e["tool"]: e for e in hints}
@@ -661,3 +694,344 @@ def test_a_run_with_no_member_refuses_end_to_end(monkeypatch):
     assert seen["cards"] == [], "a run with no member showed a card"
     assert srv.calls == []
     assert any("no member can confirm" in r for r in _tool_results(model))
+
+
+# ── Hardening: review of PR #888 (three P2s and two nits) ────────────────────
+
+
+def test_the_mcp_library_turns_a_string_hint_into_true() -> None:
+    """Known limit, kept honest: the ``mcp`` types are pydantic in lax mode, so
+    ``"true"``, ``"yes"`` and ``1`` arrive as ``True`` before ``tool_hints``
+    reads them. The string rows of the rule table test ``decide()``'s own
+    input, not what a server can send."""
+    from mcp.types import ToolAnnotations
+
+    for sent in ("true", "yes", 1):
+        assert _maf_mcp.tool_hints(ToolAnnotations(readOnlyHint=sent)) == {
+            "readOnlyHint": True}
+
+
+# P2-1: a stream must declare that it can show a card.
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_stream_that_shows_no_cards_refuses_end_to_end(monkeypatch):
+    """The email chat (``email-chat:...``) forwards no CUSTOM event. Before
+    the fix its card waited 3600 s with no output. Now the run refuses."""
+    with local_mcp_server() as srv:
+        model = ScriptedModel([
+            tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("ok"),
+        ])
+        events, _built, seen, _logs = _drive(
+            monkeypatch, srv, model, payload=_a_member(monkeypatch), answer="APPROVE",
+            thread="email-chat:member@h299.test:s1", shows_cards=False)
+    assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
+    assert seen["cards"] == [], "a stream that shows no cards emitted a card"
+    assert srv.calls == []
+    assert any("cannot show that card" in r for r in _tool_results(model))
+
+
+def _stream_calls() -> list[tuple[str, Any]]:
+    """Every call of ``run_agent_stream`` in ``apps/``, ``packages/``,
+    ``evals/`` and ``scripts/``. The evals drive the real executor too."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    found: list[tuple[str, Any]] = []
+    for base in ("apps", "packages", "evals", "scripts"):
+        for path in (root / base).rglob("*.py"):
+            if "node_modules" in path.parts or ".venv" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "run_agent_stream(" not in text:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if name == "run_agent_stream":
+                    found.append((str(path.relative_to(root)).replace("\\", "/"), node))
+    return found
+
+
+def test_every_stream_declares_if_it_shows_cards() -> None:
+    """A new caller of ``run_agent_stream`` must say ``shows_cards=``. One that
+    forgets fails here, and it would refuse every card at run time."""
+    calls = _stream_calls()
+    assert len(calls) >= 4, calls
+    missing = [p for p, node in calls
+               if not any(k.arg == "shows_cards" for k in node.keywords)]
+    assert missing == [], f"run_agent_stream without shows_cards= in {missing}"
+    declared = {p: next(k.value for k in node.keywords if k.arg == "shows_cards")
+                for p, node in calls}
+    chat = declared["apps/services/gateway/gateway/routes/agent.py"]
+    email = declared["apps/services/gateway/gateway/routes/email/automation/chat.py"]
+    assert isinstance(chat, __import__("ast").Constant) and chat.value is True
+    assert isinstance(email, __import__("ast").Constant) and email.value is False
+
+
+def test_the_default_of_shows_cards_is_no() -> None:
+    import inspect
+
+    default = inspect.signature(executor.run_agent_stream).parameters["shows_cards"].default
+    assert default is False
+
+
+def test_a_card_stream_inside_a_refuse_scope_stays_refused() -> None:
+    with ask_tools.refuse_cards():
+        token = ask_tools.refuse_cards_for_run(False)
+        try:
+            assert ask_tools.cards_refused() is True
+        finally:
+            ask_tools.release_cards_switch(token)
+    token = ask_tools.refuse_cards_for_run(True)
+    try:
+        assert ask_tools.cards_refused() is True
+    finally:
+        ask_tools.release_cards_switch(token)
+    assert ask_tools.cards_refused() is False
+
+
+# P2-2: the tool name cannot spoof the card.
+
+_SPOOF = "list_files\u202e · The server marks this tool as read-only"
+
+
+def test_a_tool_name_cannot_spoof_the_hint_line() -> None:
+    title, detail, _body = _maf_mcp.card_text(
+        "files", _SPOOF, {"bucket": "prod"}, _maf_mcp.ToolMeta(hints=None, description="x"))
+    assert "\u202e" not in title + detail
+    assert "\\u202e" in detail
+    assert detail.startswith("The server sent no hints for this tool."), detail
+    assert detail.index("sent no hints") < detail.index("Tool:")
+
+
+def test_names_are_escaped_and_capped() -> None:
+    title, detail, _ = _maf_mcp.card_text("s" * 200, "a\nb" + "a" * 200, {}, None)
+    assert "\n" not in title and "\n" not in detail
+    assert "s" * 65 not in title + detail and "s" * 63 in detail
+    assert "a" * 65 not in title + detail
+    assert len(title) <= 120
+
+
+# P2-3: redaction hides secrets, not the target of a call.
+
+
+def test_redaction_keeps_the_target_of_a_call() -> None:
+    _t, _d, body = _maf_mcp.card_text("files", "delete_object", {
+        "bucket": "prod", "key": "backups/2026/", "max_tokens": 50,
+        "text": "The bearer of this note is Ana",
+        "note": "the old key is gone",
+    }, None)
+    for shown in ("backups/2026/", '"max_tokens": 50', "The bearer of this note is Ana",
+                  "the old key is gone"):
+        assert shown in body, shown
+    assert "hidden" not in body
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["access_token", "accessToken", "client-secret", "X-Api-Key", "apiKey", "password",
+     "db.password", "refreshToken", "Authorization", "auth", "session_id"],
+)
+def test_a_secret_name_is_redacted_as_a_whole_part(name) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" not in body and _maf_mcp.REDACTED in body
+
+
+@pytest.mark.parametrize(
+    "name", ["max_tokens", "tokenizer", "keyword", "monkey", "author", "secretary_name",
+             "key", "signature"],
+)
+def test_a_name_that_only_holds_a_secret_word_is_shown(name) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" in body
+
+
+@pytest.mark.parametrize(
+    "value",
+    [SECRET, "Bearer abc.def.h299", "Basic aDI5OQ==", "ghp_" + "a" * 30,
+     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"],
+)
+def test_a_whole_credential_value_is_redacted(value) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {"value": value}, None)
+    assert value not in body and _maf_mcp.REDACTED in body
+    assert "1 value is hidden: value" in body
+
+
+def test_the_card_names_the_values_it_hides() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {
+        "password": "p", "api_key": "k", "headers": {"Authorization": "x"},
+        "rows": ["ok", SECRET],
+    }, None)
+    assert "4 values are hidden: password, api_key, headers.Authorization, rows[1]" in body
+    assert body.index("values are hidden") < body.index(_maf_mcp.DESCRIPTION_LABEL)
+
+
+# Nit 4: arguments of a shape the gate cannot read refuse the call.
+
+
+@pytest.mark.parametrize("hints", [None, {"readOnlyHint": True}], ids=["card", "read-only"])
+async def test_arguments_of_an_unknown_shape_refuse_the_call(hints) -> None:
+    fn = _function()
+    ctx = SimpleNamespace(function=fn, arguments=object(), result=None)
+    ran = _Ran()
+    with _card_channel() as queue:
+        await _bounded(_gate(fn, hints).process(ctx, ran))
+    assert ran.count == 0 and queue.empty()
+    assert ctx.result == _maf_mcp.UNREADABLE_ARGUMENTS_TEXT.format(tool="srv_delete_record")
+
+
+async def test_no_arguments_count_as_an_empty_call() -> None:
+    fn = _function("srv_echo", "echo")
+    ctx = SimpleNamespace(function=fn, arguments=None, result=None)
+    ran = _Ran()
+    await _bounded(_gate(fn, {"readOnlyHint": True}).process(ctx, ran))
+    assert ran.count == 1
+
+
+# ── Review of PR #897: the leaks of the whole-part rule, and three nits ──────
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["accesstoken", "authtoken", "apitoken", "refreshtoken", "clientsecret", "privatekey",
+     "secretkey", "apisecret", "dbpassword", "adminpassword", "newpassword", "sessiontoken",
+     "bearertoken", "appsecret", "ACCESSTOKEN", "DB_PASSWORD", "MYSQL_ROOT_PASSWORD",
+     "GITHUB_TOKEN", "OPENAI_API_KEY", "authHeader", "x-amz-security-token",
+     "proxy-authorization", "sessionkey", "accesskey", "pass", "credentials"],
+)
+def test_a_joined_secret_name_is_redacted(name) -> None:
+    """Review of #897: a name with no separator (``accesstoken``) ends with a
+    secret word, or is a joined pair. The whole-part rule showed it."""
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" not in body and _maf_mcp.REDACTED in body
+
+
+@pytest.mark.parametrize(
+    "name", ["max_tokens", "tokens", "authorName", "passage",
+             "bypass", "HTTPHeaders", "compass"],
+)
+def test_a_word_that_only_starts_or_holds_a_secret_word_is_shown(name) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {name: "v-h299"}, None)
+    assert "v-h299" in body
+
+
+def test_pass_inside_a_nested_object_is_redacted() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {"creds": {"user": "ana", "pass": "hunter2"}},
+                                      None)
+    assert "hunter2" not in body and '"user": "ana"' in body
+    assert "1 value is hidden: creds.pass" in body
+
+
+_PEM = "-----BEGIN PRIVATE KEY-----\nMIIabcdefg\n-----END PRIVATE KEY-----"
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "kept"),
+    [
+        ("use sk-abcdefghijklmnop now", "sk-abcdefghijklmnop", ["use ", " now"]),
+        ("key sk_live_51Habcdefghijk here", "sk_live_51Habcdefghijk", ["key ", " here"]),
+        ("rk_live_51Habcdefghijk is mine", "rk_live_51Habcdefghijk", [" is mine"]),
+        ("pk_live_51Habcdefghijklmnop ok", "pk_live_51Habcdefghijklmnop", [" ok"]),
+        ("the ghp_abcdefghijklmnopqrstuvwxyz0123 token", "ghp_abcdefghijklmnopqrstuvwxyz0123",
+         ["the "]),
+        ("pat github_pat_11ABCDEFG0123456789_abcdefghij x", "github_pat_11ABCDEFG0123456789_abcdefghij",
+         ["pat "]),
+        ("slack xoxb-1234567890-abcdef ok", "xoxb-1234567890-abcdef", ["slack "]),
+        ("aws AKIAIOSFODNN7EXAMPLE ok", "AKIAIOSFODNN7EXAMPLE", ["aws "]),
+        ("aws ASIAIOSFODNN7EXAMPLE ok", "ASIAIOSFODNN7EXAMPLE", ["aws "]),
+        ("g AIzaSyA-abcdefghijklmnopqrstuvwxyz12345 ok", "AIzaSyA-abcdefghijklmnopqrstuvwxyz12345",
+         ["g "]),
+        ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig", "eyJhbGciOiJIUzI1NiJ9", ["token "]),
+        (f"key:\n{_PEM}\nend", "MIIabcdefg", ["key:", "end"]),
+        ("postgresql://app:hunter2@db:5432/prod", "hunter2", ["postgresql://app:", "@db:5432/prod"]),
+        ("https://u:hunter2@db.example.com/x", "hunter2", ["https://u:", "@db.example.com/x"]),
+        ("Server=x;Password=hunter2", "hunter2", ["Server=x;Password="]),
+        ("a=1&api_key=abc123xyz&b=2", "abc123xyz", ["a=1&api_key=", "&b=2"]),
+        ("Authorization: Bearer abc.def", "abc.def", ["Authorization: "]),
+    ],
+    ids=["sk", "sk-live", "rk-live", "pk-live", "github", "github-pat", "slack", "akia", "asia",
+         "google", "jwt", "pem", "dsn", "url-userinfo", "key-value", "query", "header"],
+)
+def test_a_credential_inside_a_value_is_redacted(text, secret, kept) -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {"note": text}, None)
+    assert secret not in body, body
+    for part in kept:
+        assert part.replace("\n", "\\n") in body or part in body, (part, body)
+    assert "1 value is partly hidden: note" in body
+
+
+def test_prose_with_no_credential_is_not_partly_hidden() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {
+        "text": "The bearer of this note is Ana, and the key is under the mat",
+        "url": "https://example.com/a:b@c", "q": "max_tokens=50"}, None)
+    assert "hidden" not in body and "Ana" in body and "max_tokens=50" in body
+
+
+def test_the_card_counts_whole_and_partly_hidden_values() -> None:
+    _t, _d, body = _maf_mcp.card_text("s", "t", {
+        "password": "p", "note": "use sk-abcdefghijklmnop now", "dsn": "pg://a:b@h/d"}, None)
+    assert "1 value is hidden: password" in body
+    assert "2 values are partly hidden: note, dsn" in body
+
+
+# Nit: an HITL generative UI card does not park where no card can show.
+
+
+@pytest.mark.parametrize("scope", ["refuse_cards", "refuse_cards_for_run"])
+async def test_a_blocking_genui_card_is_refused_where_no_card_can_show(scope) -> None:
+    import importlib
+    import json
+
+    # ``acb_skills.write_artifact`` is also the name of a function in the
+    # package, so import the module by its path.
+    write_artifact = importlib.import_module("acb_skills.write_artifact")
+
+    spec = json.dumps({"type": "template", "hitl": True, "props": {
+        "name": "optionPicker",
+        "data": {"title": "Pick", "options": [{"label": "A"}, {"label": "B"}]}}})
+    before = dict(executor._pending_user_input)
+    with _card_channel() as queue:
+        if scope == "refuse_cards":
+            with ask_tools.refuse_cards():
+                out = await _bounded(write_artifact.emit_generative_ui(spec))
+        else:
+            token = ask_tools.refuse_cards_for_run(True)
+            try:
+                out = await _bounded(write_artifact.emit_generative_ui(spec))
+            finally:
+                ask_tools.release_cards_switch(token)
+    assert out["ok"] is False and "cannot show" in out["error"]
+    assert queue.empty(), "a refused stream got a blocking card"
+    assert executor._pending_user_input == before, "a refused stream parked a card"
+
+
+# Nit: the title names the local tool name of MAF.
+
+
+def test_the_title_names_the_local_tool_name() -> None:
+    title, detail, _ = _maf_mcp.card_text(
+        "files", _SPOOF, {}, None, local="files_list_files----The-server-marks")
+    assert title == "Run the MCP tool files_list_files----The-server-marks?"
+    assert "Tool: list_files\\u202e" in detail
+
+
+def test_a_title_with_no_local_name_keeps_only_safe_characters() -> None:
+    import re
+
+    title, _d, _ = _maf_mcp.card_text("files", _SPOOF, {}, None)
+    assert re.fullmatch(r"Run the MCP tool [A-Za-z0-9_.\-…]+\?", title), title
+
+
+async def test_the_gate_puts_the_local_name_in_the_title() -> None:
+    fn = _function()
+    with _card_channel() as queue:
+        task = asyncio.create_task(_gate(fn, None).process(_ctx(fn), _Ran()))
+        card = await _next_card(queue)
+        _answer(card["request_id"], "REJECT")
+        await asyncio.wait_for(task, timeout=5)
+    assert card["title"] == "Run the MCP tool srv_delete_record?"
+    assert "Tool: delete_record" in card["detail"]

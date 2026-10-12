@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-12. §12.2 WS-8c adds the MCP confirmation card (H-299, items 13 to 17). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-10-12. §12.2 WS-8c adds on-demand MCP tools (items 22 to 30). Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -766,10 +766,9 @@ Four things worked only on the Copilot path:
    `memory_context` and the persona reach the model only through the string fallback,
    `_build_event_message`. WS-43t1 (PR #595) repaired the branch behind
    `MAF_NATIVE_SESSIONS`, which is off by default (`maf_coding_engine.md` §15.9).
-3. **Registry MCP servers do not reach apis-config now.** `merge_mcp_servers` is a no-op on
-   MAF. So an `mcp_servers` row with agent scope `*` reaches only Copilot agents (H-217).
-   WS-8c gives MAF agents an MCP client, behind the setting `MAF_MCP_ORGS`. Until the flag
-   allows an org, this item stays true for that org.
+3. ~~**Registry MCP servers do not reach apis-config now.**~~ *Closed 2026-10-12.* WS-8c
+   gives MAF agents an MCP client (#869, #875), and `MAF_MCP_ORGS=*` is set on production,
+   so a registry server reaches every native MAF agent in its org. H-217 is deleted.
 4. **A delegated run is a batch run, and the addendum is Copilot-only.** When another agent
    calls apis-config, it returns one result. A native agent gets the registry block, the UI
    directive and the output-discipline block, not "Metorite Platform Tools".
@@ -969,13 +968,17 @@ nothing.
 
 **The confirmation card (H-299, added 2026-10-12).** Item 8 approved every MCP tool, because
 `decide()` approves a name that it does not know as `unknown_allowed`. Items 13 to 17 close
-that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
+that gap, and items 18 to 21 harden them (review of PR #888). The first production flip of
+`MAF_MCP_ORGS` waits for them.
 
 13. **When the gate asks for a card.** `RunScopedMCPTool` keeps the `annotations` of each tool from
     `tools/list` (MCP 2025-03-26), because MAF drops them. `McpPermissionGate` gives the hints
-    to `decide()` as `mcp_tool` and `mcp_annotations`. `decide()` answers `mcp_read_only` only
-    when `readOnlyHint` is `true` and `destructiveHint` is not `true`. It answers `mcp_confirm`
-    for every other case: no hints, a hint that is not a JSON boolean, and a destructive tool.
+    to `decide()` as `mcp_tool` and `mcp_annotations` (`permission_policy.py:248-256`).
+    `decide()` answers `mcp_read_only` only when `readOnlyHint` is `true` and
+    `destructiveHint` is not `true`. It answers `mcp_confirm` for every other case: no hints, a
+    hint that is not `true` or `false`, and a destructive tool. ⚠️ The `mcp` types are pydantic
+    in lax mode, so a server that sends `"true"`, `"yes"` or `1` reaches `tool_hints` as
+    `true`. The non-boolean rule therefore guards the input of `decide()`, not the wire.
     The MCP rule runs before the platform annotations, so a server tool never borrows the hints
     of a platform tool of the same name. The gate shows a card for every code except
     `mcp_read_only`, so `gate_error` also needs the card. `decide()` stays the one gate.
@@ -1000,13 +1003,105 @@ that gap. The first production flip of `MAF_MCP_ORGS` waits for them.
 17. **Channels.** A WhatsApp run refuses the tool. The WhatsApp profile parks only the acts of
     `whatsapp_acts.ALLOWED_ACTS`, and an MCP tool is not one. The gate reads the profile
     itself, so it never approves on WhatsApp.
+18. **Cards are opt-in for each stream.** `run_agent_stream` takes `shows_cards`, and the
+    default is `False`. A stream that does not draw cards runs inside
+    `ask_tools.refuse_cards_for_run`, as a WhatsApp run does. A card there answers "no" at
+    once, and an MCP tool that needs one is refused. The web chat (`routes/agent.py`)
+    declares `True`. The email chat (`routes/email/automation/chat.py`) declares `False`,
+    because its stream forwards no CUSTOM event. Before this item its card waited 3600 s, and
+    then the model read that the member said no. A fence fails when a new caller of
+    `run_agent_stream` does not declare `shows_cards`. `emit_generative_ui` refuses a blocking
+    card (`"hitl": true`) in the same runs, WhatsApp included. ⚠️ The switch is a ContextVar.
+    It covers the tools of a MAF agent. It does not cover a Copilot SDK tool that runs in a
+    JSON-RPC thread, because that thread reads a fresh context. Only the email chat passes
+    `False`, and it runs MAF.
+19. **Names cannot spoof the card.** The card escapes each control, format and separator
+    character of the server name and the tool name, and caps each name at 64 characters. The
+    detail starts with the real hint line, and then names the server and the remote tool. The
+    title names the local tool name of MAF, in `[A-Za-z0-9_.-]` only.
+20. **Redaction keeps the target of a call, and hides each secret.** The card saves into the
+    history of the room, so a secret that it shows stays there.
+    - A name is split on `_`, `-`, `.`, a space and camelCase. A part is a secret when it is a
+      secret word (`password`, `pass`, `token`, `auth` and more), when it ENDS with `token`,
+      `password`, `passwd`, `pwd`, `secret`, `credential(s)` or `passphrase`, or when it is a
+      joined pair (`privatekey`, `accesskey`, `secretkey`, `clientsecret`, `apikey`,
+      `sessionid`, `sessionkey`). So `accesstoken` and `dbpassword` are hidden, and
+      `max_tokens` and `key` (as in `delete_object(bucket, key)`) stay.
+    - A credential INSIDE a value is hidden in place: `sk-`, Stripe `sk_`/`rk_`/`pk_live_`,
+      GitHub `ghp_` and `github_pat_`, Slack `xox`, AWS `AKIA`/`ASIA`, Google `AIza`, a JWT,
+      a PEM private key, the password of a URL or a DSN, and a `key=value` pair whose key is a
+      secret name. A bearer or basic credential is hidden only when it is the WHOLE value, so
+      prose that holds the word "bearer" stays.
+    - Lines under the arguments name each value that the card hid whole, and each value that
+      it hid in part ("1 value is partly hidden: note").
+21. **Unreadable arguments refuse.** When the gate cannot read the arguments of a call, it
+    refuses the call, so the card never shows less than what runs.
+
+**On-demand MCP tools (added 2026-10-12).** Items 22 to 30. Today each server sends the full
+schema of every tool to the model when the run starts, up to 128 tools (`MAX_TOOLS`,
+`_maf_mcp.py:78`). Nothing caps the number of servers in a run. `test_tool_schema_diet.py`
+measures platform tools only, so no fence sees the MCP part. Verified against code on 2026-10-12
+at `origin/main` `713dc84ac`, with MAF 1.19.0 (`uv.lock:375-376`).
+
+22. **No meta-tool of Metorite.** MAF 1.19 has progressive disclosure on
+    `MCPStreamableHTTPTool`, through `use_progressive_disclosure` and `always_load`
+    (`agent_framework/_mcp.py:903-904`). It adds three loader tools for each server:
+    `<prefix>_list_mcp_tools`, `<prefix>_load_tool` and `<prefix>_unload_tool` (`:134-136`,
+    `:1468-1474`). A Metorite tool that did the same would be a second seam. The MAF feature is
+    experimental (`:984-990`).
+23. **When it turns on.** `RunScopedMCPTool` (`_maf_mcp.py:413`) is built with
+    `use_progressive_disclosure=True`. After `connect()`, the injection turns it off for a server
+    with 12 tools or fewer, when their full schemas fit in 1,500 tokens. `always_load` stays
+    empty. MAF reads the attribute each time it reads `functions` (`_mcp.py:1388-1391`), so the
+    change after the connect holds.
+24. **The budget of a run.** At run start, the MCP schemas of one server cost 1,500 tokens or
+    fewer, and all servers together cost 4,000 or fewer. When the sum passes 4,000, the largest
+    server that still shows full schemas changes to progressive disclosure. This repeats until
+    the sum fits. The count uses `skill_families.tool_json_schema` and
+    `acb_llm.context.count_message_tokens`, as `test_tool_schema_diet.py` does.
+25. **The list is an index.** MAF's `_list_progressive_mcp_tools` (`_mcp.py:1581`) returns the
+    full `parameters()` of each tool (`:1593`), so one list call costs what disclosure saved.
+    `RunScopedMCPTool` overrides it. Each entry holds the name, one line of 80 characters or
+    fewer, and `read_only`, and nothing else. The line is the first line of the server's
+    description, with each control character escaped. `read_only` is true only when the hints
+    give `mcp_read_only` (item 13). The model gets the full schema when it loads the tool. This
+    is the two-tier model of `load_artifact_kit` (`artifact_kit.py:8`, `:193`).
+26. **The loaders are MCP tools.** MAF builds the three loaders with no `_mcp_is_tool` key
+    (`_mcp.py:1488-1534`). So `egress._from_mcp` (`egress.py:107-112`) does not see them, and
+    `McpPermissionGate` lets them pass (`_maf_mcp.py:941-943`). The injection marks each loader
+    with a key of its own, `_acb_mcp_loader`, and `_from_mcp` reads that key. So the H-236
+    egress rule and `WithholdEgressTools` apply to the loaders. The key is Metorite's, so the
+    loops of MAF that read `_mcp_is_tool` (`_mcp.py:2534`, `:2657`) do not change.
+27. **List and load show no card.** The gate finds a loader by identity in the
+    `_progressive_loader_functions` of an MCP tool of the run. It lets the call through with no
+    card, and logs `mcp.loader` with the server and the action. The gate refuses a loader that
+    no tool of the run holds. A loaded tool is still an MCP function, and `_owner_of` finds it
+    by identity in `_functions` (`_maf_mcp.py:890-905`). So its hints decide its card, as
+    before, and the H-300 setting `always_confirm` applies to it.
+28. **Caps.** A run attaches 8 servers or fewer (`MAX_SERVERS = 8`), in name order.
+    `attach_mcp_tools` (`_maf_mcp.py:458`) leaves out the 9th server and each one after it. It
+    logs `mcp.server_cap` with the names only. Each server keeps the cap of 128 tools
+    (`MAX_TOOLS`, `:308`).
+29. **The clash check reads every tool.** `attach_mcp_tools` checks name clashes against
+    `tool.functions` (`:516-517`). With progressive disclosure on, that list holds the loaders
+    only. So the check reads `_functions` too, and a hidden tool that clashes leaves its server
+    out, as before.
+30. **The warning.** The constructor raises `ExperimentalWarning`
+    (`agent_framework._feature_stage`). The injection builds the tool inside
+    `warnings.catch_warnings()`, and it ignores that class only. Nothing filters the warning for
+    the whole process.
+
+Verify items 22 to 30 with `uv run pytest tests/unit/test_maf_mcp_budget.py -v -rs`. The file is
+new, and its rows are A23 to A30 below.
 
 **Known limit: nobody checks the hints.** The server writes its own hints, and a hostile server
 can mark a destructive tool read-only. Each attach logs `mcp.tool_annotations` with the
 server, the tool and the hints, so an admin can audit them. A later `tools/list` (after
 `notifications/tools/list_changed`) can only make a tool stricter in the run, and each change
 logs `mcp.tool_annotations_changed`. A per-server admin setting
-"always confirm" is H-300. It waits for an owner decision.
+"always confirm" is H-300. The owner said "build it now, keep MCP on" on 2026-10-12. It is
+`provider_meta.always_confirm` on the registry row, read by `McpPermissionGate`, and it comes
+right after IN-4.
 
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
@@ -1047,8 +1142,20 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A14 | A run with no member, or with no card channel, refuses a tool that needs a card, and shows no card. | `test_maf_mcp_confirm.py` |
 | A15 | A WhatsApp run refuses, and parks nothing. | `test_maf_mcp_confirm.py` |
 | A16 | The card redacts sensitive arguments, shows every other argument whole, and labels the server's description. A call that the card cannot show whole is refused. | `test_maf_mcp_confirm.py` |
-| A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
 | A17 | Each attach logs `mcp.tool_annotations`. A destructive tool on the real `run_agent_stream` emits the card, and the server runs it only after Approve. | `test_maf_mcp_confirm.py` |
+| A18 | A later `tools/list` cannot relax a tool, and each change of hints is logged. | `test_maf_mcp_confirm.py` |
+| A19 | A stream that does not declare `shows_cards=True` refuses each card, and every caller of `run_agent_stream` declares it. | `test_maf_mcp_confirm.py` |
+| A20 | A tool name cannot spoof the hint line. Names are escaped and capped at 64. | `test_maf_mcp_confirm.py` |
+| A21 | Redaction matches whole name parts and whole credential values, and the card names each value it hides. | `test_maf_mcp_confirm.py` |
+| A22 | Arguments of a shape the gate cannot read refuse the call. | `test_maf_mcp_confirm.py` |
+| A23 | At run start, the MCP schemas cost 1,500 tokens or fewer for each server, and 4,000 or fewer in total. The fixture has 8 servers, and one of them has 128 tools. | `test_maf_mcp_budget.py` |
+| A24 | A list call returns, for each tool, the name, one line of 80 characters or fewer, and `read_only`. It returns no `parameters`. | `test_maf_mcp_budget.py` |
+| A25 | A loaded tool whose hints need a card waits for the card. A loaded read-only tool runs at once. List and load show no card. | `test_maf_mcp_budget.py` |
+| A26 | A loader is egress. `_from_mcp` answers true for it, and `WithholdEgressTools` withholds it. | `test_maf_mcp_budget.py` |
+| A27 | A server with a 129th tool is left out, and so is a 9th server. Each case logs its event. | `test_maf_mcp_budget.py` |
+| A28 | With `ExperimentalWarning` set to error, the attach succeeds and the run goes on. | `test_maf_mcp_budget.py` |
+| A29 | A contract test pins the MAF API of items 22 to 27: the two constructor arguments, the read of the attribute in `functions`, the three loader names, the signature of `_list_progressive_mcp_tools`, `_functions` and `_progressive_loader_functions`. A MAF upgrade that changes one of them fails loud. | `test_maf_mcp_budget.py` |
+| A30 | A hidden tool whose name clashes with a platform tool leaves its server out. | `test_maf_mcp_budget.py` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.
@@ -1067,8 +1174,8 @@ The second review added `test_maf_mcp_lifecycle.py`: a slow connect, endless pag
 tool cap, a Stop during the attach, a slow session DELETE, the total close cap, and a 40 s
 DELETE through the real run.
 
-**Left open.** H-300: an admin setting "always confirm" for each MCP server, which waits for an
-owner decision. Items 13 to 17 close H-299 (the card).
+**Left open.** H-300: an admin setting "always confirm" for each MCP server. The owner said to
+build it (2026-10-12), right after IN-4. Items 13 to 17 close H-299 (the card).
 
 **Done when** the fences above pass with no skip. Then a native MAF agent in an allowed org
 shows the tools of the server of its org. The production flip of `MAF_MCP_ORGS` is gate

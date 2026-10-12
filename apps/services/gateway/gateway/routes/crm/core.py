@@ -882,6 +882,170 @@ def related_filters(
     return tuple(clauses), bound
 
 
+# ── The extra list filters (WS-53 CRM-Q8) ──────────────────────────────────
+
+#: The API slug of each entity → the value that ``crm_field_defs.entity`` holds.
+#: The sync writes the singular form (``crm_sync.engine.FIELD_DEF_ENTITIES``).
+FIELD_ENTITY_BY_SLUG: dict[str, str] = {
+    "leads": "lead",
+    "contacts": "contact",
+    "organizations": "company",
+    "deals": "deal",
+}
+
+#: The query-string prefix of a custom field filter: ``custom.<key>=<value>``.
+CUSTOM_PREFIX = "custom."
+
+
+def parse_iso_date(name: str, value: str | None) -> date | None:
+    """*value* as a date, ``None`` when it is empty, or a 422 that names *name*.
+
+    The check runs before any SQL, so a bad date never becomes a database cast
+    error (a 500).
+    """
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"'{name}' must be an ISO date (YYYY-MM-DD).",
+        ) from None
+
+
+def custom_pairs(query_params: Any) -> list[tuple[str, str]]:
+    """Every ``custom.<name>=<value>`` pair of a query string, in order.
+
+    *query_params* is ``request.query_params`` or ``None``. FastAPI cannot
+    declare a parameter name that is not known up front, so the dynamic names
+    are read off the request.
+    """
+    if query_params is None:
+        return []
+    return [
+        (key[len(CUSTOM_PREFIX):], value)
+        for key, value in query_params.multi_items()
+        if key.startswith(CUSTOM_PREFIX) and key != CUSTOM_PREFIX
+    ]
+
+
+def resolve_owner(owner: str | None, user: Any) -> str | None:
+    """``me`` is the caller. The identity comes from the session (R5), never
+    from the request."""
+    if owner and owner.strip().lower() == "me" and user is not None:
+        return actor(user)
+    return owner
+
+
+@dataclass(frozen=True)
+class ExtraFilterInput:
+    """The Q8 filters as the caller sent them, before they are checked."""
+
+    created_from: str | None = None
+    created_to: str | None = None
+    updated_from: str | None = None
+    updated_to: str | None = None
+    close_from: str | None = None
+    close_to: str | None = None
+    custom: tuple[tuple[str, str], ...] = ()
+
+
+async def extra_filters(
+    db: Any, entity: Entity, given: ExtraFilterInput,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The date-range and custom field filters, as SQL and bound parameters.
+
+    A bad date, or a ``close_*`` filter on an entity without a close date, or a
+    custom key that ``crm_field_defs`` does not list for this entity, is a 422
+    before the list query runs. Every value is a bound parameter. The custom
+    key is bound too (``custom ->> :ck``), so no caller text enters the SQL.
+    """
+    clauses: list[str] = []
+    bound: dict[str, Any] = {}
+    ranges = (
+        ("created_from", given.created_from, "created_at >= CAST(:created_from AS date)"),
+        ("created_to", given.created_to,
+         "created_at < CAST(:created_to AS date) + 1"),
+        # ⚠️ The provider's modified time, when the row has one. A mirrored
+        # row's own `updated_at` is the import time, so ranging on it would
+        # show the day of the last sync and not the day of the change.
+        ("updated_from", given.updated_from,
+         "coalesce(ext_modified_at, updated_at) >= CAST(:updated_from AS date)"),
+        ("updated_to", given.updated_to,
+         "coalesce(ext_modified_at, updated_at) < CAST(:updated_to AS date) + 1"),
+        ("close_from", given.close_from,
+         "expected_close_date >= CAST(:close_from AS date)"),
+        ("close_to", given.close_to, "expected_close_date <= CAST(:close_to AS date)"),
+    )
+    mirror: bool | None = None
+    for name, raw, clause in ranges:
+        parsed = parse_iso_date(name, raw)
+        if parsed is None:
+            continue
+        if name.startswith("created_"):
+            # ⚠️ In Mirror mode `created_at` is the import time:
+            # `upsert_from_source` refuses to write it. A range on it would
+            # answer with the sync day and hide every older record. Refused,
+            # until a mirrored created column exists (spec 18.5, CRM-Q8).
+            if mirror is None:
+                mirror = await is_mirror_mode(db, current_tenant())
+            if mirror:
+                raise HTTPException(status_code=422, detail={
+                    "code": "created_range_mirror",
+                    "message": "The created date of a synced record is not "
+                               "kept. Filter by the updated date instead.",
+                })
+        if name.startswith("close_") and entity.table != "crm_deals":
+            raise HTTPException(
+                status_code=422,
+                detail=f"{entity.slug} have no close date, so '?{name}' cannot "
+                       "filter them. Drop the parameter.",
+            )
+        clauses.append(clause)
+        bound[name] = parsed
+    if given.custom:
+        known = {
+            r.key for r in (await db.execute(
+                text("SELECT key FROM crm_field_defs WHERE entity = :entity"),
+                {"entity": FIELD_ENTITY_BY_SLUG[entity.slug]},
+            )).fetchall()
+        }
+        grouped: dict[tuple[str, bool], list[str]] = {}
+        for name, value in given.custom:
+            if name in known:
+                grouped.setdefault((name, False), []).append(value)
+            elif name.endswith(".in") and name[:-3] in known:
+                grouped.setdefault((name[:-3], True), []).extend(
+                    part.strip() for part in value.split(",") if part.strip()
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{name}' is not a custom field of {entity.slug}.",
+                )
+        for index, ((key, is_in), values) in enumerate(grouped.items()):
+            bound[f"ck{index}"] = key
+            if is_in or len(values) > 1:
+                # A multiselect field holds a JSON array (`["Red","Blue"]`),
+                # and `->>` would give its text. The array arm matches when
+                # any chosen option is in the array. Every value is bound.
+                clauses.append(
+                    f"(custom ->> :ck{index} = ANY(CAST(:cv{index} AS text[])) "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists_any(custom -> :ck{index}, "
+                    f"CAST(:cv{index} AS text[]))))"
+                )
+                bound[f"cv{index}"] = values
+            else:
+                clauses.append(
+                    f"(custom ->> :ck{index} = :cv{index} "
+                    f"OR (jsonb_typeof(custom -> :ck{index}) = 'array' "
+                    f"AND jsonb_exists(custom -> :ck{index}, :cv{index})))"
+                )
+                bound[f"cv{index}"] = values[0]
+    return tuple(clauses), bound
+
+
 def project_joined(entity: Entity, inner: str, order_by: str) -> str:
     """Wrap a base-table SELECT so its rows carry their joined display names.
 
@@ -1639,6 +1803,100 @@ async def set_deal_contacts_from_source(
             {"d": deal_id, "c": str(contact_id), "role": role},
         )
     return len(contacts), int(removed.rowcount or 0)
+
+
+# ── The generic record store (WS-53 CRM-Q6a, migration 251) ────────────────
+
+#: A provider module API name: a letter, then letters, digits and ``_``. The
+#: name reaches only a bound parameter, and the check keeps junk out of the key.
+_MODULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+#: The columns that the module door writes. The caller passes no column name.
+MODULE_RECORD_COLUMNS: tuple[str, ...] = (
+    "name", "owner_email", "fields", "ext_url", "ext_created_at", "ext_modified_at",
+)
+
+_UPSERT_MODULE_RECORD_SQL = (
+    "INSERT INTO crm_module_records (module, ext_source, ext_id, name, "
+    "owner_email, fields, ext_url, ext_created_at, ext_modified_at) VALUES "
+    "(:module, :ext_source, :ext_id, :name, :owner_email, CAST(:fields AS jsonb), "
+    ":ext_url, :ext_created_at, :ext_modified_at) "
+    "ON CONFLICT (organization_id, ext_source, module, ext_id) DO UPDATE SET "
+    "name = EXCLUDED.name, owner_email = EXCLUDED.owner_email, "
+    "fields = EXCLUDED.fields, ext_url = EXCLUDED.ext_url, "
+    "ext_created_at = EXCLUDED.ext_created_at, "
+    "ext_modified_at = EXCLUDED.ext_modified_at, updated_at = now() "
+    # A replay of the same record changes nothing, not even updated_at.
+    "WHERE (crm_module_records.name, crm_module_records.owner_email, "
+    "crm_module_records.fields, crm_module_records.ext_url, "
+    "crm_module_records.ext_created_at, crm_module_records.ext_modified_at) "
+    "IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.owner_email, EXCLUDED.fields, "
+    "EXCLUDED.ext_url, EXCLUDED.ext_created_at, EXCLUDED.ext_modified_at) "
+    "RETURNING id"
+)
+
+
+def _module_key(ext_source: str, module: str) -> None:
+    if not ext_source:
+        raise ValueError("module records: 'ext_source' is required")
+    if not _MODULE_NAME.match(module or ""):
+        raise ValueError(f"module records: {module!r} is not a module API name")
+
+
+async def upsert_module_records_from_source(
+    db: Any, ext_source: str, module: str, ext_id: str, values: dict[str, Any],
+) -> bool:
+    """Write one record of a generic module, keyed on
+    ``(organization_id, ext_source, module, ext_id)`` (WS-53 CRM-Q6a).
+
+    The fifth door of the mirror write path, beside :func:`upsert_from_source`,
+    with the same fence (``tests/unit/test_crm_upsert_from_source_fence.py``
+    refuses its name outside ``gateway/crm_sync/``). No native writer of
+    ``crm_module_records`` exists. The table has no ``zoho_id`` column, so this
+    door sets none.
+
+    *values* holds only :data:`MODULE_RECORD_COLUMNS`. A key outside them is a
+    ``ValueError``, so a column name never comes from the caller. The tenant
+    comes from the column DEFAULT that the bound session sets.
+
+    Returns True when a row was written, and False for a replay that changed
+    nothing.
+    """
+    _module_key(ext_source, module)
+    if not ext_id:
+        raise ValueError("module records: 'ext_id' is required")
+    unknown = sorted(set(values) - set(MODULE_RECORD_COLUMNS))
+    if unknown:
+        raise ValueError(f"module records: {unknown} are not columns this door writes")
+    params = {column: values.get(column) for column in MODULE_RECORD_COLUMNS}
+    params["fields"] = json.dumps(params["fields"] or {}, default=str)
+    row = (await db.execute(text(_UPSERT_MODULE_RECORD_SQL), {
+        **params, "module": module, "ext_source": ext_source, "ext_id": str(ext_id),
+    })).first()
+    return row is not None
+
+
+async def delete_module_records_from_source(
+    db: Any, ext_source: str, module: str, ext_ids: Sequence[str],
+) -> int:
+    """Delete the generic records that a provider deleted. Returns how many went.
+
+    The sixth door of the mirror write path (WS-53 CRM-Q6a), with the same
+    fence as :func:`delete_from_source`. It matches the module, ``ext_source``
+    and ``ext_id``, and the tenant policy binds the organization.
+    """
+    _module_key(ext_source, module)
+    ids = sorted({str(i) for i in ext_ids if i})
+    if not ids:
+        return 0
+    result = await db.execute(
+        text(
+            "DELETE FROM crm_module_records WHERE ext_source = :ext_source "
+            "AND module = :module AND ext_id = ANY(CAST(:ext_ids AS text[]))"
+        ),
+        {"ext_source": ext_source, "module": module, "ext_ids": ids},
+    )
+    return int(result.rowcount or 0)
 
 
 async def load_by_zoho_id(db: Any, table: str, zoho_id: str) -> Any | None:

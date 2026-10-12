@@ -62,6 +62,22 @@ const LEGACY_TABS: Record<string, { tab: CrmView["tab"]; layout?: CrmLayout }> =
   pipeline: { tab: "deals", layout: "board" },
 };
 
+/** The date-range filters, by the name they have in the URL and on the wire. */
+export const RANGE_KEYS = [
+  "created_from",
+  "created_to",
+  "updated_from",
+  "updated_to",
+  "close_from",
+  "close_to",
+] as const;
+export type RangeKey = (typeof RANGE_KEYS)[number];
+
+/** URL prefix of a custom picklist filter: `cf.Region=North,East`. */
+export const CUSTOM_PARAM = "cf.";
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 export type CrmView = {
   /** Which view is behind the sheet. `deals` is the landing tab. */
   tab: NonEntityTab | EntitySlug;
@@ -91,6 +107,14 @@ export type CrmView = {
    */
   sort: string | null;
   dir: "asc" | "desc";
+  /** The source filter (CRM-Q8). */
+  source: string | null;
+  /** The date ranges (CRM-Q8). Only a valid ISO date is kept. */
+  ranges: Partial<Record<RangeKey, string>>;
+  /** Custom picklist filters (CRM-Q8): field key to the chosen options. */
+  custom: Record<string, string[]>;
+  /** The saved view in effect (`?view=`), or null. */
+  viewId: string | null;
 };
 
 export const DEFAULT_VIEW: CrmView = {
@@ -104,6 +128,10 @@ export const DEFAULT_VIEW: CrmView = {
   owner: null,
   sort: null,
   dir: "desc",
+  source: null,
+  ranges: {},
+  custom: {},
+  viewId: null,
 };
 
 export function isEntity(value: string | null): value is EntitySlug {
@@ -153,7 +181,31 @@ export function parseView(search: string | URLSearchParams): CrmView {
     // two directions and 422s a third, so a hand-edited `dir=sideways` should
     // render a list rather than an error.
     dir: params.get("dir") === "asc" ? "asc" : "desc",
+    source: params.get("source") || null,
+    ranges: parseRanges(params),
+    custom: parseCustom(params),
+    viewId: params.get("view") || null,
   };
+}
+
+function parseRanges(params: URLSearchParams): Partial<Record<RangeKey, string>> {
+  const out: Partial<Record<RangeKey, string>> = {};
+  for (const key of RANGE_KEYS) {
+    const value = params.get(key);
+    // A hand-edited date would be a 422 that empties the list.
+    if (value && ISO_DATE.test(value)) out[key] = value;
+  }
+  return out;
+}
+
+function parseCustom(params: URLSearchParams): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  params.forEach((value, name) => {
+    if (!name.startsWith(CUSTOM_PARAM) || name === CUSTOM_PARAM) return;
+    const items = value.split(",").map((v) => v.trim()).filter(Boolean);
+    if (items.length > 0) out[name.slice(CUSTOM_PARAM.length)] = items;
+  });
+  return out;
 }
 
 /** A tab with no board is a list, whatever the URL says. */
@@ -226,6 +278,15 @@ export function serializeView(view: CrmView): string {
     // and writing it would put a parameter in every URL that changes nothing.
     if (view.dir === "asc") params.set("dir", "asc");
   }
+  if (view.source) params.set("source", view.source);
+  for (const key of RANGE_KEYS) {
+    const value = view.ranges[key];
+    if (value) params.set(key, value);
+  }
+  for (const [key, items] of Object.entries(view.custom)) {
+    if (items.length > 0) params.set(`${CUSTOM_PARAM}${key}`, items.join(","));
+  }
+  if (view.viewId) params.set("view", view.viewId);
   if (view.record) params.set(view.record.param, view.record.id);
   return params.toString();
 }
@@ -270,6 +331,11 @@ export function selectTab(view: CrmView, tab: CrmView["tab"]): CrmView {
     includeConverted: false,
     sort: null,
     dir: "desc",
+    // The new filters name fields of one entity, so none travels. `owner` does.
+    source: null,
+    ranges: {},
+    custom: {},
+    viewId: null,
   };
 }
 

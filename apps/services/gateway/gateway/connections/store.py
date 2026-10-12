@@ -220,6 +220,15 @@ def _keys() -> Any:
     return get_key_store()
 
 
+def legacy_keys() -> Any:
+    """The per-org key store, for a migration that moves an old ``provider_keys`` row.
+
+    WS-54 IN-7 reads the old ``github:token`` row through it once, then deletes
+    it. Going through this module adds no new key store call site.
+    """
+    return _keys()
+
+
 def _seal(credential: SourceCredential) -> str:
     plain = json.dumps(
         {
