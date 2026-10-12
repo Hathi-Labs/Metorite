@@ -6,7 +6,8 @@
  * `entity` picks the card and the lane header. The drop, the lane and the
  * Mirror-mode rule are shared, so the two boards cannot disagree about them.
  *
- * Deal lanes are the chosen pipeline's stages by position, colored. Lead lanes
+ * Deal lanes are the chosen pipeline's stages in `orderLanes` order, colored.
+ * The page may hide the empty ones (`lib/emptyStages.ts`). Lead lanes
  * are the Lead Status values. Cards carry name / company / amount / owner /
  * stage-age. Dragging a card issues a `PATCH` of `status_id`. Each deal lane
  * header shows its count and ₹ total for the WHOLE lane, not the page of cards

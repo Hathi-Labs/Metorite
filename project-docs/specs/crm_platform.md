@@ -27,7 +27,7 @@
 > CRM-Q1 and CRM-Q2, discovery, the source profile and the deal pipelines
 > (2026-10-12, migration 247). The other slices are not built yet.
 >
-> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12).
+> **Built later:** CRM-Q3, the new layout of §18.4 (2026-10-12). CRM-Q4, field definitions in the UI (2026-10-12). CRM-Q9, the Sync health card (2026-10-12). The Deals board stages fix (2026-10-12, §18.5).
 
 > **Supersedes for new work:** `crm_app.md` (WS-26). That file stays the as-built
 > record of the CRM that exists. It keeps the data model (§3), the API (§4) and
@@ -1170,6 +1170,16 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q11** | Currency conversion in totals and in the forecast | P1 |
 | **CRM-Q12** | Per-owner visibility in the mirror | P1 |
 | **CRM-Q13** | Attachments and email metadata. Tags. The Zoho user directory | P1 |
+
+**Deals board stages built as (2026-10-12).** The owner reported the bug with a screenshot of the Fracktal mirror.
+
+- The sync sets the type of a mirrored stage from its pipeline. A stage that the pipeline calls `won` or `lost` gets that type, also on a row that exists. A stage with no type keeps its row. Before this change, the insert kept an existing row, so Payment Complete and Re-Evaluate stayed `open`.
+- Each run applies the types of the latest stored profile before its first Zoho call. So an org gets the fix on its first run after the deploy. The pass runs in Mirror mode only, and it changes no deal row.
+- The board header counts the open and ongoing lanes only, as the owner leaderboard does. A won or a lost deal is not in the pipeline.
+- `orderLanes` in `lib/board.ts` is the one column order. Open stages come first, by probability, then by their place in the pipeline, then by the global position. Won stages come next, and lost stages come last.
+- In Mirror mode the board hides a stage that holds no deal under the current filters. In Native mode it shows that stage, because it is a drop target. The "Empty stages" button in the title bar changes this. The browser keeps the choice for each member.
+- A deal can sit in a stage that its pipeline does not list. `GET /crm/pipeline?pipeline_id=` returns that stage as a lane while it holds a deal under the same filters. Each lane carries `pipeline_position`. The lane counts then add up to the deals of the pipeline.
+- No migration and no flag. Fences: `tests/unit/test_crm_pipelines_r8.py`, `tests/unit/test_crm_discovery.py` and `src/app/crm/components/boardStages.test.ts`.
 
 **CRM-Q9 built as (2026-10-12).**
 
