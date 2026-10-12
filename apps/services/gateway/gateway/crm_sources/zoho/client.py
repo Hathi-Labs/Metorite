@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -246,11 +247,37 @@ def _parse_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+#: A generic module entity is ``module:<ApiName>`` (CRM-Q6a). The API name
+#: goes into a URL path, so it must be a plain identifier.
+_GENERIC_PREFIX = "module:"
+_GENERIC_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+
+
 def _module(entity: str) -> str:
+    """The Zoho module API name of a canonical entity or a generic module."""
+    if entity.startswith(_GENERIC_PREFIX):
+        name = entity[len(_GENERIC_PREFIX):]
+        if not _GENERIC_NAME.match(name):
+            raise ValueError(f"{name!r} is not a Zoho module API name")
+        return name
     try:
         return ZOHO_MODULES[entity]
     except KeyError:
         raise ValueError(f"Zoho has no module for the entity {entity!r}") from None
+
+
+def _read_scope(entity: str) -> str:
+    """The published read scope of an entity's module, for a scope refusal.
+
+    The one rule is ``mapping.module_read_scope`` (``Sales_Orders`` gives
+    ``salesorders``). A generic module that is not a standard module is a
+    custom module, and takes ``ZohoCRM.modules.custom.READ``.
+    """
+    from gateway.crm_sources.zoho.mapping import GENERIC_STANDARD_MODULES, module_read_scope
+
+    module = _module(entity)
+    custom = entity.startswith(_GENERIC_PREFIX) and module not in GENERIC_STANDARD_MODULES
+    return module_read_scope(module, custom=custom)
 
 
 def _page_params(cursor: SourceCursor, extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -649,10 +676,8 @@ class ZohoSource:
         if r.status_code in (204, 304):
             return SourcePage(records=(), next_cursor=None)
         if _is_scope_refusal(r):
-            module = _module(entity)
             raise ZohoScopeError(
-                f"ZohoCRM.modules.{module.lower()}.READ",
-                str(_error_body(r).get("message") or "")[:200],
+                _read_scope(entity), str(_error_body(r).get("message") or "")[:200],
             )
         self._raise_for_status(r, path)
         body = _error_body(r)

@@ -369,6 +369,8 @@ async def _drive(harness: Harness, session: Session) -> _Stream:
         AGENT, {"message": session.prompt, "user_email": session.member, "source": "eval"},
         run_id=str(uuid.uuid4()), thread_id=session.thread_id, model=harness.tier,
         organization_id=harness.org, session_user=session.member,
+        # The eval stands for the web chat, and it declines each card it sees.
+        shows_cards=True,
     )
     async for line in gen:
         for event in parse_frames([line]):

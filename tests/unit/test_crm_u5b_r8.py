@@ -85,10 +85,25 @@ def _add_connection(ns: Any, status: str) -> str:  # noqa: F811
 def _clean(ns):  # noqa: F811
     yield
     with ns.admin_engine.begin() as c:
-        for table in ("crm_leads", "integration_connections"):
+        for table in ("crm_leads", "crm_module_records", "integration_connections"):
             c.execute(text(
                 f"DELETE FROM {table} WHERE organization_id = CAST(:o AS uuid)"),
                 {"o": ns.org_a})
+
+
+def _add_module_record(ns: Any) -> None:  # noqa: F811
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO crm_module_records (organization_id, module, ext_source, "
+            "ext_id, name) VALUES (CAST(:o AS uuid), 'Products', 'zoho', 'p1', 'W')"),
+            {"o": ns.org_a})
+
+
+def _module_records(ns: Any) -> int:  # noqa: F811
+    with ns.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM crm_module_records "
+            "WHERE organization_id = CAST(:o AS uuid)"), {"o": ns.org_a}).scalar())
 
 
 async def test_reset_from_native_removes_the_17_rows(ns, app_engine) -> None:  # noqa: F811
@@ -279,3 +294,39 @@ async def test_reset_drops_the_credential_of_a_needs_reconnect_row(
             "SELECT status, credentials_encrypted FROM integration_connections "
             "WHERE id = CAST(:i AS uuid)"), {"i": conn}).first()
     assert tuple(row) == ("disconnected", None)
+
+
+# ── CRM-Q6a: the generic record store ───────────────────────────────────────
+
+
+async def test_reset_with_a_generic_module_record_is_409(ns, app_engine) -> None:  # noqa: F811
+    """A record of a generic module (``crm_module_records``) is a CRM record."""
+    _assert_non_priv(app_engine)
+    await _native(ns)
+    _add_module_record(ns)
+    r = await _reset(ns)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == _HAS_RECORDS
+    assert _module_records(ns) == 1
+    assert _mode(ns)[0] == "native"
+
+
+async def test_reset_deletes_a_module_record_that_lands_after_the_count(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """The reset deletes the cursors of the modules. A module record that it
+    left would then belong to no cursor, so the reset deletes it too."""
+    _assert_non_priv(app_engine)
+    await _native(ns)
+    from gateway.routes.crm import settings as mod
+
+    real = mod._check_reset_allowed
+
+    async def racing(db: Any, org: str) -> None:
+        await real(db, org)
+        _add_module_record(ns)
+
+    monkeypatch.setattr(mod, "_check_reset_allowed", racing)
+    r = await _reset(ns)
+    assert r.status_code == 200, r.text
+    assert _module_records(ns) == 0
